@@ -433,6 +433,38 @@ fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut Te
     assert!(has_jump(&native_tree(&mut rig)), "the Reader action did not return after the sheet cleared");
 }
 
+#[gpui::test]
+fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
+    let destination = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query)));
+    let native_focus = |rig: &mut Rig| {
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let id = tree["accesskit_focus"].as_str().expect("native focus id");
+        (id.to_owned(), tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned))
+    };
+
+    rig.keys("cmd-k");
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.frame(0);
+    assert_eq!(rig.route(), destination);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving), "the Ask exit must still own painted pixels");
+    assert_ne!(native_focus(&mut rig).1.as_deref(), Some("Find query"),
+        "the arriving Find field claimed native focus behind the leaving Ask");
+
+    rig.settle();
+    assert_eq!(ask_phase(&painted(&mut rig)), None);
+    assert_eq!(native_focus(&mut rig).1.as_deref(), Some("Find query"),
+        "the query never claimed focus after Ask and the Reader both settled");
+    rig.cx.update(|window, cx| window.focus_next(cx));
+    let away = native_focus(&mut rig);
+    assert_ne!(away.1.as_deref(), Some("Find query"), "native focus did not leave the query");
+    rig.repaint();
+    assert_eq!(native_focus(&mut rig), away, "a Find redraw stole native focus back to its query");
+}
+
 /// Real resize events hold one placement around the readable-width edge,
 /// then change it once in each direction. The sampled plate may still be
 /// moving; this checks its settled, painted rectangle at each stop.

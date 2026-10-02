@@ -374,37 +374,38 @@ fn find_settings_script() -> (Vec<InputStep>, Vec<u64>) {
     step(100, Some(InputStep::key("cmd-[")));          // 01 Code → Orbit
     step(100, Some(InputStep::key("cmd-k")));          // 02 Ask
     step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 03 owner query
-    step(800, Some(InputStep::key("cmd-enter")));      // 04 Find from current Ask reading
-    step(300, Some(InputStep::key("tab")));            // 05 native result focus
-    step(100, Some(InputStep::key("shift-tab")));      // 06 back to Find query
-    step(100, Some(InputStep::key("enter")));          // 07 exact selected declaration
-    step(200, Some(InputStep::key("cmd-[")));          // 08 Find again
-    step(200, Some(InputStep::key("cmd-a")));          // 09 select Find query
-    step(100, Some(InputStep::Text { value: "AbsentMarker".to_owned() })); // 10 dirty query
-    step(50, Some(InputStep::key("enter")));           // 11 commit query; never open old row
-    step(450, None);                                    // 12 current empty reading
-    step(200, Some(InputStep::key("cmd-k")));          // 13 Ask again
-    step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 14 owner query
-    step(800, Some(InputStep::key("cmd-enter")));      // 15 Find at original root
-    step(200, None);                                    // 16 settled Find before replacement
-    step(200, None);                                    // 17 owner source replaced in frame hook
-    step(500, Some(InputStep::key("enter")));          // 18 old result cannot open
-    step(200, Some(InputStep::key("cmd-,")));          // 19 Settings
-    step(100, Some(InputStep::FocusNext));              // 20 native entry
-    step(100, Some(InputStep::key("tab")));            // 21 contrast
-    step(100, Some(InputStep::key("tab")));            // 22 density
-    step(100, Some(InputStep::key("tab")));            // 23 text size
-    step(100, Some(InputStep::key("right")));          // 24 110%
-    step(100, Some(InputStep::key("right")));          // 25 125%
-    step(100, Some(InputStep::key("right")));          // 26 150%
-    step(100, Some(InputStep::key("end")));            // 27 200%
-    step(100, Some(InputStep::key("tab")));            // 28 motion
-    step(100, Some(InputStep::key("end")));            // 29 reduced motion
-    step(100, Some(InputStep::Resize { width: 800, height: 900 }));  // 30
-    step(100, Some(InputStep::Resize { width: 360, height: 900 }));  // 31
-    step(100, Some(InputStep::Resize { width: 1440, height: 900 })); // 32
-    step(200, Some(InputStep::key("escape")));         // 33 close Settings
-    step(200, Some(InputStep::key("cmd-[")));          // 34 Back at the current owner
+    step(800, Some(InputStep::key("cmd-enter")));      // 04 Find route while Ask exit still paints
+    step(800, None);                                    // 05 settled Find claims query focus
+    step(100, Some(InputStep::key("tab")));            // 06 native result focus
+    step(100, Some(InputStep::key("shift-tab")));      // 07 back to Find query
+    step(100, Some(InputStep::key("enter")));          // 08 exact selected declaration
+    step(200, Some(InputStep::key("cmd-[")));          // 09 Find again
+    step(200, Some(InputStep::key("cmd-a")));          // 10 select Find query
+    step(100, Some(InputStep::Text { value: "AbsentMarker".to_owned() })); // 11 dirty query
+    step(50, Some(InputStep::key("enter")));           // 12 commit query; never open old row
+    step(450, None);                                    // 13 current empty reading
+    step(200, Some(InputStep::key("cmd-k")));          // 14 Ask again
+    step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 15 owner query
+    step(800, Some(InputStep::key("cmd-enter")));      // 16 Find at original root; Ask exits
+    step(800, None);                                    // 17 settled Find before replacement
+    step(200, None);                                    // 18 owner source replaced in frame hook
+    step(500, Some(InputStep::key("enter")));          // 19 old result cannot open
+    step(200, Some(InputStep::key("cmd-,")));          // 20 Settings
+    step(100, Some(InputStep::FocusNext));              // 21 native entry
+    step(100, Some(InputStep::key("tab")));            // 22 contrast
+    step(100, Some(InputStep::key("tab")));            // 23 density
+    step(100, Some(InputStep::key("tab")));            // 24 text size
+    step(100, Some(InputStep::key("right")));          // 25 110%
+    step(100, Some(InputStep::key("right")));          // 26 125%
+    step(100, Some(InputStep::key("right")));          // 27 150%
+    step(100, Some(InputStep::key("end")));            // 28 200%
+    step(100, Some(InputStep::key("tab")));            // 29 motion
+    step(100, Some(InputStep::key("end")));            // 30 reduced motion
+    step(100, Some(InputStep::Resize { width: 800, height: 900 }));  // 31
+    step(100, Some(InputStep::Resize { width: 360, height: 900 }));  // 32
+    step(100, Some(InputStep::Resize { width: 1440, height: 900 })); // 33
+    step(200, Some(InputStep::key("escape")));         // 34 close Settings
+    step(200, Some(InputStep::key("cmd-[")));          // 35 Back at the current owner
     (actions, times)
 }
 
@@ -584,7 +585,7 @@ fn capture(
                         }), "the live shelf has a reachable project row");
                     });
                 }
-                (Script::FindSettingsJourney, 17) => {
+                (Script::FindSettingsJourney, 18) => {
                     let old = store.read(cx).snapshot().key();
                     let replacement = replace_find_fixture(&hook_endpoint, &hook_project, old);
                     eprintln!("live source replacement: {old} → {replacement}");
@@ -1000,7 +1001,7 @@ fn capture(
     }
     if shot.script == Script::FindSettingsJourney {
         let observed = journey.borrow();
-        assert_eq!(observed.len(), 35, "every real Find/Settings input has paired evidence");
+        assert_eq!(observed.len(), 36, "every real Find/Settings input has paired evidence");
         assert_eq!(set.frames.len(), observed.len());
         assert!(observed.iter().all(|frame| frame.owner_serving), "the mounted reader stays attached to the real owner");
         let native = |index: usize| set.frames[index].native_accessibility.as_ref().expect("paired AccessKit tree");
@@ -1036,51 +1037,54 @@ fn capture(
                 if query.text.as_ref() == text)
         };
         assert!(find_query(4, "RelationLabel"), "⌘↵ opens the current owner Find page");
-        assert_eq!(field_value(4).as_deref(), Some("RelationLabel"));
-        assert_eq!(focus(4)["aria"]["label"].as_str(), Some("Find query"), "Find takes native keyboard focus");
-        assert_eq!(focus(5)["aria"]["role"].as_str(), Some("Button"), "Tab reaches a native result row");
-        assert_eq!(focus(6)["aria"]["label"].as_str(), Some("Find query"), "Shift-Tab returns to the query");
-        let Route::Symbol(opened) = &observed[7].route else { panic!("Enter on Find query did not open a declaration: {:?}", observed[7].route) };
+        assert_ne!(focus(4)["aria"]["label"].as_str(), Some("Find query"), "Find cannot claim focus behind the painted Ask exit");
+        assert_eq!(field_value(5).as_deref(), Some("RelationLabel"));
+        assert_eq!(focus(5)["aria"]["label"].as_str(), Some("Find query"), "settled Find takes native keyboard focus");
+        assert_eq!(focus(6)["aria"]["role"].as_str(), Some("Button"), "Tab reaches a native result row");
+        assert_eq!(focus(7)["aria"]["label"].as_str(), Some("Find query"), "Shift-Tab returns to the query");
+        let Route::Symbol(opened) = &observed[8].route else { panic!("Enter on Find query did not open a declaration: {:?}", observed[8].route) };
         assert_eq!(opened.id, initial_code.id, "Enter chooses the exact indexed coordinate");
         assert_eq!(opened.view, View::Page);
-        assert!(find_query(8, "RelationLabel"), "Back restores the typed Find route");
-        assert_eq!(field_value(10).as_deref(), Some("AbsentMarker"));
-        assert!(find_query(10, "RelationLabel"), "dirty text has not admitted another route");
-        assert!(find_query(11, "AbsentMarker"), "Enter commits the changed query instead of the old row");
-        assert!(find_query(12, "AbsentMarker"));
-        assert!(has(12, "Group", "Search results"), "the replacement query has an indexed reading");
-        assert!(find_query(15, "RelationLabel") && find_query(16, "RelationLabel"), "Ask returns to the original exact search");
+        assert!(find_query(9, "RelationLabel"), "Back restores the typed Find route");
+        assert_eq!(field_value(11).as_deref(), Some("AbsentMarker"));
+        assert!(find_query(11, "RelationLabel"), "dirty text has not admitted another route");
+        assert!(find_query(12, "AbsentMarker"), "Enter commits the changed query instead of the old row");
+        assert!(find_query(13, "AbsentMarker"));
+        assert!(has(13, "Group", "Search results"), "the replacement query has an indexed reading");
+        assert!(find_query(16, "RelationLabel") && find_query(17, "RelationLabel"), "Ask returns to the original exact search");
+        assert_ne!(focus(16)["aria"]["label"].as_str(), Some("Find query"), "the second Ask exit also retains input ownership");
+        assert_eq!(focus(17)["aria"]["label"].as_str(), Some("Find query"), "the second settled Find regains query focus");
         let replacement = (*replaced.borrow()).expect("real source replacement was issued");
         assert!(!replacement.same_authority(snapshot_key), "the owner issued a different root");
-        assert!(observed[18].root.same_authority(replacement), "the mounted shell admitted the replacement owner root");
-        assert!(find_query(18, "RelationLabel"), "Enter cannot open an obsolete result after root replacement");
-        assert_eq!(observed[18].overlay, None);
-        let old_row = native(18).tree["nodes"].as_object().expect("native nodes").values()
+        assert!(observed[19].root.same_authority(replacement), "the mounted shell admitted the replacement owner root");
+        assert!(find_query(19, "RelationLabel"), "Enter cannot open an obsolete result after root replacement");
+        assert_eq!(observed[19].overlay, None);
+        let old_row = native(19).tree["nodes"].as_object().expect("native nodes").values()
             .find(|node| node["aria"]["role"].as_str() == Some("Button")
                 && node["aria"]["label"].as_str().is_some_and(|label| label.contains("RelationLabel")));
         assert!(old_row.is_none_or(|row| row["aria"]["disabled"].as_bool() == Some(true)),
             "a retained obsolete result is absent or natively disabled");
-        for index in 19..=32 {
+        for index in 20..=33 {
             assert_eq!(observed[index].overlay, Some(Overlay::Settings(backend_desktop::navigation::SettingsPage::Appearance)));
             assert!(has(index, "Heading", "Appearance"), "Settings keeps its native heading through edit/resize");
             for label in ["Theme", "Contrast", "Density", "Text size", "Motion"] {
                 assert!(has(index, "RadioGroup", label), "{label} remains in frame {index}");
             }
         }
-        assert_eq!(focus(23)["aria"]["role"].as_str(), Some("RadioButton"), "Tab reaches the text-size choices");
-        assert_eq!(observed[26].text_percent, 150, "three Right presses choose 150% through the native text-size control");
-        assert_eq!(observed[27].text_percent, 200, "End chooses 200% through the same native control");
-        assert_eq!(focus(28)["aria"]["role"].as_str(), Some("RadioButton"), "Tab reaches motion choices");
-        assert_eq!(observed[29].motion, MotionPreference::Reduced, "End chooses reduced motion through the native control");
-        for (index, width) in [(30, 800), (31, 360), (32, 1440)] {
+        assert_eq!(focus(24)["aria"]["role"].as_str(), Some("RadioButton"), "Tab reaches the text-size choices");
+        assert_eq!(observed[27].text_percent, 150, "three Right presses choose 150% through the native text-size control");
+        assert_eq!(observed[28].text_percent, 200, "End chooses 200% through the same native control");
+        assert_eq!(focus(29)["aria"]["role"].as_str(), Some("RadioButton"), "Tab reaches motion choices");
+        assert_eq!(observed[30].motion, MotionPreference::Reduced, "End chooses reduced motion through the native control");
+        for (index, width) in [(31, 800), (32, 360), (33, 1440)] {
             assert_eq!(set.frames[index].image.width(), width, "paired resized Settings frame");
             assert_eq!(observed[index].text_percent, 200);
             assert_eq!(observed[index].motion, MotionPreference::Reduced);
         }
-        assert!(observed[33].overlay.is_none(), "Escape closes Settings");
-        assert!(observed[33].root.same_authority(replacement), "closing Settings restores the current owner");
-        assert!(observed[34].overlay.is_none(), "Back returns to an ordinary owner route");
-        assert!(observed[34].root.same_authority(replacement));
+        assert!(observed[34].overlay.is_none(), "Escape closes Settings");
+        assert!(observed[34].root.same_authority(replacement), "closing Settings restores the current owner");
+        assert!(observed[35].overlay.is_none(), "Back returns to an ordinary owner route");
+        assert!(observed[35].root.same_authority(replacement));
     }
     assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());

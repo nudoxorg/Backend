@@ -385,6 +385,9 @@ pub(crate) struct Reader {
     core: RegionCore,
     /// The shell's occupied Ask rectangle for this frame, if results show.
     ask_geometry: Option<super::frame::AskGeometry>,
+    /// The shell's painted Ask scene, rather than its already-cleared overlay,
+    /// decides when a newly arrived body may claim native keyboard focus.
+    ask_background_input_allowed: bool,
     map: Option<Entity<bodies::graph::Map>>,
     graph_source: Option<crate::model::pages::SymbolRef>,
     links: Links,
@@ -470,6 +473,7 @@ impl Reader {
                 &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
             ask_geometry: None,
+            ask_background_input_allowed: true,
             links,
             map: None,
             graph_source: None,
@@ -1809,9 +1813,10 @@ pub(crate) fn reader_keys(snapshot: &AppSnapshot) -> Vec<PageKey> {
 }
 
 impl Reader {
-    pub(crate) fn set_ask_geometry(&mut self, geometry: Option<super::frame::AskGeometry>, cx: &mut Context<Self>) {
-        if self.ask_geometry != geometry {
+    pub(crate) fn set_ask_scene(&mut self, geometry: Option<super::frame::AskGeometry>, background_input_allowed: bool, cx: &mut Context<Self>) {
+        if self.ask_geometry != geometry || self.ask_background_input_allowed != background_input_allowed {
             self.ask_geometry = geometry;
+            self.ask_background_input_allowed = background_input_allowed;
             cx.notify();
         }
     }
@@ -1858,6 +1863,7 @@ impl Reader {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
                 active: current,
+                native_input_active: current && self.ask_background_input_allowed && self.transit.is_none(),
                 measure: layout.folio_measure,
                 note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
                 wide: layout.wide_measure,
