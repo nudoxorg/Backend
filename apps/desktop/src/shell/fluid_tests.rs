@@ -388,6 +388,7 @@ fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &m
     let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
     let destination = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query)));
     let native_focus = |rig: &mut Rig| {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
         rig.repaint();
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
@@ -412,6 +413,40 @@ fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &m
     assert_ne!(away.1.as_deref(), Some("Find query"), "native focus did not leave the query");
     rig.repaint();
     assert_eq!(native_focus(&mut rig), away, "a Find redraw stole native focus back to its query");
+}
+
+#[gpui::test]
+fn find_waits_for_its_own_arrival_and_releases_focus_on_departure(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
+    let destination = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query)));
+    let native_focus = |rig: &mut Rig| {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let id = tree["accesskit_focus"].as_str().expect("native focus id");
+        tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
+    };
+    let settled = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx|
+        shell.reader_entity().read(cx).native_motion_settled());
+
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.frame(0);
+    assert_eq!(rig.route(), destination);
+    assert!(!settled(&mut rig), "the immediate arrival must still have a pending or painted Reader transition");
+    assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"),
+        "Find took native focus before its own page settled");
+    rig.settle();
+    assert!(settled(&mut rig));
+    assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"),
+        "the settled page failed to transfer native focus to its query");
+
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx));
+    rig.frame(0);
+    assert!(!settled(&mut rig), "the departing Find must retain a painted Reader transition");
+    assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"),
+        "a departing Find retained native keyboard focus");
 }
 
 /// Real resize events hold one placement around the readable-width edge,
