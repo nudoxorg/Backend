@@ -836,8 +836,10 @@ impl Shell {
         if self.ask_open || super::titlebar::menu_open(window, cx) {
             return;
         }
-        if self.reader.read(cx).adopt_mounted_native_focus(window, cx) {
+        if let Some(changed) = self.reader.read(cx).adopt_mounted_native_focus(window, cx) {
+            let already_reader = self.zone == Zone::Reader;
             self.set_zone(Zone::Reader, cx);
+            if already_reader && changed { self.notify_zone(Zone::Reader, cx); }
         }
     }
 
