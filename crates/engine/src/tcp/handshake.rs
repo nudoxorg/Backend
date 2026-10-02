@@ -1,6 +1,4 @@
 use std::fmt;
-#[cfg(unix)]
-use std::fs::File;
 use std::io::{self, Read, Write};
 
 use super::{
@@ -293,16 +291,22 @@ fn reject(stream: &mut impl Write) {
     let _ = stream.flush();
 }
 
-#[cfg(unix)]
 fn fresh_nonce() -> Result<[u8; NONCE_BYTES], TcpHandshakeError> {
     let mut nonce = [0_u8; NONCE_BYTES];
-    File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut nonce))
-        .map_err(|_| TcpHandshakeError::NonceUnavailable)?;
+    crate::platform::fill_entropy(&mut nonce).map_err(|_| TcpHandshakeError::NonceUnavailable)?;
     Ok(nonce)
 }
 
-#[cfg(not(unix))]
-fn fresh_nonce() -> Result<[u8; NONCE_BYTES], TcpHandshakeError> {
-    Err(TcpHandshakeError::NonceUnavailable)
+#[cfg(test)]
+mod nonce_tests {
+    use super::fresh_nonce;
+
+    /// A Windows stub once reported every nonce as unavailable; the nonce must
+    /// be available and must differ between handshakes.
+    #[test]
+    fn handshake_nonces_are_available_and_fresh() {
+        let first = fresh_nonce().expect("the platform provides a nonce source");
+        let second = fresh_nonce().expect("the platform provides a nonce source");
+        assert_ne!(first, second);
+    }
 }
