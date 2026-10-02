@@ -84,7 +84,12 @@ pub(super) fn serve(gate: &OwnerGate, endpoint: &Path) -> bool {
                     .as_ref()
                     .expect("successful acquisition installed state");
                 match gate.publish_view(attachment, state.root(), state.cursor()) {
-                    PublicationAdmission::Admitted | PublicationAdmission::Obsolete => {}
+                    PublicationAdmission::Admitted => {}
+                    PublicationAdmission::Obsolete if !replace_attachment => {}
+                    PublicationAdmission::Obsolete => {
+                        gate.observation_failed(attachment, "fresh owner publication regressed behind the retained certified cursor".into());
+                        break;
+                    }
                     PublicationAdmission::Withdrawn => break,
                     PublicationAdmission::Invalid => {
                         gate.observation_failed(
