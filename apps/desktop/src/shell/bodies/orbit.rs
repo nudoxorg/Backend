@@ -7,7 +7,7 @@ use super::{Ctx, Leaf};
 use crate::model::AppSnapshot;
 use crate::model::pages::{IndexedPackage, PackageRef, PageKey, Readiness};
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
-use crate::shell::focus::{Act, Target};
+use crate::shell::focus::{Act, Target, native_control};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::icons::{Kind, KindSize};
@@ -15,7 +15,7 @@ use facet::tokens::fluid::PROJECT_GEM;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
-    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, SharedString,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px,
 };
 use std::rc::Rc;
@@ -85,7 +85,7 @@ pub(super) fn body(
             tree_links.dispatch(Intent::ActivateProject(tree_project.clone()), cx);
             tree_links.dispatch(Intent::Navigate(tree_route.clone()), cx);
         });
-        let tree_act = ctx.native_action(tree_act, cx);
+        let tree_act = ctx.native_snapshot_action(tree_act, cx);
         // A click focuses the tile it lands on (so Back, returning here,
         // restores it) and remembers this route was left by it, since
         // `Reader::arrive` unfocuses every new page it draws.
@@ -102,7 +102,7 @@ pub(super) fn body(
                 links.dispatch(Intent::Navigate(route), cx);
             }
         });
-        let act = ctx.native_action(act, cx);
+        let act = ctx.native_snapshot_action(act, cx);
         ctx.targets.push(Target {
             id: id.clone(),
             label: name.clone(),
@@ -131,25 +131,17 @@ pub(super) fn body(
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),
             _ => SharedString::default(),
         };
-        let tile_key = Rc::clone(&act);
-        let mut tile_face =
-                div()
-                    .id(id.clone())
-                    .role(if project_openable { gpui::Role::Link } else { gpui::Role::Button })
-                    .aria_label(if project_openable { format!("Open {}", project.label) } else { format!("Select {}", project.label) })
+        let tile_face =
+                native_control(id.clone(), if project_openable { format!("Open {}", project.label) } else { format!("Select {}", project.label) },
+                    if project_openable { gpui::Role::Link } else { gpui::Role::Button }, tile_focus, Rc::clone(&act))
                     .aria_description(project.path.to_string())
-                    .key_context(crate::shell::keys::NATIVE_CONTROL)
-                    .focusable()
                     .flex()
                     .flex_col()
                     .items_center()
                     .gap(measure.space(Space::Base))
                     .child(crate::shell::onboard::library::tile_gem(project, f32::from(PROJECT_GEM.at(ctx.wide.fluid_room())), active, ctx))
                     .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
-                    .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
-                    .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-                    .on_key_down(move |event: &KeyDownEvent, window, cx| activate_native(event, &tile_key, window, cx));
-        if let Some(focus) = tile_focus { tile_face = tile_face.track_focus(&focus).tab_index(0); }
+                    .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)));
         let tile = ctx.targets.track(
                 id.clone(),
                 tile_face,
@@ -157,24 +149,15 @@ pub(super) fn body(
         let mut project_block = div().flex().flex_col().items_center().gap(measure.space(Space::Snug)).child(tile);
         if project.phase != crate::model::ProjectPhase::Missing {
             let label = ctx.say("Dependency tree ›");
-            let tree_key = Rc::clone(&tree_act);
-            let mut tree_face = div()
-                .id(tree_id.clone())
-                .role(gpui::Role::Link)
-                .aria_label(format!("{} dependency tree", project.label))
+            let tree_face = native_control(tree_id.clone(), format!("{} dependency tree", project.label), gpui::Role::Link, tree_focus, Rc::clone(&tree_act))
                 .aria_description(project.path.to_string())
-                .key_context(crate::shell::keys::NATIVE_CONTROL)
-                .focusable()
                 .cursor_pointer()
                 .min_h(measure.row())
                 .flex()
                 .items_center()
                 .px(measure.space(Space::Base))
                 .hover(|style| style.bg(palette.tint))
-                .child(text(ty::SMALL, &measure, palette.ink2).child(label))
-                .on_click(move |_: &ClickEvent, window, cx| tree_act(window, cx))
-                .on_key_down(move |event: &KeyDownEvent, window, cx| activate_native(event, &tree_key, window, cx));
-            if let Some(focus) = tree_focus { tree_face = tree_face.track_focus(&focus).tab_index(0); }
+                .child(text(ty::SMALL, &measure, palette.ink2).child(label));
             project_block = project_block.child(ctx.targets.track(
                 tree_id.clone(),
                 tree_face,
@@ -231,15 +214,10 @@ pub(super) fn body(
                     let act = ctx.native_action(act, cx);
                     ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
                     let focus = ctx.native_handle(&id, cx);
-                    let key_act = Rc::clone(&act);
-                    let mut face = div().id(id.clone()).role(gpui::Role::Link).aria_label(label.clone())
-                        .key_context(crate::shell::keys::NATIVE_CONTROL).focusable()
+                    let face = native_control(id.clone(), label.clone(), gpui::Role::Link, focus, Rc::clone(&act))
                         .cursor_pointer().min_h(measure.row()).flex().items_center()
                         .px(measure.space(Space::Base)).hover(|style| style.bg(palette.tint))
-                        .child(text(ty::SMALL, &measure, palette.ink2).child(label))
-                        .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-                        .on_key_down(move |event: &KeyDownEvent, window, cx| activate_native(event, &key_act, window, cx));
-                    if let Some(focus) = focus { face = face.track_focus(&focus).tab_index(0); }
+                        .child(text(ty::SMALL, &measure, palette.ink2).child(label));
                     leaves.push(Leaf::new(div().flex().justify_center().child(ctx.targets.track(
                         id.clone(),
                         face,
@@ -343,12 +321,11 @@ fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
         recall.remember_leave(leaving, "resume");
         links.dispatch(Intent::Navigate(route.clone()), cx);
     });
-    let act = ctx.native_action(act, cx);
+    let act = ctx.native_snapshot_action(act, cx);
     let id: SharedString = "resume".into();
     ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
     let focus = ctx.native_handle(&id, cx);
-    let mut line = div().id(id.clone()).role(gpui::Role::Link).aria_label(label)
-        .key_context(crate::shell::keys::NATIVE_CONTROL).focusable()
+    let mut line = native_control(id.clone(), label, gpui::Role::Link, focus, Rc::clone(&act))
         .flex().flex_wrap().items_baseline().gap(measure.space(Space::Snug)).cursor_pointer();
     for (word, name) in words {
         line = line.child(if name {
@@ -357,10 +334,6 @@ fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
             text(ty::SMALL, &measure, palette.ink3).child(word)
         });
     }
-    let key_act = Rc::clone(&act);
-    line = line.on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-        .on_key_down(move |event: &KeyDownEvent, window, cx| activate_native(event, &key_act, window, cx));
-    if let Some(focus) = focus { line = line.track_focus(&focus).tab_index(0); }
     Some(Leaf::new(div().flex().justify_end().child(ctx.targets.track(id, line))))
 }
 
@@ -413,11 +386,11 @@ fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut
         Readiness::Indexing => palette.ink3,
         Readiness::Failed => palette.coral.base,
     };
-    let mut element = div()
-                .id(id.clone())
-                .role(if available { gpui::Role::Link } else { gpui::Role::Label })
-                .aria_label(format!("{} ({})", name, package.package))
-                .key_context(crate::shell::keys::NATIVE_CONTROL)
+    let mut element = if available {
+            native_control(id.clone(), format!("{} ({})", name, package.package), gpui::Role::Link, focus, Rc::clone(&act))
+        } else {
+            div().id(id.clone()).role(gpui::Role::Label).aria_label(format!("{} ({})", name, package.package))
+        }
                 .flex()
                 .items_center()
                 .gap(measure.space(Space::Snug))
@@ -429,23 +402,9 @@ fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut
                 .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).keyed(SharedString::from(format!("orbit-apart:{}", package.package))).flex_none().whitespace_nowrap().child(apart)));
     if available {
-        let key_act = Rc::clone(&act);
-        element = element.focusable()
-            .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-            .on_key_down(move |event: &KeyDownEvent, window, cx| activate_native(event, &key_act, window, cx))
-            .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx)));
-        if let Some(focus) = focus { element = element.track_focus(&focus).tab_index(0); }
+        element = element.on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx)));
         ctx.targets.track(id, element).into_any_element()
     } else {
         element.into_any_element()
-    }
-}
-
-fn activate_native(event: &KeyDownEvent, act: &Act, window: &mut gpui::Window, cx: &mut gpui::App) {
-    if !event.keystroke.modifiers.modified()
-        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-    {
-        if !event.is_held { act(window, cx); }
-        cx.stop_propagation();
     }
 }

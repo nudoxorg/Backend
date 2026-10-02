@@ -38,9 +38,9 @@ use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore, a11y_inert};
 use super::jump::route_symbol;
 use crate::model::AppSnapshot;
-use crate::model::pages::PageKey;
+use crate::model::pages::{PageKey, Stamp};
 use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, View};
-use crate::runtime::store::{Branch, CargoReadAdmission, DataStore, RouteDependencies, StoreEvent};
+use crate::runtime::store::{Branch, CargoReadAdmission, DataStore, OwnerAttachment, RouteDependencies, StoreEvent};
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
 use facet::tokens::ty;
@@ -380,6 +380,16 @@ fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [B
     }
 }
 
+#[derive(Clone)]
+struct NativeReturn {
+    place: u64,
+    route: Route,
+    root: crate::core::VersionedRoot,
+    id: SharedString,
+    attachment: OwnerAttachment,
+    read_stamp: Option<(PageKey, Stamp)>,
+}
+
 /// The reader region.
 pub(crate) struct Reader {
     core: RegionCore,
@@ -412,7 +422,7 @@ pub(crate) struct Reader {
     source_focus_applied: Rc<Cell<Option<(u64, u32, Option<SourceGeneration>)>>>,
     /// A Back return belongs to one visit, and waits for its live control to
     /// mount before transferring native focus from the Shell.
-    native_return: Option<(u64, Route, crate::core::VersionedRoot, SharedString)>,
+    native_return: Option<NativeReturn>,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -735,7 +745,11 @@ impl Reader {
     pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, cx: &mut Context<Self>) {
         if self.route == route && self.overlay.is_none() {
             if let Some(place) = self.places.last() {
-                self.native_return = Some((place.key, route, self.links.snapshot(cx).key(), id));
+                let root = self.links.snapshot(cx).key();
+                let store = self.links.store.read(cx);
+                let Some(attachment) = store.current_owner_attachment() else { return };
+                let read_stamp = RouteDependencies::new(&route, None).native_stamp(store, false);
+                self.native_return = Some(NativeReturn { place: place.key, route, root, id, attachment, read_stamp });
                 cx.notify();
             }
         }
@@ -750,6 +764,8 @@ impl Reader {
         place: u64,
         route: &Route,
         root: crate::core::VersionedRoot,
+        attachment: Option<&OwnerAttachment>,
+        read_stamp: Option<&(PageKey, Stamp)>,
         source: Option<SourceGeneration>,
         inventory_revision: Option<[u8; 32]>,
         cx: &gpui::App,
@@ -757,22 +773,27 @@ impl Reader {
         if self.places.last().is_none_or(|current| current.key != place)
             || self.route != *route
             || self.overlay.is_some()
-            || self.links.snapshot(cx).key() != root
+            || !self.links.snapshot(cx).key().same_authority(root)
+        {
+            return false;
+        }
+        let store = self.links.store.read(cx);
+        if attachment.is_none_or(|attachment| !store.admits_owner_attachment(attachment))
+            || !store.snapshot().key().same_authority(root)
+            || read_stamp.is_some_and(|stamp| !RouteDependencies::new(route, None).admits_native_stamp(store, root, stamp))
         {
             return false;
         }
         if let Route::CargoSource(file) = route {
+            if read_stamp.is_none() { return false; }
             let Ok(package) = crate::model::pages::PackageRef::parse(file.package.as_str()) else { return false };
-            let store = self.links.store.read(cx);
             match source {
                 Some(SourceGeneration::Cargo(digest)) => {
                     let key = crate::model::pages::CargoSourceKey {
                         project: file.project.clone(), package, file: file.file.clone(),
                     };
                     let resource = store.cargo_source(&key);
-                    if store.is_loading(&PageKey::CargoSource(key))
-                        || resource.value_root() != Some(root)
-                        || resource.loaded_value().is_none_or(|page| page.content_digest != digest)
+                    if resource.loaded_value().is_none_or(|page| page.content_digest != digest)
                     {
                         return false;
                     }
@@ -785,9 +806,7 @@ impl Reader {
                         },
                     );
                     let resource = store.pages().browse(&key);
-                    if store.is_loading(&PageKey::Browse(key))
-                        || resource.value_root() != Some(root)
-                        || !matches!(resource.loaded_value(), Some(crate::model::browse::BrowseValue::CargoSourceInventory(model)) if model.source_revision == revision)
+                    if !matches!(resource.loaded_value(), Some(crate::model::browse::BrowseValue::CargoSourceInventory(model)) if model.source_revision == revision)
                     {
                         return false;
                     }
@@ -2293,15 +2312,22 @@ impl Render for Reader {
             else { self.reveal.set(true); cx.notify(); }
         }
         self.targets.finish_native();
-        if let Some((place, route, root, id)) = self.native_return.clone() {
-            if place != current.key || route != current.route || root != snapshot.key() || current.overlay.is_some() {
+        if let Some(pending) = self.native_return.clone() {
+            let store = self.links.store.read(cx);
+            let dependencies = RouteDependencies::new(&pending.route, None);
+            let resources_current = store.admits_owner_attachment(&pending.attachment)
+                && pending.read_stamp.as_ref().is_none_or(|stamp| dependencies.admits_native_stamp(store, pending.root, stamp));
+            let input_owned = self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).allows_reader_native_return(window));
+            if pending.place != current.key || pending.route != current.route || !pending.root.same_authority(snapshot.key()) || current.overlay.is_some()
+                || !resources_current || !input_owned || super::titlebar::menu_open(window, cx)
+                || self.targets.native_focused(window).is_some_and(|focused| focused != pending.id)
+            {
                 self.native_return = None;
             } else if self.painted == Some(current.key)
-                && self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).allows_reader_native_return())
-                && !super::titlebar::menu_open(window, cx)
-                && self.targets.focus_native(&id, window, cx)
+                && staged.is_none() && self.transit.is_none() && self.arrival.is_none()
+                && self.targets.focus_native(&pending.id, window, cx)
             {
-                self.targets.focus(id);
+                self.targets.focus(pending.id);
                 self.native_return = None;
                 self.reveal.set(true);
                 cx.notify();

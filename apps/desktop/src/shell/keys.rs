@@ -340,6 +340,12 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", FolioNext, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving")),
         KeyBinding::new("shift-tab", FolioPrev, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving")),
     ]);
+    // gpui-component's Root owns a generic Tab action. Bind the same Shell
+    // walk at the deeper native-control context so a mounted Library or
+    // Reader control keeps Tab/Shift-Tab in its actual surface first.
+    let native_context = format!("{CONTEXT} && {NATIVE_CONTROL} && !Input && !Menu && !Ask && !AskLeaving && !NativeFolio");
+    bindings.push(KeyBinding::new("tab", NextZone, Some(&native_context)));
+    bindings.push(KeyBinding::new("shift-tab", PrevZone, Some(&native_context)));
     bindings
 }
 
@@ -373,7 +379,7 @@ mod tests {
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].command, Command::ZoomReset);
         // Every binding parses.
-        assert_eq!(bindings().len(), TABLE.len() + 6);
+        assert_eq!(bindings().len(), TABLE.len() + 8);
     }
 
     #[test]

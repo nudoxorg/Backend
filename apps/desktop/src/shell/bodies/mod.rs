@@ -145,22 +145,37 @@ impl Ctx<'_> {
     /// owner revision. Retained transition bodies and stale pointer events
     /// cannot navigate after that visit has been replaced.
     pub(crate) fn native_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, None, cx)
+        self.native_action_with_inventory(action, None, false, cx)
+    }
+
+    /// Controls backed only by the current workspace/session snapshot, such
+    /// as Add folder and a local project, do not borrow Orbit page bytes.
+    pub(crate) fn native_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, true, cx)
     }
 
     pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, Some(revision), cx)
+        self.native_action_with_inventory(action, Some(revision), false, cx)
     }
 
-    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, cx: &mut Context<Reader>) -> Act {
+    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, snapshot_only: bool, cx: &mut Context<Reader>) -> Act {
         let reader = cx.weak_entity();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route().clone();
         let root = snapshot.key();
         let source = inventory_revision.is_none().then_some(self.source_generation).flatten();
+        let dependencies = RouteDependencies::new(&route, snapshot.overlay());
+        let (attachment, read_stamp) = {
+            let store = self.links.store.read(cx);
+            (store.current_owner_attachment(), (!snapshot_only).then(|| dependencies.native_stamp(store, inventory_revision.is_some())).flatten())
+        };
         std::rc::Rc::new(move |window, app| {
-            if reader.upgrade().is_some_and(|reader| reader.read(app).admits_native_visit(place, &route, root, source, inventory_revision, app)) {
+            if reader.upgrade().is_some_and(|reader| reader.update(app, |reader, cx| {
+                let admitted = reader.admits_native_visit(place, &route, root, attachment.as_ref(), read_stamp.as_ref(), source, inventory_revision, cx);
+                if admitted { reader.cancel_native_return(); }
+                admitted
+            })) {
                 action(window, app);
             }
         })

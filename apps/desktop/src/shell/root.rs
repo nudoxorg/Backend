@@ -394,8 +394,8 @@ impl Shell {
         (self.zone, focused)
     }
 
-    pub(crate) fn allows_reader_native_return(&self) -> bool {
-        self.zone == Zone::Reader && !self.ask_open
+    pub(crate) fn allows_reader_native_return(&self, window: &Window) -> bool {
+        self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
     }
 
     /// How many descents the reader played and which way the last went.
@@ -546,7 +546,6 @@ impl Shell {
                     let reader = self.reader.clone();
                     cx.defer(move |cx| {
                         reader.update(cx, |reader, cx| {
-                            reader_targets.focus(id.clone());
                             reader.request_native_return(route, id, cx);
                         });
                     });
