@@ -1163,9 +1163,17 @@ mod tests {
         });
         let shell = shell_slot.borrow_mut().take().expect("mounted shell");
         let visual = VisualTestContext::from_window(window.into(), cx).into_mut();
-        visual.update(|window, _| window.activate_window());
+        visual.update(|window, cx| {
+            window.activate_window();
+            window.set_a11y_forced(true);
+            facet::probe::enable(cx);
+        });
         let draw = |visual: &mut VisualTestContext| {
-            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.update(|window, cx| {
+                window.simulate_reconciled_next_frame(cx);
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
             visual.run_until_parked();
         };
         draw(visual);
@@ -1176,11 +1184,39 @@ mod tests {
         visual.update(|window, cx| input.update(cx, |input, cx| input.replace_all("RelationLabel", window, cx)));
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            visual.executor().advance_clock(Duration::from_millis(200));
+            visual.executor().advance_clock(Duration::from_millis(16));
             draw(visual);
-            if ask.read_with(visual, |ask, cx| !ask.choices(cx).is_empty()) { break; }
-            assert!(Instant::now() < deadline, "the fixture's served Ask result never mounted");
-            std::thread::sleep(Duration::from_millis(2));
+            let result_label = ask.read_with(visual, |ask, cx| {
+                ask.choices(cx).first().filter(|choice| choice.route.is_some()).map(|choice| {
+                    if choice.place.is_empty() {
+                        format!("Result 1: Open {}", choice.name)
+                    } else {
+                        format!("Result 1: Open {}, {}", choice.name, choice.place)
+                    }
+                })
+            });
+            let ledger = visual.update(|_, cx| facet::probe::take(cx));
+            let phase = ledger.stacks.iter().rev().flat_map(|stack| stack.entries.iter())
+                .find(|entry| entry.key == "ask-plate").map(|entry| entry.phase);
+            let tree = visual.update(|window, _| {
+                let json = window.debug_a11y_tree_json().expect("forced native Ask tree");
+                serde_json::from_str::<serde_json::Value>(&json).expect("native tree JSON")
+            });
+            let actionable_link = |label: &str| {
+                tree["nodes"].as_object().expect("native nodes").values().any(|node| {
+                    node["aria"]["label"].as_str() == Some(label)
+                        && node["aria"]["role"].as_str() == Some("Link")
+                        && node["aria"]["on_action"].as_array().is_some_and(|actions| {
+                            actions.iter().any(|action| action.as_str() == Some("Click"))
+                        })
+                })
+            };
+            let result_live = result_label.as_deref().is_some_and(|label| actionable_link(label));
+            let all_live = actionable_link("Open every search result as a page");
+            if phase == Some(facet::probe::StackPhase::Open) && result_live && all_live { break; }
+            assert!(Instant::now() < deadline,
+                "Ask never exposed its settled native stops: phase={phase:?}, result={result_label:?}, result_live={result_live}, all_live={all_live}");
+            std::thread::yield_now();
         }
         assert_eq!(ask.read_with(visual, |ask, cx| ask.choices(cx).len()), 1, "fixture result is mounted");
         let focused = |visual: &mut VisualTestContext| visual.update(|window, cx| {
