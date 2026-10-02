@@ -184,6 +184,16 @@ impl std::hash::Hash for InventoryHandle {
 pub struct Actions {
     pub open_package: Rc<dyn Fn(ReleaseHandle, &mut Window, &mut App)>,
     pub open_inventory: Rc<dyn Fn(InventoryHandle, &mut Window, &mut App)>,
+    /// The host decides whether a mounted return target still owns input.
+    /// Waiting keeps the exact virtual-row return for a settled later frame.
+    pub return_focus: Rc<dyn Fn(FocusHandle, &mut Window, &mut App) -> ReturnDisposition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReturnDisposition {
+    Applied,
+    Waiting,
+    Invalid,
 }
 
 /// One exact package row retained by the owner, including rows whose role or
@@ -318,6 +328,8 @@ pub struct State {
     release_pages: VecDeque<(SharedString, usize)>,
     return_focus: Option<(ReleaseIdentity, u64)>,
     return_inventory: Option<(InventoryHandle, u64)>,
+    return_generation: u64,
+    return_scheduled: Option<u64>,
 }
 
 struct ListCache {
@@ -330,12 +342,47 @@ impl State {
     /// Remembers the exact release that opened the next page. Its button is
     /// focused only if this same tree is painted at a later Reader place.
     pub fn remember_open(&mut self, release: ReleaseHandle, place_key: u64) {
+        self.return_generation = self.return_generation.wrapping_add(1);
+        self.return_scheduled = None;
+        self.return_inventory = None;
         self.return_focus = Some((release.identity, place_key));
     }
 
     /// Remember the exact inventory source that opened a package page.
     pub fn remember_inventory_open(&mut self, row: InventoryHandle, place_key: u64) {
+        self.return_generation = self.return_generation.wrapping_add(1);
+        self.return_scheduled = None;
+        self.return_focus = None;
         self.return_inventory = Some((row, place_key));
+    }
+
+    /// A host interruption cancels both virtual-row candidates. The stale
+    /// deferred closure cannot consume a later request with the same key.
+    pub fn cancel_return(&mut self) {
+        self.return_generation = self.return_generation.wrapping_add(1);
+        self.return_scheduled = None;
+        self.return_focus = None;
+        self.return_inventory = None;
+    }
+
+    fn schedule_return(&mut self) -> Option<u64> {
+        if self.return_scheduled.is_some() {
+            return None;
+        }
+        let generation = self.return_generation;
+        self.return_scheduled = Some(generation);
+        Some(generation)
+    }
+
+    fn finish_return(&mut self, generation: u64, result: ReturnDisposition) {
+        if self.return_scheduled != Some(generation) {
+            return;
+        }
+        self.return_scheduled = None;
+        if result != ReturnDisposition::Waiting {
+            self.return_focus = None;
+            self.return_inventory = None;
+        }
     }
 
     fn inventory_return_target(&self, place_key: u64, active: bool) -> Option<&InventoryHandle> {
@@ -345,19 +392,6 @@ impl State {
             .map(|(key, _)| key)
     }
 
-    fn take_inventory_return(
-        &mut self,
-        key: &InventoryHandle,
-        place_key: u64,
-        active: bool,
-    ) -> bool {
-        if self.inventory_return_target(place_key, active) != Some(key) {
-            return false;
-        }
-        self.return_inventory = None;
-        true
-    }
-
     fn return_target(&self, place_key: u64, active: bool) -> Option<ReleaseIdentity> {
         self.return_focus
             .as_ref()
@@ -365,6 +399,7 @@ impl State {
             .map(|(release, _)| release.clone())
     }
 
+    #[cfg(test)]
     fn take_return(&mut self, release: &ReleaseIdentity, place_key: u64, active: bool) -> bool {
         if self.return_target(place_key, active).as_ref() != Some(release) {
             return false;
@@ -578,6 +613,10 @@ mod mounted_tests {
                     if let Some(opened) = &inventory_opened {
                         opened.borrow_mut().push(row);
                     }
+                }),
+                return_focus: Rc::new(|focus, window, cx| {
+                    window.focus(&focus, cx);
+                    ReturnDisposition::Applied
                 }),
             };
             div().w(self.width).h(px(900.0)).child(library(
@@ -1903,6 +1942,31 @@ fn inventory(
     block.into_any_element()
 }
 
+/// The component knows the exact mounted handle; the host alone decides if
+/// this deferred focus still belongs to the current input owner and visit.
+fn defer_return_focus(
+    state: &Rc<RefCell<State>>,
+    actions: &Actions,
+    focus: FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(generation) = state.borrow_mut().schedule_return() else {
+        return;
+    };
+    let state = Rc::clone(state);
+    let restore = Rc::clone(&actions.return_focus);
+    let focused_before = window.focused(cx);
+    window.defer(cx, move |window, cx| {
+        let result = if window.focused(cx) == focused_before {
+            restore(focus, window, cx)
+        } else {
+            ReturnDisposition::Invalid
+        };
+        state.borrow_mut().finish_return(generation, result);
+    });
+}
+
 fn inventory_row(
     id: &ElementId,
     row: &InventoryRow,
@@ -1985,12 +2049,8 @@ fn inventory_row(
             release: "".into(),
         };
         let focus = state.borrow_mut().focus_for(&focus_key, cx);
-        if state
-            .borrow_mut()
-            .take_inventory_return(&target, place_key, active)
-        {
-            let returning_focus = focus.clone();
-            window.defer(cx, move |window, cx| window.focus(&returning_focus, cx));
+        if state.borrow().inventory_return_target(place_key, active) == Some(&target) {
+            defer_return_focus(state, actions, focus.clone(), window, cx);
         }
         let open = Rc::clone(&actions.open_inventory);
         line = line.child(
@@ -2383,12 +2443,10 @@ fn row_view(
             let button_id = child(id, release.key.clone());
             let focus = state.borrow_mut().focus_for(&target.identity, cx);
             if returning
-                && state
-                    .borrow_mut()
-                    .take_return(&target.identity, place_key, active)
+                && state.borrow().return_target(place_key, active).as_ref()
+                    == Some(&target.identity)
             {
-                let returning_focus = focus.clone();
-                window.defer(cx, move |window, cx| window.focus(&returning_focus, cx));
+                defer_return_focus(state, actions, focus.clone(), window, cx);
             }
             let kind = release.source_detail.as_ref().map(|source| {
                 let source = source.as_ref();

@@ -85,6 +85,7 @@ pub(super) fn body(
                 LibraryActions {
                     open_package: open_library_package_action(Arc::clone(tree), ctx),
                     open_inventory: open_library_inventory_action(Arc::clone(tree), ctx),
+                    return_focus: ctx.native_return_focus(cx),
                 },
                 &ctx.measure,
                 Rc::clone(&ctx.library_state),
