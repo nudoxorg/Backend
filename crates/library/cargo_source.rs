@@ -1906,12 +1906,13 @@ mod tests {
 
         let mut mismatched_project = result.clone();
         let CargoPackageReadmeResultV1::Read {
-            request_binding, ..
+            request_binding: mismatched_binding,
+            ..
         } = &mut mismatched_project
         else {
             unreachable!()
         };
-        request_binding.effective_workspace_root_digest = [42; 32];
+        mismatched_binding.effective_workspace_root_digest = [42; 32];
         assert!(!mismatched_project.has_admissible_shape());
 
         let absent = CargoPackageReadmeResultV1::Absent {
