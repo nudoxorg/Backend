@@ -202,7 +202,9 @@ fn metadata_observation_revision(
             hasher.update(&[1]);
             hasher.update(&witness);
         }
-        _ => hasher.update(&[0]),
+        _ => {
+            hasher.update(&[0]);
+        }
     }
     *hasher.finalize().as_bytes()
 }

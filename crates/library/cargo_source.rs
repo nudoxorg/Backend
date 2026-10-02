@@ -1260,7 +1260,7 @@ impl CargoPackageSourceAuthorityV1 {
             package_id_digest: digest_field(b"cargo-package-id.v1", package_id.as_bytes()),
             source,
             roots: CargoPackageRootIdentityV1 {
-                workspace_root: digest_path("cargo-workspace-root.v1", workspace_root),
+                workspace_root: digest_path("cargo-workspace-root.v1", workspace_root.as_bytes()),
                 package_root: digest_path(
                     "cargo-package-root.v1",
                     package_root
@@ -1268,7 +1268,7 @@ impl CargoPackageSourceAuthorityV1 {
                         .ok_or(CargoPackageSourceAuthorityFailureV1::MissingManifestRoot)?
                         .as_bytes(),
                 ),
-                manifest_path: digest_path("cargo-manifest-path.v1", manifest_path),
+                manifest_path: digest_path("cargo-manifest-path.v1", manifest_path.as_bytes()),
             },
             path_display_digest,
             source_revision,

@@ -106,13 +106,13 @@ impl ProjectTreeRequestBindingV1 {
     /// Whether an exact Cargo source authority proves this same workspace
     /// root. The authority stores this commitment in its root identity.
     #[must_use]
-    pub const fn matches_workspace_root_identity(&self, digest: [u8; 32]) -> bool {
+    pub fn matches_workspace_root_identity(&self, digest: [u8; 32]) -> bool {
         self.effective_workspace_root_digest == digest
     }
 
     /// Whether the binding itself is well-formed.
     #[must_use]
-    pub const fn has_admissible_shape(&self) -> bool {
+    pub fn has_admissible_shape(&self) -> bool {
         self.schema == PROJECT_TREE_REQUEST_BINDING_SCHEMA
             && self.requested_root_digest != [0; 32]
             && self.effective_workspace_root_digest != [0; 32]
