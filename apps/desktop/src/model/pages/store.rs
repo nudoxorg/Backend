@@ -203,6 +203,9 @@ enum Provenance {
     /// From the launch snapshot, and no owner has confirmed it yet (W-Open
     /// I2): its next fetch is quiet.
     Seeded,
+    /// Read from a previous owner attachment. Bytes may be disclosed, but
+    /// only a successful new read can admit them for current actions.
+    Revoked,
 }
 
 #[derive(Debug)]
@@ -404,6 +407,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         };
         slot.resource = match (result, root) {
             (Ok(value), Some(root)) => {
+                slot.provenance = Provenance::Live;
                 let value = merge(previous.loaded_value(), value);
                 Resource::loaded_at(value, root)
             }
@@ -418,7 +422,11 @@ impl<K: Ord + Clone, T> Slots<K, T> {
                 // A cancelled fetch leaves the slot as it was before the
                 // fetch began; the next ensure asks again.
                 slot.asked_at = None;
-                previous.resting()
+                if slot.provenance == Provenance::Revoked {
+                    previous.waiting()
+                } else {
+                    previous.resting()
+                }
             }
         };
         slot.revision = slot.revision.next();
@@ -480,9 +488,42 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             // Nothing visible began, so nothing visible ends.
             return Some(generation);
         }
-        slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).resting();
+        let previous = std::mem::replace(&mut slot.resource, Resource::not_yet());
+        slot.resource = if slot.provenance == Provenance::Revoked {
+            previous.waiting()
+        } else {
+            previous.resting()
+        };
         slot.revision = slot.revision.next();
         Some(generation)
+    }
+
+    /// Invalidate read admission without deleting the immutable predecessor.
+    /// Seeded launch bytes retain their separate first-owner confirmation path.
+    fn revoke_owner_read(&mut self, key: &K) -> bool {
+        let Some(slot) = self.map.get_mut(key) else {
+            return false;
+        };
+        if slot.provenance == Provenance::Seeded {
+            return false;
+        }
+        if slot.provenance == Provenance::Revoked
+            && !slot.running()
+            && slot.asked_at.is_none()
+            && slot.resource.activity() == Activity::Waiting
+        {
+            return false;
+        }
+        slot.fetch = Fetch::Idle;
+        slot.asked_at = None;
+        slot.provenance = Provenance::Revoked;
+        slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).waiting();
+        slot.revision = slot.revision.next();
+        true
+    }
+
+    fn owner_read_revoked(&self, key: &K) -> bool {
+        self.map.get(key).is_some_and(|slot| slot.provenance == Provenance::Revoked)
     }
 
     fn get(&self, key: &K) -> Resource<T> {
@@ -722,6 +763,39 @@ impl PageStore {
         dispatch_ref!(self, key, |slots, k| slots.seeded(k))
     }
 
+    /// Revokes a previous attachment's read. Ordinary page values stay waiting
+    /// predecessors; Cargo file capabilities and path listings drop their
+    /// bytes. The next ensure rereads either family even at the same root.
+    /// The caller must first cancel the read pool's running job for this key.
+    pub fn revoke_owner_read(&mut self, key: &PageKey) -> bool {
+        match key {
+            PageKey::CargoSource(file) => {
+                if self.activity(key) == Activity::NotYet && self.inflight(key).is_none() {
+                    return false;
+                }
+                self.revoke_cargo_source(file);
+                true
+            }
+            PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
+                if self.activity(key) == Activity::NotYet && self.inflight(key).is_none() {
+                    return false;
+                }
+                self.revoke_cargo_source_inventory(inventory);
+                true
+            }
+            PageKey::Symbol(_) | PageKey::Source(_) | PageKey::Package(_) | PageKey::Search(_)
+                | PageKey::Orbit | PageKey::Health | PageKey::Browse(_) => {
+                dispatch!(self, key, |slots, k| slots.revoke_owner_read(k))
+            }
+        }
+    }
+
+    /// A revoked predecessor is never saved as a current launch page.
+    #[must_use]
+    pub fn is_owner_read_revoked(&self, key: &PageKey) -> bool {
+        dispatch_ref!(self, key, |slots, k| slots.owner_read_revoked(k))
+    }
+
     /// Records an access without starting a fetch.
     pub fn touch(&mut self, key: &PageKey) {
         self.clock = self.clock.next();
@@ -818,6 +892,7 @@ impl PageStore {
     /// address and slot remain so the next focused read can be retried.
     pub fn revoke_cargo_source(&mut self, file: &CargoSourceKey) {
         if let Some(slot) = self.cargo_sources.map.get_mut(file) {
+            slot.fetch = Fetch::Idle;
             slot.resource = Resource::not_yet();
             slot.asked_at = None;
             slot.revision = slot.revision.next();
@@ -827,6 +902,7 @@ impl PageStore {
     /// A new owner attachment must revalidate every retained file receipt.
     pub fn revoke_all_cargo_sources(&mut self) {
         for slot in self.cargo_sources.map.values_mut() {
+            slot.fetch = Fetch::Idle;
             slot.resource = Resource::not_yet();
             slot.asked_at = None;
             slot.revision = slot.revision.next();
@@ -838,6 +914,7 @@ impl PageStore {
     pub fn revoke_cargo_source_inventory(&mut self, key: &crate::model::browse::CargoSourceInventoryKey) {
         let browse = crate::model::browse::BrowseKey::CargoSourceInventory(key.clone());
         if let Some(slot) = self.browse.map.get_mut(&browse) {
+            slot.fetch = Fetch::Idle;
             slot.resource = Resource::not_yet();
             slot.asked_at = None;
             slot.revision = slot.revision.next();
@@ -848,6 +925,7 @@ impl PageStore {
     pub fn revoke_all_cargo_source_inventories(&mut self) {
         for (key, slot) in &mut self.browse.map {
             if matches!(key, crate::model::browse::BrowseKey::CargoSourceInventory(_)) {
+                slot.fetch = Fetch::Idle;
                 slot.resource = Resource::not_yet();
                 slot.asked_at = None;
                 slot.revision = slot.revision.next();

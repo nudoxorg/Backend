@@ -366,6 +366,22 @@ fn diagnostic_observation_bumps_do_not_revoke_current_cargo_admission(cx: &mut T
     assert_eq!(rig.file_reads.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn an_unserved_placeholder_cannot_admit_loaded_cargo_bytes() {
+    let dependencies = RouteDependencies::new(&route(), None);
+    let store = DataStore::new(
+        Arc::new(AppSnapshot::empty(VersionedRoot::unserved())),
+        None,
+    );
+    assert_eq!(
+        store.cargo_read_admission(
+            &dependencies.keys()[0],
+            &Resource::loaded_at(7_u32, VersionedRoot::unserved())
+        ),
+        CargoReadAdmission::Checking
+    );
+}
+
 #[gpui::test]
 fn closing_settings_reenters_the_same_source_pair_with_a_fresh_owner_read(cx: &mut TestAppContext) {
     let rig = rig(cx, None, true);
