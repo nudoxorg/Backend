@@ -3,6 +3,8 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
+use crate::core::{ResourceAdmission, ResourceTerminal, admit_resource};
+use crate::runtime::store::{DataStore, RouteDependencies};
 use crate::model::browse::{
     BrowseKey, BrowseValue, TreeDestination, TreeInventoryLink, TreeModel, TreeRoleLinks,
 };
@@ -12,7 +14,7 @@ use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
 use facet::browse::library::{InventoryHandle, ReleaseHandle};
 use facet::browse::{LibraryActions, LibraryModel, library};
-use gpui::{Context, SharedString};
+use gpui::{App, AppContext as _, Context, InteractiveElement, ParentElement, SharedString, Styled, div};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -24,6 +26,7 @@ pub(super) fn body(
 ) -> Vec<Leaf> {
     let key = BrowseKey::from(route);
     let resource = store.browse(&key);
+    if matches!(route, BrowseRoute::Tree(_)) { return tree_body(route, ctx, cx); }
     // Find owns a live editing engine, including while a newly admitted
     // query is being read. Replacing it with a generic loading page loses
     // IME composition, focus, the debounce and the package hand.
@@ -67,21 +70,7 @@ pub(super) fn body(
         return leaves;
     }
     match shown(&resource) {
-        Shown::Ready(BrowseValue::Tree(tree)) => {
-            let model = library_model(tree, ctx);
-            vec![Leaf::new(library(
-                "library",
-                model,
-                LibraryActions {
-                    open_package: open_library_package_action(Arc::clone(tree), ctx),
-                    open_inventory: open_library_inventory_action(Arc::clone(tree), ctx),
-                },
-                &ctx.measure,
-                Rc::clone(&ctx.library_state),
-                ctx.place_key,
-                ctx.active,
-            ))]
-        }
+        Shown::Ready(BrowseValue::Tree(_)) => tree_body(route, ctx, cx),
         Shown::Ready(BrowseValue::Compare(compare)) => {
             let model = Arc::clone(&compare.prepared);
             let actions = compare_actions(route, ctx, cx);
@@ -133,41 +122,104 @@ fn open_package_action(
     })
 }
 
+fn tree_body(route: &BrowseRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
+    let place = Route::Orbit(OrbitRoute::Browse(route.clone()));
+    let plan = RouteDependencies::new(&place, None);
+    let live = ctx.links.store.read(cx);
+    let key = BrowseKey::from(route);
+    let resource = live.pages().browse(&key);
+    let root = live.snapshot().key();
+    let serving = live.owner_serving();
+    let current = plan.current_tree(live);
+    if let Some(tree) = current {
+        let model = library_model(tree.model(), ctx);
+        let dependency = tree.native_dependency();
+        return vec![Leaf::new(library(
+            "library", model,
+            LibraryActions {
+                open_package: open_library_package_action(plan.clone(), dependency.clone(), ctx, cx),
+                open_inventory: open_library_inventory_action(plan, dependency, ctx, cx),
+            },
+            &ctx.measure, Rc::clone(&ctx.library_state), ctx.place_key, ctx.active,
+        ))];
+    }
+    let admission = admit_resource(&resource, root, serving);
+    match &admission {
+        ResourceAdmission::Retained { value, .. } | ResourceAdmission::Failed { retained: Some(value), .. } => {
+            let words = ctx.say("Earlier Library observations are retained while the current owner checks this tree. Their controls are unavailable.");
+            let mut leaves = vec![Leaf::new(crate::shell::kit::quiet(words, &ctx.measure, ctx.palette))];
+            if let BrowseValue::Tree(tree) = value {
+                let mut names = div().flex().flex_col();
+                for row in tree.inventory_links.iter().take(8) {
+                    let name = ctx.say(format!("{} {} · earlier observation", row.name, row.version));
+                    names = names.child(div().role(gpui::Role::Label).aria_label(name.clone())
+                        .child(crate::shell::kit::text(facet::tokens::ty::BODY, &ctx.measure, ctx.palette.ink2).child(name)));
+                }
+                leaves.push(Leaf::new(names));
+            }
+            if let ResourceAdmission::Failed { terminal, .. } = &admission {
+                match terminal {
+                    ResourceTerminal::Fault(error) => leaves.extend(not_ready::<BrowseValue>(&Shown::Fault(error), &PageKey::Browse(key), "Library", ctx, cx)),
+                    ResourceTerminal::Unavailable(reason) => leaves.extend(not_ready::<BrowseValue>(&Shown::Unavailable(reason, None), &PageKey::Browse(key), "Library", ctx, cx)),
+                    ResourceTerminal::Complete | ResourceTerminal::Partial => {}
+                }
+            }
+            leaves
+        }
+        ResourceAdmission::Failed { terminal: ResourceTerminal::Fault(error), .. } => not_ready::<BrowseValue>(&Shown::Fault(error), &PageKey::Browse(key), "Library", ctx, cx),
+        ResourceAdmission::Failed { terminal: ResourceTerminal::Unavailable(reason), .. } => not_ready::<BrowseValue>(&Shown::Unavailable(reason, None), &PageKey::Browse(key), "Library", ctx, cx),
+        ResourceAdmission::Current(_) => vec![Leaf::new(crate::shell::kit::quiet("The Library reply changed shape.", &ctx.measure, ctx.palette))],
+        ResourceAdmission::Pending(_) | ResourceAdmission::Failed { .. } => not_ready::<BrowseValue>(&Shown::Pending, &PageKey::Browse(key), "Library", ctx, cx),
+    }
+}
+
+fn observed_package_route(plan: &RouteDependencies, store: &DataStore, package: &PackageRef) -> Option<Route> {
+    let mut route = package_route(package)?;
+    if let Route::Package(target) = &mut route {
+        if crate::navigation::CargoSourceRoute::supports_package(&target.package) {
+            target.cargo = Some(plan.current_cargo_package(store, package)?.context().clone());
+        }
+    }
+    Some(route)
+}
+
 fn open_library_package_action(
-    tree: Arc<TreeModel>,
-    ctx: &Ctx<'_>,
-) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut gpui::App)> {
+    plan: RouteDependencies,
+    dependency: (PageKey, crate::model::pages::Stamp),
+    ctx: &Ctx<'_>, cx: &mut Context<Reader>,
+) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut App)> {
     let links = ctx.links.clone();
     let state = Rc::clone(&ctx.library_state);
     let place_key = ctx.place_key;
-    Rc::new(move |handle, _, cx| {
-        let Some(package) = typed_library_release(&tree.links, &handle) else {
-            return;
-        };
-        if let Some(route) = package_route(package) {
-            state.borrow_mut().remember_open(handle, place_key);
-            links.dispatch(Intent::Navigate(route), cx);
-        }
+    let guard = ctx.native_dependency_guard(dependency, cx);
+    Rc::new(move |handle, _, app| {
+        if !guard(app) { return; }
+        let store = links.store.read(app);
+        let Some(tree) = plan.current_tree(store) else { return; };
+        let Some(package) = typed_library_release(&tree.model().links, &handle) else { return; };
+        let Some(route) = observed_package_route(&plan, store, package) else { return; };
+        state.borrow_mut().remember_open(handle, place_key);
+        links.dispatch(Intent::Navigate(route), app);
     })
 }
 
 fn open_library_inventory_action(
-    tree: Arc<TreeModel>,
-    ctx: &Ctx<'_>,
-) -> Rc<dyn Fn(InventoryHandle, &mut gpui::Window, &mut gpui::App)> {
+    plan: RouteDependencies,
+    dependency: (PageKey, crate::model::pages::Stamp),
+    ctx: &Ctx<'_>, cx: &mut Context<Reader>,
+) -> Rc<dyn Fn(InventoryHandle, &mut gpui::Window, &mut App)> {
     let links = ctx.links.clone();
     let state = Rc::clone(&ctx.library_state);
     let place_key = ctx.place_key;
-    Rc::new(move |handle, _, cx| {
-        let Some(package) = typed_library_inventory(&tree.inventory_links, &handle) else {
-            return;
-        };
-        if let Some(route) = package_route(package) {
-            state
-                .borrow_mut()
-                .remember_inventory_open(handle, place_key);
-            links.dispatch(Intent::Navigate(route), cx);
-        }
+    let guard = ctx.native_dependency_guard(dependency, cx);
+    Rc::new(move |handle, _, app| {
+        if !guard(app) { return; }
+        let store = links.store.read(app);
+        let Some(tree) = plan.current_tree(store) else { return; };
+        let Some(package) = typed_library_inventory(&tree.model().inventory_links, &handle) else { return; };
+        let Some(route) = observed_package_route(&plan, store, package) else { return; };
+        state.borrow_mut().remember_inventory_open(handle, place_key);
+        links.dispatch(Intent::Navigate(route), app);
     })
 }
 

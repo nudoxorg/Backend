@@ -450,19 +450,23 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
                     format!("the project path cannot be sent to the owner: {error:?}"),
                 ))
             })?;
+            let requested_root = root.to_owned();
             let root = ProductText::new(root).map_err(|error| {
                 ReadFailure::Fault(crate::core::ErrorValue::new(
                     crate::core::FaultCode::Protocol,
                     error.to_string(),
                 ))
             })?;
+            if root.as_str() != requested_root {
+                return Err(ReadFailure::Fault(crate::core::ErrorValue::new(crate::core::FaultCode::Protocol,
+                    "This exact project path cannot be represented by the Tree service operand.")));
+            }
             match engine
                 .surface(SurfaceCommand::ProjectTree { root })
                 .map_err(|error| failure(&error))?
             {
-                SurfaceReply::ProjectTree(tree) => Ok(PageValue::Browse(BrowseValue::Tree(
-                    Arc::new(tree_model(&tree)),
-                ))),
+                SurfaceReply::ProjectTree(tree) if tree.has_admissible_shape()
+                    && tree.request_binding.is_some_and(|binding| binding.matches_requested_root(std::path::Path::new(&requested_root))) => Ok(PageValue::Browse(BrowseValue::Tree(Arc::new(tree_model(&tree))))),
                 _ => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
                     crate::core::FaultCode::Protocol,
                     "the project-tree reply changed shape",
@@ -562,6 +566,7 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     let prepared = Arc::new(prepared_library_model(&reading, &links, &inventory_links));
     TreeModel {
         root: Arc::from(tree.root.as_str()),
+        request_binding: tree.request_binding,
         reading,
         links,
         inventory_links,

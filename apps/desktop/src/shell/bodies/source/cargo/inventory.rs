@@ -26,6 +26,12 @@ pub(super) fn leaf(
     window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Leaf {
+    let Some(context) = route.browse.context() else {
+        return Leaf::new(quiet("The Cargo browse binding is being observed.", &ctx.measure, ctx.palette));
+    };
+    if model.request_binding != context.request_binding() || model.package.as_str() != route.package.as_str() {
+        return Leaf::new(quiet("This Cargo file list belongs to a different browse observation.", &ctx.measure, ctx.palette));
+    }
     let selected = model.paths.binary_search(&route.file).ok();
     let initial = selected.map_or(0, |at| page_start(at));
     let pager_id: ElementId = format!(
@@ -87,7 +93,7 @@ pub(super) fn leaf(
     }
     for path in &model.paths[start..end] {
         let Some(destination) = CargoSourceRoute::new(
-            route.project.clone(),
+            context.clone(),
             route.package.clone(),
             path.clone(),
             None,

@@ -2,10 +2,10 @@
 
 use super::{Pager, PagingState, SourceCursor, SourcePage, initial_cursor, pager_controls};
 use crate::model::browse::{BrowseKey, BrowseValue};
-use crate::model::pages::SourceText;
-use crate::navigation::CargoSourceRoute;
+use crate::model::pages::{PackageRef, PageKey, SourceText};
+use crate::navigation::{CargoSourceRoute, Intent, Route};
 use crate::runtime::store::CargoReadAdmission;
-use crate::shell::bodies::state::{Shown, not_ready};
+use crate::shell::bodies::state::{Shown, not_ready, shown};
 use crate::shell::bodies::{Ctx, Leaf, Pages};
 use crate::shell::focus::{Target, native_control};
 use crate::shell::kit::{quiet, text};
@@ -32,11 +32,10 @@ pub(super) fn body(
         return vec![Leaf::new(quiet("This Cargo source address has no resource plan.", &ctx.measure, ctx.palette))];
     };
     let Some(cargo) = dependencies.cargo() else {
-        return vec![Leaf::new(quiet("This Cargo source address is invalid.", &ctx.measure, ctx.palette))];
+        return awaiting_tree(route, dependencies, ctx, cx);
     };
-    let [page_key, inventory_page_key] = dependencies.keys() else {
-        return vec![Leaf::new(quiet("This Cargo source address has no resource plan.", &ctx.measure, ctx.palette))];
-    };
+    let page_key = &PageKey::CargoSource(cargo.file.clone());
+    let inventory_page_key = &PageKey::Browse(BrowseKey::CargoSourceInventory(cargo.inventory.clone()));
     let inventory_key = BrowseKey::CargoSourceInventory(cargo.inventory.clone());
     // Transition plates may retain a captured Pages snapshot. Source bytes
     // must always come from the live store after its owner revocation fence.
@@ -46,7 +45,7 @@ pub(super) fn body(
     let inventory_resource = live.pages().browse(&inventory_key);
     let inventory_admission = live.cargo_read_admission(inventory_page_key, &inventory_resource);
     drop(live);
-    let heading = ctx.say(format!("{}  ›  {}", route.package.as_str(), route.file.as_str()));
+    let heading = ctx.say(format!("{}  ›  {}", cargo.file.package.display_name(), route.file.as_str()));
     let mut leaves = vec![Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).child(heading))];
     match inventory_admission {
         CargoReadAdmission::Checking => {
@@ -92,12 +91,61 @@ pub(super) fn body(
         }
         CargoReadAdmission::Current => {}
     }
-    let Some(page) = resource.loaded_value() else {
+    let Some(page) = resource.loaded_value() else { return leaves; };
+    if page.package != cargo.file.package || page.request_binding != cargo.file.context.request_binding() || page.file != route.file {
+        leaves.push(Leaf::new(quiet("The Cargo file reply belongs to a different browse observation.", &ctx.measure, ctx.palette)));
         return leaves;
-    };
+    }
     let status = ctx.say("Current Cargo file · source bytes checked by the owner. Declaration links are unavailable until this exact file is indexed.");
     leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
     leaves.push(Leaf::new(code(&page.source, route, ctx, window, cx)));
+    leaves
+}
+
+/// A legacy source address cannot construct any file request until a current
+/// Tree for its exact submitted project admits the qualified package.
+fn awaiting_tree(
+    route: &CargoSourceRoute,
+    dependencies: &crate::runtime::store::RouteDependencies,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> Vec<Leaf> {
+    let Ok(package) = PackageRef::parse(route.package.as_str()) else {
+        return vec![Leaf::new(quiet("This saved Cargo source package is invalid.", &ctx.measure, ctx.palette))];
+    };
+    let key = PageKey::Browse(BrowseKey::Tree(route.browse.requested_project().clone()));
+    let live = ctx.links.store.read(cx);
+    let resource = live.pages().browse(&BrowseKey::Tree(route.browse.requested_project().clone()));
+    let receipt = dependencies.current_cargo_package(live, &package);
+    let tree_current = dependencies.current_tree(live).is_some();
+    let mut leaves = vec![Leaf::new(quiet("Observing the exact Library tree for this saved Cargo source address…", &ctx.measure, ctx.palette))];
+    let Some(receipt) = receipt else {
+        if tree_current {
+            leaves.push(Leaf::new(quiet("This saved source receipt was not admitted by the current Tree. Open its Library for current observations.", &ctx.measure, ctx.palette)));
+        } else {
+            leaves.extend(not_ready(&shown(&resource), &key, "The saved source's Library tree", ctx, cx));
+        }
+        return leaves;
+    };
+    let dependency = receipt.native_dependency();
+    let expected = route.clone();
+    let expected_context = receipt.context().clone();
+    let plan = dependencies.clone();
+    let links = ctx.links.clone();
+    let action: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+        if plan.current_cargo_package(links.store.read(app), &package)
+            .is_some_and(|current| current.context() == &expected_context)
+        {
+            links.dispatch(Intent::ResolveCargoBrowse { expected: expected.clone(), context: expected_context.clone() }, app);
+        }
+    });
+    let action = ctx.native_dependency_action(action, dependency, cx);
+    let id: SharedString = "cargo-source-resolve-tree".into();
+    ctx.targets.push(Target { id: id.clone(), label: "Open saved file with current Cargo browse binding".into(), act: action.clone(), peek: None, source: None });
+    let mut button = facet::controls::button(id.clone(), "Open file with current binding", &ctx.measure)
+        .ghost().size(facet::Control::Small).on_click(move |window, app| action(window, app));
+    if let Some(focus) = ctx.native_handle(&id, cx) { button = button.focus_handle(focus); }
+    leaves.push(Leaf::new(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button))));
     leaves
 }
 

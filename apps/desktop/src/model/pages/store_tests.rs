@@ -26,8 +26,9 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
         "pkg:cargo/demo@1.0.0?cargo-authority={}", digit.to_string().repeat(64)
     )).expect("qualified package");
     let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store").expect("project");
-    let first = CargoSourceKey { project: project.clone(), package: qualified('a'), file: file.clone() };
-    let second = CargoSourceKey { project, package: qualified('b'), file };
+    let context = crate::navigation::cargo_browse::fixture_context(project);
+    let first = CargoSourceKey { context: context.clone(), package: qualified('a'), file: file.clone() };
+    let second = CargoSourceKey { context: context.clone(), package: qualified('b'), file };
     let mut store = PageStore::default();
     let first_key = PageKey::CargoSource(first.clone());
     let second_key = PageKey::CargoSource(second.clone());
@@ -36,7 +37,7 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     let source = SourceText::new(Arc::from("[package]\nname = \"demo\"\n"), 1, SourceOrigin::LocalFile, true)
         .expect("valid source");
     let page = |key: &CargoSourceKey| CargoSourcePage {
-        package: key.package.clone(), file: key.file.clone(), source: source.clone(),
+        package: key.package.clone(), request_binding: key.context.request_binding(), file: key.file.clone(), source: source.clone(),
         content_digest: [7; 32], source_revision: [9; 32],
     };
     assert_eq!(store.land(&second_key, second_generation, Ok(PageValue::CargoSource(page(&second)))), Landing::Applied);
@@ -47,7 +48,7 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     assert_eq!(store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))), Landing::Unchanged);
     assert_ne!(first, second);
     let other_project = CargoSourceKey {
-        project: crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store-other").expect("other tree"),
+        context: crate::navigation::cargo_browse::fixture_context(crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store-other").expect("other tree")),
         package: first.package.clone(),
         file: first.file.clone(),
     };
@@ -70,8 +71,9 @@ fn cargo_inventory_is_revoked_separately_from_file_bytes() {
     let package = PackageRef::parse(&format!(
         "pkg:cargo/demo@1.0.0?cargo-authority={}", "a".repeat(64)
     )).expect("qualified package");
+    let context = crate::navigation::cargo_browse::fixture_context(project);
     let key = BrowseKey::CargoSourceInventory(CargoSourceInventoryKey {
-        project,
+        context: context.clone(),
         package: package.clone(),
     });
     let page_key = PageKey::Browse(key.clone());
@@ -79,6 +81,7 @@ fn cargo_inventory_is_revoked_separately_from_file_bytes() {
     let generation = store.begin(&page_key, root()).expect("inventory read");
     let model = CargoSourceInventoryModel {
         package,
+        request_binding: context.request_binding(),
         paths: Arc::from([crate::navigation::CargoSourcePath::new("Cargo.toml").expect("path")]),
         coverage: backend_library::CargoPackageSourceInventoryCoverageV1::Complete,
         source_revision: [7; 32],

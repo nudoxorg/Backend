@@ -62,14 +62,16 @@ pub(super) fn body(
     let resource = live.package(&package);
     let serving = live.owner_serving();
     drop(live);
+    let cargo_offer = cargo_manifest_offer(&package, place, snapshot, ctx, cx);
     let dossier = match admit_resource(&resource, snapshot.key(), serving) {
         ResourceAdmission::Current(dossier) => dossier.clone(),
         ResourceAdmission::Retained { value, .. } => {
-            let words = ctx.say(format!("Earlier reading of {} is retained while the current package is checked. Its links and source controls are unavailable.", value.package.display_name()));
-            return vec![Leaf::new(quiet(words, &ctx.measure, ctx.palette))];
+            let words = ctx.say(format!("Earlier reading of {} is retained while the current package is checked. Its semantic links are unavailable.", value.package.display_name()));
+            return with_cargo_offer(vec![Leaf::new(quiet(words, &ctx.measure, ctx.palette))], cargo_offer);
         }
         ResourceAdmission::Pending(_) => {
-            return not_ready(&Shown::<PackageDossier>::Pending, &PageKey::Package(package), "The package", ctx, cx);
+            let leaves = not_ready(&Shown::<PackageDossier>::Pending, &PageKey::Package(package), "The indexed package", ctx, cx);
+            return with_cargo_offer(leaves, cargo_offer);
         }
         ResourceAdmission::Failed { retained, terminal } => {
             let mut leaves = Vec::new();
@@ -82,7 +84,7 @@ pub(super) fn body(
                 ResourceTerminal::Unavailable(reason) => leaves.extend(not_ready(&Shown::<PackageDossier>::Unavailable(reason, None), &PageKey::Package(package), "The package", ctx, cx)),
                 ResourceTerminal::Complete | ResourceTerminal::Partial => {}
             }
-            return leaves;
+            return with_cargo_offer(leaves, cargo_offer);
         }
     };
     // The reader's own workspace project, not the package whose page is
@@ -261,9 +263,7 @@ pub(super) fn body(
     // Centred on the reading column it overflows.
     let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
     let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
-    if let Some(offer) = cargo_manifest_offer(&package, place, snapshot, ctx, cx) {
-        leaves.push(offer);
-    }
+    if let Some(offer) = cargo_offer { leaves.push(offer); }
     // A registry release the owner has not indexed offers to be added (W-Acquire).
     if let Some(offer) =
         crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure, cx)
@@ -276,88 +276,56 @@ pub(super) fn body(
     leaves
 }
 
-/// Cargo metadata observed the manifest path for this exact qualified source
-/// receipt. The address is still inert until the owner revalidates it on read.
+fn with_cargo_offer(mut leaves: Vec<Leaf>, offer: Option<Leaf>) -> Vec<Leaf> {
+    if let Some(offer) = offer { leaves.push(offer); }
+    leaves
+}
+
+/// Independent of the optional semantic dossier: only this route's selected
+/// current Cargo observation can offer source bytes for the exact package.
 fn cargo_manifest_offer(
     package: &PackageRef,
     place: &Route,
-    snapshot: &AppSnapshot,
+    _snapshot: &AppSnapshot,
     ctx: &mut Ctx<'_>,
     cx: &mut Context<Reader>,
 ) -> Option<Leaf> {
-    // A package route alone has no project path authority. Only a retained,
-    // loaded tree that contains this exact source-qualified reference can
-    // provide the checked address for a cold owner observation. The active
-    // shelf and package display name are deliberately never consulted.
     let package_id = crate::core::PackageId::new(package.as_str()).ok()?;
-    if !CargoSourceRoute::supports_package(&package_id) {
-        return None;
-    }
-    let owner_pages = ctx.links.store.read(cx);
-    let project = snapshot.session().back.iter().find_map(|route| {
-        match route {
-            Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))) => {
-                let resource = owner_pages
-                    .pages()
-                    .browse(&crate::model::browse::BrowseKey::Tree(project.clone()));
-                resource
-                    .loaded_value()
-                    .and_then(|value| value.tree())
-                    .filter(|tree| tree.source_packages.contains(package))
-                    .map(|_| project.clone())
-            }
-            // Zoom-out after a verified file should preserve the same entry.
-            // The file is useful here only while its owner reply remains live;
-            // a saved address alone cannot restore a package-page offer.
-            Route::CargoSource(file) if file.package == package_id => {
-                let key = crate::model::pages::CargoSourceKey {
-                    project: file.project.clone(),
-                    package: package.clone(),
-                    file: file.file.clone(),
-                };
-                let resource = owner_pages.cargo_source(&key);
-                resource.loaded_value().map(|_| file.project.clone())
-            }
-            _ => None,
-        }
-    });
-    let Some(project) = project else {
+    if !CargoSourceRoute::supports_package(&package_id) { return None; }
+    let dependencies = crate::runtime::store::RouteDependencies::new(place, None);
+    let receipt = dependencies.current_cargo_package(ctx.links.store.read(cx), package);
+    let Some(receipt) = receipt else {
         return Some(Leaf::new(quiet(
-            "Open this release from its Library project tree to browse current Cargo files.",
-            &ctx.measure,
-            ctx.palette,
+            "This release needs a current Cargo observation from its Library tree before source files can open.",
+            &ctx.measure, ctx.palette,
         )));
     };
     let file = CargoSourcePath::new("Cargo.toml")?;
-    let route = Route::CargoSource(CargoSourceRoute::new(project, package_id, file, None)?);
+    let destination = Route::CargoSource(CargoSourceRoute::new(receipt.context().clone(), package_id, file, None)?);
+    let expected_context = receipt.context().clone();
+    let expected_package = receipt.package().clone();
+    let dependency = receipt.native_dependency();
     let id: SharedString = "cargo-source-open-manifest".into();
     let leaving = place.clone();
     let recall = ctx.targets.recall();
     let links = ctx.links.clone();
     let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+        let live = links.store.read(app);
+        if dependencies.current_cargo_package(live, &expected_package)
+            .is_none_or(|current| current.context() != &expected_context)
+        { return; }
         recall.focus(id.clone());
         recall.remember_leave(leaving.clone(), id.clone());
-        links.dispatch(Intent::Navigate(route.clone()), app);
+        links.dispatch(Intent::Navigate(destination.clone()), app);
     });
-    let act = ctx.native_action(act, cx);
+    let act = ctx.native_dependency_action(act, dependency, cx);
     let id: SharedString = "cargo-source-open-manifest".into();
-    ctx.targets.push(Target {
-        id: id.clone(),
-        label: "Open current Cargo.toml source file".into(),
-        act: act.clone(),
-        peek: None,
-        source: None,
-    });
+    ctx.targets.push(Target { id: id.clone(), label: "Open current Cargo.toml source file".into(), act: act.clone(), peek: None, source: None });
     let focus = ctx.native_handle(&id, cx);
     let mut control = facet::controls::button(id.clone(), "Open Cargo.toml", &ctx.measure)
-        .ghost()
-        .size(facet::Control::Small)
-        .on_click(move |window, app| act(window, app));
+        .ghost().size(facet::Control::Small).on_click(move |window, app| act(window, app));
     if let Some(focus) = focus { control = control.focus_handle(focus); }
-    Some(Leaf::new(ctx.targets.track(
-        id.clone(),
-        div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control),
-    )))
+    Some(Leaf::new(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control))))
 }
 
 /// The measure of the page: the room the reader gives it this frame (the
@@ -1079,8 +1047,8 @@ fn route_page_key(route: &Route) -> Option<crate::model::pages::PageKey> {
                     crate::model::pages::PageKey::Symbol(symbol)
                 }
             }),
-        Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()
-            .map(|package| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { project: route.project.clone(), package, file: route.file.clone() })),
+        Route::CargoSource(route) => route.browse.context().cloned().zip(PackageRef::parse(route.package.as_str()).ok())
+            .map(|(context, package)| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { context, package, file: route.file.clone() })),
         Route::Orbit(_) | Route::World => None,
     }
 }

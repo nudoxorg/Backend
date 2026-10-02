@@ -49,7 +49,7 @@ impl fmt::Display for BrowseKey {
                 formatter,
                 "Cargo files {} in {}",
                 key.package,
-                key.project.display_lossy()
+                key.context.requested_project().display_lossy()
             ),
             Self::FindHome => formatter.write_str("find"),
             Self::Find(query) => write!(formatter, "find {:?}", query.text),
@@ -87,7 +87,7 @@ impl BrowseValue {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CargoSourceInventoryKey {
     /// Exact project tree that introduced the source-qualified package.
-    pub project: LocalProjectId,
+    pub context: crate::navigation::CargoBrowseContext,
     /// Full qualified package reference, including its Cargo authority digest.
     pub package: PackageRef,
 }
@@ -98,6 +98,8 @@ pub struct CargoSourceInventoryKey {
 pub struct CargoSourceInventoryModel {
     /// Exact qualified package in the owner reply.
     pub package: PackageRef,
+    /// Exact requested/effective roots returned by the same owner read.
+    pub request_binding: backend_library::browse::ProjectTreeRequestBindingV1,
     /// Sorted, bounded canonical package-relative paths.
     pub paths: Arc<[CargoSourcePath]>,
     /// Whether the owner enumerated every supported safe source file.
@@ -177,6 +179,8 @@ pub struct FindPackage {
 pub struct TreeModel {
     /// The workspace root the tree was read at.
     pub root: Arc<str>,
+    /// Full owner binding for the submitted Tree address, never inferred.
+    pub request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
     /// Every sentence of the page.
     pub reading: backend_present::TreeReading,
     /// Exact release destinations prepared by the read worker, aligned with

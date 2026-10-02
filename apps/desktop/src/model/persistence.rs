@@ -7,7 +7,7 @@ use super::workspace::{
     ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
-use crate::navigation::{BrowseRoute, CargoSourcePath, CargoSourceRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
+use crate::navigation::{BrowseRoute, CargoBrowseContext, CargoSourcePath, CargoSourceRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -353,6 +353,25 @@ impl Default for PersistedDesktopState {
     }
 }
 
+/// An address-only copy of the complete Cargo Tree binding. Loading this
+/// value never admits a resource or an owner attachment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedCargoBrowse {
+    /// Exact submitted Tree directory, which may be a workspace member.
+    pub project: String,
+    /// Unchanged requested/effective commitments from the producer.
+    pub request_binding: backend_library::browse::ProjectTreeRequestBindingV1,
+}
+
+impl PersistedCargoBrowse {
+    fn project(context: &CargoBrowseContext) -> Option<Self> {
+        Some(Self { project: context.requested_project().service_coordinate().ok()?.to_owned(), request_binding: context.request_binding() })
+    }
+    fn restore(&self) -> Option<CargoBrowseContext> {
+        CargoBrowseContext::from_binding_address(LocalProjectId::from_path(Path::new(&self.project)).ok()?, self.request_binding)
+    }
+}
+
 /// Closed route schema used only at the persistence edge.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PersistedRoute {
@@ -384,6 +403,9 @@ pub enum PersistedRoute {
     },
     /// A package route with its closed lane.
     Package {
+        /// Independent Cargo browse address; legacy package routes omit it.
+        #[serde(default)]
+        cargo: Option<PersistedCargoBrowse>,
         /// Optional producer project.
         project: Option<u64>,
         /// Canonical package spelling.
@@ -413,6 +435,9 @@ pub enum PersistedRoute {
     },
     /// A Cargo source file address; cold reload must ask the owner again.
     CargoSource {
+        /// Complete owner binding. Legacy addresses must observe Tree first.
+        #[serde(default)]
+        request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
         /// Exact project-tree address for owner observation rehydration.
         /// Older files had no project and cannot restore this capability.
         #[serde(default)]
@@ -506,6 +531,7 @@ fn persist_route(route: &Route) -> PersistedRoute {
             },
         },
         Route::Package(route) => PersistedRoute::Package {
+            cargo: route.cargo.as_ref().and_then(PersistedCargoBrowse::project),
             project: route.project.as_ref().map(|project| project.get().get()),
             package: route.package.as_str().to_owned(),
             lane: route.lane.into(),
@@ -520,12 +546,40 @@ fn persist_route(route: &Route) -> PersistedRoute {
             line: route.line,
         },
         Route::CargoSource(route) => PersistedRoute::CargoSource {
-            project: route.project.service_coordinate().ok().map(str::to_owned),
+            request_binding: route.browse.context().map(CargoBrowseContext::request_binding),
+            project: route.browse.requested_project().service_coordinate().ok().map(str::to_owned),
             package: route.package.as_str().to_owned(),
             file: route.file.as_str().to_owned(),
             line: route.line,
         },
         Route::World => PersistedRoute::World,
+    }
+}
+
+fn restore_cargo_source_address(
+    project: Option<&str>,
+    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
+    package: &str, file: &str, line: Option<u32>,
+) -> Option<CargoSourceRoute> {
+    let project = LocalProjectId::from_path(Path::new(project?)).ok()?;
+    let package = crate::core::PackageId::new(package).ok()?;
+    let file = CargoSourcePath::new(file)?;
+    if let Some(context) = request_binding.and_then(|binding| CargoBrowseContext::from_binding_address(project.clone(), binding)) {
+        CargoSourceRoute::new(context, package, file, line)
+    } else {
+        CargoSourceRoute::from_unbound_saved(project, package, file, line)
+    }
+}
+
+impl PersistedDesktopState {
+    /// A legacy source with no usable requested project remains a recovery
+    /// notice on Library. It cannot be rebound to the active workspace.
+    pub(crate) fn cargo_source_recovery_note(&self) -> Option<super::workspace::Note> {
+        match &self.route {
+            PersistedRoute::CargoSource { project, request_binding, package, file, line }
+                if restore_cargo_source_address(project.as_deref(), *request_binding, package, file, *line).is_none() => Some(crate::model::workspace::Note::CargoSourceAddressUnread),
+            _ => None,
+        }
     }
 }
 
@@ -965,6 +1019,7 @@ impl PersistentState {
                 .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home)),
             PersistedRoute::World => Route::World,
             PersistedRoute::Package {
+                cargo,
                 project,
                 package,
                 lane,
@@ -977,6 +1032,7 @@ impl PersistentState {
                     .ok()
                     .map(|package| {
                         Route::Package(crate::navigation::PackageRoute {
+                            cargo: cargo.as_ref().and_then(PersistedCargoBrowse::restore),
                             project,
                             package,
                             lane: (*lane).into(),
@@ -1012,11 +1068,8 @@ impl PersistentState {
                 View::parse(view).unwrap_or_default(),
                 *line,
             ),
-            PersistedRoute::CargoSource { project, package, file, line } => {
-                project.as_deref().and_then(|project| crate::core::LocalProjectId::new(project).ok())
-                    .zip(crate::core::PackageId::new(package).ok())
-                    .zip(CargoSourcePath::new(file))
-                    .and_then(|((project, package), file)| CargoSourceRoute::new(project, package, file, *line))
+            PersistedRoute::CargoSource { project, request_binding, package, file, line } => {
+                restore_cargo_source_address(project.as_deref(), *request_binding, package, file, *line)
                     .map(Route::CargoSource)
                     .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
             }
@@ -1546,6 +1599,7 @@ mod tests {
         let package = crate::core::PackageId::new("pkg:cargo/serde@1.0.0").expect("package");
         let object = crate::model::ObjectId::test(7);
         let route = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             package: package.clone(),
             lane: PackageLane::Overview,
@@ -1591,6 +1645,7 @@ mod tests {
 
         let mut moved_claim = wire.clone();
         moved_claim.route = PersistedRoute::Package {
+            cargo: None,
             project: None,
             package: "pkg:cargo/other@1.0.0".to_owned(),
             lane: PersistedPackageLane::Overview,
@@ -1619,6 +1674,7 @@ mod tests {
         };
         let store = PersistentState::at("unused");
         for route in [state.route.clone(), PersistedRoute::Package {
+            cargo: None,
             project: None,
             package: "pkg:cargo/serde@1.0.0".to_owned(),
             lane: PersistedPackageLane::Overview,
@@ -1681,17 +1737,36 @@ mod tests {
         ).expect("qualified package");
         let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-persistence").expect("tree address");
         let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
-        let route = Route::CargoSource(CargoSourceRoute::new(project.clone(), package, file, Some(43)).expect("source address"));
+        let route = Route::CargoSource(CargoSourceRoute::new(crate::navigation::cargo_browse::fixture_context(project.clone()), package, file, Some(43)).expect("source address"));
         let wire = PersistentState::project(&snapshot.with_session(SessionState { route: route.clone(), ..SessionState::default() }));
         let bytes = serde_json::to_vec(&wire).expect("serialize address");
         let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("decode address");
         let restored = PersistentState::at("unused").cold_reload(&decoded);
         assert_eq!(restored.route, route);
-        assert_eq!(crate::runtime::store::route_keys(&restored.route).len(), 2,
-            "cold address requires separate fresh owner reads for file bytes and bounded paths");
+        assert_eq!(crate::runtime::store::route_keys(&restored.route).len(), 3,
+            "cold address pairs file/path reads and watches its optional visible package header");
+
+        let Route::CargoSource(bound) = &route else { panic!("source") };
+        let parent = Route::Package(bound.package_route());
+        let parent_wire = PersistentState::project(&snapshot.with_session(SessionState { route: parent.clone(), ..SessionState::default() }));
+        assert_eq!(PersistentState::at("unused").cold_reload(&parent_wire).route, parent, "zoom-out persists its independent full binding without history");
+
+        let mut legacy = decoded.clone();
+        if let PersistedRoute::CargoSource { request_binding, .. } = &mut legacy.route { *request_binding = None; }
+        let session = PersistentState::at("unused").cold_reload(&legacy);
+        let Route::CargoSource(awaiting) = &session.route else { panic!("legacy source recovery") };
+        let awaiting = awaiting.clone();
+        assert!(matches!(awaiting.browse, crate::navigation::CargoBrowseAddress::AwaitingTree { .. }));
+        assert_eq!(crate::runtime::store::route_keys(&session.route), vec![crate::model::pages::PageKey::Browse(crate::model::browse::BrowseKey::Tree(project.clone()))], "no binding means Tree only, never a source request with guessed roots");
+        let resolved = crate::navigation::reduce(&snapshot.with_session(session.clone()), crate::navigation::Intent::ResolveCargoBrowse { expected: awaiting.clone(), context: bound.browse.context().expect("binding address").clone() }).snapshot;
+        assert_eq!(resolved.route(), &route);
+        assert_eq!(resolved.session().back, session.back, "resolving the current Tree binding is not a duplicate history stop");
+        let other_context = crate::navigation::cargo_browse::fixture_context(crate::core::LocalProjectId::new("/tmp/unrelated-member").expect("other address"));
+        assert_eq!(crate::navigation::reduce(&snapshot.with_session(session), crate::navigation::Intent::ResolveCargoBrowse { expected: awaiting.clone(), context: other_context }).snapshot.route(), &Route::CargoSource(awaiting.clone()));
 
         let mut forged = decoded;
         forged.route = PersistedRoute::CargoSource {
+            request_binding: None,
             project: None,
             package: "pkg:cargo/demo@1.2.3?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             file: "src/lib.rs".to_owned(),
@@ -1699,7 +1774,10 @@ mod tests {
         };
         assert!(matches!(PersistentState::at("unused").cold_reload(&forged).route, Route::Orbit(_)),
             "an old source address without its tree cannot rehydrate owner authority");
+        assert_eq!(forged.cargo_source_recovery_note(), Some(crate::model::workspace::Note::CargoSourceAddressUnread));
+        assert!(legacy.cargo_source_recovery_note().is_none(), "a usable exact requested Tree has an explicit AwaitingTree route");
         forged.route = PersistedRoute::CargoSource {
+            request_binding: None,
             project: Some(project.as_str().to_owned()),
             package: "pkg:cargo/demo@1.2.3".to_owned(),
             file: "../secret".to_owned(),

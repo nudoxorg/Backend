@@ -145,26 +145,40 @@ impl Ctx<'_> {
     /// owner revision. Retained transition bodies and stale pointer events
     /// cannot navigate after that visit has been replaced.
     pub(crate) fn native_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, None, NativeActionKind::Resource, cx)
+        self.native_action_with_inventory(action, None, None, NativeActionKind::Resource, cx)
+    }
+
+    /// A current factory selected a read independent of an optional dossier.
+    pub(crate) fn native_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, Some(dependency), NativeActionKind::Resource, cx)
     }
 
     /// A local project or recent route is in the snapshot rather than Orbit
     /// bytes, but entering it still requires the current owner attachment.
     pub(crate) fn native_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, None, NativeActionKind::OwnerSnapshot, cx)
+        self.native_action_with_inventory(action, None, None, NativeActionKind::OwnerSnapshot, cx)
     }
 
     /// Local setup, recovery and disclosure remain available while the
     /// indexing owner starts or fails. They still belong to one Reader visit.
     pub(crate) fn native_local_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, None, NativeActionKind::LocalUi, cx)
+        self.native_action_with_inventory(action, None, None, NativeActionKind::LocalUi, cx)
     }
 
     pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, Some(revision), NativeActionKind::Resource, cx)
+        self.native_action_with_inventory(action, Some(revision), None, NativeActionKind::Resource, cx)
     }
 
-    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, kind: NativeActionKind, cx: &mut Context<Reader>) -> Act {
+    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &mut Context<Reader>) -> Act {
+        let guard = self.native_guard_with_inventory(inventory_revision, selected, kind, cx);
+        std::rc::Rc::new(move |window, app| { if guard(app) { action(window, app); } })
+    }
+
+    pub(crate) fn native_dependency_guard(&self, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
+        self.native_guard_with_inventory(None, Some(dependency), NativeActionKind::Resource, cx)
+    }
+
+    fn native_guard_with_inventory(&self, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
         let reader = cx.weak_entity();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
@@ -180,18 +194,16 @@ impl Ctx<'_> {
                 NativeActionKind::OwnerSnapshot => super::reader::NativeActionLease::OwnerSnapshot(store.current_owner_attachment()),
                 NativeActionKind::Resource => super::reader::NativeActionLease::Resource {
                     attachment: store.current_owner_attachment(),
-                    stamp: dependencies.native_stamp(store, inventory_revision.is_some()),
+                    stamp: selected.or_else(|| dependencies.native_stamp(store, inventory_revision.is_some())),
                 },
             }
         };
-        std::rc::Rc::new(move |window, app| {
-            if reader.upgrade().is_some_and(|reader| reader.update(app, |reader, cx| {
+        std::rc::Rc::new(move |app| {
+            reader.upgrade().is_some_and(|reader| reader.update(app, |reader, cx| {
                 let admitted = reader.admits_native_visit(place, &route, overlay, root, &lease, source, inventory_revision, cx);
                 if admitted { reader.cancel_native_return(); }
                 admitted
-            })) {
-                action(window, app);
-            }
+            }))
         })
     }
 

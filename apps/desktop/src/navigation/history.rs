@@ -131,6 +131,7 @@ mod tests {
 
     fn route(value: &str) -> Route {
         Route::Package(PackageRoute {
+            cargo: None,
             project: None,
             package: PackageId::new(value).expect("package"),
             lane: PackageLane::Overview,

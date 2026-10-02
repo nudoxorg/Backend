@@ -10,6 +10,8 @@ use crate::navigation::CargoSourcePath;
 pub struct CargoSourcePage {
     /// Full source-qualified package reference.
     pub package: PackageRef,
+    /// Exact requested/effective root binding of this owner reply.
+    pub request_binding: backend_library::browse::ProjectTreeRequestBindingV1,
     /// Package-relative path the owner read.
     pub file: CargoSourcePath,
     /// Current UTF-8 text with an immutable sparse line index.

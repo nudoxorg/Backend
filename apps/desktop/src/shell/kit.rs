@@ -282,6 +282,7 @@ pub(crate) fn symbol_route(package: &str, symbol: &crate::model::pages::SymbolRe
 /// The package route for a package.
 pub(crate) fn package_route(package: &crate::model::pages::PackageRef) -> Option<crate::navigation::Route> {
     Some(crate::navigation::Route::Package(crate::navigation::PackageRoute {
+        cargo: None,
         project: None,
         package: crate::core::PackageId::new(package.as_str()).ok()?,
         lane: crate::navigation::PackageLane::Overview,

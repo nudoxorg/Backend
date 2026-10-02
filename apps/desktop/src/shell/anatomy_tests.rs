@@ -302,6 +302,7 @@ fn a_declaration_the_world_does_not_know_draws_from_the_index_alone(cx: &mut Tes
 
 pub(super) fn package_route() -> crate::navigation::Route {
     crate::navigation::Route::Package(crate::navigation::PackageRoute {
+        cargo: None,
         project: None,
         package: crate::core::PackageId::new(PACKAGE).expect("package"),
         lane: crate::navigation::PackageLane::Overview,

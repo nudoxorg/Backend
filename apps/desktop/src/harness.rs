@@ -974,6 +974,7 @@ pub mod route {
             Target::Package { id, at } => {
                 let package = resolve_package(id, fixture)?;
                 Ok(Route::Package(PackageRoute {
+                    cargo: None,
                     project: None,
                     package: PackageId::new(package.as_str())
                         .map_err(|error| format!("route package {id}: {error}"))?,

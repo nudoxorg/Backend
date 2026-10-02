@@ -35,6 +35,7 @@ impl PageReader for Registry {
 
 fn toml() -> Route {
     Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new(PINNED).expect("package"),
         lane: PackageLane::Overview,
@@ -114,6 +115,7 @@ fn scrubbing_away_from_the_pin_opens_the_upgrade_lens_and_escape_closes_it(cx: &
 #[gpui::test]
 fn a_package_without_release_data_views_the_release_with_no_lens(cx: &mut TestAppContext) {
     let serde = Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new("pkg:cargo/serde@0.8.23").expect("package"),
         lane: PackageLane::Overview,

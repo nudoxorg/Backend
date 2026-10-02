@@ -269,6 +269,7 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
             if let ["open", path] = words.as_slice() {
                 let package = crate::core::PackageId::new(path).unwrap_or_else(|error| panic!("route {target}: {error:?}"));
                 let route = crate::navigation::Route::Package(crate::navigation::PackageRoute {
+                    cargo: None,
                     project: None,
                     package,
                     lane: crate::navigation::PackageLane::Overview,
