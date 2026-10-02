@@ -31,6 +31,7 @@ mod owner_link;
 mod cargo_tests;
 
 pub(crate) use self::dependencies::RouteDependencies;
+pub(crate) use self::owner_link::OwnerAttachment;
 use self::keeper::SnapshotKeeper;
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
@@ -518,9 +519,12 @@ impl DataStore {
         &self.focused
     }
 
-    /// Read-only admission boundary; saved GUI connection status is not a lease.
+    /// Whether the owner observed by this store still serves its admitted
+    /// attachment. The gate can revoke it before the UI watcher runs.
     #[must_use]
-    pub fn owner_serving(&self) -> bool { self.owner.is_serving() }
+    pub fn owner_serving(&self) -> bool {
+        self.owner.is_current_serving()
+    }
 
     /// What the read pool is doing now.
     #[must_use]
@@ -883,13 +887,13 @@ impl DataStore {
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
-        if self.owner.attachment_changed() {
+        let (mut keys, attachment_changed) = self.owner.answered();
+        if attachment_changed {
             self.revoke_inflight(cx);
             // The watcher may see only the new Ready. Completed bytes from
             // the previous same-root attachment still need a fresh read.
             self.revoke_cargo_resources(cx);
         }
-        let mut keys = self.owner.answered();
         keys.extend(self.focused.iter().cloned());
         for key in keys {
             self.ensure(key, cx);
@@ -1074,6 +1078,19 @@ impl DataStore {
         self.pages.inflight(key).is_some()
     }
 
+    /// The serving owner this UI visit can capture for delayed actions.
+    /// An absent lease means Starting, Failed, or a replacement the store
+    /// has not yet admitted. The stable ungated test token is synthetic and
+    /// does not establish acceptance by a real owner.
+    pub(crate) fn current_owner_attachment(&self) -> Option<OwnerAttachment> {
+        self.owner.current_attachment()
+    }
+
+    /// A captured visit cannot act through a later same-root attachment.
+    pub(crate) fn admits_owner_attachment(&self, expected: &OwnerAttachment) -> bool {
+        self.current_owner_attachment().as_ref() == Some(expected)
+    }
+
     /// The current serving attachment and producer authority must both admit
     /// a Cargo observation. UI observation counters are not producer authority.
     pub(crate) fn cargo_read_admission<T>(
@@ -1082,7 +1099,7 @@ impl DataStore {
         resource: &Resource<T>,
     ) -> CargoReadAdmission {
         debug_assert!(is_cargo_source_resource(key));
-        if !self.owner.is_current_serving() {
+        if !self.owner_serving() {
             return self.owner.current_fault().map_or(CargoReadAdmission::Checking, |fault| {
                 CargoReadAdmission::Fault(ErrorValue::new(
                     FaultCode::Transport,
