@@ -171,8 +171,8 @@ fn owner() -> (
             % 100_000
     );
     // `/tmp`, not `temp_dir()`: a long socket path exceeds `sockaddr_un`.
-    let state = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}"));
-    let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
+    let state = crate::host::scratch_base().join(format!("nx-browse-{nonce}"));
+    let endpoint = crate::host::scratch_base().join(format!("nx-browse-{nonce}.sock"));
     // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
     crate::host::private_dir(&state.join("data")).expect("workspace");
     let paths = backend_runtime::WorkspacePaths::discover(

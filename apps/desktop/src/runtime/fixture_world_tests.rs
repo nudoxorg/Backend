@@ -307,7 +307,7 @@ fn boot_of(route: crate::model::PersistedRoute, hand: Vec<crate::model::persiste
         .join(format!("i3-boot-{}-{id}", std::process::id()));
     // Unix sockets have a short sockaddr path limit; keep only this endpoint outside the deep repo path.
     let endpoint =
-        Path::new("/tmp").join(format!("nx-i3-boot-{}-{id}.sock", std::process::id()));
+        crate::host::scratch_base().join(format!("nx-i3-boot-{}-{id}.sock", std::process::id()));
     let _ = std::fs::remove_file(&endpoint);
     let project = root.join("project");
     let data = root.join("data");

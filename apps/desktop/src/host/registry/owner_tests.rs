@@ -24,7 +24,7 @@ fn scratch(tag: &str) -> PathBuf {
         .as_nanos();
     // `/tmp`, not `temp_dir()`: under nix the latter makes the socket path
     // longer than `sockaddr_un` allows.
-    PathBuf::from("/tmp").join(format!("nx-w-acquire-{tag}-{}-{nonce}", std::process::id()))
+    crate::host::scratch_base().join(format!("nx-w-acquire-{tag}-{}-{nonce}", std::process::id()))
 }
 
 /// An owner on a fresh workspace, anchored at a one-file crate.
