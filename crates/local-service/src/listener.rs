@@ -746,14 +746,13 @@ impl<O> UnixListenerService<O> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, read_frame};
     use crate::service::OwnerService;
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
     #[derive(Debug, Default)]
@@ -899,7 +898,7 @@ mod tests {
         let ask = |body: &'static [u8]| {
             let path = path.clone();
             thread::spawn(move || {
-                let mut stream = std::os::unix::net::UnixStream::connect(path)
+                let mut stream = backend_engine::LocalStream::connect(path)
                     .unwrap_or_else(|error| panic!("connect: {error}"));
                 let request = crate::protocol::frame(body, limits())
                     .unwrap_or_else(|error| panic!("frame: {error}"));
@@ -947,7 +946,7 @@ mod tests {
     impl PeerPolicy for RejectPeers {
         fn authorize(
             &self,
-            _stream: &std::os::unix::net::UnixStream,
+            _stream: &backend_engine::LocalStream,
         ) -> Result<(), PeerPolicyError> {
             Err(PeerPolicyError::Rejected)
         }
@@ -1014,7 +1013,7 @@ mod tests {
             .with_telemetry(telemetry.clone());
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             let request = crate::protocol::frame(b"ping", limits())
                 .unwrap_or_else(|error| panic!("frame: {error}"));
@@ -1042,10 +1041,17 @@ mod tests {
         assert_eq!(transport.completed, 1);
         assert_eq!(transport.failed, 0);
         assert_eq!(transport.units, 4);
-        let mode = std::fs::metadata(&path)
-            .unwrap_or_else(|error| panic!("socket metadata: {error}"))
-            .permissions();
-        assert_eq!(mode.mode() & 0o777, 0o600);
+        let metadata = std::fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("socket metadata: {error}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
+        // Windows keeps the endpoint private with a protected owner-only DACL
+        // instead of a mode; the platform recognizes the file as that endpoint.
+        #[cfg(windows)]
+        assert!(backend_platform::win32::security::is_endpoint_metadata(&metadata));
         drop(listener);
         assert!(!path.exists());
     }
@@ -1082,7 +1088,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             // Longer than the per-frame deadline: this is a client thinking,
             // not a client trickling a frame.
@@ -1145,7 +1151,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             let request = crate::protocol::frame(b"slow", limits())
                 .unwrap_or_else(|error| panic!("frame: {error}"));
@@ -1216,7 +1222,7 @@ mod tests {
         struct RunningListener {
             shutdown: super::ListenerShutdown,
             worker: Option<thread::JoinHandle<Result<usize, super::ListenerError>>>,
-            client: Option<std::os::unix::net::UnixStream>,
+            client: Option<backend_engine::LocalStream>,
         }
 
         impl Drop for RunningListener {
@@ -1248,7 +1254,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
-        let mut held = std::os::unix::net::UnixStream::connect(&path)
+        let mut held = backend_engine::LocalStream::connect(&path)
             .unwrap_or_else(|error| panic!("connect: {error}"));
         held.set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap_or_else(|error| panic!("read timeout: {error}"));
@@ -1325,7 +1331,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             let body =
                 crate::protocol::encode_engine_request(11, &EngineRequest::Shutdown, limits())
@@ -1378,7 +1384,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let _ = std::os::unix::net::UnixStream::connect(client_path);
+            let _ = backend_engine::LocalStream::connect(client_path);
         });
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && listener.report().failures == 0 {
