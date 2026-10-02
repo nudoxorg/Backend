@@ -164,10 +164,21 @@ impl LocalSubscriptionTransport {
         &mut self,
         state: &PublicationLease,
     ) -> Result<(), ClientError> {
+        self.cancel_publications_current_within(state, TERMINAL_CANCEL_IO)
+    }
+
+    /// [`Self::cancel_publications_current`] with the socket deadline named,
+    /// so a test can give the owner thread scheduling slack that the
+    /// production 50 ms deliberately does not allow.
+    pub(crate) fn cancel_publications_current_within(
+        &mut self,
+        state: &PublicationLease,
+        io: Duration,
+    ) -> Result<(), ClientError> {
         if state.held_on != self.connection() {
             return Err(protocol("publication lease is not held on this socket"));
         }
-        self.cancel_lease_current(state.lease, TERMINAL_CANCEL_IO)
+        self.cancel_lease_current(state.lease, io)
     }
 
     fn admit_publications(
@@ -744,7 +755,7 @@ mod tests {
         });
         let state = lease_on(&transport, lease, &root, cursor);
         transport
-            .cancel_publications_current(&state)
+            .cancel_publications_current_within(&state, Duration::from_secs(5))
             .expect("terminal cancel");
         owner.join().expect("owner");
         // A socket already interrupted by cancellation fails promptly; it
@@ -806,7 +817,7 @@ mod tests {
         );
         let state = lease_on(&transport, lease, &root, cursor);
         transport
-            .cancel_publications_current(&state)
+            .cancel_publications_current_within(&state, Duration::from_secs(5))
             .expect("the terminal cancel does not rotate");
         owner.join().expect("owner");
     }
