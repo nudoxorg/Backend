@@ -46,7 +46,7 @@ use windows_sys::Win32::{
         ERROR_PIPE_CONNECTED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     },
-    Globalization::{CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal},
+    Globalization::{CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal},
     Security::SECURITY_ATTRIBUTES,
     Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
@@ -825,26 +825,74 @@ fn command_line(program: &OsStr, args: &[OsString]) -> io::Result<Vec<u16>> {
     Ok(line)
 }
 
-fn compare_names(left: &[u16], right: &[u16]) -> CmpOrdering {
-    // SAFETY: both slices describe valid readable UTF16 code units, including
-    // unpaired surrogates. Ordinal matching is the Windows environment policy.
-    match unsafe {
-        CompareStringOrdinal(
-            left.as_ptr(),
-            left.len() as i32,
-            right.as_ptr(),
-            right.len() as i32,
-            1,
-        )
-    } {
-        CSTR_LESS_THAN => CmpOrdering::Less,
-        CSTR_GREATER_THAN => CmpOrdering::Greater,
-        _ => CmpOrdering::Equal,
+fn ordinal_lengths(left: usize, right: usize) -> io::Result<(i32, i32)> {
+    Ok((
+        i32::try_from(left).map_err(|_| invalid("Windows name length exceeds i32"))?,
+        i32::try_from(right).map_err(|_| invalid("Windows name length exceeds i32"))?,
+    ))
+}
+
+fn ordinal_result(result: i32, error: u32) -> io::Result<CmpOrdering> {
+    match result {
+        CSTR_LESS_THAN => Ok(CmpOrdering::Less),
+        CSTR_EQUAL => Ok(CmpOrdering::Equal),
+        CSTR_GREATER_THAN => Ok(CmpOrdering::Greater),
+        0 => Err(io::Error::from_raw_os_error(error as i32)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Windows ordinal comparison result",
+        )),
     }
 }
 
+fn compare_names(left: &[u16], right: &[u16]) -> io::Result<CmpOrdering> {
+    let (left_length, right_length) = ordinal_lengths(left.len(), right.len())?;
+    // The empty-name order is unambiguous and avoids passing a dangling empty
+    // slice pointer to a native API whose pointer contract expects a string.
+    if left.is_empty() || right.is_empty() {
+        return Ok(left.len().cmp(&right.len()));
+    }
+    // SAFETY: both readable UTF16 slices remain live through the call. Their
+    // exact lengths were checked before narrowing, including unpaired UTF16.
+    let result = unsafe {
+        CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
+    };
+    // SAFETY: capture native failure immediately, without reclassifying it as
+    // equality or allowing a partial environment mutation to reach the child.
+    let error = if result == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    ordinal_result(result, error)
+}
+
+type EnvironmentEntry = (Vec<u16>, Vec<u16>);
+fn sort_environment(mut entries: Vec<EnvironmentEntry>) -> io::Result<Vec<EnvironmentEntry>> {
+    // A fallible merge sort avoids pretending an OS comparison failure is
+    // Equal inside a sort_by closure. Every comparison either orders the
+    // entries or stops command preparation before any process is created.
+    if entries.len() < 2 {
+        return Ok(entries);
+    }
+    let right = entries.split_off(entries.len() / 2);
+    let mut left = sort_environment(entries)?.into_iter().peekable();
+    let mut right = sort_environment(right)?.into_iter().peekable();
+    let mut ordered = Vec::with_capacity(left.len() + right.len());
+    while let (Some(a), Some(b)) = (left.peek(), right.peek()) {
+        if compare_names(&a.0, &b.0)? != CmpOrdering::Greater {
+            ordered.push(left.next().expect("peeked left entry"));
+        } else {
+            ordered.push(right.next().expect("peeked right entry"));
+        }
+    }
+    ordered.extend(left);
+    ordered.extend(right);
+    Ok(ordered)
+}
+
 fn environment_block(command: &CaptureCommand) -> io::Result<Vec<u16>> {
-    let mut entries: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    let mut entries: Vec<EnvironmentEntry> = Vec::new();
     if matches!(command.environment, CaptureEnvironment::Inherit) {
         // GetEnvironmentStrings preserves Windows' hidden drive-directory
         // entries and ill-formed UTF16 rather than taking a lossy UTF8 detour.
@@ -893,14 +941,20 @@ fn environment_block(command: &CaptureCommand) -> io::Result<Vec<u16>> {
         if name.is_empty() || name.contains(&(b'=' as u16)) {
             return Err(invalid("invalid Windows environment name"));
         }
-        entries.retain(|(key, _)| compare_names(key, &name) != CmpOrdering::Equal);
+        let mut retained = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            if compare_names(&key, &name)? != CmpOrdering::Equal {
+                retained.push((key, value));
+            }
+        }
+        entries = retained;
         if let Some(value) = value {
             let mut value = wide(value)?;
             value.pop();
             entries.push((name, value));
         }
     }
-    entries.sort_by(|left, right| compare_names(&left.0, &right.0));
+    let entries = sort_environment(entries)?;
     let mut block = Vec::new();
     for (name, value) in entries {
         block.extend(name);
@@ -924,12 +978,13 @@ fn resolve_program(command: &CaptureCommand, environment: &[u16]) -> io::Result<
         program.set_extension("exe");
     }
     let exe: Vec<_> = OsStr::new("exe").encode_wide().collect();
-    if program.extension().is_some_and(|extension| {
-        compare_names(&extension.encode_wide().collect::<Vec<_>>(), &exe) != CmpOrdering::Equal
-    }) {
-        return Err(invalid(
-            "bounded Windows capture requires a native .exe program",
-        ));
+    if let Some(extension) = program.extension() {
+        let extension: Vec<_> = extension.encode_wide().collect();
+        if compare_names(&extension, &exe)? != CmpOrdering::Equal {
+            return Err(invalid(
+                "bounded Windows capture requires a native .exe program",
+            ));
+        }
     }
     let cwd = command.cwd.clone().unwrap_or(std::env::current_dir()?);
     if program.is_absolute() {
@@ -944,7 +999,7 @@ fn resolve_program(command: &CaptureCommand, environment: &[u16]) -> io::Result<
         .filter(|entry| !entry.is_empty())
     {
         if let Some(separator) = entry.iter().position(|unit| *unit == b'=' as u16)
-            && compare_names(&entry[..separator], &path_name) == CmpOrdering::Equal
+            && compare_names(&entry[..separator], &path_name)? == CmpOrdering::Equal
         {
             for directory in std::env::split_paths(&OsString::from_wide(&entry[separator + 1..])) {
                 let candidate = if directory.is_absolute() {
@@ -1335,6 +1390,46 @@ mod tests {
         drop(pipe);
         drop(writer);
         assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn ordinal_failure_and_length_overflow_never_mean_equal() {
+        assert_eq!(
+            ordinal_result(CSTR_EQUAL, 0).expect("equal"),
+            CmpOrdering::Equal
+        );
+        assert_eq!(
+            ordinal_result(0, 87)
+                .expect_err("native failure")
+                .raw_os_error(),
+            Some(87)
+        );
+        assert_eq!(
+            ordinal_result(99, 0).expect_err("invalid result").kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            ordinal_lengths(i32::MAX as usize + 1, 1)
+                .expect_err("left overflow")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            ordinal_lengths(1, i32::MAX as usize + 1)
+                .expect_err("right overflow")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            ordinal_lengths(i32::MAX as usize, 1).expect("checked boundary"),
+            (i32::MAX, 1)
+        );
+        let a: Vec<_> = "Path".encode_utf16().collect();
+        let b: Vec<_> = "PATH".encode_utf16().collect();
+        assert_eq!(
+            compare_names(&a, &b).expect("native case table"),
+            CmpOrdering::Equal
+        );
     }
 
     #[test]
