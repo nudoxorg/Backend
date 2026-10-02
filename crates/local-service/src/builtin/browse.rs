@@ -160,7 +160,11 @@ fn read_bounded_file(reader: &mut impl Read, maximum: usize) -> std::io::Result<
             break;
         }
         let capacity = chunk.len();
-        let count = reader.read(&mut chunk[..remaining.min(capacity)])?;
+        let count = match reader.read(&mut chunk[..remaining.min(capacity)]) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             break;
         }
