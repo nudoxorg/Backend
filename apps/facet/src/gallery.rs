@@ -34,8 +34,8 @@ use crate::theme::{ActiveFacet, Contrast, Facet, set_facet};
 use crate::tokens::{Appearance, ty};
 use crate::{Density, Typeset, fonts, probe};
 use backend_gui_harness::{
-    Act, Drawn, Event, NativeAccessibilityFrame, PlayedFrame, Script, Session, SessionOptions,
-    Timeline, Viewport, play,
+    Act, CaptureError, Drawn, Event, NativeAccessibilityFrame, PlayedFrame, Script, Session,
+    SessionOptions, Timeline, Viewport, play,
 };
 use gpui::{
     AnyView, App, AppContext, Context, FocusHandle, Global, InteractiveElement, IntoElement,
@@ -552,8 +552,12 @@ fn run_with_timing_history(
                 frame
                     .image
                     .map(|image| {
+                        // The frame callback speaks the harness's error type,
+                        // like the direct driver's capture of the same evidence.
                         let tree = window.debug_a11y_tree_json().ok_or_else(|| {
-                            GalleryError("forced accessibility capture produced no tree".to_owned())
+                            CaptureError::Accessibility(
+                                "forced accessibility capture produced no tree".to_owned(),
+                            )
                         })?;
                         let evidence = NativeAccessibilityFrame::new(
                             format!("t{}", frame.drawn.at_ms),
@@ -563,9 +567,9 @@ fn run_with_timing_history(
                             &tree,
                             image,
                         )
-                        .map_err(GalleryError::from_display)?;
+                        .map_err(CaptureError::Accessibility)?;
                         if evidence.frame_number <= last_accessibility_frame {
-                            return Err(GalleryError(format!(
+                            return Err(CaptureError::Accessibility(format!(
                                 "native accessibility tree frame {} did not advance after {}",
                                 evidence.frame_number, last_accessibility_frame
                             )));
@@ -592,7 +596,7 @@ fn run_with_timing_history(
             observe(&tick, window, cx).map_err(|error| {
                 let message = error.0.clone();
                 *observer_error.borrow_mut() = Some(error);
-                backend_gui_harness::CaptureError::InvalidConfig(message)
+                CaptureError::InvalidConfig(message)
             })
         },
     );
