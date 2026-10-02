@@ -150,10 +150,17 @@ struct JourneyFrame {
     route: Route,
     overlay: Option<Overlay>,
     preview: Option<Route>,
+    root: VersionedRoot,
+    owner_serving: bool,
+    /// Filled after the native frame drew, from Reader's rendered words.
+    reader_text: Vec<String>,
+    reader_hero: Vec<String>,
+    reader_pages: usize,
 }
 
 struct Places {
     page: Route,
+    alias: Option<Route>,
     package: Route,
 }
 
@@ -248,31 +255,35 @@ fn places(endpoint: &Path, project: &Path) -> Places {
     // Find the RelationLabel enum through the product's own read path.
     let mut session = Session::connect(endpoint).expect("session");
     let reply = session.search("RelationLabel", 50).expect("search");
-    let coordinate = match reply.reply {
-        CommandReply::Search(result) => result
-            .root
-            .rows()
-            .iter()
-            .find(|row| {
+    let (coordinate, alias_coordinate) = match reply.reply {
+        CommandReply::Search(result) => {
+            let rows = result.root.rows();
+            let page = rows.iter().find(|row| {
                 row.label.ends_with("::RelationLabel")
                     && row.kind == Some(DeclarationKind::Enum)
                     && row.label.contains("glyph.rs")
             })
             .map(|row| row.label.clone())
-            .expect("RelationLabel is indexed"),
+            .expect("RelationLabel enum is indexed");
+            let alias = rows.iter().find(|row| row.label.ends_with("::lib.rs:103::RelationLabel"))
+                .map(|row| row.label.clone());
+            (page, alias)
+        }
         other => panic!("search answered {other:?}"),
     };
     let package = PackageId::new(project.to_str().expect("utf-8")).expect("package");
+    let page_route = |coordinate: &str, package: &PackageId| Route::Symbol(SymbolRoute {
+        project: None,
+        package: package.clone(),
+        id: Coordinate::new(coordinate).expect("coordinate"),
+        at: None,
+        view: View::Page,
+        line: None,
+        selected: None,
+    });
     Places {
-        page: Route::Symbol(SymbolRoute {
-            project: None,
-            package: package.clone(),
-            id: Coordinate::new(&coordinate).expect("coordinate"),
-            at: None,
-            view: View::Page,
-            line: None,
-            selected: None,
-        }),
+        page: page_route(&coordinate, &package),
+        alias: alias_coordinate.as_deref().map(|coordinate| page_route(coordinate, &package)),
         package: Route::Package(PackageRoute {
             project: None,
             package,
@@ -308,8 +319,8 @@ fn capture(
     projects: &[PathBuf],
     out: &Path,
 ) {
-    let expected_journey_page = (shot.script == Script::AskJourney)
-        .then(|| places(endpoint, projects.first().expect("indexed project")).page);
+    let expected_journey_places = (shot.script == Script::AskJourney)
+        .then(|| places(endpoint, projects.first().expect("indexed project")));
     assert_eq!(
         shot.frames.first().copied(),
         Some(0),
@@ -368,7 +379,9 @@ fn capture(
             InputStep::Wait { milliseconds: 100 }, InputStep::key("shift-tab"),
             InputStep::Wait { milliseconds: 100 }, InputStep::key("tab"),
             InputStep::Wait { milliseconds: 100 }, InputStep::key("down"),
-            InputStep::Wait { milliseconds: 100 }, InputStep::key("up"),
+            // Hold the Alias preview on the executor clock until a paired
+            // settled Reader frame is captured before the Up event.
+            InputStep::Wait { milliseconds: 750 }, InputStep::key("up"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("enter"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-."),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-["),
@@ -464,18 +477,24 @@ fn capture(
             }
             land(&store, cx);
             if shot_hook.script == Script::AskJourney {
-                let snapshot = store.read(cx).snapshot();
+                let data = store.read(cx);
+                let snapshot = data.snapshot();
                 journey_hook.borrow_mut().push(JourneyFrame {
                     label: frame.label.clone(),
                     route: snapshot.route().clone(),
                     overlay: snapshot.overlay(),
                     preview: snapshot.session().preview.clone(),
+                    root: snapshot.key(),
+                    owner_serving: data.owner_serving(),
+                    reader_text: Vec::new(),
+                    reader_hero: Vec::new(),
+                    reader_pages: 0,
                 });
             }
             Ok(())
         },
         |_, _, _| {},
-        move |frame: &AnimationFrame, image, _, window, _| -> Result<_, CaptureError> {
+        move |frame: &AnimationFrame, image, _, window, cx| -> Result<_, CaptureError> {
             if let Some(partial) = &partial_out {
                 let frame_dir = partial.join(&frame.label);
                 std::fs::create_dir_all(&frame_dir).map_err(|error| CaptureError::Gpui(error.to_string()))?;
@@ -486,9 +505,30 @@ fn capture(
                 std::fs::write(frame_dir.join("accesskit.json"), tree)
                     .map_err(|error| CaptureError::Gpui(error.to_string()))?;
                 if let Some(state) = journey_semantic.borrow().last() {
-                    std::fs::write(frame_dir.join("route.txt"), format!("route={:?}\noverlay={:?}\npreview={:?}\n", state.route, state.overlay, state.preview))
+                    std::fs::write(frame_dir.join("route.txt"), format!("route={:?}\noverlay={:?}\npreview={:?}\nroot={:?}\nowner_serving={}\n",
+                        state.route, state.overlay, state.preview, state.root, state.owner_serving))
                         .map_err(|error| CaptureError::Gpui(error.to_string()))?;
                 }
+                // Capture the rendered Reader after this native frame draws.
+                // Ask veils its background from AccessKit while it is open.
+                let shell = {
+                    let slot = last_slot.borrow();
+                    let entities = slot.as_ref().ok_or_else(|| CaptureError::Gpui("capture graph was not built".to_owned()))?;
+                    upgrade_capture_entity(&entities.shell, "shell")?
+                };
+                let (reader_text, reader_hero, reader_pages) = {
+                    let shell = shell.read(cx);
+                    (shell.reader_text(cx).into_iter().map(|line| line.to_string()).collect::<Vec<_>>(),
+                        shell.hero_lines(cx), shell.reader_pages(cx))
+                };
+                let mut observed = journey_semantic.borrow_mut();
+                let state = observed.last_mut().ok_or_else(|| CaptureError::Gpui("journey route was not recorded".to_owned()))?;
+                state.reader_text = reader_text;
+                state.reader_hero = reader_hero;
+                state.reader_pages = reader_pages;
+                std::fs::write(frame_dir.join("reader.txt"), format!("pages={}\nhero={:?}\ntext={:?}\n",
+                    state.reader_pages, state.reader_hero, state.reader_text))
+                    .map_err(|error| CaptureError::Gpui(error.to_string()))?;
             }
             // Confirm the mounted Root still owns the graph through its final frame.
             if frame.label == last_label {
@@ -694,7 +734,7 @@ fn capture(
     }
     if shot.script == Script::AskJourney {
         let observed = journey.borrow();
-        assert_eq!(observed.len(), 30, "record every real journey frame after writing paired evidence");
+        assert_eq!(observed.len(), 31, "record every real journey frame after writing paired evidence");
         let orbit = Route::Orbit(OrbitRoute::Home);
         for (index, expected) in [
             (&orbit, None),
@@ -703,7 +743,10 @@ fn capture(
         ].into_iter().enumerate() {
             assert_eq!((&observed[index].route, observed[index].overlay), (expected.0, expected.1), "{}", observed[index].label);
         }
-        let target = expected_journey_page.expect("exact owner page for the keyboard journey");
+        let Places { page: target, alias, .. } = expected_journey_places.expect("exact owner pages for the keyboard journey");
+        let alias = alias.expect("the live owner indexed the lib.rs:103 RelationLabel alias");
+        assert!(matches!(&alias, Route::Symbol(symbol) if symbol.id.as_str().ends_with("::lib.rs:103::RelationLabel")),
+            "the second Link names the live owner's exact re-exported symbol");
         assert_eq!(observed[3].route, target, "Down previews the exact owner search result");
         assert_eq!(observed[3].preview, Some(orbit.clone()), "preview retains the departure place");
         assert_eq!(observed[3].overlay, Some(Overlay::CommandPalette));
@@ -711,10 +754,22 @@ fn capture(
             assert_eq!(observed[index].route, target, "Tab must not replace the previewed page");
             assert_eq!(observed[index].overlay, Some(Overlay::CommandPalette));
         }
-        assert_ne!(observed[7].route, target, "Down on a focused Link previews the next exact destination");
+        assert_eq!(observed[7].route, alias, "Down on a focused Link previews the exact lib.rs:103 destination");
         assert_eq!(observed[7].preview, Some(orbit.clone()));
-        assert_eq!(observed[8].route, target, "Up on a focused Link returns to the first exact destination");
+        assert_eq!(observed[8].route, alias, "the Alias preview stays selected until its Reader settles");
         assert_eq!(observed[8].preview, Some(orbit.clone()));
+        assert_eq!(observed[8].overlay, Some(Overlay::CommandPalette));
+        assert!(observed[8].owner_serving && observed[8].root.same_authority(observed[7].root),
+            "the settled Reader still belongs to the same serving live index");
+        assert_eq!(observed[8].reader_pages, 1, "the Alias Reader has finished the page transition");
+        assert!(observed[8].reader_hero.iter().any(|line| line.contains("RelationLabel")),
+            "the settled Reader names the exact symbol");
+        assert!(observed[8].reader_text.iter().any(|line| line == "lib.rs:103"),
+            "the rendered Reader must show the live Alias source, not merely its route");
+        assert!(!observed[8].reader_text.iter().any(|line| line == "glyph.rs:138"),
+            "the prior glyph source must not remain the rendered Reader page");
+        assert_eq!(observed[9].route, target, "Up on a focused Link returns to the first exact destination");
+        assert_eq!(observed[9].preview, Some(orbit.clone()));
         let typed = set.frames.get(2).and_then(|frame| frame.native_accessibility.as_ref()).expect("typed Ask tree");
         assert!(typed.tree["nodes"].as_object().expect("native nodes").values().any(|node| {
             node["aria"]["role"].as_str() == Some("TextInput")
@@ -736,45 +791,47 @@ fn capture(
         assert_eq!(focus_id(6), focus_id(4), "Tab returns to the same exact result after a redraw");
         assert_eq!(focus_at(7)["aria"]["role"].as_str(), Some("Link"), "Down keeps native focus on a live result");
         assert_ne!(focus_id(7), focus_id(6), "Down moves the native Link focus to another exact result");
-        assert_eq!(focus_id(8), focus_id(6), "Up restores the first native Link focus");
-        assert_eq!(observed[9].route, target, "Enter on the focused exact result commits its page");
-        assert!(observed[9].preview.is_none() && observed[9].overlay.is_none());
+        assert_eq!(focus_id(8), focus_id(7), "native focus remains on the Alias Link while Reader settles");
+        assert_eq!(focus_at(8)["aria"]["role"].as_str(), Some("Link"));
+        assert_eq!(focus_id(9), focus_id(6), "Up restores the first native Link focus");
+        assert_eq!(observed[10].route, target, "Enter on the focused exact result commits its page");
+        assert!(observed[10].preview.is_none() && observed[10].overlay.is_none());
         let code = target.with_view(View::Code).expect("indexed symbol has a code view");
-        assert_eq!(observed[10].route, code, "keyboard code command opens the indexed source");
-        assert_eq!(observed[11].route, orbit, "Back returns to the actual Orbit departure");
-        assert_eq!(observed[12].overlay, Some(Overlay::CommandPalette), "Ask reopens after Back");
-        assert_eq!(observed[13].overlay, None, "Escape dismisses the live Ask");
-        assert_eq!(observed[14].overlay, Some(Overlay::CommandPalette), "keyboard shortcut reopens Ask");
-        assert!(observed[12..15].iter().all(|frame| frame.route == orbit));
-        for index in 15..=18 {
+        assert_eq!(observed[11].route, code, "keyboard code command opens the indexed source");
+        assert_eq!(observed[12].route, orbit, "Back returns to the actual Orbit departure");
+        assert_eq!(observed[13].overlay, Some(Overlay::CommandPalette), "Ask reopens after Back");
+        assert_eq!(observed[14].overlay, None, "Escape dismisses the live Ask");
+        assert_eq!(observed[15].overlay, Some(Overlay::CommandPalette), "keyboard shortcut reopens Ask");
+        assert!(observed[13..16].iter().all(|frame| frame.route == orbit));
+        for index in 16..=19 {
             assert_eq!(observed[index].route, target, "live Ask preview survives the resize frame");
             assert_eq!(observed[index].overlay, Some(Overlay::CommandPalette));
         }
-        assert!(observed[19..].iter().all(|frame| frame.route == orbit && frame.overlay.is_none()),
+        assert!(observed[20..=21].iter().all(|frame| frame.route == orbit && frame.overlay.is_none()),
             "Escape returns the preview to its departure, including the settled frame");
-        for (index, width) in [(16, 800), (17, 360), (18, 1440)] {
+        for (index, width) in [(17, 800), (18, 360), (19, 1440)] {
             let frame = &set.frames[index];
             assert_eq!(frame.image.width(), width, "{} captures the resized real window", frame.label);
             assert!(frame.native_accessibility.as_ref().expect("paired native tree").has_label("Ask anything, or find a package"),
                 "{} keeps the modal keyboard owner", frame.label);
         }
-        assert_eq!(observed[21].overlay, Some(Overlay::CommandPalette), "the next opening has a live editor");
-        assert_eq!(observed[22].overlay, Some(Overlay::CommandPalette), "typed Ask is live before interruption");
-        assert_eq!(observed[23].overlay, None, "the exit has revoked Ask interaction");
-        assert_eq!(observed[24].overlay, Some(Overlay::CommandPalette), "the close was interrupted by a real reopen key");
-        assert!(observed[25..=27].iter().all(|frame| frame.overlay == Some(Overlay::CommandPalette)),
+        assert_eq!(observed[22].overlay, Some(Overlay::CommandPalette), "the next opening has a live editor");
+        assert_eq!(observed[23].overlay, Some(Overlay::CommandPalette), "typed Ask is live before interruption");
+        assert_eq!(observed[24].overlay, None, "the exit has revoked Ask interaction");
+        assert_eq!(observed[25].overlay, Some(Overlay::CommandPalette), "the close was interrupted by a real reopen key");
+        assert!(observed[26..=28].iter().all(|frame| frame.overlay == Some(Overlay::CommandPalette)),
             "the reopened Ask stays authoritative through its resize");
-        assert!(observed[28..].iter().all(|frame| frame.overlay.is_none()),
+        assert!(observed[29..].iter().all(|frame| frame.overlay.is_none()),
             "the final exit settles without restoring a modal");
         let native_has_results = |index: usize| {
             set.frames[index].native_accessibility.as_ref().expect("paired native tree")
                 .has_label("Search results")
         };
-        assert!(native_has_results(22), "the populated Ask has native results before closing");
-        assert!(!native_has_results(23), "the painted exit retained native Ask results");
-        assert!(native_has_results(27), "the reopened Ask restores native results after resize");
-        assert!(!native_has_results(28) && !native_has_results(29), "the final exit retained native Ask results");
-        for (index, width) in [(26, 800), (27, 1440)] {
+        assert!(native_has_results(23), "the populated Ask has native results before closing");
+        assert!(!native_has_results(24), "the painted exit retained native Ask results");
+        assert!(native_has_results(28), "the reopened Ask restores native results after resize");
+        assert!(!native_has_results(29) && !native_has_results(30), "the final exit retained native Ask results");
+        for (index, width) in [(27, 800), (28, 1440)] {
             assert_eq!(set.frames[index].image.width(), width,
                 "{} captures the interrupted modal at its real resized width", set.frames[index].label);
         }
@@ -856,8 +913,8 @@ fn capture_the_shell_over_a_real_index() {
             density: Comfortable,
             appearance: Abyss,
             route: Route::Orbit(OrbitRoute::Home),
-            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 1550, 1750, 1950, 2150, 2350, 2550, 2750,
-                3350, 3450, 3550, 3650, 3750, 4150, 4250, 4350, 4450, 4490, 4530, 4600, 4700, 5200, 6200],
+            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 2050, 2200, 2400, 2600, 2800, 3000, 3200,
+                3400, 4000, 4100, 4200, 4300, 4400, 4800, 4900, 5000, 5100, 5140, 5180, 5250, 5350, 5850, 6850],
             script: Script::AskJourney,
         },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
