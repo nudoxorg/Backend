@@ -581,7 +581,7 @@ impl RenderOnce for Seg {
                     item.focusable().tab_index(-1)
                 };
                 let entity = touch.entity.clone();
-                item = item.on_hover(move |inside, _window, cx| {
+                item = item.on_hover(move |inside, _window, cx: &mut App| {
                     let now = entity.read(cx).hot_item;
                     if *inside {
                         set_hot_item(&entity, Some(index), cx);
