@@ -1541,6 +1541,8 @@ impl Render for Shell {
         // An open jump-bar menu owns the plain keys (arrows, ↵, type-ahead,
         // Esc): the shell's bindings step aside (`keys::binding`, `!Menu`).
         if super::titlebar::menu_open(window, cx) {
+            self.reader
+                .update(cx, |reader, _| reader.cancel_native_return());
             context.add("Menu");
         }
 
