@@ -20,7 +20,7 @@
 use backend_client::Session;
 use backend_desktop::core::{LocalProjectId, PackageId, VersionedRoot};
 use backend_desktop::model::{
-    AppSnapshot, AppearancePreference, DensityPreference, ProjectPhase, SessionState,
+    AppSnapshot, AppearancePreference, DensityPreference, MotionPreference, ProjectPhase, SessionState,
     SettingsState, WorkspaceProject, WorkspaceState,
 };
 use backend_desktop::navigation::{
@@ -57,8 +57,12 @@ fn repo() -> PathBuf {
 
 /// Starts an embedded owner and waits until every requested project is Ready.
 fn serve(projects: &[PathBuf]) -> (backend_desktop::DesktopHost, PathBuf) {
-    let primary = projects.first().expect("at least one indexed project");
     let state = PathBuf::from(std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()));
+    serve_at(projects, &state)
+}
+
+fn serve_at(projects: &[PathBuf], state: &Path) -> (backend_desktop::DesktopHost, PathBuf) {
+    let primary = projects.first().expect("at least one indexed project");
     let endpoint = PathBuf::from(format!("{}.sock", state.display()));
     // The real owner refuses state beneath a group-readable directory. Keep
     // the capture fixture subject to that same check, including first boot.
@@ -142,6 +146,8 @@ enum Script {
     /// From the real Orbit, type and choose an indexed hit through the keyboard,
     /// read its code, go Back, reopen Ask, and resize a live preview.
     AskJourney,
+    /// Real indexed Code → keyboard Find → replaced owner reading → Settings.
+    FindSettingsJourney,
 }
 
 #[derive(Clone)]
@@ -156,12 +162,15 @@ struct JourneyFrame {
     reader_text: Vec<String>,
     reader_hero: Vec<String>,
     reader_pages: usize,
+    text_percent: u16,
+    motion: MotionPreference,
 }
 
 struct Places {
     page: Route,
     alias: Option<Route>,
     package: Route,
+    source_line: Option<u32>,
 }
 
 /// Weak handles let the mounted window own the production graph throughout capture,
@@ -255,7 +264,7 @@ fn places(endpoint: &Path, project: &Path) -> Places {
     // Find the RelationLabel enum through the product's own read path.
     let mut session = Session::connect(endpoint).expect("session");
     let reply = session.search("RelationLabel", 50).expect("search");
-    let (coordinate, alias_coordinate) = match reply.reply {
+    let (coordinate, alias_coordinate, source_line) = match reply.reply {
         CommandReply::Search(result) => {
             let rows = result.root.rows();
             let page = rows.iter().find(|row| {
@@ -263,11 +272,11 @@ fn places(endpoint: &Path, project: &Path) -> Places {
                     && row.kind == Some(DeclarationKind::Enum)
                     && row.label.contains("glyph.rs")
             })
-            .map(|row| row.label.clone())
+            .map(|row| (row.label.clone(), row.source.captured().map(backend_library::SourceLocation::start_line)))
             .expect("RelationLabel enum is indexed");
             let alias = rows.iter().find(|row| row.label.ends_with("::lib.rs:103::RelationLabel"))
                 .map(|row| row.label.clone());
-            (page, alias)
+            (page.0, alias, page.1)
         }
         other => panic!("search answered {other:?}"),
     };
@@ -291,6 +300,43 @@ fn places(endpoint: &Path, project: &Path) -> Places {
             selected: None,
             at: None,
         }),
+        source_line,
+    }
+}
+
+/// A private, standalone Rust package gives the owner a real source file to
+/// replace without editing this checkout or relying on a seeded UI resource.
+fn find_fixture(project: &Path) {
+    std::fs::create_dir_all(project.join("src")).expect("fixture src");
+    std::fs::write(project.join("Cargo.toml"),
+        "[package]\nname = \"find_live_source\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"src/lib.rs\"\n")
+        .expect("fixture manifest");
+    std::fs::write(project.join("src/lib.rs"), "pub mod glyph;\n").expect("fixture library");
+    std::fs::write(project.join("src/glyph.rs"),
+        "/// A declaration supplied by the live local index.\npub enum RelationLabel {\n    Original,\n}\n")
+        .expect("fixture declaration");
+}
+
+fn replace_find_fixture(endpoint: &Path, project: &Path, prior: VersionedRoot) -> VersionedRoot {
+    std::fs::write(project.join("src/glyph.rs"),
+        "/// The owner's replacement source, with a different declaration.\npub enum ReplacementLabel {\n    Current,\n}\n")
+        .expect("replace fixture declaration");
+    let mut session = Session::connect(endpoint).expect("replacement session");
+    session.index(project.to_str().expect("fixture path utf-8")).expect("reindex replacement source");
+    let started = Instant::now();
+    loop {
+        let mut subscription = backend_client::LocalSubscriptionTransport::connect(endpoint).expect("replacement subscription");
+        let (_, revision) = subscription.bootstrap_root().expect("replacement root");
+        let current = VersionedRoot::from_revision(1, revision, 0);
+        let old_absent = matches!(session.search("RelationLabel", 50).map(|reply| reply.reply),
+            Ok(CommandReply::Search(page)) if page.root.rows().iter().all(|row| !row.label.ends_with("::RelationLabel")));
+        let new_present = matches!(session.search("ReplacementLabel", 50).map(|reply| reply.reply),
+            Ok(CommandReply::Search(page)) if page.root.rows().iter().any(|row| row.label.ends_with("::ReplacementLabel")));
+        if !current.same_authority(prior) && old_absent && new_present {
+            return current;
+        }
+        assert!(started.elapsed() < INDEX_DEADLINE, "replacement owner root never appeared");
+        std::thread::sleep(Duration::from_millis(30));
     }
 }
 
@@ -312,6 +358,56 @@ fn land(store: &Entity<DataStore>, cx: &mut App) {
     }
 }
 
+/// Every step is delivered through the same GPUI keyboard/resize driver as
+/// AskJourney. The parallel frame times capture pixels and AccessKit after
+/// each input, including the no-input point where the real owner is reindexed.
+fn find_settings_script() -> (Vec<InputStep>, Vec<u64>) {
+    let mut actions = Vec::new();
+    let mut times = vec![0];
+    let mut now = 0;
+    let mut step = |delay, action: Option<InputStep>| {
+        actions.push(InputStep::Wait { milliseconds: delay });
+        now += delay;
+        if let Some(action) = action { actions.push(action); }
+        times.push(now);
+    };
+    step(100, Some(InputStep::key("cmd-[")));          // 01 Code → Orbit
+    step(100, Some(InputStep::key("cmd-k")));          // 02 Ask
+    step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 03 owner query
+    step(800, Some(InputStep::key("cmd-enter")));      // 04 Find from current Ask reading
+    step(300, Some(InputStep::key("tab")));            // 05 native result focus
+    step(100, Some(InputStep::key("shift-tab")));      // 06 back to Find query
+    step(100, Some(InputStep::key("enter")));          // 07 exact selected declaration
+    step(200, Some(InputStep::key("cmd-[")));          // 08 Find again
+    step(200, Some(InputStep::key("cmd-a")));          // 09 select Find query
+    step(100, Some(InputStep::Text { value: "AbsentMarker".to_owned() })); // 10 dirty query
+    step(50, Some(InputStep::key("enter")));           // 11 commit query; never open old row
+    step(450, None);                                    // 12 current empty reading
+    step(200, Some(InputStep::key("cmd-k")));          // 13 Ask again
+    step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 14 owner query
+    step(800, Some(InputStep::key("cmd-enter")));      // 15 Find at original root
+    step(200, None);                                    // 16 settled Find before replacement
+    step(200, None);                                    // 17 owner source replaced in frame hook
+    step(500, Some(InputStep::key("enter")));          // 18 old result cannot open
+    step(200, Some(InputStep::key("cmd-,")));          // 19 Settings
+    step(100, Some(InputStep::FocusNext));              // 20 native entry
+    step(100, Some(InputStep::key("tab")));            // 21 contrast
+    step(100, Some(InputStep::key("tab")));            // 22 density
+    step(100, Some(InputStep::key("tab")));            // 23 text size
+    step(100, Some(InputStep::key("right")));          // 24 110%
+    step(100, Some(InputStep::key("right")));          // 25 125%
+    step(100, Some(InputStep::key("right")));          // 26 150%
+    step(100, Some(InputStep::key("end")));            // 27 200%
+    step(100, Some(InputStep::key("tab")));            // 28 motion
+    step(100, Some(InputStep::key("end")));            // 29 reduced motion
+    step(100, Some(InputStep::Resize { width: 800, height: 900 }));  // 30
+    step(100, Some(InputStep::Resize { width: 360, height: 900 }));  // 31
+    step(100, Some(InputStep::Resize { width: 1440, height: 900 })); // 32
+    step(200, Some(InputStep::key("escape")));         // 33 close Settings
+    step(200, Some(InputStep::key("cmd-[")));          // 34 Back at the current owner
+    (actions, times)
+}
+
 fn capture(
     shot: &Shot,
     endpoint: &Path,
@@ -321,6 +417,9 @@ fn capture(
 ) {
     let expected_journey_places = (shot.script == Script::AskJourney)
         .then(|| places(endpoint, projects.first().expect("indexed project")));
+    let expected_source_line = (shot.script == Script::FindSettingsJourney)
+        .then(|| places(endpoint, projects.first().expect("indexed project")).source_line)
+        .flatten();
     assert_eq!(
         shot.frames.first().copied(),
         Some(0),
@@ -344,11 +443,15 @@ fn capture(
     let journey = Rc::new(RefCell::new(Vec::<JourneyFrame>::new()));
     let journey_hook = Rc::clone(&journey);
     let journey_semantic = Rc::clone(&journey);
-    let partial_out = (shot.script == Script::AskJourney)
+    let replaced = Rc::new(RefCell::new(None::<VersionedRoot>));
+    let replaced_hook = Rc::clone(&replaced);
+    let partial_out = matches!(shot.script, Script::AskJourney | Script::FindSettingsJourney)
         .then(|| out.join("partial-journey").join(&shot.name));
     let last_label = frames.last().map(|frame| frame.label.clone()).unwrap_or_default();
     let built = Rc::new(std::cell::Cell::new(false));
     let built_mark = Rc::clone(&built);
+    let hook_endpoint = endpoint.to_path_buf();
+    let hook_project = projects.first().expect("indexed project").clone();
     let endpoint = endpoint.to_path_buf();
     let shot_build = shot.clone();
     let shot_hook = shot.clone();
@@ -361,7 +464,11 @@ fn capture(
         .map(|path| {
             let id = LocalProjectId::from_path(path).expect("workspace project identity");
             let mut project = WorkspaceProject::indexing_with_id(id);
-            project.phase = ProjectPhase::Ready;
+            // The dedicated live journey starts with an indexing projection;
+            // only the owner-backed startup refresh may mark it Ready.
+            if shot.script != Script::FindSettingsJourney {
+                project.phase = ProjectPhase::Ready;
+            }
             project
         })
         .collect::<Vec<_>>();
@@ -410,6 +517,7 @@ fn capture(
             InputStep::Wait { milliseconds: 500 }, InputStep::key("escape"),
             InputStep::Wait { milliseconds: 1000 },
         ],
+        Script::FindSettingsJourney => find_settings_script().0,
         _ => Vec::new(),
     };
     let mut set = capture_gpui_state_with_adapters_result_and_semantics(
@@ -476,12 +584,20 @@ fn capture(
                         }), "the live shelf has a reachable project row");
                     });
                 }
+                (Script::FindSettingsJourney, 17) => {
+                    let old = store.read(cx).snapshot().key();
+                    let replacement = replace_find_fixture(&hook_endpoint, &hook_project, old);
+                    eprintln!("live source replacement: {old} → {replacement}");
+                    *replaced_hook.borrow_mut() = Some(replacement);
+                    root.update(cx, |root, cx| root.dispatch(Intent::TestConnection, cx));
+                }
                 _ => {}
             }
             land(&store, cx);
-            if shot_hook.script == Script::AskJourney {
+            if matches!(shot_hook.script, Script::AskJourney | Script::FindSettingsJourney) {
                 let data = store.read(cx);
                 let snapshot = data.snapshot();
+                let display = shell.read(cx).display_key();
                 journey_hook.borrow_mut().push(JourneyFrame {
                     label: frame.label.clone(),
                     route: snapshot.route().clone(),
@@ -492,6 +608,8 @@ fn capture(
                     reader_text: Vec::new(),
                     reader_hero: Vec::new(),
                     reader_pages: 0,
+                    text_percent: snapshot.settings().zoom.percent(&display),
+                    motion: snapshot.settings().motion,
                 });
             }
             Ok(())
@@ -508,8 +626,8 @@ fn capture(
                 std::fs::write(frame_dir.join("accesskit.json"), tree)
                     .map_err(|error| CaptureError::Gpui(error.to_string()))?;
                 if let Some(state) = journey_semantic.borrow().last() {
-                    std::fs::write(frame_dir.join("route.txt"), format!("route={:?}\noverlay={:?}\npreview={:?}\nroot={:?}\nowner_serving={}\n",
-                        state.route, state.overlay, state.preview, state.root, state.owner_serving))
+                    std::fs::write(frame_dir.join("route.txt"), format!("route={:?}\noverlay={:?}\npreview={:?}\nroot={:?}\nowner_serving={}\ntext_percent={}\nmotion={:?}\n",
+                        state.route, state.overlay, state.preview, state.root, state.owner_serving, state.text_percent, state.motion))
                         .map_err(|error| CaptureError::Gpui(error.to_string()))?;
                 }
                 // Capture the rendered Reader after this native frame draws.
@@ -631,6 +749,7 @@ fn capture(
         Script::Ask => "ask-modal",
         Script::ShelfFocus => "shelf-focus",
         Script::AskJourney => "ask-keyboard-journey",
+        Script::FindSettingsJourney => "find-settings-keyboard-journey",
     };
     let script_id = format!(
         "real-locald-shell|shot={}|route={route_name}|text-scale={}|density={:?}|actions={script_name}",
@@ -879,6 +998,90 @@ fn capture(
                 "{} captures the interrupted modal at its real resized width", set.frames[index].label);
         }
     }
+    if shot.script == Script::FindSettingsJourney {
+        let observed = journey.borrow();
+        assert_eq!(observed.len(), 35, "every real Find/Settings input has paired evidence");
+        assert_eq!(set.frames.len(), observed.len());
+        assert!(observed.iter().all(|frame| frame.owner_serving), "the mounted reader stays attached to the real owner");
+        let native = |index: usize| set.frames[index].native_accessibility.as_ref().expect("paired AccessKit tree");
+        let has = |index: usize, role: &str, label: &str| {
+            native(index).tree["nodes"].as_object().expect("native nodes").values().any(|node| {
+                node["aria"]["role"].as_str() == Some(role) && node["aria"]["label"].as_str() == Some(label)
+            })
+        };
+        let focus = |index: usize| {
+            let tree = &native(index).tree;
+            let id = tree["accesskit_focus"].as_str().expect("native focused ID");
+            tree["nodes"].as_object().expect("native nodes").get(id).expect("focused node in the same frame").clone()
+        };
+        let field_value = |index: usize| {
+            native(index).tree["nodes"].as_object().expect("native nodes").values()
+                .find(|node| node["aria"]["role"].as_str() == Some("TextInput")
+                    && node["aria"]["label"].as_str() == Some("Find query"))
+                .and_then(|node| node["aria"]["value"].as_str()).map(str::to_owned)
+        };
+        let Route::Symbol(initial_code) = &observed[0].route else { panic!("start on indexed Code: {:?}", observed[0].route) };
+        assert_eq!(initial_code.view, View::Code);
+        assert!(expected_source_line.is_some(), "the real compiler recorded a source line");
+        assert_eq!(initial_code.line, expected_source_line, "Code opens the producer's selected source line");
+        assert_eq!(observed[0].text_percent, 100);
+        assert!(observed[0].reader_text.iter().any(|line| line.contains("pub enum RelationLabel")),
+            "the first rendered Code Reader contains the indexed fixture source");
+        assert!(has(0, "Application", "Nudox"), "Code frame has a mounted native shell");
+        assert_eq!(observed[1].route, Route::Orbit(OrbitRoute::Home), "Back leaves Code");
+        assert_eq!(observed[2].overlay, Some(Overlay::CommandPalette));
+        assert_eq!(observed[3].overlay, Some(Overlay::CommandPalette));
+        let find_query = |index: usize, text: &str| {
+            matches!(&observed[index].route, Route::Orbit(OrbitRoute::Browse(backend_desktop::navigation::BrowseRoute::Find(query)))
+                if query.text.as_ref() == text)
+        };
+        assert!(find_query(4, "RelationLabel"), "⌘↵ opens the current owner Find page");
+        assert_eq!(field_value(4).as_deref(), Some("RelationLabel"));
+        assert_eq!(focus(4)["aria"]["label"].as_str(), Some("Find query"), "Find takes native keyboard focus");
+        assert_eq!(focus(5)["aria"]["role"].as_str(), Some("Button"), "Tab reaches a native result row");
+        assert_eq!(focus(6)["aria"]["label"].as_str(), Some("Find query"), "Shift-Tab returns to the query");
+        let Route::Symbol(opened) = &observed[7].route else { panic!("Enter on Find query did not open a declaration: {:?}", observed[7].route) };
+        assert_eq!(opened.id, initial_code.id, "Enter chooses the exact indexed coordinate");
+        assert_eq!(opened.view, View::Page);
+        assert!(find_query(8, "RelationLabel"), "Back restores the typed Find route");
+        assert_eq!(field_value(10).as_deref(), Some("AbsentMarker"));
+        assert!(find_query(10, "RelationLabel"), "dirty text has not admitted another route");
+        assert!(find_query(11, "AbsentMarker"), "Enter commits the changed query instead of the old row");
+        assert!(find_query(12, "AbsentMarker"));
+        assert!(has(12, "Group", "Search results"), "the replacement query has an indexed reading");
+        assert!(find_query(15, "RelationLabel") && find_query(16, "RelationLabel"), "Ask returns to the original exact search");
+        let replacement = (*replaced.borrow()).expect("real source replacement was issued");
+        assert!(!replacement.same_authority(snapshot_key), "the owner issued a different root");
+        assert!(observed[18].root.same_authority(replacement), "the mounted shell admitted the replacement owner root");
+        assert!(find_query(18, "RelationLabel"), "Enter cannot open an obsolete result after root replacement");
+        assert_eq!(observed[18].overlay, None);
+        let old_row = native(18).tree["nodes"].as_object().expect("native nodes").values()
+            .find(|node| node["aria"]["role"].as_str() == Some("Button")
+                && node["aria"]["label"].as_str().is_some_and(|label| label.contains("RelationLabel")));
+        assert!(old_row.is_none_or(|row| row["aria"]["disabled"].as_bool() == Some(true)),
+            "a retained obsolete result is absent or natively disabled");
+        for index in 19..=32 {
+            assert_eq!(observed[index].overlay, Some(Overlay::Settings(backend_desktop::navigation::SettingsPage::Appearance)));
+            assert!(has(index, "Heading", "Appearance"), "Settings keeps its native heading through edit/resize");
+            for label in ["Theme", "Contrast", "Density", "Text size", "Motion"] {
+                assert!(has(index, "RadioGroup", label), "{label} remains in frame {index}");
+            }
+        }
+        assert_eq!(focus(23)["aria"]["role"].as_str(), Some("RadioButton"), "Tab reaches the text-size choices");
+        assert_eq!(observed[26].text_percent, 150, "three Right presses choose 150% through the native text-size control");
+        assert_eq!(observed[27].text_percent, 200, "End chooses 200% through the same native control");
+        assert_eq!(focus(28)["aria"]["role"].as_str(), Some("RadioButton"), "Tab reaches motion choices");
+        assert_eq!(observed[29].motion, MotionPreference::Reduced, "End chooses reduced motion through the native control");
+        for (index, width) in [(30, 800), (31, 360), (32, 1440)] {
+            assert_eq!(set.frames[index].image.width(), width, "paired resized Settings frame");
+            assert_eq!(observed[index].text_percent, 200);
+            assert_eq!(observed[index].motion, MotionPreference::Reduced);
+        }
+        assert!(observed[33].overlay.is_none(), "Escape closes Settings");
+        assert!(observed[33].root.same_authority(replacement), "closing Settings restores the current owner");
+        assert!(observed[34].overlay.is_none(), "Back returns to an ordinary owner route");
+        assert!(observed[34].root.same_authority(replacement));
+    }
     assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
 }
@@ -1001,5 +1204,42 @@ fn capture_the_shell_over_a_real_index() {
         capture(&shot, &endpoint, key, &projects, &out);
     }
     drop(subscription);
+    drop(host);
+}
+
+#[test]
+#[ignore = "indexes a private source and captures real owner pixels/AccessKit; run alone with NUDOX_CAPTURE_OUT"]
+fn live_find_settings_keyboard_journey() {
+    let out = PathBuf::from(std::env::var("NUDOX_CAPTURE_OUT").expect("set a fresh NUDOX_CAPTURE_OUT"));
+    if out.exists() {
+        assert_eq!(std::fs::read_dir(&out).expect("capture output").count(), 0,
+            "use a new empty output directory for the live journey");
+    } else {
+        std::fs::create_dir_all(&out).expect("capture output");
+    }
+    let project = out.join("find-source");
+    find_fixture(&project);
+    let projects = vec![project.clone()];
+    let (host, endpoint) = serve_at(&projects, &out.join("owner-state"));
+    let mut subscription = backend_client::LocalSubscriptionTransport::connect(&endpoint).expect("owner subscription");
+    let (_, revision) = subscription.bootstrap_root().expect("owner root");
+    let root = VersionedRoot::from_revision(1, revision, 0);
+    let discovered = places(&endpoint, &project);
+    let Route::Symbol(mut code) = discovered.page else { unreachable!("owner symbol route") };
+    code.view = View::Code;
+    code.line = Some(discovered.source_line.expect("compiler source line"));
+    let (_, frames) = find_settings_script();
+    let shot = Shot {
+        name: "live-find-settings-keyboard".to_owned(),
+        width: 1440,
+        height: 900,
+        percent: 100,
+        density: DensityPreference::Comfortable,
+        appearance: AppearancePreference::Abyss,
+        route: Route::Symbol(code),
+        frames,
+        script: Script::FindSettingsJourney,
+    };
+    capture(&shot, &endpoint, root, &projects, &out.join("captures"));
     drop(host);
 }
