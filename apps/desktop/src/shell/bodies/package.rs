@@ -5,8 +5,9 @@
 //! say what each name is. A future tour needs live typed use evidence;
 //! prototype fixture-world rankings never recommend a starting declaration.
 
-use super::state::{Shown, not_ready, shown};
+use super::state::{Shown, not_ready};
 use super::{Ctx, Leaf};
+use crate::core::{ResourceAdmission, ResourceTerminal, admit_resource};
 use crate::model::AppSnapshot;
 use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
 use crate::model::pages::{
@@ -76,7 +77,7 @@ mod tests;
 pub(super) fn body(
     place: &Route,
     snapshot: &AppSnapshot,
-    store: &super::Pages,
+    _store: &super::Pages,
     ctx: &mut Ctx<'_>,
     _hover: &mut HoverIntent,
     cx: &mut Context<Reader>,
@@ -88,19 +89,29 @@ pub(super) fn body(
             ctx.palette,
         ))];
     };
-    let resource = store.package(&package);
-    let dossier = match shown(&resource) {
-        Shown::Ready(dossier) => dossier.clone(),
-        other => {
-            let mut leaves = not_ready(
-                &other,
-                &PageKey::Package(package.clone()),
-                package.display_name(),
-                ctx,
-                cx,
-            );
-            if let Some(offer) = cargo_manifest_offer(&package, place, snapshot, ctx, cx) {
-                leaves.push(offer);
+    let live = ctx.links.store.read(cx);
+    let resource = live.package(&package);
+    let serving = live.owner_serving();
+    drop(live);
+    let dossier = match admit_resource(&resource, snapshot.key(), serving) {
+        ResourceAdmission::Current(dossier) => dossier.clone(),
+        ResourceAdmission::Retained { value, .. } => {
+            let words = ctx.say(format!("Earlier reading of {} is retained while the current package is checked. Its links and source controls are unavailable.", value.package.display_name()));
+            return vec![Leaf::new(quiet(words, &ctx.measure, ctx.palette))];
+        }
+        ResourceAdmission::Pending(_) => {
+            return not_ready(&Shown::<PackageDossier>::Pending, &PageKey::Package(package), "The package", ctx, cx);
+        }
+        ResourceAdmission::Failed { retained, terminal } => {
+            let mut leaves = Vec::new();
+            if retained.is_some() {
+                let words = ctx.say("An earlier package reading is retained; its controls are unavailable.");
+                leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
+            }
+            match terminal {
+                ResourceTerminal::Fault(error) => leaves.extend(not_ready(&Shown::<PackageDossier>::Fault(error), &PageKey::Package(package), "The package", ctx, cx)),
+                ResourceTerminal::Unavailable(reason) => leaves.extend(not_ready(&Shown::<PackageDossier>::Unavailable(reason, None), &PageKey::Package(package), "The package", ctx, cx)),
+                ResourceTerminal::Complete | ResourceTerminal::Partial => {}
             }
             return leaves;
         }

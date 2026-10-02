@@ -140,39 +140,56 @@ pub(crate) struct Ctx<'a> {
     pub arrived_from: Option<crate::model::pages::SymbolRef>,
 }
 
+#[derive(Clone, Copy)]
+enum NativeActionKind { LocalUi, OwnerSnapshot, Resource }
+
 impl Ctx<'_> {
     /// An action from a drawn control belongs to one Reader visit and one
     /// owner revision. Retained transition bodies and stale pointer events
     /// cannot navigate after that visit has been replaced.
     pub(crate) fn native_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, None, false, cx)
+        self.native_action_with_inventory(action, None, NativeActionKind::Resource, cx)
     }
 
-    /// Controls backed only by the current workspace/session snapshot, such
-    /// as Add folder and a local project, do not borrow Orbit page bytes.
+    /// A local project or recent route is in the snapshot rather than Orbit
+    /// bytes, but entering it still requires the current owner attachment.
     pub(crate) fn native_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, None, true, cx)
+        self.native_action_with_inventory(action, None, NativeActionKind::OwnerSnapshot, cx)
+    }
+
+    /// Local setup, recovery and disclosure remain available while the
+    /// indexing owner starts or fails. They still belong to one Reader visit.
+    pub(crate) fn native_local_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, NativeActionKind::LocalUi, cx)
     }
 
     pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> Act {
-        self.native_action_with_inventory(action, Some(revision), false, cx)
+        self.native_action_with_inventory(action, Some(revision), NativeActionKind::Resource, cx)
     }
 
-    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, snapshot_only: bool, cx: &mut Context<Reader>) -> Act {
+    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, kind: NativeActionKind, cx: &mut Context<Reader>) -> Act {
         let reader = cx.weak_entity();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route().clone();
+        let overlay = snapshot.overlay();
         let root = snapshot.key();
         let source = inventory_revision.is_none().then_some(self.source_generation).flatten();
         let dependencies = RouteDependencies::new(&route, snapshot.overlay());
-        let (attachment, read_stamp) = {
+        let lease = {
             let store = self.links.store.read(cx);
-            (store.current_owner_attachment(), (!snapshot_only).then(|| dependencies.native_stamp(store, inventory_revision.is_some())).flatten())
+            match kind {
+                NativeActionKind::LocalUi => super::reader::NativeActionLease::LocalUi,
+                NativeActionKind::OwnerSnapshot => super::reader::NativeActionLease::OwnerSnapshot(store.current_owner_attachment()),
+                NativeActionKind::Resource => super::reader::NativeActionLease::Resource {
+                    attachment: store.current_owner_attachment(),
+                    stamp: dependencies.native_stamp(store, inventory_revision.is_some()),
+                },
+            }
         };
         std::rc::Rc::new(move |window, app| {
             if reader.upgrade().is_some_and(|reader| reader.update(app, |reader, cx| {
-                let admitted = reader.admits_native_visit(place, &route, root, attachment.as_ref(), read_stamp.as_ref(), source, inventory_revision, cx);
+                let admitted = reader.admits_native_visit(place, &route, overlay, root, &lease, source, inventory_revision, cx);
                 if admitted { reader.cancel_native_return(); }
                 admitted
             })) {
