@@ -165,6 +165,11 @@ impl OwnerGate {
         self.lock().state.clone()
     }
 
+    /// Identity of this gate, independent of diagnostic root observations.
+    pub(crate) fn same_gate(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Generation of the attached owner currently answering. A page worker
     /// must retain this before its request so an old failure cannot fail a
     /// newly attached owner with the same root.
@@ -172,6 +177,15 @@ impl OwnerGate {
     pub(crate) fn attached_ready_epoch(&self) -> Option<Epoch> {
         let inner = self.lock();
         matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. }).then_some(inner.epoch)
+    }
+
+    /// Read readiness and attachment together. Separate state/epoch reads
+    /// could combine two different owners during a rapid same-root restart.
+    pub(crate) fn serves_attachment(&self, expected: Option<Epoch>) -> bool {
+        let inner = self.lock();
+        let attached = matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })
+            .then_some(inner.epoch);
+        matches!(inner.state, OwnerState::Ready { .. }) && attached == expected
     }
 
     /// Reports confirmed endpoint loss only for the attached generation that

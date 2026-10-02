@@ -282,6 +282,11 @@ fn same_root_reattachment_rechecks_completed_bytes_even_if_starting_is_coalesced
     let gate = OwnerGate::ready(root(), ServiceMode::Attached);
     let rig = rig(cx, Some(gate.clone()), true);
     rig.until(cx, |store| rig.both_current(store));
+    let old_attachment = rig.store.read_with(cx, |store, _| {
+        store
+            .current_owner_attachment()
+            .expect("serving first owner")
+    });
     let old_digest = rig.store.read_with(cx, |store, _| {
         store
             .cargo_source(&rig.dependencies.cargo().expect("Cargo pair").file)
@@ -292,6 +297,7 @@ fn same_root_reattachment_rechecks_completed_bytes_even_if_starting_is_coalesced
     let attachment = gate.attached_ready_epoch().expect("attached owner");
     assert!(gate.attached_lost_at(attachment, "fixture socket closed".into()));
     rig.store.read_with(cx, |store, _| {
+        assert!(!store.admits_owner_attachment(&old_attachment));
         let resource = store.cargo_source(&rig.dependencies.cargo().expect("Cargo pair").file);
         assert!(
             resource.loaded_value().is_some(),
@@ -311,6 +317,7 @@ fn same_root_reattachment_rechecks_completed_bytes_even_if_starting_is_coalesced
         mode: ServiceMode::Attached,
     });
     rig.store.read_with(cx, |store, _| {
+        assert!(!store.admits_owner_attachment(&old_attachment));
         let resource = store.cargo_source(&rig.dependencies.cargo().expect("Cargo pair").file);
         assert_eq!(
             store.cargo_read_admission(&rig.file_key(), &resource),
@@ -320,6 +327,9 @@ fn same_root_reattachment_rechecks_completed_bytes_even_if_starting_is_coalesced
     });
     rig.store.update(cx, DataStore::owner_ready);
     rig.until(cx, |store| rig.both_current(store));
+    assert!(!rig.store.read_with(cx, |store, _| {
+        store.admits_owner_attachment(&old_attachment)
+    }));
     assert_eq!(
         rig.file_reads.load(Ordering::SeqCst),
         2,
@@ -336,13 +346,23 @@ fn same_root_reattachment_rechecks_completed_bytes_even_if_starting_is_coalesced
 
 #[gpui::test]
 fn diagnostic_observation_bumps_do_not_revoke_current_cargo_admission(cx: &mut TestAppContext) {
-    let rig = rig(cx, None, true);
+    let gate = OwnerGate::ready(root(), ServiceMode::Attached);
+    let rig = rig(cx, Some(gate), true);
     rig.until(cx, |store| rig.both_current(store));
+    let captured = rig.store.read_with(cx, |store, _| {
+        store
+            .current_owner_attachment()
+            .expect("fixture attached owner")
+    });
     rig.store.update(cx, |store, cx| {
         let next = store.snapshot().with_key(root().observed_at(99), None);
         store.admit_snapshot(Arc::new(next), cx);
     });
     assert!(rig.store.read_with(cx, |store, _| rig.both_current(store)));
+    assert!(
+        rig.store
+            .read_with(cx, |store, _| store.admits_owner_attachment(&captured))
+    );
     assert_eq!(rig.file_reads.load(Ordering::SeqCst), 1);
 }
 
