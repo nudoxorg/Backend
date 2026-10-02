@@ -424,6 +424,9 @@ fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut Te
     rig.settle();
     let plate = rig.cx.debug_bounds("ask-plate").expect("Ask sheet");
     assert!((f32::from(plate.size.width) - 360.0).abs() < 1.0);
+    let covered = painted(&mut rig);
+    assert!(!covered.texts.iter().any(|text| text.key.starts_with("name:0:")),
+        "the sheet still paints a covered Reader heading");
     assert!(!has_jump(&native_tree(&mut rig)), "the covered Reader action remains in the native modal tree");
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
