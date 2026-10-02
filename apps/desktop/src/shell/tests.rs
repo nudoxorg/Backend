@@ -681,7 +681,7 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
     // transient stage is asserted at its notification boundary.
     let stages = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&stages);
-    let map = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("retained map");
+    let map = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_mount_entity(cx)).expect("retained map");
     let _subscription = rig.cx.update(|_, cx| cx.observe(&map, move |map, cx| {
         observed.borrow_mut().push(map.read(cx).work_status(cx));
     }));

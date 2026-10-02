@@ -525,7 +525,7 @@ impl Reader {
     }
 
     #[cfg(test)]
-    pub(crate) fn graph_entity(&self) -> Option<Entity<bodies::graph::Map>> {
+    pub(crate) fn graph_mount_entity(&self) -> Option<Entity<bodies::graph::Map>> {
         self.map.clone()
     }
 
