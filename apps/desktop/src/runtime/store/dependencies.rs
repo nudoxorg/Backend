@@ -1,7 +1,7 @@
 //! The exact visible resources and admitted Cargo observations of one route.
 
 use super::{CargoReadAdmission, DataStore, OwnerAttachment, route_package, route_symbol};
-use crate::core::{LocalProjectId, VersionedRoot, admit_resource};
+use crate::core::{LocalProjectId, ReadPhase, Resource, VersionedRoot, admit_resource};
 use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey, TreeModel};
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{CargoBrowseContext, Overlay, Route, View};
@@ -214,24 +214,49 @@ impl RouteDependencies {
     }
 
     fn current_key(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> bool {
-        let serving = store.owner_serving();
+        self.key_phase(store, root, key) == ReadPhase::Ready
+    }
+
+    fn key_phase(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> ReadPhase {
         match key {
-            PageKey::Orbit => admit_resource(&store.orbit(), root, serving).allows_actions(),
-            PageKey::Package(package) => admit_resource(&store.package(package), root, serving).allows_actions(),
-            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => store.cargo_read_admission(key, &store.pages().browse(browse)) == CargoReadAdmission::Current,
+            PageKey::Orbit => resource_phase(&store.orbit(), root, store.owner_serving()),
+            PageKey::Package(package) => resource_phase(&store.package(package), root, store.owner_serving()),
+            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => cargo_phase(store, root, key, &store.pages().browse(browse)),
             PageKey::Browse(BrowseKey::Tree(project)) if self.tree.as_ref().is_some_and(|tree| &tree.requested_project == project && tree.expected.is_some()) => {
-                root.same_authority(store.snapshot().key()) && self.current_tree(store).is_some()
+                let selected = resource_phase(&store.pages().browse(&BrowseKey::Tree(project.clone())), root, store.owner_serving());
+                if selected == ReadPhase::Ready && self.current_tree(store).is_none() {
+                    // The reply completed, but describes a different binding.
+                    // Let the body disclose refusal instead of waiting forever.
+                    ReadPhase::Terminal
+                } else { selected }
             }
-            PageKey::Browse(browse) => admit_resource(&store.pages().browse(browse), root, serving).allows_actions(),
-            PageKey::CargoSource(file) => store.cargo_read_admission(key, &store.cargo_source(file)) == CargoReadAdmission::Current,
-            PageKey::Source(symbol) => admit_resource(&store.source(symbol), root, serving).allows_actions(),
-            PageKey::Symbol(symbol) => admit_resource(&store.symbol(symbol), root, serving).allows_actions(),
-            PageKey::Search(query) => admit_resource(&store.search(query), root, serving).allows_actions(),
-            PageKey::Health => admit_resource(&store.health(), root, serving).allows_actions(),
+            PageKey::Browse(browse) => resource_phase(&store.pages().browse(browse), root, store.owner_serving()),
+            PageKey::CargoSource(file) => cargo_phase(store, root, key, &store.cargo_source(file)),
+            PageKey::Source(symbol) => resource_phase(&store.source(symbol), root, store.owner_serving()),
+            PageKey::Symbol(symbol) => resource_phase(&store.symbol(symbol), root, store.owner_serving()),
+            PageKey::Search(query) => resource_phase(&store.search(query), root, store.owner_serving()),
+            PageKey::Health => resource_phase(&store.health(), root, store.owner_serving()),
         }
     }
 
+    pub(crate) fn content_phase(&self, store: &DataStore) -> ReadPhase {
+        self.content.iter().map(|key| self.key_phase(store, store.snapshot().key(), key))
+            .fold(ReadPhase::Ready, ReadPhase::join)
+    }
+
     pub(crate) fn content_loaded(&self, store: &DataStore) -> bool {
-        self.content.iter().all(|key| self.current_key(store, store.snapshot().key(), key))
+        self.content_phase(store) == ReadPhase::Ready
+    }
+}
+
+fn resource_phase<T>(resource: &Resource<T>, root: VersionedRoot, serving: bool) -> ReadPhase {
+    admit_resource(resource, root, serving).phase()
+}
+
+fn cargo_phase<T>(store: &DataStore, root: VersionedRoot, key: &PageKey, resource: &Resource<T>) -> ReadPhase {
+    match store.cargo_read_admission(key, resource) {
+        CargoReadAdmission::Current if root.same_authority(store.snapshot().key()) => ReadPhase::Ready,
+        CargoReadAdmission::Current | CargoReadAdmission::Checking => ReadPhase::Pending,
+        CargoReadAdmission::Fault(_) | CargoReadAdmission::Unavailable(_) => ReadPhase::Terminal,
     }
 }

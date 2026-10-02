@@ -76,6 +76,8 @@ fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     store.pages.land(&dossier_key, generation, Err(ReadFailure::Unavailable(UnavailableReason::OutOfScope, "exact package is not semantically indexed".into())));
     assert!(!admit_resource(&store.package(&package), root(), store.owner_serving()).allows_actions());
     assert!(plan.content_loaded(&store), "optional semantic absence cannot delay the Cargo page");
+    assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Ready,
+        "the shared destination phase excludes optional header faults");
     let receipt = plan.current_cargo_package(&store, &package).expect("current exact observation");
     assert_eq!(receipt.context(), &context);
     assert_eq!(receipt.package(), &package);
@@ -92,6 +94,24 @@ fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     let alias_binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(alias.service_coordinate().expect("coordinate")), &tree.root).expect("alias binding");
     let alias_context = CargoBrowseContext::from_binding_address(alias, alias_binding).expect("alias address");
     assert!(RouteDependencies::new(&package_route(&package, alias_context), None).current_cargo_package(&store, &package).is_none(), "resident unrelated Trees and equal package digests are not a selected observation");
+}
+
+#[test]
+fn completed_tree_for_another_binding_is_terminal_instead_of_an_infinite_wait() {
+    let requested = LocalProjectId::new("/workspace/backend/member").expect("member");
+    let (tree, package, context) = fixture(&requested);
+    let route = package_route(&package, context);
+    let plan = RouteDependencies::new(&route, None);
+    let tree_key = PageKey::Browse(BrowseKey::Tree(requested.clone()));
+    let mut store = DataStore::new(Arc::new(at(route)), None);
+    let mut changed = tree;
+    changed.request_binding = Some(backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+        Path::new(requested.service_coordinate().expect("coordinate")), "/replacement/workspace",
+    ).expect("changed binding"));
+    land(&mut store, &tree_key, PageValue::Browse(BrowseValue::Tree(Arc::new(changed))));
+    assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Terminal);
+    assert!(!plan.content_loaded(&store));
+    assert!(plan.current_cargo_package(&store, &package).is_none());
 }
 
 #[test]

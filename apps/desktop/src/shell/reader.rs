@@ -41,6 +41,7 @@ use crate::model::AppSnapshot;
 use crate::model::pages::{PageKey, Stamp};
 use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, View};
 use crate::runtime::store::{Branch, CargoReadAdmission, DataStore, OwnerAttachment, RouteDependencies, StoreEvent};
+use crate::core::ReadPhase as DestinationState;
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
 use facet::tokens::ty;
@@ -1570,45 +1571,6 @@ impl Reader {
     }
 }
 
-/// A destination's multiple reads form one state. Terminal failure wins
-/// over waiting, so a failed source cannot remain hidden behind a symbol read.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DestinationState { Ready, Pending, Terminal }
-
-impl DestinationState {
-    fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Terminal, _) | (_, Self::Terminal) => Self::Terminal,
-            (Self::Pending, _) | (_, Self::Pending) => Self::Pending,
-            _ => Self::Ready,
-        }
-    }
-}
-
-fn resource_state<T>(resource: &crate::core::Resource<T>, root: crate::core::VersionedRoot, checking: bool) -> DestinationState {
-    use crate::core::{Activity, ResourceTerminal};
-    if matches!(resource.terminal(), ResourceTerminal::Fault(_) | ResourceTerminal::Unavailable(_)) {
-        DestinationState::Terminal
-    } else if !checking && resource.is_loaded() && resource.value_root().is_some_and(|at| at.same_authority(root)) {
-        DestinationState::Ready
-    } else if checking || resource.value_root().is_some_and(|at| !at.same_authority(root))
-        || matches!(resource.activity(), Activity::NotYet | Activity::Waiting | Activity::Working) {
-        DestinationState::Pending
-    } else {
-        DestinationState::Terminal
-    }
-}
-
-fn destination_state(store: &DataStore, keys: &[PageKey], root: crate::core::VersionedRoot) -> DestinationState {
-    keys.iter().map(|key| match key {
-        PageKey::Symbol(symbol) => resource_state(&store.symbol(symbol), root, false),
-        PageKey::Package(package) => resource_state(&store.package(package), root, false),
-        PageKey::Orbit => resource_state(&store.orbit(), root, false),
-        PageKey::Source(symbol) => resource_state(&store.source(symbol), root, false),
-        PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => DestinationState::Ready,
-    }).fold(DestinationState::Ready, DestinationState::and)
-}
-
 fn place_name(route: &Route) -> String {
     let (name, release) = match route {
         Route::Symbol(symbol) => (
@@ -1618,6 +1580,7 @@ fn place_name(route: &Route) -> String {
         Route::Package(package) => (package.package.as_str().to_owned(), package.at.as_ref()),
         Route::Orbit(_) => return "Library".to_owned(),
         Route::World => return "Graph".to_owned(),
+        Route::CargoSource(source) => return format!("{} · {}", source.package.as_str(), source.file.as_str()),
     };
     release.map_or(name.clone(), |at| format!("{name} @ {}", at.as_str()))
 }
@@ -2234,7 +2197,7 @@ impl Render for Reader {
             self.find_held_root = None;
         }
         let Some(requested) = self.places.last().cloned() else { return div(); };
-        let readiness = destination_state(self.links.store.read(cx), &place_keys(&requested.route, requested.overlay), snapshot.key());
+        let readiness = RouteDependencies::new(&requested.route, requested.overlay).content_phase(self.links.store.read(cx));
         let waiting = readiness == DestinationState::Pending;
         let was_waiting = self.pending_place.is_some();
         self.pending_place = None;
@@ -2445,7 +2408,7 @@ impl Render for Reader {
         let pending_pages = if waiting && previous.is_none() {
             Some(Pages::default())
         } else if readiness == DestinationState::Terminal {
-            let mut pages = Pages::gather(self.links.store.read(cx), &place_keys(&requested.route, requested.overlay));
+            let mut pages = Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&requested.route, requested.overlay));
             pages.expose_terminal();
             Some(pages)
         } else { None };
@@ -2457,7 +2420,7 @@ impl Render for Reader {
                 place: Place { lens: self.lens, ..current.clone() },
                 root: snapshot.key(),
                 snapshot: snapshot.clone(),
-                pages: Pages::gather(self.links.store.read(cx), &place_keys(&current.route, current.overlay)),
+                pages: Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&current.route, current.overlay)),
                 words: self.said.clone(),
             });
         }
@@ -3672,37 +3635,8 @@ mod transit_ledger {
 
 #[cfg(test)]
 mod retained_destination_tests {
-    use super::{DestinationState, resource_state, retainable};
-    use crate::core::{FaultCode, Resource, UnavailableReason, VersionedRoot};
+    use super::retainable;
     use crate::navigation::{OrbitRoute, Route};
-
-    fn root(label: &str, epoch: u64) -> VersionedRoot {
-        VersionedRoot::synthetic(backend_library::view_state_root(&[("retention".to_owned(), label.to_owned())]), epoch)
-    }
-
-    #[test]
-    fn a_failed_key_wins_over_waiting_in_both_reply_orders() {
-        let at = root("current", 1);
-        let pending = resource_state(&Resource::<u32>::not_yet().waiting(), at, false);
-        for failed in [Resource::<u32>::error(FaultCode::Missing, "source missing"), Resource::not_yet().mark_unavailable(UnavailableReason::OutOfScope)] {
-            let terminal = resource_state(&failed, at, true);
-            assert_eq!(terminal.and(pending), DestinationState::Terminal);
-            assert_eq!(pending.and(terminal), DestinationState::Terminal);
-        }
-    }
-
-    #[test]
-    fn source_readiness_requires_the_exact_root_and_a_completed_live_check() {
-        let at = root("current", 1);
-        let same_hash_new_epoch = root("current", 2);
-        let loaded = Resource::loaded_at(7_u32, at);
-        assert_eq!(resource_state(&loaded, at, false), DestinationState::Ready);
-        assert_eq!(resource_state(&loaded, at.observed_at(99), false), DestinationState::Ready,
-            "diagnostic UI observations cannot hold a producer-current read pending");
-        assert_eq!(resource_state(&loaded, same_hash_new_epoch, false), DestinationState::Pending);
-        assert_eq!(resource_state(&loaded, at, true), DestinationState::Pending);
-        assert_eq!(resource_state(&loaded.mark_error(FaultCode::Cancelled, "revoked"), at, true), DestinationState::Terminal);
-    }
 
     #[test]
     fn non_document_destinations_cannot_enter_last_good_retention() {

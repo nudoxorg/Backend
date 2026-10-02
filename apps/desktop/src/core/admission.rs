@@ -11,6 +11,16 @@ pub enum ReadHoldReason {
     NotReady,
 }
 
+/// Completion of a read, independent of whether retained bytes can be drawn.
+/// Joining concurrent reads gives failures precedence over pending work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ReadPhase { Ready, Pending, Terminal }
+
+impl ReadPhase {
+    #[must_use]
+    pub fn join(self, other: Self) -> Self { self.max(other) }
+}
+
 #[derive(Debug)]
 pub enum ResourceAdmission<'a, T> {
     Current(&'a T),
@@ -20,6 +30,15 @@ pub enum ResourceAdmission<'a, T> {
 }
 
 impl<'a, T> ResourceAdmission<'a, T> {
+    #[must_use]
+    pub fn phase(&self) -> ReadPhase {
+        match self {
+            Self::Current(_) => ReadPhase::Ready,
+            Self::Retained { .. } | Self::Pending(_) => ReadPhase::Pending,
+            Self::Failed { .. } => ReadPhase::Terminal,
+        }
+    }
+
     #[must_use]
     pub fn allows_actions(&self) -> bool { matches!(self, Self::Current(_)) }
 
@@ -103,5 +122,25 @@ mod tests {
         assert!(matches!(admit_resource(&absent, root(1), true), ResourceAdmission::Failed { retained: None, .. }));
         let pending = Resource::<u32>::not_yet();
         assert!(matches!(admit_resource(&pending, root(1), true), ResourceAdmission::Pending(_)));
+    }
+
+    #[test]
+    fn a_failed_read_wins_over_waiting_in_either_completion_order() {
+        let pending = admit_resource(&Resource::<u32>::not_yet().waiting(), root(1), true).phase();
+        for failed in [Resource::<u32>::error(FaultCode::Missing, "source missing"), Resource::unavailable(UnavailableReason::OutOfScope)] {
+            let terminal = admit_resource(&failed, root(1), false).phase();
+            assert_eq!(terminal.join(pending), ReadPhase::Terminal);
+            assert_eq!(pending.join(terminal), ReadPhase::Terminal);
+        }
+    }
+
+    #[test]
+    fn completion_requires_current_authority_and_a_completed_live_check() {
+        let loaded = Resource::loaded_at(7_u32, root(1));
+        assert_eq!(admit_resource(&loaded, root(1), true).phase(), ReadPhase::Ready);
+        assert_eq!(admit_resource(&loaded, root(1).observed_at(99), true).phase(), ReadPhase::Ready);
+        assert_eq!(admit_resource(&loaded, root(2), true).phase(), ReadPhase::Pending);
+        assert_eq!(admit_resource(&loaded, root(1), false).phase(), ReadPhase::Pending);
+        assert_eq!(admit_resource(&loaded.mark_error(FaultCode::Cancelled, "revoked"), root(1), false).phase(), ReadPhase::Terminal);
     }
 }

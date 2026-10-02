@@ -6,7 +6,7 @@ pub mod ports;
 pub mod state;
 
 pub use backend_platform::NativePath;
-pub use admission::{ReadHoldReason, ResourceAdmission, admit_resource};
+pub use admission::{ReadHoldReason, ReadPhase, ResourceAdmission, admit_resource};
 pub use ids::{
     DocumentId, IdentityError, LocalProjectId, PackageId, ProducerAuthority, ProjectId,
     ResourceIdentity, RowId, VersionedRoot,
