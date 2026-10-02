@@ -836,6 +836,14 @@ impl Reader {
     }
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
+        // The first Tree departure records the opened release. A later
+        // departure from its returning visit abandons that pending focus,
+        // even when no virtual row mounted to schedule a deferred callback.
+        if let Some(current) = self.places.last()
+            && self.library_state.return_pending_for(&current.route, current.key)
+        {
+            self.cancel_native_return();
+        }
         // A place no frame drew was never on screen, so it is not what this
         // change leaves: three routes in one instant (A, B, C) are one change
         // from A to C, not a skeleton for B leaving and one for C arriving.
@@ -1540,6 +1548,12 @@ struct LibraryStateEntry {
 }
 
 impl LibraryStateMemory {
+    fn return_pending_for(&self, route: &Route, place_key: u64) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.route == *route && entry.state.borrow().pending_return_for(place_key)
+        })
+    }
+
     fn for_route(
         &mut self,
         route: &Route,

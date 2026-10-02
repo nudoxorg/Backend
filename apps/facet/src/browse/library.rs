@@ -365,6 +365,13 @@ impl State {
         self.return_inventory = None;
     }
 
+    /// A return has begun only after the Tree is revisited at a new place.
+    /// The first departure that records the opened row must preserve it.
+    pub fn pending_return_for(&self, place_key: u64) -> bool {
+        self.return_focus.as_ref().is_some_and(|(_, from)| *from != place_key)
+            || self.return_inventory.as_ref().is_some_and(|(_, from)| *from != place_key)
+    }
+
     fn schedule_return(&mut self) -> Option<u64> {
         if self.return_scheduled.is_some() {
             return None;
