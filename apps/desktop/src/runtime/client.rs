@@ -92,29 +92,65 @@ impl LocalEngineClient {
 
     fn bootstrap_root(
         &mut self,
-    ) -> Result<(backend_library::ViewRoot, backend_library::Cursor), EngineFault> {
+        use_publication: bool,
+    ) -> Result<(Arc<backend_library::ViewRoot>, backend_library::Cursor), EngineFault> {
+        let attachment = self.attached_epoch;
         let cancel = self.current_cancel()?;
+        let publication = if use_publication {
+            self.gate
+                .as_ref()
+                .zip(attachment)
+                .and_then(|(gate, attachment)| gate.publication(attachment))
+        } else {
+            None
+        };
+        if let Some(publication) = publication {
+            // Explicit user refreshes also reach this path. A cheap admitted
+            // revision prevents returning an observer cache behind the owner.
+            let session = self.session()?;
+            let _wake = cancel_wake(&cancel, session.interrupt_handle())?;
+            if cancel.is_cancelled() {
+                return Err(EngineFault::Cancelled);
+            }
+            let revision = session
+                .revision()
+                .map_err(|error| self.client_fault(error))?;
+            if cancel.is_cancelled() {
+                return Err(EngineFault::Cancelled);
+            }
+            if revision.cursor() == publication.1 {
+                return Ok(publication);
+            }
+        }
         let result = {
             let subscription = self.subscription()?;
             let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
-            if cancel.is_cancelled() { return Err(EngineFault::Cancelled); }
+            if cancel.is_cancelled() {
+                return Err(EngineFault::Cancelled);
+            }
             subscription.bootstrap_root()
         };
         if cancel.is_cancelled() {
             self.subscription = None;
             return Err(EngineFault::Cancelled);
         }
-        match result {
+        let admitted = match result {
             Ok(root) => Ok(root),
             Err(error) if transport_break(&error) => {
                 self.subscription = None;
-                if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                if self
+                    .active_cancel
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                {
                     return Err(EngineFault::Cancelled);
                 }
                 let retry = {
                     let subscription = self.subscription()?;
                     let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
-                    if cancel.is_cancelled() { return Err(EngineFault::Cancelled); }
+                    if cancel.is_cancelled() {
+                        return Err(EngineFault::Cancelled);
+                    }
                     subscription.bootstrap_root()
                 };
                 if cancel.is_cancelled() {
@@ -124,7 +160,17 @@ impl LocalEngineClient {
                 retry.map_err(|error| self.client_fault(error))
             }
             Err(error) => Err(self.client_fault(error)),
+        }?;
+        let (view, cursor) = admitted;
+        let view = Arc::new(view);
+        if let (Some(gate), Some(attachment)) = (&self.gate, attachment) {
+            if gate.publish_view(attachment, Arc::clone(&view), cursor)
+                != super::owner::PublicationAdmission::Admitted
+            {
+                return Err(EngineFault::Superseded);
+            }
         }
+        Ok((view, cursor))
     }
 
     fn request_root(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
@@ -136,7 +182,7 @@ impl LocalEngineClient {
         else {
             unreachable!("root adapter called with a non-root request")
         };
-        let (view, revision) = self.bootstrap_root()?;
+        let (view, revision) = self.bootstrap_root(true)?;
         if revision.root() != view.root() {
             return Err(EngineFault::Failed(crate::core::ErrorValue::new(
                 FaultCode::Protocol,
@@ -259,7 +305,7 @@ impl LocalEngineClient {
         }
         self.session = Some(session);
         let (view, revision) = self
-            .bootstrap_root()
+            .bootstrap_root(false)
             .map_err(|_error| EngineFault::IndexUnconfirmed { project: project.clone() })?;
         if revision.root() != view.root() {
             // The owner already accepted the index command. A failed
@@ -321,7 +367,7 @@ impl LocalEngineClient {
                     if let Some(gate) = &self.gate {
                         gate.wait_cancelled(&cancel)
                             .map_err(owner_fault)?;
-                        if gate.attached_ready_epoch() != self.attached_epoch {
+                        if gate.ready_epoch() != self.attached_epoch {
                             return Err(EngineFault::Superseded);
                         }
                     }
@@ -394,7 +440,7 @@ impl EngineClient for LocalEngineClient {
             // An attached owner may restart under the same root. Discard
             // sockets admitted by its prior serving generation before this
             // request can use them.
-            let epoch = gate.attached_ready_epoch();
+            let epoch = gate.ready_epoch();
             if self.attached_epoch != epoch {
                 self.session = None;
                 self.subscription = None;
@@ -420,7 +466,7 @@ impl EngineClient for LocalEngineClient {
         };
         self.active_cancel = None;
         let owner_changed = self.attached_epoch.is_some()
-            && self.gate.as_ref().and_then(super::owner::OwnerGate::attached_ready_epoch)
+            && self.gate.as_ref().and_then(super::owner::OwnerGate::ready_epoch)
                 != self.attached_epoch;
         owner_change_result(request, result, owner_changed)
     }

@@ -414,6 +414,25 @@ impl UiRootEntity {
         super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
     }
 
+    /// A certified publication for the existing attachment. This advances
+    /// the ordinary current-root path without replaying startup/acquisition.
+    pub(crate) fn renew_owner(
+        &mut self,
+        key: crate::core::VersionedRoot,
+        mode: crate::model::ServiceMode,
+        attachment_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !attachment_changed
+            && self.snapshot().key().same_authority(key)
+            && self.snapshot().settings().service_mode == mode
+        {
+            return;
+        }
+        self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
+        self.refresh_root(cx);
+    }
+
     /// Reads the owner's root again: something outside the project lane
     /// changed what it serves (a release added to the library).
     pub(crate) fn refresh_root(&mut self, cx: &mut Context<Self>) {
