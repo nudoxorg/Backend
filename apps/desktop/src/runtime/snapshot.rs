@@ -277,13 +277,6 @@ pub fn kept_keys(route: &Route) -> Vec<PageKey> {
         .into_iter()
         .filter(|key| SectionKey::of(key).is_some())
         .collect::<Vec<_>>();
-    // The code view draws the declaration's page beside its source.
-    if let Route::Symbol(symbol) = route
-        && symbol.view == crate::navigation::View::Code
-        && let Some(id) = super::store::route_symbol(route)
-    {
-        keys.push(PageKey::Symbol(id));
-    }
     if let Some(package) = super::store::route_package(route).map(PageKey::Package)
         && !keys.contains(&package)
     {

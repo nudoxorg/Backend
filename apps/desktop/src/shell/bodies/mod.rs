@@ -35,7 +35,7 @@ use crate::core::Resource;
 use crate::model::pages::{
     CargoSourceKey, CargoSourcePage, HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
 };
-use crate::runtime::store::DataStore;
+use crate::runtime::store::{DataStore, RouteDependencies};
 use std::collections::BTreeMap;
 use facet::{Measure, Palette, Reveal};
 use gpui::{AnyElement, Context, FocusHandle, SharedString};
@@ -228,6 +228,7 @@ impl Lens {
 pub(crate) struct Pages {
     /// An explicit terminal destination bypasses retained values in its body.
     terminal_destination: Option<(PageKey, crate::core::ResourceTerminal)>,
+    dependencies: Option<RouteDependencies>,
     symbols: BTreeMap<SymbolRef, Resource<SymbolPage>>,
     sources: BTreeMap<SymbolRef, Resource<SourceView>>,
     cargo_sources: BTreeMap<CargoSourceKey, Resource<CargoSourcePage>>,
@@ -252,10 +253,10 @@ impl Pages {
             .or_else(|| self.orbit.as_ref().and_then(|resource| terminal(PageKey::Orbit, resource)));
     }
 
-    /// Takes `keys` from the store.
-    pub(crate) fn gather(store: &DataStore, keys: &[PageKey]) -> Self {
-        let mut pages = Self::default();
-        for key in keys {
+    /// Takes the visible route's complete dependency plan from the store.
+    pub(crate) fn gather(store: &DataStore, dependencies: &RouteDependencies) -> Self {
+        let mut pages = Self { dependencies: Some(dependencies.clone()), ..Self::default() };
+        for key in dependencies.keys() {
             match key {
                 PageKey::Symbol(symbol) => {
                     pages.symbols.insert(symbol.clone(), store.symbol(symbol));
@@ -278,6 +279,12 @@ impl Pages {
             }
         }
         pages
+    }
+
+    /// Address dependencies may be retained by a transition; current Cargo
+    /// bytes and their admission still come from the live owner store.
+    fn dependencies(&self) -> Option<&RouteDependencies> {
+        self.dependencies.as_ref()
     }
 
     pub(crate) fn symbol(&self, symbol: &SymbolRef) -> Resource<SymbolPage> {

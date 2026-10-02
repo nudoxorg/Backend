@@ -24,16 +24,20 @@
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
 
+mod dependencies;
 mod keeper;
 mod owner_link;
+#[cfg(test)]
+mod cargo_tests;
 
+pub(crate) use self::dependencies::RouteDependencies;
 use self::keeper::SnapshotKeeper;
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
-use crate::core::{ErrorValue, FaultCode, Resource, UnavailableReason};
+use crate::core::{ErrorValue, FaultCode, Resource, ResourceTerminal, UnavailableReason};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
     Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore,
@@ -330,42 +334,17 @@ pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
 /// Returns the page keys one route displays.
 #[must_use]
 pub fn route_keys(route: &Route) -> Vec<PageKey> {
-    match route {
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => {
-            vec![PageKey::Browse(browse.into())]
-        }
-        Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
-        Route::World => vec![PageKey::Orbit],
-        Route::Package(_) => route_package(route)
-            .map(PageKey::Package)
-            .into_iter()
-            .collect(),
-        Route::CargoSource(route) => PackageRef::parse(route.package.as_str())
-            .ok()
-            .map(|package| vec![
-                PageKey::CargoSource(crate::model::pages::CargoSourceKey {
-                    project: route.project.clone(),
-                    package: package.clone(),
-                    file: route.file.clone(),
-                }),
-                PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(
-                    crate::model::browse::CargoSourceInventoryKey {
-                        project: route.project.clone(),
-                        package,
-                    },
-                )),
-            ])
-            .unwrap_or_default(),
-        Route::Symbol(symbol) => route_symbol(route)
-            .map(|id| match symbol.view {
-                crate::navigation::View::Code => PageKey::Source(id),
-                crate::navigation::View::Page | crate::navigation::View::Graph => {
-                    PageKey::Symbol(id)
-                }
-            })
-            .into_iter()
-            .collect(),
-    }
+    RouteDependencies::new(route, None).into_keys()
+}
+
+/// Live admission of owner-checked Cargo bytes or path observations.
+/// Retained values never become current merely because a slot still holds them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CargoReadAdmission {
+    Current,
+    Checking,
+    Fault(ErrorValue),
+    Unavailable(UnavailableReason),
 }
 
 fn is_cargo_source_resource(key: &PageKey) -> bool {
@@ -487,7 +466,7 @@ impl DataStore {
         keep: Option<Keep>,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let route = route_keys(snapshot.route());
+            let route = RouteDependencies::new(snapshot.route(), snapshot.overlay()).into_keys();
             let mut store = Self::new(snapshot, pool);
             if let Some(gate) = gate {
                 store.owner = OwnerLink::behind(gate);
@@ -643,8 +622,8 @@ impl DataStore {
             let root = self.snapshot.key();
             self.keeper.settle(&mut self.pages, root);
         }
-        if changed.contains(&Branch::Route) {
-            self.focus(route_keys(snapshot.route()), cx);
+        if changed.contains(&Branch::Route) || changed.contains(&Branch::Overlay) {
+            self.focus(RouteDependencies::new(snapshot.route(), snapshot.overlay()).into_keys(), cx);
         } else if changed.contains(&Branch::Root) {
             let focused = self.focused.iter().cloned().collect::<Vec<_>>();
             for key in focused {
@@ -926,6 +905,9 @@ impl DataStore {
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
+            // The watcher may see only the new Ready. Completed bytes from
+            // the previous same-root attachment still need a fresh read.
+            self.revoke_cargo_resources(cx);
         }
         let mut keys = self.owner.answered();
         keys.extend(self.focused.iter().cloned());
@@ -942,8 +924,7 @@ impl DataStore {
         // from the lost owner must not land after Retry, even at the same
         // producer root. Quiet snapshot reads keep their last painted value.
         self.revoke_inflight(cx);
-        self.pages.revoke_all_cargo_sources();
-        self.pages.revoke_all_cargo_source_inventories();
+        self.revoke_cargo_resources(cx);
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -988,20 +969,37 @@ impl DataStore {
         self.prefetching.clear();
     }
 
+    /// Revokes both Cargo resource families and publishes each changed slot,
+    /// including an idle page whose read finished before the owner restarted.
+    fn revoke_cargo_resources(&mut self, cx: &mut Context<Self>) {
+        let keys = self.pages.keys().into_iter()
+            .filter(is_cargo_source_resource)
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.cancel_key(&key, cx);
+            if self.pages.activity(&key) == crate::core::Activity::NotYet {
+                continue;
+            }
+            let before = self.pages.stamp(&key);
+            match &key {
+                PageKey::CargoSource(file) => self.pages.revoke_cargo_source(file),
+                PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
+                    self.pages.revoke_cargo_source_inventory(inventory);
+                }
+                _ => continue,
+            }
+            self.emit_moved(key, before, cx);
+        }
+    }
+
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
-        let cargo_reads = self.pages.keys().into_iter()
-            .filter(|key| is_cargo_source_resource(key) && self.pages.inflight(key).is_some())
-            .collect::<Vec<_>>();
-        for key in cargo_reads {
-            self.cancel_key(&key, cx);
-        }
-        self.pages.revoke_all_cargo_sources();
-        self.pages.revoke_all_cargo_source_inventories();
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
         }
-        if self.owner.starting() {
+        let changed = self.owner.starting();
+        self.revoke_cargo_resources(cx);
+        if changed {
             cx.notify();
         }
     }
@@ -1094,6 +1092,35 @@ impl DataStore {
     #[must_use]
     pub fn is_loading(&self, key: &PageKey) -> bool {
         self.pages.inflight(key).is_some()
+    }
+
+    /// The current serving attachment and producer authority must both admit
+    /// a Cargo observation. UI observation counters are not producer authority.
+    pub(crate) fn cargo_read_admission<T>(
+        &self,
+        key: &PageKey,
+        resource: &Resource<T>,
+    ) -> CargoReadAdmission {
+        debug_assert!(is_cargo_source_resource(key));
+        if !self.owner.is_current_serving() {
+            return self.owner.current_fault().map_or(CargoReadAdmission::Checking, |fault| {
+                CargoReadAdmission::Fault(ErrorValue::new(
+                    FaultCode::Transport,
+                    format!("The Cargo owner is unavailable. {fault}"),
+                ))
+            });
+        }
+        if self.is_loading(key)
+            || resource.value_root().is_some_and(|root| !root.same_authority(self.snapshot.key()))
+        {
+            return CargoReadAdmission::Checking;
+        }
+        match resource.terminal() {
+            ResourceTerminal::Fault(error) => CargoReadAdmission::Fault(error.clone()),
+            ResourceTerminal::Unavailable(reason) => CargoReadAdmission::Unavailable(reason.clone()),
+            ResourceTerminal::Complete if resource.is_loaded() => CargoReadAdmission::Current,
+            ResourceTerminal::Complete | ResourceTerminal::Partial => CargoReadAdmission::Checking,
+        }
     }
 
     /// Returns whether the in-flight fetch for `key` is a prefetch.

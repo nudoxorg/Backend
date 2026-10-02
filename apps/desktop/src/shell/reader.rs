@@ -36,11 +36,11 @@ use super::bodies::{self, Ctx, Lens, Pages};
 use super::focus::Targets;
 use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore, a11y_inert};
-use super::jump::{route_package, route_symbol};
+use super::jump::route_symbol;
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, View};
-use crate::runtime::store::{Branch, DataStore, StoreEvent};
+use crate::runtime::store::{Branch, CargoReadAdmission, DataStore, RouteDependencies, StoreEvent};
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
 use facet::tokens::ty;
@@ -983,7 +983,7 @@ impl Reader {
                 let Some((route, _)) = route_of(&self.places, arrival.leaving) else { return };
                 let Some(symbol) = route_symbol(&route) else { return };
                 let Some((target_route, target_overlay)) = arriving.as_ref() else { return };
-                if !content_loaded(self.links.store.read(cx), &place_keys(target_route, *target_overlay)) {
+                if !RouteDependencies::new(target_route, *target_overlay).content_loaded(self.links.store.read(cx)) {
                     // A source or page still loading must show its honest
                     // loading state; never unroll a skeleton as if it were
                     // the arrived declaration.
@@ -1458,21 +1458,6 @@ impl Reader {
         }
         column
     }
-}
-
-/// Whether the pages `keys` name have their content in the store (a
-/// declaration, a package, the Library): what a reader that draws them shows
-/// is the page, not its skeleton. Pages with no read of their own (the
-/// graph, Find, settings) are always their content.
-fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
-    keys.iter().all(|key| match key {
-        PageKey::Symbol(symbol) => store.symbol(symbol).is_loaded(),
-        PageKey::Package(package) => store.package(package).is_loaded(),
-        PageKey::Orbit => store.orbit().is_loaded(),
-        PageKey::Source(symbol) => store.source(symbol).is_loaded(),
-        PageKey::CargoSource(file) => store.cargo_source(file).is_loaded(),
-        PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
-    })
 }
 
 /// A destination's multiple reads form one state. Terminal failure wins
@@ -1966,8 +1951,8 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let palette = facet.palette();
-        let keys = place_keys(&place.route, place.overlay);
-        let pages = retained_pages.cloned().unwrap_or_else(|| Pages::gather(self.links.store.read(cx), &keys));
+        let dependencies = RouteDependencies::new(&place.route, place.overlay);
+        let pages = retained_pages.cloned().unwrap_or_else(|| Pages::gather(self.links.store.read(cx), &dependencies));
         let links = self.links.clone();
         let targets = if current { self.targets.clone() } else { Targets::default() };
         let mut said = Vec::new();
@@ -1975,12 +1960,14 @@ impl Reader {
         let mut scratch_hover = HoverIntent::default();
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
         let source_generation = match &place.route {
-            Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
-                .ok()
-                .and_then(|package| self.links.store.read(cx)
-                    .cargo_source(&crate::model::pages::CargoSourceKey { project: file.project.clone(), package, file: file.file.clone() })
-                    .loaded_value()
-                    .map(|page| SourceGeneration::Cargo(page.content_digest))),
+            Route::CargoSource(_) => dependencies.cargo().and_then(|cargo| {
+                let store = self.links.store.read(cx);
+                let resource = store.cargo_source(&cargo.file);
+                (store.cargo_read_admission(&PageKey::CargoSource(cargo.file.clone()), &resource)
+                    == CargoReadAdmission::Current)
+                    .then(|| resource.loaded_value().map(|page| SourceGeneration::Cargo(page.content_digest)))
+                    .flatten()
+            }),
             _ => route_symbol(&place.route).and_then(|symbol| pages.source(&symbol).value_root().map(SourceGeneration::Indexed)),
         };
         let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code)
@@ -2044,28 +2031,7 @@ impl Reader {
 
 /// The page keys a place draws.
 fn place_keys(route: &Route, overlay: Option<Overlay>) -> Vec<PageKey> {
-    match overlay {
-        Some(Overlay::Settings(_)) => return vec![PageKey::Health],
-        Some(Overlay::Inbox) => return Vec::new(),
-        _ => {}
-    }
-    match route {
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => vec![PageKey::Browse(browse.into())],
-        Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
-        Route::World => Vec::new(),
-        Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
-        Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
-            .ok()
-            .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey { project: file.project.clone(), package, file: file.file.clone() }))
-            .into_iter()
-            .collect(),
-        Route::Symbol(symbol) => match symbol.view {
-            View::Page | View::Graph => route_symbol(route).map(PageKey::Symbol).into_iter().collect(),
-            View::Code => route_symbol(route)
-                .map(|id| vec![PageKey::Source(id.clone()), PageKey::Symbol(id)])
-                .unwrap_or_default(),
-        },
-    }
+    RouteDependencies::new(route, overlay).into_keys()
 }
 
 impl Render for Reader {
@@ -2140,7 +2106,7 @@ impl Render for Reader {
         // A page counts as painted once it drew its content: a skeleton "on its
         // way" is not a page that can leave (a route that supersedes it cuts
         // past it, and the change in flight goes on to the newer route).
-        if !waiting && content_loaded(self.links.store.read(cx), &place_keys(&current.route, current.overlay)) {
+        if !waiting && RouteDependencies::new(&current.route, current.overlay).content_loaded(self.links.store.read(cx)) {
             if let Some((key, offset)) = self.pending_scroll_restore.take() {
                 if key == current.key {
                     self.scroll.set_offset(offset);
