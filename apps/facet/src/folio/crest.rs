@@ -514,10 +514,13 @@ impl RenderOnce for Stamp {
             .children(term(Glyph::Takes, palette.peri_hi.into(), &verdict.asks, "asks"))
             .children(term(Glyph::Error, palette.coral.base.into(), &verdict.limits, "limits"));
 
+        // The words arrive once the plate has opened, and start leaving the
+        // moment the disclosure is no longer requested: like the heads-up
+        // copy, they retire before the plate contracts, not after it.
         let more_item = crate::motion::Presence::scoped(format!("folio-stamp-{}", self.id), cx)
             .enter(crate::motion::act::RISE)
             .exit(crate::motion::act::LEAVE)
-            .sync((open > 0.02).then_some("details"), window, cx)
+            .sync((requested && open > 0.02).then_some("details"), window, cx)
             .into_iter()
             .next()
             .map(|item| item.slot(more.opacity(open.min(1.0))));
