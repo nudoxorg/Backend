@@ -758,10 +758,7 @@ mod launch_snapshot {
             opened.events_for(&PageKey::Orbit) > 0,
             "inactive retained reads publish revocation too"
         );
-        assert!(
-            !opened.latch.asked().contains(&package_key()),
-            "inactive Package renewal stays lazy"
-        );
+        assert!(!opened.latch.asked().contains(&package_key()), "Package renewal waits until its dependency is requested");
         opened.latch.open();
         wait::until("the visible symbol was renewed", || {
             paint(opened.cx);
@@ -946,7 +943,8 @@ mod launch_snapshot {
 
     #[gpui::test]
     fn an_owner_that_fails_leaves_the_page_as_it_was_left_and_says_so(cx: &mut TestAppContext) {
-        let file = saved("failed", served("failed"), page(NAME));
+        let root = served("failed");
+        let file = saved("failed", root, page(NAME));
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, false);
         draw(opened.cx);
@@ -969,5 +967,42 @@ mod launch_snapshot {
             "the page stays, not a fault plate: {painted:?}"
         );
         assert_eq!(opened.submitted(), 0, "a failed owner is never dialled");
+        let failed = opened.stamps();
+        opened.events.borrow_mut().clear();
+        opened.graph.store.read_with(opened.cx, |store, _| {
+            let resource = store.symbol(&symbol(NAME));
+            assert!(resource.value_root().is_some_and(VersionedRoot::is_unserved));
+            assert!(!crate::core::admit_resource(&resource, root, true).allows_actions());
+        });
+        opened.latch.close();
+        opened.graph.store.update(opened.cx, |store, cx| store.retry(symbol_key(), cx));
+        assert_eq!(gate.state(), OwnerState::Starting, "Retry holds the page until the owner answers");
+        assert_eq!(opened.submitted(), 0);
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        wait::until("the first owner after Retry was admitted", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                store.snapshot().key().same_authority(root) && store.owner_serving()
+            })
+        });
+        opened.graph.store.read_with(opened.cx, |store, _| {
+            let resource = store.symbol(&symbol(NAME));
+            assert!(store.pages().is_seeded(&symbol_key()), "a faulted seed is not confirmed by the saved root alone");
+            assert!(resource.value_root().is_some_and(VersionedRoot::is_unserved));
+            assert!(!crate::core::admit_resource(&resource, root, store.owner_serving()).allows_actions());
+            assert!(store.is_loading(&symbol_key()), "first Ready asks for a fresh successful validation");
+        });
+        assert_eq!(opened.stamps().0, failed.0, "quiet work retains the disclosed failed predecessor until success");
+        opened.latch.open();
+        wait::until("the Retry validation cleared the retained fault", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                crate::core::admit_resource(&store.symbol(&symbol(NAME)), root, store.owner_serving()).allows_actions()
+            })
+        });
+        assert_ne!(opened.stamps().0, failed.0, "recovery is a visible transition");
+        assert!(opened.events_for(&symbol_key()) > 0, "successful recovery notifies its owner-backed controls");
+        assert_eq!(opened.stamps().1, failed.1, "the healthy Package seed still confirms without redraw");
+        assert!(!opened.latch.asked().contains(&package_key()), "the healthy Package seed is not fetched redundantly");
     }
 }

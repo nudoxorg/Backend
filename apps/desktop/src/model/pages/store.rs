@@ -318,12 +318,17 @@ impl<K: Ord + Clone, T> Slots<K, T> {
     }
 
     /// The owner serves the root the snapshot was read at: the seeded value
-    /// is current at `root` as it is. Nothing visible changes.
+    /// is current at `root` as it is. Nothing visible changes. A failed,
+    /// stopped or partial seed instead needs a successful typed read.
     fn confirm(&mut self, key: &K, root: VersionedRoot) -> bool {
         let Some(slot) = self.map.get_mut(key) else {
             return false;
         };
-        if slot.provenance != Provenance::Seeded || slot.running() {
+        if slot.provenance != Provenance::Seeded
+            || slot.running()
+            || !slot.resource.is_loaded()
+            || slot.resource.activity() != crate::core::Activity::Rest
+        {
             return false;
         }
         slot.provenance = Provenance::Live;
@@ -381,7 +386,10 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let root = slot.asked_at;
         if manner == Manner::Quiet {
             match (&result, root) {
-                (Ok(value), Some(root)) if slot.resource.loaded_value() == Some(value) => {
+                (Ok(value), Some(root))
+                    if slot.resource.is_loaded()
+                        && slot.resource.activity() == crate::core::Activity::Rest
+                        && slot.resource.loaded_value() == Some(value) => {
                     slot.provenance = Provenance::Live;
                     slot.resource =
                         std::mem::replace(&mut slot.resource, Resource::not_yet()).rebased(root);

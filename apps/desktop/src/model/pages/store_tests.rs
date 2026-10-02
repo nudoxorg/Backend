@@ -154,6 +154,36 @@ fn launch_seeds_cannot_claim_a_served_root_or_be_readmitted_by_cancelling_quiet_
     }
 }
 
+#[test]
+fn a_faulted_launch_seed_requires_a_fresh_success_that_clears_its_visible_fault() {
+    let symbol = symbol("RelationLabel");
+    let key = PageKey::Symbol(symbol.clone());
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else {
+        panic!("symbol fixture");
+    };
+    let mut store = PageStore::default();
+    assert!(store.seed(SeedEntry::Symbol(symbol.clone(), Arc::new(page.clone()))));
+    let old = store.begin(&key, VersionedRoot::unserved()).expect("initial owner failure");
+    assert_eq!(
+        store.land(&key, old, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Transport, "owner failed before first Ready")))),
+        Landing::Applied
+    );
+    let failed_stamp = store.stamp(&key);
+    assert!(!store.confirm(&key, root()), "a root claim cannot clear a failed validation");
+    assert!(store.is_seeded(&key));
+    assert!(store.symbol(&symbol).value_root().is_some_and(VersionedRoot::is_unserved));
+    assert!(!crate::core::admit_resource(&store.symbol(&symbol), root(), true).allows_actions());
+    let new = store.begin(&key, root()).expect("first served owner renews the unconfirmed seed");
+    assert_eq!(store.land(&key, old, Ok(PageValue::Symbol(page.clone()))), Landing::Superseded);
+    assert_eq!(store.land(&key, new, Ok(PageValue::Symbol(page))), Landing::Applied);
+    assert_ne!(store.stamp(&key), failed_stamp, "fault recovery publishes the visible transition even for equal bytes");
+    assert!(!store.is_seeded(&key));
+    let fresh = store.symbol(&symbol);
+    assert_eq!(fresh.terminal(), &ResourceTerminal::Complete);
+    assert_eq!(fresh.activity(), crate::core::Activity::Rest);
+    assert!(crate::core::admit_resource(&fresh, root(), true).allows_actions());
+}
+
 /// Asks for `key` at the test root (forced, as a retry or "load more" is, so a
 /// slot that is already current fetches again) and lands `value` in the slot
 /// that asked.
