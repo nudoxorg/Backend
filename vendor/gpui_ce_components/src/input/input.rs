@@ -943,6 +943,7 @@ mod tests {
 
     #[gpui::test]
     fn named_input_identity_survives_rerender_and_state_replacement(cx: &mut gpui::TestAppContext) {
+        use crate::ElementExt as _;
         use gpui::{AppContext as _, Element as _, IntoElement as _, Render};
         use std::sync::{Arc, Mutex};
         struct Probe { state: Entity<InputState>, ids: Arc<Mutex<Vec<ElementId>>> }
@@ -978,7 +979,6 @@ mod tests {
     fn native_input_focus_follows_the_editor_through_typing_blur_and_reopen(
         cx: &mut gpui::TestAppContext,
     ) {
-        use crate::Root;
         use gpui::{AppContext as _, Render};
 
         struct Probe {
