@@ -30,12 +30,14 @@ use backend_library::{
     MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES,
     PackageReference,
 };
+use backend_platform::child_output::{
+    self, CaptureCommand, CaptureEnvironment, CaptureError, CaptureLimits, OutputStream,
+};
 use backend_platform::directory::{DirectoryCapability, EntryKind};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -146,6 +148,10 @@ fn observation_budget() -> Result<(), String> {
 
 fn observation_deadline() -> Option<Instant> {
     ACTIVE_OBSERVATION.with(|slot| slot.borrow().as_ref().map(|control| control.deadline))
+}
+
+fn observation_control() -> Option<Arc<ObservationControl>> {
+    ACTIVE_OBSERVATION.with(|slot| slot.borrow().as_ref().cloned())
 }
 
 /// Reads a bounded regular file in chunks so cancellation and the absolute
@@ -3874,132 +3880,67 @@ fn run_with_default_rustc(
     default_rustc: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
     observation_budget()?;
-    let mut command = Command::new(program);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // A cancellation must stop Cargo's descendants as well as its
-        // immediate process, so their inherited output pipes can close.
-        command.process_group(0);
-    }
-    if let Some(rustc) = default_rustc {
-        // Cargo's selected compiler has already been resolved and witnessed;
-        // provide it only when no environment or Cargo config selected one.
-        command.env("RUSTC", rustc);
-    }
-    let mut child = command
-        .args(arguments)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("cargo could not start: {error}"))?;
-    let Some(stdout) = child.stdout.take() else {
-        terminate_cargo_child(&mut child);
-        return Err("cargo has no stdout".to_owned());
-    };
-    let Some(stderr) = child.stderr.take() else {
-        terminate_cargo_child(&mut child);
-        return Err("cargo has no stderr".to_owned());
-    };
-    let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
-    let reader = std::thread::Builder::new()
-        .name("cargo-browse-stdout".to_owned())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            stdout.take(limit).read_to_end(&mut bytes).map(|_| bytes)
-        })
-        .map_err(|error| {
-            terminate_cargo_child(&mut child);
-            format!("start cargo stdout reader: {error}")
-        })?;
-    let errors = match std::thread::Builder::new()
-        .name("cargo-browse-stderr".to_owned())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = stderr.take(64 * 1024).read_to_end(&mut bytes);
-            bytes
-        }) {
-        Ok(errors) => errors,
-        Err(error) => {
-            terminate_cargo_child(&mut child);
-            let _ = reader.join();
-            return Err(format!("start cargo stderr reader: {error}"));
-        }
-    };
     let started = Instant::now();
     let deadline = observation_deadline().map_or(started + CARGO_DEADLINE, |deadline| {
         deadline.min(started + CARGO_DEADLINE)
     });
-    let status = loop {
-        if let Err(reason) = observation_budget() {
-            break Err(reason);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() >= deadline => {
-                break Err(format!(
-                    "cargo {} took longer than {}s",
-                    arguments[0],
-                    CARGO_DEADLINE.as_secs()
-                ));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => break Err(format!("cargo {} failed: {error}", arguments[0])),
-        }
+    let control = observation_control();
+    let never_cancel = AtomicBool::new(false);
+    let cancelled = control
+        .as_ref()
+        .map_or(&never_cancel, |control| &control.cancelled);
+    let command = CaptureCommand {
+        program: program.as_os_str().to_os_string(),
+        args: arguments
+            .iter()
+            .map(|argument| (*argument).into())
+            .collect(),
+        cwd: Some(directory.to_path_buf()),
+        environment: CaptureEnvironment::Inherit,
+        // Cargo's selected compiler has already been resolved and witnessed.
+        // Override only when no environment or Cargo config selected one.
+        overrides: default_rustc
+            .map(|rustc| vec![("RUSTC".into(), Some(rustc.as_os_str().to_os_string()))])
+            .unwrap_or_default(),
     };
-    if status.is_err() {
-        terminate_cargo_child(&mut child);
-    } else {
-        // Cargo should have reaped its own descendants. Close a surviving
-        // process group before joining pipes if a wrapper left one behind.
-        #[cfg(unix)]
-        kill_cargo_process_group(&child);
-    }
-    // Join both readers on every path. A cancelled Cargo process may have
-    // already produced bytes, but no detached reader or child is retained.
-    let bytes = reader.join();
-    let errors = errors.join();
-    let status = status?;
-    let bytes = bytes
-        .map_err(|_| "cargo's output reader panicked".to_owned())?
-        .map_err(|error| format!("reading cargo's output: {error}"))?;
-    let errors = errors.unwrap_or_default();
-    if bytes.len() > maximum {
-        return Err(format!(
-            "cargo {} wrote more than {maximum} bytes",
-            arguments[0]
-        ));
-    }
-    if !status.success() {
-        let first = String::from_utf8_lossy(&errors)
+    let output = child_output::capture(
+        &command,
+        CaptureLimits {
+            deadline,
+            stdout_bytes: maximum,
+            stderr_bytes: 64 * 1024,
+        },
+        cancelled,
+    )
+    .map_err(|error| match error {
+        CaptureError::Cancelled => "Cargo source observation was cancelled".to_owned(),
+        CaptureError::Deadline => format!(
+            "cargo {} took longer than {}s",
+            arguments[0],
+            CARGO_DEADLINE.as_secs()
+        ),
+        CaptureError::OutputLimit {
+            stream: OutputStream::Stdout,
+            ..
+        } => {
+            format!("cargo {} wrote more than {maximum} bytes", arguments[0])
+        }
+        CaptureError::Unsupported => {
+            "bounded Cargo child capture is unavailable on this platform".to_owned()
+        }
+        other => format!("cargo {} capture failed: {other:?}", arguments[0]),
+    })?;
+    if !output.status.success() {
+        let first = String::from_utf8_lossy(&output.stderr)
             .lines()
             .find(|line| line.starts_with("error"))
-            .map_or_else(|| format!("exit status {status}"), ToOwned::to_owned);
+            .map_or_else(
+                || format!("exit status {}", output.status),
+                ToOwned::to_owned,
+            );
         return Err(format!("cargo {} failed: {first}", arguments[0]));
     }
-    Ok(bytes)
-}
-
-fn terminate_cargo_child(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    kill_cargo_process_group(child);
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(unix)]
-fn kill_cargo_process_group(child: &std::process::Child) {
-    // The child was started as its own group. A direct kill alone can leave
-    // a compiler descendant holding stdout/stderr open forever.
-    let group = format!("-{}", child.id());
-    let _ = Command::new("/bin/kill")
-        .args(["-KILL", "--", group.as_str()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
@@ -4008,7 +3949,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cancelled_cargo_command_kills_its_process_group_and_joins_output_readers() {
+    fn cancelled_cargo_command_retires_its_process_group_and_pipes() {
         let control = Arc::new(ObservationControl::new());
         let cancelling = Arc::clone(&control);
         let trigger = std::thread::spawn(move || {
