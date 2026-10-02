@@ -21,6 +21,7 @@ pub mod durability;
 pub mod durable;
 #[cfg_attr(target_os = "macos", allow(unsafe_code))]
 pub mod executable_identity;
+pub mod file_identity;
 pub mod local;
 #[cfg(target_os = "macos")]
 pub mod macos_process;
@@ -31,4 +32,5 @@ pub mod win32;
 mod windows_child_output;
 
 pub use directory::{DirectoryCapability, DirectoryEntry, DirectoryRenameError, EntryKind};
+pub use file_identity::FileIdentity;
 pub use native_path::{NativePath, NativePathError, NativePathKey, NativePathWire};

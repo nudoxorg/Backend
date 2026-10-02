@@ -1626,6 +1626,7 @@ dependencies = [
 name = "backend-store-s3"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "backend-store",
  "backend-version",
  "base64 0.22.1",
