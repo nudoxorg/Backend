@@ -15,6 +15,53 @@ const CREDIT: usize = 64;
 const LEASE_MS: u64 = 10_000;
 const MAX_RESET_ROWS: u64 = 131_072;
 const RESET_TIME: Duration = Duration::from_secs(10);
+const PAGE_TIME: Duration = Duration::from_secs(2);
+const MAX_RESET_PAGES: u64 = MAX_RESET_ROWS / CREDIT as u64;
+
+/// The first authenticated descriptor fixes the whole reset's allowance.
+/// Progress never moves this deadline; socket I/O limits remain independent.
+struct PublicationBudget {
+    started: Instant,
+    deadline: Instant,
+    rows: Option<u64>,
+    pages: u64,
+}
+impl PublicationBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            started: now,
+            deadline: now + RESET_TIME,
+            rows: None,
+            pages: 0,
+        }
+    }
+    fn page(&mut self, rows: u64, now: Instant) -> Result<(), ClientError> {
+        if rows > MAX_RESET_ROWS {
+            return Err(protocol("publication reset exceeds its row budget"));
+        }
+        if let Some(expected) = self.rows {
+            if expected != rows {
+                return Err(protocol("publication reset changed its row budget"));
+            }
+        } else {
+            let pages = rows.div_ceil(CREDIT as u64).max(1);
+            self.deadline = self.started + RESET_TIME + PAGE_TIME * pages as u32;
+            self.rows = Some(rows);
+        }
+        self.pages += 1;
+        if self.pages > MAX_RESET_PAGES {
+            return Err(protocol("publication reset exceeds its page budget"));
+        }
+        self.check(now)
+    }
+    fn check(&self, now: Instant) -> Result<(), ClientError> {
+        if now >= self.deadline {
+            Err(protocol("publication reset exceeded its time budget"))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// Exact producer state retained across socket reconnects. The lease is an
 /// owner-issued identity, never reconstructed from a path or a clock.
@@ -106,15 +153,13 @@ impl LocalSubscriptionTransport {
         mut response: LocalSubscriptionResponse,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), ClientError> {
-        let deadline = Instant::now() + RESET_TIME;
+        let mut budget = PublicationBudget::new(Instant::now());
         let previous = state.cursor;
         let mut hydrator: Option<SnapshotHydrator> = None;
         let mut expected_page: Box<[u8]> = Box::new([]);
         let (root, cursor) = loop {
             check(cancelled)?;
-            if Instant::now() >= deadline {
-                return Err(protocol("publication reset exceeded its time budget"));
-            }
+            budget.check(Instant::now())?;
             if response.lease() != state.lease {
                 return Err(protocol("publication response changed lease identity"));
             }
@@ -175,10 +220,11 @@ impl LocalSubscriptionTransport {
                     })?;
                     let claim =
                         snapshot_page_from_bytes_with_verifier(&payload, previous, None, peer)?;
-                    if claim.descriptor().row_count() > MAX_RESET_ROWS {
-                        return Err(protocol("publication reset exceeds its row budget"));
-                    }
+                    budget.page(claim.descriptor().row_count(), Instant::now())?;
                     let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
+                    if next.as_deref() == Some(page.as_ref()) {
+                        return Err(protocol("publication reset repeated its continuation"));
+                    }
                     if admitted_next.as_deref() != next.as_deref() {
                         return Err(protocol(
                             "publication reset continuation is not authenticated",
@@ -210,6 +256,7 @@ impl LocalSubscriptionTransport {
             }
         };
         check(cancelled)?;
+        budget.check(Instant::now())?;
         // Quiet Resume has already fenced this exact durable cursor; it
         // does not need another frame or a duplicate root publication.
         if cursor == previous {
@@ -222,6 +269,7 @@ impl LocalSubscriptionTransport {
             _ => return Err(protocol("publication acknowledgement cursor mismatch")),
         }
         check(cancelled)?;
+        budget.check(Instant::now())?;
         state.cursor = cursor;
         state.root = root;
         Ok(())
@@ -514,6 +562,31 @@ mod tests {
             assert!(Arc::ptr_eq(&state.root(), &root));
             owner.join().expect("fixture");
         }
+    }
+
+    #[test]
+    fn reset_budget_allows_delayed_progress_but_never_moves_its_deadline() {
+        let started = Instant::now();
+        let mut budget = PublicationBudget::new(started);
+        budget.page(256, started).expect("descriptor");
+        let fixed = budget.deadline;
+        // More than the negotiated 10s in aggregate, but each page's
+        // socket waits can still remain within the caller's 1s I/O limit.
+        for elapsed in [5, 10, 15] {
+            budget
+                .page(256, started + Duration::from_secs(elapsed))
+                .expect("bounded delayed progress");
+            assert_eq!(budget.deadline, fixed);
+        }
+        assert!(budget.check(started + Duration::from_secs(18)).is_err());
+        assert!(budget.page(257, started).is_err());
+        let mut oversized = PublicationBudget::new(started);
+        assert!(oversized.page(MAX_RESET_ROWS + 1, started).is_err());
+        let mut excessive = PublicationBudget::new(started);
+        for _ in 0..MAX_RESET_PAGES {
+            excessive.page(MAX_RESET_ROWS, started).expect("page cap");
+        }
+        assert!(excessive.page(MAX_RESET_ROWS, started).is_err());
     }
 
     #[test]
