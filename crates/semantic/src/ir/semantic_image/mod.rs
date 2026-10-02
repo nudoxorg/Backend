@@ -29,7 +29,9 @@ pub use full_wire::{
 #[cfg(feature = "mmap")]
 pub use full_wire::{
     MappedSemanticImage, MappedSemanticImageError, MappedSemanticImageIoPhase,
-    load_semantic_image_mmap, open_semantic_image_mmap,
+    MappedSemanticImageRangeError, MappedSemanticImageRangeMetrics,
+    SEMANTIC_IMAGE_MMAP_RANGE_BYTES, load_semantic_image_mmap,
+    load_semantic_image_mmap_from_ranges, open_semantic_image_mmap,
 };
 /// Exact planning failures from [`encode_full_semantic_image`].
 pub type SemanticImageEncodeError = FullPlanError;

@@ -13,7 +13,7 @@ use crate::scroll::ScrollableElement;
 use crate::text::TextViewFormat;
 use crate::text::markdown_ext::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
 use crate::text::node::{CodeBlock, TableData};
-use crate::text::state::{LineSpan, SelectionFormat, TextViewState};
+use crate::text::state::{LineSpan, PreparedMarkdown, SelectionFormat, TextViewState};
 use crate::{global_state::UiGlobalState, text::TextViewStyle};
 
 /// Type for code block actions generator function.
@@ -79,6 +79,8 @@ pub struct TextView {
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
+    background_parse: bool,
+    prepared: Option<PreparedMarkdown>,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -122,6 +124,8 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            background_parse: false,
+            prepared: None,
         }
     }
 
@@ -142,7 +146,20 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            background_parse: false,
+            prepared: None,
         }
+    }
+
+    /// Render an immutable worker-prepared Markdown snapshot immediately.
+    /// Uses native selection and links without scheduling a parse task.
+    /// Extension parsing is fixed by the prepared projection.
+    pub fn prepared_markdown(id: impl Into<ElementId>, prepared: PreparedMarkdown) -> Self {
+        let mut view = Self::markdown(id, SharedString::default());
+        view.text = None;
+        view.background_parse = true;
+        view.prepared = Some(prepared);
+        view
     }
 
     /// Create a new html text view.
@@ -162,7 +179,17 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            background_parse: false,
+            prepared: None,
         }
+    }
+
+    /// Parse every content publication on the background executor, including
+    /// small documents. First layout may be empty until parsing completes.
+    /// Width, text style and paint changes still reuse the parsed document.
+    pub fn background_parse(mut self) -> Self {
+        self.background_parse = true;
+        self
     }
 
     /// Set [`TextViewStyle`].
@@ -453,16 +480,32 @@ impl Element for TextView {
         } else {
             let default_format = self.format.unwrap_or(TextViewFormat::Markdown);
             let default_text = self.text.clone().unwrap_or_default();
+            let extensions = self.markdown_extensions.clone();
+            let background_parse = self.background_parse;
+            let prepared = self.prepared.clone();
 
             let state = window.use_keyed_state(
-                SharedString::from(format!("{}/state", self.id)),
+                SharedString::from(format!(
+                    "{}/state/{}",
+                    self.id,
+                    if self.prepared.is_some() {
+                        "prepared"
+                    } else {
+                        "live"
+                    }
+                )),
                 cx,
                 move |_, cx| {
-                    if default_format == TextViewFormat::Markdown {
-                        TextViewState::markdown(default_text.as_str(), cx)
-                    } else {
-                        TextViewState::html(default_text.as_str(), cx)
+                    if let Some(prepared) = prepared {
+                        return TextViewState::new_prepared(prepared, cx);
                     }
+                    TextViewState::new_configured(
+                        default_format,
+                        default_text.as_str(),
+                        extensions,
+                        background_parse,
+                        cx,
+                    )
                 },
             );
             self.state = Some(state.clone());
@@ -474,10 +517,15 @@ impl Element for TextView {
         let max_lines = self.max_lines.filter(|_| !self.scrollable);
 
         state.update(cx, |state, cx| {
+            state.background_parse = self.background_parse;
             state.code_block_actions = self.code_block_actions.clone();
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
-            state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+            if let Some(prepared) = &self.prepared {
+                state.set_prepared(prepared, cx);
+            } else {
+                state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+            }
             state.selectable = self.selectable;
             state.selection_format = self.selection_format;
             state.scrollable = self.scrollable;
@@ -542,9 +590,7 @@ impl Element for TextView {
         let state = request_layout.state.clone();
         let max_lines_active = state.read(cx).max_lines.is_some();
         if max_lines_active {
-            if let Ok(mut line_spans) = state.read(cx).line_spans.lock() {
-                line_spans.clear();
-            }
+            state.update(cx, |state, _| state.line_spans.clear());
             // Descendant `Inline`s report their line spans through the state
             // stack during prepaint (in addition to the paint-time push below).
             UiGlobalState::global_mut(cx)
@@ -558,31 +604,27 @@ impl Element for TextView {
 
         let mut clip_bottom = None;
         if max_lines_active {
-            let (line_spans, content_bottom) = {
+            let (clipped, clamped_changed, measured_clip_bottom) = {
                 let state = state.read(cx);
-                (
-                    state
-                        .line_spans
-                        .lock()
-                        .map(|spans| spans.clone())
-                        .unwrap_or_default(),
-                    state.bounds().bottom(),
-                )
+                let content_bottom = state.bounds().bottom();
+                // The content keeps its natural height inside the capped box,
+                // including tall images that report no lines of their own.
+                let clipped = content_bottom > bounds.bottom() + px(1.);
+                let clip_bottom = if clipped {
+                    line_safe_clip_bottom(&state.line_spans, bounds.bottom(), content_bottom)
+                } else {
+                    None
+                };
+                (clipped, state.clamped != clipped, clip_bottom)
             };
-            // The content keeps its natural height inside the capped box, so
-            // this sees everything the box cannot show — including a tall image
-            // that reports no lines of its own.
-            let clipped = content_bottom > bounds.bottom() + px(1.);
+            clip_bottom = measured_clip_bottom;
             // Notify on change so observers (e.g. an "expand" button gated on
             // `is_clamped`) re-render once the flag flips.
-            if state.read(cx).clamped != clipped {
+            if clamped_changed {
                 state.update(cx, |state, cx| {
                     state.clamped = clipped;
                     cx.notify();
                 });
-            }
-            if clipped {
-                clip_bottom = line_safe_clip_bottom(&line_spans, bounds.bottom(), content_bottom);
             }
         }
 
@@ -650,12 +692,250 @@ impl Element for TextView {
 mod tests {
     use super::{TextView, TextViewPlugin};
     use crate::text::{TableData, TextViewState, TextViewStyle};
+    use gpui::prelude::FluentBuilder as _;
     use gpui::{
-        AppContext as _, Bounds, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Overflow, ParentElement as _, Pixels,
-        Render, SharedString, StyleRefinement, Styled as _, TestAppContext, VisualTestContext,
-        Window, div, point, px,
+        AppContext as _, Bounds, ClickEvent, Context, Element as _, Entity,
+        InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
+        Overflow, ParentElement as _, Pixels, Render, SharedString, StyleRefinement, Styled as _,
+        TestAppContext, VisualTestContext, Window, div, point, px,
     };
+    use std::{cell::RefCell, rc::Rc};
+
+    // Observe the state after GPUI has requested layout through the mounted
+    // tree. Calling request_layout from a context update bypasses the current
+    // view/element stacks and cannot exercise keyed-state lifetime correctly.
+    struct MountedTextView {
+        view: TextView,
+        captured: Rc<RefCell<Option<Entity<TextViewState>>>>,
+    }
+
+    impl IntoElement for MountedTextView {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+
+    impl gpui::Element for MountedTextView {
+        type RequestLayoutState = super::TextViewLayoutState;
+        type PrepaintState = super::TextViewPrepaintState;
+
+        fn id(&self) -> Option<gpui::ElementId> {
+            self.view.id()
+        }
+        fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+            None
+        }
+
+        fn request_layout(
+            &mut self,
+            id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut gpui::App,
+        ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+            let result = self.view.request_layout(id, inspector, window, cx);
+            *self.captured.borrow_mut() = self.view.state.clone();
+            result
+        }
+
+        fn prepaint(
+            &mut self,
+            id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState,
+            window: &mut Window,
+            cx: &mut gpui::App,
+        ) -> Self::PrepaintState {
+            self.view
+                .prepaint(id, inspector, bounds, layout, window, cx)
+        }
+
+        fn paint(
+            &mut self,
+            id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState,
+            prepaint: &mut Self::PrepaintState,
+            window: &mut Window,
+            cx: &mut gpui::App,
+        ) {
+            self.view
+                .paint(id, inspector, bounds, layout, prepaint, window, cx);
+        }
+    }
+
+    #[gpui::test]
+    fn same_element_id_switches_between_live_and_prepared_without_disabling_parser(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::text::{PreparedMarkdown, SelectionFormat};
+        const LIVE: &str = "[雪 live](https://example.com/live)";
+        const FIXED: &str = "[雪 prepared](https://example.com/prepared)";
+        const LATER: &str = "[雪 background](https://example.com/background)";
+
+        struct SwitchingRoot {
+            prepared: PreparedMarkdown,
+            show_prepared: bool,
+            live_source: &'static str,
+            background: bool,
+            captured: Rc<RefCell<Option<Entity<TextViewState>>>>,
+        }
+
+        impl Render for SwitchingRoot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let view = if self.show_prepared {
+                    TextView::prepared_markdown("switch", self.prepared.clone())
+                } else {
+                    TextView::markdown("switch", self.live_source)
+                        .when(self.background, TextView::background_parse)
+                };
+                div().w(px(240.)).child(MountedTextView {
+                    view: view
+                        .selectable(true)
+                        .selection_format(SelectionFormat::Source),
+                    captured: self.captured.clone(),
+                })
+            }
+        }
+
+        cx.update(crate::init);
+        for prepared_first in [false, true] {
+            let captured = Rc::new(RefCell::new(None));
+            let (root, cx) = cx.add_window_view({
+                let captured = captured.clone();
+                move |_, _| SwitchingRoot {
+                    prepared: PreparedMarkdown::parse(FIXED).unwrap(),
+                    show_prepared: prepared_first,
+                    live_source: LIVE,
+                    background: false,
+                    captured,
+                }
+            });
+            let cx: &mut VisualTestContext = cx;
+            let mut previous: Option<(Entity<TextViewState>, &'static str)> = None;
+            // Exercise both switch directions on consecutive real frames.
+            // GPUI may discard a mode's keyed state while it is not rendered;
+            // the public contract is working parsing/links after remounting.
+            for show_prepared in [prepared_first, !prepared_first, prepared_first, false] {
+                root.update(cx, |root, cx| {
+                    root.show_prepared = show_prepared;
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                let state = captured.borrow().clone().unwrap();
+                let source = if show_prepared { FIXED } else { LIVE };
+                state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), source));
+                if let Some((previous, previous_source)) = &previous {
+                    if *previous_source != source {
+                        assert_ne!(previous.entity_id(), state.entity_id());
+                        previous.read_with(cx, |state, _| {
+                            assert_eq!(state.source().as_str(), *previous_source);
+                        });
+                    }
+                }
+                cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+                let url = if show_prepared {
+                    "https://example.com/prepared"
+                } else {
+                    "https://example.com/live"
+                };
+                assert_eq!(cx.opened_url(), Some(url.to_string()));
+                // The native select-all action copies exact original Markdown,
+                // including the Unicode link label, after every mode switch.
+                cx.update(|window, cx| {
+                    state.read(cx).focus_handle.clone().focus(window, cx);
+                });
+                cx.dispatch_action(crate::input::SelectAll);
+                state.read_with(cx, |state, _| assert_eq!(state.selected_text(), source));
+                previous = Some((state, source));
+            }
+            let (live_state, _) = previous.unwrap();
+            root.update(cx, |root, cx| {
+                root.live_source = LATER;
+                root.background = true;
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert_eq!(
+                captured.borrow().as_ref().unwrap().entity_id(),
+                live_state.entity_id()
+            );
+            live_state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), LIVE));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            live_state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), LATER));
+            cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+            assert_eq!(
+                cx.opened_url(),
+                Some("https://example.com/background".to_string())
+            );
+            // Republish reference-bearing prepared snapshots under the same
+            // mounted key. Native hit testing and copy must use the latest
+            // reference authority while the old projection stays immutable.
+            const FIRST_REFERENCE: &str =
+                "[雪 prepared][id]\n\n[id]: https://example.com/parent-first";
+            const NEXT_REFERENCE: &str =
+                "[雪 prepared][id]\n\n[id]: https://example.com/parent-next";
+            let old_projection = PreparedMarkdown::parse(FIRST_REFERENCE).unwrap();
+            for (prepared, source, url) in [
+                (
+                    old_projection.clone(),
+                    FIRST_REFERENCE,
+                    "https://example.com/parent-first",
+                ),
+                (
+                    PreparedMarkdown::parse(NEXT_REFERENCE).unwrap(),
+                    NEXT_REFERENCE,
+                    "https://example.com/parent-next",
+                ),
+            ] {
+                root.update(cx, |root, cx| {
+                    root.show_prepared = true;
+                    root.prepared = prepared;
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+                assert_eq!(cx.opened_url(), Some(url.to_string()));
+                let state = captured.borrow().clone().unwrap();
+                cx.update(|window, cx| {
+                    state.read(cx).focus_handle.clone().focus(window, cx);
+                });
+                cx.dispatch_action(crate::input::SelectAll);
+                state.read_with(cx, |state, _| assert_eq!(state.selected_text(), source));
+            }
+            assert_eq!(old_projection.source().as_str(), FIRST_REFERENCE);
+            root.update(cx, |root, cx| {
+                root.show_prepared = false;
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let state = captured.borrow().clone().unwrap();
+            state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), LATER));
+            cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+            assert_eq!(
+                cx.opened_url(),
+                Some("https://example.com/background".to_string())
+            );
+        }
+    }
 
     struct TextViewTestRoot {
         text_view: Entity<TextViewState>,

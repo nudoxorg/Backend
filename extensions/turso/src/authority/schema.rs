@@ -72,6 +72,44 @@ CREATE TABLE IF NOT EXISTS backend_index_authority_attempts (
         OR (base_generation > 0 AND base_root IS NOT NULL AND length(base_root) = 32))
 );
 
+-- Immutable terminal receipts keep cancelled/refused attempts out of the
+-- recoverable state-0 table without requiring a rewrite of existing authority
+-- tables. The exact input and attempt fences remain available for stale-result
+-- proofs after the active row is retired.
+CREATE TABLE IF NOT EXISTS backend_index_authority_attempt_terminals (
+    package TEXT NOT NULL,
+    source TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    plane_kind INTEGER NOT NULL CHECK (plane_kind IN (0, 1)),
+    profile TEXT NOT NULL,
+    attempt_id BLOB NOT NULL CHECK (length(attempt_id) = 16),
+    epoch INTEGER NOT NULL CHECK (epoch > 0),
+    attempt_fence BLOB NOT NULL CHECK (length(attempt_fence) = 32),
+    input_digest BLOB NOT NULL CHECK (length(input_digest) = 32),
+    base_generation INTEGER NOT NULL CHECK (base_generation >= 0),
+    base_root BLOB,
+    observation_sequence INTEGER NOT NULL CHECK (observation_sequence > 0),
+    terminal_reason INTEGER NOT NULL CHECK (terminal_reason IN (1, 2, 3, 4)),
+    PRIMARY KEY (package, source, branch, environment, plane_kind, profile, attempt_id),
+    UNIQUE (package, source, branch, environment, plane_kind, profile, epoch),
+    CHECK ((plane_kind = 0 AND length(profile) = 0) OR (plane_kind = 1 AND length(profile) > 0)),
+    CHECK ((base_generation = 0 AND base_root IS NULL)
+        OR (base_generation > 0 AND base_root IS NOT NULL AND length(base_root) = 32))
+);
+
+CREATE TRIGGER IF NOT EXISTS backend_index_authority_attempt_terminal_immutable_update
+BEFORE UPDATE ON backend_index_authority_attempt_terminals
+BEGIN
+    SELECT RAISE(ABORT, 'terminal compiler attempt is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS backend_index_authority_attempt_terminal_immutable_delete
+BEFORE DELETE ON backend_index_authority_attempt_terminals
+BEGIN
+    SELECT RAISE(ABORT, 'terminal compiler attempt is immutable');
+END;
+
 -- A no-result maintenance barrier is distinct from a compiler attempt. It is
 -- minted by the same serialized authority lane, receives an epoch above all
 -- candidate attempts and earlier barriers, and retires only its exact terminal

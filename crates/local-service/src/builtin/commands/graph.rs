@@ -224,6 +224,7 @@ pub(super) fn execute_search(
     query: &backend_engine::Query,
 ) -> Result<(CommandReply, backend_library::SemanticSearchStatus), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    let expected_view_capability = super::super::builtin_view_capability_for_workspace(&snapshot)?;
     let coverage = super::super::admitted_coverage()?;
     let semantic_evidence = snapshots.admit_corpus(
         snapshot.root(),
@@ -242,6 +243,7 @@ pub(super) fn execute_search(
         .select(
             snapshot.root(),
             daemon.engine().daemon().library().view().clone(),
+            expected_view_capability,
             coverage,
             semantic_evidence,
         )

@@ -17,6 +17,7 @@ cluster-process-journey-hooks = [
 test-support = []
 
 [dependencies]
+backend-client = { path = "../client" }
 backend-compile = { path = "../compile" }
 backend-engine = { path = "../engine" }
 backend-extension-turso = { path = "../../extensions/turso" }
@@ -41,8 +42,11 @@ backend-version = { path = "../version" }
 blake3.workspace = true
 base64.workspace = true
 hmac.workspace = true
+httpdate.workspace = true
 hashlink = "=0.12.2"
 tantivy.workspace = true
+tempfile.workspace = true
+postcard.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
@@ -51,6 +55,7 @@ serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
 ureq.workspace = true
+zip.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
 unicode-normalization = "0.1.25"
 

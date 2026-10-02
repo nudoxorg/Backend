@@ -142,6 +142,159 @@ fn attempt_recovery_requires_every_current_durable_fence() {
 }
 
 #[test]
+fn retired_cancelled_attempt_reopens_terminal_without_moving_selected_head() {
+    futures_executor::block_on(async {
+        let path = path();
+        let mut authority = TursoAuthority::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        let observed = authority
+            .record_source_observation(observation(SourceObservationValue::KnownCount(1), 100))
+            .await
+            .unwrap_or_else(|error| panic!("observe: {error}"));
+
+        // Establish a real nonempty selected head before the cancellation
+        // attempt. This proves cleanup preserves usable prior authority.
+        let selected_attempt = authority
+            .begin_attempt(&namespace(), [91; 32], &observed)
+            .await
+            .unwrap_or_else(|error| panic!("begin selected attempt: {error}"));
+        let selected_candidate = candidate(selected_attempt, 92, 93, 94, 93);
+        let selected_receipt = authority
+            .verify_closure(&selected_candidate, &AcceptVerifiedClosure)
+            .unwrap_or_else(|error| panic!("verify selected candidate: {error}"));
+        authority
+            .compare_and_select(selected_candidate, selected_receipt)
+            .await
+            .unwrap_or_else(|error| panic!("select prior generation: {error}"));
+
+        let attempt = authority
+            .begin_attempt(&namespace(), [95; 32], &observed)
+            .await
+            .unwrap_or_else(|error| panic!("begin: {error}"));
+        let before = authority
+            .selected_frontier(&namespace())
+            .await
+            .unwrap_or_else(|error| panic!("read initial head: {error}"));
+        assert!(before.is_some(), "fixture must have a selected generation");
+
+        let mut forged = attempt.clone();
+        forged.fence[0] ^= 1;
+        assert!(matches!(
+            authority
+                .retire_attempt(&forged, CandidateAttemptRetirementReason::Cancelled)
+                .await,
+            Err(AuthorityError::StaleAttempt)
+        ));
+        assert_eq!(
+            authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .await
+                .unwrap_or_else(|error| panic!("forged cleanup changed active attempt: {error}")),
+            attempt
+        );
+
+        authority
+            .retire_attempt(&attempt, CandidateAttemptRetirementReason::Cancelled)
+            .await
+            .unwrap_or_else(|error| panic!("retire: {error}"));
+        // Repeated cleanup cannot overwrite the first typed durable cause.
+        authority
+            .retire_attempt(&attempt, CandidateAttemptRetirementReason::Failed)
+            .await
+            .unwrap_or_else(|error| panic!("repeat retirement: {error}"));
+        assert_eq!(
+            authority
+                .selected_frontier(&namespace())
+                .await
+                .unwrap_or_else(|error| panic!("read unchanged head: {error}")),
+            before
+        );
+        assert!(matches!(
+            authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .await,
+            Err(AuthorityError::StaleAttempt)
+        ));
+
+        // Reopen after dropping every connection. Neither the canceled active
+        // attempt nor a later cleanup reason can displace the prior head.
+        drop(authority);
+        let authority = TursoAuthority::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("cold reopen after cancellation: {error}"));
+        assert_eq!(
+            authority
+                .selected_frontier(&namespace())
+                .await
+                .unwrap_or_else(|error| panic!("read cold selected head: {error}")),
+            before
+        );
+        assert!(matches!(
+            authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .await,
+            Err(AuthorityError::StaleAttempt)
+        ));
+
+        let mut active_rows = authority
+            .connection
+            .query(
+                "SELECT 1 FROM backend_index_authority_attempts \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                turso::params![
+                    namespace().package.as_ref(),
+                    namespace().source.as_ref(),
+                    namespace().branch.as_ref(),
+                    namespace().environment.as_ref(),
+                    namespace().plane.sql_parts().0,
+                    namespace().plane.sql_parts().1,
+                    attempt.attempt_id().as_slice()
+                ],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("read active attempts: {error}"));
+        assert!(
+            active_rows
+                .next()
+                .await
+                .unwrap_or_else(|error| panic!("active row: {error}"))
+                .is_none(),
+            "retired attempt remained recoverably pending"
+        );
+        let mut terminal_rows = authority
+            .connection
+            .query(
+                "SELECT terminal_reason FROM backend_index_authority_attempt_terminals \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                turso::params![
+                    namespace().package.as_ref(),
+                    namespace().source.as_ref(),
+                    namespace().branch.as_ref(),
+                    namespace().environment.as_ref(),
+                    namespace().plane.sql_parts().0,
+                    namespace().plane.sql_parts().1,
+                    attempt.attempt_id().as_slice()
+                ],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("read terminal attempt: {error}"));
+        let row = terminal_rows
+            .next()
+            .await
+            .unwrap_or_else(|error| panic!("terminal row: {error}"))
+            .unwrap_or_else(|| panic!("terminal attempt row missing"));
+        assert_eq!(
+            row.get::<i64>(0)
+                .unwrap_or_else(|error| panic!("terminal reason: {error}")),
+            CandidateAttemptRetirementReason::Cancelled.sql_code()
+        );
+    });
+}
+
+#[test]
 fn newer_observation_proves_unselected_same_epoch_attempt_invalid_without_minting_replacement() {
     futures_executor::block_on(async {
         let path = path();
@@ -204,6 +357,20 @@ fn newer_observation_proves_unselected_same_epoch_attempt_invalid_without_mintin
         assert_eq!(proof.attempt_observation_sequence(), first.sequence());
         assert_eq!(proof.current_observation_sequence(), second.sequence());
         assert_eq!(proof.current_revision(), Some([12; 32]));
+        // The owner may close the attempt after observing the newer source
+        // frontier. The close records Superseded, removes it from the
+        // recoverable pending table, and keeps the exact rejection proof.
+        authority
+            .retire_attempt(&attempt, CandidateAttemptRetirementReason::Cancelled)
+            .await
+            .expect("retire invalidated attempt");
+        assert_eq!(
+            authority
+                .attempt_invalidated_by_observation_proof(&claim)
+                .await
+                .expect("closed invalidation proof"),
+            Some(proof.clone())
+        );
         let mut forged = claim.clone();
         forged.fence[0] ^= 1;
         assert_eq!(
@@ -265,6 +432,18 @@ fn newer_observation_proves_unselected_same_epoch_attempt_invalid_without_mintin
                 .await
                 .expect("new epoch proof"),
             None
+        );
+        assert!(
+            authority
+                .superseded_attempt_proof(
+                    &namespace(),
+                    *attempt.attempt_id(),
+                    attempt.epoch(),
+                    attempt.fence_bytes()
+                )
+                .await
+                .expect("closed superseded proof")
+                .is_some()
         );
 
         let selected_path = self::path();
@@ -1184,6 +1363,10 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
             .begin_attempt(&namespace, [0x52; 32], &observed)
             .await
             .unwrap_or_else(|error| panic!("begin terminal: {error}"));
+        authority
+            .retire_attempt(&terminal, CandidateAttemptRetirementReason::Cancelled)
+            .await
+            .unwrap_or_else(|error| panic!("terminalize no-result attempt: {error}"));
         (terminal, observed)
     });
     let terminal_epoch = terminal.epoch();
@@ -1233,6 +1416,7 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
         .unwrap_or_else(|_| panic!("attempt thread panicked"));
     assert!(barrier.barrier_epoch() > terminal_epoch);
     assert_ne!(barrier.barrier_epoch(), later_attempt.epoch());
+    assert_eq!(barrier.retired_through_epoch(), terminal_epoch);
 
     futures_executor::block_on(async {
         let mut reopened = TursoAuthority::open(&path)
@@ -1258,5 +1442,176 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
             .await
             .unwrap_or_else(|error| panic!("repeat refreshed barrier: {error}"));
         assert_eq!(retry, duplicate);
+
+        let mut attempt_rows = reopened
+            .connection
+            .query(
+                "SELECT state FROM backend_index_authority_attempts \
+                 WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                   AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                turso::params![
+                    namespace.package.as_ref(),
+                    namespace.source.as_ref(),
+                    namespace.branch.as_ref(),
+                    namespace.environment.as_ref(),
+                    namespace.plane.sql_parts().0,
+                    namespace.plane.sql_parts().1,
+                    later_attempt.attempt_id().as_slice()
+                ],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("query newer attempt after barrier retry: {error}"));
+        let row = attempt_rows
+            .next()
+            .await
+            .unwrap_or_else(|error| panic!("read newer attempt after barrier retry: {error}"))
+            .unwrap_or_else(|| panic!("barrier must retain the newer candidate attempt"));
+        let state: i64 = row
+            .get(0)
+            .unwrap_or_else(|error| panic!("read newer attempt state: {error}"));
+        assert_eq!(state, 0, "barrier only retires the terminal epoch");
+        drop(attempt_rows);
     });
+}
+
+#[test]
+fn no_result_barrier_retry_handles_both_epoch_orders_after_cold_reopen() {
+    for barrier_first in [true, false] {
+        let path = path();
+        let namespace = namespace();
+        let (terminal, observed) = futures_executor::block_on(async {
+            let mut authority = TursoAuthority::open(&path)
+                .await
+                .unwrap_or_else(|error| panic!("open: {error}"));
+            let observed = authority
+                .record_source_observation(observation(SourceObservationValue::KnownCount(1), 100))
+                .await
+                .unwrap_or_else(|error| panic!("observe: {error}"));
+            let terminal = authority
+                .begin_attempt(&namespace, [0x52; 32], &observed)
+                .await
+                .unwrap_or_else(|error| panic!("begin terminal: {error}"));
+            authority
+                .retire_attempt(&terminal, CandidateAttemptRetirementReason::Cancelled)
+                .await
+                .unwrap_or_else(|error| panic!("retire terminal: {error}"));
+            (terminal, observed)
+        });
+        let terminal_epoch = terminal.epoch();
+        let terminal_fence = terminal.fence_bytes();
+        let terminal_work_id = [0x71; 16];
+
+        let (first_barrier, later_attempt) = futures_executor::block_on(async {
+            let mut authority = TursoAuthority::open(&path)
+                .await
+                .unwrap_or_else(|error| panic!("reopen before ordered interleaving: {error}"));
+            if barrier_first {
+                let barrier = authority
+                    .mint_no_result_retirement_barrier(
+                        &namespace,
+                        terminal_work_id,
+                        terminal_epoch,
+                        terminal_fence,
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("mint barrier before new attempt: {error}"));
+                let later = authority
+                    .begin_attempt(&namespace, [0x53; 32], &observed)
+                    .await
+                    .unwrap_or_else(|error| panic!("begin newer attempt after barrier: {error}"));
+                (barrier, later)
+            } else {
+                let later = authority
+                    .begin_attempt(&namespace, [0x53; 32], &observed)
+                    .await
+                    .unwrap_or_else(|error| panic!("begin newer attempt before barrier: {error}"));
+                let barrier = authority
+                    .mint_no_result_retirement_barrier(
+                        &namespace,
+                        terminal_work_id,
+                        terminal_epoch,
+                        terminal_fence,
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("mint barrier after newer attempt: {error}"));
+                (barrier, later)
+            }
+        });
+        assert!(first_barrier.barrier_epoch() > terminal_epoch);
+        assert_eq!(first_barrier.retired_through_epoch(), terminal_epoch);
+        if barrier_first {
+            assert!(first_barrier.barrier_epoch() < later_attempt.epoch());
+        } else {
+            assert!(first_barrier.barrier_epoch() > later_attempt.epoch());
+        }
+
+        futures_executor::block_on(async {
+            let mut authority = TursoAuthority::open(&path)
+                .await
+                .unwrap_or_else(|error| panic!("cold reopen with outstanding barrier: {error}"));
+            let retry = authority
+                .mint_no_result_retirement_barrier(
+                    &namespace,
+                    terminal_work_id,
+                    terminal_epoch,
+                    terminal_fence,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("retry terminal barrier: {error}"));
+            assert!(retry.barrier_epoch() > later_attempt.epoch());
+            assert_eq!(retry.retired_through_epoch(), terminal_epoch);
+            let duplicate = authority
+                .mint_no_result_retirement_barrier(
+                    &namespace,
+                    terminal_work_id,
+                    terminal_epoch,
+                    terminal_fence,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("repeat terminal barrier: {error}"));
+            assert_eq!(duplicate, retry, "unchanged scope retries are exact");
+
+            let mut active_rows = authority
+                .connection
+                .query(
+                    "SELECT state FROM backend_index_authority_attempts \
+                     WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+                       AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+                    turso::params![
+                        namespace.package.as_ref(),
+                        namespace.source.as_ref(),
+                        namespace.branch.as_ref(),
+                        namespace.environment.as_ref(),
+                        namespace.plane.sql_parts().0,
+                        namespace.plane.sql_parts().1,
+                        later_attempt.attempt_id().as_slice()
+                    ],
+                )
+                .await
+                .unwrap_or_else(|error| panic!("query newer active attempt: {error}"));
+            let row = active_rows
+                .next()
+                .await
+                .unwrap_or_else(|error| panic!("read newer active attempt: {error}"))
+                .unwrap_or_else(|| panic!("barrier retry must preserve newer work"));
+            let state: i64 = row
+                .get(0)
+                .unwrap_or_else(|error| panic!("read newer active attempt state: {error}"));
+            assert_eq!(state, 0);
+            drop(active_rows);
+
+            let newest = authority
+                .begin_attempt(&namespace, [0x54; 32], &observed)
+                .await
+                .unwrap_or_else(|error| panic!("begin after refreshed barrier: {error}"));
+            assert!(newest.epoch() > retry.barrier_epoch());
+            assert_eq!(
+                authority
+                    .selected_frontier(&namespace)
+                    .await
+                    .unwrap_or_else(|error| panic!("read selected head after barriers: {error}")),
+                None
+            );
+        });
+    }
 }

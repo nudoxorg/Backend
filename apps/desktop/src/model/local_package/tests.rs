@@ -1,6 +1,6 @@
 //! Loader, reader, and README projection tests over real fixture folders.
 
-use super::cargo::{CargoDependency, CargoMetadata, CargoPackage};
+use super::cargo::{CargoDependency, CargoMetadata, CargoPackage, bounded_output};
 use super::{
     CargoFailure, DependencyKind, LocalPackage, LocalPackageLoader, LocalPackageSource,
     ReadmeBlock, active_project, origin_url, readme,
@@ -426,6 +426,112 @@ fn readme_projection_retains_document_structure() {
 }
 
 #[test]
+fn readme_navigation_index_uses_gfm_links_and_contains_local_targets() -> Outcome {
+    let scratch = Scratch::new("readme-navigation")?;
+    scratch.write("README.md", "# Start\n\n## API\n\n## API\n\n## C API\n\n## C-API\n\n## C API 1\n\n[Guide][guide] and <https://example.test/docs>.\n\n`[code](missing.md)`\n\n```md\n[also code](missing.md)\n```\n\n[guide]: docs/guide%20one.md#L12-L14\n[outside]: ../outside.md\n")?;
+    scratch.write("docs/guide one.md", "# Guide\n")?;
+    let source = readme::read(&scratch.0, &scratch.0.join("README.md"));
+    let (links, headings) = readme::navigation_index(&source, &scratch.0, &scratch.0.join("README.md"));
+    let guide = links.iter().find(|link| link.destination.as_ref() == "docs/guide%20one.md#L12-L14").expect("reference link");
+    let expected_guide = scratch.0.join("docs/guide one.md").canonicalize().map_err(text)?;
+    assert_eq!(guide.label.as_ref(), "Guide");
+    assert_eq!(guide.local_file.as_deref(), expected_guide.to_str());
+    assert_eq!(guide.line, Some(12));
+    assert!(links.iter().any(|link| link.destination.as_ref() == "https://example.test/docs"));
+    assert!(!links.iter().any(|link| link.destination.contains("missing.md")), "code spans and fences are not links");
+    assert_eq!(
+        headings.iter().map(|heading| heading.slug.as_ref()).collect::<Vec<_>>(),
+        ["start", "api", "api-1", "c-api", "c-api-1", "c-api-1-1"]
+    );
+    assert!(headings[0].element_id.starts_with("readme-heading-"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn readme_source_and_link_index_refuse_symlink_targets() -> Outcome {
+    use std::os::unix::fs::symlink;
+
+    let scratch = Scratch::new("readme-symlink")?;
+    let target = scratch.0.join("target.md");
+    fs::write(&target, "# Outside\n\n[not admitted](README.md)\n").map_err(text)?;
+    symlink(&target, scratch.0.join("README.md")).map_err(text)?;
+
+    let read = readme::read(&scratch.0, &scratch.0.join("README.md"));
+    assert!(
+        read.is_empty(),
+        "the README reader must not follow the replacement link"
+    );
+    let (links, headings) = readme::navigation_index(
+        "[not admitted](README.md)",
+        &scratch.0,
+        &scratch.0.join("README.md"),
+    );
+    assert!(links[0].local_file.is_none());
+    assert!(headings.is_empty());
+
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[test]
+fn readme_source_rejects_fifo_without_blocking() -> Outcome {
+    let scratch = Scratch::new("readme-fifo")?;
+    let fifo = scratch.0.join("README.md");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .map_err(text)?;
+    if !status.success() {
+        return Err("mkfifo failed to create the FIFO fixture".to_owned());
+    }
+
+    let root = scratch.0.clone();
+    let path = fifo.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _sent = send.send(readme::read(&root, &path));
+    });
+    match receive.recv_timeout(Duration::from_secs(2)) {
+        Ok(source) => {
+            assert!(source.is_empty());
+            worker.join().map_err(|_| "README reader worker panicked")?;
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Release a regression that blocks in `open(README.md)` so the
+            // test process does not retain a stuck worker after reporting it.
+            let writer = fs::OpenOptions::new()
+                .write(true)
+                .open(&fifo)
+                .map_err(text)?;
+            drop(writer);
+            worker.join().map_err(|_| "README reader worker panicked")?;
+            return Err("README reader blocked while opening a FIFO".to_owned());
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("README reader worker stopped before returning".to_owned());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn readme_navigation_rejects_overlong_destinations_without_truncating_them() -> Outcome {
+    let scratch = Scratch::new("readme-long-link")?;
+    let destination = format!(
+        "https://example.test/{}",
+        "x".repeat(crate::model::local_package::MAX_README_LINK_DESTINATION_BYTES)
+    );
+    let source = format!("[oversized]({destination})");
+    let (links, _) = readme::navigation_index(&source, &scratch.0, &scratch.0.join("README.md"));
+    assert!(
+        links.is_empty(),
+        "an overlong prefix must never become actionable"
+    );
+    Ok(())
+}
+
+#[test]
 fn readme_projection_ignores_manifest_package_facts() -> Outcome {
     let scratch = Scratch::new("readme-facts")?;
     scratch.write(
@@ -709,6 +815,69 @@ fn fake_cargo(scratch: &Scratch, body: &str) -> Result<PathBuf, String> {
     fs::write(&path, format!("#!/bin/sh\n{body}\n")).map_err(text)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(text)?;
     Ok(path)
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_output_returns_at_normal_eof_with_exact_budget() -> Outcome {
+    let scratch = workspace_fixture("normal-eof")?;
+    let program = fake_cargo(&scratch, "printf 'ok'")?;
+    let bytes = bounded_output(
+        std::process::Command::new(program),
+        Duration::from_secs(1),
+        2,
+    )
+    .map_err(|failure| format!("normal child failed: {failure:?}"))?;
+    assert_eq!(bytes, b"ok");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn unrepresentable_cargo_timeout_never_starts_a_child() -> Outcome {
+    let scratch = workspace_fixture("overflowed-timeout")?;
+    let marker = scratch.0.join("started");
+    let program = fake_cargo(&scratch, &format!("printf started > '{}'", marker.display()))?;
+    let result = bounded_output(
+        std::process::Command::new(program),
+        Duration::MAX,
+        64,
+    );
+    assert_eq!(result, Err(CargoFailure::Timeout));
+    assert!(!marker.exists(), "an invalid deadline must be refused before spawn");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_exit_with_inherited_stdout_retires_descendant_at_deadline() -> Outcome {
+    let scratch = workspace_fixture("inherited-stdout")?;
+    let marker = scratch.0.join("descendant-escaped");
+    let program = fake_cargo(
+        &scratch,
+        &format!(
+            "(sleep 1; printf leaked > '{}') &\nexit 0",
+            marker.display()
+        ),
+    )?;
+    let started = Instant::now();
+    let result = bounded_output(
+        std::process::Command::new(program),
+        Duration::from_millis(200),
+        64,
+    );
+    assert_eq!(result, Err(CargoFailure::Timeout));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the inherited pipe held the worker: {:?}",
+        started.elapsed()
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !marker.exists(),
+        "the timed-out child's descendant was not retired"
+    );
+    Ok(())
 }
 
 #[cfg(unix)]

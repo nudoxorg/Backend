@@ -16,6 +16,7 @@ use super::*;
 
 const TYPED_V2_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v2-locator.v1\0";
 const TYPED_V2_COMMIT_DOMAIN: &[u8] = b"backend.semantic.history-commit.typed-v2.v1\0";
+const TYPED_V3_COMMIT_DOMAIN: &[u8] = b"backend.semantic.history-commit.typed-v3.v1\0";
 const MAX_TYPED_V2_MANIFEST_BYTES: usize = backend_semantic::ir::MAX_TYPED_PLANE_MANIFEST_V2_BYTES;
 const MAX_TYPED_V2_PENDING_RECONCILE: usize = super::MAX_HISTORY_GC_BATCH_RECORDS / 2;
 
@@ -466,10 +467,8 @@ pub(super) fn validate_typed_v2_locator_binding(
             .first()
             .copied()
             .ok_or_else(|| "root typed V2 commit cannot carry parent lineage".to_owned())?;
-        let parent_record = load_history_commit(
-            &target_root.join("history").join("commits"),
-            parent,
-        )?;
+        let parent_record =
+            load_history_commit(&target_root.join("history").join("commits"), parent)?;
         let HistoryGenerationRoot::TypedV2(parent_claim) = parent_record.generation_root else {
             return Err("typed lineage edge set parent is not a V2 commit".to_owned());
         };
@@ -482,6 +481,7 @@ pub(super) fn history_commit_identity(root: HistoryGenerationRoot, body: &[u8]) 
     let domain = match root {
         HistoryGenerationRoot::NxfiV1(_) => HISTORY_COMMIT_DOMAIN,
         HistoryGenerationRoot::TypedV2(_) => TYPED_V2_COMMIT_DOMAIN,
+        HistoryGenerationRoot::TypedV3(_) => TYPED_V3_COMMIT_DOMAIN,
     };
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain);
@@ -913,10 +913,14 @@ mod tests {
         let identity = files
             .typed_v2_locator_identity(&locator)
             .expect("identify canonical locator");
-        assert!(locator.validate_lineage_parent_binding(
-            HistoryCommitId::from_bytes([0x55; 32]),
-            &[0x66; 32],
-        ).is_ok());
+        assert!(
+            locator
+                .validate_lineage_parent_binding(
+                    HistoryCommitId::from_bytes([0x55; 32]),
+                    &[0x66; 32],
+                )
+                .is_ok()
+        );
         assert_ne!(
             identity,
             files
@@ -935,12 +939,14 @@ mod tests {
             lineage_edge_set: Some(empty_lineage(0x56)),
             ..locator.clone()
         };
-        assert!(wrong_parent_locator
-            .validate_lineage_parent_binding(
-                HistoryCommitId::from_bytes([0x55; 32]),
-                &[0x66; 32],
-            )
-            .is_err());
+        assert!(
+            wrong_parent_locator
+                .validate_lineage_parent_binding(
+                    HistoryCommitId::from_bytes([0x55; 32]),
+                    &[0x66; 32],
+                )
+                .is_err()
+        );
 
         let mut tampered_body = locator.encode_body().expect("encode tag-15 body");
         let lineage_offset = tampered_body

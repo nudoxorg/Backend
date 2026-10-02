@@ -31,7 +31,7 @@ use crate::motion::EASE;
 use crate::tokens::motion::EMPH;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    App, ClickEvent, ColorExt, ElementId, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    App, ClickEvent, ColorExt, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
     MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
     Window, div, layer, px,
 };
@@ -60,6 +60,7 @@ pub(crate) type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct Button {
     id: ElementId,
     label: Option<SharedString>,
+    accessibility_label: SharedString,
     intent: Intent,
     size: Control,
     icon: Option<Icon>,
@@ -71,14 +72,17 @@ pub struct Button {
     look: Look,
     measure: Measure,
     on_click: Option<Handler>,
+    focus_handle: Option<FocusHandle>,
 }
 
 /// A default-intent, medium button reading `label`, sized for `measure`.
 #[must_use]
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure: &Measure) -> Button {
+    let label = label.into();
     Button {
         id: id.into(),
-        label: Some(label.into()),
+        accessibility_label: label.clone(),
+        label: Some(label),
         intent: Intent::Default,
         size: Control::Medium,
         icon: None,
@@ -90,10 +94,24 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure:
         look: Look::LIVE,
         measure: *measure,
         on_click: None,
+        focus_handle: None,
     }
 }
 
 impl Button {
+    /// Human name for a symbolic or context-dependent face; visual text is unchanged.
+    #[must_use]
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = label.into();
+        self
+    }
+
+    /// Keeps keyboard focus stable when a virtual row is unmounted and rebuilt.
+    #[must_use]
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus_handle = Some(focus);
+        self
+    }
     /// The intent.
     #[must_use]
     pub const fn intent(mut self, intent: Intent) -> Self {
@@ -357,9 +375,9 @@ where
         }
     });
     if let Some(activate) = activate {
-        element = element.on_click(move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+        element = element.on_click(move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
             // A keyboard "click" is handled by the key listeners above.
-            if !window.last_input_was_keyboard() {
+            if !matches!(event, ClickEvent::Keyboard(_)) {
                 activate(window, cx);
             }
         });
@@ -373,7 +391,7 @@ impl RenderOnce for Button {
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled && !self.busy;
-        let touch = Touch::read(&self.id, self.look, active, window, cx);
+        let touch = Touch::read_with_focus(&self.id, self.look, active, self.focus_handle.clone(), window, cx);
         let motion = touch.motion.clone();
         let id = self.id.clone();
 
@@ -472,21 +490,28 @@ impl RenderOnce for Button {
             content = content.child(glyph(mark, measure.icon(icon_px), ink));
         }
         if let Some(label) = self.label.clone() {
-            // Published to the probe like every other run of words, so the
-            // harness lints a button's words too (contrast on its own fill,
-            // clipping) and a journey reads them (GAPS.md D3).
-            content = content.child(crate::probe::text(
-                ElementId::Name(format!("button:{}:{label}", self.id).into()),
-                label.clone(),
-                measure.role(role),
-                1.0,
-                crate::probe::TextOverflow::Clip,
-                div()
-                    .set(role, &measure)
-                    .text_color(ink)
-                    .whitespace_nowrap()
-                    .child(label),
-            ));
+            let words = div()
+                .set(role, &measure)
+                .text_color(ink)
+                .whitespace_nowrap()
+                .child(label.clone());
+            // A busy button keeps the label's measured width beneath its
+            // hatch, but the words are fully transparent and are not
+            // published as visible evidence to the harness.
+            let words = if self.busy {
+                words.into_any_element()
+            } else {
+                crate::probe::text(
+                    ElementId::Name(format!("button:{}:{label}", self.id).into()),
+                    label.clone(),
+                    measure.role(role),
+                    1.0,
+                    crate::probe::TextOverflow::Clip,
+                    words,
+                )
+                .into_any_element()
+            };
+            content = content.child(words);
         }
 
         let pad = if self.label.is_some() {
@@ -547,6 +572,9 @@ impl RenderOnce for Button {
 
         let plate = plate
             .id(id)
+            .role(gpui::Role::Button)
+            .aria_label(self.accessibility_label)
+            .aria_disabled(self.disabled || self.busy)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         let plate = if active {
             wire(plate, &touch, self.on_click).into_any_element()

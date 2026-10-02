@@ -13,9 +13,10 @@ use crate::overlay::float::{self, FloatKind, FloatRequest};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Face, TypeRole};
 use gpui::{
-    AnyElement, App, Bounds, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
-    px,
+    AnyElement, App, Bounds, Div, Element, ElementId, FocusHandle, GlobalElementId, Hsla,
+    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, ParentElement,
+    Pixels, Refineable, SharedString, StatefulInteractiveElement, Style, StyleRefinement, Styled,
+    Window, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -206,41 +207,93 @@ pub(crate) fn door(
     outer = outer.child(trigger);
     if let Some(after) = sheet {
         let opened = live.sheet.clone();
-        let key = key.clone();
-        outer = outer.child(
-            canvas(
-                |_, _, _| {},
-                move |bounds, (), window, cx| {
-                    if opened.replace(true) {
-                        return;
-                    }
-                    // A sheet rests on the mark, as a pointer would: the
-                    // card opens after the kind's hover delay, unfocused.
-                    if after == 0 {
-                        let request = request(&key, bounds, &card);
-                        window.defer(cx, move |window, cx| float::rest(request, window, cx));
-                        return;
-                    }
-                    let key = key.clone();
-                    let card = card.clone();
-                    window
-                        .spawn(cx, async move |cx| {
-                            cx.background_executor().timer(std::time::Duration::from_millis(after)).await;
-                            let _ = cx.update(|window, cx| {
-                                let anchor = float::reported(&key, window, cx).unwrap_or(bounds);
-                                float::rest(request(&key, anchor, &card), window, cx);
-                            });
-                        })
-                        .detach();
-                },
-            )
+        let anchor = SheetAnchor { key: key.clone(), card: card.clone(), after, opened, style: StyleRefinement::default() }
             .absolute()
             .top_0()
             .left_0()
-            .size_full(),
-        );
+            .size_full();
+        outer = outer.child(anchor);
     }
     outer.into_any_element()
+}
+
+/// Opens an initially selected state card once its owner has measured bounds.
+/// It paints nothing: the float needs the mark's first-frame layout bounds.
+struct SheetAnchor {
+    key: ElementId,
+    card: Content,
+    after: u64,
+    opened: Rc<Cell<bool>>,
+    style: StyleRefinement,
+}
+
+impl Styled for SheetAnchor {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for SheetAnchor {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for SheetAnchor {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.opened.replace(true) { return; }
+        let key = self.key.clone();
+        let card = self.card.clone();
+        let after = self.after;
+        if after == 0 {
+            let request = request(&key, bounds, &card);
+            window.defer(cx, move |window, cx| float::rest(request, window, cx));
+        } else {
+            window
+                .spawn(cx, async move |cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(after)).await;
+                    let _ = cx.update(|window, cx| {
+                        let anchor = float::reported(&key, window, cx).unwrap_or(bounds);
+                        float::rest(request(&key, anchor, &card), window, cx);
+                    });
+                })
+                .detach();
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {}
 }
 
 /// A card shown in place under its mark (boards only): the same content on

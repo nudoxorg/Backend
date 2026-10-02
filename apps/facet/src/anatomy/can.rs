@@ -12,8 +12,9 @@ use crate::semantics::caps::{Arrives, Cap};
 use crate::theme::ActiveFacet;
 use gpui::{
     InteractiveElement,
-    App, ElementId, IntoElement, ParentElement, PathBuilder, RenderOnce, SharedString, Styled, StyledText, Window,
-    canvas, div, point, px,
+    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    ParentElement, PathBuilder, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement,
+    Styled, StyledText, Window, div, point, px,
 };
 use std::sync::Arc;
 
@@ -49,41 +50,111 @@ fn mark(arrives: &Arrives, measure: &Measure, palette: &crate::tokens::Palette) 
         Arrives::Written => (Some(palette.ink1.hsla()), None, false),
         Arrives::Via(_) => (None, Some(palette.ink4.hsla()), true),
     };
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let r = px(3.6 * s);
-            let diamond = |b: &mut PathBuilder, r: gpui::Pixels| {
-                b.move_to(point(c.x, c.y - r));
-                b.line_to(point(c.x + r, c.y));
-                b.line_to(point(c.x, c.y + r));
-                b.line_to(point(c.x - r, c.y));
-                b.close();
+    CapabilityMark { scale: s, fill, stroke, dashed, style: StyleRefinement::default() }
+        .flex_none()
+        .size(px(9.0 * s))
+}
+
+struct CapabilityMark {
+    scale: f32,
+    fill: Option<Hsla>,
+    stroke: Option<Hsla>,
+    dashed: bool,
+    style: StyleRefinement,
+}
+
+impl Styled for CapabilityMark {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for CapabilityMark {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for CapabilityMark {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = px(9.0 * self.scale).into();
+        style.size.height = px(9.0 * self.scale).into();
+        style.flex_shrink = 0.0;
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        let center = bounds.center();
+        let radius = px(3.6 * self.scale);
+        let diamond = |path: &mut PathBuilder, radius| {
+            path.move_to(point(center.x, center.y - radius));
+            path.line_to(point(center.x + radius, center.y));
+            path.line_to(point(center.x, center.y + radius));
+            path.line_to(point(center.x - radius, center.y));
+            path.close();
+        };
+        if let Some(color) = self.fill {
+            let mut path = PathBuilder::fill();
+            diamond(&mut path, radius);
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
+        }
+        if let Some(color) = self.stroke {
+            let mut path = PathBuilder::stroke(px(1.2));
+            let radius = if self.dashed {
+                path = path.dash_array(&[px(1.5), px(1.5)]);
+                radius + px(1.0)
+            } else {
+                radius - px(0.6)
             };
-            if let Some(fill) = fill {
-                let mut b = PathBuilder::fill();
-                diamond(&mut b, r);
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, fill);
-                }
+            diamond(&mut path, radius);
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
             }
-            if let Some(stroke) = stroke {
-                let mut b = PathBuilder::stroke(px(1.2));
-                if dashed {
-                    b = b.dash_array(&[px(1.5), px(1.5)]);
-                    diamond(&mut b, r + px(1.0));
-                } else {
-                    diamond(&mut b, r - px(0.6));
-                }
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, stroke);
-                }
-            }
-        },
-    )
-    .flex_none()
-    .size(px(9.0 * s))
+        }
+    }
 }
 
 impl RenderOnce for Can {

@@ -50,7 +50,7 @@
 //! offset is exactly zero: painted == laid out.
 
 use super::spring::{Phase, SNAPPY, Spring};
-use super::{epoch as motion_epoch, now, reduced, request_frame};
+use super::{epoch as motion_epoch, now, reduced_in, request_frame};
 use crate::probe::{self, TrackKind, TrackSample};
 use gpui::{
     AnyElement, App, Bounds, ElementId, Global, GlobalElementId, InspectorElementId, IntoElement,
@@ -930,7 +930,7 @@ impl gpui::Element for FlowItem {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let now = now(cx);
-        let reduced = reduced(cx);
+        let reduced = reduced_in(window, cx);
         let context = context();
         // Its layout: the bounds without any paint offset around it (flow
         // springs, presence poses, scrolling), exactly as gpui snapped them.

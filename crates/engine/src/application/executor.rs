@@ -107,12 +107,14 @@ impl StagedOutputBudget {
             return Err(StagedOutputFull {
                 requested: bytes,
                 available: self.capacity.saturating_sub(*used),
+                capacity: self.capacity,
             });
         };
         if next > self.capacity {
             return Err(StagedOutputFull {
                 requested: bytes,
                 available: self.capacity.saturating_sub(*used),
+                capacity: self.capacity,
             });
         }
         *used = next;
@@ -152,6 +154,7 @@ impl Drop for StagedOutputLease {
 pub(crate) struct StagedOutputFull {
     pub(crate) requested: usize,
     pub(crate) available: usize,
+    pub(crate) capacity: usize,
 }
 
 #[cfg(test)]
@@ -357,7 +360,18 @@ mod tests {
         let budget = StagedOutputBudget::new(10);
         let first = budget.reserve(6).unwrap();
         let second = budget.reserve(4).unwrap();
-        assert!(budget.reserve(1).is_err());
+        let full = match budget.reserve(1) {
+            Err(full) => full,
+            Ok(_) => panic!("full budget unexpectedly admitted another reservation"),
+        };
+        assert_eq!(
+            full,
+            StagedOutputFull {
+                requested: 1,
+                available: 0,
+                capacity: 10,
+            }
+        );
         assert_eq!(budget.used(), 10);
         release_tx.send(()).unwrap();
         drop(first);
@@ -374,7 +388,18 @@ mod tests {
     fn output_reservations_reject_one_oversized_package_and_release_on_drop() {
         let budget = StagedOutputBudget::new(32);
         let oversized = budget.reserve(33);
-        assert!(oversized.is_err());
+        let full = match oversized {
+            Err(full) => full,
+            Ok(_) => panic!("oversized output reservation was unexpectedly admitted"),
+        };
+        assert_eq!(
+            full,
+            StagedOutputFull {
+                requested: 33,
+                available: 32,
+                capacity: 32,
+            }
+        );
         let reservation = budget.reserve(32).unwrap();
         assert_eq!(budget.used(), 32);
         drop(reservation);

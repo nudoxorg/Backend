@@ -15,22 +15,27 @@ use crate::measure::{Measure, Set, Space};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Palette, TypeRole, ty};
-use gpui::{AnyElement, ElementId, Hsla, IntoElement, ParentElement, PathBuilder, SharedString, Styled, canvas, div, point, px};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    ParentElement, PathBuilder, Pixels, Refineable, SharedString, Style, StyleRefinement, Styled, Window, div, point, px,
+};
 
 /// The words on a badge.
 const WORD: TypeRole = TypeRole { weight: 520.0, ..ty::BUTTON };
 /// The sentence that opens.
 const TIP: TypeRole = TypeRole { weight: 400.0, ..ty::SMALL };
 
-const fn icon_lang(lang: Lang) -> crate::icons::Lang {
+const fn badge_lang(lang: Lang) -> badges::Lang {
     match lang {
-        Lang::Rust | Lang::Other => crate::icons::Lang::Rust,
-        Lang::TypeScript => crate::icons::Lang::Typescript,
-        Lang::Go => crate::icons::Lang::Go,
-        Lang::Python => crate::icons::Lang::Python,
-        Lang::Java => crate::icons::Lang::Java,
-        Lang::CSharp => crate::icons::Lang::Csharp,
-        Lang::Cpp => crate::icons::Lang::Cpp,
+        Lang::Rust => badges::Lang::Rust,
+        Lang::TypeScript => badges::Lang::Typescript,
+        Lang::Go => badges::Lang::Go,
+        Lang::Python => badges::Lang::Python,
+        Lang::Java => badges::Lang::Java,
+        Lang::CSharp => badges::Lang::Csharp,
+        Lang::Cpp => badges::Lang::Cpp,
+        Lang::C => badges::Lang::C,
+        Lang::Other => badges::Lang::Unknown,
     }
 }
 
@@ -58,7 +63,7 @@ const fn icon_kind(kind: DeclKind) -> Option<crate::icons::Kind> {
 #[must_use]
 pub fn kind_word(plan: &PagePlan) -> &'static str {
     let hero = &plan.hero;
-    let item = Item::new(&hero.name, icon_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
+    let item = Item::new(&hero.name, badge_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
     let word = badges::read(&item).word;
     if hero.kind == DeclKind::Method && word == "fn" { "method" } else { word }
 }
@@ -85,7 +90,7 @@ fn facts(plan: &PagePlan) -> Vec<badges::Badge> {
         }
         Spec::Callable(_) | Spec::None => {}
     }
-    let item = Item::new(&hero.name, icon_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
+    let item = Item::new(&hero.name, badge_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
     out.extend(badges::read(&item).badges);
     out
 }
@@ -146,8 +151,8 @@ fn badge_el(key: &str, fact: &badges::Badge, m: &Measure, palette: &Palette) -> 
             content.clone(),
             mm.role(role),
             1.0,
-            TextOverflow::Clip,
-            div().set(role, &mm).text_color(color).whitespace_nowrap().child(content),
+            TextOverflow::Wrap,
+            div().set(role, &mm).text_color(color).min_w_0().child(content),
         );
         let mut body = cut()
             .chamfer(Chamfer::Px(3.0 * s))
@@ -155,10 +160,12 @@ fn badge_el(key: &str, fact: &badges::Badge, m: &Measure, palette: &Palette) -> 
             .plate(Plate::Flat)
             .fill(mix(pal.plate.into(), pal.plate2.into(), if open { 1.0 } else { 0.0 }))
             .flex()
+            .flex_wrap()
             .flex_none()
+            .max_w(mm.width())
             .items_center()
             .gap(mm.space(Space::Snug))
-            .h(px(21.0 * s))
+            .min_h(px(21.0 * s))
             .pl(mm.space(Space::Snug))
             .pr(mm.space(Space::Snug) + px(1.0))
             .child(badges::glyph(fact.glyph, 12.0 * s, ink))
@@ -197,23 +204,25 @@ fn can_group(caps: &[Cap], m: &Measure, palette: &Palette) -> AnyElement {
             .plate(Plate::Flat)
             .fill(mix(pal.plate.into(), pal.plate2.into(), if open { 1.0 } else { 0.0 }))
             .flex()
+            .flex_wrap()
             .flex_none()
+            .max_w(mm.width())
             .items_center()
             .gap(mm.space(Space::Snug))
-            .h(px(21.0 * s))
+            .min_h(px(21.0 * s))
             .px(mm.space(Space::Snug))
             .child(word("can"));
         for (n, cap) in caps.iter().enumerate() {
             let mark = cap_glyph(cap.glyph, 12.0 * s, if open { ink } else { pal.ink2.hsla() });
             if open {
                 let label = SharedString::from(cap.word.clone());
-                body = body.child(div().flex().items_center().gap(px(4.0 * s)).child(mark).child(probe::text(
+                body = body.child(div().min_w_0().flex().items_center().gap(px(4.0 * s)).child(mark).child(probe::text(
                     ElementId::Name(SharedString::from(format!("page-can-word-{n}"))),
                     label.clone(),
                     mm.role(WORD),
                     1.0,
-                    TextOverflow::Clip,
-                    div().set(WORD, &mm).text_color(pal.ink2.hsla()).whitespace_nowrap().child(label),
+                    TextOverflow::Wrap,
+                    div().set(WORD, &mm).text_color(pal.ink2.hsla()).min_w_0().child(label),
                 )));
             } else {
                 body = body.child(mark);
@@ -263,12 +272,49 @@ fn cap_glyph(glyph: CapGlyph, size: f32, color: Hsla) -> AnyElement {
             (false, vec![(6.0, 4.0), (6.0, 8.0)]),
         ],
     };
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    CapabilityGlyph { prims, size, color, style: StyleRefinement::default() }
+        .flex_none()
+        .size(px(size))
+        .into_any_element()
+}
+
+struct CapabilityGlyph {
+    prims: Vec<(bool, Vec<(f32, f32)>)>,
+    size: f32,
+    color: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for CapabilityGlyph {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for CapabilityGlyph {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for CapabilityGlyph {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (prims, size, color) = (&self.prims, self.size, self.color);
+        style.paint(bounds, window, cx, |window, _| {
             let k = size / 12.0;
             let at = |(x, y): (f32, f32)| point(bounds.origin.x + px(x * k), bounds.origin.y + px(y * k));
-            for (closed, points) in &prims {
+            for (closed, points) in prims {
                 let pts: Vec<_> = points.iter().copied().map(at).collect();
                 let mut path = PathBuilder::stroke(px(1.15 * k));
                 if *closed {
@@ -278,15 +324,10 @@ fn cap_glyph(glyph: CapGlyph, size: f32, color: Hsla) -> AnyElement {
                         if n == 0 { path.move_to(*p); } else { path.line_to(*p); }
                     }
                 }
-                if let Ok(path) = path.build() {
-                    window.paint_path(path, color);
-                }
+                if let Ok(path) = path.build() { window.paint_path(path, color); }
             }
-        },
-    )
-    .flex_none()
-    .size(px(size))
-    .into_any_element()
+        });
+    }
 }
 
 /// The palette's bevel edge for a plain plate, exposed so the can group and
@@ -297,4 +338,16 @@ fn plain_edge(palette: &Palette) -> Edge {
     edge.hi = palette.line3.into();
     edge.lo = palette.line2.into();
     edge
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lang, badge_lang, badges};
+
+    #[test]
+    fn page_badges_preserve_c_and_cpp_as_distinct_languages() {
+        assert_eq!(badge_lang(Lang::C), badges::Lang::C);
+        assert_eq!(badge_lang(Lang::Cpp), badges::Lang::Cpp);
+        assert_eq!(badge_lang(Lang::Other), badges::Lang::Unknown);
+    }
 }

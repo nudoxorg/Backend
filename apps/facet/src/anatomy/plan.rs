@@ -14,7 +14,7 @@
 use crate::semantics::types::{Nowhere, Piece, Scope};
 
 /// Bump whenever [`PagePlan`] or what [`compile`] writes into it changes.
-pub const PLAN_SCHEMA: u32 = 4;
+pub const PLAN_SCHEMA: u32 = 5;
 
 // ------------------------------------------------------------------ inputs
 
@@ -34,10 +34,12 @@ pub enum Lang {
     Java = 4,
     /// C#.
     CSharp = 5,
-    /// C or C++.
+    /// C++.
     Cpp = 6,
     /// Anything else.
     Other = 7,
+    /// C.
+    C = 8,
 }
 
 impl Lang {
@@ -51,7 +53,8 @@ impl Lang {
             "python" => Self::Python,
             "java" => Self::Java,
             "c#" | "csharp" => Self::CSharp,
-            "c" | "c++" | "cpp" => Self::Cpp,
+            "c" => Self::C,
+            "c++" | "cpp" => Self::Cpp,
             _ => Self::Other,
         }
     }

@@ -12,7 +12,8 @@
 //! settled at 240 ms, the top of the 120–240 ms budget (at MOTION's first
 //! 0.34 s it was only 93 % there).
 
-use super::spring::{Phase, Spring};
+use super::spring::Spring;
+use gpui::{SpringConfig, SpringState};
 use std::time::{Duration, Instant};
 
 /// The place-change spring: response 0.28 s, critically damped. From rest,
@@ -29,7 +30,7 @@ pub const CARRY: Spring = Spring {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Carry {
     target: f32,
-    origin: Phase,
+    origin: SpringState,
     /// When the segment starts; before it the value holds at its origin.
     start: Instant,
 }
@@ -41,8 +42,8 @@ impl Carry {
     pub fn new(from: f32, to: f32, start: Instant) -> Self {
         Self {
             target: to,
-            origin: Phase {
-                offset: f64::from(from - to),
+            origin: SpringState {
+                position: from,
                 velocity: 0.0,
             },
             start,
@@ -52,11 +53,9 @@ impl Carry {
     /// The value and its velocity (units per second) at `now`.
     #[must_use]
     pub fn sample(&self, now: Instant) -> (f32, f32) {
-        let dt = now.saturating_duration_since(self.start).as_secs_f64();
-        let phase = CARRY.step(self.origin, dt);
-        #[allow(clippy::cast_possible_truncation)]
-        let sample = ((phase.offset as f32) + self.target, phase.velocity as f32);
-        sample
+        let dt = now.saturating_duration_since(self.start).as_secs_f32();
+        let state = carry_config().step(self.origin, self.target, dt);
+        (state.position, state.velocity)
     }
 
     /// The value at `now`.
@@ -83,9 +82,9 @@ impl Carry {
         let (value, velocity) = self.sample(now);
         *self = Self {
             target: to,
-            origin: Phase {
-                offset: f64::from(value - to),
-                velocity: f64::from(velocity),
+            origin: SpringState {
+                position: value,
+                velocity,
             },
             start: now,
         };
@@ -102,8 +101,15 @@ impl Carry {
     /// of its target and stays (for probe budgets).
     #[must_use]
     pub fn budget(&self, within: f32) -> Duration {
-        Duration::from_secs_f64(CARRY.settle_time(self.origin, f64::from(within)))
+        carry_config().settle_time(self.origin, self.target, within)
     }
+}
+
+/// Translate the design token into GPUI's shared physical spring. FACET owns
+/// the response token and clock segment, while GPUI owns the oscillator math.
+fn carry_config() -> SpringConfig {
+    let omega = std::f32::consts::TAU / CARRY.response;
+    SpringConfig::new(omega * omega, 2.0 * CARRY.damping * omega, 1.0)
 }
 
 /// `p` mapped onto the band `[a, b]` and clamped: 0 before `a`, 1 after `b`.
@@ -161,6 +167,26 @@ mod tests {
         assert!((carry.value(start) - 1.0).abs() < 1e-6);
         assert!((carry.value(at(start, 64)) - 1.0).abs() < 1e-6);
         assert!(carry.value(at(start, 64 + 240)) < 0.04);
+    }
+
+    /// Repeated changes of direction preserve the last painted state even
+    /// when several user intents arrive at the same executor-clock instant.
+    #[test]
+    fn rapid_reversals_preserve_velocity_and_have_a_finite_settle_budget() {
+        let start = Instant::now();
+        let mut carry = Carry::new(0.0, 1.0, start);
+        for (ms, target) in [(40, 0.0), (40, 1.0), (80, 0.0), (96, 1.0), (96, 0.0)] {
+            let now = at(start, ms);
+            let before = carry.sample(now);
+            carry.retarget(target, now);
+            let after = carry.sample(now);
+            assert!((before.0 - after.0).abs() < 1e-6, "position at {ms}");
+            assert!((before.1 - after.1).abs() < 1e-5, "velocity at {ms}");
+            assert!(carry.budget(0.001) < Duration::from_secs(2));
+        }
+        let settled = carry.start() + carry.budget(0.001) + Duration::from_millis(32);
+        assert!(carry.settled(settled, 0.001));
+        assert!((carry.value(settled) - carry.target()).abs() <= 0.001);
     }
 
     #[test]

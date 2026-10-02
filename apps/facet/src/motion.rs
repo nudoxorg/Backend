@@ -65,6 +65,7 @@ pub use store::{Motion, Spec, frames_requested, request_frame};
 use crate::theme::ActiveFacet;
 use gpui::{App, Global};
 use std::time::Instant;
+use std::{cell::Cell, rc::Rc};
 
 /// Named motion specs: views pick one of these, never a raw duration.
 pub mod spec {
@@ -101,7 +102,47 @@ pub fn now(cx: &App) -> Instant {
 /// Whether motion is reduced (the facet's setting or the platform's).
 #[must_use]
 pub fn reduced(cx: &App) -> bool {
-    cx.facet().reduced_motion || cx.reduce_motion()
+    is_still(cx) || cx.facet().reduced_motion || cx.reduce_motion()
+}
+
+/// Retained native subtrees settle their internal motion to exact layout,
+/// independently of the current user/system motion preference.
+#[must_use]
+pub fn reduced_in(window: &gpui::Window, cx: &App) -> bool {
+    reduced(cx) || window.is_inert_subtree()
+}
+
+/// A retained body must settle immediately, even where ordinary reduced
+/// motion intentionally uses a short opacity transition.
+pub(crate) fn is_still_in(window: &gpui::Window, cx: &App) -> bool {
+    is_still(cx) || window.is_inert_subtree()
+}
+
+/// Locally sample a retained body at rest while it is assembled. This does
+/// not change the user's preference; dropping the guard restores the prior
+/// scope even during unwinding. Hold it only around synchronous body work.
+#[must_use]
+pub fn still(cx: &mut App) -> StillGuard {
+    let depth = Rc::clone(&cx.default_global::<StillDepth>().0);
+    depth.set(depth.get() + 1);
+    StillGuard(depth)
+}
+
+/// A bounded synchronous still-motion scope, independent of preferences.
+pub struct StillGuard(Rc<Cell<usize>>);
+
+impl Drop for StillGuard {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
+#[derive(Default)]
+struct StillDepth(Rc<Cell<usize>>);
+impl Global for StillDepth {}
+
+fn is_still(cx: &App) -> bool {
+    cx.try_global::<StillDepth>().is_some_and(|depth| depth.0.get() > 0)
 }
 
 #[derive(Default)]

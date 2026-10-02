@@ -1383,6 +1383,12 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Report that a named control is present but cannot be activated.
+    fn aria_disabled(mut self, disabled: bool) -> Self {
+        self.interactivity().aria.disabled = Some(disabled);
+        self
+    }
+
     /// Set the toggled state for this element.
     fn aria_toggled(mut self, toggled: accesskit::Toggled) -> Self {
         self.interactivity().aria.toggled = Some(toggled);
@@ -2041,6 +2047,7 @@ pub(crate) struct AriaProperties {
     pub(crate) keyshortcuts: Option<SharedString>,
     pub(crate) selected: Option<bool>,
     pub(crate) expanded: Option<bool>,
+    pub(crate) disabled: Option<bool>,
     pub(crate) toggled: Option<accesskit::Toggled>,
     pub(crate) numeric_value: Option<f64>,
     pub(crate) min_numeric_value: Option<f64>,
@@ -2196,7 +2203,7 @@ impl Interactivity {
                     element_state.map(|element_state| element_state.unwrap_or_default());
 
                 if let Some(element_state) = element_state.as_ref()
-                    && cx.has_active_drag()
+                    && (cx.has_active_drag() || window.is_inert_subtree())
                 {
                     if let Some(pending_mouse_down) = element_state.pending_mouse_down.as_ref() {
                         *pending_mouse_down.borrow_mut() = None;
@@ -2284,7 +2291,7 @@ impl Interactivity {
         if let Some(focus_handle) = self.tracked_focus_handle.as_ref() {
             window.set_focus_handle(focus_handle, cx);
 
-            if window.a11y.is_active() {
+            if window.a11y.is_active() && !window.is_inert_subtree() {
                 if let Some(global_id) = global_id {
                     let node_id = global_id.accesskit_node_id();
                     window.a11y.set_focusable(node_id, focus_handle.id);
@@ -2302,7 +2309,10 @@ impl Interactivity {
             }
         }
 
-        if self.report_active_descendant_focus && window.a11y.is_active() {
+        if self.report_active_descendant_focus
+            && window.a11y.is_active()
+            && !window.is_inert_subtree()
+        {
             if let Some(global_id) = global_id {
                 window
                     .a11y
@@ -2358,6 +2368,9 @@ impl Interactivity {
     }
 
     fn should_insert_hitbox(&self, style: &Style, window: &Window, cx: &App) -> bool {
+        if window.is_inert_subtree() {
+            return false;
+        }
         self.hitbox_behavior != HitboxBehavior::Normal
             || self.window_control.is_some()
             || style.mouse_cursor.is_some()
@@ -2459,7 +2472,11 @@ impl Interactivity {
         cx: &mut App,
         f: impl FnOnce(&Style, &mut Window, &mut App),
     ) {
-        self.hovered = hitbox.map(|hitbox| hitbox.is_hovered(window));
+        self.hovered = if window.is_inert_subtree() {
+            None
+        } else {
+            hitbox.map(|hitbox| hitbox.is_hovered(window))
+        };
         window.with_optional_element_state::<InteractiveElementState, _>(
             global_id,
             |element_state, window| {
@@ -2502,7 +2519,9 @@ impl Interactivity {
                                         // sibling groups every container would then sort ahead of
                                         // every item, and `focus_next` from a container would jump
                                         // to the first item in the whole window instead of its own.
-                                        if let Some(focus_handle) = &self.tracked_focus_handle {
+                                        if !window.is_inert_subtree()
+                                            && let Some(focus_handle) = &self.tracked_focus_handle
+                                        {
                                             window.next_frame.tab_stops.insert(focus_handle);
                                         }
                                         if let Some(hitbox) = hitbox {
@@ -3461,6 +3480,9 @@ impl Interactivity {
         }
         if let Some(expanded) = self.aria.expanded {
             node.set_expanded(expanded);
+        }
+        if self.aria.disabled == Some(true) {
+            node.set_disabled();
         }
         if let Some(toggled) = self.aria.toggled {
             node.set_toggled(toggled);

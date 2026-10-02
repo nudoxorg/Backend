@@ -22,6 +22,7 @@ const fn language(lang: Lang) -> Language {
         Lang::Java => Language::Java,
         Lang::CSharp => Language::CSharp,
         Lang::Cpp => Language::Cpp,
+        Lang::C => Language::C,
         Lang::Other => Language::Unknown,
     }
 }

@@ -1,0 +1,14 @@
+[package]
+name = "filter-platform-proof-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common-proof = { path = "../../deps/common" }
+optional-proof = { path = "../../deps/optional", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-only-proof = { path = "../../deps/windows" }
+
+[features]
+extra = ["dep:optional-proof"]

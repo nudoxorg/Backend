@@ -1,0 +1,27 @@
+{
+  "recorded_utc": "2026-10-02T05:03:56.452319+00:00",
+  "scope": "Saved source branches for publication requested after the stopping checkpoint; source only, not build or deployment acceptance. Candidate branch will also include the subsequent documentation commit.",
+  "remote": "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git",
+  "target_branch": "canonical",
+  "combined_source_merge": "5799fdd4c941b3cb6bf430f3432a111b76b32d61",
+  "branches_at_publication_preparation": {
+    "codex/index-compiler-tentpole": "3f535c7afb806db5ae73fce1f7ce6c6532788435",
+    "codex/gui-flow-integration-20261002": "5799fdd4c941b3cb6bf430f3432a111b76b32d61",
+    "codex/cargo-source-observation-boundary": "262b2eef8bd0a59a13d935eae1be56de54c122e5",
+    "codex/lease-expiry-reclamation": "6a54f65ea65f0c1b4a9e839233c7e2b231ff2ac3",
+    "codex/sol-owner-publication": "579f24992221b8a5ea0fb0459e60d2b9fc5bdec8",
+    "codex/sol-find-pending": "90b11cd80807bb864df3d97b844eff386dcae18e",
+    "codex/real-live-ingest-readiness": "56ba612cedc4cdcffc008e5742167ce2907325ae",
+    "codex/sol-bounded-read-results": "368bc35b4bfb0b021dc088c4ec0918a3d16b26bc",
+    "codex/sol-find-current": "178452bf286e388770d160d488bf00da056e449f",
+    "codex/sol-cargo-route-dependencies": "b7ec91ed775f1f6a19228109b10fd8aba1e1f56f",
+    "codex/sol-cargo-queued-admission": "eefd5b38841ea0ed0a8d92fbd529e50423a0816b",
+    "codex/sol-gui-action-coherence": "70e2ee14e44a4721da667b0de81ebb0735e71b30",
+    "codex/sol-gui-ecosystem-language": "b4d8c790bbd23442cf6a342e3b05ec888d84ae7a",
+    "codex/sol-geometry-clearance": "60a8c11648dbb025bf2e5d84eca0ae140ba9a290",
+    "codex/sol-native-navigation": "57d3c82c6c0f5d77127b812a6b79927dacbff620",
+    "codex/sol-fluid-native-repair": "b05c8767a666f7cc6d5fdfbfdc36b6573136b42d",
+    "codex/sol-ask-mounted-tab": "06fc0204aadf09be553b1e9087f4aafa481ad72b"
+  },
+  "preserved_local_nix_sha256": "fd113ac31e641595fe98d876133b62330a1a2cc9fbcafdba6e88890b9b07cc72"
+}

@@ -733,19 +733,34 @@ impl RegistryOwner {
         matches!(self.policy, AcquisitionPolicy::Offline)
     }
 
-    /// Stable nonzero policy/advisory frontier digest for one source.
+    /// Stable nonzero configured policy digest for one source.
+    ///
+    /// Learned package facts have their own [`Self::facts_frontier`] and must
+    /// not advance this digest: an acquisition request is bound to the policy
+    /// that authorized the fetch, while the page it fetches necessarily adds
+    /// package facts. Keeping those identities separate lets the resulting
+    /// product receipt be published and recovered against the new facts root.
     #[must_use]
     pub fn policy_epoch(&self) -> u64 {
+        self.policy_epoch_for_network_mode(!self.is_offline())
+    }
+
+    /// Returns the policy epoch for the same advisory decision policy with a
+    /// selected network mode. Acquisition cache validation uses the opposite
+    /// mode only to recover a durable source-observation timestamp; it still
+    /// rechecks the package against this owner's current gate and never turns
+    /// an offline owner into a network-capable one.
+    #[must_use]
+    pub fn policy_epoch_for_network_mode(&self, online: bool) -> u64 {
         let mut hasher = Hasher::new();
         hasher.update(b"nudox.registry.policy-frontier.v1\0");
-        hasher.update(&[u8::from(matches!(self.policy, AcquisitionPolicy::Online))]);
+        hasher.update(&[u8::from(online)]);
         hasher.update(&[match self.advisory_gate.map(|gate| gate.offline) {
             None => 0,
             Some(backend_advisory::OfflinePolicy::AllowCached) => 1,
             Some(backend_advisory::OfflinePolicy::Warn) => 2,
             Some(backend_advisory::OfflinePolicy::FailClosed) => 3,
         }]);
-        hasher.update(&self.facts_map.root());
         let digest = hasher.finalize();
         u64::from_be_bytes(
             digest.as_bytes()[..8]

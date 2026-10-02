@@ -638,3 +638,355 @@ fn a_row_that_leaves_mid_flight_ends_its_track_at_rest(cx: &mut TestAppContext) 
     }
     assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx) && pushed.presence.is_settled(cx)));
 }
+
+/// Retained-body assembly must not alter user preferences or leave a still
+/// scope installed when a renderer unwinds; sibling motion must resume.
+#[gpui::test]
+fn retained_still_scope_is_nested_and_panic_safe(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        set_facet(Facet::default(), cx);
+        assert!(!super::reduced(cx));
+        let outer = super::still(cx);
+        assert!(super::reduced(cx));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = super::still(cx);
+            assert!(super::reduced(cx));
+            panic!("retained renderer interrupted");
+        }));
+        assert!(result.is_err());
+        assert!(super::reduced(cx), "outer scope survives nested unwind");
+        drop(outer);
+        assert!(!super::reduced(cx), "sibling body resumes user motion policy");
+        assert!(!crate::ActiveFacet::facet(cx).reduced_motion, "the preference never changed");
+    });
+}
+
+struct RetainedMover {
+    child: gpui::Entity<Mover>,
+    inert: bool,
+}
+
+impl Render for RetainedMover {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let child = if self.inert {
+            gpui::inert("retained-mover", "Previous content", self.child.clone()).into_any_element()
+        } else {
+            self.child.clone().into_any_element()
+        };
+        div().size_full().child(child)
+    }
+}
+
+/// A native inert view must settle at exact layout without latching the
+/// FACET Gate; an interactive sibling/later view can still request motion.
+#[gpui::test]
+fn inert_motion_leaves_no_gate_latch_and_resumes_after_release(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    let seen = Rc::new(Cell::new(f32::NAN));
+    let (root, cx) = cx.add_window_view({
+        let seen = Rc::clone(&seen);
+        move |_, cx| RetainedMover {
+            child: cx.new(|_| Mover { motion: Motion::new(), target: 0.0, seen }),
+            inert: true,
+        }
+    });
+    frame(cx);
+    let child = root.read_with(cx, |root, _| root.child.clone());
+    for target in [100.0, 120.0] {
+        child.update(cx, |child, cx| { child.target = target; cx.notify(); });
+        frame(cx);
+        assert_eq!(seen.get(), target, "inert content samples its exact settled target");
+        assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0, "inert content never writes the Gate");
+    }
+    root.update(cx, |root, cx| { root.inert = false; cx.notify(); });
+    child.update(cx, |child, cx| { child.target = 200.0; cx.notify(); });
+    frame(cx);
+    assert!(cx.update(|_, cx| frames_requested(cx)) > 0, "motion resumes without a stale scheduled flag");
+    advance(cx, 400);
+    frame(cx);
+    assert_eq!(seen.get(), 200.0);
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    advance(cx, 400);
+    frame(cx);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+}
+
+
+struct RetainedSuite {
+    child: gpui::Entity<MotionSuite>,
+    inert: bool,
+}
+
+impl Render for RetainedSuite {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if self.inert {
+            gpui::inert("retained-suite", "Previous content", self.child.clone()).into_any_element()
+        } else { self.child.clone().into_any_element() }
+    }
+}
+
+struct MotionSuite {
+    flights: super::Flights,
+    flow: super::Flow,
+    presence: super::Presence,
+    rows: Vec<u64>,
+    version: u64,
+    target: super::Camera,
+    shot: Rc<Cell<Option<super::Shot>>>,
+    morph: Rc<Cell<super::shared::Morphing>>,
+    pulse: Rc<Cell<f32>>,
+}
+
+impl Render for MotionSuite {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui::{ElementId, px};
+        self.shot.set(Some(self.flights.fly("retained-flight", self.target, window, cx)));
+        self.pulse.set(pulse::lease(window, cx).phase(1.0));
+        self.flow.epoch(self.version);
+        let items = self.presence.sync(self.rows.iter().map(|&row| ElementId::Integer(row)), window, cx);
+        let morph = self.morph.clone();
+        div().flex().flex_col()
+            .child(super::shared::shared_with("retained-shared", move |sample| {
+                morph.set(sample);
+                div().w(px(120.0)).h(px(40.0))
+            }))
+            .children(items.into_iter().map(|item| {
+                let key = item.key.clone();
+                item.slot(self.flow.item(key, div().w(px(120.0)).h(px(40.0))))
+            }))
+    }
+}
+
+/// Actual native traversal of a live entity entering inert state. All retained
+/// tracks land without callbacks; release admits a new target/arrangement and
+/// ordinary user reduced motion keeps its intentional short flight fade.
+#[gpui::test]
+fn live_motion_families_settle_under_inert_and_restart_for_new_targets(cx: &mut TestAppContext) {
+    use gpui::{AppContext as _, Bounds, point, px, size};
+    let shot = Rc::new(Cell::new(None));
+    let morph = Rc::new(Cell::new(super::shared::Morphing { t: 1.0, from: None }));
+    let pulse_seen = Rc::new(Cell::new(-1.0));
+    let (root, cx) = cx.add_window_view({
+        let shot = shot.clone();
+        let morph = morph.clone();
+        let pulse = pulse_seen.clone();
+        move |_, cx| RetainedSuite {
+            child: cx.new(|_| MotionSuite {
+                flights: super::Flights::new(),
+                flow: super::Flow::new("retained.flow"),
+                presence: super::Presence::new("retained.presence").enter(super::act::RISE),
+                rows: vec![1, 2, 3], version: 0,
+                target: super::Camera::new(0.0, 0.0, 100.0), shot, morph, pulse,
+            }), inert: false,
+        }
+    });
+    let child = root.read_with(cx, |root, _| root.child.clone());
+    frame(cx);
+    let from = Bounds::new(point(px(300.0), px(300.0)), size(px(12.0), px(12.0)));
+    cx.update(|window, cx| super::shared::remember("retained-shared", from, window, cx));
+    child.update(cx, |suite, cx| {
+        suite.target = super::Camera::new(200.0, 80.0, 50.0);
+        suite.rows = vec![4, 3, 2, 1]; suite.version += 1; cx.notify();
+    });
+    frame(cx);
+    advance(cx, 16);
+    frame(cx);
+    assert!(shot.get().expect("flight sampled").live);
+    assert!(morph.get().t < 1.0, "existing timed shared morph is live");
+    assert!(cx.update(|_, cx| pulse::running(cx)));
+    root.update(cx, |root, cx| { root.inert = true; cx.notify(); });
+    frame(cx);
+    let settled = shot.get().expect("inert flight sampled");
+    assert_eq!(settled.camera, super::Camera::new(200.0, 80.0, 50.0));
+    assert!(!settled.live && settled.from.is_none() && settled.fade == 1.0);
+    assert_eq!(morph.get(), super::shared::Morphing { t: 1.0, from: None });
+    assert_eq!(pulse_seen.get(), 0.0);
+    assert!(child.read_with(cx, |suite, cx| suite.flow.is_settled(cx) && suite.presence.is_settled(cx)));
+    assert_eq!(cx.update(|_, cx| pulse::leases(cx)), 0);
+    assert!(!cx.update(|_, cx| pulse::running(cx)));
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    advance(cx, 500);
+    assert_eq!(frame(cx), 0, "no next-frame callback remains after the inert frame");
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    root.update(cx, |root, cx| { root.inert = false; cx.notify(); });
+    child.update(cx, |suite, cx| {
+        suite.target = super::Camera::new(400.0, 0.0, 100.0);
+        suite.rows = vec![1, 2, 3, 4]; suite.version += 1; cx.notify();
+    });
+    cx.update(|window, cx| super::shared::drive("retained-shared", from, 0.25, window, cx));
+    frame(cx);
+    assert!(shot.get().expect("new flight").live);
+    assert_eq!(morph.get().t, 0.25, "fresh external drive works after release");
+    assert!(cx.update(|_, cx| frames_requested(cx)) > requested);
+    assert!(cx.update(|_, cx| pulse::running(cx)));
+    root.update(cx, |root, cx| { root.inert = true; cx.notify(); });
+    frame(cx);
+    assert_eq!(morph.get(), super::shared::Morphing { t: 1.0, from: None }, "inert also overrides an external live driver locally");
+    assert!(!shot.get().expect("settled again").live);
+    cx.update(|window, cx| super::shared::release("retained-shared", window, cx));
+    root.update(cx, |root, cx| { root.inert = false; cx.notify(); });
+    frame(cx);
+    assert_eq!(morph.get(), super::shared::Morphing { t: 1.0, from: None }, "the old timed morph cannot replay");
+    cx.update(|_, cx| set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx));
+    child.update(cx, |suite, cx| { suite.target = super::Camera::new(500.0, 20.0, 80.0); cx.notify(); });
+    frame(cx);
+    let reduced = shot.get().expect("ordinary reduced flight");
+    assert!(reduced.live && reduced.from.is_some() && reduced.fade < 1.0,
+        "ordinary reduced preference preserves its intentional opacity transition");
+}
+
+
+struct SeededFlights {
+    flights: super::Flights,
+    seed: bool,
+    guarded: bool,
+    target: super::Camera,
+    seen: Rc<Cell<Option<[super::flight::Shot; 2]>>>,
+}
+
+impl Render for SeededFlights {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let requested = frames_requested(cx);
+        let guard = self.guarded.then(|| super::still(cx));
+        let shots = if self.seed {
+            self.seed = false;
+            let from = super::Camera::new(0.0, 0.0, 100.0);
+            [
+                self.flights
+                    .fly_from("seed", from, (10.0, 5.0, 0.2), self.target, window, cx),
+                self.flights.fly_travel_from(
+                    "travel",
+                    from,
+                    (10.0, 5.0, 0.2),
+                    self.target,
+                    super::flight::Travel::Reframe,
+                    window,
+                    cx,
+                ),
+            ]
+        } else {
+            [
+                self.flights.fly("seed", self.target, window, cx),
+                self.flights.fly_travel(
+                    "travel",
+                    self.target,
+                    super::flight::Travel::Reframe,
+                    window,
+                    cx,
+                ),
+            ]
+        };
+        if self.guarded {
+            assert_eq!(
+                frames_requested(cx),
+                requested,
+                "still sampling cannot request a wake"
+            );
+        }
+        drop(guard);
+        assert!(
+            !super::is_still_in(window, cx),
+            "the local guard released its scope"
+        );
+        self.seen.set(Some(shots));
+        div().size_full()
+    }
+}
+
+#[gpui::test]
+fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppContext) {
+    use crate::theme::ActiveFacet as _;
+    let seen = Rc::new(Cell::new(None));
+    let target = super::Camera::new(100.0, 40.0, 50.0);
+    let (view, cx) = cx.add_window_view({
+        let seen = seen.clone();
+        move |_, _| SeededFlights {
+            flights: super::Flights::new(),
+            seed: true,
+            guarded: true,
+            target,
+            seen,
+        }
+    });
+    let preference = cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion()));
+    assert_eq!(preference, (false, false));
+    let assert_landed = |target| {
+        for shot in seen.get().expect("mounted flights sampled") {
+            assert_eq!(shot.camera, target);
+            assert!(!shot.live && shot.from.is_none() && shot.fade == 1.0);
+        }
+    };
+    frame(cx);
+    assert_landed(target);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0);
+
+    // Releasing policy cannot replay either seed or its carried velocity.
+    view.update(cx, |view, cx| {
+        view.guarded = false;
+        cx.notify();
+    });
+    frame(cx);
+    assert_landed(target);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0);
+
+    let next = super::Camera::new(200.0, 0.0, 80.0);
+    view.update(cx, |view, cx| {
+        view.target = next;
+        cx.notify();
+    });
+    frame(cx);
+    assert!(seen.get().unwrap().iter().all(|shot| shot.live));
+    assert!(cx.update(|_, cx| frames_requested(cx)) > 0);
+    advance(cx, 16);
+    frame(cx);
+    for shot in seen.get().unwrap() {
+        assert!(shot.live);
+        assert_ne!(
+            shot.camera, target,
+            "the executor clock advances the mounted flight"
+        );
+        assert_ne!(shot.camera, next);
+    }
+
+    // The still policy also lands an existing flight at its unchanged target.
+    view.update(cx, |view, cx| {
+        view.guarded = true;
+        cx.notify();
+    });
+    frame(cx);
+    assert_landed(next);
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    advance(cx, 16);
+    assert_eq!(frame(cx), 0, "the pending wake drained without renewing");
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    view.update(cx, |view, cx| {
+        view.guarded = false;
+        cx.notify();
+    });
+    frame(cx);
+    assert_landed(next);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    assert_eq!(
+        cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion())),
+        preference
+    );
+
+    let final_target = super::Camera::new(300.0, 20.0, 60.0);
+    view.update(cx, |view, cx| {
+        view.target = final_target;
+        cx.notify();
+    });
+    frame(cx);
+    assert!(seen.get().unwrap().iter().all(|shot| shot.live));
+    assert!(cx.update(|_, cx| frames_requested(cx)) > requested);
+    advance(cx, 10_000);
+    frame(cx);
+    assert_landed(final_target);
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    assert_eq!(frame(cx), 0, "landed flights leave no frame demand");
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    assert_eq!(
+        cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion())),
+        preference
+    );
+}

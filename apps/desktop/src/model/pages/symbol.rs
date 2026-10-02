@@ -42,6 +42,11 @@ pub struct SignatureText {
     pub text: Arc<str>,
     /// Tokens covering the text in order; spans index into `text`.
     pub tokens: Arc<[SignatureToken]>,
+    /// Whether name-based links were checked against the entire package
+    /// outline. Missing links in a partial or unavailable outline are not
+    /// claims that a name has no declaration.
+    #[serde(default)]
+    pub name_link_coverage: NameLinkCoverage,
 }
 
 impl SignatureText {
@@ -55,6 +60,18 @@ impl SignatureText {
     pub fn token_text(&self, token: &SignatureToken) -> &str {
         self.text.get(token.span.range()).unwrap_or_default()
     }
+}
+
+/// Coverage of the package-wide lookup used for name-only signature links.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub enum NameLinkCoverage {
+    /// Every producer row in the package outline was inspected.
+    Complete,
+    /// The outline was capped or cancelled; links may be missing.
+    Partial,
+    /// No outline was available for name resolution.
+    #[default]
+    Unavailable,
 }
 
 /// What one signature token reads as.
@@ -255,12 +272,29 @@ pub struct MethodGroup {
 /// The members ledger: what a declaration is made of and what it does.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Members {
+    /// Whether this ledger came from the complete package outline. A partial
+    /// ledger can show observed rows but cannot claim that omitted rows do
+    /// not exist.
+    #[serde(default)]
+    pub coverage: MembersCoverage,
     /// Fields and variants, in source order.
     pub made_of: Arc<[Member]>,
     /// Methods, functions, and constructors grouped by receiver.
     pub does: Arc<[MethodGroup]>,
     /// Everything else attached (nested types, constants, macros, modules).
     pub other: Arc<[Member]>,
+}
+
+/// Coverage of the producer rows used for a members ledger.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub enum MembersCoverage {
+    /// The package outline was complete.
+    Complete,
+    /// The package outline was capped or cancelled.
+    Partial,
+    /// No package-wide outline established member coverage.
+    #[default]
+    Unavailable,
 }
 
 impl Members {

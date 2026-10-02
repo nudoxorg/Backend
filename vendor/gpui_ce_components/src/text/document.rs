@@ -1,9 +1,9 @@
 use gpui::{
-    App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, SharedString,
-    Styled as _, Window, div,
+    App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, Styled as _, Window,
+    div,
 };
 
-use std::{ops::RangeInclusive, sync::Arc};
+use std::ops::RangeInclusive;
 
 use crate::text::{
     SelectionFormat,
@@ -13,8 +13,8 @@ use crate::text::{
 /// The parsed document AST.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ParsedDocument {
-    pub(crate) source: SharedString,
-    pub(crate) blocks: Arc<Vec<BlockNode>>,
+    pub(crate) source: super::document_storage::SourceSnapshot,
+    pub(crate) blocks: super::document_storage::BlockSequence,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -44,6 +44,8 @@ impl ParsedDocument {
     }
 
     /// The selected text across all blocks, in `format`.
+    /// Plain text retains each block's line terminator, just like select-all;
+    /// joining paragraphs must not merge their words.
     ///
     /// In [`SelectionFormat::Source`] each block reconstructs its own Markdown
     /// source (inline markup, and block prefixes for headings and lists), and
@@ -72,37 +74,58 @@ impl ParsedDocument {
         format: SelectionFormat,
         blocks: Option<RangeInclusive<usize>>,
     ) -> String {
-        let requested_blocks = blocks.clone();
-        let painted = self
-            .blocks
-            .iter()
-            .map(|block| block.has_selection())
-            .collect::<Vec<_>>();
-        let (Some(painted_first), Some(painted_last)) = (
-            painted.iter().position(|painted| *painted),
-            painted.iter().rposition(|painted| *painted),
-        ) else {
-            return String::new();
-        };
-
         let last_ix = self.blocks.len().saturating_sub(1);
+        let explicit_range = blocks.is_some();
         let (first, last) = match blocks {
-            Some(blocks) => (*blocks.start().min(&last_ix), *blocks.end().min(&last_ix)),
-            None => (painted_first, painted_last),
+            Some(blocks) => {
+                // Reject a reversed range before clamping can collapse both
+                // endpoints onto the final block.
+                if blocks.is_empty() {
+                    return String::new();
+                }
+                let first = *blocks.start().min(&last_ix);
+                let last = *blocks.end().min(&last_ix);
+                if first > last
+                    || !self
+                        .blocks
+                        .iter_from(first)
+                        .take(last - first + 1)
+                        .any(|(_, block)| block.has_selection())
+                {
+                    return String::new();
+                }
+                (first, last)
+            }
+            None => {
+                // Without virtual endpoint indices, fall back to the painted
+                // blocks. Keep the scan allocation-free and preserve the
+                // original implicit-selection behavior.
+                let mut first = None;
+                let mut last = None;
+                for (ix, block) in self.blocks.iter().enumerate() {
+                    if block.has_selection() {
+                        first.get_or_insert(ix);
+                        last = Some(ix);
+                    }
+                }
+                let (Some(first), Some(last)) = (first, last) else {
+                    return String::new();
+                };
+                (first, last)
+            }
         };
 
         if format == SelectionFormat::Plain {
             let mut text = String::new();
-            for (ix, block) in self.blocks.iter().enumerate().take(last + 1).skip(first) {
+            for (ix, block) in self.blocks.iter_from(first).take(last - first + 1) {
+                let is_virtual_endpoint = explicit_range && (ix == first || ix == last);
+                let painted = (!explicit_range || is_virtual_endpoint) && block.has_selection();
                 let selected = block.selected_text(format);
-                let is_virtual_endpoint = requested_blocks
-                    .as_ref()
-                    .is_some_and(|blocks| ix == *blocks.start() || ix == *blocks.end());
-                if requested_blocks.is_some() && !is_virtual_endpoint {
+                if explicit_range && !is_virtual_endpoint {
                     text.push_str(&block.text());
                 } else if !selected.is_empty() {
                     text.push_str(&selected);
-                } else if !painted[ix] {
+                } else if !painted {
                     // Never painted, so it cannot report a selection of its own
                     // even though the span covers it. A painted block that came
                     // up empty really has nothing selected, and stays empty.
@@ -113,14 +136,15 @@ impl ParsedDocument {
         }
 
         let mut out: Vec<String> = Vec::new();
-        for (ix, block) in self.blocks.iter().enumerate().take(last + 1).skip(first) {
+        for (ix, block) in self.blocks.iter_from(first).take(last - first + 1) {
+            let painted = (!explicit_range || ix == first || ix == last) && block.has_selection();
             // The selection is one continuous range, so only the block it
             // starts in and the block it ends in can be partly selected.
             // Everything between them is covered whole, and so is any block
             // that reports nothing — it either scrolled past without painting,
             // or renders no selectable text run at all (a rule, a break, a
             // custom node, a standalone image).
-            let source = if (ix == first || ix == last) && painted[ix] {
+            let source = if (ix == first || ix == last) && painted {
                 block.selected_text(format)
             } else {
                 self.whole_source(block)
@@ -145,7 +169,7 @@ impl ParsedDocument {
         if let Some(span) = block.span()
             && let Some(source) = self.source.get(span.start..span.end)
         {
-            return source.to_string();
+            return source;
         }
 
         block.selected_text(SelectionFormat::Source)
@@ -234,5 +258,132 @@ impl ParsedDocument {
             })
             .size_full(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::node::Paragraph;
+    use std::ops::Range;
+
+    fn paragraph(text: &str, selection: Option<Range<usize>>) -> BlockNode {
+        let paragraph = Paragraph::new(text.to_owned());
+        if let Some(selection) = selection {
+            let mut state = paragraph.state.lock().unwrap();
+            state.set_text(text.into());
+            state.selection = Some(selection.into());
+        }
+        BlockNode::Paragraph(paragraph)
+    }
+
+    fn document(blocks: Vec<BlockNode>) -> ParsedDocument {
+        ParsedDocument {
+            source: String::new().into(),
+            blocks: blocks.into(),
+        }
+    }
+
+    #[test]
+    fn explicit_virtual_block_range_is_empty_without_a_selection() {
+        let document = document(vec![paragraph("unselected", None)]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=0)),
+            ""
+        );
+    }
+
+    #[test]
+    fn explicit_virtual_range_keeps_unpainted_endpoints_around_a_painted_interior() {
+        let document = document(vec![
+            paragraph("start", None),
+            paragraph("middle", Some(1..3)),
+            paragraph("end", None),
+        ]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=2)),
+            "start\nmiddle\nend\n"
+        );
+    }
+
+    #[test]
+    fn explicit_range_ignores_selection_state_outside_its_clamped_bounds() {
+        let document = document(vec![
+            paragraph("zero", None),
+            paragraph("one", None),
+            paragraph("two", None),
+            paragraph("outside", Some(0..7)),
+        ]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=2)),
+            ""
+        );
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=usize::MAX)),
+            "zero\none\ntwo\noutside\n"
+        );
+    }
+
+    #[test]
+    fn explicit_range_reversed_is_empty_and_implicit_range_still_uses_painted_bounds() {
+        let document = document(vec![
+            paragraph("first", None),
+            paragraph("middle", Some(1..3)),
+            paragraph("last", None),
+        ]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(2..=1)),
+            ""
+        );
+        assert_eq!(document.selected_text(SelectionFormat::Plain, None), "id\n");
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(usize::MAX..=3)),
+            ""
+        );
+    }
+
+    #[test]
+    fn virtual_range_preserves_partial_unicode_endpoints_and_whole_interior_source() {
+        use crate::text::node::Span;
+
+        // Offsets are UTF-8 bytes. The interior has a stale partial selection,
+        // but the explicit endpoints cover it whole, including its original
+        // Markdown spelling and CRLF line ending in source mode.
+        let source = "a雪尾\r\n\r\n_é_  \r\nnext\r\n\r\n終z";
+        let interior_source = "_é_  \r\nnext";
+        let start = source.find(interior_source).unwrap();
+        let mut interior = paragraph("é\nnext", Some(0..2));
+        if let BlockNode::Paragraph(paragraph) = &mut interior {
+            paragraph.span = Some(Span {
+                start,
+                end: start + interior_source.len(),
+            });
+        }
+        let document = ParsedDocument {
+            source: source.into(),
+            blocks: vec![
+                paragraph("a雪尾", Some(1..7)),
+                interior,
+                paragraph("終z", Some(0..3)),
+            ]
+            .into(),
+        };
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=2)),
+            "雪尾\né\nnext\n終\n"
+        );
+        assert_eq!(
+            document.selected_text(SelectionFormat::Source, Some(0..=2)),
+            "雪尾\n\n_é_  \r\nnext\n\n終"
+        );
+        document.clear_selection();
+        for format in [SelectionFormat::Plain, SelectionFormat::Source] {
+            assert_eq!(document.selected_text(format, Some(0..=2)), "");
+        }
     }
 }

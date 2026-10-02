@@ -1,6 +1,9 @@
 //! Durable screenshot artifacts and manifests.
 
-use crate::{CaptureConfig, CaptureRecord, DiffMetrics, GuiState, ReferenceMetadata};
+use crate::{
+    CaptureConfig, CaptureRecord, DiffMetrics, GuiState, NativeAccessibilityFrame,
+    ReferenceMetadata, hash_png_pixels,
+};
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, GenericImage, ImageEncoder, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
@@ -32,6 +35,18 @@ pub struct FrameArtifact {
     pub input_index: Option<usize>,
     /// Baseline comparison, when a baseline was available.
     pub diff: Option<DiffMetrics>,
+    /// Native GPUI accessibility evidence from the exact rendered frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_accessibility: Option<NativeAccessibilityArtifact>,
+}
+
+/// A native accessibility sidecar and its byte-level digest.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeAccessibilityArtifact {
+    /// Relative JSON path from the run root.
+    pub path: String,
+    /// SHA-256 of the exact JSON bytes.
+    pub sha256: String,
 }
 
 /// A physical-pixel crop used for close visual inspection of a frame.
@@ -298,6 +313,7 @@ fn verify_run_inner(
     let mut report = VerificationReport::default();
     let mut referenced_frames = std::collections::BTreeSet::new();
     let mut referenced_semantics = std::collections::BTreeSet::new();
+    let mut referenced_accessibility = std::collections::BTreeSet::new();
     let mut manifest_ids = std::collections::BTreeSet::new();
     for manifest_path in manifests {
         let bytes = std::fs::read(&manifest_path)?;
@@ -319,6 +335,19 @@ fn verify_run_inner(
             report.failures.push(format!(
                 "{}: manifest frame count is zero or inconsistent",
                 manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        let accessibility_frames = manifest
+            .frames
+            .iter()
+            .filter(|frame| frame.native_accessibility.is_some())
+            .count();
+        if accessibility_frames != 0 && accessibility_frames != manifest.frames.len() {
+            report.failures.push(format!(
+                "{}: native accessibility evidence covers {accessibility_frames} of {} frames",
+                manifest_path.display(),
+                manifest.frames.len()
             ));
             report.failed_manifests += 1;
         }
@@ -443,7 +472,7 @@ fn verify_run_inner(
             .and_then(Path::parent)
             .ok_or_else(|| ArtifactError::Verification(manifest_path.display().to_string()))?;
         let mut manifest_frame_paths = std::collections::BTreeSet::new();
-        for frame in manifest.frames {
+        for frame in &manifest.frames {
             let expected_size = frame
                 .viewport
                 .unwrap_or(manifest.config.viewport)
@@ -491,6 +520,60 @@ fn verify_run_inner(
                 ));
                 report.failed_manifests += 1;
             }
+            if let Some(accessibility) = &frame.native_accessibility {
+                let relative = safe_relative_path(&accessibility.path)?;
+                let accessibility_path = base.join(&relative);
+                if !referenced_accessibility.insert(accessibility_path.clone()) {
+                    report.failures.push(format!(
+                        "{}: duplicate accessibility reference {}",
+                        manifest_path.display(),
+                        accessibility.path
+                    ));
+                    report.failed_manifests += 1;
+                    continue;
+                }
+                if !accessibility_path.is_file() {
+                    report.failures.push(format!(
+                        "{}: missing native accessibility artifact {}",
+                        manifest_path.display(),
+                        accessibility.path
+                    ));
+                    report.failed_manifests += 1;
+                    continue;
+                }
+                let bytes = std::fs::read(&accessibility_path)?;
+                let evidence: NativeAccessibilityFrame =
+                    match serde_json::from_slice(&bytes) {
+                        Ok(evidence) => evidence,
+                        Err(error) => {
+                            report.failures.push(format!(
+                                "{}: invalid native accessibility artifact {}: {error}",
+                                manifest_path.display(),
+                                accessibility.path
+                            ));
+                            report.failed_manifests += 1;
+                            continue;
+                        }
+                    };
+                let viewport = frame.viewport.unwrap_or(manifest.config.viewport);
+                if hash_bytes(&bytes) != accessibility.sha256
+                    || evidence
+                        .verify_pair(
+                            &frame.label,
+                            frame.time_ms,
+                            viewport,
+                            &hash_png_pixels(&image),
+                        )
+                        .is_err()
+                {
+                    report.failures.push(format!(
+                        "{}: native accessibility artifact {} does not match its rendered frame",
+                        manifest_path.display(),
+                        accessibility.path
+                    ));
+                    report.failed_manifests += 1;
+                }
+            }
         }
     }
     let mut actual_frames = Vec::new();
@@ -510,6 +593,16 @@ fn verify_run_inner(
             report.failures.push(format!(
                 "{}: orphan semantic artifact is not referenced by a manifest",
                 semantic.display()
+            ));
+        }
+    }
+    let mut accessibility_files = Vec::new();
+    collect_named_json(root, "accessibility", &mut accessibility_files)?;
+    for accessibility in accessibility_files {
+        if !referenced_accessibility.contains(&accessibility) {
+            report.failures.push(format!(
+                "{}: orphan native accessibility artifact is not referenced by a frame",
+                accessibility.display()
             ));
         }
     }
@@ -872,6 +965,28 @@ impl ArtifactWriter {
         Ok(())
     }
 
+    /// Writes native accessibility evidence beside its screenshot frame.
+    pub fn write_native_accessibility(
+        &self,
+        state_id: &str,
+        frame_label: &str,
+        evidence: &NativeAccessibilityFrame,
+    ) -> Result<NativeAccessibilityArtifact, ArtifactError> {
+        let state = safe_component(state_id)?;
+        let label = safe_component(frame_label)?;
+        let relative = PathBuf::from("accessibility")
+            .join(state)
+            .join(format!("{label}.json"))
+            .to_string_lossy()
+            .into_owned();
+        self.write_json(&relative, evidence)?;
+        let bytes = std::fs::read(self.root.join(&relative))?;
+        Ok(NativeAccessibilityArtifact {
+            path: relative,
+            sha256: hash_bytes(&bytes),
+        })
+    }
+
     /// Reads a JSON manifest from the run root.
     pub fn read_json<T: for<'de> Deserialize<'de>>(
         &self,
@@ -956,6 +1071,7 @@ pub fn frame_artifact(record: &CaptureRecord, relative: String, sha256: String) 
         height: record.image.height(),
         input_index: record.input_index,
         diff: record.diff.clone(),
+        native_accessibility: None,
     }
 }
 
@@ -1033,6 +1149,7 @@ mod tests {
             viewport: None,
             input_index: None,
             diff: None,
+            native_accessibility: None,
         };
         assert!(validate_frame_sequence(&[frame("start", 0), frame("start", 1)]).is_err());
         assert!(validate_frame_sequence(&[frame("start", 10), frame("settled", 20)]).is_err());

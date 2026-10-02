@@ -1,9 +1,101 @@
 //! The small states the folio's components are told, as types: nothing in
 //! the page's public surface is a bare `bool` or a bare `f32` of pixels.
 
+use crate::controls::state::Touch;
 use crate::motion::{Spec, spec};
 use crate::overlay::float::QUICK_REST;
-use gpui::{Pixels, px};
+use gpui::{App, ElementId, Pixels, Window, px};
+
+/// The shared open state for a disclosure card. Children remain in ordinary
+/// GPUI flow, so their measured height moves every following sibling as the
+/// card opens, resizes, or responds to a text-scale change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DisclosureFlow {
+    /// Animated progress, including the plate's small entrance overshoot.
+    pub(crate) progress: f32,
+}
+
+/// Whether a disclosure's complete words may be painted. This is a semantic
+/// cut, separate from the spring that changes the plate's geometry: copy
+/// never reflows through progressively narrower widths on the way out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InkPhase {
+    Retained,
+    Retired,
+}
+
+/// A disclosure whose words require the full measured plate width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DisclosureCopy {
+    /// Physical expansion of the card and its children.
+    pub(crate) geometry: f32,
+    /// Whether the complete words are still on the card.
+    pub(crate) ink: InkPhase,
+}
+
+impl DisclosureCopy {
+    /// Retire whole words before closing the plate. On the way back, expand
+    /// the plate before restoring them. Separate keyed tracks preserve the
+    /// physical spring's value and velocity through a rapid reversal.
+    #[must_use]
+    pub(crate) fn read(id: &ElementId, touch: &Touch, pose: Pose, window: &mut Window, cx: &mut App) -> Self {
+        const INK_END: f32 = 0.03;
+        const FULL_WIDTH: f32 = 0.999;
+        let wanted = touch.hovered || touch.focused || pose == Pose::Held;
+        let ink_progress = touch.motion.animate(
+            crate::controls::state::track(id, "copy"),
+            if wanted { 1.0 } else { 0.0 },
+            plate(wanted),
+            window,
+            cx,
+        );
+        let geometry = touch.motion.animate(
+            crate::controls::state::track(id, "open"),
+            if ink_progress > INK_END { 1.0 } else { 0.0 },
+            spec::FOLLOW,
+            window,
+            cx,
+        ).clamp(0.0, 1.05);
+        let ink = if ink_progress > INK_END && geometry >= FULL_WIDTH {
+            InkPhase::Retained
+        } else {
+            InkPhase::Retired
+        };
+        Self { geometry, ink }
+    }
+}
+
+impl DisclosureFlow {
+    /// Preserve the design minimum at its 100% reference size while letting
+    /// larger or wrapped content determine the card's actual height.
+    #[must_use]
+    pub(crate) fn rest_height(minimum: Nominal) -> Pixels {
+        minimum.at(1.0)
+    }
+
+    /// Animate the requested disclosure state. The owning control resolves
+    /// hover, focus and an explicit user toggle before asking for motion.
+    #[must_use]
+    pub(crate) fn read(
+        id: &ElementId,
+        touch: &Touch,
+        wanted: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let progress = touch
+            .motion
+            .animate(
+                crate::controls::state::track(id, "open"),
+                if wanted { 1.0 } else { 0.0 },
+                plate(wanted),
+                window,
+                cx,
+            )
+            .clamp(0.0, 1.05);
+        Self { progress }
+    }
+}
 
 /// How a plate that answers a pointer's *rest* opens or shuts: it opens after
 /// the house rest ([`QUICK_REST`]), so a pointer only passing over it opens

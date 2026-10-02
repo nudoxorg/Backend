@@ -13,6 +13,20 @@ $env.CARGO_TARGET_DIR = (
     | path join ($env.CARGO_TARGET_DIR? | default ".local/target")
 )
 
+# The backend wrapper supplies pinned NUDOX_RUSTC and NUDOX_CARGO paths. Keep
+# Rust package authority explicit by pairing them with the user's absolute
+# Cargo home; never guess a Cargo executable from PATH or accept a relative
+# cache path. An explicit NUDOX_CARGO_HOME always wins.
+if (($env.NUDOX_CARGO_HOME? | default "") | is-empty) {
+    let cargo_home = $env.CARGO_HOME? | default ""
+    let home = $env.HOME? | default ""
+    if ($cargo_home | str starts-with "/") {
+        $env.NUDOX_CARGO_HOME = $cargo_home
+    } else if ($home | str starts-with "/") {
+        $env.NUDOX_CARGO_HOME = ($home | path join ".cargo")
+    }
+}
+
 # Shows the typed command catalog when no subcommand is supplied.
 # @class inspection
 def main []: nothing -> table {

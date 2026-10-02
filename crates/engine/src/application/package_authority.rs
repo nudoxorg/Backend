@@ -6,7 +6,11 @@
 //! fused semantic transaction.  It never manufactures a source-only fallback
 //! for a profile whose authoritative package adapter was unavailable.
 
-use std::{path::Path, sync::atomic::Ordering, time::Instant};
+use std::{
+    path::{Component, Path},
+    sync::atomic::Ordering,
+    time::Instant,
+};
 
 use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 use crate::driver::{
@@ -28,8 +32,8 @@ use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustFeatureControl, RustToolchain, RustWorkspace,
-    SourceByteLimit,
+    RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
+    RustToolchain, RustWorkspace, SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
@@ -97,6 +101,8 @@ pub struct RustPackageAuthorityConfiguration<'config> {
     pub maximum_source_bytes: SourceByteLimit,
     /// Caller-selected Cargo feature policy.
     pub features: RustFeatureControl<'config>,
+    /// Registry metadata network policy for complete Cargo resolution.
+    pub metadata_policy: RustCargoMetadataPolicy,
 }
 
 /// Explicit Java authority inputs.  The source path is converted to a package
@@ -358,9 +364,9 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         stage: PackageAuthorityStage::TypeScriptChecker,
                     },
                 )?;
-                validate_typescript_entry(request.package_root, relative, profile)?;
+                validate_typescript_source_path(relative, profile)?;
                 let report = checker
-                    .run_in_package(profile, request.source, request.package_root)
+                    .run_in_package_at(profile, request.source, request.package_root, relative)
                     .map_err(PackageAuthorityError::TypeScript)?;
                 checkpoint(
                     request.control,
@@ -449,11 +455,12 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         maximum_source_bytes: configuration.maximum_source_bytes,
                     }
                 } else {
-                    let workspace = RustWorkspace::open_with_features(
+                    let workspace = RustWorkspace::open_with_features_and_metadata_policy(
                         request.package_root,
                         configuration.toolchain,
                         profile,
                         configuration.features,
+                        configuration.metadata_policy,
                         RustAnalysisControl {
                             cancelled: request.control.cancelled,
                             maximum_source_bytes: configuration.maximum_source_bytes,
@@ -660,22 +667,37 @@ fn require_resolved_toolchain<'toolchain>(
     }
 }
 
-fn validate_typescript_entry(
-    package_root: &Path,
+fn validate_typescript_source_path(
     relative: &Path,
     profile: TypeScriptSource,
 ) -> Result<(), PackageAuthorityError> {
-    let expected = match profile {
-        TypeScriptSource::TypeScript => Path::new("index.ts"),
-        TypeScriptSource::Tsx => Path::new("index.tsx"),
+    let safe_relative = !relative.as_os_str().is_empty()
+        && !relative.is_absolute()
+        && relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return Err(PackageAuthorityError::TypeScriptSourcePath {
+            profile,
+            source_relative: relative.to_path_buf().into_boxed_path(),
+        });
     };
-    if relative == expected {
+    let declaration = [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix));
+    let extension_matches = declaration
+        || match profile {
+            TypeScriptSource::TypeScript => [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)),
+            TypeScriptSource::Tsx => [".tsx", ".jsx"].iter().any(|suffix| name.ends_with(suffix)),
+        };
+    if safe_relative && extension_matches {
         return Ok(());
     }
-    Err(PackageAuthorityError::TypeScriptEntryPath {
-        package_root: package_root.to_path_buf().into_boxed_path(),
+    Err(PackageAuthorityError::TypeScriptSourcePath {
+        profile,
         source_relative: relative.to_path_buf().into_boxed_path(),
-        expected: expected.to_path_buf().into_boxed_path(),
     })
 }
 
@@ -785,18 +807,15 @@ pub enum PackageAuthorityError {
         /// Requested Rust profile.
         profile: LanguageProfile,
     },
-    /// The current package-aware TypeScript adapter cannot preserve a source
-    /// path other than its exact staged entry path.
+    /// The selected TypeScript grammar does not match the exact source path.
     #[error(
-        "TypeScript source {source_relative:?} is not the exact staged entry {expected:?} beneath {package_root:?}"
+        "TypeScript source path {source_relative:?} is unsafe or incompatible with profile {profile:?}"
     )]
-    TypeScriptEntryPath {
-        /// Explicit package root.
-        package_root: Box<Path>,
+    TypeScriptSourcePath {
+        /// Requested TypeScript grammar profile.
+        profile: TypeScriptSource,
         /// Exact source path relative to that root.
         source_relative: Box<Path>,
-        /// Only path the current package-aware adapter can stage faithfully.
-        expected: Box<Path>,
     },
     /// An externally produced authority image exceeded the owner's retained bound.
     #[error(
@@ -885,6 +904,23 @@ mod tests {
             java: None,
             maximum_image_bytes: 0,
         }
+    }
+
+    #[test]
+    fn package_typescript_authority_admits_nested_javascript_roots_only_as_ts() {
+        let selected = Path::new("src/beacon.js");
+        assert!(validate_typescript_source_path(selected, TypeScriptSource::TypeScript).is_ok());
+        assert!(matches!(
+            validate_typescript_source_path(selected, TypeScriptSource::Tsx),
+            Err(PackageAuthorityError::TypeScriptSourcePath { .. })
+        ));
+        assert!(matches!(
+            validate_typescript_source_path(
+                Path::new("../beacon.js"),
+                TypeScriptSource::TypeScript
+            ),
+            Err(PackageAuthorityError::TypeScriptSourcePath { .. })
+        ));
     }
 
     #[test]

@@ -34,7 +34,8 @@ use crate::theme::{ActiveFacet, Contrast, Facet, set_facet};
 use crate::tokens::{Appearance, ty};
 use crate::{Density, Typeset, fonts, probe};
 use backend_gui_harness::{
-    Act, Drawn, Event, PlayedFrame, Script, Session, SessionOptions, Timeline, Viewport, play,
+    Act, Drawn, Event, NativeAccessibilityFrame, PlayedFrame, Script, Session, SessionOptions,
+    Timeline, Viewport, play,
 };
 use gpui::{
     AnyView, App, AppContext, Context, FocusHandle, Global, InteractiveElement, IntoElement,
@@ -142,6 +143,8 @@ pub struct Shot {
     pub frame_ms: u64,
     /// Keep the frame loop running until at least this time.
     pub until_ms: u64,
+    /// Force and retain GPUI's native accessibility tree beside each captured frame.
+    pub capture_native_accessibility: bool,
 }
 
 impl Shot {
@@ -162,6 +165,7 @@ impl Shot {
             script: None,
             frame_ms: 16,
             until_ms: 0,
+            capture_native_accessibility: false,
         }
     }
 
@@ -188,10 +192,14 @@ pub struct Frame {
     pub image: image::RgbaImage,
     /// What the probe saw while drawing this frame (empty unless enabled).
     pub ledger: probe::Ledger,
+    /// GPUI's native text paint trace from this exact draw.
+    pub painted_texts: Vec<gpui::PaintedText>,
     /// What the frame carried (invalidations, draw time, viewport).
     pub drawn: Drawn,
     /// Exact declared scene state at this capture (probe-enabled runs only).
     pub state: Option<json::Json>,
+    /// The AccessKit tree built by GPUI for these exact pixels, when enabled.
+    pub native_accessibility: Option<NativeAccessibilityFrame>,
 }
 
 /// One drawn frame of a [`run`], captured or not.
@@ -202,6 +210,8 @@ pub struct Tick<'a> {
     pub image: Option<&'a image::RgbaImage>,
     /// What the probe saw while drawing this frame.
     pub ledger: &'a probe::Ledger,
+    /// GPUI's native text paint trace from this exact draw.
+    pub painted_texts: &'a [gpui::PaintedText],
     /// The acts delivered at this instant, just before the frame.
     pub events: &'a [Event],
     /// Where the pointer is (None: outside the window).
@@ -212,6 +222,8 @@ pub struct Tick<'a> {
     pub note: Option<String>,
     /// Exact declared scene state at this draw (probe-enabled runs only).
     pub state: Option<json::Json>,
+    /// The AccessKit tree built for the captured frame, when enabled.
+    pub native_accessibility: Option<NativeAccessibilityFrame>,
 }
 
 /// How a scene applies script acts that have no platform event (settings,
@@ -465,6 +477,7 @@ fn run_with_timing_history(
         SessionOptions {
             asset_source: std::sync::Arc::new(crate::icons::Assets),
             frame_ms: shot.frame_ms,
+            capture_native_accessibility: shot.capture_native_accessibility,
         },
         {
             let failure = Rc::clone(&failure);
@@ -515,6 +528,7 @@ fn run_with_timing_history(
         })
         .map_err(GalleryError::from_display)?
         .unwrap_or(adapt);
+    let mut last_accessibility_frame = 0;
     let played = play(
         &mut session,
         &script,
@@ -533,15 +547,47 @@ fn run_with_timing_history(
             } else {
                 None
             };
+            let painted_texts = window.painted_texts().to_vec();
+            let native_accessibility = if shot.capture_native_accessibility {
+                frame
+                    .image
+                    .map(|image| {
+                        let tree = window.debug_a11y_tree_json().ok_or_else(|| {
+                            GalleryError("forced accessibility capture produced no tree".to_owned())
+                        })?;
+                        let evidence = NativeAccessibilityFrame::new(
+                            format!("t{}", frame.drawn.at_ms),
+                            frame.drawn.at_ms,
+                            frame.drawn.viewport,
+                            window.a11y_frame_number(),
+                            &tree,
+                            image,
+                        )
+                        .map_err(GalleryError::from_display)?;
+                        if evidence.frame_number <= last_accessibility_frame {
+                            return Err(GalleryError(format!(
+                                "native accessibility tree frame {} did not advance after {}",
+                                evidence.frame_number, last_accessibility_frame
+                            )));
+                        }
+                        last_accessibility_frame = evidence.frame_number;
+                        Ok(evidence)
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             let tick = Tick {
                 drawn: frame.drawn,
                 image: frame.image,
                 ledger: &ledger,
+                painted_texts: &painted_texts,
                 events: frame.events,
                 pointer: frame.pointer,
                 pressed: frame.pressed.is_some(),
                 note,
                 state,
+                native_accessibility,
             };
             observe(&tick, window, cx).map_err(|error| {
                 let message = error.0.clone();
@@ -580,8 +626,10 @@ pub fn observe(
                 time_ms: tick.drawn.at_ms,
                 image: image.clone(),
                 ledger: tick.ledger.clone(),
+                painted_texts: tick.painted_texts.to_vec(),
                 drawn: tick.drawn,
                 state: tick.state.clone(),
+                native_accessibility: tick.native_accessibility.clone(),
             });
         }
         Ok(())
@@ -602,8 +650,10 @@ pub fn capture(scene: &Scene, shot: &Shot) -> Result<Vec<Frame>, GalleryError> {
                 time_ms: tick.drawn.at_ms,
                 image: image.clone(),
                 ledger: tick.ledger.clone(),
+                painted_texts: tick.painted_texts.to_vec(),
                 drawn: tick.drawn,
                 state: tick.state.clone(),
+                native_accessibility: tick.native_accessibility.clone(),
             });
         }
         Ok(())

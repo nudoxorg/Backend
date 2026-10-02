@@ -748,8 +748,8 @@ pub enum DependentSources {
     NotPurl,
     /// Matching sources, plus the first unknown or unavailable reason.
     ///
-    /// The reason is reported only when no runtime or optional source matched.
-    /// A later gap does not replace an earlier one.
+    /// The reason can coexist with exact observed sources; the caller must
+    /// present those rows as partial rather than complete.
     Matched {
         /// Exact package/authority pairs that declare a counted edge.
         sources: BTreeSet<PackageGraphSourceKey>,
@@ -919,13 +919,19 @@ impl PackageGraphIndex {
             };
         };
         let mut sources = BTreeSet::new();
+        let qualified = target.qualifiers().is_some() || target.subpath().is_some();
+        let gap = self.dependent_coverage_gap(target);
         if let Some(edges) = self
             .reverse
             .get(&ecosystem)
             .and_then(|names| names.get(target.lineage_name()))
         {
-            for edge in edges
-                .unresolved
+            let unresolved = if qualified {
+                &[][..]
+            } else {
+                edges.unresolved.as_slice()
+            };
+            for edge in unresolved
                 .iter()
                 .chain(edges.resolved.get(target.as_str()).into_iter().flatten())
             {
@@ -934,9 +940,29 @@ impl PackageGraphIndex {
                 }
             }
         }
-        DependentSources::Matched {
-            sources,
-            gap: self.first_gap.clone(),
+        DependentSources::Matched { sources, gap }
+    }
+
+    /// Returns the coverage limitation for a reverse read without materializing
+    /// every matching source. A qualified target cannot inherit name-only
+    /// edges from a different registry authority.
+    pub(crate) fn dependent_coverage_gap(
+        &self,
+        target: &crate::PackageCoordinate,
+    ) -> Option<ProductText> {
+        let qualified = target.qualifiers().is_some() || target.subpath().is_some();
+        let unresolved = qualified
+            && self
+                .reverse
+                .get(&target.package_type().registry()?)
+                .and_then(|names| names.get(target.lineage_name()))
+                .is_some_and(|edges| !edges.unresolved.is_empty());
+        if unresolved {
+            Some(ProductText::from_static(
+                "name-only dependency edges do not establish this registry authority",
+            ))
+        } else {
+            self.first_gap.clone()
         }
     }
 
@@ -965,7 +991,12 @@ impl PackageGraphIndex {
             return (Vec::new(), false);
         };
 
-        let unresolved = &postings.unresolved;
+        let qualified = target.qualifiers().is_some() || target.subpath().is_some();
+        let unresolved = if qualified {
+            &[][..]
+        } else {
+            postings.unresolved.as_slice()
+        };
         let resolved = postings
             .resolved
             .get(target.as_str())
@@ -1040,24 +1071,32 @@ pub fn linear_dependent_sources(
         return DependentSources::NotPurl;
     };
     let ecosystem = target.package_type().registry();
+    let qualified = target.qualifiers().is_some() || target.subpath().is_some();
     let mut sources = BTreeSet::new();
     let mut gap = None;
+    let mut unresolved_authority = false;
     for (source, state) in facts {
         match state {
             DependencyFacts::Known(rows) => {
-                if rows.iter().any(|row| {
-                    matches!(
+                for row in rows {
+                    if !matches!(
                         row.scope,
                         DependencyScope::Runtime | DependencyScope::Optional
-                    ) && Some(row.target.ecosystem) == ecosystem
-                        && row.target.name.as_str() == target.lineage_name()
-                        && row
-                            .target
-                            .resolved
-                            .as_ref()
-                            .is_none_or(|resolved| resolved.as_str() == target.as_str())
-                }) {
-                    sources.insert(source.clone());
+                    ) || Some(row.target.ecosystem) != ecosystem
+                        || row.target.name.as_str() != target.lineage_name()
+                    {
+                        continue;
+                    }
+                    match &row.target.resolved {
+                        Some(resolved) if resolved.as_str() == target.as_str() => {
+                            sources.insert(source.clone());
+                        }
+                        None if qualified => unresolved_authority = true,
+                        None => {
+                            sources.insert(source.clone());
+                        }
+                        Some(_) => {}
+                    }
                 }
             }
             DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
@@ -1066,6 +1105,11 @@ pub fn linear_dependent_sources(
                 }
             }
         }
+    }
+    if unresolved_authority {
+        gap = Some(ProductText::from_static(
+            "name-only dependency edges do not establish this registry authority",
+        ));
     }
     DependentSources::Matched { sources, gap }
 }
@@ -1593,6 +1637,62 @@ mod tests {
             PackageGraphSourceKey::unattributed(source_ref),
             DependencyFacts::Known(vec![row].into_boxed_slice()),
         )
+    }
+
+    #[test]
+    fn qualified_reverse_dependents_keep_exact_edges_and_report_unresolved_authority() {
+        let target = PackageReference::parse(
+            "pkg:cargo/widget@1.0.0?repository_url=https%3A%2F%2Fother.example",
+        )
+        .expect("qualified target");
+        let facts = [
+            fact(
+                "pkg:cargo/other-client@1.0.0",
+                DependencyScope::Runtime,
+                "widget",
+                RegistryEcosystem::Cargo,
+                Some(target.as_str()),
+                1,
+            ),
+            fact(
+                "pkg:cargo/crates-client@1.0.0",
+                DependencyScope::Runtime,
+                "widget",
+                RegistryEcosystem::Cargo,
+                Some("pkg:cargo/widget@1.0.0"),
+                2,
+            ),
+            fact(
+                "pkg:cargo/unknown-client@1.0.0",
+                DependencyScope::Runtime,
+                "widget",
+                RegistryEcosystem::Cargo,
+                None,
+                3,
+            ),
+        ];
+        let index = PackageGraphIndex::from_facts(&facts);
+        let indexed = index.dependent_sources(&facts, &target);
+        assert_eq!(indexed, linear_dependent_sources(&facts, &target));
+        let DependentSources::Matched { sources, gap } = indexed else {
+            panic!("purl lookup")
+        };
+        assert_eq!(
+            sources
+                .iter()
+                .map(PackageGraphSourceKey::as_str)
+                .collect::<Vec<_>>(),
+            ["pkg:cargo/other-client@1.0.0"]
+        );
+        assert!(gap.is_some_and(|reason| {
+            reason
+                .as_str()
+                .contains("do not establish this registry authority")
+        }));
+        let (edges, more) = index.dependent_edges_page(&facts, &target, None, 10);
+        assert!(!more);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].source.as_str(), "pkg:cargo/other-client@1.0.0");
     }
 
     #[test]

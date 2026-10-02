@@ -14,6 +14,7 @@ pub use authority::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
     AuthorityProfileMismatch,
 };
+pub(crate) use compile::rust_authority_diagnostic;
 pub use compile::{compile, compile_ir, compile_semantic};
 pub use lowering::{
     ClangProjectionFault, FactFault, FactRejection, ParentageState, SourceSpanFact, TypeChildLane,

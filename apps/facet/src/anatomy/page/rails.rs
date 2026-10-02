@@ -12,7 +12,11 @@ use crate::anatomy::plan::{PagePlan, Part, SectionId};
 use crate::hover::{self, Lit};
 use crate::measure::Measure;
 use crate::tokens::{Palette, rhythm, scale};
-use gpui::{AnyElement, ColorExt, IntoElement, ParentElement, Pixels, Styled, div, px};
+use gpui::{
+    AnyElement, App, Bounds, ColorExt, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement,
+    LayoutId, ParentElement, PathBuilder, Pixels, Refineable, Style, StyleRefinement, Styled, Window, div,
+    point, px,
+};
 use std::rc::Rc;
 
 
@@ -162,24 +166,54 @@ pub(super) fn rails(plan: &PagePlan, geo: &Geometry, anchors: &Rc<Anchors>, m: &
 
 /// A hairline with a chevron at its end, filling its box.
 fn connector(color: gpui::Hsla, s: f32) -> AnyElement {
-    use gpui::{PathBuilder, canvas, point};
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    RailConnector { color: color.opacity(0.7), scale: s, style: StyleRefinement::default() }
+        .size_full()
+        .into_any_element()
+}
+
+struct RailConnector {
+    color: Hsla,
+    scale: f32,
+    style: StyleRefinement,
+}
+
+impl Styled for RailConnector {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for RailConnector {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for RailConnector {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (scale, color) = (self.scale, self.color);
+        style.paint(bounds, window, cx, |window, _| {
             let y = bounds.origin.y + bounds.size.height / 2.0;
             let (x0, x1) = (bounds.origin.x, bounds.origin.x + bounds.size.width);
-            let h = px(3.5 * s);
+            let h = px(3.5 * scale);
             let mut path = PathBuilder::stroke(px(1.0));
             path.move_to(point(x0, y));
             path.line_to(point(x1, y));
             path.move_to(point(x1 - h, y - h));
             path.line_to(point(x1, y));
             path.line_to(point(x1 - h, y + h));
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color.opacity(0.7));
-            }
-        },
-    )
-    .size_full()
-    .into_any_element()
+            if let Ok(path) = path.build() { window.paint_path(path, color); }
+        });
+    }
 }

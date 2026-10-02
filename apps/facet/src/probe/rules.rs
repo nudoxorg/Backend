@@ -6,7 +6,7 @@
 //! shell's rig tests (`apps/desktop/src/shell/fit_tests.rs`) both call these,
 //! so a rule is written once and both read the same frame the same way.
 
-use super::{BoundsSample, ScrollSample, TextSample};
+use super::{BoundsSample, ScrollOffset, ScrollSample, TextSample};
 
 /// The part of a text box that is actually on screen: inside the `width` x
 /// `height` window and inside the clip its ancestors set. `None` when none
@@ -16,13 +16,36 @@ use super::{BoundsSample, ScrollSample, TextSample};
 /// layout metrics (those stay on [`TextSample`]).
 #[must_use]
 pub fn visible_bounds(text: &TextSample, width: f32, height: f32) -> Option<BoundsSample> {
-    let bounds = &text.bounds;
-    let clip = text.paint_clip.as_ref();
-    let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
-    let y = bounds.y.max(clip.map_or(0.0, |b| b.y)).max(0.0);
-    let right = (bounds.x + bounds.width).min(clip.map_or(width, |b| b.x + b.width)).min(width);
-    let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
+    // Missing renderer evidence is not a viewport-sized clip. Treating it as
+    // one lets a geometric fixture or uninstrumented element prove visibility.
+    let clip = text.paint_clip.as_ref()?;
+    clipped_bounds(&text.bounds, clip, width, height)
+}
+
+/// Intersect a box with its actual renderer clip and the window viewport.
+#[must_use]
+pub fn clipped_bounds(
+    bounds: &BoundsSample,
+    clip: &BoundsSample,
+    width: f32,
+    height: f32,
+) -> Option<BoundsSample> {
+    let x = bounds.x.max(clip.x).max(0.0);
+    let y = bounds.y.max(clip.y).max(0.0);
+    let right = (bounds.x + bounds.width).min(clip.x + clip.width).min(width);
+    let bottom = (bounds.y + bounds.height).min(clip.y + clip.height).min(height);
     (right > x && bottom > y).then(|| BoundsSample { key: bounds.key.clone(), x, y, width: right - x, height: bottom - y })
+}
+
+/// Whether the renderer left a substantial readable portion of this box.
+/// A one-pixel sliver, or a thin edge strip, cannot satisfy visual coverage.
+#[must_use]
+pub fn meaningfully_visible(bounds: &BoundsSample, visible: &BoundsSample) -> bool {
+    const MIN_AXIS_FRACTION: f32 = 0.8;
+    bounds.width > 0.0
+        && bounds.height > 0.0
+        && visible.width / bounds.width >= MIN_AXIS_FRACTION
+        && visible.height / bounds.height >= MIN_AXIS_FRACTION
 }
 
 /// Whether every point of a text's intrinsic box is inside its paint clip
@@ -34,7 +57,7 @@ pub fn fully_visible(text: &TextSample, width: f32, height: f32) -> bool {
     if bounds.x < 0.0 || bounds.y < 0.0 || bounds.x + bounds.width > width || bounds.y + bounds.height > height {
         return false;
     }
-    text.paint_clip.as_ref().is_none_or(|clip| {
+    text.paint_clip.as_ref().is_some_and(|clip| {
         bounds.x >= clip.x
             && bounds.y >= clip.y
             && bounds.x + bounds.width <= clip.x + clip.width
@@ -90,7 +113,10 @@ pub fn stranded(text: &TextSample, scrolls: &[ScrollSample], width: f32) -> Opti
     } else {
         return None;
     };
-    (!scrolls.iter().any(|scroll| scroll.reaches(bounds))).then_some(side)
+    (!scrolls
+        .iter()
+        .any(|scroll| scroll.reaches(bounds, &text.scroll_ancestors)))
+    .then_some(side)
 }
 
 #[cfg(test)]
@@ -107,6 +133,7 @@ mod tests {
             key: format!("text:{content}"),
             bounds: bounds(x, y, width, height),
             paint_clip: None,
+            scroll_ancestors: Vec::new(),
             natural_width: width,
             overflow: TextOverflow::Wrap,
             content: content.to_owned(),
@@ -121,10 +148,14 @@ mod tests {
     #[test]
     fn a_text_cut_by_the_window_shows_only_the_part_inside_it() {
         let cut = text("wide words", 300.0, 10.0, 100.0, 20.0);
+        let mut cut = cut;
+        cut.paint_clip = Some(bounds(0.0, 0.0, 360.0, 640.0));
         let seen = visible_bounds(&cut, 360.0, 640.0).expect("the left 60 px are on screen");
         assert_eq!((seen.x, seen.y, seen.width, seen.height), (300.0, 10.0, 60.0, 20.0));
         assert!(!fully_visible(&cut, 360.0, 640.0));
-        assert!(fully_visible(&text("inside", 10.0, 10.0, 100.0, 20.0), 360.0, 640.0));
+        let mut inside = text("inside", 10.0, 10.0, 100.0, 20.0);
+        inside.paint_clip = Some(bounds(0.0, 0.0, 360.0, 640.0));
+        assert!(fully_visible(&inside, 360.0, 640.0));
     }
 
     #[test]
@@ -160,8 +191,72 @@ mod tests {
             key: "strip".to_owned(),
             viewport: bounds(0.0, 0.0, 360.0, 40.0),
             content: bounds(0.0, 0.0, 900.0, 40.0),
+            offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
+            ancestors: Vec::new(),
         };
+        let mut strip = strip;
+        strip.scroll_ancestors.push("strip".to_owned());
         assert_eq!(stranded(&strip, &[scroller], 360.0), None);
+    }
+
+    #[test]
+    fn scroll_reach_requires_the_measured_container_in_the_actual_ancestor_chain() {
+        let mut sample = text("row", 10.0, 340.0, 80.0, 20.0);
+        let scroller = ScrollSample {
+            key: "owned-scroll".to_owned(),
+            viewport: bounds(0.0, 0.0, 400.0, 300.0),
+            content: bounds(0.0, 0.0, 400.0, 500.0),
+            offset: Some(ScrollOffset { x: 0.0, y: 0.0 }),
+            ancestors: Vec::new(),
+        };
+        assert!(!scroller.reaches(&sample.bounds, &sample.scroll_ancestors));
+        sample.scroll_ancestors.push("owned-scroll".to_owned());
+        assert!(scroller.reaches(&sample.bounds, &sample.scroll_ancestors));
+
+        let unrelated = ScrollSample { key: "other-scroll".to_owned(), ..scroller.clone() };
+        assert!(!unrelated.reaches(&sample.bounds, &sample.scroll_ancestors));
+
+        let nested = ScrollSample { ancestors: vec!["outer-scroll".to_owned()], ..scroller };
+        assert!(!nested.reaches(&sample.bounds, &sample.scroll_ancestors));
+        sample.scroll_ancestors = vec!["outer-scroll".to_owned(), "owned-scroll".to_owned()];
+        assert!(nested.reaches(&sample.bounds, &sample.scroll_ancestors));
+    }
+
+    #[test]
+    fn reachability_translates_scrolled_items_back_to_content_coordinates() {
+        let ancestors = vec!["list".to_owned()];
+        let above_fold = bounds(10.0, -80.0, 80.0, 20.0);
+        let vertical = ScrollSample {
+            key: "list".to_owned(),
+            viewport: bounds(0.0, 0.0, 300.0, 200.0),
+            content: bounds(0.0, 0.0, 300.0, 1000.0),
+            offset: Some(ScrollOffset { x: 0.0, y: -100.0 }),
+            ancestors: Vec::new(),
+        };
+        assert!(vertical.reaches(&above_fold, &ancestors), "an above-fold row can be reached after scrolling back up");
+
+        let left_of_viewport = bounds(-50.0, 10.0, 20.0, 80.0);
+        let horizontal = ScrollSample {
+            key: "list".to_owned(),
+            viewport: bounds(0.0, 0.0, 300.0, 200.0),
+            content: bounds(0.0, 0.0, 1000.0, 200.0),
+            offset: Some(ScrollOffset { x: -100.0, y: 0.0 }),
+            ancestors: Vec::new(),
+        };
+        assert!(horizontal.reaches(&left_of_viewport, &ancestors), "a left-of-viewport item can be reached after scrolling back left");
+    }
+
+    #[test]
+    fn a_scroll_sample_without_observed_offset_cannot_claim_reachability() {
+        let target = bounds(10.0, 340.0, 80.0, 20.0);
+        let sample = ScrollSample {
+            key: "list".to_owned(),
+            viewport: bounds(0.0, 0.0, 300.0, 200.0),
+            content: bounds(0.0, 0.0, 300.0, 1000.0),
+            offset: None,
+            ancestors: Vec::new(),
+        };
+        assert!(!sample.reaches(&target, &["list".to_owned()]));
     }
 
     #[test]

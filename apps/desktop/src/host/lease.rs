@@ -8,7 +8,9 @@
 //! its listener — so a refusal to embed is answered by waiting for that owner's
 //! endpoint rather than by reporting a failure the reader cannot act on.
 
-use backend_local_service::{EmbeddedLocalService, ProcessConfig, ProcessError};
+use backend_local_service::{
+    EmbeddedLocalService, ProcessConfig, ProcessError, RegistryUserPolicy,
+};
 use backend_platform::NativePath;
 use backend_runtime::{RuntimeError, WorkspacePaths};
 use std::fmt;
@@ -76,6 +78,7 @@ impl DesktopHost {
         }
         let mut config =
             ProcessConfig::parse(Self::owner_arguments(&paths)?).map_err(HostError::Service)?;
+        config.apply_registry_user_policy(registry_user_policy(&paths));
         // The owner finds its compilers through explicit paths only; this host is
         // the operator that supplies what the process's own variables imply.
         config.compiler_environment = super::toolchain::supplied_by_the_process();
@@ -198,6 +201,23 @@ impl DesktopHost {
     }
 }
 
+/// Reads the user's last admitted service preferences before an embedded
+/// owner is composed. Invalid or unreadable state uses the fail-closed
+/// default (`LocalOnly`); attaching never reaches this function because the
+/// already-running owner controls its own policy.
+fn registry_user_policy(paths: &WorkspacePaths) -> RegistryUserPolicy {
+    let persisted = crate::model::PersistentState::at(paths.data().join("desktop-state.json"))
+        .load()
+        .unwrap_or_default();
+    RegistryUserPolicy {
+        allow_remote_metadata: persisted.privacy
+            == crate::model::PersistedPrivacy::RegistryMetadata,
+        refresh_advisories: persisted.advisories,
+        cache_enabled: persisted.cache_enabled,
+        cache_max_age_days: persisted.cache_days,
+    }
+}
+
 /// Failure to compose the native application's local service root.
 #[derive(Debug)]
 pub enum HostError {
@@ -286,6 +306,60 @@ mod tests {
     use backend_client::Session;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn the_embedded_owner_reloads_enforceable_privacy_preferences_after_cold_restart() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = PathBuf::from("/tmp").join(format!(
+            "nudox-policy-restart-{}-{nonce}",
+            std::process::id()
+        ));
+        crate::host::private_dir(&root).expect("private policy root");
+        let project = root.join("project");
+        crate::host::private_dir(&project).expect("private project");
+        let data = root.join("state");
+        let endpoint = PathBuf::from("/tmp").join(format!(
+            "nudox-policy-restart-{}-{nonce}.sock",
+            std::process::id()
+        ));
+        let paths = WorkspacePaths::discover(Some(project), Some(data.clone()), Some(endpoint))
+            .expect("explicit owner paths");
+        paths.initialize().expect("initialize owner paths");
+        let state = crate::model::PersistedDesktopState {
+            privacy: crate::model::PersistedPrivacy::RegistryMetadata,
+            advisories: false,
+            cache_enabled: false,
+            cache_days: 30,
+            ..crate::model::PersistedDesktopState::default()
+        };
+        crate::model::PersistentState::at(data.join("desktop-state.json"))
+            .save(&state)
+            .expect("persist service preferences");
+
+        // This is the path a new embedded owner takes, independent of the
+        // already-restored GUI snapshot from the preceding process.
+        let policy = registry_user_policy(&paths);
+        assert_eq!(
+            policy,
+            RegistryUserPolicy {
+                allow_remote_metadata: true,
+                refresh_advisories: false,
+                cache_enabled: false,
+                cache_max_age_days: 30,
+            }
+        );
+        let mut config =
+            ProcessConfig::parse(DesktopHost::owner_arguments(&paths).expect("owner args"))
+                .expect("new embedded process config");
+        config.apply_registry_user_policy(policy);
+        assert!(!config.advisory.refresh_enabled);
+        assert_eq!(config.registry.cache_max_age_millis, Some(0));
+
+        fs::remove_dir_all(root).expect("remove restart fixture");
+    }
 
     #[test]
     #[allow(clippy::too_many_lines, reason = "one journey: embed, attach, index, read the revision")]

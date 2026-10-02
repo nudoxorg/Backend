@@ -4,21 +4,22 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 
-use super::berg::{Basis, BergBlock, BergFacts, berg};
+use super::berg::{Basis, BergBlock, BergFacts, berg, weight};
 use super::cards::{CardFacts, Change, symbol_card};
-use super::crest::stamp;
-use super::features::{FeatureFacts, FeatureNode, features};
+use super::crest::{stamp, unread};
+use super::features::{FeatureFacts, FeatureNode, feature_preview};
 use super::fixture::{self, MPSC, TOML};
 use super::heads::{Place, Sighting, Signals, findings, heads};
+use super::module::module;
 use super::shingles::{ModuleFacts, ShingleFacts, shingles};
-use super::state::{Extent, Fold, Names, Nominal, Pick, Standing, Time, Unsafe, Use};
+use super::state::{Extent, Fold, Nominal, Unsafe, Use};
 use super::ticker::{Release, TickerFacts, ticker};
-use crate::icons::Lang;
-use crate::marks::badges::Item;
+use crate::data::release::{RegistryFact, SourceAvailability};
+use crate::marks::badges::{Item, Lang};
 use crate::marks::license::LicenseFacts;
 use crate::overlay::{dialog, float};
-use crate::probe::{self, Ledger};
-use crate::theme::ActiveFacet;
+use crate::probe::{self, Ledger, TextOverflow};
+use crate::theme::{ActiveFacet, Facet, set_facet};
 use crate::tokens::Family;
 use gpui::{
     AnyElement, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
@@ -105,6 +106,26 @@ fn click(cx: &mut VisualTestContext, x: f32, y: f32) {
     frame(cx);
 }
 
+fn native_stamp_state(cx: &mut VisualTestContext) -> (bool, bool) {
+    // The gallery test window is not accessibility-forced by `open`.
+    cx.update(|window, _| window.set_a11y_forced(true));
+    frame(cx);
+    let json = cx.update(|window, _| window.debug_a11y_tree_json())
+        .expect("the mounted stamp has a native AccessKit tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    let nodes = tree["nodes"].as_object().expect("native nodes");
+    let (id, node) = nodes.iter().find(|(_, node)| node["aria"]["label"].as_str() == Some("Toggle licence details"))
+        .expect("the mounted stamp has a named native control");
+    assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions|
+        actions.iter().any(|action| action.as_str() == Some("Click"))),
+        "the native stamp must expose Click: {node}");
+    (
+        node["aria"]["expanded"].as_bool().expect("the native stamp discloses expanded state"),
+        tree["accesskit_focus"].as_str() == Some(id.as_str()),
+    )
+}
+
 fn rust_card(name: &str, kind: crate::icons::Kind, signature: &str, doc: Option<&str>) -> Rc<CardFacts> {
     Rc::new(CardFacts::of(&Item::new(name, Lang::Rust).kind(Some(kind)).signature(Some(signature)), doc))
 }
@@ -123,6 +144,52 @@ fn a_card_says_badge_words_and_never_the_code(cx: &mut TestAppContext) {
         assert!(said.iter().any(|t| t == word), "the card never said `{word}`: {said:?}");
     }
     assert!(said.iter().all(|t| !t.contains("pub fn") && !t.contains("Result<") && !t.contains("where")), "code leaked onto the card: {said:?}");
+}
+
+#[gpui::test]
+fn a_long_symbol_identity_wraps_inside_its_native_card_target_at_200_percent(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let name = "net::模块::🧪_symbol_with_an_unbreakable_segment_非常に長い経路".to_owned();
+    let expected = name.clone();
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        symbol_card(
+            "long-symbol",
+            rust_card(&name, crate::icons::Kind::Struct, "pub struct T;", None),
+            &measure,
+        )
+        .width(px(256.0))
+        .into_any_element()
+    });
+    let frame = ledger(cx);
+    let name = frame.texts.iter().find(|text| text.content == expected).expect("the full symbol identity is painted");
+    assert_eq!(name.overflow, TextOverflow::Wrap, "the name is visible through wrapping, not an ellipsis: {name:?}");
+    assert!(name.bounds.height > name.line_height, "the card reserves the full wrapped name: {name:?}");
+    let target = frame.targets.iter().find(|target| target.key.contains("long-symbol")).expect("the native card has a real focus target");
+    assert!(target.bounds.within(WIDTH, 700.0), "the actual focus target stays in the frame: {target:?}");
+    assert!(target.bounds.x + target.bounds.width <= 276.5, "the target fits inside its 256px card width: {target:?}");
+}
+
+#[gpui::test]
+fn a_long_module_path_wraps_inside_its_narrow_page_header_at_200_percent(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let package = "crate::subpackage::a_very_long_unbreakable_package_identity_非常に長い経路".to_owned();
+    let name = "net::模块::module_with_a_long_unbreakable_identity_🧪_非常に長い経路".to_owned();
+    let expected_package = package.clone();
+    let expected_name = name.clone();
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        module("long-module-page", package.clone(), name.clone(), Vec::new(), &measure)
+            .extent(Extent::Page)
+            .into_any_element()
+    });
+    let frame = ledger(cx);
+    for expected in [expected_package, expected_name] {
+        let text = frame.texts.iter().find(|text| text.content == expected).expect("the full module path is painted");
+        assert_eq!(text.overflow, TextOverflow::Wrap, "module identity is visible by wrapping: {text:?}");
+        assert!(text.bounds.height > text.line_height, "the page header reserves every wrapped line: {text:?}");
+        assert!(text.bounds.x >= 20.0 && text.bounds.x + text.bounds.width <= 276.5, "the module path stays in its 256px header: {text:?}");
+    }
 }
 
 #[gpui::test]
@@ -240,6 +307,31 @@ fn a_region_the_host_rests_on_reads_itself_in_the_foot(cx: &mut TestAppContext) 
     assert_eq!(text_at(cx, "foot-name").map(|t| t.0), Some(fixture::TOKIO_MODULES[1].0.to_owned()), "the foot names the region the host rests on");
 }
 
+#[gpui::test]
+fn a_long_unicode_module_name_wraps_whole_inside_a_narrow_double_text_map(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let name = "net::模块::🧪_symbol_with_an_unbreakable_segment_非常に長い経路".to_owned();
+    let expected = name.clone();
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        let facts = ModuleFacts::new(
+            name.clone(),
+            vec![ShingleFacts { name: "Symbol".into(), family: Family::Type, yours: Use::Elsewhere, state: None }],
+        );
+        shingles("narrow-long-label", vec![facts].into(), &measure)
+            .rest(Some(super::shingles::Spot::Region(0)))
+            .into_any_element()
+    });
+    let label = ledger(cx).texts.into_iter().find(|text| text.content == expected).expect("the complete Unicode module identity is painted");
+    assert_eq!(label.overflow, TextOverflow::Wrap, "the label wraps rather than clips: {label:?}");
+    assert!(label.bounds.height > label.line_height, "the map reserves every wrapped line: {label:?}");
+    assert!(label.bounds.x >= 20.0 && label.bounds.x + label.bounds.width <= 276.5, "the text box stays within its 256px measured map: {label:?}");
+    let foot = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("foot-name")).expect("keyboard focus repeats the complete name in the foot");
+    assert_eq!(foot.content, expected);
+    assert_eq!(foot.overflow, TextOverflow::Wrap, "the focused name wraps too: {foot:?}");
+    assert!(foot.bounds.height > foot.line_height && foot.bounds.x + foot.bounds.width <= 276.5, "the foot reserves visible lines inside the map: {foot:?}");
+}
+
 // ------------------------------------------------------------------ ticker
 
 fn releases(dated: bool) -> Rc<TickerFacts> {
@@ -247,9 +339,10 @@ fn releases(dated: bool) -> Rc<TickerFacts> {
         .iter()
         .map(|(v, d)| Release {
             version: (*v).to_owned(),
-            date: dated.then(|| (*d).to_owned()),
-            standing: if *v == "0.1.3" { Standing::Yanked } else { Standing::Available },
-            names: if *v == "0.1.7" { Names::Unread } else { Names::Read },
+            date: if dated { RegistryFact::Known((*d).to_owned()) } else { RegistryFact::Missing },
+            yanked: RegistryFact::Known(*v == "0.1.3"),
+            source: SourceAvailability::Available,
+            indexed: RegistryFact::Known(*v != "0.1.7"),
         })
         .collect();
     Rc::new(TickerFacts::new(&rows, Some("1.47.0"), "2026-09-28"))
@@ -280,7 +373,7 @@ fn the_ticker_label_rides_the_release_under_the_pointer_and_leaving_takes_it_awa
     advance(cx, 200);
     let label = text_at(cx, "label").map(|t| t.0).expect("a label rides the hot release");
     assert!(label.contains("1.28.0") && label.contains("2023-04-19") && label.contains("features") && label.contains("3.4 years ago") || label.contains("years ago"), "{label}");
-    assert!(label.ends_with("read"), "{label}");
+    assert!(label.ends_with("release indexed"), "{label}");
     move_to(cx, 5.0, 690.0);
     advance(cx, 300);
     assert!(text_at(cx, "label").is_none(), "the label outlived the pointer");
@@ -372,6 +465,45 @@ fn the_licence_stamp_unfolds_in_place_and_folds_back(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_native_licence_stamp_click_toggles_hovered_details(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        stamp("lic-toggle", Rc::new(LicenseFacts::new(Some("MIT OR Apache-2.0"), Some("MIT OR Apache-2.0"), "backend")), px(330.0), &m).into_any_element()
+    });
+    assert!(!native_stamp_state(cx).0);
+    let (_, x, y, w, h) = text_at(cx, "verdict").expect("the verdict");
+    let (x, y) = (x + w * 0.5, y + h * 0.5);
+    move_to(cx, x, y);
+    advance(cx, 400);
+    assert!(native_stamp_state(cx).0, "hover opened the native disclosure");
+    click(cx, x, y);
+    advance(cx, 400);
+    assert!(!native_stamp_state(cx).0, "click must close the already hovered disclosure");
+    assert!(!said(cx).iter().any(|word| word.contains("keep the notice")));
+    click(cx, x, y);
+    advance(cx, 400);
+    assert!(native_stamp_state(cx).0, "a second click must reopen the disclosure");
+    assert!(said(cx).iter().any(|word| word.contains("keep the notice")));
+}
+
+#[gpui::test]
+fn the_native_licence_stamp_enter_and_space_toggle_focused_details(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        stamp("lic-keys", Rc::new(LicenseFacts::new(Some("MIT OR Apache-2.0"), Some("MIT OR Apache-2.0"), "backend")), px(330.0), &m).into_any_element()
+    });
+    cx.simulate_keystrokes("tab");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (true, true), "keyboard focus revealed the native disclosure");
+    cx.simulate_keystrokes("enter");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (false, true), "Enter must close focused details once");
+    cx.simulate_keystrokes("space");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (true, true), "Space must reopen focused details once");
+}
+
+#[gpui::test]
 fn a_pointer_only_passing_over_the_stamp_or_the_hand_opens_nothing_and_resting_opens_it(cx: &mut TestAppContext) {
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(WIDTH - 40.0));
@@ -453,6 +585,21 @@ fn a_lone_finding_says_its_words_at_rest(cx: &mut TestAppContext) {
     assert!(rest.iter().any(|t| t == "Forbids unsafe code"), "the only finding is said, not just drawn: {rest:?}");
 }
 
+#[gpui::test]
+fn a_long_source_note_wraps_inside_a_narrow_cell_at_double_text_size(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(240.0));
+        unread("source", "Licence", "reading its source", px(240.0), &m)
+            .note("registry mirror · crates index · local source manifest, verified for this package")
+            .into_any_element()
+    });
+    let note = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("-note")).expect("the source note is published from the rendered frame");
+    assert_eq!(note.overflow, TextOverflow::Wrap, "the full source qualifier wraps instead of being silently truncated: {note:?}");
+    assert!(note.natural_width > note.bounds.width, "the fixture exercises real overflow: {note:?}");
+    assert!(note.bounds.x >= 20.0 && note.bounds.x + note.bounds.width <= 260.5, "the clipped note remains inside its 240px cell: {note:?}");
+}
+
 // ------------------------------------------------------------------ features
 
 fn tokio_features() -> Rc<FeatureFacts> {
@@ -471,29 +618,46 @@ fn chip(cx: &mut VisualTestContext, name: &str) -> (f32, f32) {
 }
 
 #[gpui::test]
-fn turning_full_on_locks_what_it_needs_counts_what_it_pulls_in_and_a_locked_chip_says_who_holds_it(cx: &mut TestAppContext) {
+fn feature_preview_is_read_only_and_names_its_manifest_profile(cx: &mut TestAppContext) {
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(WIDTH - 40.0));
-        features("fb", tokio_features(), px(WIDTH - 40.0), &m).into_any_element()
+        feature_preview("fb", tokio_features(), px(WIDTH - 40.0), &m).into_any_element()
     });
-    assert!(says(cx, "of 25 on") && says(cx, "0"), "{:?}", said(cx));
+    let before = said(cx);
+    assert!(before.iter().any(|t| t == "read only · manifest defaults"), "the profile and disabled action are explicit: {before:?}");
+    assert!(before.iter().any(|t| t == "not default"), "each unselected item has a text status: {before:?}");
+    assert!(before.iter().any(|t| t == "0") && before.iter().any(|t| t == "of 25 on"), "the empty manifest default remains off: {before:?}");
+    let frame = ledger(cx);
+    let target_keys: Vec<&str> = frame.targets.iter().map(|target| target.key.as_str()).collect();
+    assert!(target_keys.iter().all(|key| !key.contains("chip-")), "feature projections are not focus or click targets: {target_keys:?}");
+    let scroll = frame
+        .scrolls
+        .iter()
+        .find(|scroll| scroll.key == "folio-feature-scroll-fb")
+        .expect("the actual horizontal feature scroller publishes its extent");
+    assert!(scroll.offset.is_some(), "the frame samples the live ScrollHandle offset: {scroll:?}");
+    assert!(scroll.content.width > scroll.viewport.width, "the profile has scrollable content: {scroll:?}");
+
     let (x, y) = chip(cx, "full");
     click(cx, x, y);
     advance(cx, 500);
-    let after = said(cx);
-    assert!(after.iter().any(|t| t == "12") && after.iter().any(|t| t == "of 25 on"), "twelve features on: {after:?}");
-    assert!(after.iter().any(|t| t == "8") && after.iter().any(|t| t == "(471K lines)"), "it pulls in eight packages, 471K lines: {after:?}");
-    // A held chip does not turn off: it shakes and names who holds it.
-    let (nx, ny) = chip(cx, "net");
-    click(cx, nx, ny);
-    advance(cx, 400);
-    assert!(says(cx, "net is held on by full"), "{:?}", said(cx));
-    assert!(says(cx, "12"), "the count did not change: {:?}", said(cx));
-    // Turning `full` back off releases everything.
-    let (fx, fy) = chip(cx, "full");
-    click(cx, fx, fy);
-    advance(cx, 400);
-    assert!(says(cx, "0") && !says(cx, "(471K lines)"), "{:?}", said(cx));
+    assert_eq!(said(cx), before, "pointer input cannot simulate a feature change");
+}
+
+#[gpui::test]
+fn feature_profile_status_wraps_within_the_narrow_double_text_reader(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let (cx, _) = open(cx, |_, cx, _| {
+        let measure = cx.facet().measure(px(320.0));
+        feature_preview("narrow-features", tokio_features(), px(320.0), &measure).into_any_element()
+    });
+    let status = ledger(cx)
+        .texts
+        .into_iter()
+        .find(|text| text.content == "read only · manifest defaults")
+        .expect("the full read-only profile status is painted");
+    assert_eq!(status.overflow, TextOverflow::Wrap);
+    assert!(status.bounds.x >= 20.0 && status.bounds.x + status.bounds.width <= 340.5, "status stays inside the 320px feature reader: {status:?}");
 }
 
 // ------------------------------------------------------------------ berg
@@ -529,4 +693,38 @@ fn the_berg_names_a_block_on_a_plate_and_says_what_share_of_the_weight_it_carrie
     assert!(hot.contains("reached via mio") && hot.contains("click to go there"), "{hot}");
     click(cx, windows.x + windows.width * 0.5, windows.y + windows.height * 0.5);
     assert_eq!(log.borrow().as_slice(), ["go 9"]);
+}
+
+#[gpui::test]
+fn weight_caption_expands_and_keeps_the_whole_fact_at_double_text_scale(cx: &mut TestAppContext) {
+    cx.update(|cx| set_facet(Facet { text_scale: 2.0, ..Facet::default() }, cx));
+    let facts = Rc::new(BergFacts {
+        name: "tokio".into(),
+        own: 49_187,
+        blocks: (0..37)
+            .map(|index| BergBlock {
+                name: format!("package-{index}").into(),
+                version: "1.0.0".into(),
+                sloc: 1,
+                layer: 1,
+                parent: None,
+                deps: Vec::new(),
+            })
+            .collect(),
+        missing: 0,
+        basis: Some(Basis::Lock),
+    });
+    let (cx, _) = open(cx, move |_, cx, _| {
+        let measure = cx.facet().measure(px(256.0));
+        weight("weight-long-caption", facts.clone(), px(256.0), Nominal::px(138.0), Fold::Folded, &measure).into_any_element()
+    });
+    let caption = ledger(cx).texts.into_iter().find(|text| text.key.ends_with("caption")).expect("the weight caption is painted");
+    assert_eq!(caption.content, "37 packages beneath · in your lock");
+    assert_eq!(caption.overflow, TextOverflow::Wrap, "the source fact is not ellipsized at 200% text");
+    assert!(caption.bounds.height > caption.line_height, "all wrapped caption lines have layout height: {caption:?}");
+    let target = ledger(cx).targets.into_iter().find(|target| target.key.contains("weight-long-caption")).expect("the whole weight card has a native target");
+    assert!(
+        caption.bounds.y + caption.bounds.height <= target.bounds.y + target.bounds.height + 0.5,
+        "the caption remains inside the card's actual target bounds: caption={caption:?}, target={target:?}"
+    );
 }

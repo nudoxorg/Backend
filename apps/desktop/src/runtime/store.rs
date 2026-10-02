@@ -24,20 +24,29 @@
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
 
+mod dependencies;
 mod keeper;
 mod owner_link;
+#[cfg(test)]
+mod cargo_tests;
+#[cfg(test)]
+pub(crate) mod cargo_context_tests;
+#[cfg(test)]
+mod owner_read_tests;
 
+pub(crate) use self::dependencies::{RouteDependencies, RouteReadLease};
+pub(crate) use self::owner_link::OwnerAttachment;
 use self::keeper::SnapshotKeeper;
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
-use crate::core::{ErrorValue, FaultCode, Resource, UnavailableReason};
+use crate::core::{ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, admit_resource};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
-    Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore, ReadFailure,
-    SearchPage, SearchQuery, SourceView, Stamp, SymbolPage, SymbolRef,
+    Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore,
+    ReadFailure, SearchPage, SearchQuery, SourceView, Stamp, SymbolPage, SymbolRef,
 };
 use crate::navigation::Route;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
@@ -129,7 +138,11 @@ pub struct Watch {
 impl Watch {
     /// Watches `keys` and `branches`, starting from the store's current stamps.
     #[must_use]
-    pub fn new(store: &DataStore, keys: impl IntoIterator<Item = PageKey>, branches: &[Branch]) -> Self {
+    pub fn new(
+        store: &DataStore,
+        keys: impl IntoIterator<Item = PageKey>,
+        branches: &[Branch],
+    ) -> Self {
         Self {
             keys: keys
                 .into_iter()
@@ -215,8 +228,6 @@ pub struct DataStore {
     /// it shows the world. Leaving the world drops it.
     tour: Option<(PackageRef, u64)>,
     tours: u64,
-    /// The fixture world's fault the window was last told of (told once).
-    world_fault: Option<super::fixture_world::WorldFault>,
     /// The owner behind the reads: its phase, and the pages held for it.
     owner: OwnerLink,
     /// The launch snapshot: seeded pages, and saving them for next time.
@@ -241,41 +252,43 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
     let (package, at) = match route {
         Route::Package(route) => (&route.package, &route.at),
         Route::Symbol(route) => (&route.package, &route.at),
+        Route::CargoSource(route) => return PackageRef::parse(route.package.as_str()).ok(),
         Route::Orbit(_) | Route::World => return None,
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
-    Some(match at {
-        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())).unwrap_or(pinned),
-        None => pinned,
-    })
+    match at {
+        Some(at) if at.is_valid() => pinned
+            .at(at.as_str())
+            .or_else(|| release_tree(&pinned, at.as_str())),
+        Some(_) => None,
+        None => Some(pinned),
+    }
 }
 
 /// The tree of the release `at` of the registry package whose tree `pinned`
 /// is: a registry root is read at another release by reading that release's
 /// own tree (`…/toml-0.5.11` beside `…/toml-0.8.23`), which the library holds
-/// once it is added. `None` for a person's own project, for the pinned
-/// release itself, and for a release this machine does not have.
+/// once it is added. This is lexical only: the worker verifies existence and
+/// index coverage. Route resolution must never touch disk on the UI lane.
 fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, PoisonError};
-    static TREES: Mutex<Option<HashMap<(String, String), Option<String>>>> = Mutex::new(None);
-    let (name, version) = pinned.registry_release()?;
+    let (name, version) = pinned.registry_shape()?;
+    // Only Cargo registry trees use this path layout. Other ecosystems keep
+    // their own exact version spelling and are read through their purl.
+    crate::model::release::Release::new(name, at).ok()?;
     if version == at {
-        return None;
+        return Some(pinned.clone());
     }
-    let key = (pinned.as_str().to_owned(), at.to_owned());
-    let known = TREES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|trees| trees.get(&key).cloned());
-    let tree = match known {
-        Some(tree) => tree,
-        None => {
-            let release = crate::model::release::Release::new(name, at).ok()?;
-            let composed = crate::host::registry::composed()?;
-            let tree = composed.source.tree_of(&release).and_then(|tree| tree.to_str().map(str::to_owned));
-            TREES.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new).insert(key, tree.clone());
-            tree
-        }
-    }?;
-    PackageRef::parse(&tree).ok()
+    let current = std::path::Path::new(pinned.as_str());
+    let parent = current.parent()?;
+    let target = format!("{name}-{at}");
+    let tree = if parent.file_name()? == current.file_name()? {
+        parent.parent()?.join(&target).join(&target)
+    } else {
+        parent.join(&target)
+    };
+    PackageRef::parse(tree.to_str()?)
+        .ok()
+        .map(|target| target.with_release_origin(pinned))
 }
 
 /// The declaration a route reads, scoped to the release it views.
@@ -289,6 +302,8 @@ pub fn route_symbol(route: &Route) -> Option<SymbolRef> {
 pub enum Unread {
     /// The address does not spell a declaration.
     NotADeclaration,
+    /// The declaration coordinate belongs to a different package than the route.
+    CoordinateOutsidePackage,
     /// The route views a release its package cannot be read at: a
     /// workspace crate has only its working copy in the index.
     ReleaseNotHere(crate::navigation::ReleaseId),
@@ -303,33 +318,60 @@ pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
         return Err(Unread::NotADeclaration);
     };
     let symbol = SymbolRef::new(route.id.as_str()).map_err(|_| Unread::NotADeclaration)?;
+    let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
+    if !symbol
+        .as_str()
+        .strip_prefix(pinned.as_str())
+        .is_some_and(|tail| tail.starts_with("::"))
+    {
+        return Err(Unread::CoordinateOutsidePackage);
+    }
     let Some(at) = &route.at else {
         return Ok(symbol);
     };
-    let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
-    let viewed = pinned.at(at.as_str()).ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
-    Ok(symbol.rebased(&pinned, &viewed).unwrap_or(symbol))
+    let viewed = route_package(&Route::Symbol(route.clone()))
+        .ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
+    symbol
+        .rebased(&pinned, &viewed)
+        .ok_or(Unread::CoordinateOutsidePackage)
 }
 
 /// Returns the page keys one route displays.
 #[must_use]
 pub fn route_keys(route: &Route) -> Vec<PageKey> {
-    match route {
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => vec![PageKey::Browse(browse.into())],
-        Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
-        Route::World => vec![PageKey::Orbit],
-        Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
-        Route::Symbol(symbol) => route_symbol(route)
-            .map(|id| match symbol.view {
-                crate::navigation::View::Code => PageKey::Source(id),
-                crate::navigation::View::Page | crate::navigation::View::Graph => PageKey::Symbol(id),
-            })
-            .into_iter()
-            .collect(),
-    }
+    RouteDependencies::new(route, None).into_keys()
+}
+
+/// Live admission of owner-checked Cargo bytes or path observations.
+/// Retained values never become current merely because a slot still holds them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CargoReadAdmission {
+    Current,
+    Checking,
+    Fault(ErrorValue),
+    Unavailable(UnavailableReason),
+}
+
+fn is_cargo_source_resource(key: &PageKey) -> bool {
+    matches!(
+        key,
+        PageKey::CargoSource(_)
+            | PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_))
+    )
 }
 
 impl DataStore {
+    /// Installs a completed Browse reply for shell event-boundary fixtures.
+    #[cfg(test)]
+    #[allow(clippy::expect_used, clippy::panic)]
+    pub(crate) fn test_land_browse(&mut self, key: crate::model::browse::BrowseKey, value: crate::model::browse::BrowseValue, cx: &mut Context<Self>) {
+        let key = PageKey::Browse(key);
+        let before = self.pages.stamp(&key);
+        let generation = self.pages.begin_forced(&key, self.snapshot.key()).expect("forced fixture reading");
+        assert_eq!(self.pages.land(&key, generation, Ok(crate::model::pages::PageValue::Browse(value))), Landing::Applied);
+        self.emit_moved(key, before, cx);
+    }
+
     /// Creates a store around the current snapshot. `pool` is the read lane;
     /// without one, every page is reported unavailable instead of spinning.
     #[must_use]
@@ -346,7 +388,6 @@ impl DataStore {
             tour: None,
             tours: 0,
             notice: None,
-            world_fault: None,
             owner: OwnerLink::serving(),
             keeper: SnapshotKeeper::default(),
         }
@@ -354,19 +395,27 @@ impl DataStore {
 
     /// A display selection never becomes an address or a history entry.
     pub(crate) fn graph_focus(&self) -> Option<&super::graph_focus::GraphFocus> {
-        self.graph_focus.as_ref().filter(|focus| focus.active(&self.snapshot))
+        self.graph_focus
+            .as_ref()
+            .filter(|focus| focus.active(&self.snapshot))
     }
 
     /// The current notice, when its visit and root are still the one showing.
     pub(crate) fn notice(&self) -> Option<&super::graph_focus::Notice> {
-        self.notice.as_ref().filter(|notice| notice.active(&self.snapshot))
+        self.notice
+            .as_ref()
+            .filter(|notice| notice.active(&self.snapshot))
     }
 
     /// Posts (or clears) the one visit-scoped notice on its own, for a
     /// caller with no graph focus of its own to admit alongside it (an
     /// anatomy link, Ask, an unindexed hold). A newer notice replaces an
     /// older one; setting `None` clears it early.
-    pub(crate) fn set_notice(&mut self, notice: Option<super::graph_focus::Notice>, cx: &mut Context<Self>) {
+    pub(crate) fn set_notice(
+        &mut self,
+        notice: Option<super::graph_focus::Notice>,
+        cx: &mut Context<Self>,
+    ) {
         if self.notice != notice {
             self.notice = notice;
             self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
@@ -384,10 +433,17 @@ impl DataStore {
 
     /// The tour asked for, with its number, while the route is the world.
     pub(crate) fn tour_ask(&self) -> Option<&(PackageRef, u64)> {
-        self.tour.as_ref().filter(|_| matches!(self.snapshot.route(), Route::World))
+        self.tour
+            .as_ref()
+            .filter(|_| matches!(self.snapshot.route(), Route::World))
     }
 
-    pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::Notice>, cx: &mut Context<Self>) {
+    pub(crate) fn admit_graph_focus(
+        &mut self,
+        focus: Option<super::graph_focus::GraphFocus>,
+        notice: Option<super::graph_focus::Notice>,
+        cx: &mut Context<Self>,
+    ) {
         if self.graph_focus != focus || self.notice != notice {
             self.graph_focus = focus;
             self.notice = notice;
@@ -396,7 +452,11 @@ impl DataStore {
     }
 
     /// Creates the entity and starts its wake task.
-    pub fn install(cx: &mut App, snapshot: Arc<AppSnapshot>, pool: Option<ReadPool>) -> Entity<Self> {
+    pub fn install(
+        cx: &mut App,
+        snapshot: Arc<AppSnapshot>,
+        pool: Option<ReadPool>,
+    ) -> Entity<Self> {
         Self::install_with_owner(cx, snapshot, pool, None, None)
     }
 
@@ -411,7 +471,7 @@ impl DataStore {
         keep: Option<Keep>,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let route = route_keys(snapshot.route());
+            let route = RouteDependencies::new(snapshot.route(), snapshot.overlay()).into_keys();
             let mut store = Self::new(snapshot, pool);
             if let Some(gate) = gate {
                 store.owner = OwnerLink::behind(gate);
@@ -446,7 +506,7 @@ impl DataStore {
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
     pub(crate) fn save_now(&self) -> std::io::Result<usize> {
-        self.keeper.save_now(&self.pages, &self.snapshot)
+        self.keeper.save_now(&self.pages, &self.snapshot, self.owner_serving())
     }
 
     /// Emits `key`'s change only when its visible state moved.
@@ -474,10 +534,22 @@ impl DataStore {
         &self.focused
     }
 
+    /// Whether the owner observed by this store still serves its admitted
+    /// attachment. The gate can revoke it before the UI watcher runs.
+    #[must_use]
+    pub fn owner_serving(&self) -> bool {
+        self.owner.is_current_serving()
+    }
+
     /// What the read pool is doing now.
     #[must_use]
     pub fn pool_activity(&self) -> PoolLoad {
-        self.pool.as_ref().map_or_else(PoolLoad::default, |pool| PoolLoad { queued: pool.queued(), running: pool.running() })
+        self.pool
+            .as_ref()
+            .map_or_else(PoolLoad::default, |pool| PoolLoad {
+                queued: pool.queued(),
+                running: pool.running(),
+            })
     }
 
     /// The read pool's `(queued, running)` counts, as a tuple: the callers in
@@ -545,11 +617,21 @@ impl DataStore {
             self.emit(StoreEvent::Snapshot(*branch), cx);
         }
         if changed.contains(&Branch::Root) {
+            // Old-root work must lose its generation before ensure asks for this root.
+            let stale = self
+                .pages
+                .keys()
+                .into_iter()
+                .filter(|key| self.pages.inflight(key).is_some())
+                .collect::<Vec<_>>();
+            for key in stale {
+                self.cancel_key(&key, cx);
+            }
             let root = self.snapshot.key();
             self.keeper.settle(&mut self.pages, root);
         }
-        if changed.contains(&Branch::Route) {
-            self.focus(route_keys(snapshot.route()), cx);
+        if changed.contains(&Branch::Route) || changed.contains(&Branch::Overlay) {
+            self.focus(RouteDependencies::new(snapshot.route(), snapshot.overlay()).into_keys(), cx);
         } else if changed.contains(&Branch::Root) {
             let focused = self.focused.iter().cloned().collect::<Vec<_>>();
             for key in focused {
@@ -558,29 +640,10 @@ impl DataStore {
         }
     }
 
-    /// Tells the window once when the fixture world could not be read: the
-    /// graph and the hand's roads are then absent, and a person should know
-    /// why. Cheap to repeat (a views calls it from render).
-    fn announce_world_fault(&mut self, cx: &mut Context<Self>) {
-        let Some(fault) = super::fixture_world::fault(cx) else { return };
-        if self.world_fault.as_ref() == Some(&fault) {
-            return;
-        }
-        let notice = super::graph_focus::Notice {
-            visit: self.snapshot.route().clone(),
-            root: self.snapshot.key(),
-            message: Arc::from(format!("The world could not be read, so the graph and the hand's roads are missing. {fault}")),
-            retry: None,
-        };
-        self.world_fault = Some(fault);
-        self.set_notice(Some(notice), cx);
-    }
-
     /// Ensures one page is loaded at the current root. Idempotent: a page
     /// that is current or in flight costs nothing, so views may call this
     /// from render. A queued prefetch for the key is promoted.
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
-        self.announce_world_fault(cx);
         self.keep_focused_resident();
         match self.owner.phase() {
             OwnerPhase::Serving => {}
@@ -598,7 +661,14 @@ impl DataStore {
         let before = self.pages.stamp(&key);
         if let Some(generation) = self.pages.begin(&key, root) {
             self.prefetching.remove(&key);
-            self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Normal, None, cx);
+            self.submit(
+                key.clone(),
+                ReadRequest::for_key(&key),
+                generation,
+                Priority::Normal,
+                None,
+                cx,
+            );
             let stamp = self.pages.stamp(&key);
             self.emit_moved(key, before, cx);
             return stamp;
@@ -618,11 +688,11 @@ impl DataStore {
     /// round trip and are dropped on landing), and the new keys are ensured.
     pub fn focus(&mut self, keys: Vec<PageKey>, cx: &mut Context<Self>) {
         let next = keys.iter().cloned().collect::<BTreeSet<_>>();
-        let dropped = self
-            .focused
-            .difference(&next)
-            .cloned()
-            .collect::<Vec<_>>();
+        let previous = self.focused.clone();
+        let previous_file = previous.iter().find(|key| matches!(key, PageKey::CargoSource(_)));
+        let next_file = next.iter().find(|key| matches!(key, PageKey::CargoSource(_)));
+        let file_changed = next_file.is_some() && previous_file != next_file;
+        let dropped = self.focused.difference(&next).cloned().collect::<Vec<_>>();
         self.owner.retain_held(|key| next.contains(key));
         self.focused = next;
         for key in dropped {
@@ -632,7 +702,26 @@ impl DataStore {
             self.cancel_key(&key, cx);
         }
         for key in keys {
-            self.ensure(key, cx);
+            if is_cargo_source_resource(&key)
+                && (!previous.contains(&key)
+                    || (file_changed
+                        && matches!(key, PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_)))))
+                && self.pages.contains(&key)
+            {
+                // A file page is a current source capability, not a durable
+                // snapshot. Back/Forward after leaving must revalidate even
+                // when the global index root has not changed.
+                match &key {
+                    PageKey::CargoSource(file) => self.pages.revoke_cargo_source(file),
+                    PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
+                        self.pages.revoke_cargo_source_inventory(inventory);
+                    }
+                    _ => {}
+                }
+                self.retry(key, cx);
+            } else {
+                self.ensure(key, cx);
+            }
         }
     }
 
@@ -640,7 +729,9 @@ impl DataStore {
     /// rested on a link for 120 ms. Low priority, cancellable, and a no-op
     /// when the page is current or already requested.
     pub fn prefetch(&mut self, key: PageKey, cx: &mut Context<Self>) {
-        if !self.owner.is_serving() {
+        if !self.owner.is_serving()
+            || (self.prefetching.len() >= 16 && !self.prefetching.contains(&key))
+        {
             return;
         }
         self.keep_focused_resident();
@@ -649,7 +740,14 @@ impl DataStore {
         if let Some(generation) = self.pages.begin(&key, root) {
             self.prefetching.insert(key.clone());
             self.stats.prefetched = self.stats.prefetched.saturating_add(1);
-            self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Prefetch, None, cx);
+            self.submit(
+                key.clone(),
+                ReadRequest::for_key(&key),
+                generation,
+                Priority::Prefetch,
+                None,
+                cx,
+            );
             self.emit_moved(key, before, cx);
         }
     }
@@ -666,6 +764,15 @@ impl DataStore {
     pub fn cancel_prefetch(&mut self, key: &PageKey, cx: &mut Context<Self>) {
         if self.prefetching.remove(key) {
             self.cancel_key(key, cx);
+        }
+    }
+
+    /// Stop a query Ask no longer displays, unless the current page still
+    /// owns that same read (for example, Ask opened over Find).
+    pub fn cancel_unfocused_search(&mut self, query: &SearchQuery, cx: &mut Context<Self>) {
+        let key = PageKey::Search(query.clone());
+        if !self.focused.contains(&key) {
+            self.cancel_key(&key, cx);
         }
     }
 
@@ -701,7 +808,14 @@ impl DataStore {
         let root = self.snapshot.key();
         if let Some(generation) = self.pages.begin_forced(&key, root) {
             self.prefetching.remove(&key);
-            self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Normal, None, cx);
+            self.submit(
+                key.clone(),
+                ReadRequest::for_key(&key),
+                generation,
+                Priority::Normal,
+                None,
+                cx,
+            );
             self.emit(StoreEvent::Resource(key), cx);
         }
     }
@@ -764,23 +878,46 @@ impl DataStore {
             }
             return;
         };
-        self.stats.submitted = self.stats.submitted.saturating_add(1);
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
-        pool.submit(ReadJob {
-            key,
+        let accepted = pool.submit(ReadJob {
+            key: key.clone(),
             request,
             generation,
             priority,
             cancel: CancellationToken::new(),
             affinity,
         });
+        if accepted {
+            self.stats.submitted = self.stats.submitted.saturating_add(1);
+        } else if priority == Priority::Prefetch {
+            self.prefetching.remove(&key);
+            let before = self.pages.stamp(&key);
+            let _ = self.pages.cancel(&key);
+            self.emit_moved(key, before, cx);
+        } else if self.pages.land(
+            &key,
+            generation,
+            Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Transport,
+                "The reader is busy with too many pages. Try this page again.",
+            ))),
+        ) == Landing::Applied
+        {
+            self.emit(StoreEvent::Resource(key), cx);
+        }
     }
 
     /// The owner answered, and its root is already admitted
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
-        let mut keys = self.owner.answered();
+        let answer = self.owner.prepare_answer();
+        if answer.attachment_changed {
+            // The watcher may see only the new Ready. Completed bytes from
+            // the previous same-root attachment still need a fresh read.
+            self.revoke_owner_reads(cx);
+        }
+        let mut keys = self.owner.answered(answer);
         keys.extend(self.focused.iter().cloned());
         for key in keys {
             self.ensure(key, cx);
@@ -790,6 +927,11 @@ impl DataStore {
     /// The owner could not start: every held page, and every page the route
     /// shows, lands as a fault carrying the owner's words.
     pub(crate) fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
+        // A serving attachment can fail while reads are running. Revoke all
+        // of their generations before faulting visible pages: a late reply
+        // from the lost owner must not land after Retry, even at the same
+        // producer root. Quiet snapshot reads keep their last painted value.
+        self.revoke_owner_reads(cx);
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -810,14 +952,49 @@ impl DataStore {
             message: Arc::from(message),
             // "Try again" asks the page for itself again, which starts the
             // owner; with no page on the route, the Library's.
-            retry: Some(self.focused.iter().next().cloned().unwrap_or(PageKey::Orbit)),
+            retry: Some(
+                self.focused
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or(PageKey::Orbit),
+            ),
         };
         self.set_notice(Some(notice), cx);
     }
 
+    fn revoke_inflight(&mut self, cx: &mut Context<Self>) {
+        let running = self
+            .pages
+            .keys()
+            .into_iter()
+            .filter(|key| self.pages.inflight(key).is_some())
+            .collect::<Vec<_>>();
+        for key in running {
+            self.cancel_key(&key, cx);
+        }
+        self.prefetching.clear();
+    }
+
+    /// A replacement owner must renew each prior live read. Immutable values
+    /// stay resident as nonactionable predecessors; only visible dependencies
+    /// are requested again when the new owner answers.
+    fn revoke_owner_reads(&mut self, cx: &mut Context<Self>) {
+        for key in self.pages.keys() {
+            self.cancel_key(&key, cx);
+            let before = self.pages.stamp(&key);
+            if self.pages.revoke_owner_read(&key) {
+                self.emit_moved(key, before, cx);
+            }
+        }
+        self.prefetching.clear();
+    }
+
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
-        if self.owner.starting() {
+        let changed = self.owner.starting();
+        self.revoke_owner_reads(cx);
+        if changed {
             cx.notify();
         }
     }
@@ -840,6 +1017,9 @@ impl DataStore {
     /// Lands every finished read. Called by the wake task; public so tests
     /// and harnesses can drive it deterministically.
     pub fn drain(&mut self, cx: &mut Context<Self>) -> usize {
+        if self.owner.attachment_changed() {
+            self.revoke_inflight(cx);
+        }
         self.stats.turns = self.stats.turns.saturating_add(1);
         let Some(pool) = &self.pool else {
             return 0;
@@ -848,10 +1028,30 @@ impl DataStore {
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {
+            if !outcome.complete {
+                match outcome.result {
+                    Ok(value) => match self.pages.stage(&outcome.key, outcome.generation, value) {
+                        Landing::Applied => {
+                            applied += 1;
+                            self.stats.landed = self.stats.landed.saturating_add(1);
+                            self.emit(StoreEvent::Resource(outcome.key), cx);
+                        }
+                        Landing::Superseded => {
+                            self.stats.superseded = self.stats.superseded.saturating_add(1)
+                        }
+                        Landing::Unchanged => {}
+                    },
+                    Err(_) => self.stats.superseded = self.stats.superseded.saturating_add(1),
+                }
+                continue;
+            }
             if self.pages.inflight(&outcome.key) == Some(outcome.generation) {
                 self.prefetching.remove(&outcome.key);
             }
-            match self.pages.land(&outcome.key, outcome.generation, outcome.result) {
+            match self
+                .pages
+                .land(&outcome.key, outcome.generation, outcome.result)
+            {
                 Landing::Applied => {
                     applied += 1;
                     super::trace::mark("read.land", format_args!("{:?}", outcome.key));
@@ -889,6 +1089,49 @@ impl DataStore {
         self.pages.inflight(key).is_some()
     }
 
+    /// The serving owner this UI visit can capture for delayed actions.
+    /// An absent lease means Starting, Failed, or a replacement the store
+    /// has not yet admitted. The stable ungated test token is synthetic and
+    /// does not establish acceptance by a real owner.
+    pub(crate) fn current_owner_attachment(&self) -> Option<OwnerAttachment> {
+        self.owner.current_attachment()
+    }
+
+    /// A captured visit cannot act through a later same-root attachment.
+    pub(crate) fn admits_owner_attachment(&self, expected: &OwnerAttachment) -> bool {
+        self.current_owner_attachment().as_ref() == Some(expected)
+    }
+
+    /// The current serving attachment and producer authority must both admit
+    /// a Cargo observation. UI observation counters are not producer authority.
+    pub(crate) fn cargo_read_admission<T>(
+        &self,
+        key: &PageKey,
+        resource: &Resource<T>,
+    ) -> CargoReadAdmission {
+        debug_assert!(is_cargo_source_resource(key));
+        if !self.owner_serving() {
+            return self.owner.current_fault().map_or(CargoReadAdmission::Checking, |fault| {
+                CargoReadAdmission::Fault(ErrorValue::new(
+                    FaultCode::Transport,
+                    format!("The Cargo owner is unavailable. {fault}"),
+                ))
+            });
+        }
+        if self.is_loading(key) {
+            return CargoReadAdmission::Checking;
+        }
+        match admit_resource(resource, self.snapshot.key(), self.owner_serving()) {
+            ResourceAdmission::Current(_) => CargoReadAdmission::Current,
+            ResourceAdmission::Failed { terminal, .. } => match terminal {
+                ResourceTerminal::Fault(error) => CargoReadAdmission::Fault(error.clone()),
+                ResourceTerminal::Unavailable(reason) => CargoReadAdmission::Unavailable(reason.clone()),
+                ResourceTerminal::Complete | ResourceTerminal::Partial => CargoReadAdmission::Checking,
+            },
+            ResourceAdmission::Retained { .. } | ResourceAdmission::Pending(_) => CargoReadAdmission::Checking,
+        }
+    }
+
     /// Returns whether the in-flight fetch for `key` is a prefetch.
     #[must_use]
     pub fn is_prefetching(&self, key: &PageKey) -> bool {
@@ -905,6 +1148,12 @@ impl DataStore {
     #[must_use]
     pub fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
         self.pages.source(symbol)
+    }
+
+    /// Returns a current Cargo source file read under the owner receipt.
+    #[must_use]
+    pub fn cargo_source(&self, file: &crate::model::pages::CargoSourceKey) -> Resource<crate::model::pages::CargoSourcePage> {
+        self.pages.cargo_source(file)
     }
 
     /// Returns the package dossier.
@@ -954,6 +1203,34 @@ mod tests {
     use std::time::{Duration, Instant};
 
     type Gate = Arc<(Mutex<BTreeSet<String>>, Condvar)>;
+
+    #[test]
+    fn a_symbol_address_must_belong_to_its_pinned_package_before_release_rebasing() {
+        let route = |id: &str| {
+            Route::Symbol(crate::navigation::SymbolRoute {
+                project: None,
+                package: crate::core::PackageId::new("pkg:cargo/serde@1.0.0").expect("package"),
+                id: crate::navigation::Coordinate::new(id).expect("coordinate"),
+                at: Some(crate::navigation::ReleaseId::new("1.0.1").expect("release")),
+                view: crate::navigation::View::Page,
+                line: None,
+                selected: None,
+            })
+        };
+        let foreign = route("pkg:cargo/serde_core@1.0.0::src/lib.rs:1::Item");
+        assert_eq!(
+            route_declaration(&foreign),
+            Err(Unread::CoordinateOutsidePackage)
+        );
+        assert!(route_symbol(&foreign).is_none());
+        assert!(route_keys(&foreign).is_empty());
+
+        let own = route("pkg:cargo/serde@1.0.0::src/lib.rs:1::Item");
+        assert_eq!(
+            route_declaration(&own).expect("own declaration").as_str(),
+            "pkg:cargo/serde@1.0.1::src/lib.rs:1::Item"
+        );
+    }
 
     /// Answers every page at once, except coordinates starting with `slow`,
     /// which wait for the test to open their gate (or for cancellation).
@@ -1009,7 +1286,11 @@ mod tests {
     }
 
     impl PageReader for FixtureReader {
-        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
             match request {
                 ReadRequest::Symbol(symbol) => {
                     let (lock, opened) = &*self.gate;
@@ -1124,17 +1405,20 @@ mod tests {
         assert_eq!(rig.take_events(), [StoreEvent::Resource(key.clone())]);
         rig.until(cx, |store| store.symbol(&symbol("fast-page")).is_loaded());
         assert_eq!(rig.take_events(), [StoreEvent::Resource(key.clone())]);
-        let (submitted, landed) = rig
-            .store
-            .read_with(cx, |store, _| (store.stats().submitted, store.stats().landed));
+        let (submitted, landed) = rig.store.read_with(cx, |store, _| {
+            (store.stats().submitted, store.stats().landed)
+        });
         assert_eq!(
             (submitted - rig.base.submitted, landed - rig.base.landed),
             (1, 1),
             "one read for three ensures"
         );
-        let page = rig.store.read_with(cx, |store, _| store.symbol(&symbol("fast-page")));
+        let page = rig
+            .store
+            .read_with(cx, |store, _| store.symbol(&symbol("fast-page")));
         assert_eq!(
-            page.loaded_value().map(|page| page.identity.name.to_string()),
+            page.loaded_value()
+                .map(|page| page.identity.name.to_string()),
             Some("fast-page".to_owned())
         );
         // A current page is not fetched again.
@@ -1149,42 +1433,140 @@ mod tests {
         let rig = rig(cx, 1);
         let old = PageKey::Symbol(symbol("slow-old"));
         let new = PageKey::Symbol(symbol("fast-new"));
-        rig.store.update(cx, |store, cx| store.focus(vec![old.clone()], cx));
-        rig.store.update(cx, |store, cx| store.focus(vec![new.clone()], cx));
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![old.clone()], cx));
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![new.clone()], cx));
         let (old_resource, cancelled) = rig.store.read_with(cx, |store, _| {
             (store.symbol(&symbol("slow-old")), store.stats().cancelled)
         });
         assert_eq!(cancelled - rig.base.cancelled, 1);
-        assert_eq!(old_resource.activity(), Activity::NotYet, "the old page is back to not-yet");
+        assert_eq!(
+            old_resource.activity(),
+            Activity::NotYet,
+            "the old page is back to not-yet"
+        );
         rig.until(cx, |store| store.symbol(&symbol("fast-new")).is_loaded());
         // The cancelled read never lands, even when its gate opens later.
         rig.open("slow-old");
         // Wait for the cancelled read to finish (its worker leaves the pool),
         // not for a guessed 20 ms: only then is "it never lands" a claim.
         rig.until(cx, |store| store.pool_activity().is_idle());
+        assert!(rig.store.read_with(cx, |store, _| {
+            store.symbol(&symbol("slow-old")).loaded_value().is_none()
+        }));
+    }
+
+    #[gpui::test]
+    fn lost_owner_revokes_a_running_page_before_its_late_reply(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let symbol = symbol("slow-owner-lost");
+        let key = PageKey::Symbol(symbol.clone());
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| {
+            store.pages.inflight(&key).is_some() && store.pool_activity().running > 0
+        });
+        rig.store.update(cx, |store, cx| {
+            store.owner_failed(&OwnerFault::Lost("socket closed".into()), cx)
+        });
         assert!(
             rig.store
-                .read_with(cx, |store, _| store.symbol(&symbol("slow-old")).loaded_value().is_none())
+                .read_with(cx, |store, _| store.pages.inflight(&key))
+                .is_none()
         );
+        rig.open("slow-owner-lost");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        assert!(
+            rig.store.read_with(cx, |store, _| store
+                .symbol(&symbol)
+                .loaded_value()
+                .is_none()),
+            "the old owner cannot publish a page after its generation was revoked"
+        );
+    }
+
+    #[gpui::test]
+    fn a_new_root_supersedes_a_blocked_read_and_submits_exactly_one_current_read(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx, 1);
+        let key = PageKey::Symbol(symbol("slow-root"));
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        let old = rig
+            .store
+            .read_with(cx, |store, _| store.pages.inflight(&key).expect("R1 read"));
+
+        let r2 = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("store".to_owned(), "new-root".to_owned())]),
+            6,
+        );
+        rig.store.update(cx, |store, cx| {
+            store.admit_snapshot(Arc::new(AppSnapshot::empty(r2)), cx)
+        });
+        let (current, submitted) = rig.store.read_with(cx, |store, _| {
+            (store.pages.inflight(&key), store.stats().submitted)
+        });
+        assert_ne!(current, Some(old));
+        assert!(current.is_some(), "R2 starts despite the old Running slot");
+        assert_eq!(
+            submitted - rig.base.submitted,
+            2,
+            "one R1 and exactly one R2 request"
+        );
+        rig.store.update(cx, |store, _| {
+            let stale_stage =
+                store
+                    .pages
+                    .stage(&key, old, PageValue::Symbol(page(&symbol("slow-root"))));
+            assert_eq!(
+                stale_stage,
+                Landing::Superseded,
+                "a queued R1 stage cannot overwrite R2"
+            );
+        });
+
+        rig.open("slow-root");
+        rig.until(cx, |store| {
+            store.symbol(&symbol("slow-root")).is_loaded() && store.pool_activity().is_idle()
+        });
+        let (resource, landed) = rig.store.read_with(cx, |store, _| {
+            (store.symbol(&symbol("slow-root")), store.stats().landed)
+        });
+        assert_eq!(resource.value_root(), Some(r2));
+        assert_eq!(landed - rig.base.landed, 1, "only R2 can land");
     }
 
     #[gpui::test]
     fn a_hover_prefetch_is_cancellable_and_a_click_adopts_it(cx: &mut TestAppContext) {
         let rig = rig(cx, 1);
         let hovered = PageKey::Symbol(symbol("slow-hover"));
-        rig.store.update(cx, |store, cx| store.prefetch(hovered.clone(), cx));
-        assert!(rig.store.read_with(cx, |store, _| store.is_prefetching(&hovered)));
-        rig.store.update(cx, |store, cx| store.cancel_prefetch(&hovered, cx));
-        let resource = rig.store.read_with(cx, |store, _| store.symbol(&symbol("slow-hover")));
+        rig.store
+            .update(cx, |store, cx| store.prefetch(hovered.clone(), cx));
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.is_prefetching(&hovered))
+        );
+        rig.store
+            .update(cx, |store, cx| store.cancel_prefetch(&hovered, cx));
+        let resource = rig
+            .store
+            .read_with(cx, |store, _| store.symbol(&symbol("slow-hover")));
         assert_eq!(resource.activity(), Activity::NotYet);
 
         // Hover again, then click: the running prefetch is adopted, not repeated.
         let clicked = PageKey::Symbol(symbol("slow-click"));
-        rig.store.update(cx, |store, cx| store.prefetch(clicked.clone(), cx));
+        rig.store
+            .update(cx, |store, cx| store.prefetch(clicked.clone(), cx));
         rig.store.update(cx, |store, cx| {
             store.ensure(clicked.clone(), cx);
         });
-        assert!(!rig.store.read_with(cx, |store, _| store.is_prefetching(&clicked)));
+        assert!(
+            !rig.store
+                .read_with(cx, |store, _| store.is_prefetching(&clicked))
+        );
         rig.open("slow-click");
         rig.until(cx, |store| store.symbol(&symbol("slow-click")).is_loaded());
         let stats = rig.store.read_with(cx, |store, _| store.stats());
@@ -1203,10 +1585,12 @@ mod tests {
         let mut settings = current.settings().clone();
         settings.reduced_motion = !settings.reduced_motion;
         let next = Arc::new(current.with_settings(settings));
-        rig.store.update(cx, |store, cx| store.admit_snapshot(Arc::clone(&next), cx));
+        rig.store
+            .update(cx, |store, cx| store.admit_snapshot(Arc::clone(&next), cx));
         assert_eq!(rig.take_events(), [StoreEvent::Snapshot(Branch::Settings)]);
         // The same snapshot again is not a change.
-        rig.store.update(cx, |store, cx| store.admit_snapshot(next, cx));
+        rig.store
+            .update(cx, |store, cx| store.admit_snapshot(next, cx));
         assert!(rig.take_events().is_empty());
     }
 
@@ -1214,7 +1598,10 @@ mod tests {
     fn orbit_route_focus_reads_health_through_the_pool(cx: &mut TestAppContext) {
         let rig = rig(cx, 2);
         rig.store.update(cx, |store, cx| {
-            store.focus(route_keys(&Route::Orbit(crate::navigation::OrbitRoute::Home)), cx);
+            store.focus(
+                route_keys(&Route::Orbit(crate::navigation::OrbitRoute::Home)),
+                cx,
+            );
         });
         rig.until(cx, |store| store.health().is_loaded());
         let (health, orbit) = rig
@@ -1233,9 +1620,30 @@ mod tests {
     #[test]
     fn a_pool_is_idle_only_when_nothing_is_queued_and_nothing_is_running() {
         assert!(PoolLoad::default().is_idle(), "no jobs is idle");
-        assert!(!PoolLoad { queued: 1, running: 0 }.is_idle(), "a queued job is work");
-        assert!(!PoolLoad { queued: 0, running: 1 }.is_idle(), "a running job is work");
-        assert!(!PoolLoad { queued: 2, running: 3 }.is_idle(), "both is work");
+        assert!(
+            !PoolLoad {
+                queued: 1,
+                running: 0
+            }
+            .is_idle(),
+            "a queued job is work"
+        );
+        assert!(
+            !PoolLoad {
+                queued: 0,
+                running: 1
+            }
+            .is_idle(),
+            "a running job is work"
+        );
+        assert!(
+            !PoolLoad {
+                queued: 2,
+                running: 3
+            }
+            .is_idle(),
+            "both is work"
+        );
     }
 }
 
@@ -1301,7 +1709,9 @@ mod watch_tests {
         let mut workspace = snapshot.workspace().clone();
         workspace.path_error = Some(Arc::from("unrelated"));
         let unrelated = Arc::new(snapshot.with_workspace(workspace));
-        store.update(cx, |store, cx| store.admit_snapshot(Arc::clone(&unrelated), cx));
+        store.update(cx, |store, cx| {
+            store.admit_snapshot(Arc::clone(&unrelated), cx)
+        });
         cx.run_until_parked();
         assert_eq!(notified(cx), baseline, "no re-render for other slices");
 
@@ -1312,7 +1722,9 @@ mod watch_tests {
         assert!(after_key > baseline, "its page changed");
         let mut settings = unrelated.settings().clone();
         settings.reduced_motion = !settings.reduced_motion;
-        store.update(cx, |store, cx| store.admit_snapshot(Arc::new(unrelated.with_settings(settings)), cx));
+        store.update(cx, |store, cx| {
+            store.admit_snapshot(Arc::new(unrelated.with_settings(settings)), cx)
+        });
         cx.run_until_parked();
         assert_eq!(notified(cx), after_key + 1, "its branch changed once");
     }

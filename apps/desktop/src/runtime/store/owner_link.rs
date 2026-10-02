@@ -6,9 +6,36 @@
 //! that does not exist yet, and never asked at a root nobody served. A failed
 //! owner is a fault on every page, in its own words.
 
-use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+use crate::runtime::owner::{Epoch, OwnerFault, OwnerGate, OwnerState};
 use crate::model::pages::PageKey;
 use std::collections::BTreeSet;
+
+/// A serving attachment captured by one UI visit. The synthetic owner used
+/// by ungated tests has no gate; it cannot establish real-owner acceptance.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnerAttachment {
+    gate: Option<OwnerGate>,
+    epoch: Option<Epoch>,
+}
+
+impl PartialEq for OwnerAttachment {
+    fn eq(&self, other: &Self) -> bool {
+        self.epoch == other.epoch
+            && match (&self.gate, &other.gate) {
+                (Some(left), Some(right)) => left.same_gate(right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for OwnerAttachment {}
+
+/// One Ready publication captured before the store revokes previous reads.
+pub(super) struct OwnerAnswer {
+    epoch: Option<Epoch>,
+    pub(super) attachment_changed: bool,
+}
 
 /// Whether the owner behind this window's reads is answering.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +53,8 @@ pub(super) enum OwnerPhase {
 pub(super) struct OwnerLink {
     phase: OwnerPhase,
     gate: Option<OwnerGate>,
+    /// Ready publication whose reads this store currently admits.
+    served_epoch: Option<Epoch>,
     /// Pages asked for while the owner starts, fetched once it answers.
     held: BTreeSet<PageKey>,
 }
@@ -33,7 +62,7 @@ pub(super) struct OwnerLink {
 impl OwnerLink {
     /// An owner that is already answering (the harness and tests).
     pub(super) const fn serving() -> Self {
-        Self { phase: OwnerPhase::Serving, gate: None, held: BTreeSet::new() }
+        Self { phase: OwnerPhase::Serving, gate: None, served_epoch: None, held: BTreeSet::new() }
     }
 
     /// The link to the owner `gate` says it is now.
@@ -43,7 +72,8 @@ impl OwnerLink {
             OwnerState::Ready { .. } => OwnerPhase::Serving,
             OwnerState::Failed(fault) => OwnerPhase::Failed(fault),
         };
-        Self { phase, gate: Some(gate), held: BTreeSet::new() }
+        let served_epoch = gate.ready_epoch();
+        Self { phase, gate: Some(gate), served_epoch, held: BTreeSet::new() }
     }
 
     pub(super) const fn phase(&self) -> &OwnerPhase {
@@ -52,6 +82,42 @@ impl OwnerLink {
 
     pub(super) fn is_serving(&self) -> bool {
         self.phase == OwnerPhase::Serving
+    }
+
+    /// Paint checks the gate itself as well as the UI-observed phase: owner
+    /// publications can precede the watcher or coalesce into a same-root Ready.
+    pub(super) fn is_current_serving(&self) -> bool {
+        self.is_serving()
+            && self.gate.as_ref().is_none_or(|gate| gate.serves_attachment(self.served_epoch))
+    }
+
+    /// Capture only an attachment that the live gate still admits. A saved
+    /// visit must not become actionable again after a same-root replacement.
+    pub(super) fn current_attachment(&self) -> Option<OwnerAttachment> {
+        self.is_current_serving().then(|| OwnerAttachment {
+            gate: self.gate.clone(),
+            epoch: self.served_epoch,
+        })
+    }
+
+    pub(super) fn current_fault(&self) -> Option<OwnerFault> {
+        if let Some(gate) = &self.gate {
+            return match gate.state() {
+                OwnerState::Failed(fault) => Some(fault),
+                OwnerState::Starting | OwnerState::Ready { .. } => None,
+            };
+        }
+        match &self.phase {
+            OwnerPhase::Failed(fault) => Some(fault.clone()),
+            OwnerPhase::Serving | OwnerPhase::Starting => None,
+        }
+    }
+
+    /// A same-root reattachment still changes the authority for in-flight
+    /// results. Check the gate directly, since several state publications
+    /// can coalesce before the UI watcher runs.
+    pub(super) fn attachment_changed(&self) -> bool {
+        self.gate.as_ref().is_some_and(|gate| gate.ready_epoch() != self.served_epoch)
     }
 
     /// Remembers a page asked for while the owner is not answering.
@@ -64,26 +130,35 @@ impl OwnerLink {
         self.held.retain(keep);
     }
 
-    /// The owner answered: serving now, and the pages that waited.
-    pub(super) fn answered(&mut self) -> BTreeSet<PageKey> {
+    /// Keep the exact attachment the watcher observed while its previous
+    /// read admissions are revoked; do not reread the gate when serving it.
+    pub(super) fn prepare_answer(&self) -> OwnerAnswer {
+        let epoch = self.gate.as_ref().and_then(OwnerGate::ready_epoch);
+        OwnerAnswer { epoch, attachment_changed: epoch != self.served_epoch }
+    }
+
+    /// The owner answered: previous reads are revoked, serving now, and the
+    /// pages that waited can be fetched at the captured attachment.
+    pub(super) fn answered(&mut self, answer: OwnerAnswer) -> BTreeSet<PageKey> {
         self.phase = OwnerPhase::Serving;
+        self.served_epoch = answer.epoch;
         std::mem::take(&mut self.held)
     }
 
     /// The owner failed with `fault`: the pages that waited on it.
     pub(super) fn failed(&mut self, fault: OwnerFault) -> BTreeSet<PageKey> {
         self.phase = OwnerPhase::Failed(fault);
+        self.served_epoch = None;
         std::mem::take(&mut self.held)
     }
 
-    /// The owner is starting again: pages asked from now on are held. Whether
-    /// the phase moved (a serving owner is left alone).
+    /// The owner is starting again: pages asked from now on are held. A UI
+    /// watcher may observe this state without observing the preceding loss.
     pub(super) fn starting(&mut self) -> bool {
-        if self.is_serving() {
-            return false;
-        }
+        let moved = self.phase != OwnerPhase::Starting;
         self.phase = OwnerPhase::Starting;
-        true
+        self.served_epoch = None;
+        moved
     }
 
     /// "Try again" on a failed owner: asks it to start again (a starting one
@@ -94,5 +169,85 @@ impl OwnerLink {
         }
         self.phase = OwnerPhase::Starting;
         self.held.insert(key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::VersionedRoot;
+    use crate::model::ServiceMode;
+
+    #[test]
+    fn a_same_root_reattachment_is_new_authority_even_when_the_watcher_skips_states() {
+        let root = VersionedRoot::unserved();
+        let gate = OwnerGate::ready(root, ServiceMode::Attached);
+        let mut link = OwnerLink::behind(gate.clone());
+        assert!(!link.attachment_changed());
+        let captured = link.current_attachment().expect("serving attachment");
+        let old = gate.attached_ready_epoch().expect("attached owner");
+        assert!(gate.attached_lost_at(old, "socket closed".into()));
+        assert!(gate.restart());
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        assert!(link.attachment_changed(), "the store must revoke old reads even when it only observes the final Ready");
+        assert!(!link.is_current_serving());
+        assert_eq!(link.current_attachment(), None);
+        let answer = link.prepare_answer();
+        assert!(answer.attachment_changed, "revocation uses the epoch actually recorded as serving");
+        let _ = link.answered(answer);
+        assert!(!link.attachment_changed());
+        assert!(link.is_current_serving());
+        assert_ne!(link.current_attachment(), Some(captured));
+    }
+
+    #[test]
+    fn an_ungated_serving_owner_has_a_stable_lease_but_a_starting_one_does_not() {
+        let mut link = OwnerLink::serving();
+        let captured = link.current_attachment().expect("stable harness owner");
+        assert_eq!(link.current_attachment().as_ref(), Some(&captured));
+        assert!(link.starting());
+        assert_eq!(link.current_attachment(), None);
+        let answer = link.prepare_answer();
+        let _ = link.answered(answer);
+        assert_eq!(link.current_attachment().as_ref(), Some(&captured));
+    }
+
+    #[test]
+    fn different_gates_do_not_share_a_lease_even_at_the_same_initial_epoch() {
+        let root = VersionedRoot::unserved();
+        let first = OwnerLink::behind(OwnerGate::ready(root, ServiceMode::Attached));
+        let second = OwnerLink::behind(OwnerGate::ready(root, ServiceMode::Attached));
+        assert_ne!(first.current_attachment(), second.current_attachment());
+    }
+
+    #[test]
+    fn a_coalesced_embedded_restart_also_revokes_the_old_serving_lease() {
+        let root = VersionedRoot::unserved();
+        let gate = OwnerGate::ready(root, ServiceMode::Embedded);
+        let mut link = OwnerLink::behind(gate.clone());
+        let captured = link.current_attachment().expect("first embedded owner");
+        assert_eq!(gate.attached_ready_epoch(), None, "embedded owners do not report socket loss");
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Embedded });
+        assert_eq!(link.current_attachment(), None);
+        let answer = link.prepare_answer();
+        assert!(answer.attachment_changed);
+        let _ = link.answered(answer);
+        assert_ne!(link.current_attachment(), Some(captured));
+        assert!(link.is_current_serving());
+    }
+
+    #[test]
+    fn a_starting_state_interrupts_serving_when_the_watcher_skips_the_failure() {
+        let gate = OwnerGate::ready(VersionedRoot::unserved(), ServiceMode::Attached);
+        let mut link = OwnerLink::behind(gate.clone());
+        assert!(link.is_serving());
+        gate.publish(OwnerState::Starting);
+        assert!(link.attachment_changed());
+        assert!(link.starting());
+        assert!(!link.is_serving());
+        link.hold(PageKey::Health);
+        let answer = link.prepare_answer();
+        assert_eq!(link.answered(answer), BTreeSet::from([PageKey::Health]));
     }
 }

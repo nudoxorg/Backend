@@ -1,0 +1,10 @@
+[package]
+name = "filter-platform-proof-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common-proof = { path = "../common" }
+
+[target.'cfg(windows)'.dependencies]
+windows-only-proof = { path = "../windows-only" }

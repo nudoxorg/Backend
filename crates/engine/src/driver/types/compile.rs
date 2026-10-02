@@ -950,7 +950,7 @@ fn rust_terminal<'diagnostic>(
 /// Writes a bounded Rust authority summary while retaining the exact typed cause separately.
 /// Cargo's raw error chain can contain absolute paths and process configuration, so the public
 /// bytes contain only a closed explanation and a validated package name when Cargo supplies one.
-fn rust_authority_diagnostic<'diagnostic>(
+pub(crate) fn rust_authority_diagnostic<'diagnostic>(
     output: Option<&'diagnostic mut [u8]>,
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
     is_build_script: bool,
@@ -988,13 +988,72 @@ fn rust_authority_diagnostic<'diagnostic>(
                 let _ = message.write_str("Rust Cargo workspace loading failed.");
             }
         }
+        RustError::CargoMetadataIncomplete { policy, .. } => {
+            let policy = match policy {
+                backend_frontend_rust::legacy::RustCargoMetadataPolicy::Online => "online",
+                backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline => "offline",
+            };
+            let _ = write!(
+                message,
+                "Full Cargo dependency and feature resolution is incomplete under the {policy} policy; no-dependency metadata cannot authorize Rust semantics."
+            );
+        }
         RustError::SourceNotLoaded { .. } => {
             let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
         }
-        RustError::DetachedSource { .. } => {
-            let _ = message.write_str(
-                "selected Rust source is cfg-inactive or detached from every active Cargo target.",
+        RustError::DetachedSource {
+            active_hir_roots, ..
+        } => {
+            let _ = write!(
+                message,
+                "selected Rust source is cfg-inactive or detached from every active Cargo target; active package HIR roots: {} [",
+                active_hir_roots.package_crate_count,
             );
+            let displayed_roots = active_hir_roots.package_relative_roots.len().min(2);
+            for (index, root) in active_hir_roots
+                .package_relative_roots
+                .iter()
+                .take(displayed_roots)
+                .enumerate()
+            {
+                if index != 0 {
+                    let _ = message.write_str(", ");
+                }
+                // These roots are already package-relative and the inventory is
+                // capped by the Rust frontend. Keep the public diagnostic useful
+                // without ever rendering the absolute selected source path.
+                let display = root.to_string_lossy();
+                let prefix_bytes = display
+                    .char_indices()
+                    .take_while(|(index, character)| {
+                        index.saturating_add(character.len_utf8()) <= 28
+                    })
+                    .map(|(index, character)| index + character.len_utf8())
+                    .last()
+                    .unwrap_or(0);
+                let _ = message.write_str(&display[..prefix_bytes]);
+                if prefix_bytes < display.len() {
+                    let _ = message.write_str("…");
+                }
+            }
+            let _ = write!(
+                message,
+                "] (+{} omitted)",
+                active_hir_roots
+                    .package_crate_count
+                    .saturating_sub(displayed_roots)
+            );
+        }
+        RustError::AmbiguousSourceOwner { .. } => {
+            let _ = message.write_str(
+                "selected Rust source belongs to multiple active Cargo target contexts.",
+            );
+        }
+        RustError::SourceOwnershipIndexLimit { .. } => {
+            let _ = message.write_str("Rust active module ownership exceeded its admitted limit.");
+        }
+        RustError::SourceOwnershipIndexUnavailable => {
+            let _ = message.write_str("Rust active module ownership is unavailable.");
         }
         RustError::EditionMismatch { .. } => {
             let _ = message.write_str("Cargo edition differs from the requested Rust profile.");
@@ -1638,5 +1697,60 @@ mod lifecycle_tests {
             panic!("the exact Rust workspace cause must remain attached");
         };
         assert_eq!(root, private_root);
+    }
+
+    #[test]
+    fn incomplete_cargo_metadata_keeps_typed_cause_and_safe_policy_diagnostic() {
+        use backend_frontend_rust::legacy::{
+            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustCargoMetadataPolicy,
+            RustAuthorityError,
+        };
+
+        let source = source();
+        let recipe = recipe(source);
+        let private_root = std::path::PathBuf::from("/private/work/serde_core");
+        let cause = lower::rust::RustCollectError::Authority(
+            RustAuthorityError::CargoMetadataIncomplete {
+                root: private_root.clone(),
+                policy: RustCargoMetadataPolicy::Offline,
+                cause: CargoMetadataIncompleteCause::Preflight(
+                    CargoMetadataPreflightError::CommandFailed {
+                        phase: "metadata full",
+                        status: "exit status: 101".to_owned(),
+                        stderr: "no matching package named `quote` found at /private/cache".to_owned(),
+                    },
+                ),
+            },
+        );
+        let mut scratch = [0xa5; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let failure = rust_terminal(source, recipe, Some(&mut scratch), false, cause);
+        let CompileFailure::Authority { failure, .. } = failure else {
+            panic!("incomplete Cargo metadata must remain an authority terminal");
+        };
+        let projection = failure.projection();
+        assert_eq!(projection.phase, AuthorityPhase::Resolve);
+        assert_eq!(projection.class, AuthorityDiagnosticClass::Binding);
+        assert_eq!(
+            projection.diagnostic.primary,
+            b"Full Cargo dependency and feature resolution is incomplete under the offline policy; no-dependency metadata cannot authorize Rust semantics."
+        );
+        let AuthorityFailure::Rust {
+            cause:
+                RustAuthorityError::CargoMetadataIncomplete {
+                    root,
+                    policy: RustCargoMetadataPolicy::Offline,
+                    cause:
+                        CargoMetadataIncompleteCause::Preflight(
+                            CargoMetadataPreflightError::CommandFailed { stderr, .. },
+                        ),
+                },
+            ..
+        } = failure
+        else {
+            panic!("the concrete Cargo metadata cause must remain attached");
+        };
+        assert_eq!(root, private_root);
+        assert!(stderr.contains("quote"));
+        assert!(stderr.contains("/private/cache"));
     }
 }

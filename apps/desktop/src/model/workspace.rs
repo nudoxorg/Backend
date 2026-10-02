@@ -24,6 +24,9 @@ pub enum ProjectPhase {
     Cancelled,
     /// The last index attempt failed and can be retried.
     Failed,
+    /// The owner may have accepted the request, but its terminal receipt was lost.
+    /// A new mutation is forbidden until the exact operation is reconciled.
+    Unconfirmed,
     /// The persisted folder no longer exists or is not a directory.
     Missing,
 }
@@ -38,6 +41,7 @@ impl ProjectPhase {
             Self::Cancelling => "Cancelling…",
             Self::Cancelled => "Paused",
             Self::Failed => "Needs attention",
+            Self::Unconfirmed => "Outcome unconfirmed",
             Self::Missing => "Folder missing",
         }
     }
@@ -130,6 +134,9 @@ impl WorkspaceProject {
 /// launch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Note {
+    /// The saved Cargo source address lacked a usable exact Tree address or
+    /// canonical file/package coordinate. Library is the recovery destination.
+    CargoSourceAddressUnread,
     /// The saved session could not be read (damaged, too large, or written
     /// by a version this one must not reinterpret). Nothing was deleted:
     /// the file was kept, and this launch started from the defaults.
@@ -341,13 +348,15 @@ pub enum ContrastPreference {
     High,
 }
 
-/// Remote data policy. Local source and indexes remain the default.
+/// Registry metadata policy applied when this desktop starts its embedded
+/// local service. An attached service keeps the policy chosen by its owner.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PrivacyPreference {
-    /// Keep source, index, and registry requests on this machine.
+    /// Keep registry and registry-discovery requests on this machine.
     #[default]
     LocalOnly,
-    /// Permit remote registry metadata while keeping source local.
+    /// Permit registry and registry-discovery metadata requests while keeping
+    /// project source and indexes local.
     RegistryMetadata,
 }
 
@@ -406,15 +415,16 @@ pub struct SettingsState {
     pub contrast: ContrastPreference,
     /// Motion preference; `reduced_motion` mirrors `Reduced`.
     pub motion: MotionPreference,
-    /// Whether remote registry metadata may be requested.
+    /// Registry network policy for this desktop's next embedded service start.
     pub privacy: PrivacyPreference,
     /// How the local daemon is hosted.
     pub service_mode: ServiceMode,
-    /// Whether advisory data is included in registry refreshes.
+    /// Whether explicit advisory-feed refreshes are enabled. Cached advisory
+    /// findings remain available when refresh is paused.
     pub advisories: bool,
-    /// Whether immutable registry responses may be reused locally.
+    /// Whether recently admitted registry results may satisfy later requests.
     pub cache_enabled: bool,
-    /// Maximum age for cached registry responses.
+    /// Maximum age for a cached registry result's authenticated receipt.
     pub cache_days: u16,
     /// Current connection probe status.
     pub connection: ConnectionStatus,

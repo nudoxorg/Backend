@@ -5,10 +5,11 @@
 //! and "desktop → toml 0.8.23" are the same sentences everywhere.
 
 use backend_library::browse::{
-    DirectDependency, Duplicate, MemberEdge, ProjectTree, RoleEvidence, RoleId, TreeAdvisory,
-    TreeSource, WhyHop,
+    DirectDependency, Duplicate, LockedInactiveCoverage, LockfileGraphCoverage,
+    LockfileWorkspaceMembership, MemberEdge, PackageOrigin, PackageRole, ProjectTree, RoleEvidence, RoleId,
+    TreeAdvisory, TreeSource, WhyHop,
 };
-use backend_library::{AdvisoryCoverage, AdvisoryStatus, FreshnessState};
+use backend_library::{AdvisoryCoverage, AdvisoryStatus, FreshnessState, PackageReference};
 use std::collections::BTreeMap;
 
 /// A whole tree, in words.
@@ -18,8 +19,8 @@ pub struct TreeReading {
     pub name: String,
     /// "Your 44 packages lean on 75 others directly, and 884 in all."
     pub lede: String,
-    /// "and 309 more for other platforms", when any.
-    pub elsewhere: Option<String>,
+    /// A truthful note about lockfile rows outside the current resolution.
+    pub locked_inactive_note: Option<String>,
     /// How the tree was read, when not by Cargo for this machine.
     pub source_note: Option<String>,
     /// One line per advisory that affects the tree.
@@ -31,6 +32,11 @@ pub struct TreeReading {
     pub health: String,
     /// The roles, in display order, with their dependencies.
     pub roles: Box<[RoleReading]>,
+    /// Every retained external package row, including lockfile-only rows
+    /// whose workspace role cannot be inferred from Cargo.lock.
+    pub inventory: Box<[InventoryReading]>,
+    /// What these rows cover and what source navigation cannot prove.
+    pub inventory_note: String,
     /// "Here twice" or "Multiple versions", then the recorded count.
     pub twice_heading: Option<(String, String)>,
     /// The packages present at more than one incompatible version.
@@ -83,6 +89,28 @@ pub struct RowReading {
     pub description: Option<String>,
     /// The versions your members resolve it to.
     pub versions: Box<[String]>,
+    /// Exact owner-issued source reference for each resolved release, in
+    /// `versions` order. Equal version text may still name distinct sources.
+    pub sources: Box<[Option<PackageReference>]>,
+    /// Exact source spelling for each release, even when a file receipt is
+    /// unavailable and its action must remain disabled.
+    pub origins: Box<[PackageOrigin]>,
+}
+
+/// One exact external package row as the owner observed it. Its origin is
+/// display evidence; only `source` carries a route admitted by the owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryReading {
+    /// Exact package name.
+    pub name: String,
+    /// Exact version, including Cargo build metadata.
+    pub version: String,
+    /// Full observed source spelling or explicit unresolved origin.
+    pub origin: PackageOrigin,
+    /// Its known role, or Unknown when only Cargo.lock answered.
+    pub role: PackageRole,
+    /// Exact qualified reference only when a current Cargo receipt exists.
+    pub source: Option<PackageReference>,
 }
 
 /// A package present more than once.
@@ -102,22 +130,82 @@ pub struct TwiceReading {
 #[must_use]
 pub fn read_tree(tree: &ProjectTree) -> TreeReading {
     let members = tree.members.len();
-    let lede = format!(
-        "Your {} {} on {} {} directly, and {} in all.",
-        count(members),
-        if members == 1 { "package leans" } else { "packages lean" },
-        count(tree.direct.len()),
-        if tree.direct.len() == 1 { "other" } else { "others" },
-        count(tree.packages.len()),
-    );
-    let elsewhere = (tree.other_platforms > 0).then(|| {
-        format!("and {} more for other platforms", count(tree.other_platforms as usize))
-    });
+    let lede = match &tree.source {
+        TreeSource::Lockfile {
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
+            ..
+        } => format!(
+            "Cargo.lock lists {} package rows; workspace membership is unknown.",
+            count(tree.packages.len()),
+        ),
+        TreeSource::Cargo { .. } => format!(
+            "Your {} {} on {} {} directly, and {} in all.",
+            count(members),
+            if members == 1 {
+                "package leans"
+            } else {
+                "packages lean"
+            },
+            count(tree.direct.len()),
+            if tree.direct.len() == 1 {
+                "other"
+            } else {
+                "others"
+            },
+            count(tree.packages.len()),
+        ),
+    };
+    let locked_inactive_note = match tree.locked_inactive_coverage {
+        LockedInactiveCoverage::Complete if tree.locked_inactive > 0 => {
+            let count_text = count(tree.locked_inactive as usize);
+            let noun = if tree.locked_inactive == 1 {
+                "package is"
+            } else {
+                "packages are"
+            };
+            Some(format!(
+                "{count_text} {noun} locked but inactive for the current target/features"
+            ))
+        }
+        LockedInactiveCoverage::Complete => None,
+        LockedInactiveCoverage::Unavailable => Some(
+            "inactive rows cannot be counted without both the current resolution and Cargo.lock"
+                .to_owned(),
+        ),
+        LockedInactiveCoverage::Partial { unmatched_packages } if tree.locked_inactive == 0 => {
+            Some(format!(
+                "some package rows could not be matched exactly ({unmatched_packages}); the inactive-package count is a lower bound"
+            ))
+        }
+        LockedInactiveCoverage::Partial { unmatched_packages } => {
+            let count_text = count(tree.locked_inactive as usize);
+            let noun = if tree.locked_inactive == 1 {
+                "package is"
+            } else {
+                "packages are"
+            };
+            Some(format!(
+                "at least {count_text} {noun} locked but inactive for the current target/features; {unmatched_packages} package row(s) could not be matched exactly"
+            ))
+        }
+    };
     let source_note = match &tree.source {
         TreeSource::Cargo { .. } => None,
-        TreeSource::Lockfile { reason } => Some(format!(
-            "Read from Cargo.lock alone, for every platform and without package metadata: {reason}"
-        )),
+        TreeSource::Lockfile {
+            reason,
+            coverage,
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
+        } => Some(match coverage {
+            LockfileGraphCoverage::Complete => format!(
+                "Read from Cargo.lock alone, without target/feature filtering or package metadata; workspace membership and local paths are unknown: {reason}"
+            ),
+            LockfileGraphCoverage::Partial {
+                ambiguous_edges,
+                ambiguous_package_rows,
+            } => format!(
+                "Read from Cargo.lock alone, without target/feature filtering or package metadata; workspace membership and local paths are unknown: {reason}; {ambiguous_edges} dependency edge(s) could not be attributed and {ambiguous_package_rows} package row(s) share an indistinguishable source identity"
+            ),
+        }),
     };
     let alerts = tree.health.affecting.iter().map(alert).collect();
     let all_pairs = tree.twice.iter().all(|duplicate| duplicate.copies.len() == 2);
@@ -154,15 +242,42 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
             })
         })
         .collect();
+    let inventory = tree
+        .packages
+        .iter()
+        .map(|package| InventoryReading {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            origin: package.origin.clone(),
+            role: package.role,
+            source: package.source_qualified_reference(),
+        })
+        .collect();
+    let inventory_note = match &tree.source {
+        TreeSource::Cargo { .. } => format!(
+            "All {} external packages in this target/features resolution are listed. Locked but inactive packages are counted separately above; source files open only with a current exact receipt.",
+            count(tree.packages.len()),
+        ),
+        TreeSource::Lockfile { coverage: LockfileGraphCoverage::Complete, .. } => format!(
+            "All {} retained Cargo.lock package rows are listed. Workspace roles and source-file access are unknown without verified Cargo metadata.",
+            count(tree.packages.len()),
+        ),
+        TreeSource::Lockfile { coverage: LockfileGraphCoverage::Partial { ambiguous_edges, ambiguous_package_rows }, .. } => format!(
+            "All {} retained Cargo.lock package rows are listed. Workspace roles and source-file access are unknown; {ambiguous_edges} dependency edge(s) and {ambiguous_package_rows} same-identity row(s) remain ambiguous.",
+            count(tree.packages.len()),
+        ),
+    };
     TreeReading {
         name: tree.name.clone(),
         lede,
-        elsewhere,
+        locked_inactive_note,
         source_note,
         alerts,
         twice_line,
         health: health(tree),
         roles,
+        inventory,
+        inventory_note,
         twice_heading: (!tree.twice.is_empty()).then(|| {
             (
                 if all_pairs { "Here twice" } else { "Multiple versions" }.to_owned(),
@@ -173,7 +288,16 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
                 ),
             )
         }),
-        twice: tree.twice.iter().map(twice).collect(),
+        twice: tree
+            .twice
+            .iter()
+            .map(|duplicate| {
+                twice(
+                    duplicate,
+                    matches!(&tree.source, TreeSource::Cargo { .. }),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -315,6 +439,8 @@ fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> Row
         evidence,
         description: dependency.description.clone(),
         versions: dependency.versions.clone(),
+        sources: dependency.package_references.clone(),
+        origins: dependency.package_origins.clone(),
     }
 }
 
@@ -323,47 +449,71 @@ fn class_words(class: &str) -> String {
     if class.contains('.') { class.to_owned() } else { format!("{class}.x") }
 }
 
-fn twice(duplicate: &Duplicate) -> TwiceReading {
+fn twice(duplicate: &Duplicate, workspace_membership_known: bool) -> TwiceReading {
     let copies = duplicate
         .copies
         .iter()
         .map(|copy| (display_version(&copy.version).to_owned(), copy.yours))
         .collect::<Box<[_]>>();
-    let paths = duplicate.copies.iter().map(|copy| why_line(&copy.why)).collect();
+    let paths = duplicate
+        .copies
+        .iter()
+        .map(|copy| {
+            if workspace_membership_known {
+                why_line(&copy.why)
+            } else {
+                "Workspace path unknown".to_owned()
+            }
+        })
+        .collect();
     let yours = duplicate.copies.iter().find(|copy| copy.yours);
     let newest_other = duplicate.copies.iter().rev().find(|copy| !copy.yours);
-    let verdict = match (yours, newest_other) {
-        (Some(_), None) => "Every copy is yours to move.".to_owned(),
-        (Some(yours), Some(other)) if yours.only_yours => {
-            format!("Moving yours to {} drops a copy.", display_version(&other.version))
-        }
-        (Some(yours), Some(other)) => {
-            let names = yours.also_asked_by.iter().map(String::as_str).collect::<Vec<_>>();
-            format!(
-                "Moving yours to {} keeps both: {} still {} for {}.",
-                display_version(&other.version),
-                and_list(&names),
-                if names.len() == 1 { "asks" } else { "ask" },
-                class_words(&yours.class)
-            )
-        }
-        _ => {
-            let most = duplicate.copies.iter().max_by_key(|copy| copy.asked_by);
-            let none = if duplicate.copies.len() > 2 { "None" } else { "Neither" };
-            most.map_or_else(
-                || format!("{none} is yours to move."),
-                |copy| {
-                    format!(
-                        "{none} is yours to move: {} {} for {}.",
-                        count(copy.asked_by as usize),
-                        if copy.asked_by == 1 { "crate still asks" } else { "crates still ask" },
-                        class_words(&copy.class)
-                    )
-                },
-            )
+    let verdict = if !workspace_membership_known {
+        "Workspace membership is unknown; cannot tell which copy, if any, is yours to move."
+            .to_owned()
+    } else {
+        match (yours, newest_other) {
+            (Some(_), None) => "Every copy is yours to move.".to_owned(),
+            (Some(yours), Some(other)) if yours.only_yours => {
+                format!("Moving yours to {} drops a copy.", display_version(&other.version))
+            }
+            (Some(yours), Some(other)) => {
+                let names = yours.also_asked_by.iter().map(String::as_str).collect::<Vec<_>>();
+                format!(
+                    "Moving yours to {} keeps both: {} still {} for {}.",
+                    display_version(&other.version),
+                    and_list(&names),
+                    if names.len() == 1 { "asks" } else { "ask" },
+                    class_words(&yours.class)
+                )
+            }
+            _ => {
+                let most = duplicate.copies.iter().max_by_key(|copy| copy.asked_by);
+                let none = if duplicate.copies.len() > 2 { "None" } else { "Neither" };
+                most.map_or_else(
+                    || format!("{none} is yours to move."),
+                    |copy| {
+                        format!(
+                            "{none} is yours to move: {} {} for {}.",
+                            count(copy.asked_by as usize),
+                            if copy.asked_by == 1 {
+                                "crate still asks"
+                            } else {
+                                "crates still ask"
+                            },
+                            class_words(&copy.class)
+                        )
+                    },
+                )
+            }
         }
     };
-    TwiceReading { name: duplicate.name.clone(), copies, paths, verdict }
+    TwiceReading {
+        name: duplicate.name.clone(),
+        copies,
+        paths,
+        verdict,
+    }
 }
 
 /// 1189 → "1,189".

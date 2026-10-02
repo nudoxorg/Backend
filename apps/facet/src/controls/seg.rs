@@ -16,20 +16,21 @@
 
 use super::button::sunk;
 use super::kbd::key_badge_at;
-use super::state::{Look, Touch, hover_zone, key_press, set_hot_item, set_key_pressed, set_pressed, track, track_n};
+use super::state::{
+    Look, Touch, hover_zone, key_press, set_hot_item, set_key_pressed, set_pressed, track, track_n,
+};
 use super::text;
 use crate::Set;
 use crate::icons::{Icon, IconSize, ui};
 use crate::measure::{Control, Density, Measure};
 use crate::motion::spec;
-use crate::paint::geom::{Fill, Poly};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::{ABYSS, Face, GLACIER, TypeRole};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    canvas, div, px,
+    div, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -80,6 +81,7 @@ type Select = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub struct Seg {
     id: ElementId,
     choices: Vec<Choice>,
+    aria_label: Option<SharedString>,
     style: SegStyle,
     art: bool,
     selected: usize,
@@ -95,6 +97,7 @@ pub fn seg(id: impl Into<ElementId>, measure: &Measure) -> Seg {
     Seg {
         id: id.into(),
         choices: Vec::new(),
+        aria_label: None,
         style: SegStyle::Stones,
         art: false,
         selected: 0,
@@ -106,6 +109,13 @@ pub fn seg(id: impl Into<ElementId>, measure: &Measure) -> Seg {
 }
 
 impl Seg {
+    /// Names the setting represented by this radio group.
+    #[must_use]
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
     /// Adds a worded choice.
     #[must_use]
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -196,7 +206,10 @@ impl Seg {
     /// The accessible names of the choices, in order.
     #[must_use]
     pub fn names(&self) -> Vec<SharedString> {
-        self.choices.iter().map(|choice| choice.name.clone()).collect()
+        self.choices
+            .iter()
+            .map(|choice| choice.name.clone())
+            .collect()
     }
 }
 
@@ -260,92 +273,86 @@ const STONE_LABEL: TypeRole = TypeRole {
 /// A swatch diamond: the theme's plate with its quiet outline (System is
 /// split on the diagonal).
 fn swatch_art(swatch: Swatch, size: Pixels) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let (cx, cy) = (f32::from(c.x), f32::from(c.y));
-            let r = f32::from(bounds.size.width) * 0.5;
-            let poly = Poly::new([
-                crate::paint::geom::pt(cx, cy - r),
-                crate::paint::geom::pt(cx + r, cy),
-                crate::paint::geom::pt(cx, cy + r),
-                crate::paint::geom::pt(cx - r, cy),
-            ]);
-            let (dark, light) = (&ABYSS, &GLACIER);
-            let paint = |window: &mut Window, poly: &Poly, color: Hsla| {
-                let mut fill = Fill::new();
-                fill.poly(poly);
-                fill.paint(window, color);
-            };
-            let ring = |window: &mut Window, color: Hsla| {
-                let mut fill = Fill::new();
-                for piece in poly.offset(-0.5).stroke_ring(1.0) {
-                    fill.poly(&piece);
-                }
-                fill.paint(window, color);
-            };
-            match swatch {
-                Swatch::Abyss => {
-                    paint(window, &poly, dark.plate.into());
-                    ring(window, dark.ink4.into());
-                }
-                Swatch::Glacier => {
-                    paint(window, &poly, light.g1.into());
-                    ring(window, light.ink4.into());
-                }
-                Swatch::System => {
-                    let top = poly.clip_half_plane(
-                        crate::paint::geom::pt(cx - r, cy),
-                        crate::paint::geom::pt(cx + r, cy),
-                    );
-                    let bottom = poly.clip_half_plane(
-                        crate::paint::geom::pt(cx + r, cy),
-                        crate::paint::geom::pt(cx - r, cy),
-                    );
-                    paint(window, &top, dark.plate.into());
-                    paint(window, &bottom, light.g1.into());
-                    ring(window, dark.ink3.into());
-                }
-            }
-        },
-    )
-    .flex_none()
-    .size(size)
-    .into_any_element()
+    let side = f32::from(size);
+    let half = side * 0.5;
+    match swatch {
+        Swatch::Abyss => crate::controls::diamond::diamond()
+            .fill(ABYSS.plate.into())
+            .outline(ABYSS.ink4.into(), 1.0)
+            .size(size)
+            .flex_none()
+            .into_any_element(),
+        Swatch::Glacier => crate::controls::diamond::diamond()
+            .fill(GLACIER.g1.into())
+            .outline(GLACIER.ink4.into(), 1.0)
+            .size(size)
+            .flex_none()
+            .into_any_element(),
+        Swatch::System => crate::controls::native::native_paths(side, side)
+            .fill(
+                &[(half, 0.0), (side, half), (0.0, half)],
+                ABYSS.plate.into(),
+            )
+            .fill(
+                &[(0.0, half), (side, half), (half, side)],
+                GLACIER.g1.into(),
+            )
+            .stroke(
+                &[(half, 0.0), (side, half), (half, side), (0.0, half)],
+                1.0,
+                true,
+                ABYSS.ink3.into(),
+            )
+            .w(size)
+            .h(size)
+            .flex_none()
+            .into_any_element(),
+    }
 }
 
 /// A painted density stone: four rows (a mark and a bar each) at the
 /// density's row pitch, in `ink`.
 fn density_art(density: Density, size: Pixels, ink: Hsla) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let s = f32::from(bounds.size.width) / 22.0;
-            let (x0, y0) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-            let pitch = 5.4 * density.row() * s;
-            let total = pitch * 3.0 + 1.6 * s;
-            let top = y0 + (f32::from(bounds.size.height) - total) * 0.5;
-            let mut marks = Fill::new();
-            let mut bars = Fill::new();
-            for row in 0..4_u8 {
-                let y = top + pitch * f32::from(row);
-                marks.poly(&Poly::rect(x0 + 2.0 * s, y, 2.4 * s, 1.6 * s));
-                let long = if row % 2 == 0 { 13.0 } else { 10.0 };
-                bars.poly(&Poly::rect(x0 + 6.0 * s, y, long * s, 1.6 * s));
-            }
-            marks.paint(window, ink);
-            bars.paint(window, Hsla { alpha: ink.alpha * 0.55, ..ink });
-        },
-    )
-    .flex_none()
-    .size(size)
-    .into_any_element()
+    let s = f32::from(size) / 22.0;
+    let pitch = 5.4 * density.row() * s;
+    let row_h = 1.6 * s;
+    let mut rows = div()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap(px((pitch - row_h).max(0.0)))
+        .h(size)
+        .w(size);
+    for row in 0..4 {
+        let long = if row % 2 == 0 { 13.0 } else { 10.0 };
+        rows = rows.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(1.6 * s))
+                .pl(px(2.0 * s))
+                .h(px(row_h))
+                .child(div().w(px(2.4 * s)).h(px(row_h)).bg(ink))
+                .child(div().w(px(long * s)).h(px(row_h)).bg(Hsla {
+                    alpha: ink.alpha * 0.55,
+                    ..ink
+                })),
+        );
+    }
+    rows.flex_none().into_any_element()
+}
+
+fn assert_unique_choice_names(id: &ElementId, choices: &[Choice]) {
+    let mut names = std::collections::HashSet::new();
+    for choice in choices {
+        assert!(names.insert(choice.name.clone()), "seg {id:?} has duplicate choice identity {:?}; choice names must be unique", choice.name);
+    }
 }
 
 impl RenderOnce for Seg {
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        assert_unique_choice_names(&self.id, &self.choices);
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled;
@@ -354,6 +361,12 @@ impl RenderOnce for Seg {
         let id = self.id.clone();
         let count = self.choices.len().max(1);
         let selected = self.selected.min(count - 1);
+        let group_label = self.aria_label.clone().unwrap_or_else(|| self
+            .choices
+            .iter()
+            .map(|choice| choice.name.to_string())
+            .collect::<Vec<_>>()
+            .join(", ").into());
 
         let well = self.style == SegStyle::Well;
         let (item_h, label_role, spread, gap_px) = if well {
@@ -405,11 +418,20 @@ impl RenderOnce for Seg {
         // running off the window: the plate then glides down the column.
         let stacked = at - gap + pad > measure.width() && widths.len() > 1;
         let (well_w, well_h, ys) = if stacked {
-            let widest = widths.iter().copied().fold(px(0.0), |a, b| if b > a { b } else { a });
+            let widest = widths
+                .iter()
+                .copied()
+                .fold(px(0.0), |a, b| if b > a { b } else { a });
             widths.iter_mut().for_each(|width| *width = widest);
             xs.iter_mut().for_each(|x| *x = pad);
-            let ys: Vec<Pixels> = (0..widths.len()).map(|i| pad + (item_h + gap) * i as f32).collect();
-            (widest + pad * 2.0, ys.last().copied().unwrap_or(pad) + item_h + pad, ys)
+            let ys: Vec<Pixels> = (0..widths.len())
+                .map(|i| pad + (item_h + gap) * i as f32)
+                .collect();
+            (
+                widest + pad * 2.0,
+                ys.last().copied().unwrap_or(pad) + item_h + pad,
+                ys,
+            )
         } else {
             (at - gap + pad, item_h + pad * 2.0, vec![pad; widths.len()])
         };
@@ -420,13 +442,35 @@ impl RenderOnce for Seg {
             .zip(widths.get(selected).copied())
             .unwrap_or((pad, px(0.0)));
         let target_y = ys.get(selected).copied().unwrap_or(pad);
-        let x = motion.animate(track(&id, "x"), f32::from(target_x), spec::FOLLOW, window, cx);
-        let w = motion.animate(track(&id, "w"), f32::from(target_w), spec::FOLLOW, window, cx);
-        let y = motion.animate(track(&id, "y"), f32::from(target_y), spec::FOLLOW, window, cx);
+        let x = motion.animate(
+            track(&id, "x"),
+            f32::from(target_x),
+            spec::FOLLOW,
+            window,
+            cx,
+        );
+        let w = motion.animate(
+            track(&id, "w"),
+            f32::from(target_w),
+            spec::FOLLOW,
+            window,
+            cx,
+        );
+        let y = motion.animate(
+            track(&id, "y"),
+            f32::from(target_y),
+            spec::FOLLOW,
+            window,
+            cx,
+        );
         // Lean toward a hovered choice: the plate wants to go there.
         let lean_to = match touch.hot_item {
             Some(hot) if hot != selected && active => {
-                if hot > selected { 1.0 } else { -1.0 }
+                if hot > selected {
+                    1.0
+                } else {
+                    -1.0
+                }
             }
             _ => 0.0,
         };
@@ -507,7 +551,16 @@ impl RenderOnce for Seg {
                     .into_any_element(),
             };
             let mut item = div()
-                .id(("choice", index))
+                .id(ElementId::NamedChild(Arc::new(id.clone()), choice.name.clone()))
+                .role(gpui::Role::RadioButton)
+                .aria_label(choice.name.clone())
+                .aria_selected(index == selected)
+                .aria_toggled(if index == selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .aria_disabled(!active);
+            if index == selected {
+                item = item.aria_active_descendant();
+            }
+            item = item
                 .relative()
                 .flex()
                 .flex_none()
@@ -517,12 +570,18 @@ impl RenderOnce for Seg {
                 .h(item_h)
                 .child(face);
             if let Some(key) = &choice.key {
-                let key_id = ElementId::NamedChild(Arc::new(id.clone()), format!("k{index}").into());
+                let key_id =
+                    ElementId::NamedChild(Arc::new(id.clone()), format!("k{index}").into());
                 item = item.child(key_badge_at(key, &motion, &key_id, &measure, active));
             }
             if active {
+                item = if index == selected {
+                    item.track_focus(&touch.focus).tab_index(0)
+                } else {
+                    item.focusable().tab_index(-1)
+                };
                 let entity = touch.entity.clone();
-                item = item.on_hover(move |inside, _window, cx| {
+                item = item.on_hover(move |inside, _window, cx: &mut App| {
                     let now = entity.read(cx).hot_item;
                     if *inside {
                         set_hot_item(&entity, Some(index), cx);
@@ -531,7 +590,21 @@ impl RenderOnce for Seg {
                     }
                 });
                 if let Some(select) = self.on_select.clone() {
-                    item = item.on_click(move |_, window, cx| select(index, window, cx));
+                    let accessible_select = select.clone();
+                    let accessible_focus = touch.focus.clone();
+                    let pointer_focus = touch.focus.clone();
+                    item = item
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| { window.focus(&accessible_focus, cx); accessible_select(index, window, cx); })
+                        .on_key_down({
+                            let select = select.clone();
+                            move |event, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    select(index, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            }
+                        })
+                        .on_click(move |_, window, cx| { window.focus(&pointer_focus, cx); select(index, window, cx); });
                 }
             }
             row = row.child(item);
@@ -551,7 +624,7 @@ impl RenderOnce for Seg {
         } else {
             super::clear(palette.inset.into())
         };
-        let well = cut()
+        let mut well = cut()
             .chamfer(Chamfer::Px(f32::from(well_h) * 0.25))
             .edge(well_edge)
             .plate(Plate::Flat)
@@ -563,13 +636,16 @@ impl RenderOnce for Seg {
             .child(plate)
             .child(row)
             .id(id)
+            .role(gpui::Role::RadioGroup)
+            .aria_disabled(!active)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
+        if !group_label.is_empty() {
+            well = well.aria_label(group_label);
+        }
         let well = if active {
             let entity = touch.entity.clone();
             let select = self.on_select.clone();
-            well.track_focus(&touch.focus)
-                .tab_index(0)
-                .cursor_pointer()
+            well.cursor_pointer()
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
                     move |_, _window, cx| set_pressed(&entity, true, cx)
@@ -588,8 +664,8 @@ impl RenderOnce for Seg {
                 })
                 .on_key_down(move |event: &KeyDownEvent, window, cx| {
                     let next = match event.keystroke.key.as_str() {
-                        "left" => Some(selected.saturating_sub(1)),
-                        "right" => Some((selected + 1).min(count - 1)),
+                        "left" | "up" => Some(selected.saturating_sub(1)),
+                        "right" | "down" => Some((selected + 1).min(count - 1)),
                         "home" => Some(0),
                         "end" => Some(count - 1),
                         _ => None,
@@ -609,5 +685,62 @@ impl RenderOnce for Seg {
             well.into_any_element()
         };
         hover_zone(well, &touch, f32::from(well_h) * 0.25, active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, FocusHandle, Modifiers, Render, TestAppContext, point};
+    use crate::theme::{Facet, set_facet};
+
+    #[test]
+    #[should_panic(expected = "duplicate choice identity")]
+    fn duplicate_choice_names_fail_instead_of_aliasing_native_controls() {
+        let choices = [0, 1].map(|_| Choice { name: "Same".into(), face: Face_::Label("Same".into()), key: None });
+        assert_unique_choice_names(&"duplicate-radio".into(), &choices);
+    }
+
+    struct Fixture { selected: usize, disabled: bool, focus: Option<FocusHandle> }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let id: ElementId = "fixture-radio".into();
+            let measure = Measure::new(px(300.0), &cx.facet());
+            self.focus = Some(Touch::read(&id, Look::LIVE, !self.disabled, window, cx).focus);
+            let owner = cx.entity().downgrade();
+            seg(id, &measure).aria_label("Fixture choice").label("One").label("Two")
+                .selected(self.selected).disabled(self.disabled)
+                .on_select(move |selected, _, cx| {
+                    let _ = owner.update(cx, |fixture, cx| { fixture.selected = selected; cx.notify(); });
+                })
+        }
+    }
+
+    // A native shell fixture; the live journey separately exercises AccessKit Click.
+    #[gpui::test]
+    fn pointer_radio_selection_and_arrow_reversal_keep_the_shared_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| { set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+        let (fixture, cx) = cx.add_window_view(|_, _| Fixture { selected: 0, disabled: false, focus: None });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        let point_ = cx.update(|window, cx| {
+            let measure = Measure::new(px(300.0), &cx.facet());
+            let scale = f32::from(measure.control(Control::Small)) / 24.0;
+            let first = text::width("One", STONE_LABEL, &measure, window) + px(26.0 * scale);
+            let second = text::width("Two", STONE_LABEL, &measure, window) + px(26.0 * scale);
+            point(first + px(4.0 * scale) + second / 2.0, measure.control(Control::Medium) / 2.0)
+        });
+        cx.simulate_click(point_, Modifiers::default());
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 1);
+        let focus = fixture.read_with(cx, |fixture, _| fixture.focus.clone().unwrap());
+        assert!(cx.update(|window, _| focus.is_focused(window)));
+        cx.simulate_keystrokes("left");
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 0);
+        assert!(cx.update(|window, _| focus.is_focused(window)));
+        fixture.update(cx, |fixture, cx| { fixture.disabled = true; cx.notify(); });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        cx.simulate_keystrokes("right");
+        assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 0);
     }
 }

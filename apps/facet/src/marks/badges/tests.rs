@@ -3,8 +3,8 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
-use super::{Glyph, Ink, Item, Shape, normalize, read};
-use crate::icons::{Kind, Lang};
+use super::{Glyph, Ink, Item, Lang, Shape, normalize, read};
+use crate::icons::Kind;
 
 fn rust(name: &str, signature: &str) -> super::Reading {
     read(&Item::new(name, Lang::Rust).signature(Some(signature)))
@@ -139,6 +139,13 @@ fn a_signature_that_is_not_source_reads_to_no_badges_but_keeps_its_kind() {
 }
 
 #[test]
+fn unknown_language_never_uses_the_rust_grammar() {
+    let reading = read(&Item::new("open", Lang::Unknown).kind(Some(Kind::Function)).signature(Some("pub unsafe fn open() -> Result<()>")));
+    assert_eq!(reading.word, "function");
+    assert!(reading.badges.is_empty(), "an unknown grammar cannot claim Rust's unsafe or result semantics");
+}
+
+#[test]
 fn typescript_reads_zod_shapes() {
     let ts = |name: &str, sig: &str, kind: Option<Kind>| read(&Item::new(name, Lang::Typescript).kind(kind).signature(Some(sig)));
     let parse = ts("parseAsync", "export async function parseAsync<T>(schema: ZodType<T>, data: unknown): Promise<T>", None);
@@ -186,6 +193,38 @@ fn python_java_csharp_and_cpp_read_what_the_text_says() {
         cpp("template <typename T> std::optional<T> find(const std::vector<T>& v) const noexcept").words(),
         ["noexcept", "reads it", "takes 1", "T", "maybe"]
     );
+}
+
+#[test]
+fn c_and_cpp_use_separate_conservative_readers() {
+    let c = read(
+        &Item::new("lookup", Lang::C)
+            .signature(Some("int lookup(const char *name, size_t length);")),
+    );
+    assert_eq!((c.shape, c.word), (Shape::Function, "function"));
+    assert_eq!(c.words(), ["takes 2"]);
+    assert_eq!(c.badges[0].tip, "It receives 2 declared parameters.");
+    assert_eq!(
+        read(&Item::new("init", Lang::C).signature(Some("int init(void);"))).words(),
+        ["takes nothing"]
+    );
+    assert!(
+        read(&Item::new("legacy", Lang::C).signature(Some("int legacy();")))
+            .badges
+            .is_empty()
+    );
+    assert_eq!(
+        read(&Item::new("make", Lang::C).signature(Some("struct Point make(void);"))).shape,
+        Shape::Function
+    );
+
+    let cpp = read(
+        &Item::new("find", Lang::Cpp)
+            .signature(Some("template <typename T> T find(T value) const noexcept")),
+    );
+    assert!(cpp.says("noexcept"));
+    assert!(cpp.says("reads it"));
+    assert!(cpp.says("T"));
 }
 
 #[test]

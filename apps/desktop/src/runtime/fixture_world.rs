@@ -213,7 +213,7 @@ pub(crate) fn launch_need(route: &Route, hand: &Hand) -> Option<LaunchNeed> {
     match route {
         Route::World => Some(LaunchNeed::Graph),
         Route::Symbol(symbol) if symbol.view == View::Graph => Some(LaunchNeed::Graph),
-        Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => (!hand.is_empty()).then_some(LaunchNeed::Hand),
+        Route::CargoSource(_) | Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => (!hand.is_empty()).then_some(LaunchNeed::Hand),
     }
 }
 
@@ -501,7 +501,7 @@ fn hand_view_asked_by(hand: &Hand, asker: Asker, cx: &mut App) -> Rc<HandView> {
     let key = HandKey { held: hand.held().to_vec() };
     let (view, standing) = match memo.ask(&key, asker, cx) {
         Answer::Ready(arranged) => (Rc::new(refreshed(&arranged, hand.held())), Standing::Arranged),
-        Answer::Reading | Answer::Failed(_) => match &remembered {
+        Answer::Reading | Answer::Deferred | Answer::Failed(_) => match &remembered {
             Some(shown) if shown.standing == Standing::Provisional && shown.held.as_slice() == hand.held() => return Rc::clone(&shown.view),
             _ => (Rc::new(standing_apart(hand.held())), Standing::Provisional),
         },

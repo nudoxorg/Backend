@@ -318,6 +318,14 @@ fn acquired_lineage_key(
     coordinate: &backend_library::PackageCoordinate,
 ) -> Result<LineageKey, String> {
     let lineage = super::registry_search_lineage(coordinate, record.ecosystem);
+    let coordinate_suffix = match (coordinate.qualifiers(), coordinate.subpath()) {
+        (None, None) => None,
+        (qualifiers, subpath) => Some(format!(
+            "{}{}",
+            qualifiers.map_or(String::new(), |value| format!("?{value}")),
+            subpath.map_or(String::new(), |value| format!("#{value}")),
+        )),
+    };
     let key = LineageKey {
         source: LineageSearchSource::Acquired {
             ecosystem: record.ecosystem,
@@ -325,6 +333,7 @@ fn acquired_lineage_key(
         },
         ecosystem: record.ecosystem,
         lineage,
+        coordinate_suffix,
     };
     key.admit()?;
     Ok(key)

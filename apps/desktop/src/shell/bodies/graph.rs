@@ -1,21 +1,22 @@
-//! The desktop's retained world graph. Until the index serves a world query,
-//! the map reads the prototype fixture (§8.5); page routes always resolve
-//! through the real read pool, never through an invented fixture coordinate.
+//! The desktop's retained world graph, projected from the exact selected
+//! index root. The map and the page routes share the producer's typed package
+//! and symbol coordinates; no prototype world supplies product data.
 
 pub(crate) mod identity;
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 
-use crate::core::{Activity, Resource, ResourceTerminal, VersionedRoot};
+use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, VersionedRoot};
 use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
+use crate::runtime::indexed_world::{self, Coverage, Key as WorldKey};
 use crate::runtime::store::{Branch, StoreEvent, route_symbol};
 use crate::shell::region::Links;
-use facet::graph::{GraphView, NodeId, Start};
 #[cfg(test)]
 use facet::graph::World;
+use facet::graph::{GraphView, GraphWorkStatus as FacetGraphWorkStatus, NodeId, Start};
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement, Render,
-    Styled, Subscription, Task, Window, div, px,
+    Styled, Subscription, Window, div, px,
 };
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -24,12 +25,54 @@ use std::sync::Arc;
 pub(crate) use crate::runtime::ui_graph::GraphDestination as OpenView;
 use crate::runtime::ui_graph::GraphViewRequest;
 
+/// A graph-owned operation that can keep a visible map from settling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MapWorkStatus {
+    /// The exact indexed-world projection is being read by the Memo.
+    ProjectionRead,
+    /// The requested projection waits for an occupied bounded Memo slot.
+    ProjectionSlot,
+    /// A completed projection is waiting for its `GraphView` entity to mount.
+    SceneMount,
+    /// The mounted graph is preparing its discovery index.
+    Discovery,
+    /// The mounted graph is computing a semantic query.
+    Search,
+    /// A result awaits owner-qualified acceptance.
+    PendingAccept,
+    /// A selected symbol awaits resolution before navigation.
+    OpenRequest,
+}
+
+fn visible_work_status(
+    visible: bool,
+    pending_open: bool,
+    visible_stage: Option<MapWorkStatus>,
+) -> Option<MapWorkStatus> {
+    if pending_open {
+        Some(MapWorkStatus::OpenRequest)
+    } else if visible {
+        visible_stage
+    } else {
+        None
+    }
+}
+
 /// One map for the reader's lifetime: its rig survives page/code visits.
 pub(crate) struct Map {
     links: Links,
     graph: Option<Entity<GraphView>>,
-    loading: Option<Task<()>>,
-    ready_scene: Option<(Arc<facet::graph::scene::Scene>, Arc<IdentityAdapter>)>,
+    ready_scene: Option<(
+        Arc<facet::graph::scene::Scene>,
+        Arc<IdentityAdapter>,
+        Coverage,
+    )>,
+    world_key: Option<WorldKey>,
+    /// The bounded Memo has deferred this key until another projection read
+    /// releases a slot. It is pending work, not a terminal load error.
+    projection_waiting: bool,
+    projection_origin: Option<indexed_world::Origin>,
+    coverage: Option<Coverage>,
     identities: Option<Arc<IdentityAdapter>>,
     /// The last tour ask flown (the store's ask number).
     toured: u64,
@@ -52,16 +95,6 @@ pub(crate) struct Map {
     _events: Subscription,
 }
 
-/// Unit integration tests inject a versioned synthetic map. They never
-/// derive expected declaration values from the mutable live world fixture.
-#[cfg(test)]
-struct TestFixture {
-    scene: Arc<facet::graph::scene::Scene>,
-    identities: Arc<IdentityAdapter>,
-}
-#[cfg(test)]
-impl gpui::Global for TestFixture {}
-
 #[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct TestCanvasLayer {
@@ -73,7 +106,16 @@ pub(crate) struct TestCanvasLayer {
 impl gpui::Global for TestCanvasLayer {}
 
 #[cfg(test)]
-pub(crate) fn install_test_fixture(cx: &mut App) {
+pub(crate) fn install_test_fixture(root: VersionedRoot, cx: &mut App) {
+    install_test_fixture_with_gate(root, None, cx);
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_fixture_with_gate(
+    root: VersionedRoot,
+    gate: Option<Arc<indexed_world::TestProjectionGate>>,
+    cx: &mut App,
+) {
     use facet::graph::{Kind, Module, Node, Package};
     let mut nodes = vec![
         Node::new(Kind::Enum, "RelationLabel", 0, 0),
@@ -106,22 +148,26 @@ pub(crate) fn install_test_fixture(cx: &mut App) {
         &world,
         PackageRef::parse("/fixture/present").expect("typed package"),
     ));
-    let layout = facet::graph::layout::layout_of(&world);
-    cx.set_global(TestFixture {
-        scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
+    indexed_world::install_test_projection(
+        root,
+        "generic graph shell test world",
+        world,
         identities,
-    });
+        gate,
+        cx,
+    );
 }
 
 /// Mounts `world` as the graph's fixture for the next map (tests): the
 /// same world the page's anatomy reads, joined by `identities`.
 #[cfg(test)]
-pub(crate) fn install_test_world(world: Arc<World>, identities: Arc<IdentityAdapter>, cx: &mut App) {
-    let layout = facet::graph::layout::layout_of(&world);
-    cx.set_global(TestFixture {
-        scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
-        identities,
-    });
+pub(crate) fn install_test_world(
+    root: VersionedRoot,
+    world: Arc<World>,
+    identities: Arc<IdentityAdapter>,
+    cx: &mut App,
+) {
+    indexed_world::install_test_projection(root, "shell graph fixture", world, identities, None, cx);
 }
 
 impl Map {
@@ -137,8 +183,7 @@ impl Map {
                     map.invalidate_open();
                     map.error = None;
                     if event.is_branch(Branch::Root) {
-                        map.resolved.clear();
-                        map.routed_focus = None;
+                        map.reset_indexed_world();
                     }
                     map.publish_focus(cx);
                 }
@@ -157,7 +202,8 @@ impl Map {
                     let snapshot = map.links.snapshot(cx);
                     if owner.read(cx).graph_view_generation() == request.sequence
                         && snapshot.route() == &request.route
-                        && snapshot.key() == request.root
+                        && request.root.authority() == request.authority
+                        && snapshot.key().authority() == request.authority
                         && snapshot.overlay().is_none()
                         && map.visible
                     {
@@ -166,45 +212,15 @@ impl Map {
                 },
             )
         });
-        #[cfg(not(test))]
-        let injected: Option<(Arc<facet::graph::scene::Scene>, Arc<IdentityAdapter>)> = None;
-        #[cfg(test)]
-        let injected = cx
-            .try_global::<TestFixture>()
-            .map(|fixture| (fixture.scene.clone(), fixture.identities.clone()));
-        let (loading, ready_scene) = if let Some(scene) = injected {
-            (None, Some(scene))
-        } else {
-            let load = cx.background_executor().spawn(async {
-                // The fixture world is shared with the symbol page's anatomy.
-                let (world, identities) = crate::runtime::fixture_world::blocking()?;
-                let layout = facet::graph::layout::layout_of(&world);
-                Ok::<_, String>((
-                    Arc::new(facet::graph::scene::Scene::new(world, layout)),
-                    identities,
-                ))
-            });
-            let loading = cx.spawn(async move |map, cx| {
-                let loaded = load.await;
-                let _ = map.update(cx, |map, cx| {
-                    map.loading = None;
-                    match loaded {
-                        Ok(scene) => {
-                            // Creation needs the window, so retain the scene until render.
-                            map.ready_scene = Some(scene);
-                        }
-                        Err(error) => map.load_error = Some(error),
-                    }
-                    cx.notify();
-                });
-            });
-            (Some(loading), None)
-        };
+        let (ready_scene, world_key) = (None, None);
         Self {
             links,
             graph: None,
-            loading,
             ready_scene,
+            world_key,
+            projection_waiting: false,
+            projection_origin: None,
+            coverage: None,
             identities: None,
             entry_origin: None,
             painted_focus: None,
@@ -227,19 +243,134 @@ impl Map {
         }
     }
 
-    /// A capture waits for the mounted map's discovery index and any routed
-    /// lookup, as well as the fixture parsing/layout worker.
+    fn reset_indexed_world(&mut self) {
+        self.graph = None;
+        self.ready_scene = None;
+        self.world_key = None;
+        self.projection_waiting = false;
+        self.projection_origin = None;
+        self.coverage = None;
+        self.identities = None;
+        self.resolved.clear();
+        self.routed_focus = None;
+        self.semantic_focus = None;
+        self.revealed_focus = None;
+        self.painted_focus = None;
+        self.entry_origin = None;
+        self.canvas_transform = gpui::LayerTransform::IDENTITY;
+        self.focus_on_mount = self.visible;
+        self._graph_events = None;
+        self.load_error = None;
+        self.toured = 0;
+    }
+
+    fn request_world(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
+        let snapshot = self.links.snapshot(cx);
+        let preferred = snapshot
+            .workspace()
+            .active
+            .as_ref()
+            .or(snapshot.workspace().host.as_ref())
+            .and_then(|project| PackageRef::parse(project.as_str()).ok());
+        let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else {
+            self.reset_indexed_world();
+            self.load_error = Some("Waiting for the local index connection.".into());
+            return;
+        };
+        if self.world_key.as_ref() != Some(&key) {
+            if self.world_key.is_some() {
+                self.entry_origin = None;
+            }
+            self.painted_focus = None;
+            self.graph = None;
+            self.ready_scene = None;
+            self.coverage = None;
+            self.identities = None;
+            self.projection_origin = None;
+            self.resolved.clear();
+            self.world_key = Some(key.clone());
+            self.projection_waiting = false;
+            self.load_error = None;
+        }
+        // Keep the latest diagnostic observation even when the canonical
+        // producer authority (and therefore the scene cache key) is stable.
+        self.world_key = Some(key.clone());
+        if self.graph.is_some() || self.ready_scene.is_some() {
+            return;
+        }
+        match indexed_world::get(&key, cx) {
+            indexed_world::State::Reading => {
+                self.projection_waiting = false;
+                self.load_error = None;
+            }
+            indexed_world::State::Waiting => {
+                self.projection_waiting = true;
+                self.load_error = Some("Waiting for an available graph-read slot…".to_owned());
+            }
+            indexed_world::State::Unavailable(reason) => {
+                self.projection_waiting = false;
+                self.load_error = Some(reason.to_string());
+            }
+            indexed_world::State::Ready(projection) => {
+                self.projection_waiting = false;
+                self.load_error = None;
+                self.projection_origin = Some(projection.origin.clone());
+                self.ready_scene = Some((
+                    Arc::clone(&projection.scene),
+                    Arc::clone(&projection.identities),
+                    projection.coverage.clone(),
+                ));
+                // This request can run at the end of a cached map render.
+                // Schedule the next draw so it mounts the completed scene;
+                // the ready_scene guard above makes this a single wake.
+                cx.notify();
+            }
+        }
+    }
+
+    /// A capture waits for the mounted map's indexed projection and any routed
+    /// lookup. An explicit unavailable state is terminal and capturable.
     pub(crate) fn ready(&self, cx: &App) -> bool {
         self.pending.is_none()
             && (!self.visible
-                || self.load_error.is_some()
-                || (self.loading.is_none()
-                    && self.ready_scene.is_none()
+                || (self.load_error.is_some() && !self.projection_waiting)
+                || (self.ready_scene.is_none()
                     && self.pending.is_none()
                     && self
                         .graph
                         .as_ref()
                         .is_some_and(|graph| graph.read(cx).ready())))
+    }
+
+    /// The exact graph stage keeping this map from becoming ready, if any.
+    pub(crate) fn work_status(&self, cx: &App) -> Option<MapWorkStatus> {
+        // A retained map can keep a read, ready scene, or discovery entity
+        // while another page is visible. Hidden work cannot hold a visible
+        // shell capture; on return the same retained state resumes mounting.
+        if !self.visible {
+            return visible_work_status(false, self.pending.is_some(), None);
+        }
+        let visible_stage = if self.projection_waiting {
+            Some(MapWorkStatus::ProjectionSlot)
+        } else if self.ready_scene.is_some() {
+            Some(MapWorkStatus::SceneMount)
+        } else if let Some(graph) = &self.graph {
+            match graph.read(cx).work_status() {
+                FacetGraphWorkStatus::Discovery => Some(MapWorkStatus::Discovery),
+                FacetGraphWorkStatus::Search => Some(MapWorkStatus::Search),
+                FacetGraphWorkStatus::PendingAccept => Some(MapWorkStatus::PendingAccept),
+                FacetGraphWorkStatus::Idle => None,
+            }
+        } else {
+            self.world_key
+                .as_ref()
+                .filter(|key| indexed_world::read_in_flight(key, cx))
+                .map(|_| MapWorkStatus::ProjectionRead)
+        };
+        visible_work_status(true, self.pending.is_some(), visible_stage)
     }
 
     pub(crate) fn report(&self, cx: &App) -> String {
@@ -253,9 +384,18 @@ impl Map {
             |graph| {
                 let entity = graph.entity_id();
                 let graph = graph.read(cx);
+                let described_count = match self.projection_origin.as_ref() {
+                    Some(indexed_world::Origin::IndexedOwner) => {
+                        format!("indexed {} declarations", graph.world().len())
+                    }
+                    #[cfg(test)]
+                    Some(indexed_world::Origin::SyntheticFixture(_)) => {
+                        format!("fixture {} nodes", graph.world().len())
+                    }
+                    None => format!("{} declarations", graph.world().len()),
+                };
                 format!(
-                    "fixture {} nodes, entity {entity:?}, focus {:?}, camera {:?}{}",
-                    graph.world().len(),
+                    "{described_count}, entity {entity:?}, focus {:?}, camera {:?}{}",
                     graph.focused(),
                     graph.camera(),
                     self.error
@@ -401,18 +541,18 @@ impl Map {
             && ask > self.toured
         {
             self.toured = ask;
-            let index = self.identities.as_ref().and_then(|identities| identities.packages_of(&package).first().copied());
-            let started = index.is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
+            let index = self
+                .identities
+                .as_ref()
+                .and_then(|identities| identities.packages_of(&package).first().copied());
+            let started = index
+                .is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
             if !started {
-                self.error = Some(format!("This graph fixture has no guided tour of {}.", package.display_name()));
+                self.error = Some(format!(
+                    "No indexed declaration tour is available for {}.",
+                    package.display_name()
+                ));
             }
-            return;
-        }
-        if let Some(at) = route.at() {
-            self.error = Some(format!(
-                "Graph fixture is pinned; release {} is not re-scoped by this map.",
-                at.as_str()
-            ));
             return;
         }
         if let Some(node) = self.revealed_focus.take() {
@@ -430,7 +570,10 @@ impl Map {
         let Some(page) = resource.loaded_value() else {
             return;
         };
-        if resource.value_root() != Some(self.links.snapshot(cx).key()) {
+        if !resource
+            .value_root()
+            .is_some_and(|root| root.same_authority(self.links.snapshot(cx).key()))
+        {
             return;
         }
         let Some(identities) = &self.identities else {
@@ -458,7 +601,7 @@ impl Map {
             }
         } else {
             self.error = Some(format!(
-                "This indexed declaration has {} exact matches in the graph fixture.",
+                "This indexed declaration has {} exact matches in the current graph.",
                 candidates.len()
             ));
         }
@@ -537,7 +680,7 @@ impl Map {
         use facet::graph::Kind as G;
         let snapshot = self.links.snapshot(cx);
         let focus = self.graph.as_ref().and_then(|graph| {
-            if !self.visible || !is_graph(snapshot.route()) || snapshot.route().at().is_some() {
+            if !self.visible || !is_graph(snapshot.route()) {
                 return None;
             }
             let graph = graph.read(cx);
@@ -549,10 +692,19 @@ impl Map {
                 .get(&id)
                 .map(|resolved| (resolved.package.clone(), resolved.symbol.clone()))
                 .or_else(|| {
+                    self.identities
+                        .as_ref()?
+                        .exact_node(id)
+                        .map(|resolved| (resolved.package, resolved.symbol))
+                })
+                .or_else(|| {
                     let package = crate::runtime::store::route_package(snapshot.route())?;
                     let store = self.links.store.read(cx);
                     let resource = store.package(&package);
-                    if resource.value_root() != Some(snapshot.key()) {
+                    if !resource
+                        .value_root()
+                        .is_some_and(|root| root.same_authority(snapshot.key()))
+                    {
                         return None;
                     }
                     let tree = resource.loaded_value()?.outline.known()?;
@@ -584,6 +736,7 @@ impl Map {
                     G::Other => D::Unknown,
                 },
                 indexed,
+                origin: self.projection_origin.clone()?,
             })
         });
         let notice = (!self.visible)
@@ -604,17 +757,19 @@ impl Map {
         let snapshot = self.links.snapshot(cx);
         CallbackBasis {
             route: snapshot.route().clone(),
-            root: snapshot.key(),
+            authority: snapshot.key().authority(),
             generation: self.open_generation,
         }
     }
 
     fn callback_current(&self, basis: &CallbackBasis, cx: &App) -> bool {
         let snapshot = self.links.snapshot(cx);
-        basis.generation == self.open_generation
-            && basis.route == *snapshot.route()
-            && basis.root == snapshot.key()
-            && snapshot.overlay().is_none()
+        basis.matches(
+            self.open_generation,
+            snapshot.route(),
+            snapshot.key().authority(),
+            snapshot.overlay().is_some(),
+        )
     }
 
     fn peek_action(
@@ -626,16 +781,6 @@ impl Map {
     ) {
         let snapshot = self.links.snapshot(cx);
         if snapshot.overlay().is_some() {
-            return;
-        }
-        if self
-            .route
-            .as_ref()
-            .is_some_and(|route| route.at().is_some())
-        {
-            self.error = Some("This graph fixture cannot focus a symbol at the viewed release; return to your pin first.".into());
-            self.publish_focus(cx);
-            cx.notify();
             return;
         }
         let Some(graph) = self.graph.clone() else {
@@ -689,22 +834,15 @@ impl Map {
         {
             return;
         }
-        if (origin == OpenOrigin::Graph && snapshot.route().at().is_some())
-            || (origin == OpenOrigin::Peek
-                && self
-                    .route
-                    .as_ref()
-                    .is_some_and(|route| route.at().is_some()))
-        {
-            self.error = Some("This graph fixture cannot open a symbol at the viewed release; return to your pin first.".into());
-            self.publish_focus(cx);
-            cx.notify();
-            return;
-        }
         self.error = None;
         self.invalidate_open();
         self.publish_focus(cx);
-        if let Some(resolved) = self.resolved.get(&node).cloned() {
+        if let Some(resolved) = self.resolved.get(&node).cloned().or_else(|| {
+            self.identities
+                .as_ref()
+                .and_then(|identities| identities.exact_node(node))
+        }) {
+            self.resolved.insert(node, resolved.clone());
             self.navigate(
                 resolved,
                 target,
@@ -730,6 +868,7 @@ impl Map {
             query: query.clone(),
             route: snapshot.route().clone(),
             root: snapshot.key(),
+            authority: snapshot.key().authority(),
         });
         self.links.store.update(cx, |store, cx| {
             store.ensure(PageKey::Search(query), cx);
@@ -890,7 +1029,10 @@ impl Map {
 
 /// A last-good value cannot settle the latest root's open. Activity is
 /// checked first because an active retry retains its previous terminal too.
-pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
+pub(crate) fn open_value<T>(
+    resource: &Resource<T>,
+    root: VersionedRoot,
+) -> Result<Option<&T>, String> {
     if matches!(
         resource.activity(),
         Activity::Waiting | Activity::Working | Activity::NotYet
@@ -902,16 +1044,20 @@ pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Resu
         ResourceTerminal::Unavailable(_) => {
             Err("The local index cannot resolve this graph symbol.".into())
         }
-        ResourceTerminal::Complete if resource.value_root() == Some(root) => {
+        ResourceTerminal::Complete
+            if resource
+                .value_root()
+                .is_some_and(|at| at.authority() == root.authority()) => {
             Ok(resource.loaded_value())
         }
         ResourceTerminal::Complete => {
             Err("The index did not return this graph symbol at the current root.".into())
         }
+        ResourceTerminal::Partial => Ok(None),
     }
 }
 
-/// The map is deliberately a fixture until a typed world query exists.
+/// Whether this route asks for the shared indexed map.
 pub(crate) fn is_graph(route: &Route) -> bool {
     matches!(
         route,
@@ -933,8 +1079,23 @@ enum OpenOrigin {
 #[derive(Clone)]
 struct CallbackBasis {
     route: Route,
-    root: VersionedRoot,
+    authority: ProducerAuthority,
     generation: u64,
+}
+
+impl CallbackBasis {
+    fn matches(
+        &self,
+        generation: u64,
+        route: &Route,
+        authority: ProducerAuthority,
+        has_overlay: bool,
+    ) -> bool {
+        self.generation == generation
+            && self.route == *route
+            && self.authority == authority
+            && !has_overlay
+    }
 }
 
 /// An open belongs to the exact visible route, root and focused symbol.
@@ -950,7 +1111,9 @@ struct OpenRequest {
     source_at_open: Option<gpui::Bounds<gpui::Pixels>>,
     query: SearchQuery,
     route: Route,
+    /// Diagnostic root metadata is kept separately from the canonical key.
     root: VersionedRoot,
+    authority: ProducerAuthority,
 }
 
 impl OpenRequest {
@@ -964,7 +1127,7 @@ impl OpenRequest {
     ) -> bool {
         self.generation == generation
             && self.route == *route
-            && self.root == root
+            && self.authority == root.authority()
             && focus == self.focus_at_open
             && visible
             && (self.origin == OpenOrigin::Peek || is_graph(route))
@@ -1088,14 +1251,19 @@ impl gpui::Element for FocusMark {
             _ => facet::icons::Kind::Struct,
         };
         let Some((symbol, origin, previous_node)) = owner.update(cx, |map, _| {
-            let Some(resolved) = map.resolved.get(&node) else {
+            let resolved = map.resolved.get(&node).cloned().or_else(|| {
+                map.identities
+                    .as_ref()
+                    .and_then(|identities| identities.exact_node(node))
+            });
+            let Some(resolved) = resolved else {
                 // A producer-root change can remove the indexed join while
-                // the fixture's selected node remains. No old ghost survives.
+                // the selected node remains. No old ghost survives.
                 map.painted_focus = None;
                 return None;
             };
             Some((
-                resolved.symbol.clone(),
+                resolved.symbol,
                 map.entry_origin.take(),
                 map.painted_focus.map(|(node, _, _)| node),
             ))
@@ -1161,8 +1329,9 @@ impl gpui::Element for FocusMark {
 
 impl Render for Map {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some((scene, identities)) = self.ready_scene.take() {
+        if let Some((scene, identities, coverage)) = self.ready_scene.take() {
             self.identities = Some(identities);
+            self.coverage = Some(coverage);
             let owner = cx.entity().downgrade();
             let peek_owner = owner.clone();
             self.graph = Some(cx.new(|cx| {
@@ -1219,6 +1388,7 @@ impl Render for Map {
         {
             self.show(&route, None, window, cx);
         }
+        self.request_world(cx);
         let mut root = div().relative().size_full();
         if let Some(graph) = &self.graph {
             if self.focus_on_mount && self.visible {
@@ -1241,7 +1411,7 @@ impl Render for Map {
             root = root.flex().items_center().justify_center().child(
                 self.load_error
                     .clone()
-                    .unwrap_or_else(|| "Laying out the graph fixture…".into()),
+                    .unwrap_or_else(|| "Reading the indexed graph…".into()),
             );
         }
         let root = root.child(
@@ -1253,19 +1423,24 @@ impl Render for Map {
                 .bottom(px(8.0))
                 .right(px(16.0))
                 .max_w(gpui::relative(0.62))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_size(px(11.0))
+                .text_size(px(10.0))
                 .child(
                     self.load_error
                         .clone()
                         .or_else(|| self.error.clone())
                         .unwrap_or_else(|| {
                             if self.pending.is_some() {
-                                "Resolving this fixture symbol in the local index…".into()
+                                "Resolving this indexed symbol…".into()
                             } else {
-                                "Graph fixture · pages resolve through your local index".into()
+                                self.coverage.as_ref().map_or_else(
+                                    || "Indexed graph".into(),
+                                    |coverage| {
+                                        self.projection_origin.as_ref().map_or_else(
+                                            || "Indexed graph".into(),
+                                            |origin| coverage.words(origin),
+                                        )
+                                    },
+                                )
                             }
                         }),
                 ),
@@ -1303,6 +1478,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hidden_graph_stages_do_not_hold_settle_but_pending_opens_remain_visible_work() {
+        for stage in [
+            MapWorkStatus::ProjectionRead,
+            MapWorkStatus::ProjectionSlot,
+            MapWorkStatus::SceneMount,
+            MapWorkStatus::Discovery,
+            MapWorkStatus::Search,
+            MapWorkStatus::PendingAccept,
+        ] {
+            assert_eq!(visible_work_status(false, false, Some(stage)), None);
+            assert_eq!(visible_work_status(true, false, Some(stage)), Some(stage));
+        }
+        assert_eq!(
+            visible_work_status(false, true, None),
+            Some(MapWorkStatus::OpenRequest),
+            "an accepted product action still owns its pending resolution while hidden"
+        );
+    }
+
+    #[test]
     fn retained_value_failure_settles_but_active_retry_waits_for_its_new_root() {
         use crate::core::{FaultCode, UnavailableReason};
         let r1 = VersionedRoot::synthetic(
@@ -1310,7 +1505,17 @@ mod tests {
             1,
         );
         let r2 = r1.with_generation(2);
+        let observed_r1 = VersionedRoot::from_revision(
+            r1.producer_epoch(),
+            r1.revision(),
+            r1.observation().saturating_add(1),
+        );
         let old = Resource::loaded_at(7_u32, r1);
+        assert_eq!(
+            open_value(&old, observed_r1),
+            Ok(Some(&7)),
+            "a same-authority observation update keeps a completed result current"
+        );
         assert_eq!(open_value(&old.clone().waiting(), r2), Ok(None));
         let failed = old
             .clone()
@@ -1338,6 +1543,30 @@ mod tests {
             open_value(&Resource::loaded_at(9_u32, r2), r2),
             Ok(Some(&9))
         );
+        let changed_epoch = VersionedRoot::from_revision(
+            r1.producer_epoch().saturating_add(1),
+            r1.revision(),
+            r1.observation(),
+        );
+        let changed_cursor = VersionedRoot::from_revision(
+            r1.producer_epoch(),
+            backend_library::Cursor::at(r1.root(), r1.generation().saturating_add(1)),
+            r1.observation(),
+        );
+        let changed_root = VersionedRoot::from_revision(
+            r1.producer_epoch(),
+            backend_library::Cursor::at(
+                backend_library::view_state_root(&[("graph".into(), "other-resource-root".into())]),
+                r1.generation(),
+            ),
+            r1.observation(),
+        );
+        for changed in [changed_epoch, changed_cursor, changed_root] {
+            assert!(
+                open_value(&old, changed).is_err(),
+                "a resource cannot cross a different root, epoch, or cursor"
+            );
+        }
         let unavailable = old.mark_unavailable(UnavailableReason::Unsupported);
         assert!(
             open_value(&unavailable, r2).is_err(),
@@ -1379,6 +1608,28 @@ mod tests {
     }
 
     #[test]
+    fn deferred_graph_callback_uses_exact_authority_and_ignores_observation() {
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("graph".to_owned(), "callback".to_owned())]),
+            2,
+        );
+        let observed_root = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            root.revision(),
+            root.observation().saturating_add(8),
+        );
+        let basis = CallbackBasis {
+            route: Route::World,
+            authority: root.authority(),
+            generation: 4,
+        };
+        assert!(basis.matches(4, &Route::World, observed_root.authority(), false));
+        assert!(!basis.matches(5, &Route::World, root.authority(), false));
+        assert!(!basis.matches(4, &Route::World, root.with_generation(3).authority(), false));
+        assert!(!basis.matches(4, &Route::World, root.authority(), true));
+    }
+
+    #[test]
     fn an_open_rejects_changed_focus_route_root_visibility_or_generation() {
         let root = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("graph".to_owned(), "requests".to_owned())]),
@@ -1395,8 +1646,18 @@ mod tests {
             query: SearchQuery::new("Value", 200).expect("query"),
             route: Route::World,
             root,
+            authority: root.authority(),
         };
         assert!(request.accepts(5, &Route::World, root, Some(7), true));
+        let observed_root = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            root.revision(),
+            root.observation().saturating_add(1),
+        );
+        assert!(
+            request.accepts(5, &Route::World, observed_root, Some(7), true),
+            "diagnostic observation changes do not stale a callback for the same authority"
+        );
         assert!(
             !request.accepts(6, &Route::World, root, Some(7), true),
             "a newer request supersedes the previous one"
@@ -1413,6 +1674,30 @@ mod tests {
             !request.accepts(5, &Route::World, root.with_generation(2), Some(7), true),
             "a retained last-good read is stale"
         );
+        let changed_epoch = VersionedRoot::from_revision(
+            root.producer_epoch().saturating_add(1),
+            root.revision(),
+            root.observation(),
+        );
+        let changed_cursor = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            backend_library::Cursor::at(root.root(), root.generation().saturating_add(1)),
+            root.observation(),
+        );
+        let changed_root = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            backend_library::Cursor::at(
+                backend_library::view_state_root(&[("graph".to_owned(), "other-root".to_owned())]),
+                root.generation(),
+            ),
+            root.observation(),
+        );
+        for changed in [changed_epoch, changed_cursor, changed_root] {
+            assert!(
+                !request.accepts(5, &Route::World, changed, Some(7), true),
+                "changed producer authority cannot complete an old callback"
+            );
+        }
         assert!(!request.accepts(
             5,
             &Route::Orbit(crate::navigation::OrbitRoute::Home),

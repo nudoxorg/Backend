@@ -1229,6 +1229,7 @@ fn same_search_projection(left: &DiscoveryMetadata, right: &DiscoveryMetadata) -
         && left.description == right.description
         && left.keywords == right.keywords
         && left.advisories == right.advisories
+        && left.cargo_sparse == right.cargo_sparse
 }
 
 fn merge_discovery_metadata(
@@ -1251,6 +1252,7 @@ fn merge_discovery_metadata(
         yanked: overlay(existing.yanked, observed.yanked),
         advisories: overlay(existing.advisories, observed.advisories),
         downloads: overlay(existing.downloads, observed.downloads),
+        cargo_sparse: overlay(existing.cargo_sparse, observed.cargo_sparse),
     }
 }
 
@@ -1444,6 +1446,15 @@ impl DiscoveryStore {
         }
         store.journal.seek(SeekFrom::End(0))?;
         Ok(store)
+    }
+
+    /// Stable sibling directory for a rebuildable durable search projection.
+    ///
+    /// The journal remains the authority. A projection can be deleted and
+    /// rebuilt from this store, but it must live beside the journal so a
+    /// restart does not silently create a new ephemeral index each time.
+    pub(crate) fn search_projection_path(&self) -> PathBuf {
+        self.path.with_file_name("catalog-search-v1")
     }
 
     /// Atomically records facts and their cursor transition as one durable

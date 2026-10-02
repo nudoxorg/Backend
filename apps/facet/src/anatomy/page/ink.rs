@@ -12,7 +12,10 @@ use super::{Anchors, Geometry, at, hue, section_subject};
 use crate::anatomy::plan::{Dir, PagePlan, Part, SectionId, Spec, Tier};
 use crate::hover;
 use crate::tokens::{Palette, stroke};
-use gpui::{AnyElement, Bounds, ColorExt, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, point, px, size};
+use gpui::{
+    AnyElement, App, Bounds, ColorExt, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement,
+    LayoutId, PathBuilder, Pixels, Point, Refineable, Style, StyleRefinement, Styled, Window, point, px, size,
+};
 use std::rc::Rc;
 
 /// What the specimen asks the ink to draw.
@@ -24,30 +27,79 @@ enum Shape {
     Socket { rows: Vec<(u8, bool)>, doers: usize },
 }
 
-/// The page's ink: an absolute canvas over the page.
+/// The page's ink: one measured path element over the page.
 #[must_use]
 pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Palette) -> AnyElement {
-    let anchors = Rc::clone(anchors);
-    let kind = hue(plan.hero.fam, palette).hsla();
-    let call = palette.f_call.hue.hsla();
-    let coral = palette.coral.base.hsla();
-    let rule = palette.line2.hsla();
-    let ground = palette.g1.hsla();
-    let sections = plan.sections.iter().map(|section| (section.id, section.dir, section.tier, section.count.is_some())).collect::<Vec<_>>();
-    let shape = match &plan.spec {
-        Spec::Record(record) => Shape::Bracket(record.rungs.iter().map(|rung| rung.optional).collect()),
-        Spec::Choice(choice) => Shape::Fork { shared: choice.shared.len(), open: choice.open.is_some() },
-        Spec::Callable(callable) => Shape::Pipe { ports: callable.ports.len(), drops: callable.drops.len() },
-        Spec::Contract(contract) => Shape::Socket {
-            rows: contract.write.iter().map(|slot| (0, slot.optional)).chain(contract.other.iter().map(|_| (1, false))).chain(contract.get.iter().map(|_| (2, false))).collect(),
-            doers: contract.doers.names.len(),
+    let element = PageInk {
+        geo,
+        anchors: Rc::clone(anchors),
+        kind: hue(plan.hero.fam, palette).hsla(),
+        call: palette.f_call.hue.hsla(),
+        coral: palette.coral.base.hsla(),
+        rule: palette.line2.hsla(),
+        ground: palette.g1.hsla(),
+        sections: plan.sections.iter().map(|section| (section.id, section.dir, section.tier, section.count.is_some())).collect(),
+        shape: match &plan.spec {
+            Spec::Record(record) => Shape::Bracket(record.rungs.iter().map(|rung| rung.optional).collect()),
+            Spec::Choice(choice) => Shape::Fork { shared: choice.shared.len(), open: choice.open.is_some() },
+            Spec::Callable(callable) => Shape::Pipe { ports: callable.ports.len(), drops: callable.drops.len() },
+            Spec::Contract(contract) => Shape::Socket {
+                rows: contract.write.iter().map(|slot| (0, slot.optional)).chain(contract.other.iter().map(|_| (1, false))).chain(contract.get.iter().map(|_| (2, false))).collect(),
+                doers: contract.doers.names.len(),
+            },
+            Spec::None => Shape::None,
         },
-        Spec::None => Shape::None,
+        maybe: plan.getting.iter().map(|rail| rail.maybe).collect(),
+        style: StyleRefinement::default(),
     };
-    let maybe = plan.getting.iter().map(|rail| rail.maybe).collect::<Vec<_>>();
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, cx| {
+    element.absolute().top_0().left_0().size_full().into_any_element()
+}
+
+struct PageInk {
+    geo: Geometry,
+    anchors: Rc<Anchors>,
+    kind: Hsla,
+    call: Hsla,
+    coral: Hsla,
+    rule: Hsla,
+    ground: Hsla,
+    sections: Vec<(SectionId, Dir, Tier, bool)>,
+    shape: Shape,
+    maybe: Vec<bool>,
+    style: StyleRefinement,
+}
+
+impl Styled for PageInk {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for PageInk {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for PageInk {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let geo = self.geo;
+        let anchors = Rc::clone(&self.anchors);
+        let (kind, call, coral, rule, ground) = (self.kind, self.call, self.coral, self.rule, self.ground);
+        let (sections, shape, maybe) = (&self.sections, &self.shape, &self.maybe);
+        style.paint(bounds, window, cx, |window, cx| {
             let s = geo.scale;
             let x_spine = bounds.origin.x + geo.spine + px(0.5);
             let x_col = bounds.origin.x + geo.col;
@@ -68,7 +120,7 @@ pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Pale
             }
 
             // The specimen.
-            match &shape {
+            match shape {
                 Shape::None => {}
                 Shape::Bracket(optional) => bracket(&pen, window, &anchors, optional, x_spine, x_col, gem_bottom, kind, ground),
                 Shape::Fork { shared, open } => fork(&pen, window, &anchors, *shared, *open, x_spine, x_col, gem_bottom, kind, ground),
@@ -167,13 +219,8 @@ pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Pale
                     }
                 }
             }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
-    .into_any_element()
+        });
+    }
 }
 
 /// Strokes at the page's scale.

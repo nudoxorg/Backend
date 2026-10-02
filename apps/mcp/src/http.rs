@@ -3,20 +3,19 @@
 //! The transport owns connection/session concerns only. Every request still
 //! enters the same JSON-RPC server and typed product session as stdio MCP.
 
-use crate::jsonrpc::{ReconnectingProduct, Server, reconnecting_product};
+use crate::jsonrpc::{ReconnectingProduct, Server, disconnected_reconnecting_product};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use backend_client::Session;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -112,7 +111,6 @@ impl SessionId {
 type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<ReconnectingProduct>>>>;
 
 struct Sessions {
-    endpoint: PathBuf,
     paths: backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: [u8; 32],
@@ -170,12 +168,8 @@ impl Sessions {
     }
 
     fn initialize(&self, body: &[u8]) -> Response {
-        let product = match Session::connect(&self.endpoint) {
-            Ok(product) => product,
-            Err(error) => return rpc_error(StatusCode::BAD_GATEWAY, -32603, &error.to_string()),
-        };
         let mut server = Server::with_authority(
-            reconnecting_product(product, &self.paths),
+            disconnected_reconnecting_product(&self.paths),
             self.project.clone(),
             self.cursor_secret,
         );
@@ -295,26 +289,17 @@ pub(super) fn main_entry(paths: &backend_runtime::WorkspacePaths, bind: Loopback
 }
 
 fn run(paths: &backend_runtime::WorkspacePaths, bind: LoopbackBind) -> Result<(), String> {
-    let endpoint = backend_runtime::ensure_locald(paths).map_err(|error| error.to_string())?;
     let project = canonical_project(paths.project());
-    let cursor_secret = crate::jsonrpc::read_authority_secret(paths.authority_secret())?;
+    let cursor_secret = crate::jsonrpc::cursor_secret(paths)?;
     let token = BearerToken::load()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(serve(
-        endpoint,
-        paths.clone(),
-        project,
-        cursor_secret,
-        token,
-        bind,
-    ))
+    runtime.block_on(serve(paths.clone(), project, cursor_secret, token, bind))
 }
 
 async fn serve(
-    endpoint: PathBuf,
     paths: backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: [u8; 32],
@@ -326,7 +311,6 @@ async fn serve(
         .map_err(|error| format!("could not bind {}: {error}", bind.0))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let state = Arc::new(Sessions {
-        endpoint,
         paths,
         project,
         cursor_secret,

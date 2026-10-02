@@ -1357,7 +1357,8 @@ pub(crate) struct NodeContext {
     /// The byte offset of the node in the original markdown text.
     /// Used for incremental updates.
     pub(crate) offset: usize,
-    pub(crate) link_refs: HashMap<SharedString, LinkMark>,
+    pub(crate) link_refs: super::reference_environment::ReferenceEnvironment,
+    pub(crate) reference_dependencies: super::reference_environment::ReferenceDependencies,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
@@ -1366,14 +1367,34 @@ pub(crate) struct NodeContext {
 }
 
 impl NodeContext {
-    pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {
-        self.link_refs.insert(identifier, link);
+    pub(super) fn add_ref(
+        &mut self,
+        identifier: SharedString,
+        link: LinkMark,
+        offset: usize,
+        end_offset: usize,
+    ) {
+        self.link_refs.add(identifier, link, offset, end_offset);
+    }
+
+    /// Resolve a reference mark through the same lookup path used by both
+    /// paragraph renderers. Keeping this operation centralized makes the
+    /// production lookup work measurable without materializing the map.
+    pub(crate) fn resolve_link_mark(&self, mut mark: LinkMark) -> LinkMark {
+        if let Some(identifier) = mark.identifier.as_ref()
+            && let Some(definition) = self.link_refs.get(identifier)
+        {
+            mark = definition.clone();
+        }
+        mark
     }
 }
 
 impl PartialEq for NodeContext {
     fn eq(&self, other: &Self) -> bool {
-        self.link_refs == other.link_refs && self.style == other.style
+        self.link_refs == other.link_refs
+            && self.reference_dependencies == other.reference_dependencies
+            && self.style == other.style
         // Note: code_block_actions, table_actions and markdown_extensions are
         // intentionally not compared (closures can't be compared)
     }
@@ -1505,12 +1526,7 @@ impl Paragraph {
                             ..Default::default()
                         });
 
-                        // convert link references, replace link
-                        if let Some(identifier) = link_mark.identifier.as_ref() {
-                            if let Some(mark) = node_cx.link_refs.get(identifier) {
-                                link_mark = mark.clone();
-                            }
-                        }
+                        link_mark = node_cx.resolve_link_mark(link_mark);
 
                         links.push((inner_range.clone(), link_mark));
                     }
@@ -1627,11 +1643,7 @@ impl Paragraph {
                             ..Default::default()
                         });
 
-                        if let Some(identifier) = link_mark.identifier.as_ref()
-                            && let Some(mark) = node_cx.link_refs.get(identifier)
-                        {
-                            link_mark = mark.clone();
-                        }
+                        link_mark = node_cx.resolve_link_mark(link_mark);
 
                         links.push((inner_range.clone(), link_mark));
                     }

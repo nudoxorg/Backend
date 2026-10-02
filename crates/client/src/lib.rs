@@ -6,11 +6,17 @@
 #![forbid(unsafe_code)]
 
 #[cfg(any(unix, windows))]
+mod remote_command;
+#[cfg(any(unix, windows))]
 mod semantic_range_local;
 mod subscription;
 #[cfg(any(unix, windows))]
 mod subscription_local;
+#[cfg(any(unix, windows))]
+mod subscription_observation;
 
+#[cfg(any(unix, windows))]
+pub use remote_command::RemoteIndexCommandTransport;
 #[cfg(any(unix, windows))]
 pub use semantic_range_local::{
     LocalSemanticIndexClient, LocalSemanticRangeTransport, SemanticCatalogSnapshot,
@@ -22,13 +28,16 @@ pub use subscription::{
 };
 #[cfg(any(unix, windows))]
 pub use subscription_local::LocalSubscriptionTransport;
+#[cfg(any(unix, windows))]
+pub use subscription_observation::PublicationLease;
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
-    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery,
-    PackageReference, PageContinuation, PageRequest, PageTerminal, Query, QueryLimit,
-    ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
+    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
+    IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexProgressPage, IndexStartResult,
+    NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest, PageTerminal, Query,
+    QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
     SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress,
     SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim, WireSchema,
     encode_id, package_key, symbol_key,
@@ -41,7 +50,91 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::Path;
+#[cfg(any(unix, windows))]
+use std::sync::{Arc, Mutex, PoisonError, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
+
+/// A bounded cancellation handle for one local transport connection.
+///
+/// The handle contains only a cloned socket. It never sends or replays a
+/// command; an owner may already have accepted a mutation when a caller
+/// interrupts its reply wait.
+#[cfg(any(unix, windows))]
+#[derive(Clone)]
+pub struct TransportInterrupt(Arc<InterruptState>);
+
+#[cfg(any(unix, windows))]
+struct InterruptState {
+    stream: Mutex<backend_replication::LocalStream>,
+    interrupted: AtomicBool,
+}
+
+#[cfg(all(test, unix))]
+mod transport_interrupt_tests {
+    use super::TransportInterrupt;
+    use std::io::Read as _;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn interrupt_releases_a_blocked_local_read() {
+        let (mut reader, _owner) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        reader.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
+        let interrupt = TransportInterrupt::new(&reader).expect("clone exact socket");
+        let waiting = std::thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            reader.read(&mut byte)
+        });
+        let started = Instant::now();
+        interrupt.interrupt();
+        let result = waiting.join().expect("join released read");
+        assert!(matches!(result, Ok(0) | Err(_)));
+        assert!(started.elapsed() < Duration::from_secs(1), "socket cancellation waited for its read deadline");
+    }
+
+    #[test]
+    fn interrupted_handle_closes_a_replacement_socket_too() {
+        let (old, _old_owner) = std::os::unix::net::UnixStream::pair().expect("old socket pair");
+        let (mut replacement, _new_owner) = std::os::unix::net::UnixStream::pair().expect("new socket pair");
+        replacement.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
+        let interrupt = TransportInterrupt::new(&old).expect("clone old socket");
+        interrupt.interrupt();
+        interrupt.replace(&replacement).expect("replace cancelled socket");
+        let mut byte = [0_u8; 1];
+        let started = Instant::now();
+        let result = replacement.read(&mut byte);
+        assert!(matches!(result, Ok(0) | Err(_)));
+        assert!(started.elapsed() < Duration::from_secs(1), "replacement survived cancellation");
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl TransportInterrupt {
+    fn new(stream: &backend_replication::LocalStream) -> Result<Self, ClientError> {
+        stream.try_clone()
+            .map(|stream| Self(Arc::new(InterruptState {
+                stream: Mutex::new(stream),
+                interrupted: AtomicBool::new(false),
+            })))
+            .map_err(|error| ClientError::Io(error.to_string()))
+    }
+
+    fn replace(&self, stream: &backend_replication::LocalStream) -> Result<(), ClientError> {
+        let replacement = stream.try_clone().map_err(|error| ClientError::Io(error.to_string()))?;
+        let mut current = self.0.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        *current = replacement;
+        if self.0.interrupted.load(Ordering::Acquire) {
+            let _ = current.shutdown(std::net::Shutdown::Both);
+        }
+        Ok(())
+    }
+
+    /// Interrupts a blocking read or write on the current connection.
+    pub fn interrupt(&self) {
+        self.0.interrupted.store(true, Ordering::Release);
+        let stream = self.0.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+}
 
 /// Maximum admitted local command/reply body.
 pub const MAX_FRAME: usize = backend_replication::LOCAL_CONTROL_MAX_FRAME;
@@ -56,11 +149,11 @@ pub enum ClientError {
     /// The connection is gone: the peer closed it, reset it, or stopped
     /// answering on it.
     ///
-    /// This is separate from [`ClientError::Io`] because it is not a fault of
-    /// the request. The daemon closes a connection that has sent nothing for
-    /// its read timeout, so a long-lived client sees this on its first call
-    /// after an idle gap and can recover by connecting again.
+    /// This is separate from [`ClientError::Io`] because the request itself
+    /// may be valid and the client can recover by opening a new connection.
     Disconnected(std::io::ErrorKind),
+    /// A remote-index connect or read-only request exceeded its bounded client lease.
+    RemoteDeadlineExceeded,
     /// A frame, DTO, or identity proof failed admission.
     Protocol(String),
     /// A bounded transport allocation was rejected.
@@ -95,6 +188,17 @@ pub enum ClientError {
     StaleCursor,
     /// The exact selected semantic generation changed during a read or range admission.
     StaleSelection,
+    /// The signed remote grant names a product root that is no longer selected.
+    StaleRemoteRoot {
+        /// Exact view root authorized by the grant.
+        expected: [u8; 32],
+        /// Current owner view root.
+        observed: [u8; 32],
+    },
+    /// The owner rejected an expired or replaced remote grant.
+    StaleRemoteCapability,
+    /// The owner revoked this exact remote grant.
+    RemoteCapabilityRevoked,
 }
 
 impl fmt::Display for ClientError {
@@ -102,7 +206,10 @@ impl fmt::Display for ClientError {
         match self {
             Self::Io(message) => write!(formatter, "local endpoint: {message}"),
             Self::Disconnected(kind) => {
-                write!(formatter, "local endpoint disconnected: {kind}")
+                write!(formatter, "endpoint disconnected: {kind}")
+            }
+            Self::RemoteDeadlineExceeded => {
+                formatter.write_str("remote index exceeded the bounded client request deadline")
             }
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
@@ -122,6 +229,15 @@ impl fmt::Display for ClientError {
             Self::StaleSelection => {
                 formatter.write_str("selected semantic generation is no longer current")
             }
+            Self::StaleRemoteRoot { .. } => {
+                formatter.write_str("remote grant is stale; renew it for the current view root")
+            }
+            Self::StaleRemoteCapability => {
+                formatter.write_str("remote grant is stale or expired; renew the grant")
+            }
+            Self::RemoteCapabilityRevoked => {
+                formatter.write_str("remote grant was revoked by its owner")
+            }
         }
     }
 }
@@ -135,6 +251,21 @@ pub trait CommandTransport {
     /// # Errors
     /// Returns a transport, protocol, correlation, or freshness error.
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError>;
+
+    /// Returns a handle that can interrupt this transport's exact socket.
+    /// Connectionless transports return `None`.
+    #[cfg(any(unix, windows))]
+    fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+        None
+    }
+
+    /// Replaces the underlying connection while retaining this transport's endpoint and grant.
+    ///
+    /// Connectionless transports may keep their existing state. Implementations that own a
+    /// socket or remote session should open a fresh authenticated session here.
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        Ok(())
+    }
 }
 
 /// Command transport with an explicit coverage-capability path.
@@ -190,7 +321,11 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 #[cfg(any(unix, windows))]
 pub struct UnixCommandTransport {
     stream: backend_replication::LocalStream,
+    interrupt: Option<TransportInterrupt>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
+    endpoint: Option<std::path::PathBuf>,
+    connect_timeout: Duration,
+    io_timeout: Duration,
 }
 
 #[cfg(any(unix, windows))]
@@ -200,17 +335,44 @@ impl UnixCommandTransport {
     /// # Errors
     /// Returns an error when the endpoint is invalid, unavailable, or cannot authenticate.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
+        Self::connect_with_timeouts(path, LOCAL_CONNECT_TIMEOUT, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    /// Connects and authenticates the local endpoint owner within `timeout`.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint is invalid, unavailable, times out, or cannot authenticate.
+    pub fn connect_timeout(path: impl AsRef<Path>, timeout: Duration) -> Result<Self, ClientError> {
+        Self::connect_with_timeouts(path, timeout, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    /// Connects and authenticates the endpoint with independent dial and I/O deadlines.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint is invalid, unavailable, times out, or cannot authenticate.
+    pub fn connect_with_timeouts(
+        path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+    ) -> Result<Self, ClientError> {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream =
-            backend_replication::LocalStream::connect(path).map_err(map_endpoint_connect_error)?;
+        let stream = backend_replication::connect_local_timeout(path, connect_timeout)
+            .map_err(map_endpoint_connect_error)?;
+        // Authentication also touches the new stream, so establish its I/O
+        // deadlines before asking the local peer proof helper to inspect it.
+        configure_timeout(&stream, io_timeout)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(map_peer_authentication_error)?;
-        configure(&stream)?;
+        let interrupt = Some(TransportInterrupt::new(&stream)?);
         Ok(Self {
             stream,
+            interrupt,
             peer: Some(peer),
+            endpoint: Some(path.to_path_buf()),
+            connect_timeout,
+            io_timeout,
         })
     }
 
@@ -218,7 +380,15 @@ impl UnixCommandTransport {
     #[must_use]
     pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let _ = configure(&stream);
-        Self { stream, peer: None }
+        let interrupt = TransportInterrupt::new(&stream).ok();
+        Self {
+            stream,
+            interrupt,
+            peer: None,
+            endpoint: None,
+            connect_timeout: LOCAL_CONNECT_TIMEOUT,
+            io_timeout: CLIENT_REQUEST_TIMEOUT,
+        }
     }
 
     /// Decodes one reply against a caller-owned exact expectation.
@@ -231,7 +401,12 @@ impl UnixCommandTransport {
         expected: &ReplyDto,
     ) -> Result<ReplyDto, ClientError> {
         let accepted = request.clone();
-        configure_request(&self.stream, request)?;
+        configure_request_with_timeouts(
+            &self.stream,
+            request,
+            self.io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
         let body = encode_request(request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -250,13 +425,40 @@ impl UnixCommandTransport {
 
 #[cfg(any(unix, windows))]
 impl CommandTransport for UnixCommandTransport {
+    fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+        self.interrupt.clone()
+    }
+
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
-        configure_request(&self.stream, &request)?;
+        configure_request_with_timeouts(
+            &self.stream,
+            &request,
+            self.io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
         let body = encode_request(&request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
         let reply = self.decode(&body)?;
         admit_reply(&request, reply)
+    }
+
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        let endpoint = self.endpoint.clone().ok_or_else(|| {
+            ClientError::Protocol(
+                "stream-backed command transport has no reconnect endpoint".to_owned(),
+            )
+        })?;
+        let connect_timeout = self.connect_timeout;
+        let io_timeout = self.io_timeout;
+        let replacement = Self::connect_with_timeouts(endpoint, connect_timeout, io_timeout)?;
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.replace(&replacement.stream)?;
+        }
+        self.stream = replacement.stream;
+        self.peer = replacement.peer;
+        self.endpoint = replacement.endpoint;
+        Ok(())
     }
 }
 
@@ -267,7 +469,12 @@ impl CertifiedCommandTransport for UnixCommandTransport {
         request: CommandDto,
         capability: Option<CoverageCapability>,
     ) -> Result<ReplyDto, ClientError> {
-        configure_request(&self.stream, &request)?;
+        configure_request_with_timeouts(
+            &self.stream,
+            &request,
+            self.io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
         let body = encode_request(&request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -289,7 +496,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 #[cfg(any(unix, windows))]
 pub struct Session {
     endpoint: std::path::PathBuf,
-    transport: UnixCommandTransport,
+    transport: Box<dyn CommandTransport + Send>,
     next_request_id: u64,
     continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
 }
@@ -314,6 +521,8 @@ pub struct SessionContinuationState {
 pub struct Revision {
     /// Current immutable product view root.
     pub root: ViewStateRoot,
+    /// Exact owner source object whose producer coverage admitted this root.
+    source: backend_library::SemanticObject,
     certificate: WireCertificate,
     cursor: backend_library::Cursor,
 }
@@ -325,6 +534,12 @@ impl Revision {
     pub const fn cursor(&self) -> backend_library::Cursor {
         self.cursor
     }
+
+    /// Returns the exact producer-coverage source object paired with this root.
+    #[must_use]
+    pub const fn source(&self) -> backend_library::SemanticObject {
+        self.source
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -334,19 +549,52 @@ impl Session {
     /// # Errors
     /// Returns an error when the local endpoint is unavailable or cannot authenticate.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
+        Self::connect_with_timeouts(path, LOCAL_CONNECT_TIMEOUT, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    /// Connects one revision-aware session with independent dial and I/O
+    /// limits. A cancelled caller can interrupt subsequent socket I/O.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint cannot be admitted within its bound.
+    pub fn connect_with_timeouts(
+        path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+    ) -> Result<Self, ClientError> {
         let endpoint = path.as_ref().to_path_buf();
         Ok(Self {
-            transport: UnixCommandTransport::connect(&endpoint)?,
+            transport: Box::new(UnixCommandTransport::connect_with_timeouts(&endpoint, connect_timeout, io_timeout)?),
             endpoint,
             next_request_id: 1,
             continuations: BTreeMap::new(),
         })
     }
 
+    /// Builds the same revision-aware product session over another admitted command transport.
+    pub fn from_transport(
+        endpoint: impl Into<std::path::PathBuf>,
+        transport: impl CommandTransport + Send + 'static,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            transport: Box::new(transport),
+            next_request_id: 1,
+            continuations: BTreeMap::new(),
+        }
+    }
+
     /// Returns the endpoint this session was connected to.
     #[must_use]
     pub fn endpoint(&self) -> &Path {
         &self.endpoint
+    }
+
+    /// Returns a connection interrupt for a caller's request lifetime.
+    /// In-process or remote transports may not expose one.
+    #[must_use]
+    pub fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+        self.transport.interrupt_handle()
     }
 
     /// Encodes an owner-issued query continuation for this authenticated MCP
@@ -431,7 +679,7 @@ impl Session {
     /// Returns an error when the endpoint is unavailable or cannot
     /// authenticate.
     pub fn reconnect(&mut self) -> Result<(), ClientError> {
-        self.transport = UnixCommandTransport::connect(&self.endpoint)?;
+        self.transport.reconnect()?;
         self.next_request_id = 1;
         Ok(())
     }
@@ -460,6 +708,7 @@ impl Session {
         });
         Ok(Revision {
             root: receipt.root(),
+            source: receipt.source(),
             certificate,
             cursor: receipt.cursor(),
         })
@@ -909,6 +1158,87 @@ impl Session {
         Ok(reply)
     }
 
+    /// Starts one package index job and returns its exact owner-issued ticket or terminal receipt.
+    ///
+    /// Keep a separate [`Session`] for [`Self::await_index_job`] and
+    /// [`Self::cancel_index_job`] when the UI needs to await and cancel concurrently.
+    ///
+    /// # Errors
+    /// Returns an error when request admission, transport, or the typed start reply fails.
+    pub fn start_index_job(
+        &mut self,
+        package: PackageReference,
+        execution_intent: CompileExecutionIntent,
+    ) -> Result<IndexStartResult, ClientError> {
+        match self.surface(SurfaceCommand::IndexStart {
+            package,
+            execution_intent,
+        })? {
+            SurfaceReply::IndexStarted(result) => Ok(result),
+            _ => Err(ClientError::Protocol(
+                "index start reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Waits for the terminal receipt of one exact owner-issued index ticket.
+    ///
+    /// # Errors
+    /// Returns an error when the ticket is unknown, request admission fails, or the owner reply
+    /// violates its typed contract.
+    pub fn await_index_job(
+        &mut self,
+        ticket: IndexJobTicket,
+    ) -> Result<IndexJobTerminal, ClientError> {
+        match self.surface(SurfaceCommand::IndexAwait { ticket })? {
+            SurfaceReply::IndexTerminal(terminal) => Ok(terminal),
+            _ => Err(ClientError::Protocol(
+                "index await reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Reads the immediate observation and next bounded progress page for one exact index job.
+    ///
+    /// Pass the returned `next_sequence` on the next call. A `truncated` page means older
+    /// events aged out of the owner's bounded buffer before they were read. Terminal and
+    /// unknown-ticket states are returned directly and never inferred from an empty page.
+    ///
+    /// # Errors
+    /// Returns an error when request admission fails or the owner reply violates its typed
+    /// contract.
+    pub fn index_job_progress(
+        &mut self,
+        ticket: IndexJobTicket,
+        after_sequence: u64,
+    ) -> Result<IndexJobObservation, ClientError> {
+        match self.surface(SurfaceCommand::IndexProgress {
+            ticket,
+            after_sequence,
+        })? {
+            SurfaceReply::IndexProgress(page) => Ok(page),
+            _ => Err(ClientError::Protocol(
+                "index progress reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests cancellation of one exact owner-issued index ticket.
+    ///
+    /// # Errors
+    /// Returns an error when request admission, transport, or the typed cancellation reply fails.
+    pub fn cancel_index_job(
+        &mut self,
+        ticket: IndexJobTicket,
+    ) -> Result<IndexCancelReceipt, ClientError> {
+        match self.surface(SurfaceCommand::IndexCancel { ticket })? {
+            SurfaceReply::IndexCancellation(receipt) => Ok(receipt),
+            _ => Err(ClientError::Protocol(
+                "index cancellation reply changed shape".to_owned(),
+            )),
+        }
+    }
+
     /// Compares two indexed package versions through their complete semantic
     /// compiler publications.
     ///
@@ -1155,9 +1485,24 @@ fn configure_request(
     stream: &backend_replication::LocalStream,
     request: &CommandDto,
 ) -> Result<(), ClientError> {
+    configure_request_with_timeouts(
+        stream,
+        request,
+        CLIENT_REQUEST_TIMEOUT,
+        CLIENT_MUTATION_TIMEOUT,
+    )
+}
+
+#[cfg(any(unix, windows))]
+fn configure_request_with_timeouts(
+    stream: &backend_replication::LocalStream,
+    request: &CommandDto,
+    read_timeout: Duration,
+    mutation_timeout: Duration,
+) -> Result<(), ClientError> {
     let timeout = match backend_library::command_spec(request.command.id()).mutation {
-        CommandMutation::Write => CLIENT_MUTATION_TIMEOUT,
-        CommandMutation::Read => CLIENT_REQUEST_TIMEOUT,
+        CommandMutation::Write => mutation_timeout,
+        CommandMutation::Read => read_timeout,
     };
     configure_timeout(stream, timeout)
 }
@@ -1222,11 +1567,13 @@ fn map_peer_authentication_error(
     }
 }
 
-/// Bounded deadline for one read-only command, including health and discovery.
+/// Bounded lease for one read-only command, including health and discovery.
 ///
 /// Every request re-arms this value, so a long mutation cannot make a later
-/// health or query call wait on the mutation lease.
-const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// health or query call wait on the mutation lease. Direct remote-index setup,
+/// handshake, send, and response read share this same absolute deadline.
+pub(crate) const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owner lease for durable writes that may synchronously compile or acquire a
 /// package before publishing their receipt.
@@ -1500,6 +1847,87 @@ mod tests {
             Some(CLIENT_REQUEST_TIMEOUT)
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_local_connect_keeps_authenticated_peer_and_io_deadlines() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/backend-client-connect-timeout-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener =
+            std::os::unix::net::UnixListener::bind(&path).expect("authenticated timeout listener");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("make listener owner-private");
+        let (accepted, accepted_rx) = std::sync::mpsc::channel();
+        let (release_peers, release_peers_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut peers = Vec::new();
+            for _ in 0..2 {
+                let (peer, _) = listener.accept().expect("accept authenticated client");
+                accepted.send(()).expect("signal accepted client");
+                peers.push(peer);
+            }
+            release_peers_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("test releases authenticated peers after checking deadlines");
+            drop(peers);
+        });
+
+        let io_timeout = Duration::from_millis(125);
+        let mut client =
+            UnixCommandTransport::connect_with_timeouts(&path, Duration::from_secs(1), io_timeout)
+                .expect("connect and authenticate inside dial deadline");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server accepted client");
+        assert!(client.peer.is_some(), "owner peer proof must be retained");
+        assert_eq!(
+            client.stream.read_timeout().expect("read timeout"),
+            Some(io_timeout)
+        );
+        assert_eq!(
+            client.stream.write_timeout().expect("write timeout"),
+            Some(io_timeout)
+        );
+        configure_request_with_timeouts(
+            &client.stream,
+            &CommandDto::new(1, Command::Revision),
+            io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )
+        .expect("re-arm the same bounded read deadline for a real request");
+        assert_eq!(
+            client.stream.read_timeout().expect("re-armed read timeout"),
+            Some(io_timeout)
+        );
+
+        client.reconnect().expect("reconnect with same deadlines");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server accepted reconnected client");
+        assert!(client.peer.is_some(), "reconnect must re-authenticate peer");
+        assert_eq!(
+            client
+                .stream
+                .read_timeout()
+                .expect("reconnected read timeout"),
+            Some(io_timeout)
+        );
+
+        drop(client);
+        release_peers
+            .send(())
+            .expect("release authenticated test peers");
+        server.join().expect("join authenticated owner");
+        std::fs::remove_file(path).expect("remove test socket");
     }
 
     #[cfg(target_os = "macos")]

@@ -11,6 +11,37 @@ fn recorded(details: RegistryNativeDetails) -> RegistryNativeMetadata {
 }
 
 #[test]
+fn cargo_publish_time_requires_exact_valid_utc_calendar() {
+    let valid = CargoPublishTime::parse("2024-02-29T23:59:59Z").expect("leap day");
+    assert_eq!(valid.as_str(), "2024-02-29T23:59:59Z");
+    for invalid in [
+        "2023-02-29T23:59:59Z",
+        "2024-02-30T23:59:59Z",
+        "2024-2-09T23:59:59Z",
+        "2024-02-09T3:59:59Z",
+        "2024-02-09T23:59:59.1Z",
+        "2024-02-09T24:00:00Z",
+        "2024-02-09T23:60:00Z",
+        "2024-02-09T23:59:60Z",
+        "0000-01-01T00:00:00Z",
+    ] {
+        assert!(CargoPublishTime::parse(invalid).is_none(), "accepted {invalid}");
+    }
+}
+
+#[test]
+fn cargo_native_admission_rejects_impossible_publication_date() {
+    let value = recorded(RegistryNativeDetails::Cargo(RegistryCargoMetadata {
+        artifacts: Box::new([]),
+        features: Box::new([]),
+        features2: Box::new([]),
+        published_at: Some("2024-02-30T23:59:59Z".to_owned()),
+        rust_version: None,
+    }));
+    assert_eq!(value.admit(), Err(ProductAdmissionError::NativeMetadata));
+}
+
+#[test]
 fn unavailable_metadata_round_trips_and_has_stable_identity() {
     let value = RegistryNativeMetadata::unavailable(
         RegistryEcosystem::Cargo,
@@ -48,9 +79,17 @@ fn recorded_metadata_round_trips_the_canonical_binary_shape() {
         .into_boxed_slice(),
         features: vec![RegistryNativeFeature {
             name: "default".to_owned(),
-            members: vec!["dep:serde".to_owned()].into_boxed_slice(),
+            members: vec!["dep:serde".to_owned(), "serde?/alloc".to_owned()]
+                .into_boxed_slice(),
         }]
         .into_boxed_slice(),
+        features2: vec![RegistryNativeFeature {
+            name: "default".to_owned(),
+            members: vec!["serde?/alloc".to_owned()].into_boxed_slice(),
+        }]
+        .into_boxed_slice(),
+        published_at: Some("2025-11-12T19:30:12Z".to_owned()),
+        rust_version: Some("1.60".to_owned()),
     }));
     let canonical = value.encode_canonical();
     assert_eq!(
@@ -80,6 +119,9 @@ fn cargo_features_must_be_lexically_sorted() {
             },
         ]
         .into_boxed_slice(),
+        features2: Box::new([]),
+        published_at: None,
+        rust_version: None,
     }));
     assert_eq!(value.admit(), Err(ProductAdmissionError::NativeMetadata));
 }

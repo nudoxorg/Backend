@@ -9,8 +9,10 @@ use crate::measure::{Measure, Set};
 use crate::probe::{self, TextOverflow};
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    AnyElement, App, Bounds, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement, InteractiveText, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, StyledText, UnderlineStyle, Window, canvas, div, fill, px, GlobalElementId, InspectorElementId, LayoutId, Pixels,
+    AnyElement, App, Bounds, Div, Element, ElementId, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla,
+    InspectorElementId, InteractiveElement, InteractiveText, IntoElement, LayoutId, ParentElement, Pixels,
+    Refineable, SharedString, StatefulInteractiveElement, Style, StyleRefinement, Styled, StyledText,
+    UnderlineStyle, Window, div, fill, px,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -240,24 +242,50 @@ pub(super) fn dotted(child: AnyElement, color: Hsla) -> AnyElement {
         .flex_none()
         .child(child)
         .child(
-            canvas(
-                |_, _, _| {},
-                move |bounds, (), window, _| {
-                    let y = bounds.origin.y + bounds.size.height - px(1.5);
-                    let mut x = bounds.origin.x;
-                    while x < bounds.origin.x + bounds.size.width {
-                        window.paint_quad(fill(Bounds::new(gpui::point(x, y), gpui::size(px(1.4), px(1.4))), color));
-                        x += px(3.6);
-                    }
-                },
-            )
-            .absolute()
-            .bottom_0()
-            .left_0()
-            .w_full()
-            .h(px(3.0)),
+            DottedUnderline { color, style: StyleRefinement::default() }
+                .absolute().bottom_0().left_0().w_full().h(px(3.0)),
         )
         .into_any_element()
+}
+
+/// The dotted rule under a declaration's doc-sourced type.
+struct DottedUnderline {
+    color: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for DottedUnderline {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for DottedUnderline {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for DottedUnderline {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let color = self.color;
+        style.paint(bounds, window, cx, |window, _| {
+            let y = bounds.origin.y + bounds.size.height - px(1.5);
+            let mut x = bounds.origin.x;
+            while x < bounds.origin.x + bounds.size.width {
+                window.paint_quad(fill(Bounds::new(gpui::point(x, y), gpui::size(px(1.4), px(1.4))), color));
+                x += px(3.6);
+            }
+        });
+    }
 }
 
 /// Where a row sits on its rail.

@@ -15,7 +15,8 @@ use crate::overlay::tooltip::Tipped as _;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use gpui::{
-    ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, px,
+    ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, px,
 };
 use std::rc::Rc;
 
@@ -226,6 +227,9 @@ impl RenderOnce for IconButton {
         }
         let plate = plate
             .id(id)
+            .role(gpui::Role::Button)
+            .aria_label(self.label.clone())
+            .aria_disabled(self.disabled)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         let plate = if active { wire(plate, &touch, self.on_click) } else { plate };
         // The label is the button's tooltip (an icon says nothing until it is

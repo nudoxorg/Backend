@@ -1,18 +1,18 @@
 //! Durable shelf/settings/session schema with crash-safe publication.
 
-use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
+use super::snapshot::{AppSnapshot, PendingSelectionClaim, SessionState, ShelfItem, ShelfState};
 use super::workspace::{
     AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
     MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
     ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
-use crate::navigation::{Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
+use crate::navigation::{BrowseRoute, CargoBrowseContext, CargoSourcePath, CargoSourceRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,6 +81,8 @@ pub enum PersistedProjectPhase {
     Cancelled,
     /// Indexing failed.
     Failed,
+    /// An index request may have committed; its receipt must be reconciled.
+    Unconfirmed,
     /// Folder is no longer available.
     Missing,
 }
@@ -93,6 +95,7 @@ impl From<ProjectPhase> for PersistedProjectPhase {
             ProjectPhase::Cancelling => Self::Cancelling,
             ProjectPhase::Cancelled => Self::Cancelled,
             ProjectPhase::Failed => Self::Failed,
+            ProjectPhase::Unconfirmed => Self::Unconfirmed,
             ProjectPhase::Missing => Self::Missing,
         }
     }
@@ -106,8 +109,23 @@ impl From<PersistedProjectPhase> for ProjectPhase {
             PersistedProjectPhase::Cancelling => Self::Cancelling,
             PersistedProjectPhase::Cancelled => Self::Cancelled,
             PersistedProjectPhase::Failed => Self::Failed,
+            PersistedProjectPhase::Unconfirmed => Self::Unconfirmed,
             PersistedProjectPhase::Missing => Self::Missing,
         }
+    }
+}
+
+#[cfg(test)]
+mod unconfirmed_phase_tests {
+    use super::{PersistedProjectPhase, ProjectPhase};
+
+    #[test]
+    fn uncertain_mutation_survives_the_persisted_phase_boundary() {
+        let saved: PersistedProjectPhase = ProjectPhase::Unconfirmed.into();
+        assert_eq!(saved, PersistedProjectPhase::Unconfirmed);
+        let bytes = serde_json::to_vec(&saved).expect("phase wire");
+        let restored: PersistedProjectPhase = serde_json::from_slice(&bytes).expect("phase wire");
+        assert_eq!(ProjectPhase::from(restored), ProjectPhase::Unconfirmed);
     }
 }
 
@@ -198,7 +216,7 @@ fn symbol_route(
                 project,
                 package,
                 id,
-                at: at.and_then(|at| ReleaseId::new(at).ok()),
+                at: at.map(ReleaseId::from_persisted),
                 view,
                 line,
                 selected: None,
@@ -216,6 +234,18 @@ pub struct PersistedWindow {
     pub height: u32,
 }
 
+/// Untrusted cold-start UI focus claim. The route and owner root are repeated
+/// so an edited or stale digest cannot silently attach to a different place.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedSelectionClaim {
+    /// Exact route that carried the selection when saved.
+    pub route: PersistedRoute,
+    /// Hex spelling of the owner view root; never decoded into authority.
+    pub root: String,
+    /// Hex spelling of the UI object key; never decoded into [`super::ObjectId`].
+    pub object: String,
+}
+
 /// Versioned, forward-compatible desktop state file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistedDesktopState {
@@ -231,6 +261,9 @@ pub struct PersistedDesktopState {
     pub context_open: bool,
     /// Last route, encoded by a small typed tag.
     pub route: PersistedRoute,
+    /// Saved focus claim; a current owner catalog must resolve it after load.
+    #[serde(default)]
+    pub selected_claim: Option<PersistedSelectionClaim>,
     /// Last settings page.
     pub settings_page: Option<String>,
     /// Active shelf project retained across a cold restart.
@@ -256,19 +289,19 @@ pub struct PersistedDesktopState {
     /// alone decides.
     #[serde(default)]
     pub motion: Option<PersistedMotion>,
-    /// Local/remote registry policy.
+    /// Registry network policy used by this desktop's next embedded service start.
     #[serde(default)]
     pub privacy: PersistedPrivacy,
     /// Embedded or attached daemon.
     #[serde(default)]
     pub service_mode: PersistedServiceMode,
-    /// Whether advisory data is enabled.
+    /// Whether explicit advisory-feed refreshes are enabled.
     #[serde(default = "default_true")]
     pub advisories: bool,
-    /// Whether immutable responses may be cached.
+    /// Whether recently admitted registry results may be reused.
     #[serde(default = "default_true")]
     pub cache_enabled: bool,
-    /// Cache retention in days.
+    /// Maximum reusable registry-result age in days.
     #[serde(default = "default_cache_days")]
     pub cache_days: u16,
     /// What you hold (at most five).
@@ -299,6 +332,7 @@ impl Default for PersistedDesktopState {
             shelf_open: true,
             context_open: true,
             route: PersistedRoute::Home,
+            selected_claim: None,
             settings_page: None,
             active_project: None,
             active_native_path: None,
@@ -319,6 +353,25 @@ impl Default for PersistedDesktopState {
     }
 }
 
+/// An address-only copy of the complete Cargo Tree binding. Loading this
+/// value never admits a resource or an owner attachment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedCargoBrowse {
+    /// Exact submitted Tree directory, which may be a workspace member.
+    pub project: String,
+    /// Unchanged requested/effective commitments from the producer.
+    pub request_binding: backend_library::browse::ProjectTreeRequestBindingV1,
+}
+
+impl PersistedCargoBrowse {
+    fn project(context: &CargoBrowseContext) -> Option<Self> {
+        Some(Self { project: context.requested_project().service_coordinate().ok()?.to_owned(), request_binding: context.request_binding() })
+    }
+    fn restore(&self) -> Option<CargoBrowseContext> {
+        CargoBrowseContext::from_binding_address(LocalProjectId::from_path(Path::new(&self.project)).ok()?, self.request_binding)
+    }
+}
+
 /// Closed route schema used only at the persistence edge.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PersistedRoute {
@@ -329,8 +382,30 @@ pub enum PersistedRoute {
         /// Producer project identity.
         project: u64,
     },
+    /// A local project's dependency tree.
+    Tree {
+        /// Native project path, admitted again on reload.
+        project: String,
+    },
+    /// Find before a query is entered.
+    FindHome,
+    /// Find results at a stable query and page size.
+    Find {
+        /// The indexed query.
+        text: String,
+        /// Requested result page size.
+        limit: u16,
+    },
+    /// Two to four packages in their chosen order.
+    Compare {
+        /// Exact package references.
+        packages: Vec<String>,
+    },
     /// A package route with its closed lane.
     Package {
+        /// Independent Cargo browse address; legacy package routes omit it.
+        #[serde(default)]
+        cargo: Option<PersistedCargoBrowse>,
         /// Optional producer project.
         project: Option<u64>,
         /// Canonical package spelling.
@@ -356,6 +431,22 @@ pub enum PersistedRoute {
         view: String,
         /// The source line the code view opens at.
         #[serde(default)]
+        line: Option<u32>,
+    },
+    /// A Cargo source file address; cold reload must ask the owner again.
+    CargoSource {
+        /// Complete owner binding. Legacy addresses must observe Tree first.
+        #[serde(default)]
+        request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
+        /// Exact project-tree address for owner observation rehydration.
+        /// Older files had no project and cannot restore this capability.
+        #[serde(default)]
+        project: Option<String>,
+        /// Full source-qualified package coordinate, including authority digest.
+        package: String,
+        /// Canonical package-relative file spelling.
+        file: String,
+        /// One-based line to reveal after revalidation.
         line: Option<u32>,
     },
     /// The whole dependency graph.
@@ -423,6 +514,75 @@ impl From<PersistedPackageLane> for PackageLane {
     }
 }
 
+/// Keeps the content place even while Settings is layered over it. The
+/// transient overlay is recorded separately in `settings_page`.
+fn persist_route(route: &Route) -> PersistedRoute {
+    match route {
+        Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
+        Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => PersistedRoute::Project {
+            project: project.get().get(),
+        },
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => match browse {
+            BrowseRoute::Tree(project) => PersistedRoute::Tree { project: project.as_str().to_owned() },
+            BrowseRoute::FindHome => PersistedRoute::FindHome,
+            BrowseRoute::Find(query) => PersistedRoute::Find { text: query.text.to_string(), limit: query.limit },
+            BrowseRoute::Compare(selection) => PersistedRoute::Compare {
+                packages: selection.packages().iter().map(|package| package.as_str().to_owned()).collect(),
+            },
+        },
+        Route::Package(route) => PersistedRoute::Package {
+            cargo: route.cargo.as_ref().and_then(PersistedCargoBrowse::project),
+            project: route.project.as_ref().map(|project| project.get().get()),
+            package: route.package.as_str().to_owned(),
+            lane: route.lane.into(),
+            at: route.at.as_ref().map(|at| at.persisted_wire().to_owned()),
+        },
+        Route::Symbol(route) => PersistedRoute::Symbol {
+            project: route.project.as_ref().map(|project| project.get().get()),
+            package: route.package.as_str().to_owned(),
+            id: route.id.as_str().to_owned(),
+            at: route.at.as_ref().map(|at| at.persisted_wire().to_owned()),
+            view: route.view.as_str().to_owned(),
+            line: route.line,
+        },
+        Route::CargoSource(route) => PersistedRoute::CargoSource {
+            request_binding: route.browse.context().map(CargoBrowseContext::request_binding),
+            project: route.browse.requested_project().service_coordinate().ok().map(str::to_owned),
+            package: route.package.as_str().to_owned(),
+            file: route.file.as_str().to_owned(),
+            line: route.line,
+        },
+        Route::World => PersistedRoute::World,
+    }
+}
+
+fn restore_cargo_source_address(
+    project: Option<&str>,
+    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
+    package: &str, file: &str, line: Option<u32>,
+) -> Option<CargoSourceRoute> {
+    let project = LocalProjectId::from_path(Path::new(project?)).ok()?;
+    let package = crate::core::PackageId::new(package).ok()?;
+    let file = CargoSourcePath::new(file)?;
+    if let Some(context) = request_binding.and_then(|binding| CargoBrowseContext::from_binding_address(project.clone(), binding)) {
+        CargoSourceRoute::new(context, package, file, line)
+    } else {
+        CargoSourceRoute::from_unbound_saved(project, package, file, line)
+    }
+}
+
+impl PersistedDesktopState {
+    /// A legacy source with no usable requested project remains a recovery
+    /// notice on Library. It cannot be rebound to the active workspace.
+    pub(crate) fn cargo_source_recovery_note(&self) -> Option<super::workspace::Note> {
+        match &self.route {
+            PersistedRoute::CargoSource { project, request_binding, package, file, line }
+                if restore_cargo_source_address(project.as_deref(), *request_binding, package, file, *line).is_none() => Some(crate::model::workspace::Note::CargoSourceAddressUnread),
+            _ => None,
+        }
+    }
+}
+
 /// A persistence error that keeps the target path visible to diagnostics.
 #[derive(Debug)]
 pub struct PersistenceError {
@@ -463,6 +623,14 @@ pub enum PersistenceRecovery {
         /// Why the canonical path could not be admitted.
         reason: PersistenceRecoveryReason,
     },
+    /// An oversized file could not be admitted into the byte budget; its
+    /// original pathname was left untouched for the next launch or support.
+    RetainedAtSource {
+        /// The original state path, kept without another read.
+        path: PathBuf,
+        /// Why this launch used defaults.
+        reason: PersistenceRecoveryReason,
+    },
 }
 
 impl PersistenceRecovery {
@@ -472,7 +640,7 @@ impl PersistenceRecovery {
     pub fn note(&self) -> Option<super::workspace::Note> {
         match self {
             Self::Current | Self::Missing => None,
-            Self::Preserved { backup, reason } => Some(super::workspace::Note::StateKept {
+            Self::Preserved { backup, reason } | Self::RetainedAtSource { path: backup, reason } => Some(super::workspace::Note::StateKept {
                 backup: Arc::from(backup.display().to_string()),
                 why: Arc::from(reason.to_string()),
             }),
@@ -487,8 +655,9 @@ pub enum PersistenceRecoveryReason {
     Corrupt,
     /// The payload exceeded the bounded desktop-state envelope.
     Oversized {
-        /// Observed byte length.
-        bytes: u64,
+        /// Lower bound established by the bounded read, without restating
+        /// a pathname that another writer could replace.
+        at_least: u64,
         /// Maximum accepted byte length.
         limit: u64,
     },
@@ -505,8 +674,8 @@ impl std::fmt::Display for PersistenceRecoveryReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Corrupt => f.write_str("invalid JSON or state shape"),
-            Self::Oversized { bytes, limit } => {
-                write!(f, "state is {bytes} bytes (limit {limit})")
+            Self::Oversized { at_least, limit } => {
+                write!(f, "state is at least {at_least} bytes (limit {limit})")
             }
             Self::IncompatibleSchema { found, supported } => {
                 write!(f, "schema {found} is incompatible with schema {supported}")
@@ -585,14 +754,14 @@ impl PersistentState {
                 });
             }
             Err(source) if source.kind() == io::ErrorKind::InvalidData => {
-                let bytes = fs::metadata(&self.path)
-                    .map(|metadata| metadata.len())
-                    .unwrap_or(0);
                 let reason = PersistenceRecoveryReason::Oversized {
-                    bytes,
+                    at_least: MAX_STATE_BYTES + 1,
                     limit: MAX_STATE_BYTES,
                 };
-                return self.preserve_and_default(reason);
+                return Ok(PersistenceLoad {
+                    state: PersistedDesktopState::default(),
+                    recovery: PersistenceRecovery::RetainedAtSource { path: self.path.clone(), reason },
+                });
             }
             Err(source) => {
                 return Err(PersistenceError {
@@ -603,10 +772,10 @@ impl PersistentState {
         };
         let value: PersistedDesktopState = match serde_json::from_slice(&bytes) {
             Ok(value) => value,
-            Err(_) => return self.preserve_and_default(PersistenceRecoveryReason::Corrupt),
+            Err(_) => return self.preserve_observed_and_default(&bytes, PersistenceRecoveryReason::Corrupt),
         };
         if value.schema != SCHEMA {
-            return self.preserve_and_default(PersistenceRecoveryReason::IncompatibleSchema {
+            return self.preserve_observed_and_default(&bytes, PersistenceRecoveryReason::IncompatibleSchema {
                 found: value.schema,
                 supported: SCHEMA,
             });
@@ -621,20 +790,12 @@ impl PersistentState {
         })
     }
 
-    fn preserve_and_default(
+    fn preserve_observed_and_default(
         &self,
+        observed: &[u8],
         reason: PersistenceRecoveryReason,
     ) -> Result<PersistenceLoad, PersistenceError> {
-        let backup = recovery_path(&self.path, &reason);
-        durable::replace_file(&self.path, &backup).map_err(|source| PersistenceError {
-            path: self.path.clone(),
-            source,
-        })?;
-        durable::sync_parent(&self.path).map_err(|source| PersistenceError {
-            path: self.path.clone(),
-            source,
-        })?;
-        cleanup_interrupted_temporaries(&self.path).map_err(|source| PersistenceError {
+        let backup = preserve_observed(&self.path, observed, &reason).map_err(|source| PersistenceError {
             path: self.path.clone(),
             source,
         })?;
@@ -658,7 +819,12 @@ impl PersistentState {
                 ),
             });
         }
-        let bytes = serde_json::to_vec_pretty(value).map_err(|error| PersistenceError {
+        let mut bytes = Vec::new();
+        let writer = durable::BoundedWriter::new(&mut bytes, MAX_STATE_BYTES as usize).map_err(|source| PersistenceError {
+            path: self.path.clone(),
+            source,
+        })?;
+        serde_json::to_writer_pretty(writer, value).map_err(|error| PersistenceError {
             path: self.path.clone(),
             source: io::Error::new(io::ErrorKind::InvalidData, error),
         })?;
@@ -706,6 +872,22 @@ impl PersistentState {
         snapshot: &AppSnapshot,
         shelf: Vec<PersistedShelfItem>,
     ) -> PersistedDesktopState {
+        let route = persist_route(snapshot.committed_route());
+        let selected_claim = if let Some(selected) = snapshot.committed_route().selected() {
+            (!snapshot.key().is_unserved()).then(|| PersistedSelectionClaim {
+                route: route.clone(),
+                root: backend_library::encode_id(snapshot.key().root().as_bytes()),
+                object: backend_library::encode_id(selected.get().as_bytes()),
+            })
+        } else {
+            snapshot.session().pending_selection.as_ref()
+                .filter(|claim| &claim.route == snapshot.committed_route())
+                .map(|claim| PersistedSelectionClaim {
+                    route: route.clone(),
+                    root: backend_library::encode_id(&claim.root),
+                    object: backend_library::encode_id(&claim.object),
+                })
+        };
         PersistedDesktopState {
             schema: SCHEMA,
             shelf,
@@ -782,39 +964,8 @@ impl PersistentState {
                 .settings()
                 .window
                 .map(|window| PersistedWindow { width: window.width, height: window.height }),
-            route: match snapshot.overlay() {
-                Some(Overlay::Settings(_)) => PersistedRoute::Settings,
-                Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
-                    match snapshot.committed_route() {
-                        // A browsing page reopens at home: its read model is
-                        // one owner round trip away, and its route is not a
-                        // persisted shape yet.
-                        Route::Orbit(
-                            crate::navigation::OrbitRoute::Home | crate::navigation::OrbitRoute::Browse(_),
-                        ) => PersistedRoute::Home,
-                        Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
-                            PersistedRoute::Project {
-                                project: project.get().get(),
-                            }
-                        }
-                        Route::Package(route) => PersistedRoute::Package {
-                            project: route.project.as_ref().map(|project| project.get().get()),
-                            package: route.package.as_str().to_owned(),
-                            lane: route.lane.into(),
-                            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
-                        },
-                        Route::Symbol(route) => PersistedRoute::Symbol {
-                            project: route.project.as_ref().map(|project| project.get().get()),
-                            package: route.package.as_str().to_owned(),
-                            id: route.id.as_str().to_owned(),
-                            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
-                            view: route.view.as_str().to_owned(),
-                            line: route.line,
-                        },
-                        Route::World => PersistedRoute::World,
-                    }
-                }
-            },
+            route,
+            selected_claim,
             settings_page: match snapshot.overlay() {
                 Some(Overlay::Settings(page)) => Some(page.as_str().to_owned()),
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => None,
@@ -830,20 +981,35 @@ impl PersistentState {
             .as_deref()
             .and_then(SettingsPage::parse)
             .unwrap_or_default();
-        let overlay = match &state.route {
-            PersistedRoute::Settings => Some(Overlay::Settings(settings_page)),
-            PersistedRoute::Home
-            | PersistedRoute::Project { .. }
-            | PersistedRoute::Package { .. }
-            | PersistedRoute::Page { .. }
-            | PersistedRoute::Source { .. }
-            | PersistedRoute::Symbol { .. }
-            | PersistedRoute::World => None,
+        let overlay = if matches!(state.route, PersistedRoute::Settings) || state.settings_page.is_some() {
+            Some(Overlay::Settings(settings_page))
+        } else {
+            None
         };
         let route = match &state.route {
             PersistedRoute::Settings | PersistedRoute::Home => {
                 Route::Orbit(crate::navigation::OrbitRoute::Home)
             }
+            PersistedRoute::Tree { project } => crate::core::LocalProjectId::new(project)
+                .map(BrowseRoute::Tree)
+                .map(crate::navigation::OrbitRoute::Browse)
+                .map(Route::Orbit)
+                .unwrap_or_else(|_| Route::Orbit(crate::navigation::OrbitRoute::Home)),
+            PersistedRoute::FindHome => Route::Orbit(crate::navigation::OrbitRoute::Browse(BrowseRoute::FindHome)),
+            PersistedRoute::Find { text, limit } => crate::model::pages::SearchQuery::new(text, *limit)
+                .map(BrowseRoute::Find)
+                .map(crate::navigation::OrbitRoute::Browse)
+                .map(Route::Orbit)
+                .unwrap_or_else(|_| Route::Orbit(crate::navigation::OrbitRoute::Home)),
+            PersistedRoute::Compare { packages } => packages.iter()
+                .map(|package| crate::model::pages::PackageRef::parse(package))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .and_then(|packages| CompareSet::new(packages).ok())
+                .map(BrowseRoute::Compare)
+                .map(crate::navigation::OrbitRoute::Browse)
+                .map(Route::Orbit)
+                .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home)),
             PersistedRoute::Project { project } => std::num::NonZeroU64::new(*project)
                 .map(|project| {
                     crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
@@ -853,6 +1019,7 @@ impl PersistentState {
                 .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home)),
             PersistedRoute::World => Route::World,
             PersistedRoute::Package {
+                cargo,
                 project,
                 package,
                 lane,
@@ -865,11 +1032,12 @@ impl PersistentState {
                     .ok()
                     .map(|package| {
                         Route::Package(crate::navigation::PackageRoute {
+                            cargo: cargo.as_ref().and_then(PersistedCargoBrowse::restore),
                             project,
                             package,
                             lane: (*lane).into(),
                             selected: None,
-                            at: at.as_deref().and_then(|at| ReleaseId::new(at).ok()),
+                            at: at.as_deref().map(ReleaseId::from_persisted),
                         })
                     })
                     .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home))
@@ -900,7 +1068,27 @@ impl PersistentState {
                 View::parse(view).unwrap_or_default(),
                 *line,
             ),
+            PersistedRoute::CargoSource { project, request_binding, package, file, line } => {
+                restore_cargo_source_address(project.as_deref(), *request_binding, package, file, *line)
+                    .map(Route::CargoSource)
+                    .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
+            }
         };
+        let pending_selection = state.selected_claim.as_ref().and_then(|claim| {
+            if claim.route != state.route || persist_route(&route) != state.route
+                || route.at().is_some_and(|release| !release.is_valid())
+            {
+                return None;
+            }
+            match &route {
+                Route::Package(_) | Route::Symbol(_) => Some(PendingSelectionClaim {
+                    route: route.clone(),
+                    root: backend_library::decode_id(&claim.root).ok()?,
+                    object: backend_library::decode_id(&claim.object).ok()?,
+                }),
+                Route::CargoSource(_) | Route::Orbit(_) | Route::World => None,
+            }
+        });
         let hand = crate::model::hand::Hand::of(state.hand.iter().filter_map(|held| {
             Some(crate::model::hand::Held {
                 package: crate::core::PackageId::new(&held.package).ok()?,
@@ -921,6 +1109,7 @@ impl PersistentState {
         SessionState {
             route,
             overlay,
+            pending_selection,
             hand,
             whispered: state.hand_whispered,
             ..SessionState::default()
@@ -996,15 +1185,16 @@ impl PersistentState {
                     return None;
                 }
                 let path = id.path();
-                let phase = if path.is_dir() {
-                    match item.phase {
-                        // There is no live request to observe after restart;
-                        // re-admit the folder as a fresh authoritative index.
-                        PersistedProjectPhase::Cancelling => ProjectPhase::Indexing,
-                        phase => phase.into(),
-                    }
-                } else {
+                // Folder disappearance does not prove an in-flight owner
+                // operation stopped. Keep its exact recovery path visible
+                // even when the source is also temporarily unavailable.
+                let unresolved = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling | PersistedProjectPhase::Unconfirmed);
+                let phase = if unresolved {
+                    ProjectPhase::Unconfirmed
+                } else if !path.is_dir() {
                     ProjectPhase::Missing
+                } else {
+                    item.phase.into()
                 };
                 let display_path: Arc<str> = item
                     .display_path
@@ -1016,10 +1206,14 @@ impl PersistentState {
                     path: display_path,
                     label: item.label.clone().into(),
                     phase,
-                    progress: item.progress.map(|progress| progress.min(100)),
-                    files_indexed: item.files_indexed,
+                    progress: (!unresolved).then_some(item.progress).flatten().map(|progress| progress.min(100)),
+                    files_indexed: (!unresolved).then_some(item.files_indexed).flatten(),
                     request: None,
-                    error: item.error.clone().map(Into::into),
+                    error: if unresolved && item.error.is_none() {
+                        Some(Arc::from("This index request was interrupted. Check its exact owner operation before starting another."))
+                    } else {
+                        item.error.clone().map(Into::into)
+                    },
                     recent: true,
                 })
             })
@@ -1161,24 +1355,7 @@ impl PersistentState {
 }
 
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
-    let file = File::open(path)?;
-    let bytes = file.metadata()?.len();
-    if bytes > MAX_STATE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("desktop state is {bytes} bytes; limit is {MAX_STATE_BYTES}"),
-        ));
-    }
-    let mut payload = Vec::with_capacity(bytes as usize);
-    file.take(MAX_STATE_BYTES.saturating_add(1))
-        .read_to_end(&mut payload)?;
-    if payload.len() as u64 > MAX_STATE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("desktop state exceeded {MAX_STATE_BYTES} bytes while it was being read"),
-        ));
-    }
-    Ok(payload)
+    durable::read_regular_bounded(path, MAX_STATE_BYTES as usize)
 }
 
 fn recovery_path(path: &Path, reason: &PersistenceRecoveryReason) -> PathBuf {
@@ -1194,16 +1371,36 @@ fn recovery_path(path: &Path, reason: &PersistenceRecoveryReason) -> PathBuf {
             format!("schema-{found}")
         }
     };
+    let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{name}.{label}.{}.{}.preserved",
+        std::process::id(),
+        sequence
+    ))
+}
+
+/// Copies exactly the bytes admitted from the held read into an exclusive
+/// diagnostic. A concurrent atomic save may have replaced `path` by now, so
+/// recovery must never rename or reread that pathname to preserve evidence.
+fn preserve_observed(path: &Path, observed: &[u8], reason: &PersistenceRecoveryReason) -> io::Result<PathBuf> {
+    if observed.len() > MAX_STATE_BYTES as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "observed state exceeds its byte budget"));
+    }
     loop {
-        let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            ".{name}.{label}.{}.{}.preserved",
-            std::process::id(),
-            sequence
-        ));
-        if !candidate.exists() {
-            return candidate;
+        let backup = recovery_path(path, reason);
+        let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = file.write_all(observed).and_then(|()| file.sync_all()) {
+            drop(file);
+            let _ = fs::remove_file(&backup);
+            return Err(error);
         }
+        drop(file);
+        durable::sync_parent(&backup)?;
+        return Ok(backup);
     }
 }
 
@@ -1325,6 +1522,44 @@ mod tests {
     }
 
     #[test]
+    fn cold_active_index_and_cancellation_require_exact_reconciliation() {
+        let root = fixture("cold-index-outcome");
+        let state = PersistedDesktopState {
+            shelf: [PersistedProjectPhase::Indexing, PersistedProjectPhase::Cancelling, PersistedProjectPhase::Indexing, PersistedProjectPhase::Unconfirmed]
+                .into_iter()
+                .enumerate()
+                .map(|(index, phase)| {
+                    let path = root.join(format!("project-{index}"));
+                    if index < 2 {
+                        fs::create_dir(&path).expect("project directory");
+                    }
+                    PersistedShelfItem {
+                        local_path: path.to_str().expect("fixture UTF-8").to_owned(),
+                        display_path: None,
+                        native_path: None,
+                        label: format!("project-{index}"),
+                        phase,
+                        progress: Some(41),
+                        files_indexed: Some(100),
+                        error: None,
+                    }
+                })
+                .collect(),
+            ..PersistedDesktopState::default()
+        };
+        let workspace = PersistentState::at(root.join("desktop.json")).cold_workspace(&state);
+        assert_eq!(workspace.projects.len(), 4);
+        for project in workspace.projects.iter() {
+            assert_eq!(project.phase, ProjectPhase::Unconfirmed);
+            assert_eq!(project.progress, None);
+            assert_eq!(project.files_indexed, None);
+            assert_eq!(project.request, None);
+            assert!(project.error.as_deref().is_some_and(|message| message.contains("Check its exact owner operation")));
+        }
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn cold_shelf_keeps_active_selection_visible_when_service_host_differs() {
         let active = "/tmp/nudox-selected-project";
         let host = "/tmp/nudox-served-project";
@@ -1398,6 +1633,202 @@ mod tests {
         assert_eq!(restored.overlay, None);
     }
 
+    #[test]
+    fn saved_focus_waits_for_the_exact_owner_catalog_row() {
+        let key = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("selection".to_owned(), "owner".to_owned())]),
+            1,
+        );
+        let package = crate::core::PackageId::new("pkg:cargo/serde@1.0.0").expect("package");
+        let object = crate::model::ObjectId::test(7);
+        let route = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
+            project: None,
+            package: package.clone(),
+            lane: PackageLane::Overview,
+            selected: Some(object),
+            at: None,
+        });
+        let snapshot = AppSnapshot::empty(key).with_session(SessionState { route, ..SessionState::default() });
+        let wire = PersistentState::project(&snapshot);
+        assert!(wire.selected_claim.is_some(), "the focus claim is saved with its route and root");
+        let store = PersistentState::at("unused");
+        let restored = store.cold_reload(&wire);
+        assert_eq!(restored.route.selected(), None, "wire bytes cannot mint a typed ObjectId");
+        assert!(restored.pending_selection.is_some());
+
+        let row = crate::model::PackageSummary {
+            coordinate: package,
+            name: Arc::from("serde"),
+            version: Arc::from("1.0.0"),
+            ecosystem: Arc::from("Cargo"),
+            bytes: 0,
+            standing: Arc::from("current"),
+            downloads: Arc::from("unknown"),
+            advisory: Arc::from("unknown"),
+            object,
+        };
+        let catalog = crate::model::CatalogState { packages: Arc::from([row.clone()]) };
+        let opened = AppSnapshot::empty(key).with_session(restored).with_catalog(catalog.clone(), key);
+        assert_eq!(opened.route().selected(), Some(object));
+        assert_eq!(opened.session().selected, Some(crate::navigation::Selection::Object(object)));
+        assert!(opened.session().pending_selection.is_none());
+
+        let mut wrong_object = wire.clone();
+        wrong_object.selected_claim.as_mut().expect("claim").object = backend_library::encode_id(crate::model::ObjectId::test(9).get().as_bytes());
+        let rejected = AppSnapshot::empty(key).with_session(store.cold_reload(&wrong_object)).with_catalog(catalog.clone(), key);
+        assert_eq!(rejected.route().selected(), None);
+        assert!(rejected.session().pending_selection.is_none());
+
+        let mut wrong_root = wire.clone();
+        wrong_root.selected_claim.as_mut().expect("claim").root = backend_library::encode_id(&[3; 32]);
+        let rejected = AppSnapshot::empty(key).with_session(store.cold_reload(&wrong_root)).with_catalog(catalog, key);
+        assert_eq!(rejected.route().selected(), None);
+        assert!(rejected.session().pending_selection.is_none());
+
+        let mut moved_claim = wire.clone();
+        moved_claim.route = PersistedRoute::Package {
+            cargo: None,
+            project: None,
+            package: "pkg:cargo/other@1.0.0".to_owned(),
+            lane: PersistedPackageLane::Overview,
+            at: None,
+        };
+        assert!(store.cold_reload(&moved_claim).pending_selection.is_none(), "a claim cannot follow an edited route");
+
+        let waiting = AppSnapshot::empty(key).with_session(store.cold_reload(&wire))
+            .with_catalog(crate::model::CatalogState::default(), key);
+        assert!(waiting.session().pending_selection.is_some(), "a paged catalog may not contain the row yet");
+        assert!(PersistentState::project(&waiting).selected_claim.is_some(), "pending focus survives another save");
+    }
+
+    #[test]
+    fn invalid_saved_release_remains_an_unread_address_after_cold_reload() {
+        let mut state = PersistedDesktopState {
+            route: PersistedRoute::Symbol {
+                project: None,
+                package: "pkg:cargo/serde@1.0.0".to_owned(),
+                id: "pkg:cargo/serde@1.0.0::src/lib.rs:1::Item".to_owned(),
+                at: Some("../other".to_owned()),
+                view: "page".to_owned(),
+                line: None,
+            },
+            ..PersistedDesktopState::default()
+        };
+        let store = PersistentState::at("unused");
+        for route in [state.route.clone(), PersistedRoute::Package {
+            cargo: None,
+            project: None,
+            package: "pkg:cargo/serde@1.0.0".to_owned(),
+            lane: PersistedPackageLane::Overview,
+            at: Some("../other".to_owned()),
+        }] {
+            state.route = route;
+            let reopened = store.cold_reload(&state);
+            let at = reopened.route.at().expect("saved alternate release remains present");
+            assert!(!at.is_valid());
+            assert!(crate::runtime::store::route_package(&reopened.route).is_none());
+            if matches!(reopened.route, Route::Symbol(_)) {
+                assert!(matches!(crate::runtime::store::route_declaration(&reopened.route), Err(crate::runtime::store::Unread::ReleaseNotHere(_))));
+            }
+            match persist_route(&reopened.route) {
+                PersistedRoute::Symbol { at, .. } | PersistedRoute::Package { at, .. } => assert_eq!(at.as_deref(), Some("../other")),
+                other => panic!("unexpected restored route: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn browsing_places_and_settings_overlay_survive_a_cold_restart() {
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("persistence".to_owned(), "browse".to_owned())]),
+            1,
+        ));
+        let browse = [
+            BrowseRoute::Tree(LocalProjectId::new("/tmp/nudox-tree").expect("tree")),
+            BrowseRoute::FindHome,
+            BrowseRoute::Find(crate::model::pages::SearchQuery::new("serde map", 73).expect("query")),
+            BrowseRoute::Compare(CompareSet::new([
+                crate::model::pages::PackageRef::parse("pkg:cargo/toml@0.8.23").expect("first"),
+                crate::model::pages::PackageRef::parse("pkg:cargo/serde@1.0.0").expect("second"),
+            ]).expect("compare")),
+        ];
+        for place in browse {
+            let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(place));
+            let session = SessionState {
+                route: route.clone(),
+                overlay: Some(Overlay::Settings(SettingsPage::Help)),
+                ..SessionState::default()
+            };
+            let persisted = PersistentState::project(&snapshot.with_session(session));
+            let bytes = serde_json::to_vec(&persisted).expect("serialize");
+            let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("deserialize");
+            let reopened = PersistentState::at("unused").cold_reload(&decoded);
+            assert_eq!(reopened.route, route);
+            assert_eq!(reopened.overlay, Some(Overlay::Settings(SettingsPage::Help)));
+        }
+    }
+
+    #[test]
+    fn cargo_source_cold_address_keeps_authority_but_cannot_mint_file_proof() {
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("persistence".to_owned(), "cargo-source".to_owned())]),
+            1,
+        ));
+        let package = crate::core::PackageId::new(
+            "pkg:cargo/demo@1.2.3?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).expect("qualified package");
+        let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-persistence").expect("tree address");
+        let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
+        let route = Route::CargoSource(CargoSourceRoute::new(crate::navigation::cargo_browse::fixture_context(project.clone()), package, file, Some(43)).expect("source address"));
+        let wire = PersistentState::project(&snapshot.with_session(SessionState { route: route.clone(), ..SessionState::default() }));
+        let bytes = serde_json::to_vec(&wire).expect("serialize address");
+        let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("decode address");
+        let restored = PersistentState::at("unused").cold_reload(&decoded);
+        assert_eq!(restored.route, route);
+        assert_eq!(crate::runtime::store::route_keys(&restored.route).len(), 3,
+            "cold address pairs file/path reads and watches its optional visible package header");
+
+        let Route::CargoSource(bound) = &route else { panic!("source") };
+        let parent = Route::Package(bound.package_route());
+        let parent_wire = PersistentState::project(&snapshot.with_session(SessionState { route: parent.clone(), ..SessionState::default() }));
+        assert_eq!(PersistentState::at("unused").cold_reload(&parent_wire).route, parent, "zoom-out persists its independent full binding without history");
+
+        let mut legacy = decoded.clone();
+        if let PersistedRoute::CargoSource { request_binding, .. } = &mut legacy.route { *request_binding = None; }
+        let session = PersistentState::at("unused").cold_reload(&legacy);
+        let Route::CargoSource(awaiting) = &session.route else { panic!("legacy source recovery") };
+        let awaiting = awaiting.clone();
+        assert!(matches!(awaiting.browse, crate::navigation::CargoBrowseAddress::AwaitingTree { .. }));
+        assert_eq!(crate::runtime::store::route_keys(&session.route), vec![crate::model::pages::PageKey::Browse(crate::model::browse::BrowseKey::Tree(project.clone()))], "no binding means Tree only, never a source request with guessed roots");
+        let resolved = crate::navigation::reduce(&snapshot.with_session(session.clone()), crate::navigation::Intent::ResolveCargoBrowse { expected: awaiting.clone(), context: bound.browse.context().expect("binding address").clone() }).snapshot;
+        assert_eq!(resolved.route(), &route);
+        assert_eq!(resolved.session().back, session.back, "resolving the current Tree binding is not a duplicate history stop");
+        let other_context = crate::navigation::cargo_browse::fixture_context(crate::core::LocalProjectId::new("/tmp/unrelated-member").expect("other address"));
+        assert_eq!(crate::navigation::reduce(&snapshot.with_session(session), crate::navigation::Intent::ResolveCargoBrowse { expected: awaiting.clone(), context: other_context }).snapshot.route(), &Route::CargoSource(awaiting.clone()));
+
+        let mut forged = decoded;
+        forged.route = PersistedRoute::CargoSource {
+            request_binding: None,
+            project: None,
+            package: "pkg:cargo/demo@1.2.3?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            file: "src/lib.rs".to_owned(),
+            line: Some(43),
+        };
+        assert!(matches!(PersistentState::at("unused").cold_reload(&forged).route, Route::Orbit(_)),
+            "an old source address without its tree cannot rehydrate owner authority");
+        assert_eq!(forged.cargo_source_recovery_note(), Some(crate::model::workspace::Note::CargoSourceAddressUnread));
+        assert!(legacy.cargo_source_recovery_note().is_none(), "a usable exact requested Tree has an explicit AwaitingTree route");
+        forged.route = PersistedRoute::CargoSource {
+            request_binding: None,
+            project: Some(project.as_str().to_owned()),
+            package: "pkg:cargo/demo@1.2.3".to_owned(),
+            file: "../secret".to_owned(),
+            line: Some(0),
+        };
+        assert!(matches!(PersistentState::at("unused").cold_reload(&forged).route, Route::Orbit(_)));
+    }
+
     /// Quitting while the query previews a result reopens where you were,
     /// never on the provisional page.
     #[test]
@@ -1441,7 +1872,7 @@ mod tests {
         };
         assert_eq!(reason, PersistenceRecoveryReason::Corrupt);
         assert_eq!(fs::read(backup).expect("preserved bytes"), corrupt);
-        assert!(!path.exists());
+        assert_eq!(fs::read(&path).expect("source untouched"), corrupt);
 
         store
             .save(&admitted.state)
@@ -1476,7 +1907,7 @@ mod tests {
             }
         );
         assert_eq!(fs::read(backup).expect("preserved bytes"), bytes);
-        assert!(!path.exists());
+        assert_eq!(fs::read(&path).expect("source untouched"), bytes);
         assert!(store.save(&future).is_err());
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1510,22 +1941,60 @@ mod tests {
         let oversized = vec![b' '; MAX_STATE_BYTES as usize + 1];
         fs::write(&path, &oversized).expect("write oversized fixture");
 
-        let admitted = store.load_recovering().expect("preserve oversized state");
-        let PersistenceRecovery::Preserved { backup, reason } = admitted.recovery else {
-            panic!("oversized state must be preserved");
+        let admitted = store.load_recovering().expect("retain oversized state");
+        let PersistenceRecovery::RetainedAtSource { path: retained, reason } = admitted.recovery else {
+            panic!("oversized state must be retained at its source");
         };
         assert_eq!(
             reason,
             PersistenceRecoveryReason::Oversized {
-                bytes: MAX_STATE_BYTES + 1,
+                at_least: MAX_STATE_BYTES + 1,
                 limit: MAX_STATE_BYTES,
             }
         );
-        assert_eq!(
-            fs::metadata(backup).expect("preserved metadata").len(),
-            MAX_STATE_BYTES + 1
-        );
+        assert_eq!(retained, path);
+        assert_eq!(fs::read(&path).expect("oversized source untouched"), oversized);
         assert_eq!(admitted.state, PersistedDesktopState::default());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn oversized_save_never_replaces_the_last_admitted_state() {
+        let root = fixture("persistence-write-budget");
+        let path = root.join("desktop.json");
+        let store = PersistentState::at(&path);
+        let current = PersistedDesktopState { reduced_motion: true, ..PersistedDesktopState::default() };
+        store.save(&current).expect("publish current state");
+        let mut oversized = PersistedDesktopState::default();
+        oversized.shelf.push(PersistedShelfItem {
+            local_path: "/tmp/oversized".to_owned(),
+            display_path: None,
+            native_path: None,
+            label: "x".repeat(MAX_STATE_BYTES as usize + 1),
+            phase: PersistedProjectPhase::Ready,
+            progress: None,
+            files_indexed: None,
+            error: None,
+        });
+        assert!(store.save(&oversized).is_err(), "encoding must stop at the same byte budget as reads");
+        assert_eq!(store.load().expect("last admitted state"), current);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn observed_corruption_is_preserved_without_moving_a_concurrent_valid_save() {
+        let root = fixture("persistence-observed-race");
+        let path = root.join("desktop.json");
+        let store = PersistentState::at(&path);
+        let corrupt = br#"{"schema":1,"shelf":["#;
+        fs::write(&path, corrupt).expect("corrupt initial state");
+        let observed = read_bounded(&path).expect("read exact corrupt bytes");
+        let current = PersistedDesktopState { reduced_motion: true, ..PersistedDesktopState::default() };
+        store.save(&current).expect("another writer publishes valid state");
+        let recovered = store.preserve_observed_and_default(&observed, PersistenceRecoveryReason::Corrupt).expect("preserve observed bytes");
+        let PersistenceRecovery::Preserved { backup, .. } = recovered.recovery else { panic!("preserved diagnostic"); };
+        assert_eq!(fs::read(backup).expect("diagnostic bytes"), corrupt);
+        assert_eq!(store.load().expect("concurrent valid canonical"), current);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

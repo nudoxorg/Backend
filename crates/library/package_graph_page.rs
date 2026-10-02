@@ -357,6 +357,9 @@ impl PackageGraphPage {
                             if self.rows.iter().any(|row| {
                                 row.target.ecosystem != ecosystem
                                     || row.target.name.as_str() != target.lineage_name()
+                                    || ((target.qualifiers().is_some()
+                                        || target.subpath().is_some())
+                                        && row.target.resolved.is_none())
                                     || row.target.resolved.as_ref().is_some_and(|resolved| {
                                         resolved.as_str() != self.package.as_str()
                                     })
@@ -632,9 +635,17 @@ fn expected_page(
                 PackageReference::Purl(target) if target.package_type().registry().is_none() => {
                     checked_reverse_knowledge(facts.facts())
                 }
-                PackageReference::Purl(_) => {
+                PackageReference::Purl(target) => {
                     let coverage = checked_reverse_knowledge(facts.facts());
                     match coverage {
+                        PackageGraphKnowledge::Known => index
+                            .dependent_coverage_gap(target)
+                            .map_or(PackageGraphKnowledge::Known, |reason| {
+                                PackageGraphKnowledge::Partial {
+                                    reason,
+                                    unavailable: false,
+                                }
+                            }),
                         PackageGraphKnowledge::Unknown {
                             reason: Some(reason),
                         } if !rows.is_empty() || more => PackageGraphKnowledge::Partial {
@@ -1074,6 +1085,48 @@ mod tests {
         assert_eq!(
             forged_source.admit_against_checked_facts(&first_request, [0xa1; 32], &checked, &index),
             Err(PackageGraphPageError::PageShape)
+        );
+    }
+
+    #[test]
+    fn qualified_reverse_page_keeps_only_exact_edges_and_marks_unresolved_coverage() {
+        let source = source();
+        let qualified = PackageReference::parse(
+            "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fother.example",
+        )
+        .expect("qualified target");
+        let checked = CheckedPackageGraphFacts::new(vec![(
+            source.clone(),
+            DependencyFacts::Known(
+                vec![
+                    edge(&source, "serde", "^1", Some(qualified.as_str())),
+                    edge(&source, "serde", "^1", Some("pkg:cargo/serde@1.0.0")),
+                    edge(&source, "serde", "^1", None),
+                ]
+                .into_boxed_slice(),
+            ),
+        )])
+        .expect("checked facts");
+        let index = PackageGraphIndex::from_checked_facts(&checked);
+        let request =
+            PackageGraphPageRequest::new(qualified, PackageGraphDirection::Dependents, None, 8)
+                .expect("request");
+        let page = page_for(&request, &checked, &index);
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].target.resolved.as_ref(),
+            Some(&request.package)
+        );
+        assert!(matches!(
+            page.knowledge,
+            PackageGraphKnowledge::Partial {
+                unavailable: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            page.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            Ok(())
         );
     }
 

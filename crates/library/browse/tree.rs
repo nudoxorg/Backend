@@ -1,6 +1,7 @@
 //! A project's dependency tree, read once and shared by every surface.
 
 use super::roles::{Declared, RoleEvidence, RoleId, cohort_role, declared_role, described_role};
+use crate::{CargoPackageSourceAuthorityStateV1, PackageReference};
 use backend_advisory::{
     AdvisoryCoverage, AdvisoryObservation, AdvisoryStatus, FreshnessState,
     cargo_compatibility_class, cargo_version_cmp,
@@ -8,9 +9,124 @@ use backend_advisory::{
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 1;
+pub const PROJECT_TREE_SCHEMA: u16 = 8;
+
+/// Wire schema of [`ProjectTreeRequestBindingV1`].
+pub const PROJECT_TREE_REQUEST_BINDING_SCHEMA: u16 = 1;
+
+/// Exact request address and effective workspace root for one tree read.
+///
+/// The requested directory may be a member/package subdirectory. The owner
+/// binds both that exact request and the workspace Cargo resolved from it;
+/// clients compare the request digest to their submitted `LocalProjectId` and
+/// compare package source receipts to the effective root. The digests are
+/// commitments, not encryption.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTreeRequestBindingV1 {
+    /// Binding schema.
+    pub schema: u16,
+    /// Commitment to the exact directory string submitted by the caller.
+    pub requested_root_digest: [u8; 32],
+    /// Commitment to Cargo's effective workspace root in this tree reply.
+    pub effective_workspace_root_digest: [u8; 32],
+}
+
+impl ProjectTreeRequestBindingV1 {
+    /// Binds the exact submitted directory to the workspace root returned by
+    /// Cargo. Returns `None` for non-absolute or non-UTF-8 paths.
+    #[must_use]
+    pub fn for_paths(requested_root: &Path, effective_workspace_root: &str) -> Option<Self> {
+        let requested_root = requested_root
+            .is_absolute()
+            .then(|| requested_root.to_str())
+            .flatten()?;
+        let effective = Path::new(effective_workspace_root);
+        if !effective.is_absolute() || effective.to_str().is_none() {
+            return None;
+        }
+        let binding = Self {
+            schema: PROJECT_TREE_REQUEST_BINDING_SCHEMA,
+            requested_root_digest: project_tree_path_digest(
+                b"backend.project-tree.requested-root.v1\0",
+                requested_root.as_bytes(),
+            ),
+            effective_workspace_root_digest: project_tree_path_digest(
+                b"cargo-workspace-root.v1",
+                effective_workspace_root.as_bytes(),
+            ),
+        };
+        binding.has_admissible_shape().then_some(binding)
+    }
+
+    /// Whether this receipt belongs to the exact path string submitted by a
+    /// caller. This intentionally does not require the submitted directory
+    /// to equal Cargo's resolved workspace root.
+    #[must_use]
+    pub fn matches_requested_root(&self, requested_root: &Path) -> bool {
+        requested_root.is_absolute()
+            && requested_root.to_str().is_some_and(|path| {
+                self.requested_root_digest
+                    == project_tree_path_digest(
+                        b"backend.project-tree.requested-root.v1\0",
+                        path.as_bytes(),
+                    )
+            })
+    }
+
+    /// Makes the request-side commitment for a local project directory. The
+    /// effective workspace root is owner-resolved and is not guessed by the
+    /// caller.
+    #[must_use]
+    pub fn requested_root_digest_for(requested_root: &Path) -> Option<[u8; 32]> {
+        let requested_root = requested_root
+            .is_absolute()
+            .then(|| requested_root.to_str())
+            .flatten()?;
+        Some(project_tree_path_digest(
+            b"backend.project-tree.requested-root.v1\0",
+            requested_root.as_bytes(),
+        ))
+    }
+
+    /// Whether this receipt agrees with the effective root spelled in the
+    /// returned tree.
+    #[must_use]
+    pub fn matches_effective_workspace_root(&self, root: &str) -> bool {
+        let path = Path::new(root);
+        path.is_absolute()
+            && path.to_str().is_some()
+            && self.effective_workspace_root_digest
+                == project_tree_path_digest(b"cargo-workspace-root.v1", root.as_bytes())
+    }
+
+    /// Whether an exact Cargo source authority proves this same workspace
+    /// root. The authority stores this commitment in its root identity.
+    #[must_use]
+    pub fn matches_workspace_root_identity(&self, digest: [u8; 32]) -> bool {
+        self.effective_workspace_root_digest == digest
+    }
+
+    /// Whether the binding itself is well-formed.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        self.schema == PROJECT_TREE_REQUEST_BINDING_SCHEMA
+            && self.requested_root_digest != [0; 32]
+            && self.effective_workspace_root_digest != [0; 32]
+    }
+}
+
+fn project_tree_path_digest(domain: &[u8], path: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(domain.len() as u64).to_le_bytes());
+    hasher.update(domain);
+    hasher.update(&(path.len() as u64).to_le_bytes());
+    hasher.update(path);
+    *hasher.finalize().as_bytes()
+}
 
 /// The most packages one tree reply admits.
 pub const MAX_TREE_PACKAGES: usize = 20_000;
@@ -24,30 +140,101 @@ pub enum TreeSource {
         /// The target triple Cargo resolved for.
         host: String,
     },
-    /// Cargo could not answer: read from `Cargo.lock` alone, so every
-    /// platform's packages count and no package states its own metadata.
+    /// Cargo could not answer: read all available rows from `Cargo.lock`
+    /// alone, without a current target/features graph or package metadata.
+    /// Workspace members and local paths remain unknown in this fallback.
     Lockfile {
         /// Why Cargo did not answer.
         reason: String,
+        /// Whether package identities and dependency edges are unambiguous.
+        coverage: LockfileGraphCoverage,
+        /// Cargo.lock does not identify workspace members or path sources.
+        /// This fallback never guesses them from a missing `source` field.
+        workspace_membership: LockfileWorkspaceMembership,
     },
 }
 
+/// What a lockfile-only read can establish about workspace membership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "membership", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LockfileWorkspaceMembership {
+    /// A lockfile has package rows but no member/source-path declarations.
+    Unknown,
+}
+
+/// How completely Cargo.lock supports package identities and dependency edges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LockfileGraphCoverage {
+    /// Every package identity is unique and every dependency edge was attributed.
+    Complete,
+    /// Some dependency strings did not identify exactly one package row or
+    /// were malformed; unresolved edges were omitted.
+    Partial {
+        /// Number of edges that had no unique package target.
+        ambiguous_edges: u32,
+        /// Number of rows whose identical name/version/source identity cannot
+        /// be distinguished from Cargo.lock alone.
+        ambiguous_package_rows: u32,
+    },
+}
+
+/// Completeness of the lockfile inventory absent from the current target and
+/// feature resolution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LockedInactiveCoverage {
+    /// Every row was paired without ambiguity using Cargo source identities
+    /// and unique source-less name/version identities from Cargo.lock.
+    Complete,
+    /// Some package rows could not be matched between the current resolve
+    /// graph and Cargo.lock without guessing a missing source identity.
+    Partial {
+        /// Number of package rows in unresolved identity groups.
+        unmatched_packages: u32,
+    },
+    /// No Cargo metadata plus lockfile comparison was available.
+    Unavailable,
+}
+
 /// Where a package's source comes from.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "from", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PackageOrigin {
-    /// A registry release.
-    Registry,
+    /// A registry release, with Cargo's observed source authority intact.
+    Registry {
+        /// Exact `registry+` or `sparse+` source from metadata or Cargo.lock.
+        source: String,
+    },
     /// A git checkout.
     Git {
-        /// The repository.
-        url: String,
+        /// Cargo's exact source identity, including reference query and the
+        /// resolved commit fragment (for example `git+https://...?...#<sha>`).
+        source: String,
     },
-    /// A path dependency that replaces a registry release (`[patch]`).
+    /// A Cargo package from a local path rather than a registry or Git source.
     Vendored {
-        /// The directory, relative to the project root when inside it.
+        /// Relative directory label, or an opaque external-root label. This
+        /// is presentation text, never a filesystem path authority.
         path: String,
     },
+    /// The reader could not establish a supported source authority.
+    Unresolved {
+        /// Cargo's source spelling, if it supplied one.
+        source: Option<String>,
+    },
+}
+
+impl PackageOrigin {
+    /// Whether Cargo named a crates.io index authority we know exactly.
+    /// Other registries must not be handed to a crates.io-only source.
+    #[must_use]
+    pub fn is_crates_io_registry(&self) -> bool {
+        matches!(self, Self::Registry { source } if matches!(source.as_str(),
+            "registry+https://github.com/rust-lang/crates.io-index"
+            | "registry+https://index.crates.io/"
+            | "sparse+https://index.crates.io/"))
+    }
 }
 
 /// One step of a path from your code to a package.
@@ -84,6 +271,8 @@ pub enum PackageRole {
     Shared,
     /// Reached from your members, but through no direct dependency.
     Unreached,
+    /// The lockfile lists this package, but workspace member roots are unknown.
+    Unknown,
 }
 
 /// One external package that builds for this project.
@@ -96,6 +285,10 @@ pub struct TreePackage {
     pub version: String,
     /// Where its source comes from.
     pub origin: PackageOrigin,
+    /// Exact Cargo source authority observed for this row, or why the owner
+    /// could not prove it. The display origin is not a read capability.
+    #[serde(default)]
+    pub source_authority: CargoPackageSourceAuthorityStateV1,
     /// Its SPDX license expression, when it states one.
     pub license: Option<String>,
     /// The shortest path from your code to it.
@@ -126,6 +319,11 @@ pub struct DirectDependency {
     pub name: String,
     /// The versions your members resolve it to, lowest first.
     pub versions: Box<[String]>,
+    /// Exact source-qualified references aligned with `versions`. Missing
+    /// receipts remain visible but cannot be used for navigation.
+    pub package_references: Box<[Option<PackageReference>]>,
+    /// Exact displayed Cargo origins aligned with `versions` and refs.
+    pub package_origins: Box<[PackageOrigin]>,
     /// Which members use it, and how.
     pub by: Box<[MemberEdge]>,
     /// Its one-line description.
@@ -210,11 +408,16 @@ pub struct ProjectTree {
     pub source: TreeSource,
     /// The workspace root.
     pub root: String,
+    /// The exact submitted directory and Cargo-resolved workspace binding.
+    /// Library-only tree construction leaves this absent; an owner reply must
+    /// attach it before the value crosses the surface boundary.
+    #[serde(default)]
+    pub request_binding: Option<ProjectTreeRequestBindingV1>,
     /// The project's display name (the root folder's name).
     pub name: String,
     /// Your own packages.
     pub members: Box<[TreeMember]>,
-    /// Every external package that builds here, by name then version.
+    /// Every external package that builds here, by name, version, then source.
     pub packages: Box<[TreePackage]>,
     /// Your direct dependencies, by name.
     pub direct: Box<[DirectDependency]>,
@@ -222,8 +425,11 @@ pub struct ProjectTree {
     pub twice: Box<[Duplicate]>,
     /// Advisory evidence for the tree.
     pub health: TreeHealth,
-    /// Lockfile packages that build only for other platforms.
-    pub other_platforms: u32,
+    /// Number of Cargo.lock package rows not active in this target/features
+    /// resolution. This does not infer why a package is inactive.
+    pub locked_inactive: u32,
+    /// Whether `locked_inactive` is exact, a lower bound, or unmeasured.
+    pub locked_inactive_coverage: LockedInactiveCoverage,
 }
 
 impl ProjectTree {
@@ -241,12 +447,160 @@ impl ProjectTree {
             .filter(move |package| package.role == PackageRole::Brought(role))
     }
 
-    /// The package record for one exact version.
+    /// The package row only when this name and version have one source.
+    ///
+    /// Returns `None` when two authorities provide the same name and version;
+    /// callers must not choose either row by display order.
     #[must_use]
     pub fn package(&self, name: &str, version: &str) -> Option<&TreePackage> {
+        let mut matches = self
+            .packages
+            .iter()
+            .filter(|package| package.name == name && package.version == version);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+
+    /// Finds only the package row whose current owner receipt binds this exact
+    /// source-qualified route.
+    #[must_use]
+    pub fn package_by_reference(&self, reference: &PackageReference) -> Option<&TreePackage> {
         self.packages
             .iter()
-            .find(|package| package.name == name && package.version == version)
+            .find(|package| package.source_qualified_reference().as_ref() == Some(reference))
+    }
+
+    /// Validates the schema, bounded rows, direct-row alignment and every
+    /// route-to-display source binding before accepting a tree from the wire.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        if self.schema != PROJECT_TREE_SCHEMA
+            || self.packages.len() > MAX_TREE_PACKAGES
+            || self.direct.len() > self.packages.len()
+            || !self.packages.iter().all(TreePackage::has_admissible_shape)
+            || !self.request_binding.is_some_and(|binding| {
+                binding.has_admissible_shape()
+                    && binding.matches_effective_workspace_root(&self.root)
+            })
+        {
+            return false;
+        }
+        let mut references = BTreeMap::new();
+        let mut displayed = BTreeSet::new();
+        for package in &self.packages {
+            displayed.insert((
+                package.name.as_str(),
+                package.version.as_str(),
+                package.origin.clone(),
+            ));
+            if let Some(reference) = package.source_qualified_reference()
+                && references
+                    .insert(
+                        reference,
+                        (
+                            package.name.as_str(),
+                            package.version.as_str(),
+                            package.origin.clone(),
+                        ),
+                    )
+                    .is_some()
+            {
+                return false;
+            }
+        }
+        self.direct.iter().all(|dependency| {
+            dependency.versions.len() == dependency.package_references.len()
+                && dependency.versions.len() == dependency.package_origins.len()
+                && dependency
+                    .versions
+                    .iter()
+                    .zip(dependency.package_references.iter())
+                    .zip(dependency.package_origins.iter())
+                    .all(|((version, reference), origin)| {
+                        reference.as_ref().is_none_or(|reference| {
+                            references.get(reference).is_some_and(
+                                |(name, exact_version, exact_origin)| {
+                                    *name == dependency.name
+                                        && *exact_version == version
+                                        && exact_origin == origin
+                                },
+                            )
+                        }) && displayed.contains(&(
+                            dependency.name.as_str(),
+                            version.as_str(),
+                            origin.clone(),
+                        ))
+                    })
+        })
+    }
+}
+
+impl TreePackage {
+    /// Whether the public name/version/source display agrees with the exact
+    /// Cargo authority receipt.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &self.source_authority else {
+            return true;
+        };
+        if !authority.has_admissible_shape()
+            || authority.name() != self.name
+            || authority.version() != self.version
+        {
+            return false;
+        }
+        let origin_matches = match (authority.source(), &self.origin) {
+            (
+                crate::CargoPackageSourceV1::Registry { scheme, index_url },
+                PackageOrigin::Registry { source },
+            ) => {
+                let prefix = match scheme {
+                    crate::CargoRegistrySourceSchemeV1::Registry => "registry+",
+                    crate::CargoRegistrySourceSchemeV1::Sparse => "sparse+",
+                };
+                source == &format!("{prefix}{}", index_url.as_str())
+            }
+            (crate::CargoPackageSourceV1::Git { .. }, PackageOrigin::Git { source }) => {
+                let crate::CargoPackageSourceV1::Git {
+                    repository_url,
+                    requested_query,
+                    resolved_commit,
+                } = authority.source()
+                else {
+                    unreachable!()
+                };
+                let query = requested_query
+                    .as_ref()
+                    .map_or_else(String::new, |query| format!("?{}", query.as_str()));
+                source
+                    == &format!(
+                        "git+{}{}#{}",
+                        repository_url.as_str(),
+                        query,
+                        resolved_commit.as_str()
+                    )
+            }
+            (crate::CargoPackageSourceV1::Path, PackageOrigin::Vendored { path }) => {
+                authority.matches_vendored_display_path(path)
+            }
+            _ => false,
+        };
+        origin_matches && authority.package_reference().is_ok()
+    }
+
+    /// Source-qualified route only when the Cargo receipt is complete and
+    /// agrees with this exact row.
+    #[must_use]
+    pub fn source_qualified_reference(&self) -> Option<PackageReference> {
+        if !self.has_admissible_shape() {
+            return None;
+        }
+        match &self.source_authority {
+            CargoPackageSourceAuthorityStateV1::Admitted(authority) => {
+                authority.package_reference().ok()
+            }
+            CargoPackageSourceAuthorityStateV1::Unavailable(_) => None,
+        }
     }
 }
 
@@ -269,6 +623,11 @@ pub struct TreeInputPackage {
     pub has_bin: bool,
     /// Where its source comes from.
     pub origin: Option<PackageOrigin>,
+    /// Owner-observed package root from this Cargo metadata row. Local input
+    /// only; never serialized on the public ProjectTree.
+    pub source_root: Option<PathBuf>,
+    /// Exact Cargo source receipt or a typed reason it is unavailable.
+    pub source_authority: CargoPackageSourceAuthorityStateV1,
     /// SPDX license expression.
     pub license: Option<String>,
     /// One-line description.
@@ -305,8 +664,11 @@ pub struct TreeInput {
     pub packages: Vec<TreeInputPackage>,
     /// Resolved edges.
     pub edges: Vec<TreeEdge>,
-    /// Lockfile packages outside this set (other platforms).
-    pub other_platforms: u32,
+    /// Number of Cargo.lock package rows outside the current target/features
+    /// resolution. This does not infer why a package is inactive.
+    pub locked_inactive: u32,
+    /// Completeness of the lockfile-to-resolution package comparison.
+    pub locked_inactive_coverage: LockedInactiveCoverage,
 }
 
 /// Answers "what do the advisory sources say about this release?".
@@ -377,8 +739,16 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         (
             input.packages[*at].name.clone(),
             VersionOrder(input.packages[*at].version.clone()),
+            input.packages[*at].id.clone(),
         )
     };
+    let workspace_membership_unknown = matches!(
+        &input.source,
+        TreeSource::Lockfile {
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
+            ..
+        }
+    );
     for targets in &mut outgoing {
         targets.sort_by_key(order);
     }
@@ -558,11 +928,17 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             TreePackage {
                 name: package.name.clone(),
                 version: package.version.clone(),
-                origin: package.origin.clone().unwrap_or(PackageOrigin::Registry),
+                origin: package
+                    .origin
+                    .clone()
+                    .unwrap_or(PackageOrigin::Unresolved { source: None }),
+                source_authority: package.source_authority.clone(),
                 license: package.license.clone(),
                 why: why(at),
                 role: if direct_set.contains(&at) {
                     PackageRole::Direct
+                } else if workspace_membership_unknown {
+                    PackageRole::Unknown
                 } else {
                     match brought[at].len() {
                         0 => PackageRole::Unreached,
@@ -587,6 +963,26 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
                     .nodes
                     .iter()
                     .map(|at| input.packages[*at].version.clone())
+                    .collect(),
+                package_references: draft
+                    .nodes
+                    .iter()
+                    .map(|at| match &input.packages[*at].source_authority {
+                        CargoPackageSourceAuthorityStateV1::Admitted(authority) => {
+                            authority.package_reference().ok()
+                        }
+                        CargoPackageSourceAuthorityStateV1::Unavailable(_) => None,
+                    })
+                    .collect(),
+                package_origins: draft
+                    .nodes
+                    .iter()
+                    .map(|at| {
+                        input.packages[*at]
+                            .origin
+                            .clone()
+                            .unwrap_or(PackageOrigin::Unresolved { source: None })
+                    })
                     .collect(),
                 by: draft.by.into_boxed_slice(),
                 description: newest.description.as_deref().map(one_line),
@@ -646,6 +1042,18 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
     let mut affecting = Vec::new();
     for &at in &externals {
         let package = &input.packages[at];
+        // The observer takes only name and version, without source authority.
+        // Another registry (or a vendored/git source) can carry the same
+        // spelling without carrying the crates.io release's advisories.
+        if !package
+            .origin
+            .as_ref()
+            .is_some_and(PackageOrigin::is_crates_io_registry)
+        {
+            coverage = weaker_coverage(coverage, AdvisoryCoverage::Unknown);
+            freshness = weaker_freshness(freshness, FreshnessState::Unknown);
+            continue;
+        }
         let observation = advisories.observe(&package.name, &package.version);
         if observation.coverage == AdvisoryCoverage::Complete {
             checked = checked.saturating_add(1);
@@ -684,6 +1092,7 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         schema: PROJECT_TREE_SCHEMA,
         source: input.source.clone(),
         root: input.root.clone(),
+        request_binding: None,
         name: std::path::Path::new(&input.root).file_name().map_or_else(
             || input.root.clone(),
             |name| name.to_string_lossy().into_owned(),
@@ -699,7 +1108,8 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             of: u32::try_from(externals.len()).unwrap_or(u32::MAX),
             affecting: affecting.into_boxed_slice(),
         },
-        other_platforms: input.other_platforms,
+        locked_inactive: input.locked_inactive,
+        locked_inactive_coverage: input.locked_inactive_coverage,
     }
 }
 
@@ -792,12 +1202,19 @@ const fn weaker_freshness(left: FreshnessState, right: FreshnessState) -> Freshn
 pub struct AdvisorySourceState {
     /// `rustsec`, `osv` or `ghsa`.
     pub source: String,
+    /// Explicit OSV coverage scope (`all`, an ecosystem name, or
+    /// `unspecified`). Other authorities do not set this field.
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Whether the source vouches for every package it does not name.
     pub complete: bool,
     /// Advisories the source holds.
     pub advisories: u64,
     /// When it was last observed, in Unix seconds.
     pub observed_at: u64,
+    /// Source-provided freshness deadline, in Unix seconds, when known.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
     /// Why the last refresh failed, when it did.
     pub error: Option<String>,
 }

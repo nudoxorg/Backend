@@ -67,7 +67,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// The environment the owner compiles with, sorted.
 #[must_use]
-pub fn toolchain() -> Vec<(String, String)> {
+pub fn toolchain() -> Result<Vec<(String, String)>, String> {
     let mut vars = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.to_string_lossy().into_owned())))
         .filter(|(name, _)| {
@@ -75,8 +75,10 @@ pub fn toolchain() -> Vec<(String, String)> {
         })
         .filter(|(name, _)| !name.starts_with("NUDOX_HARNESS") && !name.starts_with("NUDOX_TRACE") && !name.starts_with("NUDOX_REVIEW"))
         .collect::<Vec<_>>();
+    let cache = super::super::cargo_cache()?;
+    vars.push(("CARGO_AUTHORITY".to_owned(), cache.authority_key().as_str().to_owned()));
     vars.sort();
-    vars
+    Ok(vars)
 }
 
 /// This executable's build id: `macho-uuid:<hex>` when the binary carries an
@@ -128,26 +130,9 @@ pub fn input_hash(input: &Input) -> Result<String, String> {
     match input {
         Input::Tree { abs, .. } => tree_hash(abs),
         Input::Crate(release) => {
-            let archive = cached_archive(&release.stem());
-            match archive {
-                Some(path) => file_hash(&path),
-                None => tree_hash(&super::parts::registry_source(release)?),
-            }
+            tree_hash(&super::parts::registry_source(release)?)
         }
     }
-}
-
-fn cached_archive(stem: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))?;
-    let mut found = std::fs::read_dir(home.join("registry/cache"))
-        .ok()?
-        .filter_map(|index| Some(index.ok()?.path().join(format!("{stem}.crate"))))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    found.sort();
-    found.pop()
 }
 
 fn file_hash(path: &Path) -> Result<String, String> {

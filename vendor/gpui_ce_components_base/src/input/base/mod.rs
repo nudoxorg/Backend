@@ -228,6 +228,7 @@ impl RenderOnce for InputBase {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let style = self.resolved_style();
         self.base
+            .aria_disabled(self.disabled)
             .when_some(self.role.resolve(|| Role::TextInput), |this, role| {
                 this.role(role)
             })

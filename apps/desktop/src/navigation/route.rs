@@ -4,9 +4,12 @@
 //! Source.  A route carries its stable coordinate and selected identity, so a
 //! zoom-out operation can retain the selected thing without parsing a URL.
 
-use crate::core::{DocumentId, PackageId, ProjectId};
+use crate::core::{DocumentId, LocalProjectId, PackageId, ProjectId};
+use super::{CargoBrowseAddress, CargoBrowseContext};
 use crate::model::ObjectId;
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// A validated source coordinate.
@@ -40,6 +43,8 @@ pub enum CoordinateError {
     Empty,
     /// The coordinate cannot cross the persistence or accessibility boundary.
     ControlCharacter,
+    /// A release contains an address separator or exceeds its size bound.
+    InvalidRelease,
 }
 
 impl fmt::Display for CoordinateError {
@@ -47,6 +52,7 @@ impl fmt::Display for CoordinateError {
         match self {
             Self::Empty => f.write_str("coordinate must not be empty"),
             Self::ControlCharacter => f.write_str("coordinate contains a control character"),
+            Self::InvalidRelease => f.write_str("release contains an address separator or is too long"),
         }
     }
 }
@@ -78,27 +84,76 @@ pub enum OrbitRoute {
     Browse(super::BrowseRoute),
 }
 
-/// One immutable release of a package: the registry's version spelling.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ReleaseId(Arc<str>);
+/// One immutable release of a package. Ecosystem-specific admission happens
+/// at the package read boundary, where the producer's identity is available.
+#[derive(Clone, Debug)]
+pub struct ReleaseId {
+    spelling: Arc<str>,
+    admission: ReleaseAdmission,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseAdmission {
+    /// Safe text awaiting package-specific validation on its read worker.
+    Unresolved,
+    /// Unsafe saved text retained for recovery but never read.
+    InvalidSaved,
+}
+
+// Release admission is state, not address identity. A future producer-verified
+// phase must not split history/page keys for the same exact release spelling.
+impl PartialEq for ReleaseId {
+    fn eq(&self, other: &Self) -> bool { self.spelling == other.spelling }
+}
+impl Eq for ReleaseId {}
+impl Hash for ReleaseId {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.spelling.hash(state); }
+}
+impl PartialOrd for ReleaseId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for ReleaseId {
+    fn cmp(&self, other: &Self) -> Ordering { self.spelling.cmp(&other.spelling) }
+}
 
 impl ReleaseId {
-    /// Admits one version spelling.
+    /// Admits one safe version spelling as an unresolved address.
     pub fn new(value: &str) -> Result<Self, CoordinateError> {
-        let value = value.trim();
-        if value.is_empty() {
+        if value.trim().is_empty() {
             return Err(CoordinateError::Empty);
         }
         if value.chars().any(char::is_control) {
             return Err(CoordinateError::ControlCharacter);
         }
-        Ok(Self(Arc::from(value)))
+        if value != value.trim()
+            || value.len() > 256
+            || value.chars().any(|part| matches!(part, '/' | '\\' | '?' | '#' | '@'))
+        {
+            return Err(CoordinateError::InvalidRelease);
+        }
+        Ok(Self { spelling: Arc::from(value), admission: ReleaseAdmission::Unresolved })
+    }
+
+    /// Retains an invalid saved address as unread instead of treating it as the working copy.
+    #[must_use]
+    pub(crate) fn from_persisted(value: &str) -> Self {
+        Self::new(value).unwrap_or_else(|_| Self { spelling: Arc::from(value), admission: ReleaseAdmission::InvalidSaved })
+    }
+
+    /// Whether this release can be used as an index address.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool { matches!(self.admission, ReleaseAdmission::Unresolved) }
+
+    /// Exact saved spelling, including an invalid one for recovery.
+    #[must_use]
+    pub(crate) fn persisted_wire(&self) -> &str {
+        &self.spelling
     }
 
     /// Returns the version spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        if self.is_valid() { self.persisted_wire() } else { "invalid saved release" }
     }
 }
 
@@ -107,6 +162,8 @@ impl ReleaseId {
 pub struct PackageRoute {
     /// Optional project selected at the orbit level.
     pub project: Option<ProjectId>,
+    /// Independent Cargo observation address, never semantic dossier proof.
+    pub cargo: Option<CargoBrowseContext>,
     /// Stable package coordinate (the release you pin).
     pub package: PackageId,
     /// The selected package lane.
@@ -186,6 +243,100 @@ pub struct SymbolRoute {
     pub selected: Option<ObjectId>,
 }
 
+/// A package-relative file requested from Cargo's exact source authority.
+/// This is an address, not file proof: the owner revalidates the source and
+/// content digest before any bytes become a page.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CargoSourceRoute {
+    /// The exact project-tree address that supplied this package authority.
+    /// It is rechecked by the owner; it is not file-system proof.
+    pub browse: CargoBrowseAddress,
+    /// Full source-qualified package coordinate, including its authority digest.
+    pub package: PackageId,
+    /// Canonical package-relative file spelling.
+    pub file: CargoSourcePath,
+    /// Optional one-based line to reveal.
+    pub line: Option<u32>,
+}
+
+impl CargoSourceRoute {
+    /// Whether this package address carries the exact Cargo source receipt
+    /// required by the owner. A matching project tree is still required to
+    /// open a file, and the owner revalidates the receipt on every read.
+    #[must_use]
+    pub fn supports_package(package: &PackageId) -> bool {
+        let Ok(reference) =
+            backend_library::PackageReference::parse(package.as_str())
+        else {
+            return false;
+        };
+        backend_library::CargoPackageSourceAuthorityV1::digest_from_package_reference(&reference).is_some()
+    }
+
+    /// Creates an address that can only ask the owner for a source-qualified
+    /// Cargo package. The digest is an address hint, never proof by itself.
+    pub fn new(context: CargoBrowseContext, package: PackageId, file: CargoSourcePath, line: Option<u32>) -> Option<Self> {
+        if !Self::supports_package(&package) || line == Some(0) {
+            return None;
+        }
+        Some(Self { browse: CargoBrowseAddress::Bound(context), package, file, line })
+    }
+
+    /// Retains an old saved address without inventing its effective binding.
+    pub(crate) fn from_unbound_saved(project: LocalProjectId, package: PackageId, file: CargoSourcePath, line: Option<u32>) -> Option<Self> {
+        let coordinate = project.service_coordinate().ok()?;
+        if backend_library::ProductText::new(coordinate).ok()?.as_str() != coordinate
+            || !std::path::Path::new(coordinate).is_absolute()
+            || !Self::supports_package(&package) || line == Some(0) { return None; }
+        Some(Self { browse: CargoBrowseAddress::AwaitingTree { requested_project: project }, package, file, line })
+    }
+
+    /// The package page returned to by zoom-out and Back.
+    #[must_use]
+    pub fn package_route(&self) -> PackageRoute {
+        PackageRoute {
+            project: None,
+            cargo: self.browse.context().cloned(),
+            package: self.package.clone(),
+            lane: PackageLane::Overview,
+            selected: None,
+            at: None,
+        }
+    }
+
+    /// Resolves only the exact requested legacy address, preserving its place.
+    pub(crate) fn resolve_context(&self, context: CargoBrowseContext) -> Option<Self> {
+        if !matches!(self.browse, CargoBrowseAddress::AwaitingTree { .. })
+            || self.browse.requested_project() != context.requested_project()
+        { return None; }
+        Self::new(context, self.package.clone(), self.file.clone(), self.line)
+    }
+}
+
+/// A bounded, canonical relative file address. Its bytes never act as a
+/// filesystem capability; only the owner's held source root can read it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CargoSourcePath(Arc<str>);
+
+impl CargoSourcePath {
+    /// Rejects rooted, escaping, ambiguous, or overlong file spellings.
+    pub fn new(value: &str) -> Option<Self> {
+        if value.is_empty()
+            || value.len() > 1_024
+            || value.contains(['\\', ':'])
+            || value.chars().any(char::is_control)
+            || value.split('/').any(|part| matches!(part, "" | "." | ".."))
+        {
+            return None;
+        }
+        Some(Self(Arc::from(value)))
+    }
+
+    /// The exact package-relative spelling sent to the owner.
+    #[must_use]
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
 impl SymbolRoute {
     /// Whether `other` shows the same declaration at the same release (only
     /// the view or line differ): moving between them is not navigation.
@@ -208,6 +359,8 @@ pub enum Route {
     Package(PackageRoute),
     /// One declaration, as a page, its code, or its graph.
     Symbol(SymbolRoute),
+    /// A source file from a Cargo package, without an indexed symbol claim.
+    CargoSource(CargoSourceRoute),
     /// The whole dependency graph, nothing selected.
     World,
 }
@@ -266,6 +419,24 @@ impl SettingsPage {
         Self::Help,
     ];
 
+    /// The stable label used wherever the settings page is named in the
+    /// sidebar or address capsule.
+    #[must_use]
+    pub const fn menu_label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
+            Self::Agents => "Agents",
+            Self::Connections => "Connections",
+            Self::Privacy => "Privacy",
+            Self::Diagnostics => "Diagnostics",
+            Self::Index => "Index & registries",
+            Self::Registry => "Registries",
+            Self::Legend => "Legend",
+            Self::Help => "Keys",
+        }
+    }
+
     /// Returns a stable persistence spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -297,6 +468,7 @@ impl Route {
         match self {
             Self::Orbit(_) | Self::World => Some(RouteDepth::Orbit),
             Self::Package(_) => Some(RouteDepth::Package),
+            Self::CargoSource(_) => Some(RouteDepth::Source),
             Self::Symbol(route) => Some(match route.view {
                 View::Code => RouteDepth::Source,
                 View::Page | View::Graph => RouteDepth::Page,
@@ -310,7 +482,17 @@ impl Route {
         match self {
             Self::Package(route) => route.selected,
             Self::Symbol(route) => route.selected,
-            Self::Orbit(_) | Self::World => None,
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => None,
+        }
+    }
+
+    /// Keeps this place while changing its admitted UI focus identity.
+    #[must_use]
+    pub(crate) fn with_selected(&self, selected: Option<ObjectId>) -> Self {
+        match self {
+            Self::Package(route) => Self::Package(PackageRoute { selected, ..route.clone() }),
+            Self::Symbol(route) => Self::Symbol(SymbolRoute { selected, ..route.clone() }),
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => self.clone(),
         }
     }
 
@@ -320,7 +502,7 @@ impl Route {
         match self {
             Self::Package(route) => route.at.as_ref(),
             Self::Symbol(route) => route.at.as_ref(),
-            Self::Orbit(_) | Self::World => None,
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => None,
         }
     }
 
@@ -331,7 +513,7 @@ impl Route {
         match self {
             Self::Package(route) => Self::Package(PackageRoute { at, ..route.clone() }),
             Self::Symbol(route) => Self::Symbol(SymbolRoute { at, ..route.clone() }),
-            Self::Orbit(_) | Self::World => self.clone(),
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => self.clone(),
         }
     }
 
@@ -341,7 +523,7 @@ impl Route {
     pub fn with_view(&self, view: View) -> Option<Self> {
         match self {
             Self::Symbol(route) => Some(Self::Symbol(SymbolRoute { view, ..route.clone() })),
-            Self::Orbit(_) | Self::Package(_) | Self::World => None,
+            Self::CargoSource(_) | Self::Orbit(_) | Self::Package(_) | Self::World => None,
         }
     }
 
@@ -351,6 +533,7 @@ impl Route {
     pub fn same_place(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Symbol(a), Self::Symbol(b)) => a.same_place(b),
+            (Self::CargoSource(a), Self::CargoSource(b)) => a.browse == b.browse && a.package == b.package && a.file == b.file,
             _ => self == other,
         }
     }
@@ -360,7 +543,9 @@ impl Route {
     #[must_use]
     pub fn zoom_out(&self) -> Option<Self> {
         match self {
+            Self::CargoSource(route) => Some(Self::Package(route.package_route())),
             Self::Symbol(route) => Some(Self::Package(PackageRoute {
+                cargo: None,
                 project: route.project.clone(),
                 package: route.package.clone(),
                 lane: PackageLane::Overview,
@@ -386,7 +571,7 @@ impl Route {
             Self::Orbit(OrbitRoute::Home) => RouteKey::OrbitHome,
             Self::Orbit(OrbitRoute::Project(id)) => RouteKey::OrbitProject(id.clone()),
             Self::Package(route) => {
-                RouteKey::Package(route.project.clone(), route.package.clone(), route.lane)
+                RouteKey::Package(route.project.clone(), route.package.clone(), route.lane, route.cargo.clone())
             }
             Self::Symbol(route) => RouteKey::Symbol(
                 route.project.clone(),
@@ -394,6 +579,7 @@ impl Route {
                 route.id.clone(),
                 route.at.clone(),
             ),
+            Self::CargoSource(route) => RouteKey::CargoSource(route.browse.clone(), route.package.clone(), route.file.clone()),
             Self::Orbit(OrbitRoute::Browse(route)) => RouteKey::Browse(route.clone()),
             Self::World => RouteKey::World,
         }
@@ -408,9 +594,11 @@ pub enum RouteKey {
     /// Project orbit.
     OrbitProject(ProjectId),
     /// Package coordinate.
-    Package(Option<ProjectId>, PackageId, PackageLane),
+    Package(Option<ProjectId>, PackageId, PackageLane, Option<CargoBrowseContext>),
     /// Declaration coordinate and release.
     Symbol(Option<ProjectId>, PackageId, Coordinate, Option<ReleaseId>),
+    /// Exact Cargo source package and package-relative file.
+    CargoSource(CargoBrowseAddress, PackageId, CargoSourcePath),
     /// The whole graph.
     World,
     /// A browsing page.
@@ -430,6 +618,43 @@ pub enum Selection {
 mod tests {
     use super::*;
     use crate::model::ObjectId;
+
+    #[test]
+    fn cargo_file_route_keeps_exact_package_authority_and_line_independent_place() {
+        let project = LocalProjectId::new("/tmp/nudox-cargo-route").expect("tree address");
+        let context = super::super::cargo_browse::fixture_context(project.clone());
+        let package = PackageId::new("pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("qualified package");
+        let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
+        let first = Route::CargoSource(CargoSourceRoute::new(context.clone(), package.clone(), file.clone(), Some(12)).expect("route"));
+        let later = Route::CargoSource(CargoSourceRoute::new(context.clone(), package.clone(), file.clone(), Some(90)).expect("route"));
+        assert!(first.same_place(&later));
+        assert_eq!(first.key(), later.key());
+        let other_project = LocalProjectId::new("/tmp/nudox-cargo-route-other").expect("other tree");
+        let other = Route::CargoSource(CargoSourceRoute::new(super::super::cargo_browse::fixture_context(other_project), package.clone(), file.clone(), Some(12)).expect("other route"));
+        assert!(!first.same_place(&other), "the same package in a different tree needs its own cold observation");
+        assert_ne!(first.key(), other.key());
+        assert_eq!(first.depth(), Some(RouteDepth::Source));
+        assert_eq!(first.zoom_out().expect("package").key(), Route::Package(CargoSourceRoute::new(context.clone(), package.clone(), file, None).expect("route").package_route()).key());
+        assert!(CargoSourcePath::new("../Cargo.toml").is_none());
+        assert!(CargoSourcePath::new("src//lib.rs").is_none());
+        assert!(CargoSourcePath::new("/Cargo.toml").is_none());
+        assert!(CargoSourcePath::new("C:\\Cargo.toml").is_none());
+        assert!(CargoSourceRoute::new(context.clone(), PackageId::new("/local/project").expect("local"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+        assert!(CargoSourceRoute::from_unbound_saved(LocalProjectId::new("relative/tree").expect("relative address"), package.clone(), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+        assert!(CargoSourceRoute::new(context, PackageId::new("pkg:cargo/demo@1.0.0").expect("unqualified"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+    }
+
+    #[test]
+    fn release_spelling_is_ecosystem_neutral_but_never_a_path_component_escape() {
+        for spelling in ["1.1.post1", "1.0-SNAPSHOT", "1.0.0-preview.1", "1!2.0"] {
+            assert_eq!(ReleaseId::new(spelling).expect("safe release").as_str(), spelling);
+        }
+        for spelling in ["../other", "1.0/other", "1.0\\other", " 1.0.0 "] {
+            assert!(ReleaseId::new(spelling).is_err());
+            assert!(!ReleaseId::from_persisted(spelling).is_valid());
+            assert_eq!(ReleaseId::from_persisted(spelling).persisted_wire(), spelling);
+        }
+    }
 
     fn symbol(view: View) -> Route {
         Route::Symbol(SymbolRoute {
@@ -471,6 +696,7 @@ mod tests {
     fn package_zoom_out_returns_the_selected_project_orbit() {
         let project = ProjectId::test(1).expect("project");
         let route = Route::Package(PackageRoute {
+            cargo: None,
             project: Some(project.clone()),
             package: PackageId::new("pkg").expect("package"),
             lane: PackageLane::Overview,

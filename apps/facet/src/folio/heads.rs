@@ -10,10 +10,10 @@
 //! files and the environment, then what it says about `unsafe`. A package
 //! with nothing to flag says so, in mint.
 
-use super::state::{Build, Library, Nominal, Pose, Unsafe};
-use super::text::{ellipsis, key, one, wrap};
+use super::state::{Build, DisclosureCopy, DisclosureFlow, InkPhase, Library, Nominal, Pose, Unsafe};
+use super::text::{ellipsis, key, natural_width, one, wrap};
 use crate::controls::button::wire;
-use crate::controls::state::{Touch, hover_zone, track};
+use crate::controls::state::{Touch, hover_zone};
 use crate::marks::badges::{Glyph, glyph};
 use crate::measure::{Measure, Space};
 use crate::overlay::dialog::{self, Dialog, DialogButton};
@@ -23,7 +23,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window,
-    deferred, div, px,
+    div, px,
 };
 use std::rc::Rc;
 
@@ -283,161 +283,184 @@ impl RenderOnce for HeadsUp {
         let palette = cx.palette();
         let measure = self.measure;
         let scale = measure.scale();
-        let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
-        let motion = touch.motion.clone();
-        let wanted = touch.hovered || touch.focused || self.held == Pose::Held;
-        let open = motion.animate(track(&self.id, "open"), if wanted { 1.0 } else { 0.0 }, super::state::plate(wanted), window, cx).clamp(0.0, 1.05);
+        let mut touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
+        // The card stays open while its control owns keyboard focus, even if
+        // a resize causes the platform to reconcile the parked pointer and
+        // switches the :focus-visible modality back to mouse. The open
+        // disclosure is the focus affordance here; tying it to the transient
+        // modality would close the card while focus never moved.
+        touch.focused = touch.focus.is_focused(window);
+        if let Some((_, target)) = touch.claim.as_mut() {
+            target.focused = touch.focused;
+        }
+        let disclosure = DisclosureCopy::read(&self.id, &touch, self.held, window, cx);
+        let open = disclosure.geometry;
         let findings = self.findings.clone();
         let warns = findings.iter().filter(|f| f.tone == Tone::Warn).count();
         let chip = CHIP * scale;
         let overlap = OVERLAP * scale;
         let gap = f32::from(measure.space(Space::Snug));
         let pad = f32::from(measure.space(Space::Roomy));
-        // The step from one chip to the next at rest: the glyphs stay whole
-        // unless the cell is too narrow for that many, then they close up.
-        let step = rest_step(findings.len(), f32::from(self.width) - pad * 2.0, chip, overlap);
-
-        // Each chip's full width when fanned out: glyph, word, count.
+        // Measure each complete chip with the platform text system, then cap
+        // it to the space this card can occupy. Labels wrap inside that real
+        // width and their measured height participates in ordinary flow.
         let word_role = measure.role(WORD);
         let count_role = measure.role(COUNT);
-        let widths: Vec<f32> = findings
+        let available_width = f32::from(measure.width()).min(f32::from(self.spread));
+        let base_width = f32::from(self.width).min(available_width);
+        let natural_widths: Vec<f32> = findings
             .iter()
             .map(|f| {
-                let word = f32::from(probe::natural_width(&f.word, word_role, 1.0, window));
-                let count = f.count.map_or(0.0, |n| f32::from(probe::natural_width(&SharedString::from(n.to_string()), count_role, 1.0, window)) + gap);
+                let word = f32::from(natural_width(&f.word, word_role, window));
+                let count = f.count.map_or(0.0, |n| f32::from(natural_width(&SharedString::from(n.to_string()), count_role, window)) + gap);
                 (10.0 * scale + 14.0 * scale + gap + word + count + 10.0 * scale).max(chip)
             })
             .collect();
-        // Fanned out, in rows that fit the room the cell may take.
-        let room = f32::from(self.spread) - pad * 2.0;
-        let mut spots: Vec<(f32, usize)> = Vec::new();
-        let (mut x, mut row) = (0.0_f32, 0usize);
-        for w in &widths {
-            if x > 0.0 && x + w > room {
-                x = 0.0;
-                row += 1;
-            }
-            spots.push((x, row));
-            x += w + gap;
-        }
+        #[allow(clippy::cast_precision_loss)]
+        let gaps = findings.len().saturating_sub(1) as f32;
+        let wanted_width = natural_widths.iter().sum::<f32>() + gap * gaps + 2.0 * pad;
+        let target_plate_width = wanted_width.max(base_width).min(available_width);
+        let target_room = (target_plate_width - 2.0 * pad).max(chip);
+        let target_widths = natural_widths.iter().map(|width| width.min(target_room)).collect::<Vec<_>>();
+        let plate_width = base_width + (target_plate_width - base_width) * open.min(1.0);
         // One finding alone says its words at rest, when its cell holds them: a
         // lone icon in an otherwise empty tile says nothing.
-        let lone = findings.len() == 1 && widths.first().is_some_and(|w| *w <= f32::from(self.width) - pad * 2.0);
-        let rows = spots.last().map_or(1, |(_, r)| r + 1);
-        let spread_used = spots.iter().zip(&widths).map(|((x, _), w)| x + w).fold(0.0, f32::max);
-        let plate_w = f32::from(self.width) + (pad * 2.0 + spread_used - f32::from(self.width)).max(0.0) * open.min(1.0);
-        let base_h = f32::from(self.height.at(scale));
-        let extra = ((rows.saturating_sub(1)) as f32 * (chip + 4.0 * scale)) * open.min(1.0);
+        let lone = findings.len() == 1
+            && natural_widths
+                .first()
+                .is_some_and(|width| *width <= (base_width - 2.0 * pad).max(0.0));
+        let base_h = DisclosureFlow::rest_height(self.height);
 
-        let mut hand = div().relative().h(px(chip + (rows.saturating_sub(1)) as f32 * (chip + 4.0 * scale) * open.min(1.0))).w_full();
+        // At rest the chips overlap slightly. As they open they unwrap into
+        // bounded flex rows, with GPUI measuring every wrapped label's height.
+        let mut hand = div()
+            .flex()
+            .flex_wrap()
+            .items_start()
+            .gap_x(px(gap * open.min(1.0)))
+            .gap_y(px(4.0 * scale * open.min(1.0)))
+            .w_full()
+            .min_w_0();
         if findings.is_empty() {
             hand = hand.child(
                 div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .h(px(chip))
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Snug))
+                    .min_w_0()
+                    .w_full()
+                    .min_h(px(chip))
                     .child(glyph(Glyph::Shield, 16.0 * scale, palette.mint.base))
-                    .child(one(key(&self.id, "nothing"), "Nothing to flag", NOTHING, palette.mint.base, &measure)),
+                    .child(div().flex_1().min_w_0().child(wrap(
+                        key(&self.id, "nothing"),
+                        "Nothing to flag",
+                        NOTHING,
+                        palette.mint.base,
+                        &measure,
+                        None,
+                    ))),
             );
         }
         for (i, item) in findings.iter().enumerate() {
-            let (spread_x, spread_row) = spots[i];
-            #[allow(clippy::cast_precision_loss)]
-            let stacked_x = i as f32 * step;
-            let x = stacked_x + (spread_x - stacked_x) * open.min(1.0);
-            let y = spread_row as f32 * (chip + 4.0 * scale) * open.min(1.0);
             let shown = if lone { 1.0 } else { open.min(1.0) };
-            let w = chip + (widths[i] - chip) * shown;
+            let target_width = target_widths[i];
+            let width = chip + (target_width - chip) * shown;
             let ink = ink_of(item.tone, palette);
-            let mut inner = div().flex().items_center().h_full().gap(px(gap)).pl(px((chip - 14.0 * scale) * 0.5)).child(glyph(item.glyph, 14.0 * scale, ink));
-            if shown > 0.03 {
-                inner = inner.child(one(key(&self.id, format!("word-{i}")), item.word.clone(), WORD, palette.ink0, &measure));
-                if let Some(count) = item.count {
-                    inner = inner.child(one(key(&self.id, format!("count-{i}")), count.to_string(), COUNT, ink, &measure));
-                }
+            let icon_inset = (chip - 14.0 * scale) * 0.5;
+            let copy_visible = lone || disclosure.ink == InkPhase::Retained;
+            let right_inset = if copy_visible { 10.0 * scale } else { 0.0 };
+            let row_text_room = width - icon_inset - 14.0 * scale - gap - right_inset;
+            let stacked_text_room = width - icon_inset - right_inset;
+            // Keep at least four ems for the identifier before spending that
+            // width on a non-wrapping count. If the icon itself leaves less
+            // room than that, move it above the copy so the label can use the
+            // full tile width. Both choices follow the measured tile width;
+            // neither clips nor truncates the finding.
+            let readable_word_room = word_role.size * 4.0;
+            let stack_icon = copy_visible
+                && row_text_room < readable_word_room
+                && stacked_text_room > row_text_room;
+            let label_room = if stack_icon { stacked_text_room } else { row_text_room };
+            let count_width = item.count.map_or(0.0, |count| {
+                f32::from(natural_width(&SharedString::from(count.to_string()), count_role, window))
+            });
+            let show_copy = copy_visible && label_room >= word_role.size;
+            let count_inline = show_copy
+                && !stack_icon
+                && item.count.is_some()
+                && row_text_room - count_width - gap >= readable_word_room;
+            let mut inner = if stack_icon {
+                div().flex().flex_col().items_start().min_w_0().gap(px(gap))
+            } else {
+                div().flex().items_start().min_w_0().gap(px(gap))
             }
-            hand = hand.child(
-                cut()
-                    .chamfer(Chamfer::Px(8.0 * scale))
-                    .edge(edge_of(item.tone, palette))
-                    .plate(Plate::Flat)
-                    .fill(palette.g1)
-                    .absolute()
-                    .left(px(x))
-                    .top(px(y))
-                    .w(px(w))
-                    .h(px(chip))
-                    .overflow_hidden()
-                    .child(inner),
-            );
+            .pl(px(icon_inset))
+            .pr(px(if show_copy { right_inset } else { 0.0 }))
+            .child(probe::measure(
+                key(&self.id, format!("icon-{i}")),
+                glyph(item.glyph, 14.0 * scale, ink),
+            ));
+            if show_copy {
+                let word = wrap(
+                    key(&self.id, format!("word-{i}")),
+                    item.word.clone(),
+                    WORD,
+                    palette.ink0,
+                    &measure,
+                    None,
+                );
+                let mut details = if count_inline {
+                    div().flex().items_center().gap(px(gap)).min_w_0().flex_1()
+                } else {
+                    div().flex().flex_col().items_start().gap(px(gap)).min_w_0()
+                };
+                details = if stack_icon { details.w_full() } else { details.flex_1() };
+                details = if count_inline {
+                    details.child(div().min_w_0().flex_1().child(word))
+                } else {
+                    details.child(word)
+                };
+                if let Some(count) = item.count {
+                    details = details.child(one(key(&self.id, format!("count-{i}")), count.to_string(), COUNT, ink, &measure));
+                }
+                inner = inner.child(details);
+            }
+            let tile = cut()
+                .chamfer(Chamfer::Px(8.0 * scale))
+                .edge(edge_of(item.tone, palette))
+                .plate(Plate::Flat)
+                .fill(palette.g1)
+                .flex_none()
+                .min_w_0()
+                .w(px(width))
+                .min_h(px(chip))
+                .overflow_hidden()
+                .child(inner);
+            let tile = if i == 0 {
+                tile.into_any_element()
+            } else {
+                tile.ml(px(-overlap * (1.0 - open.min(1.0))))
+                    .into_any_element()
+            };
+            hand = hand.child(probe::measure(key(&self.id, format!("chip-{i}")), tile));
         }
 
         let mut edge = Edge::of(Bevel::Rest, palette);
         edge.hi = palette.line3.into();
         edge.lo = palette.line2.into();
         let edge = edge.mix(Edge::of(Bevel::Peri, palette), open.min(1.0));
-        let plate = super::crest::cell(&self.id, "Heads-up", (warns > 0).then(|| warns.to_string()), Some("from its source"), &measure, palette)
+        let plate = super::crest::cell(&self.id, "Heads-up", (warns > 0).then(|| warns.to_string()), Some("from its source"), &measure, px(plate_width), window, palette)
             .edge(edge)
             .fill(mix(palette.plate.into(), palette.plate2.into(), open.min(1.0)))
-            .w(px(plate_w))
-            .h(px(base_h + extra))
+            .w(px(plate_width))
+            .min_h(base_h)
             .child(hand)
-            .id(self.id.clone());
+            .id(key(&self.id, "control"));
         let package = self.package.clone();
         let for_sheet = findings.clone();
         let plate = wire(plate, &touch, Some(Rc::new(move |window: &mut Window, cx: &mut App| open_sheet(&package, for_sheet.clone(), window, cx))));
-        // The hover zone follows the plate as it grows.
-        if open > 0.001 || touch.hovered || self.held == Pose::Held {
-            // Fanned out it draws above its neighbours (drawn late, hit first).
-            let zone = hover_zone(plate.absolute().top_0().left_0(), &touch, 9.0 * scale, true);
-            div().relative().flex_none().w(self.width).h(px(base_h)).child(deferred(zone).with_priority(open_priority(open))).into_any_element()
-        } else {
-            // At rest it is part of the page's own flow, so a page change that
-            // cuts the page cuts it too (a deferred draw would not be).
-            div().flex_none().w(self.width).h(px(base_h)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
-        }
-    }
-}
-
-/// The step from one chip to the next while the hand is closed: `chip` less
-/// `overlap`, unless `room` cannot hold `count` chips that far apart, then as
-/// close as the room asks (never under a quarter of a chip).
-fn rest_step(count: usize, room: f32, chip: f32, overlap: f32) -> f32 {
-    let wide = chip - overlap;
-    match count.checked_sub(1).and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0) {
-        Some(gaps) => wide.min(((room - chip) / f32::from(gaps)).max(chip * 0.25)),
-        None => wide,
-    }
-}
-
-/// The plate draws above its neighbours while it is open.
-fn open_priority(open: f32) -> usize {
-    usize::from(open > 0.01) + 1
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A chip's glyph sits 7 to 21 px into its 28: the next chip must start
-    /// past that, or only the top chip's glyph shows (the stack was unreadable).
-    #[test]
-    fn a_closed_hand_shows_every_glyph_whole_when_the_cell_holds_them() {
-        for count in 1..=6 {
-            let step = rest_step(count, 190.0, CHIP, OVERLAP);
-            assert!(step >= 21.0, "{count} chips step {step} px, which covers the glyph before it");
-        }
-    }
-
-    /// In a cell too narrow for the stack it closes up rather than leaving the cell.
-    #[test]
-    fn a_closed_hand_closes_up_in_a_narrow_cell_and_never_leaves_it() {
-        let step = rest_step(6, 100.0, CHIP, OVERLAP);
-        assert!(step < 21.0 && step >= CHIP * 0.25, "{step}");
-        assert!(step * 5.0 + CHIP <= 100.0 + 0.01, "six chips fit a 100 px cell at step {step}");
+        // The animated hand's wrapped row heights participate in this
+        // natural flow, keeping every following card below the open content.
+        div().id(self.id.clone()).flex_none().w(px(plate_width)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
     }
 }

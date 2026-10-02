@@ -11,14 +11,70 @@
 //! threshold does not flip them every frame; the caller keeps the
 //! [`Modes`] between frames.
 //!
-//! No width is compared with a number here, and no frame constant is
-//! defined here: the sizes are `facet::tokens::geo` and the thresholds are
-//! `facet::tokens::fluid`.
+//! Structural sizes use `facet::tokens::geo` and mode thresholds use
+//! `facet::tokens::fluid`. Ask also requires a minimum readable preview
+//! beside its panel; otherwise its plate becomes a full sheet.
 
 use facet::fluid::{Modes, Room, Settled};
-use facet::tokens::fluid::{DOCK, DRAWER_STRIP, Dock, PINS, Pins};
+use facet::tokens::fluid::{ASK, ASK_PANEL, ASK_PREVIEW_GAP, ASK_PREVIEW_HYSTERESIS, ASK_PREVIEW_MIN, DOCK, DRAWER_STRIP, READER_PAD, Dock, Float, PINS, Pins};
 use facet::tokens::geo;
-use gpui::{Pixels, px};
+use gpui::{Bounds, Pixels, Size, point, px, size};
+
+/// The one occupied rectangle for Ask and the first x the Reader may use
+/// while showing its preview. Both the painted plate and the preview layout
+/// consume this value; neither independently guesses where the other ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AskGeometry {
+    pub plate: Bounds<Pixels>,
+    pub reader_left: Pixels,
+    /// Window-space x of the first usable preview pixel. A sheet covers the
+    /// whole reader, so no preview is visible beside it.
+    pub preview_left: Option<Pixels>,
+}
+
+/// One remembered placement decision. The panel leaves at the readability
+/// floor and returns only after a little more room is available, so repeated
+/// resize events near that floor cannot alternate sheet and panel.
+#[derive(Default)]
+pub struct AskPlacement {
+    panel: bool,
+}
+
+fn readable_after(frame: &Frame, viewport: Size<Pixels>, plate_width: Pixels, reader_left: Pixels) -> Pixels {
+    let gap = ASK_PREVIEW_GAP.at(frame.room);
+    let beside = (viewport.width - (plate_width + gap).max(reader_left)).max(px(0.0));
+    (beside - READER_PAD.at(Room::new(beside, frame.room.scale()))).max(px(0.0))
+}
+
+impl AskPlacement {
+    #[must_use]
+    pub fn target_width(&mut self, frame: &Frame, viewport: Size<Pixels>, reader_left: Pixels, modes: &Modes) -> Pixels {
+        let panel = ASK_PANEL.at(frame.room).min(viewport.width);
+        let floor = ASK_PREVIEW_MIN.at(frame.room);
+        let enter = floor + ASK_PREVIEW_HYSTERESIS.at(frame.room);
+        let required = if self.panel { floor } else { enter };
+        self.panel = modes.settle(&ASK, frame.room).mode == Float::Panel
+            && readable_after(frame, viewport, panel, reader_left) >= required;
+        if self.panel { panel } else { viewport.width }
+    }
+}
+
+impl AskGeometry {
+    /// The exact rectangle to paint after the frame clock samples its width.
+    #[must_use]
+    pub fn resolve(frame: &Frame, viewport: Size<Pixels>, status: Pixels, reader_left: Pixels, painted_width: Pixels) -> Self {
+        let width = painted_width.max(px(0.0)).min(viewport.width);
+        let preview_left = (width < viewport.width - px(0.5)
+            && readable_after(frame, viewport, width, reader_left) >= ASK_PREVIEW_MIN.at(frame.room))
+            .then_some((width + ASK_PREVIEW_GAP.at(frame.room)).max(reader_left));
+        Self {
+            plate: Bounds::new(point(px(0.0), frame.titlebar), size(width,
+                (viewport.height - frame.titlebar - status).max(px(0.0)))),
+            reader_left,
+            preview_left,
+        }
+    }
+}
 
 /// What sits in the shelf column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

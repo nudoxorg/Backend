@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, FocusHandle, Hsla,
+    AccessibleAction, AnyElement, App, DefiniteLength, ElementId, Edges, Entity, FocusHandle, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Rems, RenderOnce, Role,
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div,
     px, relative,
@@ -126,6 +126,7 @@ pub struct Input {
     selected: bool,
     content_type: Option<InputContentType>,
     role: RoleOverride,
+    element_id: Option<ElementId>,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
     aria_description: Option<SharedString>,
@@ -204,6 +205,7 @@ impl Input {
             selected: false,
             content_type: None,
             role: RoleOverride::default(),
+            element_id: None,
             accessibility_id: None,
             aria_label: None,
             aria_description: None,
@@ -212,6 +214,14 @@ impl Input {
             on_press_observed: None,
             context_menu_builder: None,
         }
+    }
+
+    /// Sets the native element identity inside its parent namespace.
+    /// The InputState still owns text, selection and focus. Active siblings must
+    /// use distinct IDs; leaving this unset preserves the entity-derived identity.
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.element_id = Some(id.into());
+        self
     }
 
     /// Retain the legacy accessibility-id builder for source compatibility.
@@ -395,6 +405,12 @@ impl Input {
         let Some(gpui::accesskit::ActionData::Value(value)) = data else {
             return;
         };
+        // Accessibility actions are user edits. A previously advertised
+        // action can arrive after the field becomes disabled or read-only;
+        // replace_all is a programmatic API that deliberately permits both.
+        if !state.presentation(cx).is_editable() {
+            return;
+        }
         state.replace_all(value.to_string(), window, cx);
     }
 
@@ -601,10 +617,12 @@ impl RenderOnce for Input {
             None if placeholder_is_mask => None,
             None => placeholder.clone(),
         };
-        BaseInput::new(("input", state.entity_id()))
+        BaseInput::new(self.element_id.unwrap_or_else(|| ("input", state.entity_id()).into()))
             .focused(focused)
             .disabled(disabled)
-            .track_focus(&frame_focus_handle)
+            // The semantic TextInput node tracks the editor's actual focus
+            // handle, including programmatic focus and restoration.
+            .track_focus(presentation.focus_handle())
             .tab_index(self.tab_index)
             .tab_stop(self.tab_stop)
             .styles(|styles| {
@@ -642,7 +660,7 @@ impl RenderOnce for Input {
                 this.aria_placeholder(placeholder)
             })
             .when_some(accessibility_value, |this, value| this.aria_value(value))
-            .when(!disabled, |this| {
+            .when(presentation.is_editable(), |this| {
                 this.on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
                     Self::handle_accessibility_set_value(&accessibility_state, data, window, cx);
                 })
@@ -921,6 +939,276 @@ mod tests {
             Input::handle_accessibility_set_value(&base, Some(&action), window, cx);
         });
         assert_eq!(state.read_with(cx, |state, _| state.value()), "updated");
+    }
+
+    #[gpui::test]
+    fn named_input_identity_survives_rerender_and_state_replacement(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Element as _, IntoElement as _, Render};
+        use std::sync::{Arc, Mutex};
+        struct Probe { state: Entity<InputState>, ids: Arc<Mutex<Vec<ElementId>>> }
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let state = self.state.clone();
+                let ids = self.ids.clone();
+                div().on_prepaint(move |_, window, cx| {
+                    let element = Input::new(&state).id("find-query").aria_label("Find query").render(window, cx).into_element();
+                    ids.lock().unwrap().push(element.id().expect("named native input"));
+                    let legacy = Input::new(&state).render(window, cx).into_element();
+                    assert_eq!(legacy.id(), Some(("input", state.entity_id()).into()));
+                })
+            }
+        }
+        cx.update(crate::init);
+        let ids = Arc::new(Mutex::new(Vec::new()));
+        let captured = ids.clone();
+        let (probe, cx) = cx.add_window_view(move |window, cx| Probe {
+            state: cx.new(|cx| InputState::new(window, cx)), ids,
+        });
+        for _ in 0..2 { cx.update(|window, cx| { window.draw(cx).clear(cx); }); }
+        cx.update(|window, cx| {
+            let replacement = cx.new(|cx| InputState::new(window, cx));
+            probe.update(cx, |probe, cx| { probe.state = replacement; cx.notify(); });
+        });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert!(captured.lock().unwrap().iter().all(|id| id == &ElementId::from("find-query")));
+        assert!(captured.lock().unwrap().len() >= 3);
+    }
+
+    #[gpui::test]
+    fn native_input_focus_follows_the_editor_through_typing_blur_and_reopen(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::Root;
+        use gpui::{AppContext as _, Render};
+
+        struct Probe {
+            input: Entity<InputState>,
+            other: FocusHandle,
+            show: bool,
+            disabled: bool,
+            readonly: bool,
+        }
+
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div()
+                    .child(
+                        div()
+                            .id("other-focus")
+                            .role(Role::Button)
+                            .aria_label("Other")
+                            .track_focus(&self.other),
+                    )
+                    .children(self.show.then(|| {
+                        Input::new(&self.input)
+                            .aria_label("Ask anything, or find a package")
+                            .disabled(self.disabled)
+                            .readonly(self.readonly)
+                    }))
+            }
+        }
+
+        fn draw_tree(cx: &mut gpui::VisualTestContext) -> serde_json::Value {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                serde_json::from_str(&window.debug_a11y_tree_json().expect("forced native tree"))
+                    .expect("native tree JSON")
+            })
+        }
+
+        fn input_node(tree: &serde_json::Value) -> (&str, &serde_json::Value) {
+            let nodes = tree["nodes"].as_object().expect("native nodes");
+            let mut matches = nodes.iter().filter(|(_, node)| {
+                node["aria"]["role"].as_str() == Some("TextInput")
+                    && node["aria"]["label"].as_str() == Some("Ask anything, or find a package")
+            });
+            let (id, node) = matches.next().expect("named native input");
+            assert!(matches.next().is_none(), "input has one semantic owner");
+            (id.as_str(), node)
+        }
+
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| {
+            window.set_a11y_forced(true);
+            Probe {
+                input: cx.new(|cx| InputState::new(window, cx)),
+                other: cx.focus_handle().tab_stop(true),
+                show: true,
+                disabled: false,
+                readonly: false,
+            }
+        });
+        let input = probe.read_with(cx, |probe, _| probe.input.clone());
+        let other = probe.read_with(cx, |probe, _| probe.other.clone());
+
+        // Ask focuses the real editor programmatically. The outer native
+        // TextInput node must report that same handle on every repaint.
+        cx.update(|window, cx| input.update(cx, |input, cx| input.focus(window, cx)));
+        cx.run_until_parked();
+        for _ in 0..2 {
+            let tree = draw_tree(cx);
+            let (id, node) = input_node(&tree);
+            assert_eq!(tree["gpui_focus"].as_str(), Some(id));
+            assert_eq!(tree["accesskit_focus"].as_str(), Some(id));
+            assert!(
+                node["aria"]["on_action"]
+                    .as_array()
+                    .expect("native actions")
+                    .iter()
+                    .any(|action| action.as_str() == Some("SetValue"))
+            );
+        }
+
+        cx.simulate_input("a");
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "a");
+        let action = gpui::accesskit::ActionData::Value("replaced".into());
+        cx.update(|window, cx| {
+            Input::handle_accessibility_set_value(&input.clone().into(), Some(&action), window, cx);
+        });
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "replaced");
+
+        cx.update(|window, cx| other.focus(window, cx));
+        cx.run_until_parked();
+        let blurred = draw_tree(cx);
+        let (input_id, _) = input_node(&blurred);
+        assert_ne!(blurred["gpui_focus"].as_str(), Some(input_id));
+
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.disabled = true;
+                cx.notify();
+            })
+        });
+        let disabled = draw_tree(cx);
+        let (_, node) = input_node(&disabled);
+        assert_eq!(node["aria"]["disabled"].as_bool(), Some(true));
+        assert!(
+            !node["aria"]["on_action"]
+                .as_array()
+                .is_some_and(|actions| actions
+                    .iter()
+                    .any(|action| action.as_str() == Some("SetValue")))
+        );
+
+        let stale_action = gpui::accesskit::ActionData::Value("forbidden stale edit".into());
+        cx.update(|window, cx| {
+            Input::handle_accessibility_set_value(
+                &input.clone().into(),
+                Some(&stale_action),
+                window,
+                cx,
+            );
+        });
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "replaced");
+
+        probe.update(cx, |probe, cx| {
+            probe.disabled = false;
+            cx.notify();
+        });
+        let enabled = draw_tree(cx);
+        let (_, node) = input_node(&enabled);
+        // The native debug projection emits this AccessKit flag only when true.
+        assert!(node["aria"].get("disabled").is_none(), "reenabling clears the native disabled flag");
+        assert!(
+            node["aria"]["on_action"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action.as_str() == Some("SetValue"))
+        );
+
+        probe.update(cx, |probe, cx| {
+            probe.readonly = true;
+            cx.notify();
+        });
+        let readonly = draw_tree(cx);
+        let (_, node) = input_node(&readonly);
+        assert!(node["aria"].get("disabled").is_none(), "readonly remains natively enabled");
+        assert!(
+            !node["aria"]["on_action"]
+                .as_array()
+                .is_some_and(|actions| actions
+                    .iter()
+                    .any(|action| action.as_str() == Some("SetValue")))
+        );
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
+            Input::handle_accessibility_set_value(
+                &input.clone().into(),
+                Some(&stale_action),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let focused_readonly = draw_tree(cx);
+        let (id, _) = input_node(&focused_readonly);
+        assert_eq!(focused_readonly["gpui_focus"].as_str(), Some(id));
+        assert_eq!(focused_readonly["accesskit_focus"].as_str(), Some(id));
+        cx.simulate_input("blocked typing");
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "replaced");
+        cx.dispatch_action(crate::input::SelectAll);
+        cx.dispatch_action(crate::input::Copy);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("replaced".into())
+            );
+        });
+        probe.update(cx, |probe, cx| {
+            probe.readonly = false;
+            cx.notify();
+        });
+        let editable_again = draw_tree(cx);
+        let (_, node) = input_node(&editable_again);
+        assert!(
+            node["aria"]["on_action"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action.as_str() == Some("SetValue"))
+        );
+        let resumed_action = gpui::accesskit::ActionData::Value("resumed".into());
+        cx.update(|window, cx| {
+            Input::handle_accessibility_set_value(
+                &input.clone().into(),
+                Some(&resumed_action),
+                window,
+                cx,
+            );
+        });
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "resumed");
+
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.show = false;
+                probe.disabled = false;
+                cx.notify();
+            })
+        });
+        assert!(
+            !draw_tree(cx)["nodes"]
+                .as_object()
+                .expect("native nodes")
+                .values()
+                .any(|node| { node["aria"]["role"].as_str() == Some("TextInput") })
+        );
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.show = true;
+                cx.notify();
+            })
+        });
+        let _ = draw_tree(cx);
+        cx.update(|window, cx| {
+            other.focus(window, cx);
+            window.focus_next(cx);
+        });
+        cx.run_until_parked();
+        let reopened = draw_tree(cx);
+        let (id, _) = input_node(&reopened);
+        assert_eq!(reopened["gpui_focus"].as_str(), Some(id));
     }
 
     #[gpui::test]

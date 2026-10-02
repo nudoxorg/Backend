@@ -2062,6 +2062,7 @@ mod tests {
             height: 2000,
             input_index: None,
             diff: None,
+            native_accessibility: None,
         }];
         let manifest = CaptureManifest {
             schema: 1,
@@ -2142,6 +2143,7 @@ mod tests {
                 height: 12,
                 input_index: None,
                 diff: None,
+                native_accessibility: None,
             });
         }
         let state = GuiState::new("motion", Some(PageState::Browse), None);

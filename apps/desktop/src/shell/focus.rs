@@ -16,8 +16,8 @@ use facet::paint::{Bevel, CutPaint, Edge, paint_cut};
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style,
-    Window, point, px, size,
+    ClickEvent, FocusHandle, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId,
+    MouseExitEvent, MouseMoveEvent, Pixels, SharedString, StatefulInteractiveElement, Style, Window, div, point, px, size,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -44,6 +44,37 @@ impl Zone {
 
 /// What a target does when it is activated (Enter, a click, a hint).
 pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// A raw Reader target's native semantics and activation. The caller owns
+/// visual styling and the existing target list owns order and hints. Facet
+/// buttons keep their own native control implementation.
+pub(crate) fn native_control(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    role: gpui::Role,
+    handle: Option<FocusHandle>,
+    act: Act,
+) -> gpui::Stateful<gpui::Div> {
+    let key_act = Rc::clone(&act);
+    let mut control = div()
+        .id(id)
+        .role(role)
+        .aria_label(label.into())
+        .key_context(crate::shell::keys::NATIVE_CONTROL)
+        .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            {
+                if !event.is_held { key_act(window, cx); }
+                cx.stop_propagation();
+            }
+        });
+    if let Some(handle) = handle {
+        control = control.focusable().track_focus(&handle).tab_index(0);
+    }
+    control
+}
 
 /// One thing the keyboard can stand on.
 #[derive(Clone)]
@@ -184,6 +215,15 @@ pub(crate) struct Targets {
     /// The declaration each target that is one stands for (twins: what a
     /// hovered target lights elsewhere), rebuilt every render.
     sources: Rc<RefCell<HashMap<SharedString, SymbolRef>>>,
+    /// Native focus for controls in this same target list. Only handles
+    /// registered by the current mounted frame can receive keyboard focus.
+    native: Rc<RefCell<NativeTargets>>,
+}
+
+#[derive(Default)]
+struct NativeTargets {
+    frame: u64,
+    handles: HashMap<SharedString, (FocusHandle, u64)>,
 }
 
 impl Targets {
@@ -199,6 +239,9 @@ impl Targets {
     /// same ids record again, so a reused prepaint keeps them valid).
     pub(crate) fn begin(&self) {
         let _ = self.list.with(Vec::clear);
+        let mut native = self.native.borrow_mut();
+        native.frame = native.frame.wrapping_add(1);
+        drop(native);
         self.layouts.borrow_mut().clear();
         self.escape.borrow_mut().take();
         self.sources.borrow_mut().clear();
@@ -308,7 +351,76 @@ impl Targets {
     /// left by must not fly the bevel in from the other page).
     pub(crate) fn new_page(&self) {
         self.recall.clear_focus();
+        self.native.borrow_mut().handles.clear();
         self.fresh.set(true);
+    }
+
+    /// Attach a real GPUI focus handle to a target already in this frame's
+    /// list. Reorders preserve the handle; unmounted rows are discarded at
+    /// the end of the frame so old inventory pages cannot own input.
+    pub(crate) fn native_handle(&self, id: &SharedString, cx: &mut App) -> FocusHandle {
+        let mut native = self.native.borrow_mut();
+        let frame = native.frame;
+        let (handle, seen) = native.handles.entry(id.clone())
+            .or_insert_with(|| (cx.focus_handle().tab_stop(true), frame));
+        *seen = frame;
+        handle.clone()
+    }
+
+    pub(crate) fn finish_native(&self) {
+        let mut native = self.native.borrow_mut();
+        let frame = native.frame;
+        native.handles.retain(|_, (_, seen)| *seen == frame);
+    }
+
+    fn native_order(&self) -> Vec<(SharedString, FocusHandle)> {
+        let native = self.native.borrow();
+        self.list.with(|list| list.iter().filter_map(|target| native.handles.get(&target.id)
+            .filter(|(_, seen)| *seen == native.frame)
+            .map(|(handle, _)| (target.id.clone(), handle.clone()))).collect())
+            .unwrap_or_default()
+    }
+
+    /// The next mounted native control in the reader. The list itself owns
+    /// walk order and actions; this only gives that target native focus.
+    pub(crate) fn native_step(&self, forward: bool, window: &mut Window, cx: &mut App) -> bool {
+        let order = self.native_order();
+        // AccessKit and input controls can change GPUI focus without walking
+        // our logical target list. The mounted handle is the input origin;
+        // Recall follows it, never the other way around.
+        let current = order.iter().position(|(_, handle)| handle.is_focused(window));
+        if let Some(at) = current { self.focus(order[at].0.clone()); }
+        let next = match current {
+            Some(at) if forward => at.checked_add(1).filter(|at| *at < order.len()),
+            Some(at) => at.checked_sub(1),
+            None if forward => (!order.is_empty()).then_some(0),
+            None => order.len().checked_sub(1),
+        };
+        let Some((id, handle)) = next.and_then(|at| order.get(at)) else { return false };
+        self.focus(id.clone());
+        handle.focus(window, cx);
+        true
+    }
+
+    pub(crate) fn focus_native(&self, id: &str, window: &mut Window, cx: &mut App) -> bool {
+        let Some((_, handle)) = self.native_order().into_iter().find(|(key, _)| key == id) else { return false };
+        handle.focus(window, cx);
+        true
+    }
+
+    pub(crate) fn native_focused(&self, window: &Window) -> Option<SharedString> {
+        self.native_order().into_iter().find(|(_, handle)| handle.is_focused(window)).map(|(id, _)| id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_keys(&self) -> Vec<SharedString> {
+        self.native_order().into_iter().map(|(id, _)| id).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn focused_native_is_live(&self, window: &Window) -> bool {
+        self.focused().is_some_and(|id| self.native_order().into_iter()
+            .any(|(key, handle)| key == id && handle.is_focused(window)))
     }
 
     /// Focuses `id` (a pointer click keeps the keyboard where the pointer
@@ -466,7 +578,7 @@ impl Element for Tracked {
             self.child.prepaint(window, cx);
             return None;
         }
-        facet::probe::record_target(
+        facet::probe::record_target_in(
             cx,
             &ElementId::Name(self.id.clone()),
             bounds,
@@ -477,6 +589,7 @@ impl Element for Tracked {
                 focusable: true,
                 clickable: true,
             },
+            window,
         );
         self.child.prepaint(window, cx);
         self.source.as_ref().map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))

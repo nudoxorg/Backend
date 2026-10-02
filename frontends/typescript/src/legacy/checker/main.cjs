@@ -44,7 +44,9 @@ if (!sourcePath) {
 const absolute = path.resolve(sourcePath);
 const bytes = fs.readFileSync(absolute);
 const source = bytes.toString('utf8');
-const isTsx = absolute.endsWith('.tsx');
+const extension = path.extname(absolute).toLowerCase();
+const isTsx = extension === '.tsx' || extension === '.jsx';
+const isJavaScript = ['.js', '.mjs', '.cjs', '.jsx'].includes(extension);
 
 const host = ts.createCompilerHost({}, /* setParentNodes */ true);
 const program = ts.createProgram(
@@ -55,6 +57,8 @@ const program = ts.createProgram(
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.NodeJs,
     jsx: isTsx ? ts.JsxEmit.Preserve : undefined,
+    allowJs: isJavaScript,
+    checkJs: isJavaScript,
   },
   host,
 );

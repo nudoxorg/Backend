@@ -9,11 +9,15 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 
 use super::fit_tests::{findings, package_route, painted, resize};
+use super::focus::Zone;
 use super::root::Shell;
-use super::tests::{Rig, page_route, rig};
+use super::tests::{Rig, page_route, rig, view_route};
 use super::ShelfMode;
-use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage};
+use crate::core::admit_resource;
+use crate::model::pages::{SearchQuery, SearchRow};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage, View};
 use facet::probe::{Ledger, TextSample};
+use facet::probe::StackPhase;
 use facet::tokens::fluid::Dock;
 use gpui::{Modifiers, TestAppContext, point, px};
 
@@ -22,6 +26,52 @@ const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)]
 
 fn frame(rig: &mut Rig) -> super::Frame {
     rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
+}
+
+/// The current owner-certified row, rather than a name inferred from the
+/// route that was on screen before Ask opened.
+fn ask_result(rig: &mut Rig) -> SearchRow {
+    let query = SearchQuery::new("relation", SearchQuery::DEFAULT_LIMIT).expect("Ask fixture query");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        let resource = store.search(&query);
+        let page = admit_resource(&resource, store.snapshot().key(), store.owner_serving())
+            .current_value().expect("current owner-certified Ask results");
+        assert_eq!(page.query.as_ref(), query.text.as_ref());
+        let rows = &page.rows;
+        assert_eq!(rows.len(), 1, "this fixture must expose one unambiguous preview destination");
+        rows[0].clone()
+    })
+}
+
+fn preview_name(rig: &mut Rig) -> String {
+    let row = ask_result(rig);
+    let route = rig.route();
+    let Route::Symbol(symbol) = &route else { panic!("Ask did not preview its exact result: {route:?}"); };
+    assert_eq!(symbol.id.as_str(), row.decl.coordinate.as_str(),
+        "the Reader preview differs from the current search result coordinate");
+    assert_eq!(Some(symbol.package.as_str()), row.package.as_deref(),
+        "the Reader preview differs from the result's owning package");
+    row.decl.name.to_string()
+}
+
+fn reader_name(rig: &mut Rig) -> String {
+    let previewing = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().preview.is_some());
+    if previewing {
+        return preview_name(rig);
+    }
+    let route = rig.route();
+    let Route::Symbol(symbol) = route else { panic!("Ask's Reader has no symbol page: {route:?}"); };
+    crate::model::pages::SymbolRef::new(symbol.id.as_str())
+        .expect("Reader symbol coordinate").identity().name().to_owned()
+}
+
+fn native_tree(rig: &mut Rig) -> serde_json::Value {
+    // VisualTestContext does not force AccessKit on by default. Register
+    // native accessibility before drawing the frame under assertion.
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+    serde_json::from_str(&json).expect("native tree JSON")
 }
 
 /// A shelf row's words are on screen (the shelf is open, inline or over).
@@ -285,10 +335,11 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
             "the plate at {width} px is {bounds:?}, want {plate} wide at (0, {titlebar})"
         );
         // A result row is drawn below it, over the shelf's column, inside the plate.
+        let result_name = ask_result(&mut rig).decl.name.to_string();
         let row = words
             .iter()
-            .find(|text| text.text.contains("RelationLabel") && f32::from(text.bounds.origin.y) > titlebar && f32::from(text.bounds.origin.x) < plate)
-            .unwrap_or_else(|| panic!("no result row for `relation` at {width} px: {:?}", words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()));
+            .find(|text| text.text.as_ref() == result_name.as_str() && f32::from(text.bounds.origin.y) > titlebar && f32::from(text.bounds.origin.x) < plate)
+            .unwrap_or_else(|| panic!("no result row for {result_name:?} at {width} px: {:?}", words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()));
         assert!(
             f32::from(row.bounds.right()) <= plate + 0.5 && f32::from(row.bounds.right()) <= width,
             "the result row {:?} is outside the {plate} px plate at {width} px",
@@ -299,6 +350,455 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
         let after: Vec<gpui::PaintedText> = rig.cx.update(|window, _| window.painted_texts().to_vec());
         assert!(!after.iter().any(|text| text.text.as_ref() == "relation" && f32::from(text.bounds.origin.y) < titlebar), "Escape left the query in the titlebar at {width} px");
     }
+}
+
+/// This checks the mounted page's measured hero, not a second copy of the
+/// layout formula. Ask and Reader must agree on the plate's occupied pixels
+/// while the window, text scale, and inline shelf move underneath them.
+#[gpui::test]
+fn ask_preview_stays_beside_its_plate_through_zoom_and_resize(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    rig.keys("down");
+    rig.settle();
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    for percent in [100_u16, 150, 200] {
+        rig.go(Intent::ZoomTo { display: display.clone(), percent });
+        resize(&mut rig, 1440.0, 900.0);
+        assert_ask_geometry(&mut rig, true);
+    }
+    rig.go(Intent::ZoomTo { display, percent: 100 });
+    for width in [800.0, 640.0, 360.0, 1440.0] {
+        rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+        rig.draw();
+        assert_ask_geometry(&mut rig, false);
+        rig.settle();
+        assert_ask_geometry(&mut rig, true);
+        let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
+        if width <= 640.0 {
+            assert!((f32::from(plate.size.width) - width).abs() < 1.0,
+                "{width} px cannot fit a readable preview beside Ask: {plate:?}");
+        }
+    }
+}
+
+fn assert_ask_geometry(rig: &mut Rig, settled: bool) {
+    let expected_name = reader_name(rig);
+    let ledger = painted(rig);
+    let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
+    let viewport_width = rig.cx.update(|window, _| f32::from(window.viewport_size().width));
+    if f32::from(plate.size.width) >= viewport_width - 0.5 {
+        assert!((f32::from(plate.right()) - viewport_width).abs() < 1.0,
+            "Ask sheet must cover the whole Reader: {plate:?}");
+        return;
+    }
+    let hero = ledger.texts.iter()
+        .find(|text| text.key.starts_with("name:0:") && text.content == expected_name);
+    if settled {
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1,
+            "the exact preview has not settled to one mounted Reader page");
+        assert!(rig.said().iter().any(|line| line == &expected_name),
+            "the mounted Reader has no words for its exact preview result {expected_name:?}");
+        assert!(hero.is_some(), "the settled Reader drew no {expected_name:?} hero beside Ask");
+    }
+    if let Some(hero) = hero {
+        assert!(hero.bounds.x >= f32::from(plate.right()) + 8.0,
+            "Reader hero {:?} crosses Ask plate {plate:?}", hero.bounds);
+    }
+}
+
+#[gpui::test]
+fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Code)), 360.0, 640.0);
+    rig.settle();
+    let has_jump = |tree: &serde_json::Value| tree["nodes"].as_object().expect("native nodes")
+        .values().any(|node| node["aria"]["role"].as_str() == Some("Button")
+            && node["aria"]["label"].as_str() == Some("Go to line")
+            && node["aria"]["on_action"].as_array().is_some_and(|actions|
+                actions.iter().any(|action| action.as_str() == Some("Click"))));
+    assert!(has_jump(&native_tree(&mut rig)), "the Code Reader must positively mount a native action before Ask");
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    let plate = rig.cx.debug_bounds("ask-plate").expect("Ask sheet");
+    assert!((f32::from(plate.size.width) - 360.0).abs() < 1.0);
+    let covered = painted(&mut rig);
+    assert!(!covered.texts.iter().any(|text| text.key.starts_with("name:0:")),
+        "the sheet still paints a covered Reader heading");
+    assert!(!has_jump(&native_tree(&mut rig)), "the covered Reader action remains in the native modal tree");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert!(rig.cx.debug_bounds("ask-plate").is_some(), "the sheet should have painted exit pixels");
+    assert!(!has_jump(&native_tree(&mut rig)), "the Reader action returned beneath a departing sheet");
+    rig.settle();
+    assert!(has_jump(&native_tree(&mut rig)), "the Reader action did not return after the sheet cleared");
+}
+
+#[gpui::test]
+fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
+    let destination = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query)));
+    let native_focus = |rig: &mut Rig| {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let id = tree["accesskit_focus"].as_str().expect("native focus id");
+        (id.to_owned(), tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned))
+    };
+
+    rig.keys("secondary-k");
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.frame(0);
+    assert_eq!(rig.route(), destination);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving), "the Ask exit must still own painted pixels");
+    assert_ne!(native_focus(&mut rig).1.as_deref(), Some("Find query"),
+        "the arriving Find field claimed native focus behind the leaving Ask");
+
+    rig.settle();
+    assert_eq!(ask_phase(&painted(&mut rig)), None);
+    assert_eq!(native_focus(&mut rig).1.as_deref(), Some("Find query"),
+        "the query never claimed focus after Ask and the Reader both settled");
+    rig.cx.update(|window, cx| window.focus_next(cx));
+    let away = native_focus(&mut rig);
+    assert_ne!(away.1.as_deref(), Some("Find query"), "native focus did not leave the query");
+    rig.repaint();
+    assert_eq!(native_focus(&mut rig), away, "a Find redraw stole native focus back to its query");
+}
+
+fn native_focus_label(rig: &mut Rig) -> Option<String> {
+    let tree = native_tree(rig);
+    let id = tree["accesskit_focus"].as_str().expect("native focus id");
+    tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
+}
+
+#[gpui::test]
+fn tab_cannot_walk_the_native_folio_during_find_arrival(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let destination = find_route();
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.frame(0);
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let before = rig.cx.update(|window, cx| window.focused(cx));
+    rig.cx.simulate_keystrokes("tab");
+    rig.frame(0);
+    assert_eq!(rig.route(), destination);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before,
+        "Tab escaped NativeFolio into the generic shell walk during arrival");
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+}
+
+#[gpui::test]
+fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let route = rig.route();
+    rig.keys("secondary-k");
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(rig.route(), route);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "query focused beneath the departing Ask plate");
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.cx.update(|window, cx| window.focus_next(cx));
+    let away = native_focus_label(&mut rig);
+    rig.repaint();
+    assert_eq!(native_focus_label(&mut rig), away, "one-shot return stole focus on redraw");
+
+    // A later query-focused Ask has its return canceled by a Tab during exit.
+    rig.cx.update(|window, cx| window.focus_prev(cx));
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.keys("secondary-k");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    rig.cx.simulate_keystrokes("tab");
+    rig.settle();
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "an intervening Tab revived the canceled query return");
+}
+
+#[gpui::test]
+fn pointer_during_ask_exit_cancels_find_query_return(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.keys("secondary-k");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    rig.cx.simulate_click(point(px(720.0), px(450.0)), Modifiers::default());
+    rig.settle();
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "a pointer interruption allowed a delayed query focus steal");
+}
+
+#[gpui::test]
+fn find_waits_for_its_own_arrival_and_releases_focus_on_departure(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
+    let destination = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query)));
+    let native_focus = |rig: &mut Rig| {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let id = tree["accesskit_focus"].as_str().expect("native focus id");
+        tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
+    };
+    let settled = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx|
+        shell.reader_entity().read(cx).native_motion_settled());
+
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.frame(0);
+    assert_eq!(rig.route(), destination);
+    assert!(!settled(&mut rig), "the immediate arrival must still have a pending or painted Reader transition");
+    assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"),
+        "Find took native focus before its own page settled");
+    rig.settle();
+    assert!(settled(&mut rig));
+    assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"),
+        "the settled page failed to transfer native focus to its query");
+
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx));
+    rig.frame(0);
+    assert!(!settled(&mut rig), "the departing Find must retain a painted Reader transition");
+    assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"),
+        "a departing Find retained native keyboard focus");
+}
+
+/// Real resize events hold one placement around the readable-width edge,
+/// then change it once in each direction. The sampled plate may still be
+/// moving; this checks its settled, painted rectangle at each stop.
+#[gpui::test]
+fn ask_panel_and_sheet_hold_through_oscillating_resizes(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 800.0, 700.0);
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    for percent in [100_u16, 150, 200] {
+        let scale = f32::from(percent) / 100.0;
+        rig.go(Intent::ZoomTo { display: display.clone(), percent });
+        let mut sheets = Vec::new();
+        for design_width in [800.0, 700.0, 720.0, 670.0, 685.0, 700.0, 740.0] {
+            let width = design_width * scale;
+            resize(&mut rig, width, 700.0);
+            let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
+            sheets.push((f32::from(plate.size.width) - width).abs() < 1.0);
+        }
+        assert_eq!(sheets, [false, false, false, true, true, true, false],
+            "{percent}% text alternated panel and sheet across the resize band");
+        assert_eq!(sheets.windows(2).filter(|pair| pair[0] != pair[1]).count(), 2,
+            "{percent}% text changed placement more than once in each direction");
+    }
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.cx.simulate_resize(gpui::size(px(670.0 * 2.0), px(700.0)));
+    rig.draw();
+    let plate = rig.cx.debug_bounds("ask-plate").expect("reduced-motion sheet");
+    assert!((f32::from(plate.size.width) - 1340.0).abs() < 1.0,
+        "reduced motion settles the occupied rectangle in the resize frame");
+}
+
+fn ask_phase(ledger: &Ledger) -> Option<StackPhase> {
+    ledger.stacks.iter().rev().flat_map(|stack| stack.entries.iter())
+        .find(|entry| entry.key == "ask-plate" || entry.key == "ask-field" || entry.key == "ask-veil")
+        .map(|entry| entry.phase)
+}
+
+fn has_native_ask_results(rig: &mut Rig) -> bool {
+    let tree = native_tree(rig);
+    tree["nodes"].as_object().expect("native nodes").values().any(|node|
+        node["aria"]["label"].as_str() == Some("Search results"))
+}
+
+/// A result can be painted through the moving plate, but its clipped rows
+/// cannot become native or keyboard actions until the full row is revealed.
+#[gpui::test]
+fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.simulate_keystrokes("secondary-k");
+    rig.frame(16);
+    rig.cx.simulate_keystrokes("r e l a t i o n");
+    rig.frame(32);
+    let plate = rig.cx.debug_bounds("ask-plate").expect("entering plate");
+    assert!(f32::from(plate.size.width) > 1.0 && f32::from(plate.size.width) < 439.0,
+        "the test must sample an actually clipped entry: {plate:?}");
+    rig.frame(168);
+    let plate = rig.cx.debug_bounds("ask-plate").expect("spring plate after veil tween");
+    assert!(f32::from(plate.size.width) < 439.0, "the plate unexpectedly settled with the veil: {plate:?}");
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Entering),
+        "a settled veil mislabeled the still-moving plate Open");
+    let actionable_links = |tree: &serde_json::Value| tree["nodes"].as_object().expect("native nodes")
+        .values().filter(|node| node["aria"]["role"].as_str() == Some("Link")
+            && node["aria"]["on_action"].as_array().is_some_and(|actions|
+                actions.iter().any(|action| action.as_str() == Some("Click")))).count();
+    assert_eq!(actionable_links(&native_tree(&mut rig)), 0, "a clipped entering row registered a native action");
+    rig.cx.simulate_keystrokes("tab");
+    rig.frame(0);
+    let tree = native_tree(&mut rig);
+    let focus = tree["accesskit_focus"].as_str().expect("native focus");
+    assert_eq!(tree["nodes"][focus]["aria"]["role"].as_str(), Some("TextInput"),
+        "Tab escaped the editor into a clipped result");
+    rig.settle();
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Open));
+    assert!(actionable_links(&native_tree(&mut rig)) > 0, "settled results never became actionable");
+}
+
+/// The modal's painted shell reverses from its current width. Results and
+/// their native actions leave in the first closing frame, even while plate
+/// pixels continue out, and a quick reopen starts at that painted width.
+#[gpui::test]
+fn ask_exit_is_inert_and_reopen_reverses_its_painted_plate(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    assert!(has_native_ask_results(&mut rig), "the live Ask results must first exist in AccessKit");
+    let opened = rig.cx.debug_bounds("ask-plate").expect("open plate");
+    assert!((f32::from(opened.size.width) - 440.0).abs() < 1.0);
+
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    let leaving = painted(&mut rig);
+    let first = rig.cx.debug_bounds("ask-plate").expect("painted exit plate");
+    assert_eq!(ask_phase(&leaving), Some(StackPhase::Leaving));
+    assert!(!has_native_ask_results(&mut rig), "exiting pixels retained stale native result actions");
+    rig.frame(80);
+    let narrowing = rig.cx.debug_bounds("ask-plate").expect("mid-exit plate");
+    assert!(f32::from(narrowing.size.width) < f32::from(first.size.width) - 2.0);
+    assert!(f32::from(narrowing.size.width) > 1.0);
+
+    rig.cx.simulate_keystrokes("secondary-k");
+    rig.frame(0);
+    rig.cx.simulate_keystrokes("r e l a t i o n");
+    rig.frame(0);
+    let reversed = rig.cx.debug_bounds("ask-plate").expect("reopened plate");
+    assert!((f32::from(reversed.size.width) - f32::from(narrowing.size.width)).abs() < 3.0,
+        "reopen jumped rather than retargeted the painted plate: {narrowing:?} -> {reversed:?}");
+    let mut widths = Vec::new();
+    for _ in 0..10 {
+        rig.frame(32);
+        widths.push(f32::from(rig.cx.debug_bounds("ask-plate").expect("reopening plate").size.width));
+    }
+    assert!(widths.last().copied().unwrap_or_default() > f32::from(reversed.size.width) + 15.0,
+        "reopened plate did not turn toward its target: {widths:?}");
+    rig.cx.simulate_resize(gpui::size(px(800.0), px(900.0)));
+    rig.frame(16);
+    assert_ask_geometry(&mut rig, false);
+    rig.settle();
+    assert_ask_geometry(&mut rig, true);
+    assert!(has_native_ask_results(&mut rig), "the reopened modal did not restore its live results");
+
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    rig.settle();
+    let gone = painted(&mut rig);
+    assert_eq!(ask_phase(&gone), None, "the exit kept scheduling or left a painted stack entry");
+    assert!(rig.cx.debug_bounds("ask-plate").is_none(), "Ask left plate pixels after settling");
+    assert!(!has_native_ask_results(&mut rig));
+
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.cx.simulate_keystrokes("secondary-k");
+    rig.frame(0);
+    rig.cx.simulate_keystrokes("r e l a t i o n");
+    rig.frame(0);
+    let reduced = rig.cx.debug_bounds("ask-plate").expect("reduced-motion Ask plate");
+    assert!((f32::from(reduced.size.width) - 344.0).abs() < 1.0,
+        "reduced motion did not place the whole panel in its first query frame");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    let gone = painted(&mut rig);
+    assert_eq!(ask_phase(&gone), None, "reduced motion kept an exit animation");
+    assert!(rig.cx.debug_bounds("ask-plate").is_none());
+}
+
+/// The Code Reader's visible copy target stays selected across Ask, but its
+/// keys cannot walk, activate, or change routes beneath a departing plate.
+/// Once the final pixel clears, the same target and shortcuts work again.
+#[gpui::test]
+fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut TestAppContext) {
+    let code = view_route("RelationLabel", View::Code);
+    let mut rig = rig(cx, Some(code.clone()), 1440.0, 900.0);
+    let visible = painted(&mut rig);
+    assert!(visible.targets.iter().any(|target| target.key == "source-copy-excerpt"),
+        "the Code Reader must positively paint the control used in this test");
+    rig.keys("j");
+    rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).focus("source-copy-excerpt"));
+    let selected = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(selected, (Zone::Reader, Some("source-copy-excerpt".into())),
+        "the keyboard did not stand on the visible Code control");
+    rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("ask-exit-sentinel".into()));
+
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    rig.cx.simulate_keystrokes("tab shift-tab j enter cmd-. ctrl-1");
+    rig.frame(0);
+    assert_eq!(rig.route(), code, "a background navigation key fired under the painted Ask exit");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
+        "Tab or J moved focus to a covered control");
+    assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
+        "Enter activated the selected Code control beneath Ask's exit");
+
+    rig.cx.simulate_keystrokes("secondary-k");
+    rig.frame(0);
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(crate::navigation::Overlay::CommandPalette), "⌘K could not interrupt Ask's exit");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    rig.settle();
+    assert_eq!(ask_phase(&painted(&mut rig)), None);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
+        "the Code control lost its selected focus after the exit settled");
+    rig.keys("enter");
+    assert_ne!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
+        "the Code control did not activate after Ask's plate cleared");
+    rig.keys("secondary-.");
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Page),
+        "source navigation did not resume after Ask's plate cleared");
+}
+
+#[gpui::test]
+fn reader_clearance_follows_the_plate_that_was_painted_mid_flight(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 670.0, 700.0);
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    rig.keys("down");
+    rig.settle();
+    let expected_name = preview_name(&mut rig);
+    assert!((f32::from(rig.cx.debug_bounds("ask-plate").expect("sheet").size.width) - 670.0).abs() < 1.0);
+    rig.cx.simulate_resize(gpui::size(px(800.0), px(700.0)));
+    rig.draw();
+    let mut widths = Vec::new();
+    for _ in 0..40 {
+        rig.frame(16);
+        let ledger = painted(&mut rig);
+        let plate = rig.cx.debug_bounds("ask-plate").expect("painted Ask plate");
+        let width = f32::from(plate.size.width);
+        widths.push(width);
+        if let Some(hero) = ledger.texts.iter().find(|text|
+            text.key.starts_with("name:0:") && text.content == expected_name) {
+            assert!(hero.bounds.x >= f32::from(plate.right()) + 8.0,
+                "frame hero {:?} crossed its actually painted plate {plate:?}", hero.bounds);
+        }
+    }
+    let between = widths.iter().filter(|width| **width > 350.0 && **width < 660.0).count();
+    assert!(between >= 3, "plate skipped its moving widths: {widths:?}");
+    rig.settle();
+    let settled = rig.cx.debug_bounds("ask-plate").expect("settled Ask panel");
+    assert!((f32::from(settled.size.width) - 344.0).abs() < 2.0,
+        "panel did not settle at its FACET width after {widths:?}");
+    assert_ask_geometry(&mut rig, true);
 }
 
 /// A fast shrink (a maximise-then-restore, an edge snap: 1440 to 360 at once)

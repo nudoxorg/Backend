@@ -14,10 +14,14 @@
 //! through the ordinary engine-event mapping.
 
 mod cargo;
+pub(crate) mod files;
 mod manifest;
 mod readme;
 #[cfg(test)]
 mod tests;
+
+/// Maximum exact destination retained for a local Markdown link action.
+pub(crate) const MAX_README_LINK_DESTINATION_BYTES: usize = 4 * 1024;
 
 use crate::core::LocalProjectId;
 use std::collections::BTreeSet;
@@ -25,7 +29,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use readme::ReadmeBlock;
+pub use readme::{ReadmeBlock, ReadmeHeading, ReadmeLink};
+pub(crate) use readme::rustdoc_link;
+
+/// Normalizes a Markdown heading fragment using the README index's spelling.
+pub(crate) fn readme_fragment_slug(value: &str) -> String {
+    readme::heading_slug(value)
+}
 
 /// Every package fact the local dossier renders.
 ///
@@ -59,6 +69,13 @@ pub struct LocalPackage {
     pub categories: Arc<[Arc<str>]>,
     /// README projected into structural blocks.
     pub readme: Arc<[ReadmeBlock]>,
+    /// The bounded Markdown source, retained verbatim for the rich reader.
+    /// `None` means no README source was read.
+    pub readme_markdown: Option<Arc<str>>,
+    /// Bounded Markdown links with only worker-resolved local files admitted.
+    pub readme_links: Arc<[ReadmeLink]>,
+    /// Bounded heading targets matching the README's rendered anchors.
+    pub readme_headings: Arc<[ReadmeHeading]>,
     /// Unique dependency requirements across workspace members.
     pub dependencies: Arc<[LocalDependency]>,
     /// Unique feature definitions across workspace members.
@@ -85,6 +102,10 @@ pub enum LocalPackageSource {
 pub enum CargoFailure {
     /// The loader was configured without a Cargo program.
     Disabled,
+    /// Bounded child capture is not yet available on this platform.
+    UnsupportedCapture,
+    /// The requesting worker withdrew while Cargo was running.
+    Cancelled,
     /// The Cargo program could not be started.
     Spawn,
     /// Cargo did not finish within the loader's time bound.
@@ -217,7 +238,21 @@ impl LocalPackageLoader {
     #[allow(clippy::unused_self)]
     pub fn readme(&self, project: &LocalProjectId) -> Option<LocalPackage> {
         let root = project.path();
-        let readme = readme::project_readme(&root);
+        let readme_file = readme::project_readme_file(&root);
+        let markdown = readme_file.as_ref().map(|(_, source)| Arc::clone(source));
+        let readme: Arc<[ReadmeBlock]> = markdown
+            .as_deref()
+            .map_or_else(|| Arc::from([]), |source| readme::parse(source).into());
+        let (readme_links, readme_headings): (Arc<[ReadmeLink]>, Arc<[ReadmeHeading]>) = markdown.as_deref().map_or_else(
+            || (Arc::from([]), Arc::from([])),
+            |source| {
+                readme::navigation_index(
+                    source,
+                    &root,
+                    readme_file.as_ref().map_or(&root, |(path, _)| path),
+                )
+            },
+        );
         let facts = manifest::read_manifest(&root.join("Cargo.toml"))
             .map(|manifest| manifest::package_facts(&root, &manifest));
         let description = facts.as_ref().and_then(|facts| present(facts.description.clone()));
@@ -245,6 +280,9 @@ impl LocalPackageLoader {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme,
+            readme_markdown: markdown,
+            readme_links,
+            readme_headings,
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -258,23 +296,38 @@ impl LocalPackageLoader {
     /// canonical package record use [`Self::readme`] instead.
     #[must_use]
     pub fn load(&self, project: &LocalProjectId) -> LocalPackage {
+        self.load_with_cancel(project, &|| false).unwrap_or_else(|| {
+            // The closure above never cancels; keep the ordinary loader's
+            // return type total if the cancellation implementation changes.
+            manifest::project(project.clone(), &project.path(), CargoFailure::Cancelled)
+        })
+    }
+
+    /// Loads on a worker and stops its subprocess when that worker closes.
+    /// `None` is a withdrawn read and must never be published as package data.
+    pub(crate) fn load_with_cancel(
+        &self,
+        project: &LocalProjectId,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<LocalPackage> {
+        if cancelled() { return None; }
         let root = project.path();
         let manifest = root.join("Cargo.toml");
         // Without a root manifest Cargo would search parent directories and
         // could describe an unrelated enclosing workspace.
         if !manifest.is_file() {
-            return manifest::project(project.clone(), &root, CargoFailure::Status);
+            return (!cancelled()).then(|| manifest::project(project.clone(), &root, CargoFailure::Status));
         }
         let failure = match self.cargo.as_deref() {
             None => CargoFailure::Disabled,
             Some(program) => {
-                match cargo::metadata(program, &manifest, self.timeout, self.max_output) {
-                    Ok(metadata) => return cargo::project(project.clone(), &root, metadata),
+                match cargo::metadata(program, &manifest, self.timeout, self.max_output, cancelled) {
+                    Ok(metadata) => return (!cancelled()).then(|| cargo::project(project.clone(), &root, metadata)),
                     Err(failure) => failure,
                 }
             }
         };
-        manifest::project(project.clone(), &root, failure)
+        (!cancelled()).then(|| manifest::project(project.clone(), &root, failure))
     }
 }
 
@@ -327,6 +380,7 @@ struct Facts {
     keywords: Vec<String>,
     categories: Vec<String>,
     readme: String,
+    readme_path: Option<PathBuf>,
 }
 
 impl Facts {
@@ -347,6 +401,10 @@ impl Facts {
             let paragraph = readme::first_paragraph(&self.readme);
             (!paragraph.is_empty()).then_some(paragraph)
         });
+        let fallback_readme_path = root.join("README.md");
+        let readme_path = self.readme_path.as_deref().unwrap_or(&fallback_readme_path);
+        let (readme_links, readme_headings) =
+            readme::navigation_index(&self.readme, &root, readme_path);
         LocalPackage {
             source,
             name: Arc::from(name),
@@ -362,6 +420,9 @@ impl Facts {
             keywords: shared(self.keywords),
             categories: shared(self.categories),
             readme: readme::parse(&self.readme).into(),
+            readme_links,
+            readme_headings,
+            readme_markdown: (!self.readme.is_empty()).then(|| Arc::from(self.readme)),
             dependencies: dependencies.into(),
             features: features.into(),
             members,

@@ -64,6 +64,9 @@ impl Doors for GalleryHost {
     fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement {
         self.doors.track(key, label, door, element)
     }
+    fn track_hoverable(&self, key: SharedString, label: SharedString, door: &Door, focus: crate::hover::FocusTarget, element: AnyElement) -> AnyElement {
+        self.doors.track_hoverable(key, label, door, focus, element)
+    }
     fn say(&self, _: &str) {}
 }
 

@@ -4,8 +4,8 @@
 //! ([`invoke`]), the request sequence one command needs ([`run`]), and the
 //! choice of rendering ([`render`]). What an answer *means* lives in
 //! `backend-present`, and what a command *is* lives in
-//! [`backend_library::COMMANDS`]. That split is what lets the CLI reach all
-//! thirty-five registry rows without thirty-five hand-written parsers, and
+//! [`backend_library::COMMANDS`]. That split is what lets the CLI reach the
+//! whole registry without hand-written per-command parsers, and
 //! what makes `--format markdown` byte-identical to the MCP text block rather
 //! than merely similar.
 //!

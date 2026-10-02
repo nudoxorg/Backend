@@ -16,7 +16,7 @@
 
 use std::{
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
@@ -184,6 +184,32 @@ pub enum CheckerError {
     PackageTimeout {
         /// Configured deadline in milliseconds.
         milliseconds: u128,
+    },
+    /// The selected package source path was empty, absolute, or escaped its root.
+    #[error("TypeScript checker package source path is not a safe relative path: {path:?}")]
+    PackageSourcePath {
+        /// Rejected package-relative source path.
+        path: PathBuf,
+    },
+    /// The selected file was absent from the staged package tree.
+    #[error("TypeScript checker selected package source is missing: {path:?}")]
+    PackageSourceMissing {
+        /// Required package-relative source path.
+        path: PathBuf,
+    },
+    /// The selected file changed after the caller admitted its source bytes.
+    #[error("TypeScript checker selected package source changed after admission: {path:?}")]
+    PackageSourceChanged {
+        /// Exact package-relative source path whose bytes drifted.
+        path: PathBuf,
+    },
+    /// The selected file extension does not agree with the requested grammar profile.
+    #[error("TypeScript checker package source {path:?} is incompatible with profile {profile:?}")]
+    PackageSourceProfile {
+        /// Requested closed grammar profile.
+        profile: TypeScriptSource,
+        /// Rejected package-relative source path.
+        path: PathBuf,
     },
     /// A checker UTF-16 span could not bind to the exact UTF-8 source.
     #[error("TypeScript checker span {start}..{end} does not bind to the source")]
@@ -1014,8 +1040,34 @@ impl ExplicitTypeScriptChecker {
         source: &[u8],
         package_root: &Path,
     ) -> Result<Report, CheckerError> {
-        self.checker
-            .run_in_package_with_invocation(&self.invocation, profile, source, package_root)
+        self.checker.run_in_package_with_invocation(
+            &self.invocation,
+            profile,
+            source,
+            package_root,
+            None,
+        )
+    }
+
+    /// Runs the checker against one exact package-relative source path.
+    ///
+    /// The selected file is copied from the admitted package tree at its
+    /// original relative path. This preserves extension-sensitive compiler
+    /// behavior and relative imports for nested source files.
+    pub fn run_in_package_at(
+        &self,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+        source_relative: &Path,
+    ) -> Result<Report, CheckerError> {
+        self.checker.run_in_package_with_invocation(
+            &self.invocation,
+            profile,
+            source,
+            package_root,
+            Some(source_relative),
+        )
     }
 }
 
@@ -1128,6 +1180,30 @@ impl Checker {
         source: &[u8],
         package_root: &Path,
     ) -> Result<Report, CheckerError> {
+        self.run_in_package_internal(profile, source, package_root, None)
+    }
+
+    /// Runs the checker against one exact package-relative source path.
+    pub fn run_in_package_at(
+        &self,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+        source_relative: &Path,
+    ) -> Result<Report, CheckerError> {
+        self.run_in_package_internal(profile, source, package_root, Some(source_relative))
+    }
+
+    fn run_in_package_internal(
+        &self,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+        source_relative: Option<&Path>,
+    ) -> Result<Report, CheckerError> {
+        if let Some(path) = source_relative {
+            validate_package_source_profile(profile, path)?;
+        }
         let work = work_directory();
         std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
             phase: "prepare",
@@ -1138,18 +1214,32 @@ impl Checker {
             let staged = work.join("package");
             let mut budget = PackageBudget::new(started, self.timeout);
             let mut declaration_file = false;
+            let mut selected_file_seen = false;
             stage_package(
                 package_root,
                 &staged,
+                Path::new(""),
                 &mut budget,
                 source,
+                source_relative,
                 &mut declaration_file,
+                &mut selected_file_seen,
             )?;
-            let file = staged.join(package_entry_file(profile, declaration_file));
-            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
-                phase: "prepare",
-                source: cause,
-            })?;
+            let file = if let Some(source_relative) = source_relative {
+                if !selected_file_seen {
+                    return Err(CheckerError::PackageSourceMissing {
+                        path: source_relative.to_path_buf(),
+                    });
+                }
+                staged.join(source_relative)
+            } else {
+                let file = staged.join(package_entry_file(profile, declaration_file));
+                std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                    phase: "prepare",
+                    source: cause,
+                })?;
+                file
+            };
             let report = match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
                 Ok(binary) => self.run_child(&work, Path::new(&binary), &file),
                 Err(std::env::VarError::NotPresent) => {
@@ -1189,7 +1279,11 @@ impl Checker {
         profile: TypeScriptSource,
         source: &[u8],
         package_root: &Path,
+        source_relative: Option<&Path>,
     ) -> Result<Report, CheckerError> {
+        if let Some(path) = source_relative {
+            validate_package_source_profile(profile, path)?;
+        }
         let work = work_directory();
         std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
             phase: "prepare",
@@ -1200,18 +1294,32 @@ impl Checker {
             let staged = work.join("package");
             let mut budget = PackageBudget::new(started, self.timeout);
             let mut declaration_file = false;
+            let mut selected_file_seen = false;
             stage_package(
                 package_root,
                 &staged,
+                Path::new(""),
                 &mut budget,
                 source,
+                source_relative,
                 &mut declaration_file,
+                &mut selected_file_seen,
             )?;
-            let file = staged.join(package_entry_file(profile, declaration_file));
-            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
-                phase: "prepare",
-                source: cause,
-            })?;
+            let file = if let Some(source_relative) = source_relative {
+                if !selected_file_seen {
+                    return Err(CheckerError::PackageSourceMissing {
+                        path: source_relative.to_path_buf(),
+                    });
+                }
+                staged.join(source_relative)
+            } else {
+                let file = staged.join(package_entry_file(profile, declaration_file));
+                std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                    phase: "prepare",
+                    source: cause,
+                })?;
+                file
+            };
             let report = self.run_explicit_file(invocation, &work, &file)?;
             Ok(declaration_report(report, declaration_file))
         })();
@@ -1503,6 +1611,51 @@ const fn package_entry_file(profile: TypeScriptSource, declaration: bool) -> &'s
     }
 }
 
+fn validate_package_source_path(path: &Path) -> Result<(), CheckerError> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CheckerError::PackageSourcePath {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_package_source_profile(
+    profile: TypeScriptSource,
+    path: &Path,
+) -> Result<(), CheckerError> {
+    validate_package_source_path(path)?;
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(CheckerError::PackageSourceProfile {
+            profile,
+            path: path.to_path_buf(),
+        });
+    };
+    let declaration = [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix));
+    let accepted = declaration
+        || match profile {
+            TypeScriptSource::TypeScript => [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)),
+            TypeScriptSource::Tsx => [".tsx", ".jsx"].iter().any(|suffix| name.ends_with(suffix)),
+        };
+    if accepted {
+        Ok(())
+    } else {
+        Err(CheckerError::PackageSourceProfile {
+            profile,
+            path: path.to_path_buf(),
+        })
+    }
+}
+
 /// Stamps the checker's package-derived declaration classification onto the
 /// decoded report. The classification is the checker's own decision: it is
 /// true exactly when the checked bytes were read from an ambient declaration
@@ -1567,9 +1720,12 @@ impl PackageBudget {
 fn stage_package(
     source: &Path,
     destination: &Path,
+    current_relative: &Path,
     budget: &mut PackageBudget,
     probe: &[u8],
+    selected_relative: Option<&Path>,
     declaration_file: &mut bool,
+    selected_file_seen: &mut bool,
 ) -> Result<(), CheckerError> {
     let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
         phase: "stage metadata",
@@ -1599,13 +1755,24 @@ fn stage_package(
             source: cause,
         })?;
         let child = entry.path();
-        let target = destination.join(entry.file_name());
+        let file_name = entry.file_name();
+        let target = destination.join(&file_name);
+        let relative = current_relative.join(&file_name);
         let metadata = std::fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
             phase: "stage metadata",
             source: cause,
         })?;
         if metadata.is_dir() {
-            stage_package(&child, &target, budget, probe, declaration_file)?;
+            stage_package(
+                &child,
+                &target,
+                &relative,
+                budget,
+                probe,
+                selected_relative,
+                declaration_file,
+                selected_file_seen,
+            )?;
         } else if metadata.is_file() {
             let remaining = PACKAGE_BYTE_LIMIT.saturating_sub(budget.bytes);
             let mut bytes = Vec::new();
@@ -1637,6 +1804,12 @@ fn stage_package(
                 && is_declaration_file_name(&child)
             {
                 *declaration_file = true;
+            }
+            if selected_relative.is_some_and(|selected| relative == selected) {
+                if bytes != probe {
+                    return Err(CheckerError::PackageSourceChanged { path: relative });
+                }
+                *selected_file_seen = true;
             }
             budget.check(bytes.len())?;
             std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
@@ -1749,11 +1922,65 @@ fn tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod capability_tests {
     use std::{
-        path::PathBuf,
+        fs,
+        path::{Path, PathBuf},
         process::Command,
+        time::{Duration, Instant},
     };
 
-    use super::{Checker, TypeScriptCheckerProgramError, TypeScriptInvocationModeV1};
+    use backend_semantic::vocabulary::TypeScriptSource;
+
+    use super::{
+        Checker, CheckerError, PackageBudget, TypeScriptCheckerProgramError,
+        TypeScriptInvocationModeV1, stage_package, validate_package_source_profile, work_directory,
+    };
+
+    #[test]
+    fn package_checker_keeps_javascript_source_path_and_bytes_exact() {
+        let root = work_directory();
+        let package = root.join("package");
+        let selected = Path::new("src/beacon.js");
+        let source = b"export function beacon() { return 8; }\n";
+        fs::create_dir_all(package.join("src")).expect("package source directory is creatable");
+        fs::write(package.join(selected), source).expect("selected source is writable");
+        let staged = root.join("staged");
+        let mut budget = PackageBudget::new(Instant::now(), Duration::from_secs(5));
+        let mut declaration_file = false;
+        let mut selected_file_seen = false;
+
+        validate_package_source_profile(TypeScriptSource::TypeScript, selected)
+            .expect("JavaScript is a supported source path for the TypeScript checker");
+        stage_package(
+            &package,
+            &staged,
+            Path::new(""),
+            &mut budget,
+            source,
+            Some(selected),
+            &mut declaration_file,
+            &mut selected_file_seen,
+        )
+        .expect("package source stages");
+
+        assert!(selected_file_seen);
+        assert_eq!(
+            fs::read(staged.join(selected)).expect("staged source exists"),
+            source
+        );
+        assert!(!declaration_file);
+        assert!(matches!(
+            validate_package_source_profile(TypeScriptSource::Tsx, selected),
+            Err(CheckerError::PackageSourceProfile { .. })
+        ));
+        assert!(matches!(
+            validate_package_source_profile(
+                TypeScriptSource::TypeScript,
+                Path::new("../escape.js")
+            ),
+            Err(CheckerError::PackageSourcePath { .. })
+        ));
+        fs::remove_dir_all(root).expect("staging test paths are removed");
+    }
 
     #[test]
     fn portable_invocation_mode_survives_path_relocation_and_changes_with_mode() {

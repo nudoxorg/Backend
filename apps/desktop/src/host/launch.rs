@@ -17,7 +17,6 @@ use crate::model::{
     AppSnapshot, Note, PersistedDesktopState, PersistenceRecovery, PersistentState, SessionState,
     WindowSize,
 };
-use crate::runtime::fixture_world::{LaunchNeed, launch_need};
 use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
 use crate::runtime::reads::{ReadPool, SessionReader};
 use crate::runtime::snapshot::{Keep, Seed, SnapshotFile};
@@ -68,9 +67,6 @@ pub(crate) struct Boot {
     pub(crate) owner: Option<OwnerThread>,
     /// The launch snapshot, and the thread reading the route's pages from it.
     pub(crate) keep: Option<SnapshotRead>,
-    /// What the restored window needs of the fixture world at once, if
-    /// anything: `run` starts the world's thread for it.
-    pub(crate) world_need: Option<LaunchNeed>,
 }
 
 /// How long the window waits for the snapshot thread before it opens without
@@ -146,7 +142,6 @@ pub(crate) fn prepare(
             gate,
             owner: None,
             keep: None,
-            world_need: None,
         }
     };
     let paths = match discovered {
@@ -164,7 +159,6 @@ pub(crate) fn prepare(
     };
     let Restored { state: persisted, persistence, note } = restore(&paths);
     let snapshot = restored_snapshot(&paths, &project, &persisted, note);
-    let world_need = launch_need(snapshot.route(), &snapshot.session().hand);
     let keep = read_snapshot(paths.data(), snapshot.route());
     let client = BootClient::Local(Box::new(LocalEngineClient::gated(
         paths.endpoint(),
@@ -186,7 +180,6 @@ pub(crate) fn prepare(
         gate,
         owner,
         keep,
-        world_need,
     }
 }
 
@@ -197,10 +190,18 @@ fn restore(paths: &WorkspacePaths) -> Restored {
     let persistence = PersistentState::at(paths.data().join("desktop-state.json"));
     match persistence.load_recovering() {
         Ok(admitted) => {
-            if let PersistenceRecovery::Preserved { backup, reason } = &admitted.recovery {
-                eprintln!("backend-desktop: preserved unadmitted state at {}: {reason}", backup.display());
+            match &admitted.recovery {
+                PersistenceRecovery::Preserved { backup, reason } => {
+                    eprintln!("backend-desktop: preserved unadmitted state at {}: {reason}", backup.display());
+                }
+                PersistenceRecovery::RetainedAtSource { path, reason } => {
+                    eprintln!("backend-desktop: unadmitted state retained at {}: {reason}", path.display());
+                }
+                PersistenceRecovery::Current | PersistenceRecovery::Missing => {}
             }
-            Restored { note: admitted.recovery.note(), state: admitted.state, persistence: Some(persistence) }
+            let may_save = !matches!(&admitted.recovery, PersistenceRecovery::RetainedAtSource { .. });
+            let note = admitted.recovery.note().or_else(|| admitted.state.cargo_source_recovery_note());
+            Restored { note, state: admitted.state, persistence: may_save.then_some(persistence) }
         }
         Err(error) => {
             eprintln!("backend-desktop: admit desktop state at {}: {error}", persistence.path().display());
@@ -251,6 +252,7 @@ fn restored_snapshot(
             back: restored.back,
             forward: restored.forward,
             selected: restored.selected,
+            pending_selection: restored.pending_selection,
             hand: restored.hand,
             whispered: restored.whispered,
             whisper: None,
@@ -281,17 +283,21 @@ impl EngineClient for BootClient {
 
 fn run(mut boot: Boot) {
     let reading = boot.keep.take();
-    let Boot { snapshot, persistence, client, endpoint, gate, owner, keep: _, world_need } = boot;
-    if let Some(need) = world_need {
-        crate::runtime::fixture_world::preload(need);
-    }
+    let Boot { snapshot, persistence, client, endpoint, gate, owner, keep: _ } = boot;
     let window = snapshot.settings().window;
     let Some((runtime, reads)) = start_workers(snapshot, client, endpoint, &gate) else { return };
     let parts = AppParts { runtime, persistence, reads, gate: gate.clone(), reading, window };
     let starting_platform = Instant::now();
-    gpui::Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(facet::icons::Assets)
-        .run(move |cx: &mut App| open_the_window(cx, parts, starting_platform));
+    let application =
+        gpui::Application::with_platform(gpui_platform::current_platform(false))
+            .with_assets(facet::icons::Assets);
+    application.on_reopen(|cx| {
+        cx.activate(true);
+        if let Some(window) = cx.active_window().or_else(|| cx.windows().into_iter().next()) {
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+        }
+    });
+    application.run(move |cx: &mut App| open_the_window(cx, parts, starting_platform));
     gate.close();
     drop(owner);
 }
@@ -350,6 +356,7 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
         eprintln!("backend-desktop: install UI assets: {error}");
         return;
     }
+    super::menus::install(cx);
     crate::runtime::trace::span("boot.fonts", installing, "gpui_component::init + facet::fonts::install");
     crate::runtime::trace::frames(cx);
     crate::runtime::trace::mark("boot.app_running", "gpui");

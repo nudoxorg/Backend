@@ -9,8 +9,10 @@ use crate::shell::kit::{SaidChild, text};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, Bounds, Hsla, HighlightStyle, IntoElement, ParentElement, PathBuilder, Pixels, RenderOnce, SharedString, Styled, StyledText,
-    UnderlineStyle, Window, canvas, div, point, px,
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, HighlightStyle,
+    InspectorElementId, IntoElement, LayoutId, ParentElement, PathBuilder, Pixels, Refineable,
+    RenderOnce, SharedString, Style, StyleRefinement, Styled, StyledText, UnderlineStyle, Window,
+    div, point, px,
 };
 use std::ops::Range;
 
@@ -56,47 +58,104 @@ fn one(glyph: Glyph, measure: &Measure, palette: &Palette) -> AnyElement {
 /// A square with its bottom-right corner cut: how often your code uses it.
 fn notch(color: Hsla, measure: &Measure) -> impl IntoElement {
     let side = px(NOTCH * measure.scale());
-    canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, (), window: &mut Window, _: &mut App| {
-            let (w, h) = (bounds.size.width, bounds.size.height);
-            let mut path = PathBuilder::fill();
-            path.move_to(bounds.origin);
-            path.line_to(point(bounds.origin.x + w, bounds.origin.y));
-            path.line_to(point(bounds.origin.x + w, bounds.origin.y + h * 0.6));
-            path.line_to(point(bounds.origin.x + w * 0.6, bounds.origin.y + h));
-            path.line_to(point(bounds.origin.x, bounds.origin.y + h));
-            path.close();
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .flex_none()
-    .size(side)
+    SideGlyph { shape: SideShape::Notch, color, side, style: StyleRefinement::default() }
+        .flex_none()
+        .size(side)
 }
 
 /// A diamond: it changes in the release being read.
 fn diamond(color: Hsla, measure: &Measure) -> impl IntoElement {
     let side = px(DIAMOND * measure.scale());
-    canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, (), window: &mut Window, _: &mut App| {
-            let c = bounds.center();
-            let r = bounds.size.width * 0.5;
-            let mut path = PathBuilder::fill();
-            path.move_to(point(c.x, c.y - r));
-            path.line_to(point(c.x + r, c.y));
-            path.line_to(point(c.x, c.y + r));
-            path.line_to(point(c.x - r, c.y));
-            path.close();
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color);
+    SideGlyph { shape: SideShape::Diamond, color, side, style: StyleRefinement::default() }
+        .flex_none()
+        .size(side)
+}
+
+#[derive(Clone, Copy)]
+enum SideShape { Notch, Diamond }
+
+struct SideGlyph {
+    shape: SideShape,
+    color: Hsla,
+    side: Pixels,
+    style: StyleRefinement,
+}
+
+impl Styled for SideGlyph {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for SideGlyph {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for SideGlyph {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = self.side.into();
+        style.size.height = self.side.into();
+        style.flex_shrink = 0.0;
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {}
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        let mut path = PathBuilder::fill();
+        match self.shape {
+            SideShape::Notch => {
+                let (w, h) = (bounds.size.width, bounds.size.height);
+                path.move_to(bounds.origin);
+                path.line_to(point(bounds.origin.x + w, bounds.origin.y));
+                path.line_to(point(bounds.origin.x + w, bounds.origin.y + h * 0.6));
+                path.line_to(point(bounds.origin.x + w * 0.6, bounds.origin.y + h));
+                path.line_to(point(bounds.origin.x, bounds.origin.y + h));
             }
-        },
-    )
-    .flex_none()
-    .size(side)
+            SideShape::Diamond => {
+                let center = bounds.center();
+                let radius = bounds.size.width * 0.5;
+                path.move_to(point(center.x, center.y - radius));
+                path.line_to(point(center.x + radius, center.y));
+                path.line_to(point(center.x, center.y + radius));
+                path.line_to(point(center.x - radius, center.y));
+            }
+        }
+        path.close();
+        if let Ok(path) = path.build() {
+            window.paint_path(path, self.color);
+        }
+    }
 }
 
 /// A release's mark: the pin in mint, the release being read in periwinkle,

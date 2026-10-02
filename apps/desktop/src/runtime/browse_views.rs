@@ -38,6 +38,7 @@ fn answer(row: &SearchRow) -> facet::browse::find::Answer {
         summary: row.snippet.as_ref().and_then(|text| doc_summary(text)),
         pipe: signature.as_deref().and_then(|signature| facet::semantics::recorded::callable(signature, &row.decl.name, facet::semantics::recorded::Language::from_name(row.decl.language.name()))),
         signature: signature.map(Into::into),
+        source_available: row.decl.path.is_some() && row.decl.line.is_some(),
     }
 }
 
@@ -151,6 +152,7 @@ pub fn prepare_compare(packages: &[PackageDossier], apis: &[Known<PackageApi>]) 
                 context: source_context(&item.decl),
                 summary: item.summary.as_ref().and_then(|text| doc_summary(text)),
                 pipe: signature.as_deref().and_then(|signature| facet::semantics::recorded::callable(signature, &item.decl.name, facet::semantics::recorded::Language::from_name(item.decl.language.name()))), signature: signature.map(Into::into),
+                source_available: item.decl.path.is_some() && item.decl.line.is_some(),
             }}
         }).collect());
         Candidate { key: package.package.as_str().to_owned().into(), name: record.map_or_else(|| package.package.display_name().to_owned(), |record| record.name.to_string()).into(),

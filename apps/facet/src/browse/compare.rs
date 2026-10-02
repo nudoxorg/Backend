@@ -228,8 +228,8 @@ impl RenderOnce for Compare {
                 .children(candidate.version.as_ref().map(|version| words(child(&key, "version"), version.clone(), ty::MONO_SMALL, p.ink2, &column_m)))
                 .child(silhouette(&key, candidate, &self.model.kind_counts[at], &state, &column_m, cx))
                 .child(div().flex().flex_wrap().gap(m.space(Space::Tight))
-                    .child(button(child(&key, "open"), "Explore", &column_m).ghost().size(Control::Small).on_click(move |window, cx| open(package.clone(), window, cx)))
-                    .child(button(child(&key, "remove"), "Remove", &column_m).ghost().size(Control::Small).disabled(count <= 2)
+                    .child(button(child(&key, "open"), "Explore", &column_m).ghost().size(Control::Small).disabled(!self.actions.active).on_click(move |window, cx| open(package.clone(), window, cx)))
+                    .child(button(child(&key, "remove"), "Remove", &column_m).ghost().size(Control::Small).disabled(!self.actions.active || count <= 2)
                         .on_click(move |window, cx| remove(remove_key.clone(), window, cx))));
             if let Some(coverage) = &candidate.coverage { head = head.child(words(child(&key, "coverage"), coverage.clone(), ty::CAPTION, p.ink2, &column_m)); }
             heads = heads.child(head);
@@ -408,15 +408,15 @@ fn operation_detail(id: &ElementId, row: &Alignment, model: &Model, state: &Enti
                 }
                 if let Some(path) = &operation.path { column = column.child(words(child(&operation_id, "path"), path.clone(), ty::CAPTION, p.ink2, &column_m)); }
                 let mut actions_row = div().flex().flex_wrap().gap(m.space(Space::Tight));
-                if operation.answer.signature.is_some() {
+                if operation.answer.source_available {
                     let open = Rc::clone(&actions.open_code);
                     let key = operation.answer.key.clone();
-                    actions_row = actions_row.child(button(child(&operation_id, "code"), "Code", &column_m).ghost().size(Control::Small).icon(Icon::Peel)
+                    actions_row = actions_row.child(button(child(&operation_id, "code"), "Code", &column_m).ghost().size(Control::Small).icon(Icon::Peel).disabled(!actions.active)
                         .on_click(move |window, cx| open(key.clone(), window, cx)));
                 }
                 let open = Rc::clone(&actions.open_symbol);
                 let key = operation.answer.key.clone();
-                actions_row = actions_row.child(button(child(&operation_id, "open"), "Explore", &column_m).ghost().size(Control::Small).icon(Icon::Trail)
+                actions_row = actions_row.child(button(child(&operation_id, "open"), "Explore", &column_m).ghost().size(Control::Small).icon(Icon::Trail).disabled(!actions.active)
                     .on_click(move |window, cx| open(key.clone(), window, cx)));
                 column = column.child(actions_row);
             }
@@ -479,7 +479,7 @@ mod tests {
         let scroll = ScrollHandle::new();
         let operations = (0..18).map(|at| Operation { path: None, answer: Answer {
             key: format!("symbol-{at}").into(), name: format!("function_{at:02}").into(), kind: Kind::Function,
-            context: None, reason: "indexed".into(), summary: None, pipe: None, signature: None,
+            context: None, reason: "indexed".into(), summary: None, pipe: None, signature: None, source_available: false,
         }}).collect::<Vec<_>>();
         let candidate = |name: &str| Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None, description: None, facts: vec![],
             operations: Some(operations.clone()), complete: true, coverage: None };
@@ -598,7 +598,7 @@ mod tests {
         Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None, description: None, facts: vec![],
             operations: Some(kinds.iter().enumerate().map(|(at, kind)| Operation { path: None, answer: Answer {
                 key: format!("{name}::{at}").into(), name: "Value".into(), kind: *kind, reason: "indexed".into(), summary: None, pipe: None, signature: None,
-                context: None,
+                context: None, source_available: false,
             }}).collect()), complete, coverage: None }
     }
     #[test]

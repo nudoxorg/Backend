@@ -18,6 +18,7 @@ backend-client = { path = "../../crates/client" }
 backend-engine = { path = "../../crates/engine" }
 backend-local-service = { path = "../../crates/local-service" }
 backend-library = { path = "../../crates/library" }
+backend-platform = { path = "../../crates/platform" }
 backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }

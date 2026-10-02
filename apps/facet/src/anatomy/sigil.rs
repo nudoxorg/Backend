@@ -25,7 +25,10 @@
 use super::page::hue;
 use super::plan::{DeclKind, DropVerb, Fam, PagePlan, Spec};
 use crate::tokens::Palette;
-use gpui::{AnyElement, Bounds, ColorExt, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, point, px};
+use gpui::{
+    AnyElement, App, Bounds, ColorExt, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement,
+    LayoutId, PathBuilder, Pixels, Point, Refineable, Style, StyleRefinement, Styled, Window, point, px,
+};
 
 /// What a sigil draws.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -160,14 +163,48 @@ pub fn weight(size: f32) -> f32 {
 #[must_use]
 pub fn sigil(facts: Sigil, size: f32, palette: &Palette) -> AnyElement {
     let colors = Colors::of(facts.fam, palette);
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| paint(&facts, bounds, size, colors, window),
-    )
-    .w(px(size))
-    .h(px(size))
-    .flex_none()
-    .into_any_element()
+    SigilElement { facts, size, colors, style: StyleRefinement::default() }
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .into_any_element()
+}
+
+struct SigilElement {
+    facts: Sigil,
+    size: f32,
+    colors: Colors,
+    style: StyleRefinement,
+}
+
+impl Styled for SigilElement {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for SigilElement {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for SigilElement {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (facts, size, colors) = (self.facts, self.size, self.colors);
+        style.paint(bounds, window, cx, |window, _| paint(&facts, bounds, size, colors, window));
+    }
 }
 
 /// The inks a sigil is drawn in.

@@ -8,11 +8,11 @@
 //! current effect cycle, and engine results arrive through the actor's wake
 //! task, so nothing here ever needs a frame.
 
-use super::coordinator::{DesktopRuntime, RuntimeEvent};
+use super::coordinator::{DesktopRuntime, RequestOutcome, RuntimeEvent};
 use super::reads::ReadPool;
-use super::store::DataStore;
-use crate::core::{IntentDispatcher, SnapshotReadModel};
-use crate::model::{AppSnapshot, PersistentState};
+use super::store::{DataStore, RouteDependencies, RouteReadLease};
+use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
+use crate::model::{AppSnapshot, ConnectionStatus, PersistentState};
 use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
 use std::collections::BTreeSet;
@@ -26,22 +26,84 @@ pub(crate) enum GraphDestination { Page, Code }
 impl GraphDestination {
     pub(crate) const fn view(self) -> View { match self { Self::Page => View::Page, Self::Code => View::Code } }
 }
+
+#[derive(Default)]
+struct ConnectionProbeLatch {
+    active: Option<ActiveConnectionProbe>,
+}
+
+struct ActiveConnectionProbe {
+    request: crate::navigation::RequestId,
+    previous: ConnectionStatus,
+}
+
+impl ConnectionProbeLatch {
+    fn begin(
+        &mut self,
+        request: crate::navigation::RequestId,
+        previous: ConnectionStatus,
+    ) -> bool {
+        if self.active.is_some() {
+            return false;
+        }
+        self.active = Some(ActiveConnectionProbe { request, previous });
+        true
+    }
+
+    fn finish(
+        &mut self,
+        request: crate::navigation::RequestId,
+        outcome: RequestOutcome,
+    ) -> Option<Intent> {
+        let active = self.active.as_ref()?;
+        if active.request != request {
+            return None;
+        }
+        let previous = active.previous;
+        self.active.take()?;
+        Some(match outcome {
+            RequestOutcome::Succeeded => Intent::ConnectionResult { connected: true },
+            RequestOutcome::Failed => Intent::ConnectionResult { connected: false },
+            RequestOutcome::Cancelled
+            | RequestOutcome::Superseded
+            | RequestOutcome::Refused(_) => Intent::ConnectionProbeAborted {
+                previous,
+            },
+        })
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct GraphViewRequest {
     pub target: GraphDestination,
     pub route: Route,
+    /// Full observation metadata retained for diagnostics.
     pub root: crate::core::VersionedRoot,
+    pub authority: ProducerAuthority,
     pub sequence: u64,
+}
+
+enum QueuedIntent {
+    Plain(Intent),
+    Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
+}
+
+impl QueuedIntent {
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Read { intent, .. } => intent } }
 }
 
 /// The complete UI-thread state owner for one desktop window.
 pub struct UiRootEntity {
     runtime: DesktopRuntime,
-    pending: Vec<Intent>,
+    pending: Vec<QueuedIntent>,
     persistence: Option<PersistentState>,
     first_catalog_route_admitted: bool,
     folder_picker_task: Option<Task<()>>,
-    connection_probe: Option<crate::navigation::RequestId>,
+    connection_probe: ConnectionProbeLatch,
     /// The data plane: snapshot mirror, keyed page resources, read pool.
     store: Option<Entity<DataStore>>,
     /// The one task that drains engine results when the actor wakes it.
@@ -69,11 +131,11 @@ impl UiRootEntity {
             // Startup is itself a typed intent.  The root is admitted before
             // the first useful frame so a cold window never renders a fake
             // catalog or a second, view-owned bootstrap path.
-            pending: vec![Intent::RefreshRoot { basis, request }],
+            pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
             persistence,
             first_catalog_route_admitted: false,
             folder_picker_task: None,
-            connection_probe: None,
+            connection_probe: ConnectionProbeLatch::default(),
             store: None,
             engine_wake: None,
             flush_scheduled: false,
@@ -169,8 +231,13 @@ impl UiRootEntity {
         if pending.is_empty() {
             return;
         }
-        for intent in pending {
-            self.dispatch(intent, cx);
+        for queued in pending {
+            match queued {
+                QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
+                QueuedIntent::Read { intent, lease, sequence } if sequence == self.graph_view_generation
+                    && self.store.as_ref().is_some_and(|store| lease.admits(store.read(cx))) => self.dispatch(intent, cx),
+                QueuedIntent::Read { .. } => {}
+            }
         }
     }
 
@@ -186,7 +253,7 @@ impl UiRootEntity {
             return;
         }
         if self.published.as_ref().is_some_and(|previous| previous.route() != snapshot.route()
-            || previous.key() != snapshot.key() || previous.overlay() != snapshot.overlay()) {
+            || !previous.key().same_authority(snapshot.key()) || previous.overlay() != snapshot.overlay()) {
             self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
         }
         self.published = Some(Arc::clone(&snapshot));
@@ -204,12 +271,43 @@ impl UiRootEntity {
     /// Queues a typed intent; it is reduced at the end of the current effect
     /// cycle, so a burst of intents from one input is one reduction pass.
     pub fn queue(&mut self, intent: Intent, cx: &mut Context<Self>) {
-        self.pending.push(intent);
+        if let Intent::ResolveCargoBrowse { expected, context } = &intent {
+            let Some(dependency) = self.cargo_resolution_dependency(expected, context, cx) else { return; };
+            self.queue_read(intent, dependency, cx);
+            return;
+        }
+        self.pending.push(QueuedIntent::Plain(intent));
         self.schedule_flush(cx);
+    }
+
+    /// A selected current resource must remain admitted when this intent is
+    /// reduced. A competing visit invalidates the existing UI generation.
+    pub(crate) fn queue_read(&mut self, intent: Intent, dependency: (crate::model::pages::PageKey, crate::model::pages::Stamp), cx: &mut Context<Self>) {
+        let Some(store) = &self.store else { return; };
+        let store = store.read(cx);
+        let snapshot = self.snapshot();
+        if snapshot.route() != store.snapshot().route() || snapshot.overlay() != store.snapshot().overlay()
+            || !snapshot.key().same_authority(store.snapshot().key()) { return; }
+        let Some(lease) = RouteReadLease::capture(store, dependency) else { return; };
+        self.pending.push(QueuedIntent::Read { intent, lease, sequence: self.graph_view_generation });
+        self.schedule_flush(cx);
+    }
+
+    fn cargo_resolution_dependency(&self, expected: &crate::navigation::CargoSourceRoute, context: &crate::navigation::CargoBrowseContext, cx: &App) -> Option<(crate::model::pages::PageKey, crate::model::pages::Stamp)> {
+        let snapshot = self.snapshot();
+        if snapshot.route() != &Route::CargoSource(expected.clone()) || expected.resolve_context(context.clone()).is_none() { return None; }
+        let store = self.store.as_ref()?.read(cx);
+        if store.snapshot().route() != snapshot.route() || store.snapshot().overlay() != snapshot.overlay()
+            || !store.snapshot().key().same_authority(snapshot.key()) { return None; }
+        let package = crate::model::pages::PackageRef::parse(expected.package.as_str()).ok()?;
+        let receipt = RouteDependencies::new(snapshot.route(), snapshot.overlay()).current_cargo_package(store, &package)?;
+        (receipt.context() == context).then(|| receipt.native_dependency())
     }
 
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if let Intent::ResolveCargoBrowse { expected, context } = &intent
+            && self.cargo_resolution_dependency(expected, context, cx).is_none() { return; }
         self.reduced = self.reduced.saturating_add(1);
         match intent {
             Intent::SetView(view @ (View::Page | View::Code))
@@ -221,6 +319,7 @@ impl UiRootEntity {
                     target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
                     route: snapshot.route().clone(),
                     root: snapshot.key(),
+                    authority: snapshot.key().authority(),
                     sequence: self.graph_view_generation,
                 });
             }
@@ -240,17 +339,19 @@ impl UiRootEntity {
                 crate::host::editor::open(launch.as_ref(), None, &path, line);
             }
             Intent::TestConnection => {
-                self.dispatch_runtime(Intent::TestConnection, cx);
-                if self.connection_probe.is_none() {
+                if !self.connection_probe.is_active() {
                     let request = self.runtime.allocate_request();
-                    self.connection_probe = Some(request);
-                    self.dispatch_runtime(
-                        Intent::RefreshRoot {
-                            basis: self.snapshot().key(),
-                            request,
-                        },
-                        cx,
-                    );
+                    let previous = self.snapshot().settings().connection;
+                    if self.connection_probe.begin(request, previous) {
+                        self.dispatch_runtime(Intent::TestConnection, cx);
+                        self.dispatch_runtime(
+                            Intent::RefreshRoot {
+                                basis: self.snapshot().key(),
+                                request,
+                            },
+                            cx,
+                        );
+                    }
                 }
             }
             Intent::FolderPickerResult { outcome } => {
@@ -311,6 +412,25 @@ impl UiRootEntity {
         }
         // Packages an earlier launch was still adding are added now.
         super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
+    }
+
+    /// A certified publication for the existing attachment. This advances
+    /// the ordinary current-root path without replaying startup/acquisition.
+    pub(crate) fn renew_owner(
+        &mut self,
+        key: crate::core::VersionedRoot,
+        mode: crate::model::ServiceMode,
+        attachment_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !attachment_changed
+            && self.snapshot().key().same_authority(key)
+            && self.snapshot().settings().service_mode == mode
+        {
+            return;
+        }
+        self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
+        self.refresh_root(cx);
     }
 
     /// Reads the owner's root again: something outside the project lane
@@ -385,7 +505,9 @@ impl UiRootEntity {
     }
 
     fn schedule_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
-        if self.index_intent_pending(&project) {
+        if self.index_intent_pending(&project)
+            || !self.snapshot().workspace().projects.iter().any(|item| item.id == project && item.phase == crate::model::ProjectPhase::Indexing)
+        {
             return;
         }
         let basis = self.snapshot().key();
@@ -401,8 +523,8 @@ impl UiRootEntity {
     }
 
     fn index_intent_pending(&self, project: &crate::core::LocalProjectId) -> bool {
-        self.pending.iter().any(|intent| {
-            matches!(intent, Intent::IndexProject { project: candidate, .. } if candidate == project)
+        self.pending.iter().any(|queued| {
+            matches!(queued.intent(), Intent::IndexProject { project: candidate, .. } if candidate == project)
         })
     }
 
@@ -418,18 +540,12 @@ impl UiRootEntity {
                         let _ = persistence.save(&PersistentState::project(&snapshot));
                     }
                 }
-                RuntimeEvent::RequestCompleted { request, succeeded }
-                    if self.connection_probe == Some(request) =>
-                {
-                    self.connection_probe = None;
-                    self.dispatch_runtime(
-                        Intent::ConnectionResult {
-                            connected: succeeded,
-                        },
-                        cx,
-                    );
+                RuntimeEvent::RequestCompleted { request, outcome } => {
+                    if let Some(intent) = self.connection_probe.finish(request, outcome) {
+                        self.dispatch_runtime(intent, cx);
+                    }
                 }
-                RuntimeEvent::RequestCompleted { .. } | RuntimeEvent::RejectedStale(_) => {}
+                RuntimeEvent::RejectedStale(_) => {}
             }
         }
         self.publish_snapshot(cx);
@@ -464,6 +580,7 @@ impl UiRootEntity {
         self.first_catalog_route_admitted = true;
         self.queue(
             Intent::Navigate(Route::Package(PackageRoute {
+                cargo: None,
                 project: None,
                 package: package.coordinate.clone(),
                 lane: PackageLane::Overview,
@@ -475,6 +592,9 @@ impl UiRootEntity {
     }
 
 }
+
+#[cfg(test)]
+mod cargo_queue_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();
@@ -520,7 +640,9 @@ impl SnapshotReadModel for UiRootEntity {
 
 impl IntentDispatcher for UiRootEntity {
     fn dispatch(&mut self, intent: Intent) {
-        self.pending.push(intent);
+        // This context-free adapter cannot capture a current read receipt.
+        // Read-backed legacy resolution goes through queue/queue_read.
+        if !matches!(intent, Intent::ResolveCargoBrowse { .. }) { self.pending.push(QueuedIntent::Plain(intent)); }
     }
 }
 
@@ -581,5 +703,63 @@ impl UiEntityGraph {
             super::owner::watch(gate, &root, &store, cx);
         }
         Self { root, store }
+    }
+}
+
+#[cfg(test)]
+mod connection_probe_tests {
+    use super::*;
+
+    #[test]
+    fn superseded_probe_retires_once_and_allows_a_later_reconnect() {
+        let mut probe = ConnectionProbeLatch::default();
+        let first = crate::navigation::RequestId::new(701);
+        let second = crate::navigation::RequestId::new(702);
+
+        assert!(probe.begin(first, ConnectionStatus::Disconnected));
+        assert_eq!(
+            probe.finish(crate::navigation::RequestId::new(799), RequestOutcome::Succeeded),
+            None,
+            "an unrelated request terminal cannot release this probe"
+        );
+        assert!(!probe.begin(second, ConnectionStatus::Unknown));
+        assert_eq!(
+            probe.finish(first, RequestOutcome::Superseded),
+            Some(Intent::ConnectionProbeAborted {
+                previous: ConnectionStatus::Disconnected,
+            })
+        );
+        assert_eq!(probe.finish(first, RequestOutcome::Succeeded), None);
+        assert!(!probe.is_active());
+
+        assert!(probe.begin(second, ConnectionStatus::Connected));
+        assert_eq!(
+            probe.finish(second, RequestOutcome::Succeeded),
+            Some(Intent::ConnectionResult { connected: true })
+        );
+        assert!(!probe.is_active());
+    }
+
+    #[test]
+    fn refusal_and_actor_failure_are_not_reported_as_success() {
+        let mut probe = ConnectionProbeLatch::default();
+        let refused = crate::navigation::RequestId::new(703);
+        assert!(probe.begin(refused, ConnectionStatus::Unknown));
+        assert_eq!(
+            probe.finish(
+                refused,
+                RequestOutcome::Refused(super::super::coordinator::RequestRefusalReason::Closed),
+            ),
+            Some(Intent::ConnectionProbeAborted {
+                previous: ConnectionStatus::Unknown,
+            })
+        );
+
+        let failed = crate::navigation::RequestId::new(704);
+        assert!(probe.begin(failed, ConnectionStatus::Unknown));
+        assert_eq!(
+            probe.finish(failed, RequestOutcome::Failed),
+            Some(Intent::ConnectionResult { connected: false })
+        );
     }
 }

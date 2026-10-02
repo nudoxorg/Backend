@@ -11,13 +11,13 @@
 //! held set; it is never stored. A card goes to its page and touches it.
 
 use super::kit::{kind_mark, text};
-use crate::runtime::fixture_world::Card;
+use crate::runtime::hand::Card;
 use facet::motion::presence::{Act, Axis, Entry, Extent};
 use facet::motion::{Keys, Pose, Presence};
 use std::collections::HashMap;
 use super::region::Links;
 use crate::navigation::Intent;
-use crate::runtime::fixture_world::HandView;
+use crate::runtime::hand::HandView;
 use facet::icons::KindSize;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
@@ -104,7 +104,7 @@ impl Marks {
     /// the hand is empty and the last card has gone.
     pub(crate) fn render(
         &mut self,
-        view: &std::rc::Rc<HandView>,
+        view: &std::sync::Arc<HandView>,
         links: &Links,
         measure: &Measure,
         palette: &'static Palette,
@@ -162,7 +162,7 @@ impl Marks {
                 _ => mark,
             };
             let links = links.clone();
-            let view = std::rc::Rc::clone(view);
+            let view = std::sync::Arc::clone(view);
             let mut cell = div().flex().items_center();
             cell = if follows {
                 cell.child(div().w(px(8.0 * scale)).h(px(1.0)).bg(palette.ink4))
@@ -208,12 +208,12 @@ impl Marks {
 }
 
 /// The Row rung: the hand opened, over the foot.
-pub(crate) fn row(view: &std::rc::Rc<HandView>, at: usize, links: &Links, measure: &Measure, palette: &'static Palette) -> AnyElement {
+pub(crate) fn row(view: &std::sync::Arc<HandView>, at: usize, links: &Links, measure: &Measure, palette: &'static Palette) -> AnyElement {
     let scale = measure.scale();
     let card = |n: usize| {
         let held = &view.cards[n];
         let links = links.clone();
-        let view = std::rc::Rc::clone(view);
+        let view = std::sync::Arc::clone(view);
         cut()
             .chamfer(Chamfer::Sm)
             // The card the keyboard stands on wears the focus bevel.
@@ -239,6 +239,13 @@ pub(crate) fn row(view: &std::rc::Rc<HandView>, at: usize, links: &Links, measur
         .flex_col()
         .gap(measure.space(Space::Base))
         .p(measure.space(Space::Roomy));
+    if let Some(status) = &view.status {
+        column = column.child(
+            text(ty::CAPTION, measure, palette.ink2)
+                .keyed("hand-row:status")
+                .child(status.to_string()),
+        );
+    }
     for road in &view.roads {
         let mut line = div().flex().flex_wrap().items_center().gap(px(6.0 * scale));
         for (k, &n) in road.cards.iter().enumerate() {

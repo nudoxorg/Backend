@@ -16,7 +16,7 @@ use crate::glyph::{KindGlyph, LanguageGlyph};
 use crate::identity::{Identity, ProjectRef};
 use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
-use crate::product::ProductView;
+use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, TokenKind};
@@ -204,7 +204,12 @@ pub fn page(page: &Page, theme: Theme) -> String {
     }
     push_prose(&mut lines, page.prose(), theme);
     push_members(&mut lines, page.members(), page.identity().project(), theme);
-    push_relations(&mut lines, page.relations(), page.identity().project(), theme);
+    push_relations(
+        &mut lines,
+        page.relations(),
+        page.identity().project(),
+        theme,
+    );
     push_source(&mut lines, page.source(), theme);
     push_notes(&mut lines, page.notes(), theme);
     lines.finish()
@@ -308,10 +313,7 @@ fn push_relations(
             group.relations().len()
         ));
         for relation in group.relations() {
-            lines.push(format!(
-                "    {}",
-                trail(relation.identity(), within, theme)
-            ));
+            lines.push(format!("    {}", trail(relation.identity(), within, theme)));
             lines.push(format!(
                 "      {}",
                 theme.paint(Style::Coordinate, relation.identity().coordinate().as_str())
@@ -423,7 +425,11 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
     for root in tree.roots() {
         push_outline_entry(&mut lines, root, 0, theme);
     }
-    let mut summary = format!("{} declaration(s) · {}", tree.count(), tree.truncation().name());
+    let mut summary = format!(
+        "{} declaration(s) · {}",
+        tree.count(),
+        tree.truncation().name()
+    );
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
@@ -433,9 +439,10 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
 
 fn push_outline_entry(lines: &mut Lines, entry: &OutlineEntry, depth: usize, theme: Theme) {
     let indent = "  ".repeat(depth.min(16));
-    let glyph = entry
-        .kind()
-        .map_or_else(|| "·".to_owned(), |kind| KindGlyph::new(kind).as_str().to_owned());
+    let glyph = entry.kind().map_or_else(
+        || "·".to_owned(),
+        |kind| KindGlyph::new(kind).as_str().to_owned(),
+    );
     let name = entry.name();
     let painted = if entry.identity().is_some() {
         theme.paint(Style::Name, &name)
@@ -501,27 +508,103 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
     }
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
-        index_search_page_footer(view, &mut lines);
-        return lines.finish();
+        if view.records().is_empty() {
+            index_search_page_footer(view, &mut lines);
+            index_job_footer(view, &mut lines, theme);
+            return lines.finish();
+        }
     }
     if view.records().is_empty() {
         lines.push(theme.paint(Style::Dim, "  no row at this revision"));
         index_search_page_footer(view, &mut lines);
+        index_job_footer(view, &mut lines, theme);
         return lines.finish();
     }
     for record in view.records() {
-        let mut head = format!("{} {}", theme.paint(Style::Ready, "●"), theme.paint(Style::Name, record.title()));
+        let mut head = format!(
+            "{} {}",
+            theme.paint(Style::Ready, "●"),
+            theme.paint(Style::Name, record.title())
+        );
         if !record.tags().is_empty() {
-            let _ = write!(head, "  {}", theme.paint(Style::Dim, &record.tags().join(" · ")));
+            let _ = write!(
+                head,
+                "  {}",
+                theme.paint(Style::Dim, &record.tags().join(" · "))
+            );
         }
         lines.push(head);
         if let Some(operand) = record.operand() {
             lines.push(format!("  {}", theme.paint(Style::Coordinate, operand)));
         }
+        if let Some(status) = record.history_status() {
+            lines.push(format!(
+                "  {}",
+                theme.paint(Style::Dim, &semantic_history_details(status))
+            ));
+        }
     }
     lines.push(theme.paint(Style::Dim, &format!("{} row(s)", view.records().len())));
     index_search_page_footer(view, &mut lines);
+    index_job_footer(view, &mut lines, theme);
     lines.finish()
+}
+
+fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
+    let Some(job) = view.index_job() else {
+        return;
+    };
+    let guidance = match job {
+        IndexJobProjection::Started(backend_library::IndexStartResult::Started { .. }) => {
+            "poll backend.index_progress with the exact ticket shown above (after_sequence 0)"
+        }
+        IndexJobProjection::Started(backend_library::IndexStartResult::Terminal(_))
+        | IndexJobProjection::Terminal(_) => "the owner returned a terminal index receipt",
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(page)) => {
+            lines.push(theme.paint(
+                Style::Dim,
+                &format!(
+                    "  poll backend.index_progress with the exact ticket shown above (after_sequence {})",
+                    page.next_sequence
+                ),
+            ));
+            return;
+        }
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Terminal(_)) => {
+            "the owner returned a terminal index receipt"
+        }
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Unknown {
+            ticket,
+            current_owner_epoch,
+        }) if ticket.owner_epoch() != *current_owner_epoch => {
+            "this ticket belongs to a prior owner process and cannot be resumed here"
+        }
+        IndexJobProjection::Progress(backend_library::IndexJobObservation::Unknown { .. }) => {
+            "this ticket is no longer active or retained by the current owner"
+        }
+        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Requested,
+            ..
+        }) => "cancellation was requested; poll backend.index_progress for its terminal receipt",
+        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Terminal(_),
+            ..
+        }) => "the owner returned a terminal index receipt",
+        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Unknown,
+            ..
+        }) => "no active or retained terminal job matched the cancellation ticket",
+    };
+    lines.push(theme.paint(Style::Dim, &format!("  {guidance}")));
+    if let IndexJobProjection::Cancellation(receipt) = job {
+        lines.push(theme.paint(
+            Style::Dim,
+            &format!(
+                "  cancellation ticket: {}",
+                serde_json::json!(&receipt.ticket)
+            ),
+        ));
+    }
 }
 
 fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
@@ -540,6 +623,14 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         page.result_count()
     ));
     if let Some(cursor) = page.next_cursor() {
-        lines.push(format!("  next cursor (pass --cursor): {cursor}"));
+        let instruction = match page
+            .cursor_projection()
+            .map_or(CursorTarget::CliOption, |projection| projection.target())
+        {
+            CursorTarget::CliOption => "pass --cursor",
+            CursorTarget::McpIndexSearchTool => "pass cursor to backend.index_search",
+            CursorTarget::SurfaceCommand => "set command.cursor in backend.surface",
+        };
+        lines.push(format!("  next cursor ({instruction}): {cursor}"));
     }
 }

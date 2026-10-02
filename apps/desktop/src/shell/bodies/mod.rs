@@ -15,14 +15,17 @@ mod orbit;
 mod package;
 mod settings;
 mod source;
+pub(crate) use source::paging::PagingState;
 mod state;
 mod symbol;
+
+use gpui::Window;
 
 /// How many declaration pages are still reading their lines (the harness
 /// waits for none before a capture).
 
 
-use super::focus::Targets;
+use super::focus::{Act, Targets};
 use super::kit::HoverIntent;
 use super::reader::Reader;
 use super::region::Links;
@@ -30,12 +33,13 @@ use crate::model::AppSnapshot;
 use crate::navigation::{Overlay, Route, View};
 use crate::core::Resource;
 use crate::model::pages::{
-    HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
+    CargoSourceKey, CargoSourcePage, HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
 };
-use crate::runtime::store::DataStore;
-use std::collections::BTreeMap;
+use crate::runtime::store::{DataStore, RouteDependencies};
 use facet::{Measure, Palette, Reveal};
-use gpui::{AnyElement, Context, SharedString};
+use gpui::{AnyElement, Context, FocusHandle, SharedString};
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 /// One block of a page, with its margin note.
 pub(crate) struct Leaf {
@@ -74,6 +78,9 @@ impl Leaf {
 pub(crate) struct Ctx<'a> {
     /// Only the current page publishes shared motion endpoints.
     pub active: bool,
+    /// The current page may claim native input only after its own transition
+    /// and the shell's sampled Ask presentation have both released it.
+    pub native_input_active: bool,
     /// The folio's measure.
     pub measure: Measure,
     /// The margin's measure (the folio's when notes fold under).
@@ -103,6 +110,22 @@ pub(crate) struct Ctx<'a> {
     pub targets: &'a Targets,
     /// Native reading viewport for keyboard-only reveal of a chosen row.
     pub reader_scroll: gpui::ScrollHandle,
+    /// Signal the reader to reveal an explicitly routed source line.
+    pub reader_reveal: std::rc::Rc<std::cell::Cell<bool>>,
+    /// One-time initial focus for the exact arriving place, requested line,
+    /// and source revision. It is deliberately separate from live keyboard
+    /// focus so later user navigation is never pulled back on rerender.
+    pub source_focus_applied: std::rc::Rc<std::cell::Cell<Option<(u64, u32, Option<crate::shell::reader::SourceGeneration>)>>>,
+    /// Exact Reader place whose content this body represents.
+    pub place_key: u64,
+    /// Shell input interruption generation at this body render.
+    pub native_return_interruption: u64,
+    /// Exact indexed-source revision or owner-verified Cargo file digest.
+    pub source_generation: Option<crate::shell::reader::SourceGeneration>,
+    /// Source cursor/history retained by Reader across page body unmounts.
+    pub source_paging: std::rc::Rc<std::cell::RefCell<Option<PagingState>>>,
+    /// Exact tree disclosure and virtual-list scroll state retained across Back.
+    pub library_state: std::rc::Rc<std::cell::RefCell<facet::browse::library::State>>,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.
@@ -120,12 +143,147 @@ pub(crate) struct Ctx<'a> {
     pub arrived_from: Option<crate::model::pages::SymbolRef>,
 }
 
+#[derive(Clone, Copy)]
+enum NativeActionKind { LocalUi, OwnerSnapshot, Resource }
+
 impl Ctx<'_> {
+    /// An action from a drawn control belongs to one Reader visit and one
+    /// owner revision. Retained transition bodies and stale pointer events
+    /// cannot navigate after that visit has been replaced.
+    pub(crate) fn native_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, None, NativeActionKind::Resource, cx)
+    }
+
+    /// A current factory selected a read independent of an optional dossier.
+    pub(crate) fn native_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, Some(dependency), NativeActionKind::Resource, cx)
+    }
+
+    /// A local project or recent route is in the snapshot rather than Orbit
+    /// bytes, but entering it still requires the current owner attachment.
+    pub(crate) fn native_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, None, NativeActionKind::OwnerSnapshot, cx)
+    }
+
+    /// Local setup, recovery and disclosure remain available while the
+    /// indexing owner starts or fails. They still belong to one Reader visit.
+    pub(crate) fn native_local_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, None, NativeActionKind::LocalUi, cx)
+    }
+
+    pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, Some(revision), None, NativeActionKind::Resource, cx)
+    }
+
+    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &mut Context<Reader>) -> Act {
+        let guard = self.native_guard_with_inventory(inventory_revision, selected, kind, cx);
+        std::rc::Rc::new(move |window, app| { if guard(app) { action(window, app); } })
+    }
+
+    pub(crate) fn native_dependency_guard(&self, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
+        self.native_guard_with_inventory(None, Some(dependency), NativeActionKind::Resource, cx)
+    }
+
+    fn native_guard_with_inventory(&self, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
+        let reader = cx.weak_entity();
+        let place = self.place_key;
+        let snapshot = self.links.snapshot(cx);
+        let route = snapshot.route().clone();
+        let overlay = snapshot.overlay();
+        let root = snapshot.key();
+        let source = inventory_revision.is_none().then_some(self.source_generation).flatten();
+        let lease = self.native_lease(&route, overlay, inventory_revision.is_some(), selected, kind, cx);
+        std::rc::Rc::new(move |app| {
+            reader.upgrade().is_some_and(|reader| reader.update(app, |reader, cx| {
+                let admitted = reader.admits_native_visit(place, &route, overlay, root, &lease, source, inventory_revision, cx);
+                if admitted { reader.cancel_native_return(); }
+                admitted
+            }))
+        })
+    }
+
+    fn native_lease(
+        &self,
+        route: &Route,
+        overlay: Option<Overlay>,
+        inventory: bool,
+        selected: Option<(PageKey, crate::model::pages::Stamp)>,
+        kind: NativeActionKind,
+        cx: &Context<Reader>,
+    ) -> super::reader::NativeActionLease {
+        let store = self.links.store.read(cx);
+        match kind {
+            NativeActionKind::LocalUi => super::reader::NativeActionLease::LocalUi,
+            NativeActionKind::OwnerSnapshot => {
+                super::reader::NativeActionLease::OwnerSnapshot(store.current_owner_attachment())
+            }
+            NativeActionKind::Resource => super::reader::NativeActionLease::Resource {
+                attachment: store.current_owner_attachment(),
+                stamp: selected.or_else(|| RouteDependencies::new(route, overlay).native_stamp(store, inventory)),
+            },
+        }
+    }
+
+    pub(crate) fn native_resource_lease(&self, cx: &Context<Reader>) -> super::reader::NativeActionLease {
+        let snapshot = self.links.snapshot(cx);
+        self.native_lease(snapshot.route(), snapshot.overlay(), false, None, NativeActionKind::Resource, cx)
+    }
+
+    /// A mounted facet row supplies the handle; Reader owns whether a later
+    /// deferred transfer is still the settled, current keyboard visit.
+    pub(crate) fn native_return_focus(
+        &self,
+        cx: &mut Context<Reader>,
+    ) -> Rc<
+        dyn Fn(
+            FocusHandle,
+            &mut Window,
+            &mut gpui::App,
+        ) -> facet::browse::library::ReturnDisposition,
+    > {
+        let reader = cx.weak_entity();
+        let place = self.place_key;
+        let snapshot = self.links.snapshot(cx);
+        let route = snapshot.route().clone();
+        let overlay = snapshot.overlay();
+        let root = snapshot.key();
+        let lease = self.native_lease(&route, overlay, false, None, NativeActionKind::Resource, cx);
+        let interruption = self.native_return_interruption;
+        Rc::new(move |focus, window, app| {
+            let Some(reader) = reader.upgrade() else {
+                return facet::browse::library::ReturnDisposition::Invalid;
+            };
+            let result = reader.update(app, |reader, cx| {
+                reader.native_return_disposition(
+                    place,
+                    &route,
+                    overlay,
+                    root,
+                    &lease,
+                    interruption,
+                    window,
+                    cx,
+                )
+            });
+            if result == facet::browse::library::ReturnDisposition::Applied {
+                window.focus(&focus, app);
+            }
+            result
+        })
+    }
+
+    /// Native input for a target in the current, mounted Reader body. The
+    /// Reader's target list remains the single source of walk order/actions.
+    pub(crate) fn native_handle(&self, id: &SharedString, cx: &mut Context<Reader>) -> Option<FocusHandle> {
+        self.active.then(|| self.targets.native_handle(id, cx))
+    }
+
     /// Records a string the body puts on screen.
     /// The one line a page says when its route reads no declaration.
     pub(crate) fn unread(&mut self, unread: &crate::runtime::store::Unread) -> Vec<Leaf> {
         let words = match unread {
             crate::runtime::store::Unread::NotADeclaration => "This page's address is not a declaration.".to_owned(),
+            crate::runtime::store::Unread::CoordinateOutsidePackage => "This declaration does not belong to the package in this address.".to_owned(),
             crate::runtime::store::Unread::ReleaseNotHere(at) => format!(
                 "Release {} is not in this index; only your working copy is. Esc returns to it.",
                 at.as_str()
@@ -172,10 +330,14 @@ impl Lens {
 /// The resources one body reads, taken from the store before building so
 /// the body can hold the reader's context mutably. Cloning a resource
 /// shares its value.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Pages {
+    /// An explicit terminal destination bypasses retained values in its body.
+    terminal_destination: Option<(PageKey, crate::core::ResourceTerminal)>,
+    dependencies: Option<RouteDependencies>,
     symbols: BTreeMap<SymbolRef, Resource<SymbolPage>>,
     sources: BTreeMap<SymbolRef, Resource<SourceView>>,
+    cargo_sources: BTreeMap<CargoSourceKey, Resource<CargoSourcePage>>,
     packages: BTreeMap<PackageRef, Resource<PackageDossier>>,
     orbit: Option<Resource<OrbitModel>>,
     health: Option<Resource<HealthModel>>,
@@ -183,16 +345,33 @@ pub(crate) struct Pages {
 }
 
 impl Pages {
-    /// Takes `keys` from the store.
-    pub(crate) fn gather(store: &DataStore, keys: &[PageKey]) -> Self {
-        let mut pages = Self::default();
-        for key in keys {
+    /// Capture one exact failed key before the renderer can prefer a retained
+    /// value or another still-pending read. Only selected body handles are
+    /// inspected; the shared cache's refresh policy stays unchanged.
+    pub(crate) fn expose_terminal(&mut self) {
+        fn terminal<T>(key: PageKey, resource: &Resource<T>) -> Option<(PageKey, crate::core::ResourceTerminal)> {
+            matches!(resource.terminal(), crate::core::ResourceTerminal::Fault(_) | crate::core::ResourceTerminal::Unavailable(_))
+                .then(|| (key, resource.terminal().clone()))
+        }
+        self.terminal_destination = self.symbols.iter().find_map(|(key, resource)| terminal(PageKey::Symbol(key.clone()), resource))
+            .or_else(|| self.sources.iter().find_map(|(key, resource)| terminal(PageKey::Source(key.clone()), resource)))
+            .or_else(|| self.packages.iter().find_map(|(key, resource)| terminal(PageKey::Package(key.clone()), resource)))
+            .or_else(|| self.orbit.as_ref().and_then(|resource| terminal(PageKey::Orbit, resource)));
+    }
+
+    /// Takes the visible route's complete dependency plan from the store.
+    pub(crate) fn gather(store: &DataStore, dependencies: &RouteDependencies) -> Self {
+        let mut pages = Self { dependencies: Some(dependencies.clone()), ..Self::default() };
+        for key in dependencies.keys() {
             match key {
                 PageKey::Symbol(symbol) => {
                     pages.symbols.insert(symbol.clone(), store.symbol(symbol));
                 }
                 PageKey::Source(symbol) => {
                     pages.sources.insert(symbol.clone(), store.source(symbol));
+                }
+                PageKey::CargoSource(file) => {
+                    pages.cargo_sources.insert(file.clone(), store.cargo_source(file));
                 }
                 PageKey::Package(package) => {
                     pages.packages.insert(package.clone(), store.package(package));
@@ -208,12 +387,22 @@ impl Pages {
         pages
     }
 
+    /// Address dependencies may be retained by a transition; current Cargo
+    /// bytes and their admission still come from the live owner store.
+    fn dependencies(&self) -> Option<&RouteDependencies> {
+        self.dependencies.as_ref()
+    }
+
     pub(crate) fn symbol(&self, symbol: &SymbolRef) -> Resource<SymbolPage> {
         self.symbols.get(symbol).cloned().unwrap_or_else(Resource::not_yet)
     }
 
     pub(crate) fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
         self.sources.get(symbol).cloned().unwrap_or_else(Resource::not_yet)
+    }
+
+    pub(crate) fn cargo_source(&self, file: &CargoSourceKey) -> Resource<CargoSourcePage> {
+        self.cargo_sources.get(file).cloned().unwrap_or_else(Resource::not_yet)
     }
 
     pub(crate) fn package(&self, package: &PackageRef) -> Resource<PackageDossier> {
@@ -241,10 +430,23 @@ pub(crate) fn build(
     store: &Pages,
     ctx: &mut Ctx<'_>,
     hover: &mut HoverIntent,
+    window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
+    if let Some((key, terminal)) = &store.terminal_destination {
+        let shown = match terminal {
+            crate::core::ResourceTerminal::Fault(error) => state::Shown::<()>::Fault(error),
+            crate::core::ResourceTerminal::Unavailable(reason) => state::Shown::Unavailable(reason, None),
+            _ => unreachable!("only terminal faults are captured"),
+        };
+        let what = match key {
+            PageKey::Symbol(symbol) | PageKey::Source(symbol) => symbol.identity().name().to_owned(),
+            _ => key.to_string(),
+        };
+        return state::not_ready(&shown, key, &what, ctx, cx);
+    }
     match overlay {
-        Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, cx),
+        Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, window, cx),
         Some(Overlay::Inbox) => return inbox::body(ctx),
         Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
     }
@@ -252,11 +454,31 @@ pub(crate) fn build(
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
         Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
+        Route::CargoSource(file) => source::cargo_body(file, store, ctx, window, cx),
         Route::Symbol(symbol) => match symbol.view {
             View::Page => symbol::body(route, symbol, store, ctx, hover, cx),
-            View::Code => source::body(route, symbol, store, ctx, cx),
+            View::Code => source::body(route, symbol, store, ctx, window, cx),
             View::Graph => graph::body(route, store, ctx),
         },
         Route::World => graph::body(route, store, ctx),
+    }
+}
+
+#[cfg(test)]
+mod terminal_destination_tests {
+    use super::Pages;
+    use crate::core::{FaultCode, Resource, ResourceTerminal};
+    use crate::model::pages::PageKey;
+
+    #[test]
+    fn a_failed_symbol_exposes_its_fault_before_pending_source_rendering() {
+        let symbol = crate::shell::tests::symbol("RelationLabel");
+        let mut pages = Pages::default();
+        pages.symbols.insert(symbol.clone(), Resource::error(FaultCode::Missing, "declaration revoked"));
+        pages.sources.insert(symbol.clone(), Resource::not_yet().waiting());
+        pages.expose_terminal();
+        let (key, terminal) = pages.terminal_destination.expect("one exact terminal destination");
+        assert_eq!(key, PageKey::Symbol(symbol));
+        assert!(matches!(terminal, ResourceTerminal::Fault(error) if error.message() == "declaration revoked"));
     }
 }

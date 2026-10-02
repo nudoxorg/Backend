@@ -76,6 +76,17 @@ fn assert_facts(
     Err(format!("{}\nextracted:\n  {}", wrong.join("\n"), rows.join("\n  ")).into())
 }
 
+fn signature<'a>(
+    declarations: &'a [SourceDeclaration],
+    name: &str,
+) -> Result<&'a str, Box<dyn Error>> {
+    declarations
+        .iter()
+        .find(|declaration| declaration.name() == name)
+        .map(SourceDeclaration::signature)
+        .ok_or_else(|| std::io::Error::other(format!("no declaration named {name}")).into())
+}
+
 fn documentation<'a>(
     declarations: &'a [SourceDeclaration],
     kind: &str,
@@ -420,4 +431,68 @@ fn cpp_reads_deprecated_attributes_and_pure_virtuals() -> Result<(), Box<dyn Err
             ),
         ],
     )
+}
+
+#[test]
+fn clang_keeps_complete_multiline_signatures_at_ast_boundaries() -> Result<(), Box<dyn Error>> {
+    let c = analyzed(
+        &backend_frontend_clang::syntax_frontend(),
+        "callables.c",
+        r#"
+#include <stddef.h>
+#define BACKEND_LIMIT 32
+
+[[nodiscard]] const char *lookup(
+    const char *key,
+    /* Keep this comment within the declarator source range. */
+    int (*compare)(const char *left, const char *right),
+    void *context
+);
+
+int map_values(
+    int (*callback)(int value),
+    int value
+) {
+    return callback(value);
+}
+"#,
+    )?;
+    assert_eq!(
+        signature(&c, "lookup")?,
+        r#"[[nodiscard]] const char *lookup(
+    const char *key,
+    /* Keep this comment within the declarator source range. */
+    int (*compare)(const char *left, const char *right),
+    void *context
+);"#
+    );
+    assert_eq!(
+        signature(&c, "map_values")?,
+        r#"int map_values(
+    int (*callback)(int value),
+    int value
+)"#
+    );
+
+    let cpp = analyzed(
+        &backend_frontend_clang::syntax_frontend(),
+        "reader.hpp",
+        r#"
+class Reader {
+public:
+    virtual int call(
+        int (*callback)(const char *text),
+        void *context
+    ) const = 0;
+};
+"#,
+    )?;
+    assert_eq!(
+        signature(&cpp, "call")?,
+        r#"virtual int call(
+        int (*callback)(const char *text),
+        void *context
+    ) const = 0;"#
+    );
+    Ok(())
 }

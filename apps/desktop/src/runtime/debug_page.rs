@@ -38,6 +38,7 @@ fn status<T>(resource: &Resource<T>) -> String {
     };
     let terminal = match resource.terminal() {
         ResourceTerminal::Complete => "complete".to_owned(),
+        ResourceTerminal::Partial => "partial".to_owned(),
         ResourceTerminal::Unavailable(reason) => format!("unavailable({reason:?})"),
         ResourceTerminal::Fault(error) => format!("fault({:?}: {})", error.code(), error.message()),
     };
@@ -271,6 +272,22 @@ pub fn package_text(dossier: &PackageDossier) -> String {
     let _ = writeln!(out, "  dependents: {}", known(&dossier.dependents, |dependents| {
         format!("{} packages", dependents.len())
     }));
+    if !dossier.observed_dependents.is_empty()
+        || dossier
+            .dependents
+            .gap()
+            .is_some_and(|gap| gap.reason == crate::model::pages::GapReason::Unknown)
+    {
+        let _ = writeln!(
+            out,
+            "  observed dependents: {} rows{}",
+            dossier.observed_dependents.len(),
+            dossier
+                .dependents
+                .gap()
+                .map_or_else(String::new, |gap| format!(" · incomplete: {}", gap.detail)),
+        );
+    }
     let _ = writeln!(out, "  readme: {}", known(&dossier.readme, |blocks| format!("{} blocks", blocks.len())));
     match &dossier.outline {
         Known::Known(tree) => {
@@ -319,7 +336,7 @@ pub fn source_text(view: &SourceView) -> String {
             .take(24)
             .map(|span| {
                 let word = text
-                    .and_then(|text| text.text.get(span.span.range()))
+                    .and_then(|text| text.text().get(span.span.range()))
                     .unwrap_or("?");
                 format!("{word}@{}→{}", span.span.start, span.link.target)
             })
@@ -330,9 +347,9 @@ pub fn source_text(view: &SourceView) -> String {
     let _ = writeln!(out, "  uses elsewhere: {}", view.uses_elsewhere.len());
     match &view.text {
         Known::Known(text) => {
-            let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line);
-            for (offset, line) in text.text.lines().enumerate().take(40) {
-                let _ = writeln!(out, "    {:>5} │ {line}", text.first_line as usize + offset);
+            let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line());
+            for (offset, line) in text.text().lines().enumerate().take(40) {
+                let _ = writeln!(out, "    {:>5} │ {line}", text.first_line() as usize + offset);
             }
         }
         Known::Unknown(missing) => {
@@ -445,6 +462,9 @@ pub fn render_text(store: &DataStore) -> String {
         let text = match &key {
             PageKey::Symbol(symbol) => section(&store.symbol(symbol), symbol_text),
             PageKey::Source(symbol) => section(&store.source(symbol), source_text),
+            PageKey::CargoSource(file) => section(&store.cargo_source(file), |page| {
+                format!("{} · {} bytes · no indexed symbol links", page.file.as_str(), page.source.text().len())
+            }),
             PageKey::Package(package) => section(&store.package(package), package_text),
             PageKey::Search(query) => section(&store.search(query), search_text),
             PageKey::Orbit => section(&store.orbit(), orbit_text),

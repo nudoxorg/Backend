@@ -1078,6 +1078,17 @@ pub mod fluid {
     /// as the window grows (a sheet across the window below 640).
     pub const ASK_PANEL: Length = Length::new(&[stop(640.0, 320.0), stop(1440.0, 440.0)]);
 
+    /// Clear space between the Ask panel and a visible Reader preview.
+    pub const ASK_PREVIEW_GAP: Length = Length::new(&[stop(320.0, 16.0), stop(2560.0, 16.0)]);
+
+    /// Minimum readable Reader content beside Ask, after the outer gutter;
+    /// when it cannot fit, Ask becomes a full sheet.
+    pub const ASK_PREVIEW_MIN: Length = Length::new(&[stop(320.0, 320.0), stop(2560.0, 320.0)]);
+
+    /// Extra readable room needed to enter panel mode after a sheet; a
+    /// panel exits as soon as the minimum itself is lost.
+    pub const ASK_PREVIEW_HYSTERESIS: Length = Length::new(&[stop(320.0, 24.0), stop(2560.0, 24.0)]);
+
     /// How a page sets its detail against its list.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub enum Split {

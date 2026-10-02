@@ -13,14 +13,14 @@ use crate::core::LocalProjectId;
 use crate::model::{ProjectPhase, WorkspaceProject};
 use super::commands::{ProjectCommand, Weight};
 use crate::shell::bodies::{Ctx, Leaf};
-use crate::shell::focus::{Act, Target};
+use crate::shell::focus::{Act, Target, native_control};
 use crate::shell::kit::text;
 use crate::shell::reader::Reader;
 use facet::controls::button;
 use facet::icons::{Icon, IconSize, ui};
 use facet::tokens::ty;
 use facet::Space;
-use gpui::{BorrowAppContext as _, Context, Global, InteractiveElement as _, IntoElement as _, ParentElement, StatefulInteractiveElement as _, Styled, div, px};
+use gpui::{BorrowAppContext as _, Context, Global, InteractiveElement as _, IntoElement as _, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -106,7 +106,7 @@ impl Global for Disclosed {}
 pub(crate) fn stopped(projects: &[WorkspaceProject], ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<Leaf> {
     let cards: Vec<_> = projects
         .iter()
-        .filter(|project| matches!(project.phase, ProjectPhase::Failed | ProjectPhase::Cancelled | ProjectPhase::Missing))
+        .filter(|project| matches!(project.phase, ProjectPhase::Failed | ProjectPhase::Cancelled | ProjectPhase::Missing | ProjectPhase::Unconfirmed))
         .collect();
     if cards.is_empty() {
         return None;
@@ -127,6 +127,11 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             (format!("{} stopped.", project.label), Cause::of(owner).says(), (!owner.is_empty()).then(|| owner.to_owned()))
         }
         ProjectPhase::Cancelled => (format!("{} is paused.", project.label), vec!["Its index was stopped before it finished.".to_owned()], None),
+        ProjectPhase::Unconfirmed => (
+            format!("{} may still be indexing.", project.label),
+            vec![project.error.as_deref().unwrap_or("The owner's answer was lost. A new index request is held until this attempt can be checked.").to_owned()],
+            None,
+        ),
         _ => (
             format!("{} is not where it was.", project.label),
             vec![format!("Nudox looked for it at {}.", project.path)],
@@ -150,7 +155,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
     let id = project.id.clone();
     let mut actions = div().flex().flex_wrap().justify_center().gap(measure.space(Space::Base)).pt(measure.space(Space::Snug));
     for command in ProjectCommand::for_phase(project.phase, false).into_iter().filter(|command| *command != ProjectCommand::Activate) {
-        actions = actions.child(act(ctx, format!("{command:?}-{}", project.path).to_lowercase(), command, &id));
+        actions = actions.child(act(ctx, format!("{command:?}-{}", project.path).to_lowercase(), command, &id, cx));
     }
     stack = stack.child(actions);
     if let Some(words) = owner_words {
@@ -167,20 +172,21 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             });
             reader.update(cx, |_, cx| cx.notify());
         });
+        let act = ctx.native_local_action(act, cx);
         ctx.targets.push(Target { id: door.clone().into(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
+        let focus = ctx.native_handle(&SharedString::from(door.clone()), cx);
+        let face = native_control(door.clone().into(), label.clone(), gpui::Role::Button, focus, Rc::clone(&act))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .min_h(px(24.0 * measure.scale()))
+            .px(measure.space(Space::Roomy))
+            .hover(|style| style.bg(palette.tint))
+            .child(text(ty::SMALL, &measure, palette.ink2).child(label));
         stack = stack.child(ctx.targets.track(
             door.clone(),
-            div()
-                .id(gpui::SharedString::from(door))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .min_h(px(24.0 * measure.scale()))
-                .px(measure.space(Space::Roomy))
-                .hover(|style| style.bg(palette.tint))
-                .child(text(ty::SMALL, &measure, palette.ink2).child(label))
-                .on_click(move |_, window, cx| act(window, cx)),
+            face,
         ));
         if shown {
             let words = ctx.say(words);
@@ -198,18 +204,21 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
 
 /// One button that dispatches the command's intent for `project`, and the
 /// keyboard's way to it.
-fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalProjectId) -> gpui::AnyElement {
+fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalProjectId, cx: &mut Context<Reader>) -> gpui::AnyElement {
     let links = ctx.links.clone();
     let intent = command.intent(project);
     let act: Act = Rc::new(move |_, cx| links.dispatch(intent.clone(), cx));
+    let act = ctx.native_local_action(act, cx);
     ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), act: Rc::clone(&act), peek: None, source: None });
+    let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
     let control = button(gpui::SharedString::from(id.clone()), command.label(), &ctx.measure).on_click(move |window, cx| act(window, cx));
-    let control = match command.weight() {
+    let mut control = match command.weight() {
         Weight::Primary => control.primary(),
         Weight::Plain => control.ghost(),
         Weight::Danger => control.danger().ghost(),
     };
-    ctx.targets.track(id, control).into_any_element()
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
+    ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)).into_any_element()
 }
 
 #[cfg(test)]

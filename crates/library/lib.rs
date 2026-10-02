@@ -19,6 +19,8 @@ mod arrangement;
 pub mod browse;
 pub mod canonical;
 mod capability;
+mod cargo_profile;
+mod cargo_source;
 mod catalog;
 mod command;
 mod command_registry;
@@ -81,6 +83,33 @@ pub use capability::{
     LanguageOracleTask, MAX_CAPABILITY_INVENTORY, PackageAuthorityIdentity,
     compiler_authority_recipe, embedding_authority_recipe,
 };
+pub use cargo_profile::{
+    MAX_RUST_CARGO_DEPENDENCY_EDGES, MAX_RUST_CARGO_FEATURE_EDGES,
+    MAX_RUST_CARGO_METADATA_TEXT_BYTES, MAX_RUST_CARGO_PROFILE_FEATURES,
+    MAX_RUST_CARGO_RESOLVED_PACKAGES, MAX_RUST_CARGO_TARGETS, MAX_RUST_CARGO_WORKSPACE_PACKAGES,
+    RustCargoBuildProfileV1, RustCargoDependencyKindFactV1, RustCargoFactsAdmissionError,
+    RustCargoFeatureFactV1, RustCargoFeatureSelectionV1, RustCargoProfileRequestError,
+    RustCargoProfileSelectionV1, RustCargoResolvedDependencyFactV1, RustCargoResolvedPackageFactV1,
+    RustCargoTargetFactV1, RustCargoWorkspaceFactsV1, RustCargoWorkspacePackageFactV1,
+};
+pub use cargo_source::{
+    CARGO_PACKAGE_SOURCE_AUTHORITY_SCHEMA, CargoPackageReadmeAbsenceV1,
+    CargoPackageReadmeFailureV1, CargoPackageReadmeLinkFailureV1, CargoPackageReadmeLinkRequestV1,
+    CargoPackageReadmeLinkResultV1, CargoPackageReadmeLinkTargetV1, CargoPackageReadmeManifestV1,
+    CargoPackageReadmeOriginV1, CargoPackageReadmeRequestV1, CargoPackageReadmeResultV1,
+    CargoPackageReadmeRootScopeV1, CargoPackageReadmeSelectionV1, CargoPackageReadmeV1,
+    CargoPackageRootIdentityV1, CargoPackageSourceAuthorityFailureV1,
+    CargoPackageSourceAuthorityStateV1, CargoPackageSourceAuthorityV1,
+    CargoPackageSourceFileResultV1, CargoPackageSourceInventoryCoverageV1,
+    CargoPackageSourceInventoryFailureV1, CargoPackageSourceInventoryGapV1,
+    CargoPackageSourceInventoryResultV1, CargoPackageSourceInventoryV1, CargoPackageSourcePathV1,
+    CargoPackageSourceReadFailureV1, CargoPackageSourceRequestV1,
+    CargoPackageSourceSemanticStatusV1, CargoPackageSourceV1, CargoRegistrySourceSchemeV1,
+    MAX_CARGO_PACKAGE_README_BYTES, MAX_CARGO_PACKAGE_README_LINK_BYTES,
+    MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS,
+    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES,
+    MAX_CARGO_SOURCE_COORDINATE_BYTES, MAX_CARGO_SOURCE_DETAIL_BYTES,
+};
 pub use catalog::{Library, RankedSearchSnapshot};
 pub use command::ReferenceFact;
 pub use command::{
@@ -135,10 +164,10 @@ pub use registry_forge::{
     RegistryForgeSourceIdentity,
 };
 pub use registry_native::{
-    MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, MAX_REGISTRY_NATIVE_TEXT_BYTES,
-    REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata, RegistryConanMetadata,
-    RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract, RegistryGoSourceFacts,
-    RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,
+    CargoPublishTime, MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS,
+    MAX_REGISTRY_NATIVE_TEXT_BYTES, REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata,
+    RegistryConanMetadata, RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract,
+    RegistryGoSourceFacts, RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,
     RegistryNativeArtifactKind, RegistryNativeAvailability, RegistryNativeChecksum,
     RegistryNativeChecksumAlgorithm, RegistryNativeDetails, RegistryNativeDistTag,
     RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
@@ -157,21 +186,26 @@ pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
     ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,
     ForgePackageRecord, ForgePackageRegistryEvidence, ForgeRepositoryMetadataRecord,
-    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, MAX_INDEX_SEARCH_CURSOR_BYTES,
-    MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES, PackageCoordinate, PackageReference,
-    ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
-    ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
-    RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
-    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
-    RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
-    RegistryPackageFactAuthority, RegistryPackageFactCompleteness, RegistryPackageFactFreshness,
-    RegistryPackageFactProof, RegistryPackageRecord, RegistryPackageSearchGroup,
-    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
-    RegistrySearchRelease, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
-    SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,
-    SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionFreshness,
-    SemanticVersionRecord, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeId,
-    TreeNodeRecord, TreeOpener, TreeSubject,
+    IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
+    IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal, IndexJobTicket,
+    IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
+    IndexStartResult, MAX_INDEX_PROGRESS_EVENTS, MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS,
+    MAX_PRODUCT_TEXT_BYTES, PackageCoordinate, PackageReference, ProductAdmissionError,
+    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord,
+    RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
+    RegistryDiscoveryFreshness, RegistryDiscoveryMetadata, RegistryDiscoveryStanding,
+    RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet, RegistryFactAvailability,
+    RegistryMetadata, RegistryNegativeFactKind, RegistryPackageFactAuthority,
+    RegistryPackageFactCompleteness, RegistryPackageFactFreshness, RegistryPackageFactProof,
+    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
+    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
+    ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity, SemanticGenerationId,
+    SemanticHistoryImageIdentity, SemanticHistoryInputReplayStatus,
+    SemanticHistoryPublicationProof, SemanticHistoryPublicationStatus,
+    SemanticHistorySelectionStamp, SemanticLanguageProfile, SemanticLinkDelta,
+    SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan,
+    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceCommand,
+    SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
 };
 pub use view::{
     Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,

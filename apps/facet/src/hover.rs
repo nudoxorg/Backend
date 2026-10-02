@@ -13,7 +13,9 @@
 //! - **At 350 ms** a peek unfurls from the target (the float layer's hover
 //!   intent) and leaves the way it came.
 //! - Nothing tweens: colour and stroke steps are instant.
-//! - Keyboard focus lights exactly like the pointer ([`focus`]).
+//! - Keyboard focus lights exactly like the pointer ([`focus`]). Each window
+//!   retains both source targets: the latest input source takes the light,
+//!   and the other resumes when it leaves.
 //! - The pointer's target lets go when the pointer leaves the window, when
 //!   the content moves out from under a still pointer, and on navigation
 //!   ([`clear`]); a focus target stays until focus moves.
@@ -32,8 +34,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, Tone};
 use gpui::{
     AnyElement, App, Bounds, ColorExt, ElementId, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
-    WindowId, fill, point, px, size,
+    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString,
+    Subscription, Window, WindowId, fill, point, px, size,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -48,6 +50,38 @@ impl Subject {
     /// A subject named by `address`.
     pub fn new(address: impl Into<SharedString>) -> Self {
         Self(address.into())
+    }
+}
+
+/// The identity shared by a pointer hoverable and its semantic keyboard
+/// target. Build the hoverable from this value and pass the same value to the
+/// shell's target registration; Facet never guesses keyboard focus from the
+/// pointer or layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusTarget {
+    id: ElementId,
+    subject: Subject,
+}
+
+impl FocusTarget {
+    /// The identity for a custom hoverable whose pointer and keyboard target
+    /// are maintained outside [`Hoverable`]. Prefer [`hoverable_target`] when
+    /// both inputs use the standard hover element.
+    #[must_use]
+    pub fn new(id: impl Into<ElementId>, subject: Subject) -> Self {
+        Self { id: id.into(), subject }
+    }
+
+    /// The stable element id shared with the pointer hit target.
+    #[must_use]
+    pub fn id(&self) -> &ElementId {
+        &self.id
+    }
+
+    /// The semantic identity shared with related hoverables.
+    #[must_use]
+    pub fn subject(&self) -> &Subject {
+        &self.subject
     }
 }
 
@@ -71,6 +105,49 @@ impl Lit {
     }
 }
 
+/// Which input source currently owns a hover treatment. A semantic focus
+/// change wins over the pointer position remembered before it; the pointer
+/// takes over again after its next actual move.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum InteractionMode {
+    /// The remembered pointer hit may light its target.
+    Pointer,
+    /// The current semantic target overrides a stale pointer hit.
+    Keyboard,
+}
+
+/// The current interaction mode for a component whose keyboard target is
+/// `rest` and whose last pointer event observed `observed_rest`.
+#[must_use]
+pub fn interaction_mode<T: PartialEq>(observed_rest: Option<&T>, rest: Option<&T>) -> InteractionMode {
+    if observed_rest == rest { InteractionMode::Pointer } else { InteractionMode::Keyboard }
+}
+
+/// Chooses the target lit by pointer or semantic keyboard focus using the
+/// shared modality rule. Components store `observed_rest` with pointer state
+/// and refresh it on a genuine pointer move.
+#[must_use]
+pub fn visible_target<T: Copy + PartialEq>(pointer: Option<T>, observed_rest: Option<T>, rest: Option<T>) -> Option<T> {
+    visible_target_by(pointer, observed_rest.as_ref(), rest.as_ref(), rest)
+}
+
+/// Chooses a painted target using a separate identity for the keyboard and
+/// pointer observations. This is useful when the painted target is an index
+/// into a changing snapshot: compare its stable semantic identity, then return
+/// the current index.
+#[must_use]
+pub fn visible_target_by<T: Copy, I: PartialEq>(
+    pointer: Option<T>,
+    observed_rest: Option<&I>,
+    rest_identity: Option<&I>,
+    rest_target: Option<T>,
+) -> Option<T> {
+    match interaction_mode(observed_rest, rest_identity) {
+        InteractionMode::Pointer => pointer.or(rest_target),
+        InteractionMode::Keyboard => rest_target,
+    }
+}
+
 /// The hit shape the target's bevel is drawn on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Shape {
@@ -83,60 +160,105 @@ pub enum Shape {
     Diamond,
 }
 
-/// What made an element the target: the pointer over it, or keyboard focus
-/// on it. The pointer's target follows the pointer (it lets go when the
-/// element moves out from under a still pointer); a focus target stays
-/// until focus moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Source {
-    /// The pointer is over it.
-    Pointer,
-    /// Keyboard focus is on it.
-    Keyboard,
-}
-
 /// The element lit as the target, its subject and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Held {
     id: ElementId,
     subject: Subject,
-    source: Source,
 }
 
-/// The per-window hover field: which element is the target, and its
-/// subject.
+/// The active target and both input sources belong to one window. Keeping the
+/// inactive source lets keyboard focus and the pointer yield to one another
+/// without losing the target that should resume when the other leaves.
+#[derive(Default)]
+struct WindowField {
+    pointer: Option<Held>,
+    keyboard: Option<Held>,
+    active: Option<InteractionMode>,
+}
+
+impl WindowField {
+    fn held(&self) -> Option<Held> {
+        let value = match self.active {
+            Some(InteractionMode::Pointer) => self.pointer.as_ref().or(self.keyboard.as_ref()),
+            Some(InteractionMode::Keyboard) => self.keyboard.as_ref().or(self.pointer.as_ref()),
+            None => self.keyboard.as_ref().or(self.pointer.as_ref()),
+        };
+        value.cloned()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pointer.is_none() && self.keyboard.is_none()
+    }
+}
+
+/// The per-window hover field. Each window retains its own pointer and
+/// keyboard targets; no window can light another window's target.
 #[derive(Default)]
 struct Field {
-    windows: HashMap<WindowId, Held>,
+    windows: HashMap<WindowId, WindowField>,
+    /// One app-lifetime observer removes each closed window's last target.
+    /// The callback only receives an App when invoked; it captures no global
+    /// or entity, so this subscription does not keep the app's state alive.
+    window_closed: Option<Subscription>,
 }
 
 impl Global for Field {}
 
+/// Installs one app-wide cleanup observer before the first window target is
+/// recorded. Keeping it on the global makes the observer's lifetime match
+/// the `Field`; the callback itself owns no `Field` reference.
+fn watch_window_closes(cx: &mut App) {
+    if cx.default_global::<Field>().window_closed.is_some() {
+        return;
+    }
+
+    let subscription = cx.on_window_closed(|cx, id| {
+        cx.default_global::<Field>().windows.remove(&id);
+    });
+    cx.default_global::<Field>().window_closed = Some(subscription);
+}
+
 fn held(window: &Window, cx: &App) -> Option<Held> {
     cx.try_global::<Field>()
-        .and_then(|field| field.windows.get(&window.window_handle().window_id()).cloned())
+        .and_then(|field| field.windows.get(&window.window_handle().window_id()).and_then(WindowField::held))
+}
+
+fn pointer_held(window: &Window, cx: &App) -> Option<Held> {
+    cx.try_global::<Field>()
+        .and_then(|field| field.windows.get(&window.window_handle().window_id()).and_then(|state| state.pointer.clone()))
 }
 
 fn target(window: &Window, cx: &App) -> Option<(ElementId, Subject)> {
     held(window, cx).map(|held| (held.id, held.subject))
 }
 
-fn set_target(value: Option<Held>, window: &mut Window, cx: &mut App) {
+fn set_pointer(value: Option<Held>, window: &mut Window, cx: &mut App) {
+    watch_window_closes(cx);
     let id = window.window_handle().window_id();
     let field = cx.default_global::<Field>();
-    let changed = match &value {
-        Some(value) => field.windows.get(&id) != Some(value),
-        None => field.windows.contains_key(&id),
+    let before = field.windows.get(&id).and_then(WindowField::held);
+    let (after, empty) = {
+        let state = field.windows.entry(id).or_default();
+        match value {
+            Some(value) => {
+                state.pointer = Some(value);
+                state.active = Some(InteractionMode::Pointer);
+            }
+            None => {
+                state.pointer = None;
+                if state.active == Some(InteractionMode::Pointer) {
+                    state.active = state.keyboard.as_ref().map(|_| InteractionMode::Keyboard);
+                }
+            }
+        }
+        (state.held(), state.is_empty())
     };
-    if !changed {
-        return;
+    if empty { field.windows.remove(&id); }
+    if before != after {
+        // Answer in the same frame the input arrived in.
+        window.refresh();
     }
-    match value {
-        Some(value) => field.windows.insert(id, value),
-        None => field.windows.remove(&id),
-    };
-    // Answer in the same frame the input arrived in.
-    window.refresh();
 }
 
 /// Lets go of the target, whatever holds it: the page under the pointer
@@ -144,7 +266,10 @@ fn set_target(value: Option<Held>, window: &mut Window, cx: &mut App) {
 /// [`float::close_all`] calls this, and the shell calls that on every
 /// navigation.
 pub fn clear(window: &mut Window, cx: &mut App) {
-    set_target(None, window, cx);
+    let id = window.window_handle().window_id();
+    if cx.default_global::<Field>().windows.remove(&id).is_some() {
+        window.refresh();
+    }
 }
 
 /// The subject of whatever is the target now (the pointer's or keyboard
@@ -175,14 +300,38 @@ pub fn lit(subject: &Subject, window: &Window, cx: &App) -> Lit {
     }
 }
 
-/// Keyboard focus lights like the pointer: `Some` makes `id` the target,
-/// `None` clears it (only if `id` holds it).
-pub fn focus(target: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut App) {
-    set_target(
-        target.map(|(id, subject)| Held { id, subject, source: Source::Keyboard }),
-        window,
-        cx,
-    );
+/// Keyboard focus lights like the pointer. Each window retains its last
+/// pointer hit independently, so clearing focus restores that target when it
+/// still lies under the pointer. A repeated synchronization of the same focus
+/// target does not steal the light from a more recent pointer move.
+pub fn focus(target: Option<FocusTarget>, window: &mut Window, cx: &mut App) {
+    watch_window_closes(cx);
+    let id = window.window_handle().window_id();
+    let field = cx.default_global::<Field>();
+    let before = field.windows.get(&id).and_then(WindowField::held);
+    let (after, empty) = {
+        let state = field.windows.entry(id).or_default();
+        match target {
+            Some(target) => {
+                let target = Held { id: target.id, subject: target.subject };
+                // The shell mirrors its focus target every layout pass. Only
+                // a real focus change takes precedence over a recent pointer.
+                if state.keyboard.as_ref() != Some(&target) {
+                    state.keyboard = Some(target);
+                    state.active = Some(InteractionMode::Keyboard);
+                }
+            }
+            None => {
+                state.keyboard = None;
+                if state.active == Some(InteractionMode::Keyboard) {
+                    state.active = state.pointer.as_ref().map(|_| InteractionMode::Pointer);
+                }
+            }
+        }
+        (state.held(), state.is_empty())
+    };
+    if empty { field.windows.remove(&id); }
+    if before != after { window.refresh(); }
 }
 
 /// The ink a hoverable's text takes: one step up the ink ramp when lit
@@ -219,9 +368,19 @@ pub fn hoverable(
     hue: Hsla,
     build: impl FnOnce(Lit) -> AnyElement + 'static,
 ) -> Hoverable {
+    hoverable_target(FocusTarget::new(id, subject), hue, build)
+}
+
+/// A hoverable built from the exact identity the shell can register as its
+/// semantic keyboard target. Keeping the identity in one value prevents the
+/// pointer id or subject from drifting away from the shell's focus mirror.
+pub fn hoverable_target(
+    target: FocusTarget,
+    hue: Hsla,
+    build: impl FnOnce(Lit) -> AnyElement + 'static,
+) -> Hoverable {
     Hoverable {
-        id: id.into(),
-        subject,
+        target,
         hue,
         shape: Shape::Rect,
         build: Some(Box::new(build)),
@@ -233,8 +392,7 @@ pub fn hoverable(
 
 /// See [`hoverable`].
 pub struct Hoverable {
-    id: ElementId,
-    subject: Subject,
+    target: FocusTarget,
     hue: Hsla,
     shape: Shape,
     build: Option<Box<dyn FnOnce(Lit) -> AnyElement>>,
@@ -292,12 +450,12 @@ impl gpui::Element for Hoverable {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        self.lit = lit_as(&self.id, &self.subject, window, cx);
+        self.lit = lit_as(&self.target.id, &self.target.subject, window, cx);
         let built = self.build.take().map_or_else(|| gpui::Empty.into_any_element(), |build| build(self.lit));
         let mut child = match &self.peek {
             Some(request) => {
                 let request = Rc::clone(request);
-                float::trigger(self.id.clone(), move |bounds| request(bounds), built).into_any_element()
+                float::trigger(self.target.id.clone(), move |bounds| request(bounds), built).into_any_element()
             }
             None => built,
         };
@@ -348,13 +506,13 @@ impl gpui::Element for Hoverable {
         let Some(hitbox) = hitbox.clone() else {
             return;
         };
-        let (id, subject) = (self.id.clone(), self.subject.clone());
+        let (id, subject) = (self.target.id.clone(), self.target.subject.clone());
         // The pointer is still but the content moved (a scroll, a reflow, a
         // page that changed): the target follows the layout, not the last move.
-        if held(window, cx).is_some_and(|held| held.id == id && held.source == Source::Pointer)
+        if pointer_held(window, cx).is_some_and(|held| held.id == id)
             && !hitbox.is_hovered(window)
         {
-            set_target(None, window, cx);
+            set_pointer(None, window, cx);
         }
         window.on_mouse_event({
             let (id, subject) = (id.clone(), subject.clone());
@@ -363,12 +521,11 @@ impl gpui::Element for Hoverable {
                     return;
                 }
                 let hovered = hitbox.is_hovered(window);
-                let holds = target(window, cx).is_some_and(|(held, _)| held == id);
-                if hovered && !holds {
-                    let held = Held { id: id.clone(), subject: subject.clone(), source: Source::Pointer };
-                    set_target(Some(held), window, cx);
-                } else if !hovered && holds {
-                    set_target(None, window, cx);
+                if hovered {
+                    let held = Held { id: id.clone(), subject: subject.clone() };
+                    set_pointer(Some(held), window, cx);
+                } else if pointer_held(window, cx).is_some_and(|held| held.id == id) {
+                    set_pointer(None, window, cx);
                 }
             }
         });
@@ -377,9 +534,9 @@ impl gpui::Element for Hoverable {
         // pointer held stays lit for ever otherwise.
         window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
             if phase == gpui::DispatchPhase::Bubble
-                && held(window, cx).is_some_and(|held| held.id == id && held.source == Source::Pointer)
+                && pointer_held(window, cx).is_some_and(|held| held.id == id)
             {
-                set_target(None, window, cx);
+                set_pointer(None, window, cx);
             }
         });
         let _ = cx.facet();

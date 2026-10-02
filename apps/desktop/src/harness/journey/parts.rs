@@ -230,7 +230,8 @@ fn locked_version(root: &Path, name: &str) -> Result<String, String> {
 /// # Errors
 /// The release is not unpacked in the cache.
 pub fn registry_source(release: &CrateRelease) -> Result<PathBuf, String> {
-    super::super::registry_source(&release.stem())
+    let cache = super::super::cargo_cache()?;
+    super::super::registry_source(&cache, &release.stem())
 }
 
 /// A part: its name, parameters, where it is written, and its body lines.

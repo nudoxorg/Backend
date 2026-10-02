@@ -78,10 +78,18 @@ let
       )
   );
   optionalEnv = pkgs.lib.optionalAttrs (tools.typescriptChecker != null) {
+    NUDOX_TYPESCRIPT_REPORT_PROGRAM = "${tools.typescriptChecker}/bin/nudox-typescript-checker";
+    # Standalone frontend tests still invoke the same pinned report producer
+    # through this adapter name. LocalHost uses the typed alias above.
     NUDOX_TYPESCRIPT_CHECKER_BIN = "${tools.typescriptChecker}/bin/nudox-typescript-checker";
   };
   optionalOracleEnv = pkgs.lib.optionalAttrs (tools.goOracle != null) {
+    NUDOX_GO_ORACLE = "${tools.goOracle}/bin/oracle";
+    # The standalone frontend still uses this compatibility name.
     NUDOX_GO_ORACLE_BIN = "${tools.goOracle}/bin/oracle";
+  };
+  optionalRoslynEnv = pkgs.lib.optionalAttrs (tools.roslynHelper != null) {
+    NUDOX_ROSLYN_HELPER = "${tools.roslynHelper}/lib/nudox-roslyn-helper/oracle.dll";
   };
   # Real package sources for the seven-language corpus. Every value names a
   # pinned store path built by `.config/nix/corpus.nix`; absent when this
@@ -117,7 +125,6 @@ in
   COMPILER_TYPESCRIPT_COMPILER = "${compilers.typescript}/bin/tsc";
   LIBCLANG_PATH = "${compilers.libclang.lib}/lib";
   NUDOX_CLANG = "${compilers.clang}/bin/clang";
-  NUDOX_CLANG_DRIVER = "${compilers.clang}/bin/clang";
   NUDOX_CSHARP_DOTNET = "${compilers.dotnet}/bin/dotnet";
   NUDOX_DOTNET = "${compilers.dotnet}/bin/dotnet";
   NUDOX_GO = "${compilers.go}/bin/go";
@@ -126,6 +133,7 @@ in
   NUDOX_PYREFLY = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYREFLY_BIN = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYTHON = "${compilers.python}/bin/python3";
+  NUDOX_CARGO = toolchains.stableCargo;
   NUDOX_RUSTC = "${toolchains.stable}/bin/rustc";
   # The owner's Rust authority needs rustc, Cargo and a Cargo home together;
   # with any one missing it compiles no Rust ("Unavailable { language: Rust }").
@@ -144,5 +152,6 @@ in
 }
 // optionalEnv
 // optionalOracleEnv
+// optionalRoslynEnv
 // optionalCorpusEnv
 // nativeCompilerShellEnvVars

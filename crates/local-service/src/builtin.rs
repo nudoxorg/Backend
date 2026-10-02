@@ -81,6 +81,9 @@ mod worker;
 use worker::connect_worker;
 #[path = "builtin/cluster_dispatch.rs"]
 mod cluster_dispatch;
+#[path = "builtin/remote_semantic_query.rs"]
+mod remote_semantic_query;
+pub use remote_semantic_query::{RemoteIndexGrantSummary, RemoteIndexUsage};
 #[path = "builtin/compiler_scope.rs"]
 mod compiler_scope;
 #[path = "builtin/embedded_host.rs"]
@@ -1379,13 +1382,30 @@ pub(crate) fn compose_owner(
         compiler_root.join("embedding.config"),
     )
     .map_err(|error| ProcessError::Profile(format!("open compiler embedding runtime: {error}")))?;
-    let compiler_host = backend_engine::application::LocalCompilerHost::new(
+    let cargo_metadata_policy = match config.registry.policy {
+        backend_engine::registry::AcquisitionPolicy::Online => {
+            backend_frontend_rust::legacy::RustCargoMetadataPolicy::Online
+        }
+        backend_engine::registry::AcquisitionPolicy::Offline => {
+            backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline
+        }
+    };
+    let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
             data_root: compiler_root,
             supplied: config.compiler_environment.clone(),
         },
         backend_engine::application::LocalHostDiscovery::ExplicitOnly,
-    );
+    )
+    .with_rust_cargo_metadata_policy(cargo_metadata_policy);
+    if let Ok(cache_directory) = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .open_embedding_cache_directory()
+    {
+        compiler_host = compiler_host.with_embedding_cache_directory(cache_directory);
+    }
     let compiler =
         match embedding.provisioning_failure() {
             Some(cause) => compiler_host
@@ -1502,9 +1522,7 @@ pub(crate) fn compose_owner(
         &mut image_rows,
         &mut generations,
     )
-    .map_err(|error| {
-        embedded_host::view_refusal(&daemon, &error, "repair product view: ")
-    })?;
+    .map_err(|error| embedded_host::view_refusal(&daemon, &error, "repair product view: "))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -1546,6 +1564,7 @@ pub(crate) fn compose_owner(
     let owner_cluster = cluster_dispatch::OwnerCompilerClusterRuntime::open_if_configured(
         &config.workspace,
         semantic_authority.store(),
+        config.endpoint.as_path(),
     )
     .map_err(|error| ProcessError::Profile(format!("open compiler cluster owner: {error}")))?
     .map(Arc::new);
@@ -1585,7 +1604,8 @@ pub(crate) fn compose_owner(
                 ProcessError::Profile(format!("start pending compiler ACK retry: {error}"))
             })?;
     }
-    let search_snapshots = query::SearchSnapshotOwner::default();
+    let search_snapshots =
+        query::SearchSnapshotOwner::with_durable_root(config.workspace.join("search-index-v2"));
     let worker_secret = match profile.kind {
         BuiltinProfile::Product => product_secret.ok_or_else(|| {
             ProcessError::Profile("product authority credential disappeared".to_owned())
@@ -1662,7 +1682,8 @@ pub(crate) fn compose_owner(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
-    );
+    )
+    .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
     let commands = Arc::new(Mutex::new(commands));
     let command_commands = Arc::clone(&commands);
     let command = move |daemon: &mut crate::Locald<
@@ -1730,6 +1751,13 @@ impl crate::DeferredCommands<BuiltinModel, BuiltinValidator, BuiltinAuthorityVer
             .into_iter()
             .map(|(ticket, reply)| (ticket, reply.map_err(|error| error.to_string())))
             .collect()
+    }
+
+    fn close(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close();
     }
 }
 

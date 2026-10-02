@@ -8,6 +8,7 @@
 //! the engine may not know is a [`common::Known`] with a typed gap.
 
 pub mod common;
+pub mod cargo_source;
 pub mod health;
 pub mod key;
 pub mod lines;
@@ -24,22 +25,24 @@ pub use common::{
     ByteSpan, DeclFacts, DeclRef, Deprecation, Derivation, Gap, GapReason, KeyError, KindFamily,
     Known, LineSpan, PackageRef, Provenance, RowKey, SymbolRef, confidence_name, link_name,
 };
+pub use cargo_source::CargoSourcePage;
 pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
-pub use key::{PageKey, SearchQuery};
+pub use key::{CargoSourceKey, PageKey, SearchQuery};
 pub use lines::{Resolution, UseLine};
+pub(crate) use orbit::VerifiedRegistryRelease;
 pub use orbit::{
     IndexedPackage, OrbitModel, OrbitProject, Readiness, TreeNode, TreeOpener, TreeSubject,
 };
 pub use package::{
     AdvisorySummary, Dependency, DependencyScope, Downloads, OutlineNode, OutlineTree,
-    PackageDossier, PackageRecord, RecordSource, Standing, VersionEntry,
+    PackageDossier, PackageRecord, ReadmeExactKind, ReadmeExactTarget, ReadmeExactTargets, RecordSource, Standing, VersionEntry,
 };
 pub use search::{MatchReason, SearchContinuation, SearchPage, SearchRow};
-pub use source::{IdentifierSpan, SourceOrigin, SourceText, SourceView};
+pub use source::{IdentifierSpan, SourceCoverage, SourceOrigin, SourceText, SourceTextError, SourceView};
 pub use store::{Capacity, Generation, Landing, PageStore, PageValue, ReadFailure, SeedEntry, Stamp};
 pub use symbol::{
     Arrival, DocEntry, DocFragment, DocSection, DocSections, Excerpt, FileSpan, Member, Members,
-    MethodGroup, OutlinePosition, SectionKind,
-    Receiver, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText,
-    SignatureToken, SourceLocation, SourceSite, SymbolLink, SymbolPage, TokenClass,
+    MembersCoverage, MethodGroup, NameLinkCoverage, OutlinePosition, SectionKind, Receiver,
+    ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText, SignatureToken,
+    SourceLocation, SourceSite, SymbolLink, SymbolPage, TokenClass,
 };

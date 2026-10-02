@@ -43,7 +43,7 @@ const TICK: Duration = Duration::from_secs(60);
 pub(crate) fn stages(phase: ProjectPhase) -> Option<[Stage; 3]> {
     let middle = match phase {
         ProjectPhase::Indexing => StageState::Now,
-        ProjectPhase::Cancelling | ProjectPhase::Cancelled => StageState::Stall,
+        ProjectPhase::Cancelling | ProjectPhase::Cancelled | ProjectPhase::Unconfirmed => StageState::Stall,
         ProjectPhase::Failed => StageState::Bad,
         ProjectPhase::Ready | ProjectPhase::Missing => return None,
     };
@@ -60,6 +60,7 @@ fn tip(phase: ProjectPhase, step: usize) -> TipText {
         (0, _) => ("Folder added", "It is on your shelf."),
         (1, ProjectPhase::Failed) => ("Stopped", "Why is written below."),
         (1, ProjectPhase::Cancelling | ProjectPhase::Cancelled) => ("Paused", "Resume it from the project."),
+        (1, ProjectPhase::Unconfirmed) => ("Awaiting the owner", "Its index outcome must be checked."),
         (1, _) => ("Compiling", "One pass; no finer step is reported."),
         _ => ("Ready to browse", "Pages open when the pass ends."),
     };
@@ -88,12 +89,16 @@ pub(crate) fn tile_gem(project: &WorkspaceProject, edge: f32, active: bool, ctx:
 /// What the window has to say about this launch, once, at the top of the
 /// Library: a session it could not read, an index it set aside. Each is
 /// dismissed by the person, and none is written to disk.
-pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut leaves = Vec::new();
     for (index, note) in snapshot.workspace().notes.iter().enumerate() {
         let (headline, detail) = match note {
+            Note::CargoSourceAddressUnread => (
+                "Your saved Cargo source address could not be reopened.".to_owned(),
+                "Open the release from its Library project tree to browse current files.".to_owned(),
+            ),
             Note::StateKept { backup, why } => (
                 "Your saved layout could not be read, so this launch started fresh.".to_owned(),
                 format!("It said: {why}. The file is kept at {backup}; nothing was deleted."),
@@ -113,8 +118,12 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         let links = ctx.links.clone();
         let held = note.clone();
         let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::DismissNote(held.clone()), cx));
+        let act = ctx.native_local_action(act, cx);
         ctx.targets.push(Target { id: id.clone().into(), label: "Got it".into(), act: Rc::clone(&act), peek: None, source: None });
-        let dismiss = ctx.targets.track(id.clone(), button(SharedString::from(id), "Got it", &measure).ghost().on_click(move |window, cx| act(window, cx)));
+        let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
+        let mut control = button(SharedString::from(id.clone()), "Got it", &measure).ghost().on_click(move |window, cx| act(window, cx));
+        if let Some(focus) = focus { control = control.focus_handle(focus); }
+        let dismiss = ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
         leaves.push(Leaf::new(
             div()
                 .flex()
@@ -140,7 +149,7 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
 
 /// The Library with nothing on the shelf: what to do, in one line, with the
 /// one thing to press.
-pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
+pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let lede = ctx.say("Read the code you depend on.");
@@ -162,6 +171,7 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
         let links = links.clone();
         Rc::new(move |_, cx| links.dispatch(Intent::OpenAddProject, cx))
     };
+    let act = ctx.native_local_action(act, cx);
     ctx.targets.push(Target {
         id: "add-folder".into(),
         label: "Add a folder".into(),
@@ -169,10 +179,10 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
         peek: None,
         source: None,
     });
-    let add = ctx.targets.track(
-        "add-folder",
-        button("add-folder", "Add a folder", &measure).primary().on_click(move |window, cx| act(window, cx)),
-    );
+    let focus = ctx.native_handle(&SharedString::from("add-folder"), cx);
+    let mut control = button("add-folder", "Add a folder", &measure).primary().on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
+    let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
     Leaf::new(
         div()
             .flex()
@@ -251,16 +261,17 @@ impl Arrival {
 
 /// The way to add another folder, under the projects already there: the same
 /// door the empty Library has, quieter.
-pub(crate) fn add_another(ctx: &mut Ctx<'_>) -> Leaf {
+pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let links = ctx.links.clone();
     let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::OpenAddProject, cx));
+    let act = ctx.native_local_action(act, cx);
     ctx.targets.push(Target { id: "add-folder".into(), label: "Add a folder".into(), act: Rc::clone(&act), peek: None, source: None });
-    let add = ctx.targets.track(
-        "add-folder",
-        button("add-folder", "Add a folder", &measure).ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx)),
-    );
+    let focus = ctx.native_handle(&SharedString::from("add-folder"), cx);
+    let mut control = button("add-folder", "Add a folder", &measure).ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
+    let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
     Leaf::new(
         div()
             .flex()
@@ -589,6 +600,7 @@ mod tests {
         assert_eq!(middle(ProjectPhase::Indexing), Some((StageState::Done, StageState::Now, StageState::Todo)), "asked, no answer yet: running, no fraction");
         assert_eq!(middle(ProjectPhase::Failed), Some((StageState::Done, StageState::Bad, StageState::Todo)), "the owner refused: the step it stopped on is bad");
         assert_eq!(middle(ProjectPhase::Cancelled), Some((StageState::Done, StageState::Stall, StageState::Todo)), "stopped by the person: waiting, not failed");
+        assert_eq!(middle(ProjectPhase::Unconfirmed), Some((StageState::Done, StageState::Stall, StageState::Todo)), "lost receipt never claims a failed or completed job");
         assert_eq!(middle(ProjectPhase::Ready), None, "an answered index has no steps left to show");
         assert!(
             stages(ProjectPhase::Indexing).is_some_and(|steps| steps.iter().all(|step| step.done <= 1.0 && (step.state == StageState::Done || step.done == 0.0))),

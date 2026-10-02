@@ -497,7 +497,7 @@ fn native_scenarios_preserve_state_picking_and_geometry_across_weather_and_caden
                             && bounds.x + bounds.width <= card.x + card.width + 0.5
                             && bounds.y + bounds.height <= card.y + card.height + 0.5;
                         let reachable = tick.ledger.scrolls.iter().any(|scroll| scroll.key == "graph-focus-scroll"
-                            && contained(&scroll.viewport) && scroll.reaches(&text.bounds));
+                            && contained(&scroll.viewport) && scroll.reaches(&text.bounds, &text.scroll_ancestors));
                         assert!(contained(&text.bounds) || reachable,
                             "{id}/{width}/{cadence}: focus text {} escapes card without actual measured scroll reachability: text {:?}, card {card:?}",text.key,text.bounds);
                     }

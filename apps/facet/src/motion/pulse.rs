@@ -12,7 +12,7 @@
 //! The pulse time is quantised to whole ticks since the motion epoch, so a
 //! frame captured at a virtual time always sees the same phase.
 
-use super::{epoch, now, reduced};
+use super::{epoch, now, reduced_in};
 use crate::probe::{self, TrackKind, TrackSample};
 use gpui::{App, EntityId, Global, Task, Window};
 use std::collections::HashMap;
@@ -65,6 +65,16 @@ impl Pulse {
 /// Call from `render` (or `prepaint`) every frame the ambient motion is
 /// visible; stop calling it and the pulse lets go within three ticks.
 pub fn lease(window: &mut Window, cx: &mut App) -> Pulse {
+    if super::is_still_in(window, cx) {
+        let view = window.current_view();
+        let clock = cx.default_global::<PulseClock>();
+        clock.leases.remove(&view);
+        if clock.leases.is_empty() {
+            clock.running = false;
+            clock.task = None;
+        }
+        return Pulse { seconds: 0.0 };
+    }
     let now = now(cx);
     let epoch = epoch(cx);
     let clock = cx.default_global::<PulseClock>();
@@ -72,7 +82,7 @@ pub fn lease(window: &mut Window, cx: &mut App) -> Pulse {
         return Pulse { seconds };
     }
     let seconds = quantise(now.saturating_duration_since(epoch));
-    if reduced(cx) {
+    if reduced_in(window, cx) {
         return Pulse { seconds: 0.0 };
     }
     let clock = cx.default_global::<PulseClock>();

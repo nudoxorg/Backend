@@ -92,17 +92,41 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
+        Intent::SetPrivacy(privacy) => {
+            if next.settings().privacy != *privacy {
+                let mut settings = next.settings().clone();
+                settings.privacy = *privacy;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::ToggleAdvisories => {
             let mut settings = next.settings().clone();
             settings.advisories = !settings.advisories;
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
+        Intent::SetAdvisoriesEnabled(enabled) => {
+            if next.settings().advisories != *enabled {
+                let mut settings = next.settings().clone();
+                settings.advisories = *enabled;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::ToggleCache => {
             let mut settings = next.settings().clone();
             settings.cache_enabled = !settings.cache_enabled;
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
+        }
+        Intent::SetCacheEnabled(enabled) => {
+            if next.settings().cache_enabled != *enabled {
+                let mut settings = next.settings().clone();
+                settings.cache_enabled = *enabled;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
         }
         Intent::SetCacheDays { up } => {
             let mut settings = next.settings().clone();
@@ -149,7 +173,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .workspace()
                 .projects
                 .iter()
-                .any(|item| item.id == *project)
+                .any(|item| item.id == *project && item.phase == ProjectPhase::Indexing)
             {
                 next =
                     set_project_phase(&next, project, ProjectPhase::Indexing, None, Some(*request));
@@ -167,7 +191,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             } else {
                 let mut workspace = next.workspace().clone();
                 workspace.path_error = Some(Arc::from(
-                    "That project is no longer on the shelf. Choose it again to reopen it.",
+                    "This project is not ready for a new index request. Check its current outcome first.",
                 ));
                 next = next.with_workspace(workspace);
                 effects.push(Effect::Persist);
@@ -256,6 +280,12 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::RevealProject(_) | Intent::OpenSource { .. } => {}
         Intent::RetryIndex(project) => {
+            if next.workspace().projects.iter().any(|item| item.id == *project && item.phase == ProjectPhase::Unconfirmed) {
+                let mut workspace = next.workspace().clone();
+                workspace.path_error = Some(Arc::from("The previous index may have committed. Check its exact owner operation before starting another."));
+                next = next.with_workspace(workspace);
+                return Some(Reduction { snapshot: next, effects });
+            }
             let previous_request = next
                 .workspace()
                 .projects
@@ -302,6 +332,14 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             };
             next = next.with_settings(settings);
         }
+        Intent::ConnectionProbeAborted { previous } => {
+            let mut settings = next.settings().clone();
+            if settings.connection == ConnectionStatus::Testing {
+                settings.connection = *previous;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::OwnerReady { key, mode } => {
             // The owner's own root, read by the owner thread the moment it
             // answered; no read was ever asked at the unserved one.
@@ -318,20 +356,30 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::LibraryRebuilding { kept_at } => {
             // The index every ready project stood on is gone from the owner's
-            // side (set aside), so "ready" on the shelf is no longer true: each
-            // project that still has a folder is indexed again, from nothing.
+            // side (set aside). A completed ready row can be indexed under the
+            // new owner, but an in-flight attempt still needs exact operation
+            // reconciliation; replacing it would risk a second mutation.
             let mut workspace = next.workspace().clone();
             workspace.projects = workspace
                 .projects
                 .iter()
                 .cloned()
                 .map(|mut project| {
-                    if project.phase != ProjectPhase::Missing {
-                        project.phase = ProjectPhase::Indexing;
-                        project.progress = None;
-                        project.files_indexed = None;
-                        project.request = None;
-                        project.error = None;
+                    match project.phase {
+                        ProjectPhase::Ready => {
+                            project.phase = ProjectPhase::Indexing;
+                            project.progress = None;
+                            project.files_indexed = None;
+                            project.request = None;
+                            project.error = None;
+                        }
+                        ProjectPhase::Indexing | ProjectPhase::Cancelling => {
+                            project.phase = ProjectPhase::Unconfirmed;
+                            project.progress = None;
+                            project.request = None;
+                            project.error = Some(Arc::from("Check this project's exact owner operation before another index starts."));
+                        }
+                        ProjectPhase::Cancelled | ProjectPhase::Failed | ProjectPhase::Unconfirmed | ProjectPhase::Missing => {}
                     }
                     project
                 })
@@ -396,11 +444,13 @@ fn admit_project_identity(
     workspace.active = Some(project.clone());
     let mut projects = workspace.projects.to_vec();
     if let Some(existing) = projects.iter_mut().find(|item| item.id == project) {
-        existing.phase = ProjectPhase::Indexing;
-        existing.progress = None;
-        existing.files_indexed = None;
-        existing.error = None;
-        existing.request = None;
+        if existing.phase != ProjectPhase::Unconfirmed {
+            existing.phase = ProjectPhase::Indexing;
+            existing.progress = None;
+            existing.files_indexed = None;
+            existing.error = None;
+            existing.request = None;
+        }
         existing.recent = true;
     } else {
         projects.push(WorkspaceProject::indexing_with_display(
@@ -493,6 +543,36 @@ mod tests {
             backend_library::view_state_root(&[("root".to_owned(), "one".to_owned())]),
             1,
         ))
+    }
+
+    #[test]
+    fn registry_privacy_preferences_are_exact_and_persisted_without_false_toggle_changes() {
+        let changed = reduce(
+            &snapshot(),
+            &Intent::SetPrivacy(PrivacyPreference::RegistryMetadata),
+        )
+        .expect("workspace");
+        assert_eq!(changed.snapshot.settings().privacy, PrivacyPreference::RegistryMetadata);
+        assert_eq!(changed.effects, [Effect::Persist]);
+        let same = reduce(
+            &changed.snapshot,
+            &Intent::SetPrivacy(PrivacyPreference::RegistryMetadata),
+        )
+        .expect("unchanged workspace");
+        assert!(same.effects.is_empty(), "selecting the current segment does not toggle it back");
+
+        let advisory = reduce(&same.snapshot, &Intent::SetAdvisoriesEnabled(false))
+            .expect("advisory preference");
+        assert!(!advisory.snapshot.settings().advisories);
+        assert_eq!(advisory.effects, [Effect::Persist]);
+        let cache = reduce(&advisory.snapshot, &Intent::SetCacheEnabled(false))
+            .expect("cache preference");
+        assert!(!cache.snapshot.settings().cache_enabled);
+        assert_eq!(cache.effects, [Effect::Persist]);
+        let age = reduce(&cache.snapshot, &Intent::SetCacheDays { up: true })
+            .expect("cache age preference");
+        assert_eq!(age.snapshot.settings().cache_days, 30);
+        assert_eq!(age.effects, [Effect::Persist]);
     }
 
     #[test]
@@ -672,6 +752,22 @@ mod tests {
     }
 
     #[test]
+    fn an_unconfirmed_index_cannot_be_resubmitted_by_retry_add_or_direct_request() {
+        let (snapshot, project, _) = two_ready_projects();
+        let uncertain = set_project_phase(&snapshot, &project, ProjectPhase::Unconfirmed, Some(Arc::from("reply lost")), None);
+        let retry = reduce(&uncertain, &Intent::RetryIndex(project.clone())).expect("retry");
+        assert_eq!(retry.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        assert!(!retry.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
+        let added = reduce(&uncertain, &Intent::AddProject { project: project.clone() }).expect("add");
+        assert_eq!(added.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        let direct = reduce(&uncertain, &Intent::IndexProject {
+            project, basis: uncertain.key(), request: RequestId::new(53),
+        }).expect("direct index");
+        assert!(!direct.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
+        assert_eq!(direct.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+    }
+
+    #[test]
     fn removing_the_active_project_makes_another_active_and_forgets_the_row() {
         let (snapshot, first, second) = two_ready_projects();
         let active = snapshot.workspace().active.clone().expect("the last added is active");
@@ -718,12 +814,82 @@ mod tests {
     }
 
     #[test]
+    fn library_rebuild_keeps_in_flight_owner_attempts_unconfirmed() {
+        let (snapshot, first, second) = two_ready_projects();
+        let indexing = set_project_phase(&snapshot, &first, ProjectPhase::Indexing, None, None);
+        let cancelling = set_project_phase(&indexing, &second, ProjectPhase::Cancelling, None, None);
+        let rebuilt = reduce(&cancelling, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/old-owner") }).expect("workspace");
+        assert!(rebuilt.snapshot.workspace().projects.iter().all(|project| {
+            project.phase == ProjectPhase::Unconfirmed && project.request.is_none()
+        }));
+    }
+
+    #[test]
     fn the_window_size_is_remembered_only_when_it_changed() {
         let resized = reduce(&snapshot(), &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
         assert_eq!(resized.snapshot.settings().window, Some(crate::model::WindowSize { width: 1100, height: 800 }));
         assert_eq!(resized.effects, [Effect::Persist]);
         let same = reduce(&resized.snapshot, &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
         assert!(same.effects.is_empty(), "the same size writes nothing");
+    }
+
+    #[test]
+    fn an_aborted_connection_probe_restores_its_prior_state_only_while_testing() {
+        for previous in [
+            ConnectionStatus::Disconnected,
+            ConnectionStatus::Connected,
+            ConnectionStatus::Unknown,
+        ] {
+            let mut settings = snapshot().settings().clone();
+            settings.connection = previous;
+            let initial = snapshot().with_settings(settings);
+            let testing = reduce(&initial, &Intent::TestConnection)
+                .expect("connection probe")
+                .snapshot;
+            assert_eq!(testing.settings().connection, ConnectionStatus::Testing);
+
+            let restored = reduce(
+                &testing,
+                &Intent::ConnectionProbeAborted { previous },
+            )
+            .expect("aborted probe")
+            .snapshot;
+            assert_eq!(restored.settings().connection, previous);
+        }
+
+        let mut settings = snapshot().settings().clone();
+        settings.connection = ConnectionStatus::Disconnected;
+        let initial = snapshot().with_settings(settings);
+        let testing = reduce(&initial, &Intent::TestConnection)
+            .expect("connection probe")
+            .snapshot;
+
+        let owner_key = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("root".to_owned(), "owner".to_owned())]),
+            2,
+        );
+        let connected = reduce(
+            &testing,
+            &Intent::OwnerReady {
+                key: owner_key,
+                mode: crate::model::ServiceMode::Attached,
+            },
+        )
+        .expect("owner ready")
+        .snapshot;
+        let after_late_abort = reduce(
+            &connected,
+            &Intent::ConnectionProbeAborted {
+                previous: ConnectionStatus::Disconnected,
+            },
+        )
+            .expect("late probe cancellation")
+            .snapshot;
+        assert_eq!(
+            after_late_abort.settings().connection,
+            ConnectionStatus::Connected,
+            "a newer owner observation must win over a late cancellation"
+        );
     }
 
     #[test]

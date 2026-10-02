@@ -126,6 +126,8 @@ impl<T> Clone for Resource<T> {
 pub enum ResourceTerminal {
     /// The value is complete.
     Complete,
+    /// An intermediate value is readable, but its owner has not finished.
+    Partial,
     /// The producer does not provide the value.
     Unavailable(UnavailableReason),
     /// The latest attempt failed.
@@ -150,6 +152,17 @@ impl<T> Resource<T> {
             value: Some((Arc::new(value), root)),
             terminal: ResourceTerminal::Complete,
             activity: Activity::Rest,
+        }
+    }
+
+    /// Creates an intermediate value at the producer root. The value can be
+    /// read immediately, but it cannot be treated as a complete saved page.
+    #[must_use]
+    pub fn partial_at(value: T, root: VersionedRoot) -> Self {
+        Self {
+            value: Some((Arc::new(value), root)),
+            terminal: ResourceTerminal::Partial,
+            activity: Activity::Working,
         }
     }
 

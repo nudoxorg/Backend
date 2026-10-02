@@ -425,6 +425,29 @@ pub struct CandidateAttemptRecoveryClaim {
     pub(super) observation_sequence: u64,
 }
 
+/// Closed owner disposition for a compiler attempt that did not reach selection.
+///
+/// This is persisted separately from the selected state so a refused or
+/// cancelled job cannot be reopened as pending work after a process restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i64)]
+pub enum CandidateAttemptRetirementReason {
+    /// The owner observed cancellation for this exact candidate.
+    Cancelled = 1,
+    /// Compiler output or source admission was refused.
+    Refused = 2,
+    /// The job failed before the candidate could be selected.
+    Failed = 3,
+    /// A newer observation or attempt fenced this candidate.
+    Superseded = 4,
+}
+
+impl CandidateAttemptRetirementReason {
+    pub(super) const fn sql_code(self) -> i64 {
+        self as i64
+    }
+}
+
 impl CandidateAttemptRecoveryClaim {
     /// Names the exact durable attempt facts recorded before an Offer.
     #[must_use]

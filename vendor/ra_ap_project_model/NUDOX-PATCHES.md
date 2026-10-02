@@ -14,3 +14,14 @@ environment as isolated. The project model then uses the explicit `CARGO`,
 variables before applying the explicit overlay, and resolves tools through the
 same overlay. This keeps an admitted compiler path and Cargo home consistent
 through sysroot discovery, Cargo metadata, and rustc queries.
+
+`ProjectWorkspace::run_build_scripts_with_runner` and
+`ProjectWorkspace::run_all_build_scripts_with_runner` expose an injectable
+`BuildScriptProcessRunner`. rust-analyzer still builds the complete Cargo
+command, including its argv, working directory, lockfile handling, and
+environment overrides; the runner receives that command plus the explicit
+clear-or-inherit base environment policy and stdout/stderr line callbacks.
+rust-analyzer retains its Cargo JSON parsing and diagnostic handling. Build
+command construction applies the internal isolation marker from
+`CargoConfig.isolate_env` and returns the matching policy alongside the
+command.

@@ -160,7 +160,7 @@ impl BuiltinIntent {
         package: backend_engine::PackageKey,
         label: impl Into<String>,
     ) -> Result<Self, BuiltinModelError> {
-        Self::remove_project(package, label, &[])
+        Self::remove_project(package, label, &[], Vec::new())
     }
 
     /// Creates an intent that removes a project and every file selected by
@@ -169,6 +169,7 @@ impl BuiltinIntent {
         package: backend_engine::PackageKey,
         label: impl Into<String>,
         files: &[[u8; 32]],
+        semantic_changes: Vec<BuiltinSemanticChange>,
     ) -> Result<Self, BuiltinModelError> {
         let label = label.into();
         let mut changes = Vec::with_capacity(files.len().saturating_add(1));
@@ -187,7 +188,7 @@ impl BuiltinIntent {
             package,
             label,
             changes,
-            Vec::new(),
+            semantic_changes,
             None,
         )
     }

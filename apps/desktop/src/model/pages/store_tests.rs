@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::core::{FaultCode, ResourceTerminal};
-use crate::model::pages::SearchQuery;
+use crate::model::pages::{ByteSpan, CargoSourceKey, CargoSourcePage, Known, SearchQuery, SourceCoverage, SourceOrigin, SourceText};
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest};
 use crate::shell::tests::{Fixture, PACKAGE, symbol};
 
@@ -19,11 +19,89 @@ fn root() -> VersionedRoot {
     VersionedRoot::synthetic(backend_library::view_state_root(&[("store".to_owned(), "tests".to_owned())]), 1)
 }
 
+#[test]
+fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
+    let file = crate::navigation::CargoSourcePath::new("Cargo.toml").expect("relative file");
+    let qualified = |digit: char| PackageRef::parse(&format!(
+        "pkg:cargo/demo@1.0.0?cargo-authority={}", digit.to_string().repeat(64)
+    )).expect("qualified package");
+    let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store").expect("project");
+    let context = crate::navigation::cargo_browse::fixture_context(project);
+    let first = CargoSourceKey { context: context.clone(), package: qualified('a'), file: file.clone() };
+    let second = CargoSourceKey { context: context.clone(), package: qualified('b'), file };
+    let mut store = PageStore::default();
+    let first_key = PageKey::CargoSource(first.clone());
+    let second_key = PageKey::CargoSource(second.clone());
+    let stale = store.begin(&first_key, root()).expect("first owner read");
+    let second_generation = store.begin(&second_key, root()).expect("other authority read");
+    let source = SourceText::new(Arc::from("[package]\nname = \"demo\"\n"), 1, SourceOrigin::LocalFile, true)
+        .expect("valid source");
+    let page = |key: &CargoSourceKey| CargoSourcePage {
+        package: key.package.clone(), request_binding: key.context.request_binding(), file: key.file.clone(), source: source.clone(),
+        content_digest: [7; 32], source_revision: [9; 32],
+    };
+    assert_eq!(store.land(&second_key, second_generation, Ok(PageValue::CargoSource(page(&second)))), Landing::Applied);
+    assert!(store.cargo_source(&first).loaded_value().is_none());
+    assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Applied);
+    let newer = store.begin_forced(&first_key, root()).expect("new read");
+    assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Superseded);
+    assert_eq!(store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))), Landing::Unchanged);
+    assert_ne!(first, second);
+    let other_project = CargoSourceKey {
+        context: crate::navigation::cargo_browse::fixture_context(crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store-other").expect("other tree")),
+        package: first.package.clone(),
+        file: first.file.clone(),
+    };
+    assert_ne!(first, other_project, "a cold owner rehydrates against the selected tree, not an arbitrary matching package");
+    assert!(store.cargo_source(&other_project).loaded_value().is_none());
+
+    let lost = store.begin_forced(&first_key, root()).expect("owner revalidation");
+    assert_eq!(store.land(&first_key, lost, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, "source authority changed")))), Landing::Applied);
+    assert!(store.cargo_source(&first).loaded_value().is_none(), "a stale file cannot remain visible as current source");
+    assert!(store.cargo_source(&second).is_loaded());
+    store.revoke_all_cargo_sources();
+    assert!(store.cargo_source(&second).loaded_value().is_none(), "owner restart revokes every retained file");
+    assert!(store.begin(&second_key, root()).is_some(), "the same indexed root must still recheck Cargo file bytes");
+}
+
+#[test]
+fn cargo_inventory_is_revoked_separately_from_file_bytes() {
+    use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey, CargoSourceInventoryModel};
+    let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-inventory-store").expect("tree");
+    let package = PackageRef::parse(&format!(
+        "pkg:cargo/demo@1.0.0?cargo-authority={}", "a".repeat(64)
+    )).expect("qualified package");
+    let context = crate::navigation::cargo_browse::fixture_context(project);
+    let key = BrowseKey::CargoSourceInventory(CargoSourceInventoryKey {
+        context: context.clone(),
+        package: package.clone(),
+    });
+    let page_key = PageKey::Browse(key.clone());
+    let mut store = PageStore::default();
+    let generation = store.begin(&page_key, root()).expect("inventory read");
+    let model = CargoSourceInventoryModel {
+        package,
+        request_binding: context.request_binding(),
+        paths: Arc::from([crate::navigation::CargoSourcePath::new("Cargo.toml").expect("path")]),
+        coverage: backend_library::CargoPackageSourceInventoryCoverageV1::Complete,
+        source_revision: [7; 32],
+    };
+    let value = PageValue::Browse(BrowseValue::CargoSourceInventory(Arc::new(model)));
+    assert_eq!(store.land(&page_key, generation, Ok(value)), Landing::Applied);
+    assert!(store.browse(&key).loaded_value().is_some());
+    let BrowseKey::CargoSourceInventory(inventory) = &key else { panic!("inventory key") };
+    store.revoke_cargo_source_inventory(inventory);
+    assert!(store.browse(&key).loaded_value().is_none());
+    assert!(store.begin(&page_key, root()).is_some(), "reentry must schedule another owner observation");
+    store.revoke_all_cargo_source_inventories();
+    assert!(store.browse(&key).loaded_value().is_none());
+}
+
 /// What the fixture owner answers for `request`.
 fn read(request: &ReadRequest) -> PageValue {
     let cancel = crate::runtime::CancellationToken::new();
     let outlines = OutlineCache::default();
-    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
     Fixture.read(request, &context).unwrap_or_else(|failure| panic!("the fixture read {request:?}: {failure:?}"))
 }
 
@@ -33,6 +111,41 @@ fn read(request: &ReadRequest) -> PageValue {
 fn land(store: &mut PageStore, key: &PageKey, value: PageValue) -> Landing {
     let generation = store.begin_forced(key, root()).expect("the slot starts a fetch");
     store.land(key, generation, Ok(value))
+}
+
+#[test]
+fn a_partial_page_is_visible_while_its_generation_reads_and_stale_stages_are_dropped() {
+    let mut store = PageStore::default();
+    let key = PageKey::Symbol(symbol("RelationLabel"));
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("symbol page") };
+    let first = store.begin(&key, root()).expect("first read");
+    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Applied);
+    assert_eq!(store.symbol(&symbol("RelationLabel")).loaded_value(), Some(&page));
+    assert_eq!(store.symbol(&symbol("RelationLabel")).terminal(), &ResourceTerminal::Partial);
+    assert!(!store.symbol(&symbol("RelationLabel")).is_loaded(), "a staged value is not a complete snapshot page");
+    assert_eq!(store.inflight(&key), Some(first), "the worker still owns the read");
+    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Unchanged);
+    assert_eq!(store.cancel(&key), Some(first));
+    assert_eq!(store.symbol(&symbol("RelationLabel")).terminal(), &ResourceTerminal::Partial, "cancellation must retain partial provenance");
+    assert!(!store.symbol(&symbol("RelationLabel")).is_loaded());
+    let second = store.begin(&key, root()).expect("return to page");
+    assert_ne!(first, second);
+    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Superseded);
+    assert_eq!(store.land(&key, second, Ok(PageValue::Symbol(page))), Landing::Applied);
+    assert!(store.symbol(&symbol("RelationLabel")).is_loaded());
+}
+
+#[test]
+fn a_failed_read_drops_an_intermediate_page_and_says_why_it_stopped() {
+    let mut store = PageStore::default();
+    let key = PageKey::Symbol(symbol("RelationLabel"));
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("symbol page") };
+    let generation = store.begin(&key, root()).expect("read");
+    assert_eq!(store.stage(&key, generation, PageValue::Symbol(page)), Landing::Applied);
+    assert_eq!(store.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Transport, "owner disconnected")))), Landing::Applied);
+    let resource = store.symbol(&symbol("RelationLabel"));
+    assert!(resource.loaded_value().is_none(), "an incomplete value is not a last good page");
+    assert!(matches!(resource.terminal(), ResourceTerminal::Fault(error) if error.message() == "owner disconnected"));
 }
 
 #[test]
@@ -57,6 +170,68 @@ fn a_value_read_for_a_key_is_the_value_its_slot_shows() {
     let PageValue::Health(health) = read(&ReadRequest::Health) else { panic!("a health read answers the health model") };
     assert_eq!(land(&mut store, &PageKey::Health, PageValue::Health(health.clone())), Landing::Applied);
     assert_eq!(store.health().loaded_value(), Some(&health));
+}
+
+#[test]
+fn quiet_source_revalidation_replaces_saved_unverified_coverage() {
+    let source_ref = symbol("RelationLabel");
+    let key = PageKey::Source(source_ref.clone());
+    let PageValue::Source(mut saved) = read(&ReadRequest::Source(source_ref.clone())) else {
+        panic!("a source read answers a source page");
+    };
+    let saved_text = saved.text.known().expect("fixture source text");
+    let wire = serde_json::to_value(saved_text).expect("serialize saved source text");
+    let restored_text: SourceText =
+        serde_json::from_value(wire).expect("restore saved source text");
+    assert_eq!(restored_text.coverage(), SourceCoverage::Unverified);
+    saved.text = Known::Known(restored_text);
+
+    let mut store = PageStore::default();
+    assert!(store.seed(
+        SeedEntry::Source(source_ref.clone(), Arc::new(saved)),
+        root()
+    ));
+    let seeded_stamp = store.stamp(&key);
+    let next_root = root().with_generation(2);
+    let generation = store
+        .begin(&key, next_root)
+        .expect("new authority quietly revalidates the snapshot source");
+    assert_eq!(
+        store.stamp(&key),
+        seeded_stamp,
+        "quiet revalidation keeps the saved view visible"
+    );
+
+    let PageValue::Source(mut fresh) = read(&ReadRequest::Source(source_ref.clone())) else {
+        panic!("a source read answers a source page");
+    };
+    let fresh_text = fresh.text.known().expect("fresh source text").clone();
+    let start = fresh_text.text().find("pub enum").expect("declaration excerpt start");
+    let end = fresh_text.text().find("\n// tail").expect("declaration excerpt end");
+    let verified = fresh_text.with_verified_local_excerpt(
+        ByteSpan::new(
+            u32::try_from(start).expect("bounded source offset"),
+            u32::try_from(end).expect("bounded source offset"),
+        )
+        .expect("valid excerpt"),
+    );
+    fresh.text = Known::Known(verified);
+
+    assert_eq!(
+        store.land(&key, generation, Ok(PageValue::Source(fresh))),
+        Landing::Applied,
+        "the coverage change is visible even when source bytes are unchanged"
+    );
+    assert_ne!(
+        store.stamp(&key),
+        seeded_stamp,
+        "the visible proof transition redraws the source page"
+    );
+    let admitted = store.source(&source_ref);
+    assert!(matches!(
+        admitted.loaded_value().and_then(|page| page.text.known()).map(SourceText::coverage),
+        Some(SourceCoverage::LiveFileExcerptVerified { .. })
+    ));
 }
 
 #[test]

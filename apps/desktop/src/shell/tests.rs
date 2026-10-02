@@ -16,11 +16,12 @@ use crate::model::pages::{
     OutlineTree, PackageDossier, PackageRecord, PackageRef, PageValue, Provenance, Readiness,
     ReadFailure, Receiver, RecordSource, Relation, RelationKind, Rose, SearchPage, SearchRow, SearchContinuation,
     MatchReason, SignatureText, SourceLocation, SourceOrigin, SourceSite, SourceText, SourceView,
-    SymbolPage, SymbolRef,
+    Standing, SymbolPage, SymbolRef,
 };
 use crate::model::{AppSnapshot, DensityPreference, SessionState};
 use crate::navigation::{Coordinate, Intent, Route, SymbolRoute, View};
 use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
+use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::runtime::{DesktopRuntime, UiEntityGraph};
 use backend_library::DeclarationKind;
@@ -60,6 +61,7 @@ fn member(name: &str, kind: DeclarationKind, signature: &str, summary: &str) -> 
         signature: Known::Known(SignatureText {
             text: Arc::from(signature),
             tokens: Arc::from([]),
+            name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
         }),
         summary: Some(Arc::from(summary)),
         docs: Arc::from([DocFragment::Text(Arc::from(summary))]),
@@ -85,6 +87,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
         signature: Known::Known(SignatureText {
             text: Arc::from(format!("pub enum {name}")),
             tokens: Arc::from([]),
+            name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
         }),
         docs: Arc::from([DocFragment::Text(Arc::from(format!(
             "The readable label of {name}.\n\nIt names one relation group."
@@ -102,6 +105,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             }),
         },
         members: Known::Known(Members {
+            coverage: crate::model::pages::MembersCoverage::Complete,
             made_of: Arc::from([
                 member("Typed", DeclarationKind::Variant, "Typed(SemanticLinkKind)", "A relation whose kind is known."),
                 member("Related", DeclarationKind::Variant, "Related", "Related, and nothing more is known."),
@@ -140,7 +144,7 @@ pub(crate) fn dossier() -> PackageDossier {
             source: RecordSource::LocalManifest,
             name: Arc::from("present"),
             version: Known::Known(Arc::from("0.4.2")),
-            ecosystem: Known::Known(Arc::from("cargo")),
+            ecosystem: Known::Known(backend_library::RegistryEcosystem::Cargo),
             standing: Known::Unknown(unknown(GapReason::LocalProject)),
             downloads: Known::Unknown(unknown(GapReason::LocalProject)),
             bytes: Known::Unknown(unknown(GapReason::LocalProject)),
@@ -151,6 +155,7 @@ pub(crate) fn dossier() -> PackageDossier {
         versions: Known::Unknown(unknown(GapReason::LocalProject)),
         dependencies: Known::Known(Arc::from([])),
         dependents: Known::Unknown(unknown(GapReason::LocalProject)),
+        observed_dependents: Arc::from([]),
         outline: Known::Known(OutlineTree {
             roots: Arc::from([
                 node("identity", DeclarationKind::Module, vec![node("Identity", DeclarationKind::Struct, vec![])]),
@@ -172,7 +177,53 @@ pub(crate) fn dossier() -> PackageDossier {
             complete: true,
         }),
         readme: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_markdown: Known::unknown(GapReason::NotCaptured, "fixture has no Markdown source"),
+        readme_links: Known::unknown(GapReason::NotCaptured, "fixture has no link index"),
+        readme_headings: Known::unknown(GapReason::NotCaptured, "fixture has no heading index"),
+        readme_exact_targets: Known::unknown(GapReason::NotCaptured, "fixture has no exact README targets"),
     }
+}
+
+/// The small shell fixture rebased under the exact registry release a test
+/// requested. A dossier for `/fixture/present` cannot prove facts or provide
+/// navigation targets for a different package merely because a label matches.
+pub(crate) fn registry_dossier(package: &PackageRef) -> PackageDossier {
+    fn rebase(mut node: OutlineNode, from: &PackageRef, to: &PackageRef) -> OutlineNode {
+        node.decl.coordinate = node
+            .decl
+            .coordinate
+            .rebased(from, to)
+            .expect("fixture declaration belongs to its original package");
+        node.children = node
+            .children
+            .iter()
+            .cloned()
+            .map(|child| rebase(child, from, to))
+            .collect::<Vec<_>>()
+            .into();
+        node
+    }
+
+    let mut about = dossier();
+    let original = about.package.clone();
+    let mut record = about.record.known().cloned().expect("fixture record");
+    record.package = package.clone();
+    record.source = RecordSource::Registry;
+    record.name = Arc::from(package.display_name());
+    record.version = Known::Known(Arc::from(package.version().expect("registry fixture is pinned")));
+    record.standing = Known::Known(Standing::Available);
+    about.record = Known::Known(record);
+    let mut outline = about.outline.known().cloned().expect("fixture outline");
+    outline.roots = outline
+        .roots
+        .iter()
+        .cloned()
+        .map(|node| rebase(node, &original, package))
+        .collect::<Vec<_>>()
+        .into();
+    about.outline = Known::Known(outline);
+    about.package = package.clone();
+    about
 }
 
 fn health() -> HealthModel {
@@ -204,17 +255,24 @@ impl PageReader for Fixture {
                 PageValue::Source(SourceView {
                     symbol: decl(&name, DeclarationKind::Enum),
                     file: Known::Known(Arc::from("glyph.rs")),
-                    text: Known::Known(SourceText {
-                        text: Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
-                        first_line: 137,
-                        origin: SourceOrigin::LocalFile,
-                        complete: true,
-                    }),
+                    editor_path: Known::unknown(GapReason::NotServed, "fixture has no editor authority"),
+                    text: Known::Known(SourceText::new(
+                        Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
+                        137,
+                        SourceOrigin::LocalFile,
+                        true,
+                    ).expect("valid fixture source lines")),
                     declaration: Known::Known(LineSpan { first: 138, last: 140 }),
                     identifiers: Known::Known(Arc::from([])),
                     uses: Known::Known(Arc::from([])),
                     uses_elsewhere: Arc::from([]),
                 })
+            }
+            ReadRequest::CargoSource(_) => {
+                return Err(ReadFailure::Unavailable(
+                    crate::core::UnavailableReason::Unsupported,
+                    Arc::from("fixture has no owner-admitted Cargo source authority"),
+                ));
             }
             ReadRequest::Package(_) => PageValue::Package(dossier()),
             ReadRequest::Orbit => PageValue::Orbit(OrbitModel {
@@ -222,6 +280,7 @@ impl PageReader for Fixture {
                     package: package(),
                     name: Arc::from("present"),
                     readiness: Readiness::Ready,
+                    verified_registry_release: None,
                 }])),
                 projects: Known::Known(Arc::from([])),
                 explore: Known::Unknown(unknown(GapReason::NotServed)),
@@ -249,6 +308,103 @@ impl PageReader for Fixture {
                 next: None,
             }),
         })
+    }
+}
+
+/// A mounted Tree with one exact release control. Package data remains the
+/// ordinary fixture; the Tree row is supplied by an independent read slot.
+struct NativeTreeFixture;
+
+impl PageReader for NativeTreeFixture {
+    fn read(
+        &mut self,
+        request: &ReadRequest,
+        context: &ReadContext<'_>,
+    ) -> Result<PageValue, ReadFailure> {
+        let ReadRequest::Browse(crate::model::browse::BrowseKey::Tree(project)) = request else {
+            return Fixture.read(request, context);
+        };
+        use backend_library::browse::{
+            LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, TreeInput,
+            TreeSource, build_tree,
+        };
+        let tree = build_tree(
+            &TreeInput {
+                root: project
+                    .service_coordinate()
+                    .expect("test Tree address")
+                    .to_owned(),
+                source: TreeSource::Lockfile {
+                    reason: "focus fixture".into(),
+                    coverage: LockfileGraphCoverage::Complete,
+                    workspace_membership: LockfileWorkspaceMembership::Unknown,
+                },
+                packages: Vec::new(),
+                edges: Vec::new(),
+                locked_inactive: 0,
+                locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
+            },
+            &|_: &str, _: &str| panic!("empty focus fixture never asks advisories"),
+        );
+        let mut model = crate::runtime::browse_reads::tree_model(&tree);
+        let exact = package();
+        model.links = Arc::from([crate::model::browse::TreeRoleLinks {
+            role: backend_library::browse::RoleId::Formats,
+            rows: Arc::from([crate::model::browse::TreeRowLinks {
+                name: "present".into(),
+                key: "native-row".into(),
+                releases: Arc::from([crate::model::browse::TreeReleaseLink {
+                    version: "1".into(),
+                    key: "native-release".into(),
+                    destination: crate::model::browse::TreeDestination::Open(exact),
+                    source_detail: None,
+                }]),
+            }]),
+        }]);
+        model.prepared = Arc::new(facet::browse::library::Model {
+            name: "native-tree".into(),
+            lede: "One exact release".into(),
+            lede_tip: None,
+            note: None,
+            alerts: vec![],
+            facts: vec![],
+            roles: vec![facet::browse::library::Role {
+                key: "formats".into(),
+                icon: facet::icons::Icon::Split,
+                label: "speaks formats".into(),
+                serving: None,
+                brings: None,
+                rows: vec![facet::browse::library::Row {
+                    key: "native-row".into(),
+                    name: "present".into(),
+                    at_rest: None,
+                    why: "Exact fixture release".into(),
+                    about: None,
+                    releases: vec![facet::browse::library::ReleaseLink {
+                        key: "native-release".into(),
+                        version: "1".into(),
+                        target: Some(facet::browse::library::ReleaseHandle::identified(
+                            0,
+                            0,
+                            0,
+                            "formats",
+                            "native-row",
+                            "native-release",
+                        )),
+                        unavailable: None,
+                        source_detail: None,
+                    }],
+                }],
+            }],
+            inventory: vec![],
+            inventory_index: std::collections::BTreeMap::new(),
+            inventory_note: "".into(),
+            twice_heading: None,
+            twice: vec![],
+        });
+        Ok(PageValue::Browse(crate::model::browse::BrowseValue::Tree(
+            Arc::new(model),
+        )))
     }
 }
 
@@ -331,16 +487,41 @@ pub(crate) fn rig_with_engine(
     pool: ReadPool,
     engine: impl EngineClient,
 ) -> Rig {
+    rig_with_engine_gate(cx, route, width, height, pool, engine, None)
+}
+
+fn rig_with_engine_gate(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+    gate: Option<OwnerGate>,
+) -> Rig {
+    rig_with_engine_gate_at_root(cx, route, width, height, pool, engine, gate, VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
+        4,
+    ))
+}
+
+fn rig_with_engine_gate_at_root(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+    gate: Option<OwnerGate>,
+    initial_root: VersionedRoot,
+) -> Rig {
+    let waiting_for_owner = gate.as_ref().is_some_and(|gate| !matches!(gate.state(), OwnerState::Ready { .. }));
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
-        super::bodies::graph::install_test_fixture(cx);
     });
-    let mut snapshot = AppSnapshot::empty(VersionedRoot::synthetic(
-        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
-        4,
-    ));
+    let mut snapshot = AppSnapshot::empty(initial_root);
     let folder = std::env::temp_dir().join(format!("nudox-shell-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&folder);
     let mut workspace = snapshot.workspace().clone();
@@ -349,7 +530,7 @@ pub(crate) fn rig_with_engine(
     snapshot = snapshot.with_session(SessionState::default());
     let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
-    let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
+    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, None, Some(pool), gate, None));
     let window_graph = UiEntityGraph {
         root: graph.root.clone(),
         store: graph.store.clone(),
@@ -378,7 +559,15 @@ pub(crate) fn rig_with_engine(
         cx: visual,
         patience: Duration::from_secs(20),
     };
-    rig.settle();
+    if waiting_for_owner {
+        rig.draw();
+    } else {
+        rig.settle();
+        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
+        rig.repaint();
+        rig.settle();
+    }
     if let Some(route) = route {
         rig.go(Intent::Navigate(route));
     }
@@ -386,9 +575,14 @@ pub(crate) fn rig_with_engine(
 }
 
 impl Rig {
-    /// Draws one frame.
-    pub(crate) fn draw(&mut self) {
+    /// Draws exactly one frame without consuming its deferred wake.
+    pub(crate) fn draw_frame(&mut self) {
         self.cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// Draws a frame and drains its effects, including notified follow-up draws.
+    pub(crate) fn draw(&mut self) {
+        self.draw_frame();
         self.cx.run_until_parked();
     }
 
@@ -419,10 +613,12 @@ impl Rig {
             let frames = self.cx.update(|window, cx| window.simulate_next_frame(cx));
             self.draw();
             let (queued, running) = self.graph.store.read_with(self.cx, |store, _| store.pool_load());
-            let asking = frames > 0
-                || self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
-                || !self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx));
-            let reading = queued > 0 || running > 0;
+            let (graph_ready, graph_work) = self.shell.read_with(self.cx, |shell, cx| {
+                (shell.graph_ready(cx), shell.graph_work_status(cx))
+            });
+            let root_work = self.graph.root.read_with(self.cx, |root, _| root.has_pending_work());
+            let asking = settle_counts_as_asking(frames, root_work, graph_ready, graph_work);
+            let reading = queued > 0 || running > 0 || graph_work.is_some();
             if !asking && !reading {
                 self.draw();
                 return;
@@ -435,12 +631,12 @@ impl Rig {
             assert!(
                 rounds <= ROUNDS,
                 "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
-                 {queued} queued and {running} running read(s); renders so far {:?}",
+                 {queued} queued and {running} running read(s), graph ready={graph_ready}, graph work={graph_work:?}; renders so far {:?}",
                 self.counts()
             );
             assert!(
                 Instant::now() < deadline,
-                "the shell never settled: after {:?} of real time {queued} read(s) are queued and {running} running",
+                "the shell never settled: after {:?} of real time {queued} read(s) are queued, {running} running, graph ready={graph_ready}, graph work={graph_work:?}",
                 self.patience
             );
             std::thread::sleep(Duration::from_millis(2));
@@ -482,6 +678,369 @@ impl Rig {
         self.cx.simulate_keystrokes(keys);
         self.settle();
     }
+}
+
+fn settle_counts_as_asking(
+    frames: usize,
+    root_work: bool,
+    graph_ready: bool,
+    graph_work: Option<super::bodies::graph::MapWorkStatus>,
+) -> bool {
+    frames > 0 || root_work || (!graph_ready && graph_work.is_none())
+}
+
+#[test]
+fn settle_waits_for_named_graph_work_but_keeps_the_frame_and_root_watchdog() {
+    use super::bodies::graph::MapWorkStatus;
+
+    for work in [
+        MapWorkStatus::ProjectionRead,
+        MapWorkStatus::ProjectionSlot,
+        MapWorkStatus::SceneMount,
+        MapWorkStatus::Discovery,
+        MapWorkStatus::Search,
+        MapWorkStatus::PendingAccept,
+        MapWorkStatus::OpenRequest,
+    ] {
+        assert!(
+            !settle_counts_as_asking(0, false, false, Some(work)),
+            "real graph work {work:?} is governed by the patience deadline"
+        );
+    }
+    assert!(
+        settle_counts_as_asking(0, false, false, None),
+        "an unexplained unready shell still trips the round watchdog"
+    );
+    assert!(
+        settle_counts_as_asking(1, false, false, Some(MapWorkStatus::Discovery)),
+        "repeated frames remain bounded even when background work is active"
+    );
+    assert!(
+        settle_counts_as_asking(0, true, false, Some(MapWorkStatus::ProjectionRead)),
+        "root work remains bounded even when a graph read is active"
+    );
+}
+
+#[gpui::test]
+fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
+    cx: &mut TestAppContext,
+) {
+    use super::bodies::graph::MapWorkStatus;
+    use crate::runtime::indexed_world::TestProjectionGate;
+    use std::sync::Arc;
+
+    let mut rig = rig(cx, Some(Route::World), 1440.0, 900.0);
+    let root = rig
+        .graph
+        .store
+        .read_with(rig.cx, |store, _| store.snapshot().key());
+    let mut gates = Vec::new();
+
+    // Each replacement gets a distinct fixture owner. The first four reads
+    // hold every bounded Memo slot; the fifth request is explicitly deferred.
+    for slot in 0..5 {
+        let gate = Arc::new(TestProjectionGate::default());
+        rig.cx.update(|_, cx| {
+            super::bodies::graph::install_test_fixture_with_gate(
+                root,
+                Some(Arc::clone(&gate)),
+                cx,
+            );
+        });
+        rig.repaint();
+        rig.cx.run_until_parked();
+        let work = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx));
+        if slot < 4 {
+            assert_eq!(work, Some(MapWorkStatus::ProjectionRead));
+            assert!(gate.entered(), "fixture read {slot} owns its Memo slot");
+        } else {
+            assert_eq!(work, Some(MapWorkStatus::ProjectionSlot));
+            assert!(!gate.entered(), "the fifth read waits without starting work");
+        }
+        gates.push(gate);
+    }
+
+    // Navigating to a page suspends the retained graph while its four readers
+    // are still gated. Hidden graph work must not keep the visible page's
+    // settlement loop alive.
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None,
+        "hidden reads and a deferred projection cannot block another page"
+    );
+
+    for gate in &gates[..4] {
+        gate.release();
+    }
+    rig.cx.run_until_parked();
+
+    // The deferred fixture key starts only after the old flights release
+    // their slots and the graph becomes visible again.
+    rig.graph.root.update(rig.cx, |root, cx| {
+        root.dispatch(Intent::Navigate(Route::World), cx);
+    });
+    rig.draw();
+    assert!(gates[4].entered(), "the visible deferred projection resumes");
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        Some(MapWorkStatus::ProjectionRead)
+    );
+
+    // Hide while that deferred projection is still running. A product page
+    // settles without waiting for invisible graph work.
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None
+    );
+    gates[4].release();
+    rig.cx.run_until_parked();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None,
+        "a completed projection stays hidden and cached until the graph returns"
+    );
+
+    // Completion while hidden remains cached. Reopening consumes the single
+    // mounting wake within the native draw and starts graph discovery. Do not
+    // drain the discovery executor before checking the actual mounted stage.
+    rig.graph.root.update(rig.cx, |root, cx| {
+        root.dispatch(Intent::Navigate(Route::World), cx);
+    });
+    rig.draw_frame();
+    assert_eq!(
+        rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        Some(MapWorkStatus::Discovery),
+        "the cached projection mounted and began discovery"
+    );
+    assert!(
+        rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("fixture 3 nodes"),
+        "the completed projection reached the real graph entity"
+    );
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+
+    // Hide before discovery settles. The page settles, then returning uses
+    // that same projection and mounts it into GraphView.
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None
+    );
+    rig.go(Intent::Navigate(Route::World));
+
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None
+    );
+    assert!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_report(cx))
+            .contains("fixture 3 nodes"),
+        "reopening mounts the completed fixture projection"
+    );
+}
+
+fn native_tree_rig(cx: &mut TestAppContext, gate: Option<OwnerGate>) -> Rig {
+    let pool = ReadPool::start(2, |_| NativeTreeFixture).expect("Tree read pool");
+    let mut rig = rig_with_engine_gate(cx, None, 1440.0, 900.0, pool, RootOnly, gate);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let tree = Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Tree(
+            LocalProjectId::new("/fixture/native-tree").expect("Tree project"),
+        ),
+    ));
+    rig.go(Intent::Navigate(tree));
+    rig
+}
+
+fn click_native_tree(rig: &mut Rig, part: &str) {
+    let ledger = crate::shell::anatomy_tests::painted(rig);
+    let target = ledger
+        .targets
+        .iter()
+        .find(|target| target.key.contains(part))
+        .unwrap_or_else(|| panic!("mounted Tree target {part:?} was absent"));
+    let at = point(
+        px(target.bounds.x + target.bounds.width / 2.0),
+        px(target.bounds.y + target.bounds.height / 2.0),
+    );
+    rig.cx.simulate_mouse_move(at, None, Modifiers::none());
+    rig.draw();
+    rig.cx.simulate_click(at, Modifiers::none());
+    rig.settle();
+}
+
+fn open_native_tree_release(rig: &mut Rig) {
+    click_native_tree(rig, "native-row/details");
+    click_native_tree(rig, "native-release");
+    assert!(
+        matches!(rig.route(), Route::Package(_)),
+        "the mounted Tree release opened its package"
+    );
+}
+
+fn native_tree_return_focused(rig: &mut Rig) -> bool {
+    crate::shell::anatomy_tests::painted(rig)
+        .targets
+        .iter()
+        .any(|target| target.key.contains("native-release") && target.state.focused)
+}
+
+fn native_tree_release_mounted(rig: &mut Rig) -> bool {
+    crate::shell::anatomy_tests::painted(rig)
+        .targets
+        .iter()
+        .any(|target| target.key.contains("native-release"))
+}
+
+#[gpui::test]
+fn mounted_tree_back_returns_focus_to_the_exact_release(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.keys("secondary-[");
+    assert!(
+        native_tree_release_mounted(&mut rig),
+        "the exact release remounted after Back"
+    );
+    assert!(
+        native_tree_return_focused(&mut rig),
+        "the settled Tree restored native focus to that release"
+    );
+}
+
+#[gpui::test]
+fn mounted_tree_back_return_waits_for_settlement_and_tab_interrupts_it(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.frame(16);
+    assert!(matches!(
+        rig.route(),
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(_))
+    ));
+    rig.cx.simulate_keystrokes("tab");
+    rig.settle();
+    assert!(
+        native_tree_release_mounted(&mut rig),
+        "the interrupted Tree still mounted its release"
+    );
+    assert!(
+        !native_tree_return_focused(&mut rig),
+        "Tab during Back prevents a late facet focus transfer"
+    );
+}
+
+#[gpui::test]
+fn mounted_tree_back_return_is_cancelled_by_a_new_navigation(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.frame(16);
+    let next = Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Tree(
+            LocalProjectId::new("/fixture/interrupted-tree").expect("next Tree project"),
+        ),
+    ));
+    rig.go(Intent::Navigate(next.clone()));
+    assert_eq!(rig.route(), next, "the new Tree replaced the returning visit");
+    assert!(native_tree_release_mounted(&mut rig), "the new Tree mounted its own release");
+    assert!(!native_tree_return_focused(&mut rig), "the interrupted Back cannot focus a new Tree's release");
+}
+
+#[gpui::test]
+fn mounted_tree_back_return_does_not_steal_ask_focus(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.frame(16);
+    rig.cx.simulate_keystrokes("secondary-k");
+    rig.settle();
+    assert!(
+        rig.shell.read_with(rig.cx, |shell, _| shell.transients().0),
+        "Ask owns input over the returning Tree"
+    );
+    assert!(
+        rig.cx.update(|window, cx| {
+            let ask = rig.shell.read(cx).ask_entity();
+            ask.read(cx)
+                .input()
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        }),
+        "Ask's native input actually owns focus"
+    );
+    assert!(!native_tree_return_focused(&mut rig));
+    rig.keys("escape");
+    assert!(
+        native_tree_release_mounted(&mut rig),
+        "the release remained mounted after Ask closed"
+    );
+    assert!(
+        !native_tree_return_focused(&mut rig),
+        "closing Ask cannot revive the old return intent"
+    );
+}
+
+#[gpui::test]
+fn mounted_tree_back_return_does_not_resume_after_jump_menu(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.frame(16);
+    let ledger = crate::shell::anatomy_tests::painted(&mut rig);
+    let back = ledger.targets.iter().find(|target| target.key == "jump-back")
+        .expect("mounted Jump Back target");
+    let at = point(px(back.bounds.x + back.bounds.width / 2.0), px(back.bounds.y + back.bounds.height / 2.0));
+    rig.cx.simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::none());
+    rig.cx.simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::none());
+    rig.settle();
+    let menu: gpui::ElementId = "jump-back-menu".into();
+    assert!(rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu, window, cx)));
+    rig.keys("escape");
+    assert!(native_tree_release_mounted(&mut rig));
+    assert!(!native_tree_return_focused(&mut rig), "closing the menu cannot revive the interrupted return");
+}
+
+#[gpui::test]
+fn mounted_tree_same_root_owner_replacement_cannot_revive_return_focus(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
+        4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = native_tree_rig(cx, Some(gate.clone()));
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.frame(16);
+    gate.publish(OwnerState::Starting);
+    rig.draw();
+    gate.publish(OwnerState::Ready {
+        key: root,
+        mode: crate::model::ServiceMode::Attached,
+    });
+    rig.settle();
+    assert!(
+        native_tree_release_mounted(&mut rig),
+        "the replacement owner renewed the Tree row"
+    );
+    assert!(
+        !native_tree_return_focused(&mut rig),
+        "new same-root Tree callbacks cannot adopt the old owner's return marker"
+    );
 }
 
 #[gpui::test]
@@ -574,6 +1133,226 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     assert_eq!(zone, super::focus::Zone::Titlebar);
 }
 
+#[gpui::test]
+fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let mut package_id = None;
+    for _ in 0..8 {
+        rig.keys("tab");
+        let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(zone, super::focus::Zone::Reader, "Library controls precede the next Shell zone");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let native = rig.cx.update(|window, _| targets.focused_native_is_live(window));
+        assert!(native, "Tab moved actual GPUI focus to the mounted control");
+        if focused.as_deref().is_some_and(|id| id.starts_with("orbit-package-")) {
+            package_id = focused;
+            break;
+        }
+    }
+    let package_id = package_id.expect("Tab reaches the indexed package chip");
+    rig.keys("shift-tab");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("add-folder"));
+    rig.keys("tab");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1, Some(package_id.clone()));
+    rig.keys("space");
+    assert!(matches!(rig.route(), Route::Package(_)), "Space activates the focused native chip");
+    rig.keys("secondary-[");
+    assert!(matches!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home)));
+    let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone, super::focus::Zone::Reader);
+    assert_eq!(focused, Some(package_id), "Back returns to the exact chip that opened the package");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)), "native focus returns only after that chip remounts");
+}
+
+#[gpui::test]
+fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.keys("tab");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let order = targets.native_keys();
+    assert!(order.len() >= 3, "Library mounts multiple native controls");
+    let recalled = targets.focused();
+    let mut actual = None;
+    for _ in 0..32 {
+        // GPUI's own traversal stands in for AccessKit or an input control;
+        // Shell's logical Recall intentionally receives no walk event.
+        rig.cx.update(|window, cx| window.focus_next(cx));
+        if let Some(id) = rig.cx.update(|window, _| targets.native_focused(window))
+            && let Some(at) = order.iter().position(|key| key == &id)
+            && at > 0 && at + 1 < order.len()
+        {
+            actual = Some(at);
+            break;
+        }
+    }
+    let at = actual.expect("GPUI traversed to a later mounted Reader control");
+    assert_ne!(targets.focused(), Some(order[at].clone()), "the native move was independent of Recall");
+    assert_eq!(targets.focused(), recalled);
+    rig.keys("tab");
+    assert_eq!(targets.focused(), Some(order[at + 1].clone()), "Shell Tab starts at the actually focused handle");
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(order[at + 1].clone()));
+}
+
+#[gpui::test]
+fn an_interrupted_back_does_not_transfer_native_focus_late(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let mut opened = None;
+    for _ in 0..16 {
+        rig.keys("tab");
+        let focused = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1;
+        if focused.as_deref().is_some_and(|id| id.starts_with("orbit-package-")) {
+            opened = focused;
+            break;
+        }
+    }
+    let opened = opened.expect("Tab reaches a mounted package target");
+    rig.keys("space");
+    assert!(matches!(rig.route(), Route::Package(_)));
+    // Let Back install its pending return and begin closing the plate, then
+    // dispatch a real Shell Tab before the transition settles.
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.draw();
+    assert!(matches!(rig.route(), Route::Orbit(_)));
+    rig.cx.simulate_keystrokes("tab");
+    rig.settle();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_ne!(targets.focused(), Some(opened), "the cancelled Back cannot steal focus after the Shell walk");
+}
+
+#[gpui::test]
+fn a_mounted_native_action_survives_only_an_observation_bump(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let action = (0..16).find_map(|_| {
+        rig.keys("tab");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
+    }).expect("Tab reaches an indexed package");
+    rig.graph.store.update(rig.cx, |store, cx| {
+        let snapshot = store.snapshot();
+        let old = snapshot.key();
+        store.admit_snapshot(Arc::new(snapshot.with_key(old.observed_at(old.observation() + 1), None)), cx);
+    });
+    rig.cx.update(|window, cx| action(window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Package(_)), "diagnostic observation does not revoke producer authority");
+}
+
+#[gpui::test]
+fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()),
+    );
+    let action = (0..16).find_map(|_| {
+        rig.keys("tab");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
+    }).expect("Tab reaches an indexed package");
+    gate.publish(OwnerState::Starting);
+    // Repaint retained Orbit bytes before the watcher processes Starting.
+    // The predecessor remains legible, but no new package callback mounts.
+    rig.repaint();
+    let retained_targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.orbit().loaded_value().is_some()));
+    assert!(!retained_targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained bytes mount no native package callback");
+    assert!(rig.said().iter().any(|line| line.contains("Earlier Library reading retained")));
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // This action came from the former mounted visit. The gate's epoch has
+    // already moved even if its UI watcher has not run yet.
+    rig.cx.update(|window, cx| action(window, cx));
+    assert!(matches!(rig.route(), Route::Orbit(_)), "the retained callback did not navigate");
+}
+
+#[gpui::test]
+fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate), VersionedRoot::unserved(),
+    );
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(targets.native_keys().iter().any(|id| id == "add-folder"));
+    rig.cx.simulate_keystrokes("tab");
+    rig.draw();
+    assert_eq!(targets.focused().as_deref(), Some("add-folder"));
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
+    assert!(!rig.cx.did_prompt_for_paths());
+    rig.cx.simulate_keystrokes("enter");
+    rig.draw();
+    assert!(rig.cx.did_prompt_for_paths(), "local Add folder still opens while the owner starts");
+}
+
+#[gpui::test]
+fn local_library_control_cannot_act_after_its_visit_is_replaced(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        .placed().into_iter().find(|(target, _)| target.id == "add-folder")
+        .expect("Library Add is mounted").0.act;
+    rig.go(Intent::Navigate(Route::World));
+    rig.cx.update(|window, cx| add(window, cx));
+    assert!(!rig.cx.did_prompt_for_paths(), "an old local UI callback cannot open a picker on another visit");
+}
+
+#[gpui::test]
+fn unserved_library_control_cannot_act_after_an_overlay_takes_input(cx: &mut TestAppContext) {
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(OwnerGate::starting()), VersionedRoot::unserved(),
+    );
+    let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        .placed().into_iter().find(|(target, _)| target.id == "add-folder")
+        .expect("Library Add is mounted on first launch").0.act;
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(
+        Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx,
+    ));
+    rig.draw();
+    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(crate::navigation::Overlay::Settings(_))));
+    rig.cx.update(|window, cx| add(window, cx));
+    assert!(!rig.cx.did_prompt_for_paths(), "an old local control cannot act through an overlay");
+}
+
+#[gpui::test]
+fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    rig.draw();
+    rig.repaint();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let keys = targets.native_keys();
+    assert!(keys.iter().any(|id| id == "add-folder"), "recovery cannot hide local setup");
+    assert!(keys.iter().any(|id| id.starts_with("retry-")), "the fault mounts a semantic Retry control");
+    rig.cx.simulate_keystrokes("tab");
+    rig.draw();
+    assert_eq!(targets.focused().as_deref(), Some("add-folder"));
+    assert!(!rig.cx.did_prompt_for_paths());
+    rig.cx.simulate_keystrokes("enter");
+    rig.draw();
+    assert!(rig.cx.did_prompt_for_paths(), "Add folder also works from the failed Library");
+    rig.cx.simulate_path_prompt_response(|_| None);
+    rig.draw();
+    let mut reached_retry = false;
+    for _ in 0..8 {
+        rig.cx.simulate_keystrokes("tab");
+        rig.draw();
+        if targets.focused().is_some_and(|id| id.starts_with("retry-")) {
+            reached_retry = true;
+            break;
+        }
+    }
+    assert!(reached_retry, "Shell Tab reaches Retry through the failed Library");
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
+    rig.cx.simulate_keystrokes("enter");
+    rig.draw();
+    assert!(matches!(gate.state(), OwnerState::Starting), "native Retry asks the failed owner to restart");
+}
+
 /// The lead's report: on a symbol page, Tab, J and Space each changed
 /// nothing. Confirms all three are wired end to end on a fresh page: Tab
 /// moves the keyboard zone, J walks the reader's focus, and Space peeks a
@@ -608,6 +1387,7 @@ fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
 #[gpui::test]
 fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Package(crate::navigation::PackageRoute {
+        cargo: None,
         project: None,
         at: None,
         package: crate::core::PackageId::new(PACKAGE).expect("package"),
@@ -806,6 +1586,38 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn appearance_text_size_control_updates_the_current_displays_saved_zoom(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.go(Intent::OpenSettings(
+        crate::navigation::SettingsPage::Appearance,
+    ));
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    rig.repaint();
+    let choice = rig
+        .cx
+        .update(|window, _| {
+            window
+                .painted_texts()
+                .iter()
+                .find(|text| text.text.as_ref() == "200%")
+                .map(|text| text.bounds.center())
+        })
+        .expect("Appearance paints the 200% text-size choice");
+    rig.cx.simulate_click(choice, Modifiers::default());
+    rig.settle();
+    let zoom = rig
+        .graph
+        .store
+        .read_with(rig.cx, |store, _| store.snapshot().settings().zoom.clone());
+    assert_eq!(zoom.percent(&display), 200, "the control uses the existing per-display preference");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(
+        store.snapshot().overlay(),
+        Some(crate::navigation::Overlay::Settings(crate::navigation::SettingsPage::Appearance))
+    )), "changing text size keeps Settings open");
+}
+
+#[gpui::test]
 fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     // Stand on a member row and peek it.
@@ -847,6 +1659,141 @@ fn settings_keys_lists_the_sidebars_keys_beside_the_shells_and_the_graphs(cx: &m
     }
     let at = |words: &str| said.iter().position(|line| line == words).unwrap_or(usize::MAX);
     assert!(at("In the sidebar") < at("In the graph"), "the sidebar's keys come before the graph's");
+}
+
+#[gpui::test]
+fn settings_legend_explains_declaration_and_sidebar_marks(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Legend));
+    let said = rig.said();
+    for words in [
+        "Legend",
+        "Declaration mark shape names its kind; its hue groups the kind by family.",
+        "Declaration kinds",
+        "function",
+        "Callable",
+        "Sidebar state marks",
+        "Mint notch and use count",
+        "Focus and motion colors",
+    ] {
+        assert!(said.iter().any(|line| line == words), "Settings › Legend says {words:?}: {said:#?}");
+    }
+    assert!(!said.iter().any(|line| line == "In the sidebar"), "Legend no longer aliases the Keys page");
+}
+
+#[gpui::test]
+fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
+    use crate::navigation::{Overlay, SettingsPage};
+
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let pages = [
+        (SettingsPage::Appearance, "Appearance"),
+        (SettingsPage::Editor, "Editor"),
+        (SettingsPage::Agents, "Agents & MCP"),
+        (SettingsPage::Connections, "Connections"),
+        (SettingsPage::Privacy, "Privacy & local data"),
+        (SettingsPage::Diagnostics, "Diagnostics"),
+        (SettingsPage::Index, "Index & registries"),
+        (SettingsPage::Registry, "Registry sources"),
+        (SettingsPage::Legend, "Legend"),
+        (SettingsPage::Help, "Keys"),
+    ];
+
+    rig.keys("secondary-,");
+    for _ in 0..4 {
+        let zone = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
+        if zone == super::focus::Zone::Shelf {
+            break;
+        }
+        rig.keys("tab");
+    }
+    assert_eq!(
+        rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0),
+        super::focus::Zone::Shelf,
+        "Tab gives the Settings page list the keyboard"
+    );
+
+    for (index, (page, title)) in pages.into_iter().enumerate() {
+        if index > 0 {
+            rig.keys("j");
+        }
+        rig.keys("enter");
+        assert_eq!(
+            rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::Settings(page)),
+            "the {title} row opens its typed page"
+        );
+        assert!(
+            rig.said().iter().any(|line| line == title),
+            "the {title} page paints its own body"
+        );
+    }
+}
+
+#[gpui::test]
+fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_percent(
+    cx: &mut TestAppContext,
+) {
+    use crate::navigation::SettingsPage;
+
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.go(Intent::ZoomTo {
+        display,
+        percent: 200,
+    });
+    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+
+    let labels = crate::model::ZoomPreference::LADDER.map(|percent| format!("{percent}%"));
+    for width in [320.0, 360.0, 390.0, 640.0, 1440.0] {
+        super::fit_tests::resize(&mut rig, width, 568.0);
+        let viewport = rig.cx.update(|window, _| window.bounds());
+        let (left, right, top, bottom) = (
+            f32::from(viewport.origin.x),
+            f32::from(viewport.origin.x + viewport.size.width),
+            f32::from(viewport.origin.y),
+            f32::from(viewport.origin.y + viewport.size.height),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for offset in [0.0, -350.0, -700.0, -1050.0, -1400.0, -1750.0, -2100.0] {
+            rig.shell.read_with(rig.cx, |shell, cx| {
+                shell.set_source_reader_scroll_offset(point(px(0.0), px(offset)), cx)
+            });
+            rig.repaint();
+            let visible = rig.cx.update(|window, _| {
+                window
+                    .painted_texts()
+                    .iter()
+                    .filter(|text| labels.iter().any(|label| label == text.text.as_ref()))
+                    .map(|text| {
+                        (
+                            text.text.to_string(),
+                            f32::from(text.bounds.origin.x),
+                            f32::from(text.bounds.origin.y),
+                            f32::from(text.bounds.size.width),
+                            f32::from(text.bounds.size.height),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            for (label, x, y, text_width, text_height) in visible {
+                if y >= top - 0.5 && y + text_height <= bottom + 0.5 {
+                    assert!(
+                        x >= left - 0.5 && x + text_width <= right + 0.5,
+                        "the visible {label} choice at {width:.0}px and 200% lies within the actual reader bounds {left:.1}..{right:.1}, got {x:.1}..{:.1}",
+                        x + text_width
+                    );
+                    seen.insert(label);
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            labels.iter().cloned().collect(),
+            "every zoom option is actually visible and reachable at {width:.0}px and 200%"
+        );
+    }
 }
 
 /// GAPS D5: Esc closes Settings, whether the keyboard is still where ⌘,
@@ -1233,6 +2180,11 @@ fn graph_failed_new_root_open_with_retained_old_results_settles_and_can_retry(cx
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 500) });
     let new_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     assert_ne!(new_root, old_root, "the test really advances producer authority");
+    // The synthetic owner is exact-root scoped, just like the real owner.
+    // Admit its R2 projection explicitly before opening a node in that world.
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(new_root, cx));
+    rig.repaint();
+    rig.settle();
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
@@ -1541,6 +2493,14 @@ fn new_root_without_an_indexed_join_clears_the_previous_painted_graph_ghost(cx: 
     let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 501) });
+    // No R2 graph projection is installed. Exercise the independent failed
+    // declaration read while the graph must already have revoked R1 geometry.
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(),
+        "an unadmitted new graph cannot retain the old root's painted endpoint");
+    rig.graph.store.update(rig.cx, |store, cx| {
+        store.ensure(crate::model::pages::PageKey::Symbol(symbol("RelationLabel")), cx);
+    });
+    rig.settle();
     rig.graph.store.read_with(rig.cx, |store, _| {
         assert_ne!(store.snapshot().key(), old_root);
         let resource = store.symbol(&symbol("RelationLabel"));

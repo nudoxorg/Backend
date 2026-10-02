@@ -1,8 +1,16 @@
 use super::*;
 use crate::contract::{AuthorityAdmissionError, AuthorityRegistry};
 use std::{
-    error::Error, fmt::Write as _, fs, io::Write as _, path::PathBuf, process::Command, sync::Arc,
-    thread, time::Duration,
+    error::Error,
+    fmt::Write as _,
+    fs,
+    io::Write as _,
+    path::PathBuf,
+    process::Command,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
 };
 
 fn test_coreutils_executable(name: &str) -> PathBuf {
@@ -1207,6 +1215,37 @@ fn supervisor_kills_when_the_caller_cancels() -> Result<(), Box<dyn Error>> {
 
 #[cfg(unix)]
 #[test]
+fn supervisor_polls_a_borrowed_atomic_cancellation_flag() -> Result<(), Box<dyn Error>> {
+    let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
+    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let observer = Arc::clone(&cancelled);
+    let join =
+        thread::spawn(move || ProcessSupervisor::new(process).run_with_observer(observer.as_ref()));
+    thread::sleep(Duration::from_millis(20));
+    cancelled.store(true, Ordering::Release);
+    let result = join.join().map_err(|_| "supervisor thread panicked")?;
+    assert_eq!(result, Err(ProcessError::Cancelled));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_honors_a_borrowed_absolute_deadline() -> Result<(), Box<dyn Error>> {
+    let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
+    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let cancelled = AtomicBool::new(false);
+    let deadline = std::time::Instant::now() + Duration::from_millis(20);
+
+    assert_eq!(
+        ProcessSupervisor::new(process).run_with_observer_until(&cancelled, deadline),
+        Err(ProcessError::Deadline)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn supervisor_cancels_the_entire_process_group() -> Result<(), Box<dyn Error>> {
     let pid_path = std::env::temp_dir().join(format!(
         "backend-compile-grandchild-{}.pid",
@@ -1625,6 +1664,258 @@ while True:
     assert_eq!(validated.records()[0].key(), "symbol");
     assert_eq!(observation.decode_payload()?, validated.clone());
     session.fallback_to_cold()?;
+    let _ = fs::remove_dir_all(workspace);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_native_combined_output_limit_rejects_second_response_before_publication()
+-> Result<(), Box<dyn Error>> {
+    let python = [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file());
+    let Some(python) = python else {
+        return Ok(());
+    };
+    let authority = MockAuthority {
+        revision: 1,
+        unavailable: false,
+    };
+    let snapshot = authority.discover()?;
+    let key = session_key(&authority, &snapshot);
+    let payload = NativeEnvelope::unbound(
+        "rust",
+        [31; 32],
+        [32; 32],
+        [33; 32],
+        1,
+        NativeCoverage::Partial,
+        vec![NativeRecord::new(
+            NativeRecordKind::Declaration,
+            "quota-symbol",
+            b"bounded-native-payload",
+        )?],
+    )?
+    .encode()?;
+    let payload_hex = payload.iter().fold(
+        String::with_capacity(payload.len().saturating_mul(2)),
+        |mut hex, byte| {
+            let _ = write!(&mut hex, "{byte:02x}");
+            hex
+        },
+    );
+    let workspace = std::env::temp_dir().join(format!(
+        "backend-compile-persistent-output-quota-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&workspace);
+    fs::create_dir(&workspace)?;
+    let script_path = workspace.join("authority.py");
+    fs::write(
+        &script_path,
+        br#"import os, sys
+def read_exact(size):
+    data = b""
+    while len(data) < size:
+        part = sys.stdin.buffer.read(size - len(data))
+        if not part:
+            return data
+        data += part
+    return data
+hello = read_exact(38)
+if len(hello) != 38:
+    raise SystemExit(1)
+sys.stdout.buffer.write(hello)
+sys.stdout.buffer.flush()
+payload = bytes.fromhex(os.environ["BACKEND_PAYLOAD"])
+while True:
+    request = read_exact(54)
+    if not request:
+        break
+    if len(request) != 54:
+        raise SystemExit(1)
+    response = bytearray(request)
+    response[5] = 5
+    sys.stdout.buffer.write(response)
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(payload)
+    sys.stderr.buffer.flush()
+"#,
+    )?;
+    let environment = ProcessEnvironment::new(vec![("BACKEND_PAYLOAD".into(), payload_hex)])?;
+    // The handshake and first response fit. The second frame and payload push
+    // the lifetime aggregate one byte past the quota while both stream totals
+    // remain individually within their bounds.
+    let output_limit = 38_usize
+        .checked_add(54_usize.saturating_mul(2))
+        .and_then(|total| total.checked_add(payload.len().saturating_mul(2)))
+        .and_then(|total| total.checked_sub(1))
+        .ok_or("output quota calculation overflowed")?;
+    let process_limits = limits(
+        256,
+        payload.len().saturating_mul(2).saturating_add(1),
+        Duration::from_secs(2),
+        output_limit,
+    )?;
+    let command = SupervisedCommand::for_authority(
+        python,
+        vec![script_path.to_string_lossy().into_owned()],
+        environment,
+        workspace.clone(),
+        ProcessStdin::null(),
+        authority.identity().toolchain,
+        Some(key),
+        ProtocolDescriptor::persistent(),
+        process_limits,
+    )?;
+    let mut session = NativeAuthorityRunner::new(command).start_persistent()?;
+    let first = session.request(snapshot.manifest().digest(), snapshot.sequence())?;
+    assert_eq!(
+        first
+            .payload()
+            .ok_or("missing first payload")?
+            .records()
+            .len(),
+        1
+    );
+    let result = session.request(snapshot.manifest().digest(), snapshot.sequence());
+    assert!(
+        matches!(
+            &result,
+            Err(NativeRunnerError::Process(ProcessError::OutputLimit))
+        ),
+        "unexpected second response result: {result:?}"
+    );
+    let _ = fs::remove_dir_all(workspace);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_native_surplus_stdout_is_accounted_before_response_publication()
+-> Result<(), Box<dyn Error>> {
+    let python = [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file());
+    let Some(python) = python else {
+        return Ok(());
+    };
+    let authority = MockAuthority {
+        revision: 1,
+        unavailable: false,
+    };
+    let snapshot = authority.discover()?;
+    let key = session_key(&authority, &snapshot);
+    let payload = NativeEnvelope::unbound(
+        "rust",
+        [41; 32],
+        [42; 32],
+        [43; 32],
+        1,
+        NativeCoverage::Partial,
+        vec![NativeRecord::new(
+            NativeRecordKind::Declaration,
+            "surplus-symbol",
+            b"valid-payload-before-surplus-frame",
+        )?],
+    )?
+    .encode()?;
+    let payload_hex = payload.iter().fold(
+        String::with_capacity(payload.len().saturating_mul(2)),
+        |mut hex, byte| {
+            let _ = write!(&mut hex, "{byte:02x}");
+            hex
+        },
+    );
+    let workspace = std::env::temp_dir().join(format!(
+        "backend-compile-persistent-stdout-drain-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&workspace);
+    fs::create_dir(&workspace)?;
+    let script_path = workspace.join("authority.py");
+    fs::write(
+        &script_path,
+        br#"import os, sys
+def read_exact(size):
+    data = b""
+    while len(data) < size:
+        part = sys.stdin.buffer.read(size - len(data))
+        if not part:
+            return data
+        data += part
+    return data
+hello = read_exact(38)
+if len(hello) != 38:
+    raise SystemExit(1)
+sys.stdout.buffer.write(hello)
+sys.stdout.buffer.flush()
+payload = bytes.fromhex(os.environ["BACKEND_PAYLOAD"])
+request = read_exact(54)
+if len(request) != 54:
+    raise SystemExit(1)
+response = bytearray(request)
+response[5] = 5
+sys.stdout.buffer.write(response)
+sys.stdout.buffer.flush()
+# Queue an extra complete response before publishing the valid stderr payload.
+# The test pauses the pump after the first frame so this surplus is pending at
+# the exact response-publication gate.
+sys.stdout.buffer.write(response)
+sys.stdout.buffer.flush()
+sys.stderr.buffer.write(payload)
+sys.stderr.buffer.flush()
+while True:
+    if not read_exact(54):
+        break
+"#,
+    )?;
+    let environment = ProcessEnvironment::new(vec![("BACKEND_PAYLOAD".into(), payload_hex)])?;
+    // Handshake, expected frame, and valid payload fit. The queued surplus
+    // frame pushes the aggregate past the limit while stdout's own quota allows it.
+    let output_limit = 38_usize
+        .checked_add(54)
+        .and_then(|total| total.checked_add(payload.len()))
+        .and_then(|total| total.checked_add(1))
+        .ok_or("output quota calculation overflowed")?;
+    let process_limits = limits(
+        256,
+        payload.len().saturating_add(1),
+        Duration::from_secs(2),
+        output_limit,
+    )?;
+    let command = SupervisedCommand::for_authority(
+        python,
+        vec![script_path.to_string_lossy().into_owned()],
+        environment,
+        workspace.clone(),
+        ProcessStdin::null(),
+        authority.identity().toolchain,
+        Some(key),
+        ProtocolDescriptor::persistent(),
+        process_limits,
+    )?;
+    let mut session = NativeAuthorityRunner::new(command).start_persistent()?;
+    assert!(session.pause_stdout_after_next_frame_for_test());
+    let result = session.request(snapshot.manifest().digest(), snapshot.sequence());
+    assert!(
+        matches!(
+            &result,
+            Err(NativeRunnerError::Process(ProcessError::OutputLimit))
+        ),
+        "surplus stdout was not rejected before publication: {result:?}"
+    );
     let _ = fs::remove_dir_all(workspace);
     Ok(())
 }

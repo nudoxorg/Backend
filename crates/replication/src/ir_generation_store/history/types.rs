@@ -40,6 +40,9 @@ pub enum HistoryProposalError {
     /// The current publisher only carries the first-parent closure forward;
     /// it cannot safely advertise a merge with second-parent-only segments.
     UnsupportedMergePayloadClosure,
+    /// A typed durable history operation failed with a retryable availability
+    /// error such as a filesystem write or directory-sync failure.
+    RetryableStorage(String),
     /// A storage, authority, or validation failure while building the proposal.
     Storage(String),
 }
@@ -50,6 +53,9 @@ impl std::fmt::Display for HistoryProposalError {
             Self::UnsupportedMergePayloadClosure => formatter.write_str(
                 "two-parent semantic history publication is unsupported until payload closures are unioned",
             ),
+            Self::RetryableStorage(message) => {
+                write!(formatter, "semantic history storage is temporarily unavailable: {message}")
+            }
             Self::Storage(message) => formatter.write_str(message),
         }
     }
@@ -60,6 +66,84 @@ impl std::error::Error for HistoryProposalError {}
 impl From<String> for HistoryProposalError {
     fn from(message: String) -> Self {
         Self::Storage(message)
+    }
+}
+
+/// Failure classification retained by typed V3 history mutation paths.
+/// Legacy history APIs stringify this value, while the V3 owner bridge maps
+/// availability and compare failures to explicit retry outcomes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryMutationError {
+    /// A durable write failed with an I/O or sync error.
+    RetryableAvailability(String),
+    /// Another publisher changed the ref away from the expected tip.
+    CompareAndSwapMismatch,
+    /// Validation, authority, or an opaque legacy helper refused the change.
+    Refused(String),
+}
+
+impl std::fmt::Display for HistoryMutationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RetryableAvailability(detail) => {
+                write!(
+                    formatter,
+                    "history storage is temporarily unavailable: {detail}"
+                )
+            }
+            Self::CompareAndSwapMismatch => {
+                formatter.write_str("semantic history reference compare-and-swap failed")
+            }
+            Self::Refused(detail) => formatter.write_str(detail),
+        }
+    }
+}
+
+impl std::error::Error for HistoryMutationError {}
+
+impl From<String> for HistoryMutationError {
+    fn from(detail: String) -> Self {
+        Self::Refused(detail)
+    }
+}
+
+/// Error construction shared by legacy string APIs and typed V3 history CAS.
+pub(crate) trait HistoryMutationFailure: From<String> + std::fmt::Display {
+    /// Marks a directly observed durable I/O failure.
+    fn retryable_io(detail: String) -> Self;
+
+    /// Marks a ref-tip mismatch observed by the final atomic CAS.
+    fn ref_tip_mismatch() -> Self;
+
+    /// Preserves a typed lower history failure through generic mutation code.
+    fn from_typed(error: HistoryMutationError) -> Self;
+}
+
+impl HistoryMutationFailure for String {
+    fn retryable_io(detail: String) -> Self {
+        detail
+    }
+
+    fn ref_tip_mismatch() -> Self {
+        "semantic history reference compare-and-swap failed".to_owned()
+    }
+
+    fn from_typed(error: HistoryMutationError) -> Self {
+        error.to_string()
+    }
+}
+
+impl HistoryMutationFailure for HistoryMutationError {
+    fn retryable_io(detail: String) -> Self {
+        Self::RetryableAvailability(detail)
+    }
+
+    fn ref_tip_mismatch() -> Self {
+        Self::CompareAndSwapMismatch
+    }
+
+    fn from_typed(error: HistoryMutationError) -> Self {
+        error
     }
 }
 
@@ -105,8 +189,8 @@ impl HistoryCommitId {
 
 /// Versioned semantic-generation authority bound into a history commit ID.
 ///
-/// V1 commits use the existing full-NXFI `GenerationId`. V2 commits store
-/// only untrusted root claims; cold typed replay checks them against the
+/// V1 commits use the existing full-NXFI `GenerationId`. V2 and V3 commits
+/// store only untrusted root claims; cold typed replay checks them against the
 /// canonical manifest and complete immutable object closure before returning
 /// semantic content proof. The local generation-record ID remains a separate
 /// materialization locator and is not this semantic root.
@@ -119,6 +203,10 @@ pub enum HistoryGenerationRoot {
     /// object bridge. Cold typed replay must verify all of them before it
     /// yields semantic content evidence.
     TypedV2(HistoryTypedV2RootClaim),
+    /// Claim-only c007 revision-3 roots, exact immutable object closure, and
+    /// portable V3 manifest/object bridge. Cold replay verifies the full
+    /// closure before returning typed semantic content evidence.
+    TypedV3(HistoryTypedV3RootClaim),
 }
 
 /// Untrusted V2 claims committed by a history record. This metadata wrapper
@@ -282,6 +370,7 @@ impl HistoryGenerationRoot {
         match self {
             Self::NxfiV1(_) => 1,
             Self::TypedV2(_) => 2,
+            Self::TypedV3(_) => 3,
         }
     }
 
@@ -297,6 +386,13 @@ impl HistoryGenerationRoot {
                 writer.fixed(root.generation_root.as_bytes())?;
                 writer.fixed(root.closure.as_bytes())?;
                 writer.fixed(root.locator.as_bytes())
+            }
+            Self::TypedV3(root) => {
+                writer.u8(self.wire_discriminator())?;
+                writer.fixed(root.content_root_claim().as_bytes())?;
+                writer.fixed(root.generation_root_claim().as_bytes())?;
+                writer.fixed(root.closure().as_bytes())?;
+                writer.fixed(root.locator().as_bytes())
             }
         }
     }
@@ -317,6 +413,16 @@ impl HistoryGenerationRoot {
                 closure: ArtifactClosureClaim::from_bytes(reader.fixed()?),
                 locator: HistoryTypedV2LocatorId(reader.fixed()?),
             })),
+            3 => Ok(Self::TypedV3(HistoryTypedV3RootClaim::from_claims(
+                backend_semantic::ir::UntrustedSemanticContentRootV2::from_wire_claim(
+                    reader.fixed()?,
+                ),
+                backend_semantic::ir::UntrustedSemanticGenerationRootV2::from_wire_claim(
+                    reader.fixed()?,
+                ),
+                ArtifactClosureClaim::from_bytes(reader.fixed()?),
+                HistoryTypedV3LocatorId::from_bytes(reader.fixed()?),
+            ))),
             _ => Err("semantic history generation-root discriminator is invalid".to_owned()),
         }
     }
@@ -344,8 +450,18 @@ impl HistoryGenerationRoot {
     #[must_use]
     pub const fn typed_v2_claim(&self) -> Option<HistoryTypedV2RootClaim> {
         match self {
-            Self::NxfiV1(_) => None,
+            Self::NxfiV1(_) | Self::TypedV3(_) => None,
             Self::TypedV2(claim) => Some(*claim),
+        }
+    }
+
+    /// Returns the claim-only typed V3 binding, when this commit uses the
+    /// c007 revision-3 materialization layout.
+    #[must_use]
+    pub const fn typed_v3_claim(&self) -> Option<HistoryTypedV3RootClaim> {
+        match self {
+            Self::TypedV3(claim) => Some(*claim),
+            Self::NxfiV1(_) | Self::TypedV2(_) => None,
         }
     }
 }
@@ -429,16 +545,16 @@ impl UnpublishedHistoryProposal {
         self.record.generation
     }
 
-    /// Returns the V1 root or claim-only V2 root bound by this history
-    /// identity, separate from its local materialization record.
+    /// Returns the V1 root or claim-only typed V2/V3 root bound by this
+    /// history identity, separate from its local materialization record.
     #[must_use]
     pub const fn generation_root(&self) -> HistoryGenerationRoot {
         self.record.generation_root
     }
 
     /// Returns the manifest root of the referenced local materialization
-    /// record. For V2 semantic replay, use the manifest in the proof-bearing
-    /// [`TypedV2HistoryReplay`] token.
+    /// record. For typed semantic replay, use the manifest in the corresponding
+    /// proof-bearing [`TypedV2HistoryReplay`] or [`TypedV3HistoryReplay`] token.
     #[must_use]
     pub const fn manifest_root(&self) -> backend_semantic::ir::SemanticManifestRoot {
         self.record.manifest_root
@@ -471,16 +587,16 @@ impl AdmittedHistoryCommit {
         self.record.generation
     }
 
-    /// Returns the V1 root or claim-only V2 root bound by this history
-    /// identity, separate from its local materialization record.
+    /// Returns the V1 root or claim-only typed V2/V3 root bound by this
+    /// history identity, separate from its local materialization record.
     #[must_use]
     pub const fn generation_root(&self) -> HistoryGenerationRoot {
         self.record.generation_root
     }
 
     /// Returns the manifest root of the referenced local materialization
-    /// record. For V2 semantic replay, use the manifest in the proof-bearing
-    /// [`TypedV2HistoryReplay`] token.
+    /// record. For typed semantic replay, use the manifest in the corresponding
+    /// proof-bearing [`TypedV2HistoryReplay`] or [`TypedV3HistoryReplay`] token.
     #[must_use]
     pub const fn manifest_root(&self) -> backend_semantic::ir::SemanticManifestRoot {
         self.record.manifest_root
@@ -578,6 +694,7 @@ pub struct HistoryAdmissionReceipt {
     created: bool,
     _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
     typed_v2_proof: Option<TypedV2HistoryPublicationProof>,
+    typed_v3_proof: Option<TypedV3HistoryPublicationProof>,
 }
 
 impl HistoryAdmissionReceipt {
@@ -607,6 +724,27 @@ impl HistoryAdmissionReceipt {
         Some(TypedV2HistoryPublicationAdmission {
             identity: proof.identity,
             content: proof.content,
+            closure: proof.closure,
+            locator: proof.locator,
+            _gc_pin: gc_pin.as_ref(),
+        })
+    }
+
+    /// Borrows the live same-store pin and distinct history-only semantic
+    /// proof required by V3 ref publication.
+    pub(crate) fn typed_v3_publication_admission(
+        &self,
+        store_root: &std::path::Path,
+    ) -> Option<TypedV3HistoryPublicationAdmission<'_>> {
+        let gc_pin = self._gc_pin.as_ref()?;
+        let proof = self.typed_v3_proof.as_ref()?;
+        if proof.store_root.as_path() != store_root || proof.identity != self.commit.identity() {
+            return None;
+        }
+        Some(TypedV3HistoryPublicationAdmission {
+            identity: proof.identity,
+            content: proof.content,
+            input_claim: proof.input_claim,
             closure: proof.closure,
             locator: proof.locator,
             _gc_pin: gc_pin.as_ref(),
@@ -643,6 +781,41 @@ impl HistoryAdmissionReceipt {
         Ok(self)
     }
 
+    pub(crate) fn with_typed_v3_proof(
+        mut self,
+        content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+        input_claim: backend_semantic::ir::SemanticInputClaimV2,
+        closure: ArtifactClosureClaim,
+        locator: HistoryTypedV3LocatorId,
+        store_root: std::path::PathBuf,
+    ) -> Result<Self, String> {
+        let HistoryGenerationRoot::TypedV3(claim) = self.commit.generation_root() else {
+            return Err(
+                "typed V3 publication proof was attached to another history root".to_owned(),
+            );
+        };
+        if content.input_claim() != input_claim
+            || !claim.content_root_claim().matches(content.content_root())
+            || !claim
+                .generation_root_claim()
+                .matches(content.generation_root())
+            || claim.closure().as_bytes() != closure.as_bytes()
+            || claim.locator() != locator
+            || self._gc_pin.is_none()
+        {
+            return Err("typed V3 publication proof differs from its admitted commit".to_owned());
+        }
+        self.typed_v3_proof = Some(TypedV3HistoryPublicationProof {
+            identity: self.commit.identity(),
+            content,
+            input_claim,
+            closure,
+            locator,
+            store_root,
+        });
+        Ok(self)
+    }
+
     pub(crate) fn with_gc_pin(mut self, gc_pin: std::sync::Arc<backend_store::GcPinGuard>) -> Self {
         self._gc_pin = Some(gc_pin);
         self
@@ -658,6 +831,57 @@ pub(crate) struct TypedV2HistoryPublicationAdmission<'pin> {
     closure: ArtifactClosureClaim,
     locator: HistoryTypedV2LocatorId,
     _gc_pin: &'pin backend_store::GcPinGuard,
+}
+
+/// Capability that binds a typed V3 commit and claim-only history proof to the
+/// live same-store closure-verifier pin held by the caller.
+pub(crate) struct TypedV3HistoryPublicationAdmission<'pin> {
+    identity: HistoryCommitId,
+    content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+    input_claim: backend_semantic::ir::SemanticInputClaimV2,
+    closure: ArtifactClosureClaim,
+    locator: HistoryTypedV3LocatorId,
+    _gc_pin: &'pin backend_store::GcPinGuard,
+}
+
+impl<'pin> TypedV3HistoryPublicationAdmission<'pin> {
+    pub(crate) const fn identity(&self) -> HistoryCommitId {
+        self.identity
+    }
+
+    pub(crate) const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3 {
+        self.content
+    }
+
+    pub(crate) const fn input_claim(&self) -> backend_semantic::ir::SemanticInputClaimV2 {
+        self.input_claim
+    }
+
+    pub(crate) const fn closure(&self) -> ArtifactClosureClaim {
+        self.closure
+    }
+
+    pub(crate) const fn locator(&self) -> HistoryTypedV3LocatorId {
+        self.locator
+    }
+
+    pub(crate) fn from_cold_verification(
+        identity: HistoryCommitId,
+        content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+        input_claim: backend_semantic::ir::SemanticInputClaimV2,
+        closure: ArtifactClosureClaim,
+        locator: HistoryTypedV3LocatorId,
+        gc_pin: &'pin backend_store::GcPinGuard,
+    ) -> Self {
+        Self {
+            identity,
+            content,
+            input_claim,
+            closure,
+            locator,
+            _gc_pin: gc_pin,
+        }
+    }
 }
 
 impl<'pin> TypedV2HistoryPublicationAdmission<'pin> {
@@ -700,6 +924,16 @@ struct TypedV2HistoryPublicationProof {
     content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
     closure: ArtifactClosureClaim,
     locator: HistoryTypedV2LocatorId,
+    store_root: std::path::PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct TypedV3HistoryPublicationProof {
+    identity: HistoryCommitId,
+    content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+    input_claim: backend_semantic::ir::SemanticInputClaimV2,
+    closure: ArtifactClosureClaim,
+    locator: HistoryTypedV3LocatorId,
     store_root: std::path::PathBuf,
 }
 
@@ -904,6 +1138,78 @@ pub struct TypedV2HistoryReplay {
     _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
 }
 
+/// Status of the input/read-frontier information recovered from a persisted
+/// typed V3 history record. V3 records preserve the opaque input claim, but do
+/// not persist a replayable read-closure preimage or authority proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TypedV3HistoryInputReplayStatus {
+    /// The persisted input declaration cannot authorize read-frontier reuse.
+    Unproven,
+}
+
+/// Cold-verified V3 semantic history content. This token proves only the
+/// canonical c007 manifest and exact typed payload closure. It does not
+/// recreate owner selection or read-frontier authority, and keeps the FileStore
+/// GC pin alive while its verified payload closure is in use.
+#[derive(Debug)]
+pub struct TypedV3HistoryReplay {
+    commit: AdmittedHistoryCommit,
+    manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
+    content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+    input_claim: backend_semantic::ir::SemanticInputClaimV2,
+    _gc_pin: Option<std::sync::Arc<backend_store::GcPinGuard>>,
+}
+
+impl TypedV3HistoryReplay {
+    pub(crate) fn new(
+        commit: AdmittedHistoryCommit,
+        manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
+        content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
+        gc_pin: std::sync::Arc<backend_store::GcPinGuard>,
+    ) -> Self {
+        let input_claim = manifest.input_claim();
+        Self {
+            commit,
+            manifest,
+            content,
+            input_claim,
+            _gc_pin: Some(gc_pin),
+        }
+    }
+
+    /// Returns the history commit whose exact typed payload closure was
+    /// independently reopened and verified.
+    #[must_use]
+    pub const fn commit(&self) -> &AdmittedHistoryCommit {
+        &self.commit
+    }
+
+    /// Returns the canonical persisted V3 manifest.
+    #[must_use]
+    pub const fn manifest(&self) -> &backend_semantic::ir::SemanticTypedPlaneManifestV2 {
+        &self.manifest
+    }
+
+    /// Returns the semantic content proof for the exact persisted closure.
+    #[must_use]
+    pub const fn content(&self) -> backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3 {
+        self.content
+    }
+
+    /// Returns the persisted opaque input claim. This value is not an input
+    /// preimage and does not establish a reusable read frontier.
+    #[must_use]
+    pub const fn input_claim(&self) -> backend_semantic::ir::SemanticInputClaimV2 {
+        self.input_claim
+    }
+
+    /// Reports the authority recoverable from the persisted V3 input fields.
+    #[must_use]
+    pub const fn input_replay_status(&self) -> TypedV3HistoryInputReplayStatus {
+        TypedV3HistoryInputReplayStatus::Unproven
+    }
+}
+
 impl TypedV2HistoryReplay {
     pub(crate) fn new(
         commit: AdmittedHistoryCommit,
@@ -954,10 +1260,8 @@ impl TypedV2HistoryReplay {
     /// confirmation attestations. Do not use it to alias or rewrite identity.
     pub fn lineage_candidates(
         &self,
-    ) -> Result<
-        Option<lineage::UnprovenTypedLineageEdgeSetV1<'_>>,
-        lineage::LineageEdgeSetErrorV1,
-    > {
+    ) -> Result<Option<lineage::UnprovenTypedLineageEdgeSetV1<'_>>, lineage::LineageEdgeSetErrorV1>
+    {
         let Some(bytes) = &self.lineage_edge_set else {
             return Ok(None);
         };

@@ -9,12 +9,14 @@
 use super::{Ctx, Leaf};
 use crate::core::{ErrorValue, FaultCode, Resource, ResourceTerminal, UnavailableReason};
 use crate::model::pages::PageKey;
+use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{Set as _, Space};
-use gpui::{Context, ParentElement, SharedString, Styled, div, px};
+use gpui::{Context, InteractiveElement, ParentElement, SharedString, Styled, div, px};
+use std::rc::Rc;
 
 /// What a resource can show right now.
 pub(crate) enum Shown<'a, T> {
@@ -36,7 +38,7 @@ pub(crate) fn shown<T>(resource: &Resource<T>) -> Shown<'_, T> {
     match resource.terminal() {
         ResourceTerminal::Fault(error) => Shown::Fault(error),
         ResourceTerminal::Unavailable(reason) => Shown::Unavailable(reason, None),
-        ResourceTerminal::Complete => Shown::Pending,
+        ResourceTerminal::Complete | ResourceTerminal::Partial => Shown::Pending,
     }
 }
 
@@ -81,7 +83,15 @@ pub(crate) fn not_ready<T>(
             let message = ctx.say(error.message().to_owned());
             let code = ctx.say(fault_code(error.code()));
             let links = ctx.links.clone();
-            let key = key.clone();
+            let retry_key = key.clone();
+            let id: SharedString = format!("retry-{key:?}").into();
+            let act: Act = Rc::new(move |_, cx| links.retry(retry_key.clone(), cx));
+            let act = ctx.native_local_action(act, cx);
+            ctx.targets.push(Target { id: id.clone(), label: "Try again".into(), act: Rc::clone(&act), peek: None, source: None });
+            let focus = ctx.native_handle(&id, cx);
+            let mut control = facet::controls::button(id.clone(), "Try again", &measure)
+                .primary().on_click(move |window, cx| act(window, cx));
+            if let Some(focus) = focus { control = control.focus_handle(focus); }
             let plate = cut()
                 .chamfer(Chamfer::Md)
                 .bevel(Bevel::Coral)
@@ -98,9 +108,7 @@ pub(crate) fn not_ready<T>(
                         .items_center()
                         .gap(measure.space(Space::Roomy))
                         .child(
-                            facet::controls::button("retry", "Try again", &measure)
-                                .primary()
-                                .on_click(move |_, cx| links.retry(key.clone(), cx)),
+                            ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)),
                         )
                         .child(div().set(ty::MONO_SMALL, &measure).text_color(palette.ink3.hsla()).child(code)),
                 );

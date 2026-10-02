@@ -11,14 +11,15 @@
 //! drives it from the UI thread.
 
 use super::common::{PackageRef, SymbolRef};
+use super::cargo_source::CargoSourcePage;
 use super::health::HealthModel;
-use super::key::{PageKey, SearchQuery};
+use super::key::{CargoSourceKey, PageKey, SearchQuery};
 use super::orbit::OrbitModel;
 use super::package::PackageDossier;
 use super::search::SearchPage;
 use super::source::SourceView;
 use super::symbol::SymbolPage;
-use crate::core::{Activity, ErrorValue, Resource, UnavailableReason, VersionedRoot};
+use crate::core::{Activity, ErrorValue, Resource, ResourceTerminal, UnavailableReason, VersionedRoot};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -29,6 +30,8 @@ pub enum PageValue {
     Symbol(SymbolPage),
     /// A source view.
     Source(SourceView),
+    /// A current owner-verified Cargo file, without semantic-index coverage.
+    CargoSource(CargoSourcePage),
     /// A package dossier.
     Package(PackageDossier),
     /// The first page of a search.
@@ -61,6 +64,7 @@ macro_rules! family_of {
 family_of! {
     symbol: Symbol(SymbolPage),
     source: Source(SourceView),
+    cargo_source: CargoSource(CargoSourcePage),
     package: Package(PackageDossier),
     orbit: Orbit(OrbitModel),
     health: Health(HealthModel),
@@ -199,6 +203,9 @@ enum Provenance {
     /// From the launch snapshot, and no owner has confirmed it yet (W-Open
     /// I2): its next fetch is quiet.
     Seeded,
+    /// Read from a previous owner attachment. Bytes may be disclosed, but
+    /// only a successful new read can admit them for current actions.
+    Revoked,
 }
 
 #[derive(Debug)]
@@ -389,8 +396,18 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             }
         }
         let previous = std::mem::replace(&mut slot.resource, Resource::not_yet());
+        // An interim page is useful while work continues, but a failed
+        // primary read cannot present it as a last-good complete page.
+        let previous = if matches!(previous.terminal(), ResourceTerminal::Partial)
+            && matches!(&result, Err(ReadFailure::Fault(_) | ReadFailure::Unavailable(_, _)))
+        {
+            Resource::not_yet()
+        } else {
+            previous
+        };
         slot.resource = match (result, root) {
             (Ok(value), Some(root)) => {
+                slot.provenance = Provenance::Live;
                 let value = merge(previous.loaded_value(), value);
                 Resource::loaded_at(value, root)
             }
@@ -405,9 +422,57 @@ impl<K: Ord + Clone, T> Slots<K, T> {
                 // A cancelled fetch leaves the slot as it was before the
                 // fetch began; the next ensure asks again.
                 slot.asked_at = None;
-                previous.resting()
+                if slot.provenance == Provenance::Revoked {
+                    previous.waiting()
+                } else {
+                    previous.resting()
+                }
             }
         };
+        slot.revision = slot.revision.next();
+        Landing::Applied
+    }
+
+    /// A current-file capability cannot keep old bytes after its owner says
+    /// the authority or file is gone, or its check was cancelled. Other
+    /// families may retain a last-good value; this one must revoke it.
+    fn land_strict(
+        &mut self,
+        key: &K,
+        generation: Generation,
+        result: Result<T, ReadFailure>,
+    ) -> Landing
+    where
+        T: PartialEq,
+    {
+        if result.is_err() {
+            if let Some(slot) = self.map.get_mut(key)
+                && matches!(slot.fetch, Fetch::Running { generation: running, .. } if running == generation)
+            {
+                slot.resource = Resource::not_yet();
+            }
+        }
+        self.land(key, generation, result, replace)
+    }
+
+    /// Publishes a useful partial value while the same generation keeps
+    /// reading. An older or cancelled generation cannot paint over a newer
+    /// route. Quiet snapshot revalidation keeps its already complete page.
+    fn stage(&mut self, key: &K, generation: Generation, value: T) -> Landing
+    where
+        T: PartialEq,
+    {
+        let Some(slot) = self.map.get_mut(key) else { return Landing::Superseded };
+        let Fetch::Running { generation: running, manner } = slot.fetch else { return Landing::Superseded };
+        if running != generation { return Landing::Superseded; }
+        if manner == Manner::Quiet || slot.resource.is_loaded() {
+            return Landing::Unchanged;
+        }
+        let Some(root) = slot.asked_at else { return Landing::Superseded };
+        if slot.resource.loaded_value() == Some(&value) && slot.resource.value_root() == Some(root) {
+            return Landing::Unchanged;
+        }
+        slot.resource = Resource::partial_at(value, root);
         slot.revision = slot.revision.next();
         Landing::Applied
     }
@@ -423,9 +488,42 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             // Nothing visible began, so nothing visible ends.
             return Some(generation);
         }
-        slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).resting();
+        let previous = std::mem::replace(&mut slot.resource, Resource::not_yet());
+        slot.resource = if slot.provenance == Provenance::Revoked {
+            previous.waiting()
+        } else {
+            previous.resting()
+        };
         slot.revision = slot.revision.next();
         Some(generation)
+    }
+
+    /// Invalidate read admission without deleting the immutable predecessor.
+    /// Seeded launch bytes retain their separate first-owner confirmation path.
+    fn revoke_owner_read(&mut self, key: &K) -> bool {
+        let Some(slot) = self.map.get_mut(key) else {
+            return false;
+        };
+        if slot.provenance == Provenance::Seeded {
+            return false;
+        }
+        if slot.provenance == Provenance::Revoked
+            && !slot.running()
+            && slot.asked_at.is_none()
+            && slot.resource.activity() == Activity::Waiting
+        {
+            return false;
+        }
+        slot.fetch = Fetch::Idle;
+        slot.asked_at = None;
+        slot.provenance = Provenance::Revoked;
+        slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).waiting();
+        slot.revision = slot.revision.next();
+        true
+    }
+
+    fn owner_read_revoked(&self, key: &K) -> bool {
+        self.map.get(key).is_some_and(|slot| slot.provenance == Provenance::Revoked)
     }
 
     fn get(&self, key: &K) -> Resource<T> {
@@ -457,6 +555,8 @@ pub struct Capacity {
     pub symbols: usize,
     /// Source views.
     pub sources: usize,
+    /// Owner-revalidated Cargo source files.
+    pub cargo_sources: usize,
     /// Package dossiers.
     pub packages: usize,
     /// Search queries.
@@ -468,6 +568,7 @@ impl Default for Capacity {
         Self {
             symbols: 64,
             sources: 32,
+            cargo_sources: 16,
             packages: 16,
             searches: 16,
         }
@@ -479,6 +580,7 @@ impl Default for Capacity {
 pub struct PageStore {
     symbols: Slots<SymbolRef, SymbolPage>,
     sources: Slots<SymbolRef, SourceView>,
+    cargo_sources: Slots<CargoSourceKey, CargoSourcePage>,
     packages: Slots<PackageRef, PackageDossier>,
     searches: Slots<SearchQuery, SearchPage>,
     orbit: Slots<(), OrbitModel>,
@@ -505,6 +607,11 @@ macro_rules! dispatch {
             PageKey::Source(symbol) => {
                 let $slots = &mut $store.sources;
                 let $k = symbol;
+                $body
+            }
+            PageKey::CargoSource(file) => {
+                let $slots = &mut $store.cargo_sources;
+                let $k = file;
                 $body
             }
             PageKey::Package(package) => {
@@ -549,6 +656,11 @@ macro_rules! dispatch_ref {
                 let $k = symbol;
                 $body
             }
+            PageKey::CargoSource(file) => {
+                let $slots = &$store.cargo_sources;
+                let $k = file;
+                $body
+            }
             PageKey::Package(package) => {
                 let $slots = &$store.packages;
                 let $k = package;
@@ -585,6 +697,7 @@ impl PageStore {
         Self {
             symbols: Slots::new(capacity.symbols),
             sources: Slots::new(capacity.sources),
+            cargo_sources: Slots::new(capacity.cargo_sources),
             packages: Slots::new(capacity.packages),
             searches: Slots::new(capacity.searches),
             orbit: Slots::new(1),
@@ -650,6 +763,39 @@ impl PageStore {
         dispatch_ref!(self, key, |slots, k| slots.seeded(k))
     }
 
+    /// Revokes a previous attachment's read. Ordinary page values stay waiting
+    /// predecessors; Cargo file capabilities and path listings drop their
+    /// bytes. The next ensure rereads either family even at the same root.
+    /// The caller must first cancel the read pool's running job for this key.
+    pub fn revoke_owner_read(&mut self, key: &PageKey) -> bool {
+        match key {
+            PageKey::CargoSource(file) => {
+                if self.activity(key) == Activity::NotYet && self.inflight(key).is_none() {
+                    return false;
+                }
+                self.revoke_cargo_source(file);
+                true
+            }
+            PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
+                if self.activity(key) == Activity::NotYet && self.inflight(key).is_none() {
+                    return false;
+                }
+                self.revoke_cargo_source_inventory(inventory);
+                true
+            }
+            PageKey::Symbol(_) | PageKey::Source(_) | PageKey::Package(_) | PageKey::Search(_)
+                | PageKey::Orbit | PageKey::Health | PageKey::Browse(_) => {
+                dispatch!(self, key, |slots, k| slots.revoke_owner_read(k))
+            }
+        }
+    }
+
+    /// A revoked predecessor is never saved as a current launch page.
+    #[must_use]
+    pub fn is_owner_read_revoked(&self, key: &PageKey) -> bool {
+        dispatch_ref!(self, key, |slots, k| slots.owner_read_revoked(k))
+    }
+
     /// Records an access without starting a fetch.
     pub fn touch(&mut self, key: &PageKey) {
         self.clock = self.clock.next();
@@ -667,6 +813,7 @@ impl PageStore {
         match key {
             PageKey::Symbol(symbol) => self.symbols.land(symbol, generation, take(result, PageValue::symbol), replace),
             PageKey::Source(symbol) => self.sources.land(symbol, generation, take(result, PageValue::source), replace),
+            PageKey::CargoSource(file) => self.cargo_sources.land_strict(file, generation, take(result, PageValue::cargo_source)),
             PageKey::Package(package) => self.packages.land(package, generation, take(result, PageValue::package), replace),
             PageKey::Search(query) => {
                 let append = matches!(result, Ok(PageValue::SearchMore(_)));
@@ -678,6 +825,16 @@ impl PageStore {
             PageKey::Orbit => self.orbit.land(&(), generation, take(result, PageValue::orbit), replace),
             PageKey::Health => self.health.land(&(), generation, take(result, PageValue::health), replace),
             PageKey::Browse(browse) => self.browse.land(browse, generation, take(result, PageValue::browse), replace),
+        }
+    }
+
+    /// Publishes an intermediate result without ending its read generation.
+    pub fn stage(&mut self, key: &PageKey, generation: Generation, value: PageValue) -> Landing {
+        match key {
+            PageKey::Symbol(symbol) => match value.symbol() { Some(value) => self.symbols.stage(symbol, generation, value), None => Landing::Superseded },
+            PageKey::Package(package) => match value.package() { Some(value) => self.packages.stage(package, generation, value), None => Landing::Superseded },
+            PageKey::Orbit => match value.orbit() { Some(value) => self.orbit.stage(&(), generation, value), None => Landing::Superseded },
+            PageKey::Source(_) | PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => Landing::Superseded,
         }
     }
 
@@ -704,6 +861,7 @@ impl PageStore {
         match key {
             PageKey::Symbol(symbol) => self.symbols.map.contains_key(symbol),
             PageKey::Source(symbol) => self.sources.map.contains_key(symbol),
+            PageKey::CargoSource(file) => self.cargo_sources.map.contains_key(file),
             PageKey::Package(package) => self.packages.map.contains_key(package),
             PageKey::Search(query) => self.searches.map.contains_key(query),
             PageKey::Orbit => self.orbit.map.contains_key(&()),
@@ -722,6 +880,57 @@ impl PageStore {
     #[must_use]
     pub fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
         self.sources.get(symbol)
+    }
+
+    /// Returns an owner-revalidated Cargo source file resource.
+    #[must_use]
+    pub fn cargo_source(&self, file: &CargoSourceKey) -> Resource<CargoSourcePage> {
+        self.cargo_sources.get(file)
+    }
+
+    /// Drops current-file bytes when their owner is left or restarted. The
+    /// address and slot remain so the next focused read can be retried.
+    pub fn revoke_cargo_source(&mut self, file: &CargoSourceKey) {
+        if let Some(slot) = self.cargo_sources.map.get_mut(file) {
+            slot.fetch = Fetch::Idle;
+            slot.resource = Resource::not_yet();
+            slot.asked_at = None;
+            slot.revision = slot.revision.next();
+        }
+    }
+
+    /// A new owner attachment must revalidate every retained file receipt.
+    pub fn revoke_all_cargo_sources(&mut self) {
+        for slot in self.cargo_sources.map.values_mut() {
+            slot.fetch = Fetch::Idle;
+            slot.resource = Resource::not_yet();
+            slot.asked_at = None;
+            slot.revision = slot.revision.next();
+        }
+    }
+
+    /// A path inventory is an observation of the current owner, not a saved
+    /// file capability. Recheck it when its source route is revisited.
+    pub fn revoke_cargo_source_inventory(&mut self, key: &crate::model::browse::CargoSourceInventoryKey) {
+        let browse = crate::model::browse::BrowseKey::CargoSourceInventory(key.clone());
+        if let Some(slot) = self.browse.map.get_mut(&browse) {
+            slot.fetch = Fetch::Idle;
+            slot.resource = Resource::not_yet();
+            slot.asked_at = None;
+            slot.revision = slot.revision.next();
+        }
+    }
+
+    /// An owner restart invalidates all retained file-address listings.
+    pub fn revoke_all_cargo_source_inventories(&mut self) {
+        for (key, slot) in &mut self.browse.map {
+            if matches!(key, crate::model::browse::BrowseKey::CargoSourceInventory(_)) {
+                slot.fetch = Fetch::Idle;
+                slot.resource = Resource::not_yet();
+                slot.asked_at = None;
+                slot.revision = slot.revision.next();
+            }
+        }
     }
 
     /// Returns the package dossier resource.
@@ -767,6 +976,7 @@ impl PageStore {
         keys.extend(self.packages.map.keys().cloned().map(PageKey::Package));
         keys.extend(self.symbols.map.keys().cloned().map(PageKey::Symbol));
         keys.extend(self.sources.map.keys().cloned().map(PageKey::Source));
+        keys.extend(self.cargo_sources.map.keys().cloned().map(PageKey::CargoSource));
         keys.extend(self.searches.map.keys().cloned().map(PageKey::Search));
         keys.extend(self.browse.map.keys().cloned().map(PageKey::Browse));
         keys
@@ -778,6 +988,7 @@ impl PageStore {
         match key {
             PageKey::Symbol(symbol) => self.symbols.get(symbol).activity(),
             PageKey::Source(symbol) => self.sources.get(symbol).activity(),
+            PageKey::CargoSource(file) => self.cargo_sources.get(file).activity(),
             PageKey::Package(package) => self.packages.get(package).activity(),
             PageKey::Search(query) => self.searches.get(query).activity(),
             PageKey::Orbit => self.orbit.get(&()).activity(),

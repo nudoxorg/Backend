@@ -6,6 +6,9 @@
 //! release you pin: the same, different (and how), not here yet, gone.
 //! Releases nobody read have no cap: the page never guesses what it was.
 
+use crate::data::release::RegistryFact;
+use gpui::SharedString;
+
 /// What the symbol was at a release, against the pinned one.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Was {
@@ -42,11 +45,10 @@ pub enum Weight {
 pub struct Release {
     /// The version as people read it (`0.8.23`).
     pub version: String,
-    /// When it was published (ISO 8601, `2025-01-13`), or empty when the
-    /// registry did not say.
-    pub at: String,
-    /// Yanked from the registry.
-    pub yanked: bool,
+    /// Its exact publication date, or the registry's missing/conflicting state.
+    pub at: RegistryFact<SharedString>,
+    /// Its exact yanked state, or the registry's missing/conflicting state.
+    pub yanked: RegistryFact<bool>,
     /// How much it moved the API.
     pub weight: Weight,
     /// What the symbol was there.
@@ -56,7 +58,7 @@ pub struct Release {
 /// The symbol across the releases of its package, oldest first.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct History {
-    /// Every release with a date.
+    /// Whether the package has at least two releases to compare.
     pub releases: Vec<Release>,
 }
 
@@ -64,7 +66,7 @@ impl History {
     /// Whether there is a history to draw.
     #[must_use]
     pub fn drawn(&self) -> bool {
-        self.releases.iter().filter(|release| !release.at.is_empty()).count() >= 2
+        self.releases.len() >= 2
     }
 
     /// The releases the index has read.
@@ -97,8 +99,10 @@ impl History {
     pub fn label(&self, index: usize) -> String {
         let Some(release) = self.releases.get(index) else { return String::new() };
         let mut parts = vec![release.version.clone()];
-        if !release.at.is_empty() {
-            parts.push(release.at.clone());
+        match &release.at {
+            RegistryFact::Known(at) => parts.push(at.to_string()),
+            RegistryFact::Missing => parts.push("publication date unavailable".to_owned()),
+            RegistryFact::Ambiguous => parts.push("publication dates conflict".to_owned()),
         }
         match &release.was {
             Was::Unread => parts.push("not read".to_owned()),
@@ -108,8 +112,11 @@ impl History {
             Was::NotYet => parts.push("not here yet".to_owned()),
             Was::Gone => parts.push("gone".to_owned()),
         }
-        if release.yanked {
-            parts.push("yanked".to_owned());
+        match &release.yanked {
+            RegistryFact::Known(true) => parts.push("yanked".to_owned()),
+            RegistryFact::Known(false) => {}
+            RegistryFact::Missing => parts.push("yanked status unavailable".to_owned()),
+            RegistryFact::Ambiguous => parts.push("yanked status conflicts".to_owned()),
         }
         parts.join(" · ")
     }
@@ -120,7 +127,13 @@ mod tests {
     use super::*;
 
     fn release(version: &str, at: &str, was: Was) -> Release {
-        Release { version: version.to_owned(), at: at.to_owned(), was, ..Release::default() }
+        Release {
+            version: version.to_owned(),
+            at: RegistryFact::Known(at.into()),
+            yanked: RegistryFact::Known(false),
+            was,
+            ..Release::default()
+        }
     }
 
     #[test]
@@ -138,5 +151,27 @@ mod tests {
         assert_eq!(history.caption(), "only your pin is on disk: other releases not read");
         assert!(history.drawn());
         assert!(!History::default().drawn());
+    }
+
+    #[test]
+    fn missing_and_conflicting_registry_facts_remain_distinct_in_the_release_label() {
+        let missing = Release {
+            version: "0.3.0".to_owned(),
+            at: RegistryFact::Missing,
+            yanked: RegistryFact::Missing,
+            ..Release::default()
+        };
+        let ambiguous = Release {
+            version: "0.4.0".to_owned(),
+            at: RegistryFact::Ambiguous,
+            yanked: RegistryFact::Ambiguous,
+            ..Release::default()
+        };
+        let history = History { releases: vec![missing, ambiguous] };
+        assert!(history.drawn());
+        assert!(history.label(0).contains("publication date unavailable"));
+        assert!(history.label(0).contains("yanked status unavailable"));
+        assert!(history.label(1).contains("publication dates conflict"));
+        assert!(history.label(1).contains("yanked status conflicts"));
     }
 }

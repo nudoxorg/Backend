@@ -11,14 +11,14 @@ impl Render for Host {
     }
 }
 
-struct MountedFind { state: Entity<State>, scroll: ScrollHandle, model: Arc<Model>, actions: Actions }
+struct MountedFind { active: bool, state: Entity<State>, scroll: ScrollHandle, model: Arc<Model>, actions: Actions }
 impl Render for MountedFind {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::probe::draw_started(cx);
         let id: ElementId = "mounted-find".into();
         let measure = Measure::new(px(360.0), &cx.facet());
         div().id("mounted-find-scroll").w(px(360.0)).h(px(220.0)).overflow_y_scroll().track_scroll(&self.scroll)
-            .child(Find { id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, test_state: Some(self.state.clone()) })
+            .child(Find { admission: None, active: self.active, id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, test_state: Some(self.state.clone()) })
     }
 }
 
@@ -49,7 +49,7 @@ fn mounted_find_arrows_reveal_offscreen_choice_without_pointer_auto_scroll(cx: &
     let model = Arc::new(Model { query: "package".into(), candidates, loose: vec![], coverage: vec![], more_answers: false, loading: false });
     let (host, cx) = cx.add_window_view(|window, cx| {
         let state = cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx));
-        MountedFind { state, scroll: scroll.clone(), model, actions }
+        MountedFind { active: true, state, scroll: scroll.clone(), model, actions }
     });
     draw(cx);
     let state = host.read_with(cx, |host, _| host.state.clone());
@@ -87,9 +87,15 @@ fn actions(reads: &Rc<RefCell<Vec<SharedString>>>, opened: &Rc<RefCell<Vec<Share
     let reads = Rc::clone(reads);
     let opened = Rc::clone(opened);
     Actions {
+        retry: None,
         scroll: ScrollHandle::new(),
         initial_held: vec![], persist_held: Rc::new(|_, _| {}),
+        return_focus: Rc::new(|_, _, _| crate::browse::library::ReturnDisposition::Invalid),
+        query_input: Rc::new(|text| if text.trim().chars().any(char::is_control) {
+            QueryInput::Invalid("fixture invalid query".into())
+        } else if text.trim().is_empty() { QueryInput::Blank } else { QueryInput::Valid }),
         refine: Rc::new(move |query, _| reads.borrow_mut().push(query)),
+        symbol_routability: Rc::new(|_| Routability::Available),
         open_symbol: Rc::new(move |key, _, _| opened.borrow_mut().push(key)),
         open_code: Rc::new(|_, _, _| {}), open_package: Rc::new(|_, _, _| {}), compare: Rc::new(|_, _, _| {}),
         acquire: None,
@@ -211,4 +217,117 @@ fn the_selection_follows_a_release_the_library_just_added(cx: &mut TestAppContex
     cx.update(|window, cx| state.update(cx, |state, cx| state.accept(&after, &callbacks, window, cx)));
     assert_eq!(state.read_with(cx, |state, _| state.selected.clone()), Some(Selection::Package("/cache/smallvec-1.16.2".into())),
         "the added release stays selected at its new address, not the first candidate");
+}
+
+// Native component fixture only: this does not establish a live-owner journey.
+#[gpui::test]
+fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); crate::probe::enable(cx); });
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let actions = actions(&reads, &opened);
+    let model = model("from_str", false);
+    let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
+        active: true,
+        state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
+        scroll: ScrollHandle::new(), model, actions,
+    });
+    draw(cx);
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    edit(&state, "toml", cx);
+    assert!(state.read_with(cx, |state, _| state.pending.is_some()));
+    host.update(cx, |host, cx| { host.active = false; cx.notify(); });
+    draw(cx);
+    let departing = cx.update(|_, cx| crate::probe::take(cx));
+    assert!(departing.texts.iter().any(|text| text.content == "FIND"), "the departing page keeps its visible body");
+    assert!(!state.read_with(cx, |state, _| state.active));
+    assert!(state.read_with(cx, |state, _| state.pending.is_none()));
+    advance(cx, 200);
+    assert!(reads.borrow().is_empty(), "departing input must not publish an obsolete query");
+    edit(&state, "stale edit", cx);
+    advance(cx, 200);
+    assert!(reads.borrow().is_empty());
+    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    draw(cx);
+    assert!(state.read_with(cx, |state, _| state.active));
+    edit(&state, "Deserialize", cx);
+    advance(cx, 120);
+    assert_eq!(reads.borrow().as_slice(), &[SharedString::from("Deserialize")]);
+    assert!(opened.borrow().is_empty());
+}
+
+#[test]
+fn one_admission_rule_drives_blank_invalid_current_retained_and_failed_actions() {
+    let current = ReadAdmission::Current;
+    assert_eq!(admit("", QueryInput::Blank, "", &current), Admission::Blank);
+    assert_eq!(admit("from_str", QueryInput::Valid, "from_str", &current), Admission::Current);
+    let invalid = admit("bad\0query", QueryInput::Invalid("invalid fixture query".into()), "from_str", &current);
+    assert!(matches!(invalid, Admission::Invalid(_)));
+    let retained = admit("from_str", QueryInput::Valid, "from_str", &ReadAdmission::Retained("owner restarting".into()));
+    assert!(matches!(retained, Admission::Retained(_)));
+    let failed = admit("from_str", QueryInput::Valid, "from_str", &ReadAdmission::Failed("destination failed".into()));
+    assert!(matches!(failed, Admission::Failed(_)));
+    for blocked in [invalid, retained, failed, admit("new query", QueryInput::Valid, "from_str", &current)] {
+        assert!(!blocked.allows_actions());
+        assert!(blocked.note().is_some(), "a blocked reading always explains why");
+    }
+}
+
+#[gpui::test]
+fn retained_first_read_keeps_local_evidence_without_admitting_an_action(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let callbacks = actions(&reads, &opened);
+    let evidence = model("from_str", false);
+    let (host, cx) = cx.add_window_view(|window, cx| Host { state: cx.new(|cx| {
+        let mut state = State::new(evidence.query.clone(), callbacks.clone(), window, cx);
+        state.read_admission = ReadAdmission::Retained("producer changed".into());
+        state.accept(&evidence, &callbacks, window, cx);
+        state
+    }) });
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    state.read_with(cx, |state, cx| {
+        assert!(Arc::ptr_eq(state.snapshot.as_ref().expect("retained evidence"), &evidence));
+        assert!(state.loaded_query.is_none());
+        assert!(matches!(state.result_admission(cx), Admission::Retained(_)));
+    });
+}
+
+// Native input-event fixture, independent of the required live-owner journey.
+#[gpui::test]
+fn invalid_queries_and_retained_or_unaddressable_answers_never_open_or_clear_routes(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let mut callbacks = actions(&reads, &opened);
+    callbacks.symbol_routability = Rc::new(|_| Routability::Unavailable("fixture has no package address".into()));
+    let initial = model("from_str", false);
+    let (host, cx) = cx.add_window_view(|window, cx| Host { state: cx.new(|cx| {
+        let mut state = State::new(initial.query.clone(), callbacks.clone(), window, cx);
+        state.accept(&initial, &callbacks, window, cx);
+        state.selected = Some(Selection::Answer("unqualified::from_str".into()));
+        state
+    }) });
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    edit(&state, "bad\0query", cx);
+    advance(cx, 200);
+    assert!(reads.borrow().is_empty(), "invalid input must not mean FindHome/clear");
+    assert_eq!(state.read_with(cx, |state, _| state.route_query.clone()), SharedString::from("from_str"));
+    edit(&state, "from_str", cx);
+    cx.update(|_, cx| state.read(cx).input.clone().update(cx, |_, cx| cx.emit(InputEvent::PressEnter { secondary: false, shift: false })));
+    cx.run_until_parked();
+    assert!(opened.borrow().is_empty(), "unqualified coordinates have no open action");
+    state.update(cx, |state, cx| {
+        state.read_admission = ReadAdmission::Retained("fixture owner restarting".into());
+        state.actions.symbol_routability = Rc::new(|_| Routability::Available);
+        cx.notify();
+    });
+    cx.update(|_, cx| state.read(cx).input.clone().update(cx, |_, cx| cx.emit(InputEvent::PressEnter { secondary: false, shift: false })));
+    cx.run_until_parked();
+    assert!(opened.borrow().is_empty(), "retained source authority cannot open even a routable answer");
+    edit(&state, "new query", cx);
+    cx.update(|_, cx| state.read(cx).input.clone().update(cx, |_, cx| cx.emit(InputEvent::PressEnter { secondary: false, shift: false })));
+    cx.run_until_parked();
+    assert_eq!(reads.borrow().as_slice(), &[SharedString::from("new query")], "a new valid query can be submitted while the previous reading is retained");
 }

@@ -621,6 +621,22 @@ impl Element for Cut {
         Element::source_location(&self.div)
     }
 
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        Element::a11y_role(&self.div)
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        Element::write_a11y_info(&self.div, node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder,
+    ) {
+        Element::a11y_synthetic_children(&mut self.div, &mut prepaint.div, builder);
+    }
+
     fn request_layout(
         &mut self,
         id: Option<&GlobalElementId>,
@@ -719,9 +735,23 @@ impl Element for Cut {
 mod tests {
     use super::*;
     use crate::tokens::GLACIER;
+    use gpui::StatefulInteractiveElement as _;
 
     fn b(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn cut_forwards_its_inner_divs_accessible_role_and_name() {
+        let plate = cut()
+            .id("shelf-toggle")
+            .role(gpui::Role::Button)
+            .aria_label("Toggle the shelf");
+        assert_eq!(Element::a11y_role(&plate), Some(gpui::Role::Button));
+        let mut node = gpui::accesskit::Node::new(gpui::Role::Button);
+        Element::write_a11y_info(&plate, &mut node);
+        assert_eq!(node.label(), Some("Toggle the shelf"));
+        assert_eq!(Element::a11y_role(&cut()), None);
     }
 
     #[test]

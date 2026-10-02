@@ -12,7 +12,12 @@ use std::sync::Arc;
 
 /// Exact engine coordinate of one declaration, never abbreviated.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-pub struct SymbolRef(Arc<str>);
+#[serde(transparent)]
+pub struct SymbolRef {
+    coordinate: Arc<str>,
+    #[serde(skip)]
+    release_origin: Option<Arc<str>>,
+}
 
 /// A page key that cannot cross the engine boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,19 +54,19 @@ impl SymbolRef {
         if value.chars().any(char::is_control) {
             return Err(KeyError::ControlCharacter);
         }
-        Ok(Self(Arc::from(value)))
+        Ok(Self { coordinate: Arc::from(value), release_origin: None })
     }
 
     /// Returns the exact coordinate spelling the engine accepts.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.coordinate
     }
 
     /// Parses the coordinate into its display parts.
     #[must_use]
     pub fn identity(&self) -> Identity {
-        Identity::parse(&self.0)
+        Identity::parse(&self.coordinate)
     }
 
     /// The same declaration inside `to` when this coordinate is spelled
@@ -69,8 +74,16 @@ impl SymbolRef {
     #[must_use]
     pub fn rebased(&self, from: &PackageRef, to: &PackageRef) -> Option<Self> {
         let rest = self.as_str().strip_prefix(from.as_str())?;
-        Self::new(&format!("{}{rest}", to.as_str())).ok()
+        if !rest.starts_with("::") { return None; }
+        let mut rebased = Self::new(&format!("{}{rest}", to.as_str())).ok()?;
+        rebased.release_origin = to.release_origin.clone();
+        Some(rebased)
     }
+
+    /// The original registry tree that must be verified before this
+    /// alternate-release coordinate is read.
+    #[must_use]
+    pub(crate) fn release_origin(&self) -> Option<&str> { self.release_origin.as_deref() }
 
     /// Returns the owning package, when the coordinate spells a project root.
     #[must_use]
@@ -83,7 +96,7 @@ impl SymbolRef {
 
 impl fmt::Display for SymbolRef {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.coordinate)
     }
 }
 
@@ -109,7 +122,12 @@ impl fmt::Debug for RowKey {
 
 /// Exact package locator: a local project root or a version-pinned purl.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-pub struct PackageRef(backend_library::PackageReference);
+#[serde(transparent)]
+pub struct PackageRef {
+    reference: backend_library::PackageReference,
+    #[serde(skip)]
+    release_origin: Option<Arc<str>>,
+}
 
 impl PackageRef {
     /// Admits one package spelling.
@@ -121,56 +139,74 @@ impl PackageRef {
             return Err(KeyError::Empty);
         }
         backend_library::PackageReference::parse(value.to_owned())
-            .map(Self)
+            .map(Self::from_reference)
             .map_err(|_| KeyError::Package)
     }
 
     /// Wraps an already admitted reference.
     #[must_use]
     pub const fn from_reference(reference: backend_library::PackageReference) -> Self {
-        Self(reference)
+        Self { reference, release_origin: None }
     }
 
     /// Returns the typed reference the engine accepts.
     #[must_use]
     pub const fn reference(&self) -> &backend_library::PackageReference {
-        &self.0
+        &self.reference
     }
 
     /// Returns the canonical spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        self.reference.as_str()
     }
 
     /// Returns whether this is a local project rather than a registry release.
     #[must_use]
     pub const fn is_local(&self) -> bool {
-        matches!(self.0, backend_library::PackageReference::Local(_))
+        matches!(self.reference, backend_library::PackageReference::Local(_))
     }
+
+    /// Keeps the exact original registry root in the page key, so a result
+    /// validated for one pin cannot be reused for a different pin.
+    #[must_use]
+    pub(crate) fn with_release_origin(mut self, pinned: &Self) -> Self {
+        self.release_origin = Some(Arc::from(pinned.as_str()));
+        self
+    }
+
+    /// The original registry root a worker must verify before this page.
+    #[must_use]
+    pub(crate) fn release_origin(&self) -> Option<&str> { self.release_origin.as_deref() }
 
     /// The version this reference pins, when it is a registry release.
     #[must_use]
     pub fn version(&self) -> Option<&str> {
-        if self.is_local() {
-            return None;
+        match &self.reference {
+            backend_library::PackageReference::Purl(purl) => Some(purl.version()),
+            backend_library::PackageReference::Local(_) => None,
         }
-        let text = self.as_str();
-        let at = text.rfind('@')?;
-        let version = &text[at + 1..];
-        let version = version.split(['?', '#']).next().unwrap_or(version);
-        (!version.is_empty()).then_some(version)
     }
 
     /// The same package at another release, when it is a registry release
     /// (a local project has one state: `None`).
     #[must_use]
     pub fn at(&self, version: &str) -> Option<Self> {
-        let pinned = self.version()?;
-        let text = self.as_str();
-        let at = text.rfind('@')?;
-        let rest = &text[at + 1 + pinned.len()..];
-        Self::parse(&format!("{}@{version}{rest}", &text[..at])).ok()
+        let backend_library::PackageReference::Purl(purl) = &self.reference else {
+            return None;
+        };
+        // A Cargo source authority is a digest of one observed package at
+        // one version. Reusing it with another version would mint a false
+        // address; only the owner may issue another receipt.
+        if purl.qualifiers().is_some_and(|qualifiers| qualifiers.split('&').any(|item| item.starts_with("cargo-authority="))) {
+            return None;
+        }
+        let text = purl.as_str();
+        let address = text.split(['?', '#']).next()?;
+        let at = address.rfind('@')?;
+        (address.get(at + 1..) == Some(purl.version()))
+            .then(|| Self::parse(&format!("{}@{version}{}", &address[..at], &text[address.len()..])).ok())
+            .flatten()
     }
 
     /// The registry release this package is: a purl's, or a registry tree's
@@ -183,15 +219,23 @@ impl PackageRef {
         }
     }
 
-    /// The registry release a local root is, as `(name, version)` from its
-    /// manifest, when it is a registry package's unpacked source: cargo's
+    /// The registry release a previously verified local root is, as
+    /// `(name, version)`, when it is a registry package's unpacked source: cargo's
     /// cache (`…/registry/src/index.…/NAME-VERSION`) or this app's own
-    /// (`…/registry-sources/NAME-VERSION/NAME-VERSION`). The tree is named
-    /// `{name}-{version}` after its manifest; the strings returned are the
-    /// manifest's name and version (read and compared), borrowed from the
-    /// path that spells them.
+    /// (`…/registry-sources/AUTHORITY/NAME-VERSION/CHECKSUM/NAME-VERSION`). The
+    /// tree is named `{name}-{version}` after its manifest. This lookup is memory-only so
+    /// UI rendering never opens or parses a manifest. A read worker admits
+    /// the root with [`Self::verify_registry_manifest`] first.
     #[must_use]
     pub fn registry_release(&self) -> Option<(&str, &str)> {
+        let (name, version) = self.registry_shape()?;
+        manifest_says_cached(std::path::Path::new(self.as_str())).then_some((name, version))
+    }
+
+    /// The structural Cargo cache spelling, before manifest/provider proof.
+    /// May only create a tentative worker read, never a producer fact.
+    #[must_use]
+    pub(crate) fn registry_shape(&self) -> Option<(&str, &str)> {
         if !self.is_local() {
             return None;
         }
@@ -201,18 +245,39 @@ impl PackageRef {
         let parent_name = parent.file_name()?.to_str()?;
         let in_cargo = parent_name.starts_with("index.")
             && parent.parent().is_some_and(|src| src.ends_with("registry/src"));
-        let in_app = parent_name == stem
-            && parent.parent().is_some_and(|dir| dir.file_name().is_some_and(|name| name == "registry-sources"));
+        let in_app = (parent_name == stem
+            && parent.parent().is_some_and(|dir| dir.file_name().is_some_and(|name| name == "registry-sources")))
+            || parent.parent().is_some_and(|release_dir| {
+                release_dir.file_name().is_some_and(|name| name == stem)
+                    && release_dir
+                        .parent()
+                        .and_then(std::path::Path::parent)
+                        .is_some_and(|registry| registry.file_name().is_some_and(|name| name == "registry-sources"))
+            });
         if !(in_cargo || in_app) {
             return None;
         }
-        let (name, version) = stem.match_indices('-').find_map(|(at, _)| {
+        stem.match_indices('-').find_map(|(at, _)| {
             let (name, version) = (&stem[..at], &stem[at + 1..]);
             crate::model::release::Release::new(name, version).ok().map(|_| (name, version))
-        })?;
-        // The name and version are the manifest's: the tree's own
-        // `Cargo.toml` is read (once per tree) and must say exactly these.
-        manifest_says(path, name, version).then_some((name, version))
+        })
+    }
+
+    /// Validates this Cargo tree's manifest on a read worker and admits its
+    /// display identity for later memory-only UI lookups.
+    #[must_use]
+    pub(crate) fn verify_registry_manifest(&self) -> Option<crate::model::release::Release> {
+        let (name, version) = self.registry_shape()?;
+        let path = std::path::Path::new(self.as_str());
+        let admitted = (|| {
+            let bytes = backend_platform::durable::read_regular_bounded(&path.join("Cargo.toml"), 1024 * 1024).ok()?;
+            let manifest = std::str::from_utf8(&bytes).ok()?.parse::<toml::Table>().ok()?;
+            let package = manifest.get("package")?.as_table()?;
+            (package.get("name")?.as_str()? == name && package.get("version")?.as_str()? == version)
+                .then(|| crate::model::release::Release::new(name, version).ok())?
+        })();
+        if admitted.is_some() { remember_manifest(path); } else { forget_manifest(path); }
+        admitted
     }
 
     /// The version to show beside [`Self::display_name`]: a registry
@@ -231,42 +296,69 @@ impl PackageRef {
         if let Some((name, _)) = self.registry_release() {
             return name;
         }
-        let text = self.as_str();
-        if self.is_local() {
-            return text
-                .trim_end_matches(['/', '\\'])
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(text);
+        match &self.reference {
+            backend_library::PackageReference::Purl(purl) => purl.name(),
+            backend_library::PackageReference::Local(_) => {
+                let text = self.as_str();
+                text.trim_end_matches(['/', '\\'])
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(text)
+            }
         }
-        let without_version = text.split('@').next().unwrap_or(text);
-        without_version.rsplit('/').next().unwrap_or(without_version)
     }
 }
 
-/// Whether `root/Cargo.toml` names the package `name` at `version`, read once
-/// per root for the life of the process.
-fn manifest_says(root: &std::path::Path, name: &str, version: &str) -> bool {
-    use std::collections::HashMap;
-    use std::sync::{OnceLock, PoisonError, RwLock};
-    static READ: OnceLock<RwLock<HashMap<std::path::PathBuf, Option<(String, String)>>>> = OnceLock::new();
-    let read = READ.get_or_init(RwLock::default);
-    let known = read.read().unwrap_or_else(PoisonError::into_inner).get(root).cloned();
-    let identity = known.unwrap_or_else(|| {
-        let identity = std::fs::read_to_string(root.join("Cargo.toml")).ok().and_then(|text| {
-            let manifest = text.parse::<toml::Table>().ok()?;
-            let package = manifest.get("package")?.as_table()?;
-            Some((package.get("name")?.as_str()?.to_owned(), package.get("version")?.as_str()?.to_owned()))
-        });
-        read.write().unwrap_or_else(PoisonError::into_inner).insert(root.to_path_buf(), identity.clone());
-        identity
-    });
-    identity.is_some_and(|(said_name, said_version)| said_name == name && said_version == version)
+/// Bounded worker-admitted manifest identities. Reads of this table are pure
+/// even for a cold route; a miss simply keeps the stem as its loading label.
+fn manifest_cache() -> &'static std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>> {
+    static READ: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>>> = std::sync::OnceLock::new();
+    READ.get_or_init(std::sync::Mutex::default)
+}
+
+fn manifest_says_cached(root: &std::path::Path) -> bool {
+    manifest_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|known| known == root)
+}
+
+fn remember_manifest(root: &std::path::Path) {
+    let mut cache = manifest_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.retain(|known| known != root);
+    cache.push_front(root.to_path_buf());
+    cache.truncate(128);
+}
+
+fn forget_manifest(root: &std::path::Path) {
+    manifest_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|known| known != root);
 }
 
 impl fmt::Display for PackageRef {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod cargo_source_identity_tests {
+    use super::PackageRef;
+
+    #[test]
+    fn authority_qualified_package_never_synthesizes_another_version() {
+        let package = PackageRef::parse(
+            "pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).expect("qualified package");
+        assert_eq!(package.version(), Some("1.0.0"));
+        assert_eq!(package.display_name(), "demo");
+        assert!(package.at("2.0.0").is_none(), "only the owner can issue a new source receipt");
+    }
+
+    #[test]
+    fn qualifier_text_with_at_does_not_change_typed_version() {
+        let package = PackageRef::parse(
+            "pkg:cargo/demo@1.0.0?repository_url=https%3A%2F%2Fexample.test%2Fuser%40host",
+        ).expect("qualified package");
+        assert_eq!(package.version(), Some("1.0.0"));
+        assert_eq!(package.at("2.0.0").expect("same authority at next version").as_str(),
+            "pkg:cargo/demo@2.0.0?repository_url=https%3A%2F%2Fexample.test%2Fuser%40host");
     }
 }
 

@@ -4,7 +4,7 @@
 
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -980,7 +980,29 @@ fn serde_1_0_228_docsrs_source_is_retained_as_detached_scope() -> Result<(), Tes
             source,
         })?;
         match result {
-            Err(RustAuthorityError::DetachedSource { path }) if path == selected_canonical => {
+            Err(RustAuthorityError::DetachedSource {
+                path,
+                active_hir_roots,
+            }) if path == selected_canonical => {
+                assert!(active_hir_roots.package_crate_count > 0);
+                assert_eq!(
+                    active_hir_roots.package_crate_count,
+                    active_hir_roots.package_relative_roots.len()
+                        + active_hir_roots.omitted_package_crates
+                );
+                assert!(active_hir_roots.package_relative_roots.len() <= 16);
+                assert!(
+                    active_hir_roots
+                        .package_relative_roots
+                        .iter()
+                        .any(|root| root == Path::new("src/lib.rs"))
+                );
+                assert!(
+                    !active_hir_roots
+                        .package_relative_roots
+                        .iter()
+                        .any(|root| root == Path::new("src/core/crate_root.rs"))
+                );
                 Ok(())
             }
             _ => Err(TestFailure::SerdeSourceScope),

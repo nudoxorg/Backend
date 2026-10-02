@@ -79,9 +79,10 @@ pub(crate) fn coalesce_runtime_development_dependency_rows(
 mod tests;
 
 pub use discovery::{
-    ConanRecipeRef, ConanRecipeTree, CratesRecentPage, CratesRecentRelease, CratesSparsePackage,
-    CratesSparseRelease, DiscoveryAdvisory, DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor,
-    DiscoveryError, DiscoveryFacet, DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt,
+    ConanRecipeRef, ConanRecipeTree, CratesRecentPage, CratesRecentRelease, CratesSparseDependency,
+    CratesSparseFeature, CratesSparseMetadata, CratesSparsePackage, CratesSparseRelease,
+    DiscoveryAdvisory, DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
+    DiscoveryFacet, DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt,
     DiscoveryPackageRetraction, DiscoveryReleaseObservation, DiscoverySourceIdentity,
     DiscoveryStanding, GoModuleIndexPage, MAX_DISCOVERY_CURSOR_BYTES, MAX_DISCOVERY_PAGE_ITEMS,
     MAX_DISCOVERY_PROJECTS, MavenSearchPage, NpmChangedPackage, NpmChangesPage, NpmPackument,

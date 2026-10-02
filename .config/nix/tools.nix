@@ -67,8 +67,15 @@ let
       null;
   # A bounded pool of Cargo 1.97 build directories shares intermediate
   # artifacts without making parallel worktrees wait on one build lock.
-  # sccache shares compiler results across the four isolated lanes; callers
-  # wait or fail with status 75 when every lane is occupied.
+  # sccache shares immutable third-party library compilation results across
+  # the four isolated lanes; callers wait or fail with status 75 when every
+  # lane is occupied.
+  dependencyRustcCache = pkgs.writeShellScript "nudox-dependency-rustc-cache" (
+    builtins.replaceStrings
+      [ "@sccache@" ]
+      [ "${pkgs.sccache}/bin/sccache" ]
+      (builtins.readFile ../scripts/cargo-rustc-cache.sh)
+  );
   parallelCargo = pkgs.writeShellApplication {
     name = "cargo";
     runtimeInputs = [
@@ -77,11 +84,21 @@ let
       pkgs.sccache
       pkgs.gawk
       pkgs.procps
+      pkgs.python3
     ];
     text =
       builtins.replaceStrings
-        [ "@cargo@" "@git@" "@sccache@" ]
-        [ "${toolchains.stable}/bin/cargo" "${pkgs.git}/bin/git" "${pkgs.sccache}/bin/sccache" ]
+        [ "@cargo@" "@git@" "@sccache@" "@rustc_cache_wrapper@" "@python3@" "@rustc@" "@wrapper_source@" "@provenance@" ]
+        [
+          "${toolchains.stable}/bin/cargo"
+          "${pkgs.git}/bin/git"
+          "${pkgs.sccache}/bin/sccache"
+          (toString dependencyRustcCache)
+          "${pkgs.python3}/bin/python3"
+          "${toolchains.stable}/bin/rustc"
+          (toString ../scripts/cargo-shared-cache.sh)
+          (toString ../scripts/cargo-provenance.py)
+        ]
         (builtins.readFile ../scripts/cargo-shared-cache.sh);
   };
   # `luna-tools` is the cheap, pinned command closure used to enter a lane
@@ -576,6 +593,111 @@ let
       }
     else
       null;
+  # The Roslyn helper is a required runtime authority for C# source facts.
+  # Restore only the exact transitive packages already pinned in the checked-in
+  # NuGet lock file, from a local feed assembled out of fixed-output fetches;
+  # the helper build itself cannot reach nuget.org or an ambient user cache.
+  roslynLock =
+    if workspaceAvailable then
+      builtins.fromJSON (
+        builtins.readFile (workspaceRoot + "/frontends/csharp/src/legacy/helper/packages.lock.json")
+      )
+    else
+      null;
+  roslynPackages =
+    if roslynLock == null then
+      [ ]
+    else
+      pkgs.lib.mapAttrsToList (
+        name: package:
+        let
+          packageId = pkgs.lib.toLower name;
+          version = package.resolved;
+          # NuGet's lock-file contentHash excludes the .nupkg signature, while
+          # Nix fetchurl authenticates the complete archive. Keep both hashes:
+          # the lock file is checked by locked restore, and these independently
+          # verified official archive hashes pin the complete downloaded bytes.
+          archiveHashes = {
+            "microsoft.codeanalysis.analyzers" =
+              "sha512-v9jPlSs/fE7AU2/eZOw5EUzq0JOaWgP+2gghwIP2XbbTv56PZZZsy1QgEiMa3jjO8hR8SN1+NJvG1xxHL2FDgw==";
+            "microsoft.codeanalysis.common" =
+              "sha512-r9n3DQIexF0JlGLNcabK6V6i9Q5QzcYQx2LzJJE2wrhmiUAEqPEoignhMvY10MqScAlUOzkm0ZTWpvYyzjWiZQ==";
+            "microsoft.codeanalysis.csharp" =
+              "sha512-6fek0NrSP5NsR/f+JMajZVqKCiuQ0vZR9GQnPBIZCMj3o9eDOpriDjG2SjQXcSAoEqojG0s52zhHurKKQ0R8PQ==";
+            "system.collections.immutable" =
+              "sha512-JdD3TbINwQPseS67IR4oTJHb0KGxwnaT/j3A/VWqoKhvBIqTBgWK08UhDn7mcKEozKIfeSUWspmpW9kE2EgsHQ==";
+            "system.reflection.metadata" =
+              "sha512-wY+305y+G3F14m0ba1znntQaZZSGDeCkUYJu1MP4ms0yer0wjx1lDr9PV+3PPXF1FJaKZqynUPzh5S0Oud2OHg==";
+          };
+          archive = pkgs.fetchurl {
+            url = "https://api.nuget.org/v3-flatcontainer/${packageId}/${version}/${packageId}.${version}.nupkg";
+            hash = archiveHashes.${packageId};
+          };
+        in
+        {
+          inherit archive packageId version;
+        }
+      ) roslynLock.dependencies."net8.0";
+  roslynFeed =
+    if roslynLock == null then
+      null
+    else
+      pkgs.runCommand "nudox-roslyn-nuget-feed" { } ''
+        mkdir -p "$out"
+        ${pkgs.lib.concatMapStringsSep "\n" (package: ''
+          ln -s ${package.archive} "$out/${package.packageId}.${package.version}.nupkg"
+        '') roslynPackages}
+      '';
+  roslynSource =
+    if workspaceAvailable then
+      pkgs.lib.cleanSourceWith {
+        src = workspaceRoot + "/frontends/csharp/src/legacy/helper";
+        filter =
+          path: type:
+          type == "directory"
+          || builtins.elem (baseNameOf (toString path)) [
+            "AuthorityImage.cs"
+            "DocComments.cs"
+            "Extractor.cs"
+            "Program.cs"
+            "SourceLoader.cs"
+            "TypeSigWriter.cs"
+            "oracle.csproj"
+            "packages.lock.json"
+          ];
+      }
+    else
+      null;
+  roslynHelper =
+    if workspaceAvailable then
+      pkgs.stdenvNoCC.mkDerivation {
+        pname = "nudox-roslyn-helper";
+        version = "0.1.0";
+        src = roslynSource;
+        nativeBuildInputs = [ compilers.dotnet ];
+        dontStrip = true;
+        doCheck = false;
+        buildPhase = ''
+          runHook preBuild
+          export DOTNET_CLI_HOME="$TMPDIR/dotnet-home"
+          export DOTNET_CLI_TELEMETRY_OPTOUT=1
+          export DOTNET_NOLOGO=1
+          export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+          export NUGET_PACKAGES="$TMPDIR/nuget-packages"
+          mkdir -p "$DOTNET_CLI_HOME" "$NUGET_PACKAGES" "$TMPDIR/obj" "$TMPDIR/bin" "$TMPDIR/publish"
+          dotnet restore oracle.csproj --locked-mode --nologo --source ${roslynFeed} -p:NuGetAudit=false -p:BaseIntermediateOutputPath="$TMPDIR/obj/" -p:BaseOutputPath="$TMPDIR/bin/"
+          dotnet publish oracle.csproj --no-restore --nologo --configuration Release --framework net8.0 -p:NuGetAudit=false -p:BaseIntermediateOutputPath="$TMPDIR/obj/" -p:BaseOutputPath="$TMPDIR/bin/" --output "$TMPDIR/publish"
+          runHook postBuild
+        '';
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out/lib/nudox-roslyn-helper"
+          cp -R "$TMPDIR/publish/." "$out/lib/nudox-roslyn-helper/"
+          runHook postInstall
+        '';
+      }
+    else
+      null;
   # TypeScript checker seam expected by `NUDOX_TYPESCRIPT_CHECKER_BIN`: the
   # vendored driver plus the pinned `typescript` npm package on `NODE_PATH`.
   # Null under the configuration-only flake for the same reason as `goOracle`.
@@ -633,7 +755,8 @@ let
   # path that nothing built.
   authorityHelpers =
     pkgs.lib.optional (goOracle != null) goOracle
-    ++ pkgs.lib.optional (typescriptChecker != null) typescriptChecker;
+    ++ pkgs.lib.optional (typescriptChecker != null) typescriptChecker
+    ++ pkgs.lib.optional (roslynHelper != null) roslynHelper;
 in
 {
   fuzzContract = fuzzBundle.contract;
@@ -653,6 +776,7 @@ in
     linuxGraphicsEnvironment
     nativeCompilers
     qualityTools
+    roslynHelper
     serviceTools
     typescriptChecker
     observabilityTools

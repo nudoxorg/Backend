@@ -7,7 +7,7 @@
 //! sentence opens inside the badge when you rest on it).
 //!
 //! The grammar is Rust's in full (it is the language most packages here are
-//! written in) and a smaller, honest reading of the other six ecosystems:
+//! written in) and a smaller, honest reading of the other supported languages:
 //! a word that cannot be read from the text is not invented, and a
 //! signature that is not source text (an encoded compiler type) reads to no
 //! badges at all.
@@ -26,9 +26,33 @@ pub mod view;
 pub use glyph::{Glyph, glyph};
 pub use view::{Badge as BadgeView, badge};
 
-use crate::icons::{Kind, Lang};
+use crate::icons::Kind;
 use crate::tokens::Family;
 use gpui::SharedString;
+
+/// The language used to read an item's signature. Unknown stays unclassified
+/// instead of borrowing Rust's grammar or mark.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Lang {
+    /// Rust.
+    Rust,
+    /// TypeScript or JavaScript.
+    Typescript,
+    /// Python.
+    Python,
+    /// Go.
+    Go,
+    /// Java.
+    Java,
+    /// C#.
+    Csharp,
+    /// C.
+    C,
+    /// C++.
+    Cpp,
+    /// No supported language was identified.
+    Unknown,
+}
 
 /// What a badge's colour says. Plain is the neutral ink; the rest are the
 /// house voices (amber waits and warns, coral fails, periwinkle is a
@@ -233,7 +257,21 @@ pub fn read(item: &Item<'_>) -> Reading {
     let hinted = item.kind.map(Shape::of_kind);
     let mut reading = match (&text, item.lang) {
         (Some(text), Lang::Rust) => rust::read(item, text),
-        (Some(text), lang) => other::read(item, text, lang),
+        (
+            Some(text),
+            lang @ (Lang::Typescript
+            | Lang::Python
+            | Lang::Go
+            | Lang::Java
+            | Lang::Csharp
+            | Lang::C
+            | Lang::Cpp),
+        ) => other::read(item, text, lang),
+        (Some(_), Lang::Unknown) => Reading {
+            shape: hinted.unwrap_or(Shape::Item),
+            word: hinted.unwrap_or(Shape::Item).word(item.lang),
+            badges: Vec::new(),
+        },
         (None, _) => Reading {
             shape: hinted.unwrap_or(Shape::Item),
             word: hinted.unwrap_or(Shape::Item).word(item.lang),

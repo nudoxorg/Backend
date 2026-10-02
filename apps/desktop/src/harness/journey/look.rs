@@ -73,6 +73,7 @@ pub(super) fn painted_extras(ledger: &Ledger, painted: &[gpui::PaintedText]) -> 
             TextSample {
                 key: bounds.key.clone(),
                 paint_clip: None,
+                scroll_ancestors: Vec::new(),
                 natural_width: bounds.width,
                 overflow: facet::probe::TextOverflow::Wrap,
                 content: line.text.to_string(),
@@ -574,6 +575,13 @@ pub(super) fn describe(route: &Route) -> String {
             at(symbol.at.as_ref()),
             symbol.line.map_or_else(String::new, |line| format!(" line={line}"))
         ),
+        Route::CargoSource(source) => format!(
+            "cargo-source {} file={} project={}{}",
+            source.package.as_str(),
+            source.file.as_str(),
+            source.project.display_lossy(),
+            source.line.map_or_else(String::new, |line| format!(" line={line}")),
+        ),
     }
 }
 
@@ -591,6 +599,7 @@ mod tests {
             key: format!("text:{content}"),
             bounds: at(content, x, y, 80.0, 16.0),
             paint_clip: None,
+            scroll_ancestors: Vec::new(),
             natural_width: 80.0,
             overflow: TextOverflow::Clip,
             content: content.to_owned(),

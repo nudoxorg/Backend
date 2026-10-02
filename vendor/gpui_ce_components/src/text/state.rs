@@ -1,10 +1,5 @@
-use futures::Stream as _;
-use std::{
-    ops::RangeInclusive,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::Poll,
-};
+use futures::{Stream as _, StreamExt as _};
+use std::{ops::RangeInclusive, pin::Pin, sync::Arc, task::Poll};
 
 use gpui::{
     App, AppContext as _, Bounds, Context, FocusHandle, IntoElement, KeyBinding, ListState,
@@ -14,7 +9,6 @@ use gpui::{
 
 use crate::{
     ElementExt,
-    async_util::{Receiver, Sender, unbounded},
     input::{self, SelectAll},
     scroll::AutoScroll,
     text::{
@@ -22,14 +16,13 @@ use crate::{
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
+        pending_update::{self, Publications, Publisher},
         selection_adapter::TextViewSelectionAdapter,
     },
     v_flex,
 };
 
 const CONTEXT: &'static str = "TextView";
-// Keep coalescing bounded so sustained streams still render intermediate updates.
-const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
 // Preserve exact first-layout height for small documents while bounding the
 // amount of source parsed synchronously on the UI thread.
 const MAX_SYNC_FULL_REPLACE_BYTES: usize = 4 * 1024;
@@ -82,6 +75,77 @@ pub(super) struct LineSpan {
     pub(super) line_height: Pixels,
 }
 
+/// An immutable Markdown projection prepared outside the UI thread.
+///
+/// Keeps the component's native marks, links and selection model. Preparing
+/// parses synchronously; invoke this from a worker, never render or layout.
+#[derive(Clone)]
+pub struct PreparedMarkdown(Arc<ParsedContent>);
+
+impl PreparedMarkdown {
+    pub(crate) fn from_content(content: ParsedContent) -> Self {
+        Self(Arc::new(content))
+    }
+
+    /// Parse a standalone fragment with the component's default Markdown rules.
+    pub fn parse(source: &str) -> Result<Self, SharedString> {
+        let mut node_cx = NodeContext::default();
+        let document = format::markdown::parse(source, &mut node_cx)?;
+        Ok(Self(Arc::new(ParsedContent {
+            document,
+            node_cx,
+            ..ParsedContent::default()
+        })))
+    }
+
+    pub(super) fn source(&self) -> SharedString {
+        self.0.document.source.shared()
+    }
+}
+
+/// Ownership follows the document's lifecycle: editable source and workers
+/// exist only for live documents; prepared projections remain shared.
+enum DocumentLifecycle {
+    Live(LiveDocument),
+    Prepared(PreparedMarkdown),
+}
+
+struct LiveDocument {
+    text: String,
+    tx: Publisher<UpdateOptions>,
+    _parse_task: Task<()>,
+    _receive_task: Task<()>,
+}
+
+impl LiveDocument {
+    fn new(format: TextViewFormat, text: &str, cx: &mut Context<TextViewState>) -> Self {
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
+        let (tx_result, mut rx_result) = pending_update::channel(ParsedUpdate::merge);
+        let receive_task = cx.spawn(async move |weak_self, cx| {
+            while let Some(parsed_update) = rx_result.next().await {
+                _ = weak_self.update(cx, |state, cx| {
+                    state.accept_parsed_update(parsed_update, cx);
+                });
+            }
+        });
+        Self {
+            text: text.to_owned(),
+            tx,
+            _parse_task: cx.background_spawn(UpdateFuture::new(format, rx, tx_result)),
+            _receive_task: receive_task,
+        }
+    }
+}
+
+impl DocumentLifecycle {
+    fn live(&self) -> Option<&LiveDocument> {
+        match self {
+            Self::Live(live) => Some(live),
+            Self::Prepared(_) => None,
+        }
+    }
+}
+
 /// The state of a TextView.
 pub struct TextViewState {
     pub(super) focus_handle: FocusHandle,
@@ -96,7 +160,7 @@ pub struct TextViewState {
     pub(super) max_lines: Option<usize>,
     /// Line spans reported by `Inline` during prepaint (collected only while
     /// [`Self::max_lines`] is set); cleared by `TextView` at each frame start.
-    pub(super) line_spans: Arc<Mutex<Vec<LineSpan>>>,
+    pub(super) line_spans: Vec<LineSpan>,
     /// Whether the last painted frame clipped content due to `max_lines`.
     pub(super) clamped: bool,
     pub(super) text_view_style: TextViewStyle,
@@ -113,17 +177,15 @@ pub struct TextViewState {
     pub(super) selection_adapter: TextViewSelectionAdapter,
 
     pub(super) parsed_content: ParsedContent,
+    lifecycle: DocumentLifecycle,
     /// Content format (markdown / html), used for bounded synchronous parsing
     /// of small full-replace updates.
     format: TextViewFormat,
-    text: String,
+    pub(super) background_parse: bool,
     revision: usize,
     pub(super) selection_revision: usize,
     compatible_layout_update: bool,
     parsed_error: Option<SharedString>,
-    tx: Sender<UpdateOptions>,
-    _parse_task: Task<()>,
-    _receive_task: Task<()>,
 }
 
 impl TextViewState {
@@ -139,48 +201,48 @@ impl TextViewState {
 
     /// Create a new TextViewState.
     fn new(format: TextViewFormat, text: &str, cx: &mut Context<Self>) -> Self {
+        Self::new_configured(format, text, Arc::default(), false, cx)
+    }
+
+    pub(super) fn new_configured(
+        format: TextViewFormat,
+        text: &str,
+        markdown_extensions: Arc<MarkdownExtensions>,
+        background_parse: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let lifecycle = DocumentLifecycle::Live(LiveDocument::new(format, text, cx));
+        let mut this =
+            Self::new_inner(format, markdown_extensions, background_parse, lifecycle, cx);
+        this.increment_update(text, false, cx);
+        this
+    }
+
+    pub(super) fn new_prepared(prepared: PreparedMarkdown, cx: &mut Context<Self>) -> Self {
+        Self::new_inner(
+            TextViewFormat::Markdown,
+            Arc::default(),
+            true,
+            DocumentLifecycle::Prepared(prepared),
+            cx,
+        )
+    }
+
+    fn new_inner(
+        format: TextViewFormat,
+        markdown_extensions: Arc<MarkdownExtensions>,
+        background_parse: bool,
+        lifecycle: DocumentLifecycle,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let selection_adapter = TextViewSelectionAdapter::new(cx.entity().downgrade(), cx);
+        let parsed_content = match &lifecycle {
+            DocumentLifecycle::Live(_) => ParsedContent::default(),
+            DocumentLifecycle::Prepared(snapshot) => (*snapshot.0).clone(),
+        };
 
-        let (tx, rx) = unbounded::<UpdateOptions>();
-        let (tx_result, rx_result) = unbounded::<ParsedUpdate>();
-        let _receive_task = cx.spawn({
-            async move |weak_self, cx| {
-                while let Ok(parsed_update) = rx_result.recv().await {
-                    _ = weak_self.update(cx, |state, cx| {
-                        if parsed_update.revision != state.revision {
-                            return;
-                        }
-                        if parsed_update.baseline_ack {
-                            debug_assert!(parsed_update.full_parse);
-                            return;
-                        }
-
-                        match parsed_update.result {
-                            Ok(content) => {
-                                state.parsed_content = content;
-                                state.parsed_error = None;
-                                state.compatible_layout_update = parsed_update.selection_compatible;
-                            }
-                            Err(err) => {
-                                state.parsed_error = Some(err);
-                            }
-                        }
-                        // Don't interrupt an active drag-selection; the stored
-                        // positions remain valid for append-only updates and will
-                        // self-correct on the next mouse-move event.
-                        if !parsed_update.selection_compatible && !state.is_selecting {
-                            state.reset_selection_and_adapter(cx);
-                        }
-                        cx.notify();
-                    });
-                }
-            }
-        });
-
-        let _parse_task = cx.background_spawn(UpdateFuture::new(format, rx, tx_result));
-
-        let mut this = Self {
+        Self {
             focus_handle,
             bounds: Bounds::default(),
             multi_click_selection: None,
@@ -190,7 +252,7 @@ impl TextViewState {
             selection_format: SelectionFormat::default(),
             scrollable: false,
             max_lines: None,
-            line_spans: Arc::default(),
+            line_spans: Vec::new(),
             clamped: false,
             // Measure all blocks (not just visible ones) so the scrollbar
             // thumb size stays stable. Without this, off-screen blocks count
@@ -201,28 +263,75 @@ impl TextViewState {
             code_block_actions: None,
             table_actions: None,
             link_click_handler: None,
-            markdown_extensions: Arc::default(),
+            markdown_extensions,
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
             selection_adapter,
-            parsed_content: Default::default(),
+            parsed_content,
+            lifecycle,
             format,
+            background_parse,
             parsed_error: None,
-            text: text.to_string(),
             revision: 0,
             selection_revision: 0,
             compatible_layout_update: false,
-            tx,
-            _parse_task,
-            _receive_task,
-        };
-        this.increment_update(&text, false, cx);
-        this
+        }
+    }
+
+    pub(super) fn set_prepared(&mut self, prepared: &PreparedMarkdown, cx: &mut Context<Self>) {
+        if matches!(&self.lifecycle, DocumentLifecycle::Prepared(current)
+            if Arc::ptr_eq(&current.0, &prepared.0))
+        {
+            return;
+        }
+        self.lifecycle = DocumentLifecycle::Prepared(prepared.clone());
+        self.revision = self.revision.wrapping_add(1);
+        self.selection_revision = self.selection_revision.wrapping_add(1);
+        self.parsed_content = (*prepared.0).clone();
+        self.parsed_error = None;
+        self.compatible_layout_update = false;
+        if !self.is_selecting {
+            self.reset_selection_and_adapter(cx);
+        }
+        cx.notify();
+    }
+
+    fn accept_parsed_update(
+        &mut self,
+        parsed_update: ParsedUpdate,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.lifecycle.live().is_none() || parsed_update.revision != self.revision {
+            return false;
+        }
+        if parsed_update.baseline_ack {
+            debug_assert!(parsed_update.full_parse);
+            return false;
+        }
+
+        match parsed_update.result {
+            Ok(content) => {
+                self.parsed_content = content;
+                self.parsed_error = None;
+                self.compatible_layout_update = parsed_update.selection_compatible;
+            }
+            Err(err) => {
+                self.parsed_error = Some(err);
+            }
+        }
+        // Don't interrupt an active drag-selection; the stored
+        // positions remain valid for append-only updates and will
+        // self-correct on the next mouse-move event.
+        if !parsed_update.selection_compatible && !self.is_selecting {
+            self.reset_selection_and_adapter(cx);
+        }
+        cx.notify();
+        true
     }
 
     /// Get the text content.
     pub(crate) fn source(&self) -> SharedString {
-        self.parsed_content.document.source.clone()
+        self.parsed_content.document.source.shared()
     }
 
     /// Set whether the text is selectable, default false.
@@ -276,12 +385,22 @@ impl TextViewState {
 
     /// Set the text content.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if self.text.as_str() == text {
-            return;
+        match &mut self.lifecycle {
+            DocumentLifecycle::Live(live) => {
+                if live.text == text {
+                    return;
+                }
+                live.text.clear();
+                live.text.push_str(text);
+            }
+            DocumentLifecycle::Prepared(prepared) => {
+                // Only explicit editing may materialize a prepared source.
+                if prepared.0.document.source.as_str() == text {
+                    return;
+                }
+                self.lifecycle = DocumentLifecycle::Live(LiveDocument::new(self.format, text, cx));
+            }
         }
-
-        self.text.clear();
-        self.text.push_str(text);
         self.parsed_error = None;
         self.increment_update(text, false, cx);
     }
@@ -291,8 +410,20 @@ impl TextViewState {
         if new_text.is_empty() {
             return;
         }
-        self.text.push_str(new_text);
-        self.increment_update(new_text, true, cx);
+        match &mut self.lifecycle {
+            DocumentLifecycle::Live(live) => {
+                live.text.push_str(new_text);
+                self.increment_update(new_text, true, cx);
+            }
+            DocumentLifecycle::Prepared(prepared) => {
+                // Promotion publishes a complete baseline, so the new worker
+                // cannot interpret this append as a standalone document.
+                let mut text = prepared.0.document.source.to_string();
+                text.push_str(new_text);
+                self.lifecycle = DocumentLifecycle::Live(LiveDocument::new(self.format, &text, cx));
+                self.increment_update(&text, false, cx);
+            }
+        }
     }
 
     pub(crate) fn set_markdown_extensions(
@@ -305,8 +436,10 @@ impl TextViewState {
         }
 
         self.markdown_extensions = markdown_extensions;
-        if self.format == TextViewFormat::Markdown {
-            let text = self.text.clone();
+        if self.format == TextViewFormat::Markdown
+            && let Some(live) = self.lifecycle.live()
+        {
+            let text = live.text.clone();
             self.increment_update(&text, false, cx);
         }
     }
@@ -367,7 +500,8 @@ impl TextViewState {
         if !append {
             self.selection_revision = self.selection_revision.wrapping_add(1);
         }
-        let parse_synchronously = !append && text.len() <= MAX_SYNC_FULL_REPLACE_BYTES;
+        let parse_synchronously =
+            !self.background_parse && !append && text.len() <= MAX_SYNC_FULL_REPLACE_BYTES;
         let update_options = UpdateOptions {
             revision: self.revision,
             append,
@@ -401,12 +535,22 @@ impl TextViewState {
             // Keep the background parser's accumulated document in sync so a
             // later append extends this baseline instead of parsing the delta
             // as a standalone document.
-            _ = self.tx.try_send(update_options);
+            _ = self
+                .lifecycle
+                .live()
+                .expect("updates require a live document")
+                .tx
+                .try_send(update_options);
             cx.notify();
             return;
         }
 
-        _ = self.tx.try_send(update_options);
+        _ = self
+            .lifecycle
+            .live()
+            .expect("updates require a live document")
+            .tx
+            .try_send(update_options);
     }
 
     /// Save bounds and unselect if bounds changed.
@@ -656,26 +800,81 @@ impl Render for TextViewState {
 pub(crate) struct ParsedContent {
     pub(crate) document: ParsedDocument,
     pub(crate) node_cx: node::NodeContext,
+    append_compatible: bool,
+    /// Test-only successful grammar input in the current checked lineage,
+    /// not a parse-time estimate. Open-block reparses and reference fallback
+    /// contribute their source bytes. Replacement and failed-basis recovery
+    /// start a fresh lineage; failed parses are excluded. This is not total
+    /// worker input over its lifetime.
+    #[cfg(test)]
+    grammar_input_bytes: usize,
+}
+
+impl ParsedContent {
+    pub(crate) fn from_document(document: ParsedDocument, node_cx: node::NodeContext) -> Self {
+        Self {
+            document,
+            node_cx,
+            ..Self::default()
+        }
+    }
 }
 
 struct UpdateFuture {
     format: TextViewFormat,
     content: ParsedContent,
-    rx: Pin<Box<Receiver<UpdateOptions>>>,
-    tx_result: Sender<ParsedUpdate>,
+    logical_source: super::document_storage::SourceSnapshot,
+    basis_checked: bool,
+    rx: Pin<Box<Publications<UpdateOptions>>>,
+    tx_result: Publisher<ParsedUpdate>,
 }
 
 impl UpdateFuture {
     fn new(
         format: TextViewFormat,
-        rx: Receiver<UpdateOptions>,
-        tx_result: Sender<ParsedUpdate>,
+        rx: Publications<UpdateOptions>,
+        tx_result: Publisher<ParsedUpdate>,
     ) -> Self {
         Self {
             format,
             content: Default::default(),
+            logical_source: Default::default(),
+            basis_checked: true,
             rx: Box::pin(rx),
             tx_result,
+        }
+    }
+    fn apply(&mut self, options: UpdateOptions) -> ParsedUpdate {
+        if options.append {
+            self.logical_source.append(&options.pending_text);
+        } else {
+            self.logical_source = options.pending_text.clone().into();
+        }
+        let recover = options.append && !self.basis_checked;
+        let res = if recover {
+            let complete = UpdateOptions {
+                append: false,
+                pending_text: self.logical_source.to_string(),
+                mode: ParseMode::Replace,
+                ..options.clone()
+            };
+            parse_content(self.format, ParsedContent::default(), &complete)
+        } else {
+            parse_content(self.format, self.content.clone(), &options)
+        };
+        self.basis_checked = res.is_ok();
+        if let Ok(content) = &res {
+            self.content = content.clone();
+        }
+        ParsedUpdate {
+            revision: options.revision,
+            full_parse: !options.append
+                || recover
+                || res.as_ref().is_ok_and(|content| !content.append_compatible),
+            selection_compatible: !recover
+                && res.as_ref().is_ok_and(|content| content.append_compatible),
+            baseline_ack: options.mode == ParseMode::BaselineAck,
+            result: res,
         }
     }
 }
@@ -684,32 +883,17 @@ impl Future for UpdateFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.rx.as_mut().poll_next(cx) {
-                Poll::Ready(Some(mut options)) => {
-                    let hit_coalesce_budget =
-                        merge_pending_options(&mut options, self.rx.as_ref().get_ref());
-
-                    let res = parse_content(self.format, self.content.clone(), &options);
-                    if let Ok(content) = &res {
-                        self.content = content.clone();
-                    }
-                    _ = self.tx_result.try_send(ParsedUpdate {
-                        revision: options.revision,
-                        full_parse: !options.append,
-                        selection_compatible: options.mode == ParseMode::Compatible,
-                        baseline_ack: options.mode == ParseMode::BaselineAck,
-                        result: res,
-                    });
-                    if hit_coalesce_budget {
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    continue;
-                }
-                Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Pending => return Poll::Pending,
+        match self.rx.as_mut().poll_next(cx) {
+            Poll::Ready(Some(options)) => {
+                let parsed = self.apply(options);
+                _ = self.tx_result.try_send(parsed);
+                // One parse per poll; a concurrent publisher cannot keep
+                // this worker occupied indefinitely.
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
+            Poll::Ready(None) => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -745,6 +929,18 @@ struct ParsedUpdate {
     result: Result<ParsedContent, SharedString>,
 }
 
+impl ParsedUpdate {
+    fn merge(&mut self, mut next: Self) {
+        // Each success is a complete cumulative document, so its content can
+        // supersede the pending result. A skipped incompatible replacement
+        // must still reset selection when its later appended result paints.
+        // Baseline acknowledgements are already installed synchronously and
+        // must not invalidate a selection made after that installation.
+        next.selection_compatible &= self.baseline_ack || self.selection_compatible;
+        *self = next;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ParseMode {
     BaselineAck,
@@ -752,31 +948,20 @@ enum ParseMode {
     Compatible,
 }
 
-fn merge_pending_options(options: &mut UpdateOptions, rx: &Receiver<UpdateOptions>) -> bool {
-    let mut update_count = 1;
-
-    while update_count < MAX_COALESCED_UPDATES_PER_PARSE {
-        match rx.try_recv() {
-            Ok(next_options) => {
-                options.merge(next_options);
-                update_count += 1;
-            }
-            Err(_) => return false,
-        }
-    }
-
-    true
-}
-
 fn parse_content(
     format: TextViewFormat,
     mut content: ParsedContent,
     options: &UpdateOptions,
 ) -> Result<ParsedContent, SharedString> {
-    let mut node_cx = NodeContext {
-        markdown_extensions: options.markdown_extensions.clone(),
-        ..NodeContext::default()
+    let mut node_cx = if options.append {
+        content.node_cx.clone()
+    } else {
+        NodeContext::default()
     };
+    node_cx.markdown_extensions = options.markdown_extensions.clone();
+    let prior_dependencies = node_cx.reference_dependencies;
+    node_cx.link_refs.begin_update();
+    node_cx.reference_dependencies = Default::default();
 
     // Re-parse the last block together with the appended text, so a block the
     // new text continues (an unclosed list, a fenced code block) is not split
@@ -793,12 +978,41 @@ fn parse_content(
                 .and_then(|block| block.span())
         })
         .flatten();
+    let open_reference_start = options
+        .append
+        .then(|| {
+            node_cx
+                .link_refs
+                .open_tail_definition_start(&content.document.source)
+        })
+        .flatten();
+    let reparse_start = match (last_span.map(|span| span.start), open_reference_start) {
+        (Some(block), Some(reference)) => Some(block.min(reference)),
+        (Some(block), None) => Some(block),
+        (None, Some(reference)) => Some(reference),
+        (None, None) => None,
+    };
 
     let mut source = String::new();
-    if let Some(span) = last_span {
-        Arc::make_mut(&mut content.document.blocks).pop();
-        node_cx.offset = span.start;
-        source.push_str(&content.document.source[span.start..]);
+    if let Some(start) = reparse_start {
+        while content
+            .document
+            .blocks
+            .last()
+            .and_then(|block| block.span())
+            .is_some_and(|span| span.start >= start || span.end > start)
+        {
+            content.document.blocks.pop();
+        }
+        node_cx.link_refs.truncate_from(start);
+        node_cx.offset = start;
+        source.push_str(
+            &content
+                .document
+                .source
+                .get(start..content.document.source.len())
+                .unwrap(),
+        );
         source.push_str(&options.pending_text);
     } else {
         if options.append {
@@ -812,15 +1026,55 @@ fn parse_content(
         TextViewFormat::Html => format::html::parse(&source, &mut node_cx),
     }?;
 
+    #[cfg(test)]
+    {
+        content.grammar_input_bytes += source.len();
+    }
+    let suffix_dependencies = node_cx.reference_dependencies;
+    let reference_mapping_changed = node_cx.link_refs.finish_update();
+    if options.append
+        && ((prior_dependencies.depends_on_definitions() && reference_mapping_changed)
+            || (suffix_dependencies.has_unresolved_candidates()
+                && !content.node_cx.link_refs.is_empty()))
+    {
+        // A new definition can change previously plain prose into a reference
+        // link. A suffix reference may need definitions outside its parse
+        // window. The Markdown parser owns that grammar, so reproject the true
+        // complete source rather than inventing a separate bracket parser.
+        let mut whole = content.document.source.clone();
+        whole.append(&options.pending_text);
+        let full = UpdateOptions {
+            append: false,
+            pending_text: whole.to_string(),
+            mode: ParseMode::Replace,
+            ..options.clone()
+        };
+        let mut result = parse_content(format, ParsedContent::default(), &full)?;
+        #[cfg(test)]
+        {
+            result.grammar_input_bytes += content.grammar_input_bytes;
+        }
+        result.append_compatible = false;
+        return Ok(result);
+    }
+    node_cx.reference_dependencies.merge(prior_dependencies);
+    content.append_compatible = options.mode == ParseMode::Compatible;
+
     if options.append {
-        content.document.source =
-            format!("{}{}", content.document.source, options.pending_text).into();
-        Arc::make_mut(&mut content.document.blocks)
-            .extend(Arc::unwrap_or_clone(new_document.blocks));
+        // Test accounting includes the parse-buffer copy and the temporary
+        // suffix document's source storage, not only the persistent append.
+        #[cfg(test)]
+        content
+            .document
+            .source
+            .record_materialized_bytes(source.len() + new_document.source.copied_bytes());
+        content.document.source.append(&options.pending_text);
+        content.document.blocks.append(new_document.blocks);
     } else {
         content.document = new_document;
     }
 
+    content.node_cx = node_cx;
     Ok(content)
 }
 
@@ -829,6 +1083,841 @@ mod tests {
     use super::*;
     use crate::text::MarkdownNode;
     use gpui::TestAppContext;
+
+    fn replace_markdown(source: &str) -> ParsedContent {
+        parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: source.to_owned(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: Arc::default(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn append_markdown(content: ParsedContent, source: &str) -> ParsedContent {
+        parse_content(
+            TextViewFormat::Markdown,
+            content,
+            &UpdateOptions {
+                revision: 2,
+                pending_text: source.to_owned(),
+                append: true,
+                mode: ParseMode::Compatible,
+                markdown_extensions: Arc::default(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn first_reference_link(content: &ParsedContent) -> &node::LinkMark {
+        content
+            .document
+            .blocks
+            .iter()
+            .find_map(|block| {
+                let node::BlockNode::Paragraph(paragraph) = block else {
+                    return None;
+                };
+                paragraph
+                    .children
+                    .iter()
+                    .flat_map(|run| &run.marks)
+                    .find_map(|(_, mark)| {
+                        mark.link.as_ref().filter(|link| link.identifier.is_some())
+                    })
+            })
+            .expect("fixture contains a reference link")
+    }
+
+    #[test]
+    fn append_reconciles_a_reference_definition_open_at_eof() {
+        let initial = replace_markdown("[id]: fo");
+        assert_eq!(
+            initial.node_cx.link_refs.get(&"id".into()).unwrap().url,
+            "fo"
+        );
+
+        let appended = append_markdown(initial, "o\n\n[link][id]");
+        let definition = appended
+            .node_cx
+            .resolve_link_mark(first_reference_link(&appended).clone());
+        assert_eq!(definition.url.as_str(), "foo");
+        assert_eq!(appended.document.source.as_str(), "[id]: foo\n\n[link][id]");
+        assert!(appended.append_compatible);
+    }
+
+    #[test]
+    fn appended_definition_reprojects_an_earlier_unresolved_reference() {
+        let initial = replace_markdown("[link][id]\n\nbody\n\n");
+        assert!(
+            initial
+                .node_cx
+                .reference_dependencies
+                .has_unresolved_candidates()
+        );
+        assert!(initial.document.text().contains("[link][id]"));
+
+        let appended = append_markdown(initial, "[id]: dest");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "dest"
+        );
+        assert!(!appended.append_compatible);
+        assert_eq!(
+            appended.document.source.as_str(),
+            "[link][id]\n\nbody\n\n[id]: dest"
+        );
+        assert!(appended.grammar_input_bytes > appended.document.source.len());
+    }
+
+    #[test]
+    fn appends_keep_reference_first_wins_order() {
+        let initial = replace_markdown("[link][id]\n\n[id]: first");
+        let initial_link_block = initial.document.blocks.get(0).unwrap() as *const node::BlockNode;
+        let appended = append_markdown(initial.clone(), "\n\n[id]: second");
+        assert_eq!(
+            appended.document.blocks.get(0).unwrap() as *const node::BlockNode,
+            initial_link_block,
+            "reparsing the final definition must retain the earlier reference paragraph"
+        );
+        assert_eq!(initial.document.blocks.len(), 2);
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "first"
+        );
+        assert_eq!(
+            appended.node_cx.link_refs.get(&"id".into()).unwrap().url,
+            "first"
+        );
+    }
+
+    #[test]
+    fn appended_reference_uses_a_definition_retained_before_the_parse_window() {
+        let initial = replace_markdown("[id]: dest\n\nbody\n\n");
+        let appended = append_markdown(initial, "[link][id]");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "dest"
+        );
+        assert!(!appended.append_compatible);
+        assert!(appended.grammar_input_bytes > appended.document.source.len());
+    }
+
+    #[test]
+    fn changing_an_open_winner_reprojects_existing_reference_links() {
+        let initial = replace_markdown("[link][id]\n\n[id]: old");
+        let appended = append_markdown(initial.clone(), "er");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "older"
+        );
+        assert_eq!(
+            initial.node_cx.link_refs.get(&"id".into()).unwrap().url,
+            "old"
+        );
+        assert!(!appended.append_compatible);
+        assert!(appended.grammar_input_bytes > appended.document.source.len());
+    }
+
+    #[test]
+    fn worker_and_render_reference_work_uses_shared_production_lookup() {
+        let mut source = String::new();
+        for ix in 0..256 {
+            source.push_str(&format!("[ref-{ix}]: dest-{ix}\n\n"));
+        }
+        source.push_str("[link][ref-0]\n\nbody");
+        let mut content = replace_markdown(&source);
+        let entry_clones = content.node_cx.link_refs.copied_entries();
+        let environment_clones = content.node_cx.link_refs.environment_clones();
+
+        // This is the same content clone and append path used by UpdateFuture
+        // before a worker result is published to the UI state.
+        for _ in 0..32 {
+            content = append_markdown(content.clone(), "tail\n\n");
+        }
+        assert_eq!(content.node_cx.link_refs.copied_entries(), entry_clones);
+        assert!(content.node_cx.link_refs.environment_clones() >= environment_clones + 32);
+
+        let lookups = content.node_cx.link_refs.lookups();
+        let resolved = content
+            .node_cx
+            .resolve_link_mark(first_reference_link(&content).clone());
+        assert_eq!(resolved.url.as_str(), "dest-0");
+        assert_eq!(content.node_cx.link_refs.lookups(), lookups + 1);
+    }
+
+    #[test]
+    fn open_paragraph_and_fence_report_grammar_reparse_separately_from_map_clones() {
+        for prefix in ["open", "```rust\ncode"] {
+            let mut content = replace_markdown(prefix);
+            let initial_bytes = content.document.source.len();
+            for _ in 0..24 {
+                content = append_markdown(content, "x");
+            }
+            let final_bytes = content.document.source.len();
+            assert!(
+                content.grammar_input_bytes > final_bytes * 3,
+                "open blocks are reparsed by the Markdown grammar: grammar_input_bytes={} final_source_bytes={final_bytes}",
+                content.grammar_input_bytes
+            );
+            assert!(content.document.source.copied_bytes() > final_bytes);
+            assert!(final_bytes > initial_bytes);
+            assert_eq!(content.node_cx.link_refs.copied_entries(), 0);
+        }
+    }
+
+    #[test]
+    fn prepared_heading_resolves_parent_reference_definitions_and_preserves_exact_source() {
+        let extensions = Arc::new(MarkdownExtensions::default().block_parser(|node, context| {
+            let markdown::mdast::Node::Heading(heading) = node else {
+                return None;
+            };
+            Some(MarkdownNode::new(
+                "derived",
+                context.prepare_inline(&heading.children, "[Guide][id]"),
+            ))
+        }));
+        let content = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: "## [Guide][id]\n\n[id]: src/lib.rs#L7".into(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: extensions,
+            },
+        )
+        .unwrap();
+        let node::BlockNode::Custom(custom) = &content.document.blocks[0] else {
+            panic!("heading missing");
+        };
+        let projection = custom.data::<PreparedMarkdown>().unwrap();
+        assert_eq!(projection.0.document.text().trim(), "Guide");
+        assert_eq!(projection.source().as_str(), "[Guide][id]");
+        assert!(projection.0.node_cx.link_refs.environment_clones() >= 1);
+        let reference = projection.0.node_cx.link_refs.get(&"id".into()).unwrap();
+        assert_eq!(reference.url.as_str(), "src/lib.rs#L7");
+        let node::BlockNode::Paragraph(paragraph) = &projection.0.document.blocks[0] else {
+            panic!("inline missing");
+        };
+        assert!(
+            paragraph
+                .children
+                .iter()
+                .flat_map(|run| &run.marks)
+                .any(|(_, mark)| {
+                    mark.link
+                        .as_ref()
+                        .is_some_and(|link| link.identifier.as_deref() == Some("id"))
+                })
+        );
+    }
+
+    fn prepared_heading_extensions() -> Arc<MarkdownExtensions> {
+        Arc::new(MarkdownExtensions::default().block_parser(|node, context| {
+            let markdown::mdast::Node::Heading(heading) = node else {
+                return None;
+            };
+            let inline_source = context.node_source(node)?.strip_prefix("## ")?;
+            Some(MarkdownNode::new(
+                "derived",
+                context.prepare_inline(&heading.children, inline_source),
+            ))
+        }))
+    }
+
+    fn prepared_heading(content: &ParsedContent) -> Option<&PreparedMarkdown> {
+        content.document.blocks.iter().find_map(|block| {
+            let node::BlockNode::Custom(custom) = block else {
+                return None;
+            };
+            custom.data::<PreparedMarkdown>()
+        })
+    }
+
+    #[test]
+    fn custom_heading_appends_reproject_reference_dependencies_from_parent_ast() {
+        for (source, suffix, previous_target, target) in [
+            ("## [Guide][id]\n\nbody\n\n", "[id]: dest", None, "dest"),
+            ("## [Guide][id]\n\n[id]: old", "er", Some("old"), "older"),
+            ("[id]: dest\n\nbody\n\n", "## [Guide][id]", None, "dest"),
+        ] {
+            let (_, rx) = pending_update::channel(UpdateOptions::merge);
+            let (tx_result, _) = pending_update::channel(ParsedUpdate::merge);
+            let mut worker = UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result);
+            let extensions = prepared_heading_extensions();
+            let options = |revision, text: &str, append| UpdateOptions {
+                revision,
+                pending_text: text.into(),
+                append,
+                mode: if append {
+                    ParseMode::Compatible
+                } else {
+                    ParseMode::Replace
+                },
+                markdown_extensions: extensions.clone(),
+            };
+            let initial = worker.apply(options(1, source, false)).result.unwrap();
+            let original_blocks = initial.document.blocks.len();
+            let appended = worker.apply(options(2, suffix, true));
+            assert!(!appended.selection_compatible);
+            let appended = appended.result.unwrap();
+            let projection = prepared_heading(&appended).expect("custom heading exists");
+            assert_eq!(projection.source().as_str(), "[Guide][id]");
+            assert_eq!(projection.0.document.text().trim(), "Guide");
+            // Use the native renderer's production reference lookup, rather
+            // than checking only the parent's definition table.
+            assert_eq!(
+                projection
+                    .0
+                    .node_cx
+                    .resolve_link_mark(first_reference_link(&projection.0).clone())
+                    .url
+                    .as_str(),
+                target
+            );
+            assert_eq!(
+                appended.document.source.as_str(),
+                format!("{source}{suffix}")
+            );
+            assert_eq!(initial.document.source.as_str(), source);
+            assert_eq!(initial.document.blocks.len(), original_blocks);
+            if let Some(previous_target) = previous_target {
+                let original = prepared_heading(&initial).unwrap();
+                assert_eq!(
+                    original
+                        .0
+                        .node_cx
+                        .resolve_link_mark(first_reference_link(&original.0).clone())
+                        .url
+                        .as_str(),
+                    previous_target
+                );
+            } else if let Some(original) = prepared_heading(&initial) {
+                assert_eq!(original.0.document.text().trim(), "[Guide][id]");
+                assert!(original.0.node_cx.link_refs.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_references_reuse_custom_heading_projection_and_prefix_identity() {
+        let extensions = prepared_heading_extensions();
+        let options = |text: &str, append| UpdateOptions {
+            revision: if append { 2 } else { 1 },
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: extensions.clone(),
+        };
+        let initial = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &options("## [Guide][id]\n\n[id]: dest\n\nbody\n\n", false),
+        )
+        .unwrap();
+        let appended = parse_content(
+            TextViewFormat::Markdown,
+            initial.clone(),
+            &options("next\n\n", true),
+        )
+        .unwrap();
+        assert!(appended.append_compatible);
+        assert_eq!(
+            initial.document.blocks.get(0).unwrap() as *const node::BlockNode,
+            appended.document.blocks.get(0).unwrap() as *const node::BlockNode
+        );
+        assert!(Arc::ptr_eq(
+            &prepared_heading(&initial).unwrap().0,
+            &prepared_heading(&appended).unwrap().0
+        ));
+    }
+
+    #[gpui::test]
+    fn prepared_heading_is_complete_before_executor_runs_and_keeps_native_links_and_copy(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        // The production heading extension performs this preparation in its
+        // worker callback. Instantiating a TextView consumes only the snapshot.
+        let prepared = PreparedMarkdown::parse("🦀 **Guide** [local](src/lib.rs#L7)").unwrap();
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(prepared.clone(), cx)));
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.parsed_content.document.blocks.len(), 1);
+            let node::BlockNode::Paragraph(paragraph) = &state.parsed_content.document.blocks[0]
+            else {
+                panic!("native inline paragraph missing");
+            };
+            assert_eq!(paragraph.text(), "🦀 Guide local");
+            let destinations: Vec<_> = paragraph
+                .children
+                .iter()
+                .flat_map(|run| run.marks.iter())
+                .filter_map(|(_, mark)| mark.link.as_ref().map(|link| link.url.as_str()))
+                .collect();
+            assert_eq!(destinations, ["src/lib.rs#L7"]);
+            // A prepared heading has no parser consumer or background receive
+            // task: it must not depend on another executor turn to fill in.
+            assert!(matches!(state.lifecycle, DocumentLifecycle::Prepared(_)));
+        });
+        state.update(cx, |state, cx| {
+            state.selectable = true;
+            state.select_all(cx);
+            assert_eq!(state.selected_text().trim(), "🦀 Guide local");
+            state.selection_format = SelectionFormat::Source;
+            assert_eq!(state.selected_text(), "🦀 **Guide** [local](src/lib.rs#L7)");
+            let selected_revision = state.selection_revision;
+            state.set_prepared(&prepared, cx);
+            assert_eq!(state.selection_revision, selected_revision);
+            assert!(state.select_all);
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(
+                state.source().as_str(),
+                "🦀 **Guide** [local](src/lib.rs#L7)"
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn prepared_install_and_republication_keep_large_source_unmaterialized(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let first = PreparedMarkdown::parse(&"large prepared paragraph\n\n".repeat(2048)).unwrap();
+        let second =
+            PreparedMarkdown::parse(&"replacement prepared paragraph\n\n".repeat(2048)).unwrap();
+        let first_copies = first.0.document.source.copied_bytes();
+        let second_copies = second.0.document.source.copied_bytes();
+        let _view = crate::text::TextView::prepared_markdown("large-prepared", first.clone());
+        assert_eq!(first.0.document.source.copied_bytes(), first_copies);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(first.clone(), cx)));
+        state.update(cx, |state, cx| {
+            assert!(matches!(state.lifecycle, DocumentLifecycle::Prepared(_)));
+            assert_eq!(first.0.document.source.copied_bytes(), first_copies);
+            state.set_prepared(&first, cx);
+            state.set_prepared(&second, cx);
+            assert_eq!(second.0.document.source.copied_bytes(), second_copies);
+            assert!(
+                matches!(&state.lifecycle, DocumentLifecycle::Prepared(current)
+                if Arc::ptr_eq(&current.0, &second.0))
+            );
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(first.0.document.source.copied_bytes(), first_copies);
+            assert_eq!(second.0.document.source.copied_bytes(), second_copies);
+            assert_eq!(state.parsed_content.document.blocks.len(), 2048);
+        });
+    }
+
+    #[gpui::test]
+    fn prepared_promotion_starts_a_complete_live_baseline_and_rejects_old_completion(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let prepared = PreparedMarkdown::parse("[雪][id]\n\n[id]: prepared").unwrap();
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("old live", cx)));
+        let retired_extensions = Arc::new(MarkdownExtensions::default());
+        let retired = Arc::downgrade(&retired_extensions);
+        state.update(cx, |state, cx| {
+            let retired_revision = state.revision;
+            state
+                .lifecycle
+                .live()
+                .unwrap()
+                .tx
+                .try_send(UpdateOptions {
+                    revision: retired_revision,
+                    pending_text: "queued retiring live worker".into(),
+                    append: false,
+                    mode: ParseMode::Replace,
+                    markdown_extensions: retired_extensions,
+                })
+                .unwrap();
+            state.set_prepared(&prepared, cx);
+            // Reject even a matching revision while the lifecycle is prepared.
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: state.revision,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Ok(replace_markdown("obsolete live")),
+                },
+                cx
+            ));
+            state.push_str("\n\ntail", cx);
+            assert!(state.lifecycle.live().is_some());
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: retired_revision,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Err("retired live failure".into()),
+                },
+                cx
+            ));
+        });
+        cx.run_until_parked();
+        assert!(
+            retired.upgrade().is_none(),
+            "retired worker or publication retained its input"
+        );
+        state.update(cx, |state, cx| {
+            assert_eq!(
+                state.source().as_str(),
+                "[雪][id]\n\n[id]: prepared\n\ntail"
+            );
+            assert_eq!(
+                state
+                    .parsed_content
+                    .node_cx
+                    .resolve_link_mark(first_reference_link(&state.parsed_content).clone())
+                    .url
+                    .as_str(),
+                "prepared"
+            );
+            state.selection_format = SelectionFormat::Source;
+            state.select_all(cx);
+            assert_eq!(state.selected_text(), "[雪][id]\n\n[id]: prepared\n\ntail");
+        });
+    }
+
+    #[gpui::test]
+    fn distinct_prepared_semantics_replace_same_source_and_parent_offset_is_local(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let first = PreparedMarkdown::parse("same").unwrap();
+        let mut changed = (*first.0).clone();
+        let mut paragraph = node::Paragraph::default();
+        paragraph.push(
+            node::InlineNode::new("same").marks(vec![(0..4, node::TextMark::default().bold())]),
+        );
+        changed.document.blocks = vec![node::BlockNode::Paragraph(paragraph)].into();
+        let changed = PreparedMarkdown::from_content(changed);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(first, cx)));
+        state.update(cx, |state, cx| state.set_prepared(&changed, cx));
+        state.read_with(cx, |state, _| {
+            let node::BlockNode::Paragraph(paragraph) = &state.parsed_content.document.blocks[0]
+            else {
+                panic!("paragraph missing");
+            };
+            assert!(paragraph.children[0].marks[0].1.bold);
+        });
+
+        let extensions = Arc::new(MarkdownExtensions::default().block_parser(|node, context| {
+            let markdown::mdast::Node::Heading(heading) = node else {
+                return None;
+            };
+            assert!(
+                context.offset() > 0,
+                "fixture must exercise a nonzero parent offset"
+            );
+            Some(MarkdownNode::new(
+                "offset-heading",
+                context.prepare_inline(&heading.children, "<b>Guide</b> [id][target]"),
+            ))
+        }));
+        let prefix = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: "first\n\nsecond\n\n".into(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: extensions.clone(),
+            },
+        )
+        .unwrap();
+        let content =
+            parse_content(
+                TextViewFormat::Markdown,
+                prefix,
+                &UpdateOptions {
+                    revision: 2,
+                    pending_text:
+                        "## <b>Guide</b> [id][target]\n\n[target]: first.rs\n[target]: second.rs"
+                            .into(),
+                    append: true,
+                    mode: ParseMode::Compatible,
+                    markdown_extensions: extensions,
+                },
+            )
+            .unwrap();
+        let node = content
+            .document
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                node::BlockNode::Custom(node) => Some(node),
+                _ => None,
+            });
+        let Some(node) = node else {
+            panic!("heading missing");
+        };
+        let projection = node.data::<PreparedMarkdown>().unwrap();
+        assert_eq!(projection.0.node_cx.offset, 0);
+        assert_eq!(
+            projection
+                .0
+                .node_cx
+                .link_refs
+                .get(&"target".into())
+                .unwrap()
+                .url
+                .as_str(),
+            "first.rs"
+        );
+        assert_eq!(projection.0.document.blocks[0].span().unwrap().start, 0);
+        let state =
+            cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(projection.clone(), cx)));
+        state.update(cx, |state, cx| {
+            state.selection_format = SelectionFormat::Source;
+            state.select_all(cx);
+            assert_eq!(state.selected_text(), "<b>Guide</b> [id][target]");
+        });
+    }
+
+    #[gpui::test]
+    fn prepared_heading_replacement_updates_without_worker_and_clears_old_selection(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let first = PreparedMarkdown::parse("old [link](#old)").unwrap();
+        let replacement = PreparedMarkdown::parse("**new** [guide](#guide)").unwrap();
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(first, cx)));
+        state.update(cx, |state, cx| {
+            state.select_all(cx);
+            state.set_prepared(&replacement, cx);
+            assert!(!state.select_all);
+            assert_eq!(state.parsed_content.document.text().trim(), "new guide");
+            assert_eq!(state.source().as_str(), "**new** [guide](#guide)");
+        });
+    }
+
+    #[gpui::test]
+    fn background_small_markdown_installs_extensions_once_before_parsing(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        cx.update(crate::init);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let extensions = Arc::new(MarkdownExtensions::default().block_parser(
+            move |node, context| {
+                let markdown::mdast::Node::Heading(heading) = node else {
+                    return None;
+                };
+                observed.fetch_add(1, Ordering::SeqCst);
+                Some(
+                    MarkdownNode::new("heading", heading.depth)
+                        .text("Hello 🦀")
+                        .markdown(context.node_source(node).unwrap()),
+                )
+            },
+        ));
+        let source = "# Hello 🦀\n\n[local](src/lib.rs#L7)";
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    source,
+                    extensions.clone(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        state.read_with(cx, |state, _| {
+            assert!(state.parsed_content.document.blocks.is_empty())
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            let blocks = &state.parsed_content.document.blocks;
+            assert_eq!(blocks.len(), 2);
+            let node::BlockNode::Custom(heading) = &blocks[0] else {
+                panic!("custom heading missing");
+            };
+            assert_eq!(heading.data::<u8>(), Some(&1));
+            assert_eq!(heading.as_text(), "Hello 🦀");
+            let node::BlockNode::Paragraph(paragraph) = &blocks[1] else {
+                panic!("link paragraph missing");
+            };
+            assert_eq!(paragraph.text(), "local");
+            let destinations: Vec<_> = paragraph
+                .children
+                .iter()
+                .flat_map(|run| run.marks.iter())
+                .filter_map(|(_, mark)| mark.link.as_ref().map(|link| link.url.as_str()))
+                .collect();
+            assert_eq!(destinations, ["src/lib.rs#L7"]);
+        });
+        state.update(cx, |state, cx| {
+            state.set_markdown_extensions(extensions, cx);
+            state.set_text(source, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "unchanged source/options must reuse parse"
+        );
+    }
+
+    #[gpui::test]
+    fn held_old_completion_and_failure_cannot_publish_over_new_revision(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    "A",
+                    Arc::default(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        let held_a = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: "A".into(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: Arc::default(),
+            },
+        )
+        .unwrap();
+        state.update(cx, |state, cx| {
+            state.set_text("B", cx);
+            state.set_text("C", cx);
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: 1,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Ok(held_a),
+                },
+                cx
+            ));
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: 2,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Err("obsolete B failure".into()),
+                },
+                cx
+            ));
+            assert!(state.source().is_empty());
+            assert!(state.parsed_error.is_none());
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), "C");
+            assert!(state.parsed_error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn background_replacements_publish_only_latest_unicode_source(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    "A",
+                    Arc::default(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        state.update(cx, |state, cx| {
+            state.set_text("B", cx);
+            state.set_text("**C 🦀**", cx);
+        });
+        state.read_with(cx, |state, _| assert!(state.source().is_empty()));
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), "**C 🦀**");
+            assert_eq!(state.parsed_content.document.text().trim(), "C 🦀");
+        });
+    }
+
+    #[gpui::test]
+    fn background_bounded_large_readme_keeps_first_heading_and_unicode_tail(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        // The owner admits at most 512 KiB of README. Keep this fixture under
+        // that bound while exercising a long Unicode paragraph and final link.
+        let source = format!("# First\n\n{}\n\n[最後](#first)", "文 ".repeat(120_000));
+        assert!(source.len() < 512 * 1024);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    &source,
+                    Arc::default(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        state.read_with(cx, |state, _| {
+            assert!(state.parsed_content.document.blocks.is_empty())
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), source);
+            assert_eq!(state.parsed_content.document.blocks.len(), 3);
+            let rendered = state.parsed_content.document.text();
+            assert!(rendered.starts_with("First"));
+            assert!(rendered.trim_end().ends_with("最後"));
+            assert_eq!(
+                state.parsed_content.document.blocks[0]
+                    .span()
+                    .unwrap()
+                    .start,
+                0
+            );
+        });
+    }
 
     #[gpui::test]
     fn small_full_replace_parses_before_background_executor_runs(cx: &mut TestAppContext) {
@@ -860,12 +1949,15 @@ mod tests {
         });
 
         markdown_state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), markdown.as_str());
+            assert_eq!(
+                state.lifecycle.live().unwrap().text.as_str(),
+                markdown.as_str()
+            );
             assert!(state.source().as_str().is_empty());
             assert!(state.parsed_content.document.blocks.is_empty());
         });
         html_state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), html.as_str());
+            assert_eq!(state.lifecycle.live().unwrap().text.as_str(), html.as_str());
             assert!(state.source().as_str().is_empty());
             assert!(state.parsed_content.document.blocks.is_empty());
         });
@@ -897,7 +1989,10 @@ mod tests {
         cx.run_until_parked();
 
         state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), expected.as_str());
+            assert_eq!(
+                state.lifecycle.live().unwrap().text.as_str(),
+                expected.as_str()
+            );
             assert_eq!(state.source().as_str(), expected.as_str());
         });
     }
@@ -941,7 +2036,7 @@ mod tests {
         cx.run_until_parked();
 
         state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), "new text");
+            assert_eq!(state.lifecycle.live().unwrap().text.as_str(), "new text");
             assert_eq!(state.source().as_str(), "new text");
         });
 
@@ -951,7 +2046,7 @@ mod tests {
         cx.run_until_parked();
 
         state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), "");
+            assert_eq!(state.lifecycle.live().unwrap().text.as_str(), "");
             assert_eq!(state.source().as_str(), "");
         });
     }
@@ -1030,48 +2125,244 @@ mod tests {
     }
 
     #[test]
-    fn update_future_yields_before_coalescing_all_queued_updates() {
-        let (tx, rx) = unbounded::<UpdateOptions>();
-        let (tx_result, rx_result) = unbounded::<ParsedUpdate>();
-        let total_updates = 128;
-
-        for revision in 1..=total_updates {
-            tx.try_send(UpdateOptions {
-                revision,
-                pending_text: format!("{revision}\n"),
-                append: revision != 1,
-                mode: if revision == 1 {
-                    ParseMode::BaselineAck
-                } else {
-                    ParseMode::Compatible
-                },
-                markdown_extensions: Arc::default(),
-            })
-            .unwrap();
-        }
-
-        let mut future = Box::pin(UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result));
-        let waker = futures::task::noop_waker();
-        let mut task_cx = std::task::Context::from_waker(&waker);
-
-        assert!(matches!(
-            std::future::Future::poll(future.as_mut(), &mut task_cx),
-            Poll::Pending
+    fn held_actual_worker_coalesces_replacement_and_repair_append_before_paint() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = barrier.clone();
+        let (started, wait_started) = mpsc::channel();
+        let entered = AtomicBool::new(false);
+        let extensions = Arc::new(MarkdownExtensions::default().mdx().block_parser(
+            move |_, context| {
+                if context.source() == "A" && !entered.swap(true, Ordering::SeqCst) {
+                    started.send(()).unwrap();
+                    worker_barrier.wait();
+                }
+                None
+            },
         ));
-        let parsed_update = rx_result.try_recv().expect("parse result");
-
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
+        let (tx_result, results) = pending_update::channel(ParsedUpdate::merge);
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: extensions.clone(),
+        };
+        tx.try_send(options(1, "A", false)).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut worker = Box::pin(UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result));
+            let waker = futures::task::noop_waker();
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(worker.as_mut().poll(&mut context).is_pending());
+            assert!(worker.as_mut().poll(&mut context).is_pending());
+        });
+        wait_started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(results.try_recv().is_err());
+        tx.try_send(options(2, "{invalid", false)).unwrap();
+        tx.try_send(options(3, "}", true)).unwrap();
+        tx.try_send(options(4, " tail", true)).unwrap();
+        barrier.wait();
+        worker.join().unwrap();
+        let ready = results.try_recv().unwrap();
+        assert_eq!(ready.revision, 4);
+        assert!(!ready.selection_compatible);
+        assert_eq!(
+            ready.result.unwrap().document.source.as_str(),
+            "{invalid} tail"
+        );
         assert!(
-            parsed_update.revision < total_updates,
-            "single poll coalesced every queued update through revision {}",
-            parsed_update.revision
+            results.try_recv().is_err(),
+            "no intermediate stale document may remain queued"
+        );
+    }
+
+    #[test]
+    fn real_incremental_parser_preserves_prefix_nodes_and_linear_source_copy_work() {
+        let (_, rx) = pending_update::channel(UpdateOptions::merge);
+        let (tx_result, _) = pending_update::channel(ParsedUpdate::merge);
+        let mut worker = UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result);
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: Arc::default(),
+        };
+        let initial = worker
+            .apply(options(1, "first\n\nsecond\n\n", false))
+            .result
+            .unwrap();
+        let original_first = initial.document.blocks.get(0).unwrap() as *const node::BlockNode;
+        let before = worker.content.document.source.copied_bytes();
+        for revision in 2..=1025 {
+            worker
+                .apply(options(revision, "next\n\n", true))
+                .result
+                .unwrap();
+        }
+        assert_eq!(
+            worker.content.document.blocks.get(0).unwrap() as *const node::BlockNode,
+            original_first
+        );
+        assert_eq!(initial.document.blocks.len(), 2);
+        assert_eq!(worker.content.document.blocks.len(), 1026);
+        let copied = worker.content.document.source.copied_bytes() - before;
+        assert!(
+            copied < 1024 * 64,
+            "copied {copied} bytes while appending only stable short paragraphs"
+        );
+        assert_eq!(
+            worker.content.document.blocks.last().unwrap().text().trim(),
+            "next"
+        );
+        assert!(
+            worker
+                .content
+                .document
+                .source
+                .as_str()
+                .starts_with("first\n\nsecond\n\n")
+        );
+    }
+
+    #[test]
+    fn failed_mdx_basis_recovers_true_logical_source_on_later_append() {
+        let extensions = Arc::new(MarkdownExtensions::default().mdx());
+        for (initial, failed, failed_append, expected) in [
+            ("A", "{invalid", false, "{invalid}"),
+            ("", "{invalid", false, "{invalid}"),
+            ("A", "\n{invalid", true, "A\n{invalid}"),
+        ] {
+            let (_, rx) = pending_update::channel(UpdateOptions::merge);
+            let (tx_result, _) = pending_update::channel(ParsedUpdate::merge);
+            let mut worker = UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result);
+            let options = |revision, text: &str, append| UpdateOptions {
+                revision,
+                pending_text: text.into(),
+                append,
+                mode: if append {
+                    ParseMode::Compatible
+                } else {
+                    ParseMode::Replace
+                },
+                markdown_extensions: extensions.clone(),
+            };
+            assert!(worker.apply(options(1, initial, false)).result.is_ok());
+            let failed = worker.apply(options(2, failed, failed_append));
+            assert!(failed.result.is_err());
+            assert!(!worker.basis_checked);
+            let repaired = worker.apply(options(3, "}", true));
+            assert!(repaired.full_parse);
+            assert!(!repaired.selection_compatible);
+            assert_eq!(repaired.result.unwrap().document.source.as_str(), expected);
+            assert!(worker.basis_checked);
+        }
+    }
+
+    #[test]
+    fn pending_completed_results_keep_latest_document_and_required_selection_reset() {
+        let (tx, rx) = pending_update::channel(ParsedUpdate::merge);
+        let parsed = |revision: usize,
+                      source: &str,
+                      append_compatible: bool,
+                      baseline_ack: bool| ParsedUpdate {
+            revision,
+            full_parse: !append_compatible,
+            selection_compatible: append_compatible,
+            baseline_ack,
+            result: parse_content(
+                TextViewFormat::Markdown,
+                ParsedContent::default(),
+                &UpdateOptions {
+                    revision,
+                    pending_text: source.into(),
+                    append: false,
+                    mode: ParseMode::Replace,
+                    markdown_extensions: Arc::default(),
+                },
+            ),
+        };
+        // The UI is busy while a replacement and two subsequent appended
+        // publications complete. It must receive only the cumulative third.
+        tx.try_send(parsed(1, "replacement", false, false)).unwrap();
+        tx.try_send(parsed(2, "replacement α", true, false))
+            .unwrap();
+        tx.try_send(parsed(3, "replacement α β", true, false))
+            .unwrap();
+        let ready = rx.try_recv().unwrap();
+        assert_eq!(ready.revision, 3);
+        assert_eq!(
+            ready.result.unwrap().document.text().trim(),
+            "replacement α β"
+        );
+        assert!(
+            !ready.selection_compatible,
+            "skipped replacement still requires reset"
+        );
+        assert!(rx.try_recv().is_err());
+
+        tx.try_send(parsed(4, "sync baseline", false, true))
+            .unwrap();
+        tx.try_send(parsed(5, "sync baseline appended", true, false))
+            .unwrap();
+        let ready = rx.try_recv().unwrap();
+        assert!(
+            ready.selection_compatible,
+            "already installed baseline must preserve new selection"
+        );
+        assert!(!ready.baseline_ack);
+    }
+
+    #[test]
+    fn pending_publications_replace_obsolete_snapshots_and_preserve_deltas() {
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: Arc::default(),
+        };
+        tx.try_send(options(1, "A", false)).unwrap();
+        let held = rx.try_recv().unwrap();
+        tx.try_send(options(2, "B", false)).unwrap();
+        tx.try_send(options(3, "C 🦀", false)).unwrap();
+        tx.try_send(options(4, " tail", true)).unwrap();
+        let latest = rx.try_recv().unwrap();
+        assert_eq!(held.pending_text, "A");
+        assert_eq!(latest.revision, 4);
+        assert_eq!(latest.pending_text, "C 🦀 tail");
+        assert!(!latest.append);
+        assert_eq!(latest.mode, ParseMode::Replace);
+        assert!(
+            rx.try_recv().is_err(),
+            "obsolete B must not have its own publication"
         );
 
-        assert!(matches!(
-            std::future::Future::poll(future.as_mut(), &mut task_cx),
-            Poll::Pending
-        ));
-        let parsed_update = rx_result.try_recv().expect("next parse result");
-        assert_eq!(parsed_update.revision, total_updates);
+        tx.try_send(options(5, " α", true)).unwrap();
+        tx.try_send(options(6, " β", true)).unwrap();
+        let delta = rx.try_recv().unwrap();
+        assert!(delta.append);
+        assert_eq!(delta.pending_text, " α β");
     }
 
     #[gpui::test]

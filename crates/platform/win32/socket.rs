@@ -83,6 +83,17 @@ impl LocalAddr {
 pub struct LocalStream(Socket);
 
 impl LocalStream {
+    /// Connects to a named AF_UNIX endpoint within `timeout`.
+    ///
+    /// # Errors
+    /// Returns an I/O error when the endpoint cannot be reached before the deadline.
+    pub fn connect_timeout(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Self> {
+        let address = SockAddr::unix(path.as_ref())?;
+        let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+        socket.connect_timeout(&address, timeout)?;
+        Ok(Self(socket))
+    }
+
     /// Connects to the listener bound at `path`.
     ///
     /// # Errors

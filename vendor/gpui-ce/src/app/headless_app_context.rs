@@ -161,6 +161,37 @@ impl HeadlessAppContext {
         app.update_window(window, f)
     }
 
+    /// Simulates a platform resize for one of this context's test windows.
+    ///
+    /// This routes through `PlatformWindow::on_resize`, the same callback
+    /// used by a live window manager. Directly changing `Window::resize` only
+    /// mutates the test platform's stored bounds and can leave resize
+    /// observers, focus layout, and the next captured scene out of sync.
+    ///
+    /// # Errors
+    /// Returns an error if the window is gone or is not backed by `TestWindow`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn simulate_resize(
+        &mut self,
+        window_handle: AnyWindowHandle,
+        size: Size<Pixels>,
+    ) -> Result<()> {
+        let window_id = window_handle.window_id();
+        let mut test_window = {
+            let mut app = self.app.borrow_mut();
+            let Some(Some(window)) = app.windows.get_mut(window_id) else {
+                anyhow::bail!("cannot resize a window that is no longer open");
+            };
+            let Some(test_window) = window.platform_window.as_test() else {
+                anyhow::bail!("headless resize requires a TestWindow platform");
+            };
+            test_window.clone()
+        };
+        test_window.simulate_resize(size);
+        self.dispatcher.run_until_parked();
+        Ok(())
+    }
+
     /// Captures a screenshot from a window.
     ///
     /// Requires that the context was created with a renderer factory that

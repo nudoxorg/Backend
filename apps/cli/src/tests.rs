@@ -424,6 +424,20 @@ fn help_is_grouped_by_domain_and_names_every_domain() {
     }
     assert!(help.contains("surface <JSON>"), "the escape hatch stays");
     assert!(help.contains("--format human|markdown|json"));
+    assert!(help.contains("--passive"));
+}
+
+#[test]
+fn passive_connection_mode_is_limited_to_health_and_status() {
+    let (options, words) =
+        options::split(&words("--passive status")).expect("status accepts a passive connection");
+    assert!(options.passive());
+    assert_eq!(words, vec!["status".to_owned()]);
+
+    let error = options::split(&words("--passive search symbols"))
+        .expect_err("passive mode must not alter ordinary commands");
+    assert_eq!(error.slug(), FaultSlug::Usage);
+    assert_eq!(error.operand().render(), "--passive");
 }
 
 #[test]
@@ -508,6 +522,69 @@ fn add_accepts_background_and_rejects_unknown_execution_intents() {
             .sentence()
             .contains("choose interactive or background")
     );
+}
+
+#[test]
+fn owner_index_job_commands_accept_exact_cli_ticket_operands() {
+    let ticket = backend_library::IndexJobTicket::new(
+        std::num::NonZeroU64::new(29).expect("nonzero job id"),
+        [0x2a; 16],
+        backend_library::PackageReference::parse("pkg:cargo/serde@1.0.228")
+            .expect("pinned package"),
+    );
+    let ticket_json = serde_json::to_string(&ticket).expect("exact owner ticket JSON");
+
+    let start = invoke::parse(
+        &words("index_start pkg:cargo/serde@1.0.228 --execution-intent background"),
+        None,
+    )
+    .expect("parse index_start");
+    assert!(matches!(
+        lower(&start, "/unused"),
+        Ok(Request::Surface(command))
+            if matches!(*command,
+                SurfaceCommand::IndexStart {
+                    package: backend_library::PackageReference::Purl(ref package),
+                    execution_intent: backend_library::CompileExecutionIntent::Background,
+                } if package.as_str() == "pkg:cargo/serde@1.0.228")
+    ));
+
+    for (line, expected_id) in [
+        (
+            format!("index_progress {ticket_json} --after-sequence 17"),
+            17,
+        ),
+        (format!("index_await {ticket_json}"), 0),
+        (format!("index_cancel {ticket_json}"), 0),
+    ] {
+        let invocation = invoke::parse(&words(&line), None).expect("parse exact ticket operand");
+        let request = lower(&invocation, "/unused").expect("lower exact ticket operand");
+        match (invocation.grammar().name(), request) {
+            ("index_progress", Request::Surface(command)) => assert!(matches!(
+                *command,
+                SurfaceCommand::IndexProgress {
+                    ticket: ref observed,
+                    after_sequence,
+                } if observed == &ticket && after_sequence == expected_id
+            )),
+            ("index_await", Request::Surface(command)) => assert!(matches!(
+                *command,
+                SurfaceCommand::IndexAwait { ticket: ref observed }
+                    if observed == &ticket
+            )),
+            ("index_cancel", Request::Surface(command)) => assert!(matches!(
+                *command,
+                SurfaceCommand::IndexCancel { ticket: ref observed }
+                    if observed == &ticket
+            )),
+            (name, _) => panic!("{name} did not lower to its typed job surface command"),
+        }
+    }
+
+    let help = invoke::help_for(grammar_for("index_progress").expect("progress grammar"));
+    assert!(help.contains("<TICKET>"));
+    assert!(help.contains("quote it as one shell argument"));
+    assert!(help.contains("--after-sequence SEQUENCE"));
 }
 
 #[test]

@@ -9,13 +9,12 @@ use super::{
     readme,
 };
 use crate::core::LocalProjectId;
+use backend_platform::child_output;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::Read as _;
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// The stable subset of `cargo metadata --format-version 1` the dossier uses.
@@ -83,6 +82,7 @@ pub(super) fn metadata(
     manifest: &Path,
     timeout: Duration,
     max_output: usize,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<CargoMetadata, CargoFailure> {
     let mut command = Command::new(program);
     if let Some(directory) = manifest.parent() {
@@ -102,97 +102,108 @@ pub(super) fn metadata(
         .env("CARGO_TERM_COLOR", "never")
         // A `rust-toolchain.toml` must not make rustup download a toolchain.
         .env("RUSTUP_AUTO_INSTALL", "0");
-    let bytes = bounded_output(command, timeout, max_output)?;
+    let bytes = bounded_output_cancelled(command, timeout, max_output, cancelled)?;
     serde_json::from_slice(&bytes).map_err(|_| CargoFailure::Decode)
 }
 
 /// Runs `command` to completion, returning stdout within both bounds.
 pub(super) fn bounded_output(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     max_output: usize,
 ) -> Result<Vec<u8>, CargoFailure> {
+    bounded_output_cancelled(command, timeout, max_output, &|| false)
+}
+
+pub(super) fn bounded_output_cancelled(
+    mut command: Command,
+    timeout: Duration,
+    max_output: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, CargoFailure> {
+    if cancelled() { return Err(CargoFailure::Cancelled); }
+    // An arbitrary public timeout must never panic after the child starts.
+    // Reject an unrepresentable deadline before creating a process or pipe.
+    let deadline = Instant::now().checked_add(timeout).ok_or(CargoFailure::Timeout)?;
+    #[cfg(windows)]
+    return Err(CargoFailure::UnsupportedCapture);
+    #[cfg(target_os = "macos")]
+    backend_platform::macos_process::configure_process_session(&mut command);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| CargoFailure::Spawn)?;
-    let Some(stdout) = child.stdout.take() else {
-        stop(&mut child);
+    let Some(mut stdout) = child.stdout.take() else {
+        child_output::stop(&mut child);
         return Err(CargoFailure::Spawn);
     };
-    // One byte past the bound proves overflow without buffering the excess.
-    let cap = u64::try_from(max_output)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let overflowed = Arc::new(AtomicBool::new(false));
-    let reader_overflowed = Arc::clone(&overflowed);
-    let reader = std::thread::Builder::new()
-        .name("nudox-cargo-metadata".to_owned())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            let read = stdout.take(cap).read_to_end(&mut bytes);
-            if bytes.len() > max_output {
-                reader_overflowed.store(true, Ordering::Release);
-            }
-            read.map(|_| bytes)
-        });
-    let Ok(reader) = reader else {
-        stop(&mut child);
+    if child_output::configure(&stdout).is_err() {
+        child_output::stop(&mut child);
         return Err(CargoFailure::Spawn);
-    };
-    // On timeout or overflow the reader is detached, not joined: a
-    // grandchild that inherited the pipe could otherwise hold this worker.
-    let status = wait(&mut child, &overflowed, timeout)?;
-    let bytes = reader
-        .join()
-        .map_err(|_| CargoFailure::Decode)?
-        .map_err(|_| CargoFailure::Decode)?;
-    if bytes.len() > max_output {
-        return Err(CargoFailure::OutputLimit);
     }
-    if !status.success() {
-        return Err(CargoFailure::Status);
-    }
-    Ok(bytes)
-}
-
-/// Polls the child until it exits, the deadline passes, or the reader has
-/// seen more than the output bound (a child blocked writing into a pipe
-/// nobody drains would otherwise only be stopped by the deadline).
-fn wait(
-    child: &mut Child,
-    overflowed: &AtomicBool,
-    timeout: Duration,
-) -> Result<ExitStatus, CargoFailure> {
-    let deadline = Instant::now() + timeout;
+    let cap = max_output.saturating_add(1);
+    let mut bytes = Vec::new();
+    let mut scratch = [0_u8; 8 * 1024];
+    let mut eof = false;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {}
-            Err(_) => {
-                stop(child);
-                return Err(CargoFailure::Spawn);
+        if cancelled() {
+            child_output::stop(&mut child);
+            return Err(CargoFailure::Cancelled);
+        }
+        let mut progressed = false;
+        if !eof {
+            // One byte beyond the admitted output budget proves overflow.
+            let take = cap.saturating_sub(bytes.len()).max(1).min(scratch.len());
+            match child_output::read_available(&mut stdout, &mut scratch[..take]) {
+                Ok(Some(0)) => eof = true,
+                Ok(Some(count)) => {
+                    bytes.extend_from_slice(&scratch[..count]);
+                    if bytes.len() > max_output {
+                        child_output::stop(&mut child);
+                        return Err(CargoFailure::OutputLimit);
+                    }
+                    progressed = true;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    child_output::stop(&mut child);
+                    return Err(CargoFailure::Decode);
+                }
             }
         }
-        if overflowed.load(Ordering::Acquire) {
-            stop(child);
-            return Err(CargoFailure::OutputLimit);
+        // A descendant can retain stdout after the leader exits. Do not reap
+        // the leader before EOF: macOS process-group retirement needs its PID
+        // pinned while the deadline is enforced on that inherited pipe.
+        if eof {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return if status.success() {
+                        Ok(bytes)
+                    } else {
+                        Err(CargoFailure::Status)
+                    };
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    child_output::stop(&mut child);
+                    return Err(CargoFailure::Spawn);
+                }
+            }
         }
         if Instant::now() >= deadline {
-            stop(child);
+            child_output::stop(&mut child);
             return Err(CargoFailure::Timeout);
         }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn stop(child: &mut Child) {
-    // Kill fails only when the child was already reaped; then there is
-    // nothing left to wait for.
-    if child.kill().is_ok() {
-        let _reaped = child.wait();
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
@@ -213,13 +224,14 @@ pub(super) fn project(
     members.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
     let selected = root_package(root, &members);
     let selected_manifest = selected.map(|package| package.manifest_path.clone());
-    let readme = selected
+    let readme_path = selected
         .and_then(|package| {
             let file = package.readme.as_ref()?;
             let directory = Path::new(&package.manifest_path).parent().unwrap_or(root);
-            Some(readme::read(&directory.join(file)))
+            Some(directory.join(file))
         })
-        .unwrap_or_else(|| readme::read(&root.join("README.md")));
+        .unwrap_or_else(|| root.join("README.md"));
+    let readme = readme::read(root, &readme_path);
     let facts = Facts {
         name: selected.map(|package| package.name.clone()),
         version: selected.map(|package| package.version.clone()),
@@ -232,6 +244,7 @@ pub(super) fn project(
         keywords: selected.map_or_else(Vec::new, |package| package.keywords.clone()),
         categories: selected.map_or_else(Vec::new, |package| package.categories.clone()),
         readme,
+        readme_path: Some(readme_path),
     };
     let members = scope_to_member(root, members, selected_manifest.as_deref());
     let dependencies = dependencies(members.iter().flat_map(|package| {

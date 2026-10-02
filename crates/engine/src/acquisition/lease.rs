@@ -635,6 +635,31 @@ impl LeaseGuard {
     pub const fn lease(&self) -> AcquisitionLease {
         self.lease
     }
+
+    #[cfg(test)]
+    pub(super) fn expire_for_test(&mut self) -> io::Result<()> {
+        let _gate = self.store.try_gate(self.lease.key)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::WouldBlock, "test expiry fence is contended")
+        })?;
+        let previous = self.store.latest_lease(self.lease.key)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "test expiry lease is absent")
+        })?;
+        if !previous.active || previous.token != self.lease.token {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "test expiry lease is stale",
+            ));
+        }
+        self.store
+            .publish_lease_record(
+                self.lease.key,
+                Some(previous),
+                true,
+                self.lease.token,
+                now_millis().saturating_sub(1),
+            )
+            .map(|_| ())
+    }
     /// Returns whether this exact fence still owns an unexpired lease record.
     #[must_use]
     pub fn owns(&self) -> bool {

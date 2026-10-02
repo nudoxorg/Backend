@@ -4,12 +4,13 @@ use std::{rc::Rc, time::Duration};
 #[cfg(target_family = "wasm")]
 use web_time::Instant;
 
-use gpui::{App, ElementId, Pixels, SharedString, Window};
+use gpui::{App, ElementId, Pixels, SharedString, SpringConfig, SpringState, Window};
 
 use crate::animation::{Lerp, ease_out_cubic};
 
 /// Matches GPUI's own default spring settling tolerance.
 const DEFAULT_SPRING_EPSILON: f32 = 0.001;
+const MAX_COMPONENT_DAMPING_RATIO: f32 = 1.0e6;
 
 /// A value that can be interpolated between two application-owned targets.
 pub trait Interpolate: Clone {
@@ -274,22 +275,44 @@ impl Spring {
         self
     }
 
-    /// The physical parameters used by the local spring integrator. The
-    /// response must be non-zero; [`spring`] adopts the target before reaching
-    /// here when it is not.
-    fn config(&self) -> (f32, f32) {
-        let frequency = std::f32::consts::TAU / self.response.as_secs_f32();
-        (frequency * frequency, 2.0 * self.damping * frequency)
+    /// Converts this presentation policy to GPUI's shared analytic spring
+    /// kernel. The scalar boundary is intentionally `f32`; app simulations
+    /// whose precision or derivative contract requires `f64` keep their own
+    /// typed state and do not pass through [`SpringValue`]. The response must
+    /// be non-zero; [`spring`] adopts the target before reaching here when it
+    /// is not.
+    fn config(&self) -> SpringConfig {
+        let response = self.response.as_secs_f32().max(1e-3);
+        let damping = if self.damping.is_finite() {
+            self.damping.clamp(0.0, MAX_COMPONENT_DAMPING_RATIO)
+        } else {
+            1.0
+        };
+        let frequency = std::f32::consts::TAU / response;
+        SpringConfig::new(frequency * frequency, 2.0 * damping * frequency, 1.0)
+    }
+
+    fn epsilon(&self) -> f32 {
+        if self.epsilon.is_finite() && self.epsilon >= 0.0 {
+            self.epsilon
+        } else {
+            DEFAULT_SPRING_EPSILON
+        }
     }
 }
 
-/// A scalar value that can be animated by [`spring`].
+/// A presentation value adapted to GPUI's generic `f32` spring coordinate.
 ///
-/// GPUI-CE no longer exposes its former `SpringTarget` abstraction. Component
-/// motion only animates logical scalars and CSS pixels, so it keeps that small
-/// conversion boundary locally instead of depending on GPUI internals.
+/// This conversion is for UI values such as normalized scalars and logical
+/// pixels. It is deliberately a lossy presentation boundary and is not the
+/// storage type for an app-owned simulation with a `f64` precision or
+/// derivative contract. Such simulations keep their analytic state and adapt
+/// only their rendered output to GPUI.
 pub trait SpringValue: Copy {
+    /// Converts the presentation value to GPUI's scalar spring coordinate.
     fn to_spring_value(self) -> f32;
+
+    /// Converts GPUI's scalar presentation sample back to the caller's units.
     fn from_spring_value(value: f32) -> Self;
 }
 
@@ -319,25 +342,6 @@ struct SpringTransition {
     velocity: f32,
     target: f32,
     updated_at: Instant,
-}
-
-fn step_spring(
-    mut state: SpringTransition,
-    target: f32,
-    elapsed: f32,
-    stiffness: f32,
-    damping: f32,
-) -> SpringTransition {
-    // Large elapsed intervals occur after a window is backgrounded. Integrate
-    // in short fixed steps so a resumed animation settles instead of exploding.
-    let steps = (elapsed / (1. / 120.)).ceil().max(1.) as usize;
-    let step = elapsed / steps as f32;
-    for _ in 0..steps {
-        let acceleration = stiffness * (target - state.position) - damping * state.velocity;
-        state.velocity += acceleration * step;
-        state.position += state.velocity * step;
-    }
-    state
 }
 
 /// Returns the current value for a spring travelling toward `target`.
@@ -403,12 +407,17 @@ where
     let elapsed = now
         .saturating_duration_since(snapshot.updated_at)
         .as_secs_f32();
-    let (stiffness, damping) = policy.config();
-    let stepped = step_spring(snapshot, snapshot.target, elapsed, stiffness, damping);
+    let config = policy.config();
+    let stepped = config.step(
+        SpringState {
+            position: snapshot.position,
+            velocity: snapshot.velocity,
+        },
+        snapshot.target,
+        elapsed,
+    );
 
-    if (stepped.position - target_position).abs() <= policy.epsilon
-        && stepped.velocity.abs() <= policy.epsilon
-    {
+    if config.is_settled(stepped, target_position, policy.epsilon()) {
         state.update(cx, |state, _| settle(state));
         return T::from_spring_value(target_position);
     }
@@ -434,6 +443,24 @@ mod tests {
     use gpui::{Empty, IntoElement, Render, TestAppContext, WindowHandle, px, size};
 
     use super::*;
+
+    #[test]
+    fn extreme_component_spring_policy_stays_finite_in_shared_kernel() {
+        let policy = Spring::new(Duration::from_millis(1)).with_damping(f32::MAX);
+        let config = policy.config();
+        let settled = config.step(
+            SpringState {
+                position: 0.0,
+                velocity: 0.0,
+            },
+            1.0,
+            Duration::MAX.as_secs_f32(),
+        );
+
+        assert!(settled.position.is_finite());
+        assert!(settled.velocity.is_finite());
+        assert!(config.is_settled(settled, 1.0, policy.epsilon()));
+    }
 
     #[test]
     fn transition_ids_accept_element_like_scalars_and_named_channels() {

@@ -59,6 +59,31 @@ let
       export CARGO_TARGET_DIR="$PWD/.local/target"
       export CLIPPY_CONF_DIR="$PWD/.config"
       export BACKEND_WORKSPACE_SNAPSHOT="$PWD"
+      # LocalHost fingerprints these runtime paths explicitly. Resolve each
+      # through the pinned toolchain or selected Cargo environment and export
+      # it only when the exact target exists on this process host.
+      if [ -z "''${NUDOX_RUST_SYSROOT:-}" ]; then
+        rust_sysroot="$("${toolchains.stable}/bin/rustc" --print sysroot 2>/dev/null || true)"
+        case "$rust_sysroot" in
+          /*) if [ -d "$rust_sysroot" ]; then export NUDOX_RUST_SYSROOT="$rust_sysroot"; fi ;;
+        esac
+      fi
+      if [ -z "''${NUDOX_CARGO_HOME:-}" ]; then
+        cargo_home="''${CARGO_HOME:-''${HOME:-}/.cargo}"
+        case "$cargo_home" in
+          /*) if [ -d "$cargo_home" ]; then export NUDOX_CARGO_HOME="$cargo_home"; fi ;;
+        esac
+      fi
+      # LocalHost accepts the Go module cache only as an explicit absolute
+      # authority. Resolve it through the pinned Go executable at shell entry
+      # so an existing workspace cache is admitted without guessing from PATH;
+      # leave the variable absent when the cache directory is not present.
+      if [ -z "''${NUDOX_GO_ROOT:-}" ]; then
+        go_module_cache="''${GOMODCACHE:-$(${tools.compilers.go}/bin/go env GOMODCACHE 2>/dev/null || true)}"
+        case "$go_module_cache" in
+          /*) if [ -d "$go_module_cache" ]; then export NUDOX_GO_ROOT="$go_module_cache"; fi ;;
+        esac
+      fi
     '';
   };
   development = pkgs.mkShell (

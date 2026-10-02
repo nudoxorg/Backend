@@ -14,6 +14,7 @@ use gpui::{
     AnyView, App, AppContext, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, px,
 };
+use gpui::prelude::FluentBuilder;
 
 /// The gallery scene.
 pub(crate) const SCENES: &[Scene] = &[Scene {
@@ -55,6 +56,8 @@ canaries! {
     "canary-dead-focus" => DeadFocus,
     "canary-wall-clock" => WallClock,
     "canary-residue" => Residue,
+    "canary-zero-opacity" => ZeroOpacity,
+    "canary-opaque-cover" => OpaqueCover,
 }
 
 /// One deliberate defect.
@@ -98,6 +101,10 @@ pub enum Defect {
     WallClock,
     /// The title's entrance settles at 97 % opacity when motion is on.
     Residue,
+    /// Text geometry stays published while its effective paint alpha is zero.
+    ZeroOpacity,
+    /// An unregistered opaque plate covers the title after text paints.
+    OpaqueCover,
 }
 
 const NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
@@ -750,7 +757,11 @@ impl Render for Bench {
                 div()
                     .typeset(ty::HEAD, &facet)
                     .text_color(palette.ink1.hsla())
-                    .opacity(title)
+                    .opacity(if self.defect == Defect::ZeroOpacity {
+                        0.0
+                    } else {
+                        title
+                    })
                     .child("harness bench"),
             ))
             .child(div().flex().flex_wrap().gap(px(gap)).children(plates))
@@ -791,6 +802,17 @@ impl Render for Bench {
             )
             .children(cards)
             .children(parked)
+            .when(self.defect == Defect::OpaqueCover, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .left(px(40.0))
+                        .top(px(40.0))
+                        .w(px(240.0))
+                        .h(px(42.0))
+                        .bg(palette.g1),
+                )
+            })
     }
 }
 

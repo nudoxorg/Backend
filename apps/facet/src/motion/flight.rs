@@ -35,7 +35,7 @@
 //! value, slope and acceleration at landing. No position or velocity jumps,
 //! and the flight still lands exactly on its target.
 
-use super::{epoch as motion_epoch, now, reduced, request_frame};
+use super::{epoch as motion_epoch, now, reduced_in, request_frame};
 use crate::probe::{self, TrackKind, TrackSample};
 use gpui::{App, ElementId, Global, SharedString, Window};
 use std::cell::RefCell;
@@ -970,10 +970,13 @@ impl Flights {
         cx: &mut App,
     ) -> Shot {
         let now = now(cx);
-        let reduced = reduced(cx);
+        let reduced = reduced_in(window, cx);
         let (shot, trip) = {
             let mut store = self.store.borrow_mut();
             let state = store.entry(key.clone()).or_insert(State::Still(target));
+            if super::is_still_in(window, cx) {
+                *state = State::Still(target);
+            }
             if let Some(travel) = travel {
                 step_with(state, target, now, reduced, self.pacing, Some(travel))
             } else {
@@ -1002,8 +1005,12 @@ impl Flights {
         cx: &mut App,
     ) -> Shot {
         let key = key.into();
+        if super::is_still_in(window, cx) {
+            self.jump(key.clone(), target);
+            return self.fly(key, target, window, cx);
+        }
         let trip = plan(camera, velocity, target, now(cx), self.pacing);
-        let state = if reduced(cx) {
+        let state = if reduced_in(window, cx) {
             State::Still(camera)
         } else {
             State::Flying(trip)
@@ -1024,8 +1031,12 @@ impl Flights {
         cx: &mut App,
     ) -> Shot {
         let key = key.into();
+        if super::is_still_in(window, cx) {
+            self.jump(key.clone(), target);
+            return self.fly_travel(key, target, travel, window, cx);
+        }
         let trip = plan_travel(camera, velocity, target, now(cx), self.pacing, travel);
-        let state = if reduced(cx) {
+        let state = if reduced_in(window, cx) {
             State::Still(camera)
         } else {
             State::Flying(trip)

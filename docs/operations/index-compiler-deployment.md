@@ -2,20 +2,21 @@
 
 This runbook installs one durable index owner and one or more compiler workers
 on private Linux or macOS machines. The owner serves local CLI and MCP through
-a Unix socket with mode `0600`; clients must run as the same effective user as
-locald. On a headless index host, that is the `nudox-index` service account.
-The desktop application runs a local owner under the launching login account,
-so it cannot attach to the separate headless service UID. A remote desktop
-client or proxy is not shipped. Iroh carries authenticated compiler
-assignments and results over direct UDP.
+a Unix socket with mode `0600`; local clients must run as the same effective
+user as locald. On a headless index host, that is the `nudox-index` service
+account. The desktop application runs a local owner under the launching login
+account, so it cannot attach to the separate headless service UID. Iroh also
+serves explicitly granted, read-only remote queries and semantic hydration
+over direct UDP; this is a separate signed-capability path and does not expose
+the Unix socket.
 
-The current cluster is a compiler-result path, not a remotely queryable index
-cluster. Iroh has no relay, public peer discovery, DNS lookup, or remote client
-query endpoint. A desktop app launched under a normal user account uses that
-user's local owner; it does not query the headless service. A workspace
-snapshot is not an OS sandbox: a grant authorizes coordinator-selected host
-execution. Use a dedicated service account and operating-system isolation
-appropriate to the compiler inputs you accept.
+Iroh has no relay, public peer discovery, or DNS lookup. Remote index clients
+need the owner's peer ID and direct advertised IP address. A desktop app
+launched under a normal user account uses that user's local owner; it does not
+automatically query the headless service. A workspace snapshot is not an OS
+sandbox: a compiler grant authorizes coordinator-selected host execution. Use
+a dedicated service account and operating-system isolation appropriate to the
+compiler inputs you accept.
 
 The Rust `ir-vcs` API computes borrowed snapshots and deltas over the
 canonical `Ir`/`SemanticReader`; it is not an Iroh query protocol.
@@ -31,6 +32,209 @@ segments are retained under the configured client store. S3 remains one possible
 location for immutable compiler objects: local clients use the same owner
 endpoint whether the owner reads an object from its disk CAS or S3, and the
 worker never receives the owner's S3 credentials.
+
+### Set up a remote read-only index client
+
+Create the client identity on the machine that will run the client. The key
+file stays private to that machine; the command prints only its public peer ID.
+Keep both the key and copied capability in a private owner-only directory. The
+CLI pins the private parent directory, rejects symlinked or reparse-point path
+components, and opens the direct child as an owner-only regular file before
+reading it; it never prints or logs the key bytes. The owner identity and grant
+ledger use the same held-parent storage rules.
+Share that ID with the index owner. The owner must have locald running to read
+the current product root or semantic selection before signing a grant.
+
+This release uses remote-index protocol version 3 with the existing signed
+capability schema version 2. A product grant binds the exact selected view
+root. The authenticated Iroh owner admits producer coverage for its replies;
+the client requires the returned revision to match the grant and each typed
+query reply to match its requested basis. The owner checks both the view root
+and producer source before and after a query. Reissue a grant if its selected
+root changes; an older protocol client cannot connect to this owner.
+
+```sh
+backend --workspace "$CLIENT_DATA" cluster client init --key-file "$CLIENT_DATA/remote-index-client.v1"
+```
+
+On the owner, issue a grant for one product view root and a closed set of
+operations. Copy the signed capability file to the client using your existing
+authenticated file-transfer channel. The capability is bound to the client
+peer ID and contains no private key.
+
+```sh
+backend --workspace "$OWNER_DATA" --project "$PROJECT" \
+  cluster owner grant product create \
+  --client-peer "$CLIENT_PEER" \
+  --capability-file "$OWNER_DATA/product-read.cap" \
+  --operations search,names,document,source,outline,graph,related
+```
+
+Connect and run the same proof-admitting product query API used by local
+clients. `--owner-peer` is the endpoint ID from `cluster owner show`;
+`--owner-address` is its direct advertised IP address and UDP port. `connect`
+sends a real bounded request and reports the grant scope without printing
+keys.
+
+```sh
+backend --workspace "$CLIENT_DATA" cluster client connect \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/product-read.cap"
+backend --workspace "$CLIENT_DATA" cluster client query \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/product-read.cap" \
+  --operation search --value cluster_deploy_smoke --limit 20
+```
+
+To expose the same typed cross-plane package catalog search to a remote client,
+include `index-search` in the product grant. The owner binds that operation to
+the current composite index-search snapshot, which covers the product root,
+selected package catalog, and discovery revisions. Each page and continuation
+cursor is checked against that exact snapshot; if it changes, the client must
+receive a stale-snapshot result and the owner must issue a new grant. This
+scope does not authorize other product commands.
+
+```sh
+backend --workspace "$OWNER_DATA" --project "$PROJECT" \
+  cluster owner grant product create \
+  --client-peer "$CLIENT_PEER" \
+  --capability-file "$OWNER_DATA/catalog-read.cap" \
+  --operations index-search
+backend --workspace "$CLIENT_DATA" cluster client query \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/catalog-read.cap" \
+  --operation index-search --value identity --limit 10
+# Pass the returned data.next_cursor as --cursor to fetch the next page.
+```
+
+To exercise the installed CLI, real locald owner, and a separate remote client
+on one host, run the loopback journey after building both binaries:
+
+```sh
+BACKEND_CLI=/path/to/backend-cli \
+BACKEND_LOCALD_BIN=/path/to/backend-locald \
+tests/journeys/run-remote-index-client.sh
+```
+
+The journey indexes a temporary Rust fixture, searches it through the remote
+client, restarts locald, and repeats the query with the same grant. It uses
+temporary owner/client keys, samples combined owner/client RSS during each
+query, checks durable response-byte usage remains within the signed budget,
+and removes its state on exit. Set `REMOTE_INDEX_RSS_LIMIT_KB` to tune the
+sampled process-memory ceiling for the host.
+
+The `run-remote-index-catalog-client.sh` journey exercises this cross-plane
+operation against a copied, frozen offline Maven discovery journal. It checks
+the typed snapshot and cursor chain across an owner cold restart and compares
+all returned source coordinates with independent labels. Its product grant is
+limited to 100 requests and 4 MiB of responses, and it checks sampled combined
+owner/client RSS against `REMOTE_INDEX_RSS_LIMIT_KB` (default 2 GiB). Set
+`REMOTE_MAVEN_CATALOG_JOURNAL` and `REMOTE_MAVEN_LABELS` to use equivalent
+local fixtures. For the frozen Maven replay, set both paths explicitly:
+
+```sh
+REMOTE_MAVEN_CATALOG_JOURNAL="$FROZEN_CATALOG_JOURNAL" \
+REMOTE_MAVEN_LABELS="$FROZEN_CATALOG_LABELS" \
+BACKEND_CLI=/path/to/backend-cli \
+BACKEND_LOCALD_BIN=/path/to/backend-locald \
+tests/journeys/run-remote-index-catalog-client.sh
+```
+
+The owner checks the exact selected product root before and after each query;
+the typed command also carries that root as its basis. For `index-search`, it
+also checks the returned page snapshot and the current composite catalog and
+discovery snapshot before exposing the response. If either binding changes
+during a query, the client receives a typed stale result and must request a
+new grant. Grants also have request, response-byte, and expiry bounds. Restrict
+inbound UDP to the client's network and keep the owner peer ID and advertised
+address together when configuring clients.
+
+The owner keeps an owner-bound, checksummed grant ledger under its private
+workspace. Review active and revoked grants with `cluster owner grant list`;
+revoke one client without rotating the owner identity with
+`cluster owner grant revoke --grant-id GRANT_ID`. Revocation survives owner
+restart and blocks newly admitted requests and results. Every query or
+hydration result/refusal frame that is sent, including typed stale outcomes,
+reserves its exact canonical wire size (the serialized typed frame plus its
+four-byte length prefix) before the QUIC write. Revocation linearizes against
+that durable response permit: a result whose permit has not been admitted is
+suppressed; a response admitted earlier may finish sending after the revoke
+command returns.
+A payload-free `CapabilityRevoked` notice may still be sent if its own exact
+bytes fit the remaining grant budget. A corrupt ledger disables remote reads
+while local CLI, MCP, and compiler operation remain available.
+
+Owner forwarding uses a separate eight-slot blocking-work bound in addition to
+the eight authenticated Iroh connection slots. Each admitted request keeps its
+work slot through grant metering, the local owner call, and response metering;
+if a QUIC caller times out, the slot remains held until the blocking operation
+returns or panics. The owner socket dial is limited to five seconds and each
+local request/response read or write to twenty seconds. A reconnect therefore
+cannot create unbounded detached owner work.
+
+### Remote-client regression matrix
+
+Run these checks against binaries built from the same reviewed source revision.
+The two-process journeys invoke the installed CLI against a real locald owner
+and use a separate Iroh client identity.
+
+| Control | Executable check | Pass condition |
+| --- | --- | --- |
+| Product query, semantic catalog, hydration, durable byte usage, cold owner restart, and per-grant revoke | `tests/journeys/run-remote-index-client.sh` | The indexed marker and admitted semantic ranges are returned; ledger bytes stay within the signed budget; after restart a revoked grant is rejected. |
+| Product-root/index-search snapshot, pagination cursor resume across owner restart, bounded catalog response budget, and persistent per-grant revoke | `tests/journeys/run-remote-index-catalog-client.sh` with the frozen journal and independent labels | All 96 expected coordinates appear exactly once; each page matches the signed snapshot; request/byte and RSS ceilings hold; after restart, the revoked client is rejected without charging another request and the typed notice is byte-metered. |
+| Exact canonical frame metering for large stale-root outcomes | `prepared_response_reports_the_exact_canonical_wire_frame_size` and `stale_root_response_reserves_its_full_canonical_wire_size` | The charged size equals the typed postcard frame actually sent, including both 32-byte roots and the frame prefix. |
+| Revoke before/after result admission | `response_admission_is_the_revoke_linearization_point` and `concurrent_revoke_and_response_admission_has_one_durable_winner` | Revoke-first refuses result admission; permit-first retains a valid in-flight send permit, while later request admission is denied. |
+| Withheld local owner response, caller timeout, and blocking-work permit lifetime | `withheld_local_owner_response_hits_the_configured_socket_deadline`, `detached_blocking_owner_work_keeps_its_slot_until_completion`, and `blocking_work_slot_is_released_after_worker_panic` | The local response read times out; a detached blocked call continues to consume its bounded slot and releases it only on completion or panic. |
+| Private key, capability, owner identity, and grant-ledger storage | CLI, `cluster_owner`, and `remote_semantic_query` path-adversary unit tests | Reads and writes are relative to pinned private parent handles; ancestor links and FIFO entries are refused, and the ledger stays in the originally opened directory after its pathname is replaced. |
+| Corrupted-range rejection, clean retry, and interrupted range resume across an owner restart | `cargo test -p backend-journeys --no-default-features --features extended-journeys --test s3_cold_selected_journey` | The journey injects one corrupted real HTTP 206 response, requires refusal before complete client CAS admission, retries against the unchanged selected generation with an independent segment hash, then resumes a staged range after a cold owner restart. Treat this as source coverage until that journey passes against the reviewed binaries. |
+| Root/snapshot publication race during live query | Mutate the selected root or discovery snapshot while the installed remote query is in flight | The client receives a typed stale result or a closed refusal; no response is attached to a different current root/snapshot. |
+
+The first two rows are executable installed-client journeys. The corrupted
+range row is an executable S3-backed owner/client journey in source; run it
+against binaries built from the reviewed revision before claiming runtime
+coverage. The remaining rows are regression gates: source tests cover the frame
+and permit-order invariants, while a live selected-root publication race still
+needs dedicated two-process coverage.
+
+For semantic hydration, the owner creates a grant only after it has admitted
+the current catalog for the exact package, coordinate, and language profile.
+The grant is bound to the selection revision, source coordinate, selected
+root, closure, and catalog root. On the client, `semantic-catalog` opens the
+same bounded remote semantic channel used by
+`LocalSemanticIndexClient::connect_remote`; the API then uses the existing
+manifest, image, range-resume, Bao verification, and durable checkpoint
+operations. The local `semantic-hydrate` command above continues to use the
+Unix endpoint unless all remote connection flags are supplied; remote mode
+uses that same client API and durable range checkpoint.
+
+```sh
+backend --workspace "$OWNER_DATA" --project "$PROJECT" \
+  cluster owner grant semantic create \
+  --client-peer "$CLIENT_PEER" \
+  --capability-file "$OWNER_DATA/semantic-read.cap" \
+  --package 'pkg:cargo/my-app@1.2.3' \
+  --coordinate 'pkg:cargo/my-app@1.2.3' --profile rust-2024
+backend --workspace "$CLIENT_DATA" cluster client semantic-catalog \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/semantic-read.cap"
+backend semantic-hydrate \
+  --package 'pkg:cargo/my-app@1.2.3' \
+  --coordinate 'pkg:cargo/my-app@1.2.3' --profile rust-2024 \
+  --image-ordinal "$IMAGE_ORDINAL" --plane core \
+  --store "$CLIENT_DATA/my-app-semantic-cas" \
+  --key-file "$CLIENT_DATA/remote-index-client.v1" \
+  --owner-peer "$OWNER_PEER" --owner-address 10.0.0.10:40123 \
+  --capability-file "$CLIENT_DATA/semantic-read.cap"
+```
+
+If the product root or semantic selection changes, the old grant is stale;
+issue a new grant for the new selection. Product and semantic capabilities
+are read-only and independently scoped. They do not authorize compiler
+execution, publication, owner administration, or arbitrary local commands.
 
 Rust declaration documentation follows rust-analyzer's Rustdoc expansion for
 active `#[doc = include_str!("relative/path")]` attributes, including repeated
@@ -315,6 +519,14 @@ not every byte in their registry caches. For reliable matching, use the same
 pinned Nix closure, identical canonical path mounts, matching OS/architecture,
 and identical verified dependency contents. Keep these values unchanged after
 enrollment; changing them requires a new scope report and worker grant.
+
+The repository's pinned development shell and `backend` command wrapper set
+`NUDOX_RUSTC` and `NUDOX_CARGO` from the same Fenix toolchain. If
+`NUDOX_CARGO_HOME` is not supplied explicitly, they use absolute `CARGO_HOME`
+when configured, otherwise `$HOME/.cargo` when `HOME` is absolute. The owner
+still checks the complete tuple at runtime; missing or relative Cargo-home
+configuration produces a typed Rust capability refusal. Desktop startup uses
+the selected toolchain provisioner to construct the same explicit tuple.
 
 ## 3. Configure addresses and open the direct Iroh path
 
@@ -762,8 +974,7 @@ after the owner ACK:
   --config /etc/nudox-worker/cluster.bin --data-dir /var/lib/nudox-worker
 ```
 
-On the owner, verify the selected head, indexed symbol, document, and local
-MCP path:
+On the owner, verify the selected head, indexed symbol, status, and trust grant:
 
 ```sh
 "$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
@@ -771,18 +982,60 @@ MCP path:
 "$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
   --endpoint "$ENDPOINT" --format json search cluster_deploy_smoke --limit 20
 "$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
+  --endpoint "$ENDPOINT" --format json --passive health
+"$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
   --endpoint "$ENDPOINT" --format json cluster trust list
+```
 
+The health JSON reports the current revision, source, sequence, row count,
+lane coverage, and capability inventory. `readiness` describes index
+coverage: `ready` means every declared lane is complete, `indexing` means a
+lane is partial, `unavailable` means a declared lane failed, and `unknown`
+means coverage is not yet known. An unconfigured optional lane does not
+withhold `ready`; inspect `coverage` and `capabilities` for the actual scope.
+Health is an owner request, not process-manager state. Before querying, check
+the service manager (`sudo systemctl is-active nudox-index.service` on Linux
+or `sudo launchctl print system/com.nudox.index` on macOS). If the managed owner is
+inactive, inspect its logs and restart that service first. Ordinary CLI
+commands may start `locald` when the endpoint is absent. For an operational
+probe that must not start a replacement, use `backend-cli --passive ...
+health` (or `status`): it connects only to the configured existing endpoint,
+does not create workspace state or remove a stale socket, and returns the
+underlying not-found/refused cause if no owner answers. This option is limited
+to `health/status`; normal interactive commands keep their existing
+auto-start behavior.
+
+The MCP server uses stdio by default. Initialization and `tools/list` are
+local protocol operations and do not connect to the owner; they prove client
+discovery only. Include `backend.status` to test an owner-backed request. The
+advertised tool list includes `backend.packages`, `backend.index`,
+`backend.remove`, `backend.status`, `backend.outline`, `backend.search`,
+`backend.resolve`, `backend.document`, `backend.source`, `backend.read`,
+`backend.references`, `backend.graph`, `backend.index_start`,
+`backend.index_progress`, and `backend.index_cancel`. This is the supported
+MCP session surface, not every CLI command. An owner-backed tool request uses
+the shared runtime and may start `locald` if its endpoint is absent, so check
+the service manager and the passive CLI probe above before using this MCP
+sequence as a managed-service smoke test.
+
+```sh
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"deployment-check","version":"1"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"backend.search","arguments":{"query":"cluster_deploy_smoke","limit":20}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"backend.status","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"backend.search","arguments":{"query":"cluster_deploy_smoke","limit":20}}}' \
   | /opt/nudox/current/bin/backend-mcp --project "$PROJECT" \
       --workspace "$OWNER_DATA" --endpoint "$ENDPOINT"
 ```
 
-The search must return `cluster_deploy_smoke`; `semantic-versions` must show
-a selected generation; MCP's `backend.search` must return the same symbol.
+Expect an `initialize` result, a `tools/list` result containing the names
+above, a successful structured result for `backend.status`, and the same
+`cluster_deploy_smoke` symbol from MCP `backend.search` as from the CLI. A
+successful handshake or tool listing with a failed status call means the MCP
+process started but its owner request did not complete. The search must return
+`cluster_deploy_smoke`, `semantic-versions` must show a selected generation,
+and health must report the expected coverage.
 The desktop application currently works with its login user's local owner.
 Its launch environment may select that local session with `BACKEND_PROJECT`,
 `BACKEND_LOCALD_WORKSPACE`, `BACKEND_LOCALD_ENDPOINT`, and
@@ -836,6 +1089,11 @@ inspect each launch daemon's configured stdout/stderr files and
    preserve that directory while diagnosing selection or transfer failures.
 7. The owner CLI's `semantic-versions`, `search`, and `show`, and local MCP
    query all use the expected workspace and socket.
+8. Use the `--passive` health command above as `nudox-index` to query the
+   current owner without starting a replacement. A not-found or refused
+   endpoint means the owner is not accepting connections; check the manager,
+   endpoint path, and service-account permissions before changing socket or
+   workspace files.
 
 When `BACKEND_S3_*` is enabled, diagnose owner credentials and bucket policy
 on the owner only. Workers do not publish index packs. S3 availability does

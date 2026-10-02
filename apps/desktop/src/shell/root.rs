@@ -7,6 +7,7 @@
 //! held modifiers re-render only the region they belong to.
 
 use super::ask::Ask;
+use super::ask_presentation::{AskPresentation, AskScene};
 use super::bodies::graph::OpenView;
 use super::facet_sync::{Surroundings, facet_for};
 use super::system;
@@ -17,11 +18,10 @@ use super::hints::{HintMode, Step};
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
 use super::reader::{Reader, Way};
-use super::region::{Links, measured, new_region};
+use super::region::{Links, a11y_inert, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
-use super::symbol_links::{Request as SymbolLinkRequest, Step as SymbolLinkStep};
 use super::jump::route_symbol;
 use super::titlebar::Titlebar;
 use super::{kit, peeks};
@@ -34,7 +34,7 @@ use crate::runtime::UiEntityGraph;
 use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
 use facet::paint::ground;
-use facet::tokens::fluid::{ASK, ASK_PANEL, COLUMNS_SHARE, Float};
+use facet::tokens::fluid::COLUMNS_SHARE;
 use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
@@ -81,6 +81,7 @@ pub struct Shell {
     status: Entity<Status>,
     pins: Entity<Pins>,
     ask: Entity<Ask>,
+    ask_presentation: AskPresentation,
     motion: Motion,
     zen: bool,
     /// The hand's Row rung is open (H, or the foot's marks).
@@ -102,14 +103,17 @@ pub struct Shell {
     /// How many peeks are pinned (the pins column exists only for pins).
     pinned: usize,
     ask_open: bool,
+    /// True only while the current overlay has a physically mounted result
+    /// plate; a just-opened query cannot focus a clipped-away destination.
+    ask_results_mounted: bool,
     /// An exact fixture-node link waiting for the index. Each new visit
     /// invalidates it even if Back later restores the same route.
-    symbol_link_generation: u64,
-    pending_symbol_link: Option<SymbolLinkRequest>,
     /// The system's appearance and text size, and the window's display.
     around: Surroundings,
     renders: u64,
     frame: Option<Frame>,
+    /// Keeps the native reduced-motion observer installed while this window lives.
+    _reduced_motion: system::ReducedMotionWatch,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -184,6 +188,21 @@ impl Shell {
         });
         // Twins: what a hovered declaration lights elsewhere is drawn above the regions.
         let twins = cx.observe_global::<super::side::twin::Lit>(|_, cx| cx.notify());
+        let reduced_motion = system::watch_reduced_motion();
+        let system_reduced_motion = reduced_motion.initial();
+        let motion_changes = reduced_motion.changes();
+        cx.spawn(async move |shell, cx| {
+            while let Ok(system) = motion_changes.recv().await {
+                if shell.update(cx, |shell, cx| {
+                    if shell.around.system_reduced_motion != system {
+                        shell.around.system_reduced_motion = system;
+                        shell.apply_facet(cx);
+                    }
+                }).is_err() {
+                    break;
+                }
+            }
+        }).detach();
         let mut shell = Self {
             links,
             graph: UiEntityGraph {
@@ -198,6 +217,7 @@ impl Shell {
             status,
             pins,
             ask,
+            ask_presentation: AskPresentation::default(),
             motion: Motion::new(),
             zen: false,
             hand_open: false,
@@ -212,15 +232,16 @@ impl Shell {
             peeking: None,
             pinned: 0,
             ask_open: false,
-            symbol_link_generation: 0,
-            pending_symbol_link: None,
+            ask_results_mounted: false,
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
+                system_reduced_motion,
                 display: system::display_key(window, cx),
             },
             renders: 0,
             frame: None,
+            _reduced_motion: reduced_motion,
             _subscriptions: vec![events, appearance, activation, moved, keystrokes, twins],
         };
         shell.apply_facet(cx);
@@ -237,6 +258,13 @@ impl Shell {
     /// Fixture world loading is part of the capture's real I/O quiet gate.
     #[must_use]
     pub fn graph_ready(&self, cx: &App) -> bool { self.reader.read(cx).graph_ready(cx) }
+
+    pub(crate) fn graph_work_status(
+        &self,
+        cx: &App,
+    ) -> Option<crate::shell::bodies::graph::MapWorkStatus> {
+        self.reader.read(cx).graph_work_status(cx)
+    }
 
     /// The retained map's actual node count, focus and camera.
     #[must_use]
@@ -257,6 +285,9 @@ impl Shell {
 
     #[cfg(test)]
     pub(crate) fn ask_entity(&self) -> Entity<Ask> { self.ask.clone() }
+
+    #[cfg(test)]
+    pub(crate) fn reader_entity(&self) -> Entity<Reader> { self.reader.clone() }
 
     #[cfg(test)]
     pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
@@ -285,6 +316,18 @@ impl Shell {
     #[cfg(test)]
     pub(crate) fn reader_targets(&self, cx: &App) -> super::focus::Targets {
         self.reader.read(cx).targets.clone()
+    }
+
+    /// Native reader viewport position for Back/Forward restoration tests.
+    #[cfg(test)]
+    pub(crate) fn source_reader_scroll_offset(&self, cx: &App) -> gpui::Point<gpui::Pixels> {
+        self.reader.read(cx).scroll_offset()
+    }
+
+    /// Seeds an exact native viewport offset before navigating away in a restoration test.
+    #[cfg(test)]
+    pub(crate) fn set_source_reader_scroll_offset(&self, offset: gpui::Point<gpui::Pixels>, cx: &App) {
+        self.reader.read(cx).set_scroll_offset(offset);
     }
 
     /// Render counters of the root and every region.
@@ -349,6 +392,10 @@ impl Shell {
             Zone::Pins => self.pins.read(cx).targets.focused(),
         };
         (self.zone, focused)
+    }
+
+    pub(crate) fn allows_reader_native_return(&self, window: &Window) -> bool {
+        self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
     }
 
     /// How many descents the reader played and which way the last went.
@@ -477,11 +524,20 @@ impl Shell {
                 cx.notify();
             }
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
-            StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
+            StoreEvent::Snapshot(Branch::Overlay) => {
+                if self.links.snapshot(cx).overlay().is_some() {
+                    self.reader
+                        .update(cx, |reader, _| reader.cancel_native_return());
+                }
+                self.sync_overlay(window, cx);
+            }
             StoreEvent::Snapshot(Branch::Route) => {
-                self.cancel_symbol_link(cx);
-                let route = self.links.snapshot(cx).route().clone();
-                if !super::bodies::graph::is_graph(&route) {
+                let snapshot = self.links.snapshot(cx);
+                let route = snapshot.route().clone();
+                // A preview changes the Reader while Ask retains keyboard ownership.
+                if snapshot.overlay() != Some(Overlay::CommandPalette)
+                    && !super::bodies::graph::is_graph(&route)
+                {
                     self.focus.focus(window, cx);
                 }
                 // A route a click once left (not a key walk) restores the
@@ -493,7 +549,12 @@ impl Shell {
                 // raced against it.
                 let reader_targets = self.reader.read(cx).targets.clone();
                 if let Some(id) = reader_targets.left_by(&route) {
-                    cx.defer(move |_cx| reader_targets.focus(id));
+                    let reader = self.reader.clone();
+                    cx.defer(move |cx| {
+                        reader.update(cx, |reader, cx| {
+                            reader.request_native_return(route, id, cx);
+                        });
+                    });
                 }
                 // Navigation closes what floats (pins stay).
                 let mut closed = float::close_all(window, cx);
@@ -509,17 +570,12 @@ impl Shell {
                 self.sync_overlay(window, cx);
             }
             StoreEvent::Resource(key) => {
-                if self.pending_symbol_link.as_ref().is_some_and(|request| {
-                    matches!(key, PageKey::Package(package) if request.package.as_ref() == Some(package))
-                }) {
-                    self.resolve_symbol_link(cx);
-                }
                 // The open card reads the store each frame: redraw it.
                 if self.peeking.as_ref() == Some(key) {
                     cx.notify();
                 }
             }
-            StoreEvent::Snapshot(Branch::Root) => self.cancel_symbol_link(cx),
+            StoreEvent::Snapshot(Branch::Root) => {}
             StoreEvent::Snapshot(_) => {}
         }
     }
@@ -531,7 +587,10 @@ impl Shell {
             return;
         }
         self.ask_open = wants_ask;
+        self.ask_results_mounted = false;
         if wants_ask {
+            let focused = window.focused(cx);
+            self.reader.update(cx, |reader, cx| reader.begin_find_focus_return(focused, cx));
             self.ask.update(cx, |ask, cx| ask.opened(window, cx));
         } else {
             self.focus.focus(window, cx);
@@ -546,14 +605,7 @@ impl Shell {
         self.links.dispatch(Intent::OpenCommandPalette, cx);
     }
 
-    fn cancel_symbol_link(&mut self, cx: &mut Context<Self>) {
-        self.symbol_link_generation = self.symbol_link_generation.wrapping_add(1);
-        self.pending_symbol_link = None;
-        self.status.update(cx, |status, cx| status.set_opening(None, cx));
-    }
-
     fn find_symbol_link(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
-        self.cancel_symbol_link(cx);
         self.links.dispatch(
             Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
                 crate::navigation::BrowseRoute::Find(query),
@@ -563,10 +615,9 @@ impl Shell {
     }
 
     /// S2: the exact identity behind an anatomy link could not be resolved
-    /// (no admitted package, or no exact match in its complete outline).
+    /// by this revision's complete indexed graph.
     /// The link does not move the page; the Notice says so.
     fn symbol_link_unresolved(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
-        self.cancel_symbol_link(cx);
         let snapshot = self.links.snapshot(cx);
         let notice = crate::runtime::graph_focus::Notice {
             visit: snapshot.route().clone(),
@@ -577,42 +628,9 @@ impl Shell {
         self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
     }
 
-    /// A resource event may be for a previous route, release, or fixture.
-    /// Only the same generation and exact source identity can open a page.
-    fn resolve_symbol_link(&mut self, cx: &mut Context<Self>) {
-        let Some(request) = self.pending_symbol_link.take() else { return };
-        let snapshot = self.links.snapshot(cx);
-        let current = crate::runtime::fixture_world::link_world(cx);
-        if !request.accepts(
-            self.symbol_link_generation,
-            snapshot.route(),
-            snapshot.key(),
-            current.as_ref(),
-        ) {
-            return;
-        }
-        let Some(package) = &request.package else { self.symbol_link_unresolved(request.query, cx); return };
-        let resource = self.links.store.read(cx).package(package);
-        match request.step(&resource) {
-            SymbolLinkStep::Waiting => self.pending_symbol_link = Some(request),
-            SymbolLinkStep::Resolved(resolved) => {
-                self.cancel_symbol_link(cx);
-                if let Some(route) = kit::symbol_view_route(
-                    resolved.package.as_str(), &resolved.symbol, View::Page, resolved.line,
-                ) {
-                    self.links.dispatch(Intent::Navigate(route), cx);
-                } else {
-                    self.find_symbol_link(request.query, cx);
-                }
-            }
-            SymbolLinkStep::Find => self.symbol_link_unresolved(request.query, cx),
-        }
-    }
-
-    /// Follow a recorded node through exact indexed source identity. A
-    /// spelled path is only a contextual search, not an invented coordinate.
+    /// Follow a graph node through the exact locator captured with the
+    /// selected indexed world. A display name never becomes a symbol route.
     fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
-        self.cancel_symbol_link(cx);
         let node = match &open.target {
             facet::semantics::Target::Node(node) => *node,
             facet::semantics::Target::Path(path) => {
@@ -625,39 +643,76 @@ impl Shell {
             }
         };
         let snapshot = self.links.snapshot(cx);
-        let Some((world, identities)) = crate::runtime::fixture_world::link_world(cx) else { return };
-        let Some(request) = SymbolLinkRequest::new(
-            node,
-            snapshot.route().clone(),
-            snapshot.key(),
-            self.symbol_link_generation,
-            world,
-            identities,
-        ) else { return };
         if snapshot.route().at().is_some() {
-            // Fixture nodes describe the pinned world, not the viewed old
-            // release. Offer the index query without claiming an exact page.
-            self.find_symbol_link(request.query, cx);
+            self.links.store.update(cx, |store, cx| {
+                store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: "Historical graph identities are not available for this release.".into(),
+                    retry: None,
+                }), cx);
+            });
             return;
         }
-        if let Some(package) = crate::runtime::store::route_package(snapshot.route())
-        {
-            let dossier = self.links.store.read(cx).package(&package);
-            if let Ok(Some(dossier)) = super::bodies::graph::open_value(&dossier, snapshot.key())
-                && let Some(tree) = dossier.outline.known()
-                && let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, tree, cx)
-                && let Some(route) = kit::symbol_route(package.as_str(), &symbol)
-            {
-                self.links.dispatch(Intent::Navigate(route), cx);
+        let Some(key) = crate::runtime::indexed_world::key(
+            snapshot.key(),
+            crate::runtime::hand::preferred(&snapshot),
+            cx,
+        ) else {
+            self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                visit: snapshot.route().clone(),
+                root: snapshot.key(),
+                message: "The local graph reader is not ready.".into(),
+                retry: None,
+            }), cx));
+            return;
+        };
+        let projection = match crate::runtime::indexed_world::get(&key, cx) {
+            crate::runtime::indexed_world::State::Ready(projection) => projection,
+            crate::runtime::indexed_world::State::Reading => {
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: "The current indexed graph is still being read.".into(),
+                    retry: None,
+                }), cx));
                 return;
             }
-        }
-        let Some(package) = request.package.clone() else { self.symbol_link_unresolved(request.query, cx); return };
-        let opening: SharedString = format!("Opening {}…", request.query.text).into();
-        self.status.update(cx, |status, cx| status.set_opening(Some(opening), cx));
-        self.pending_symbol_link = Some(request);
-        self.links.store.update(cx, |store, cx| { store.ensure(PageKey::Package(package), cx); });
-        self.resolve_symbol_link(cx);
+            crate::runtime::indexed_world::State::Waiting => {
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: "Waiting for an available graph-read slot; this view will retry when one opens.".into(),
+                    retry: None,
+                }), cx));
+                return;
+            }
+            crate::runtime::indexed_world::State::Unavailable(reason) => {
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: format!("The current indexed graph is unavailable: {reason}").into(),
+                    retry: None,
+                }), cx));
+                return;
+            }
+        };
+        let Some(resolved) = projection.identities.exact_node(node) else {
+            let name = projection.world.nodes.get(node as usize).map(|node| node.name.to_string()).unwrap_or_else(|| "graph node".to_owned());
+            if let Ok(query) = crate::model::pages::SearchQuery::new(&name, 200) {
+                self.symbol_link_unresolved(query, cx);
+            }
+            return;
+        };
+        let Some(route) = kit::symbol_view_route(
+            resolved.package.as_str(),
+            &resolved.symbol,
+            View::Page,
+            resolved.line,
+        ) else {
+            return;
+        };
+        self.links.dispatch(Intent::Navigate(route), cx);
     }
 
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the
@@ -718,12 +773,19 @@ impl Shell {
     /// J/K: the focus walks inside the active zone (only that region
     /// re-renders; the glow springs to the next target).
     pub fn walk(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        self.adopt_reader_native_zone(window, cx);
         if let Some(key) = self.peeking.take() {
             // The keyboard's peek belongs to where the keyboard stood.
             float::close(&peeks::float_key(&key), window, cx);
             cx.notify();
         }
         if self.with_zone(cx, |targets| targets.walk(delta)) {
+            if self.zone != Zone::Reader
+                || !self.reader.read(cx).focus_native_current(window, cx)
+            {
+                self.focus.focus(window, cx);
+            }
             self.notify_zone(self.zone, cx);
         }
     }
@@ -746,7 +808,15 @@ impl Shell {
     }
 
     /// Tab: the next zone takes the keyboard.
-    pub fn cycle_zone(&mut self, forward: bool, cx: &mut Context<Self>) {
+    pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        self.adopt_reader_native_zone(window, cx);
+        if self.zone == Zone::Reader
+            && self.reader.read(cx).step_native(forward, window, cx)
+        {
+            self.notify_zone(Zone::Reader, cx);
+            return;
+        }
         let zones = self.visible_zones();
         let at = zones.iter().position(|zone| *zone == self.zone).unwrap_or(0);
         let next = if forward {
@@ -755,10 +825,36 @@ impl Shell {
             zones[(at + zones.len() - 1) % zones.len()]
         };
         self.set_zone(next, cx);
+        if next != Zone::Reader
+            || !self.reader.read(cx).focus_native_current(window, cx)
+        {
+            self.focus.focus(window, cx);
+        }
     }
 
-    /// The zone takes the keyboard (Tab, or a click in the sidebar).
-    pub(crate) fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
+    /// The mounted native handle is the input origin even when a pointer or
+    /// accessibility client moved it without a Shell zone action.
+    fn adopt_reader_native_zone(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.ask_open || !self.background_input_allowed() || super::titlebar::menu_open(window, cx) {
+            return;
+        }
+        if let Some(changed) = self.reader.read(cx).adopt_mounted_native_focus(window, cx) {
+            let already_reader = self.zone == Zone::Reader;
+            self.set_zone(Zone::Reader, cx);
+            if already_reader && changed { self.notify_zone(Zone::Reader, cx); }
+        }
+    }
+
+    /// A custom navigation zone shares the shell's persistent native focus
+    /// owner. A clicked row can disappear as it changes the list; that must
+    /// not leave keyboard dispatch attached to the retired row.
+    pub(crate) fn take_zone(&mut self, zone: Zone, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_zone(zone, cx);
+        self.focus.focus(window, cx);
+    }
+
+    /// Updates the active targets inside the persistent keyboard owner.
+    fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
         if zone == self.zone {
             return;
         }
@@ -851,6 +947,7 @@ impl Shell {
         let package = kit::package_of(&symbol).or_else(|| match snapshot.route() {
             Route::Symbol(route) => Some(route.package.as_str().to_owned()),
             Route::Package(route) => Some(route.package.as_str().to_owned()),
+            Route::CargoSource(route) => Some(route.package.as_str().to_owned()),
             Route::Orbit(_) | Route::World => None,
         });
         if let Some(route) = package.and_then(|package| kit::symbol_view_route(&package, &symbol, View::Code, line)) {
@@ -876,6 +973,7 @@ impl Shell {
             Route::Symbol(route) if route.view == View::Graph => Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view")),
             Route::Symbol(_) => Intent::SetView(View::Graph),
             Route::World => Intent::Back,
+            Route::CargoSource(_) => return,
             Route::Orbit(_) | Route::Package(_) => {
                 self.reader.update(cx, |reader, cx| reader.reset_world(cx));
                 Intent::Navigate(Route::World)
@@ -929,6 +1027,33 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "tab" {
+            self.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
+        }
+        if self.ask_presentation.blocks_background_input(self.ask_open) {
+            // The exit's painted plate still covers the page. The shell's
+            // key context gates its actions; this also stops raw child keys.
+            // A new Ask and the platform's close shortcuts stay available.
+            let key = event.keystroke.key.as_str();
+            let platform = event.keystroke.modifiers.platform;
+            if !(platform && matches!(key, "k" | "q" | "w")) {
+                cx.stop_propagation();
+            }
+            return;
+        }
+        if self.ask_open {
+            let key = event.keystroke.key.as_str();
+            if !event.keystroke.modifiers.modified()
+                && matches!(key, "up" | "down")
+                && self.ask_results_mounted
+                && self.ask.read(cx).owns_focus(window, cx)
+            {
+                let delta = if key == "up" { -1 } else { 1 };
+                self.ask.update(cx, |ask, cx| ask.step(delta, window, cx));
+                cx.stop_propagation();
+                return;
+            }
+        }
         if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx) {
             cx.stop_propagation();
             return;
@@ -958,6 +1083,49 @@ impl Shell {
             Step::Missed => self.hints = None,
         }
         cx.notify();
+    }
+
+    fn background_input_allowed(&self) -> bool {
+        !self.ask_presentation.blocks_background_input(self.ask_open)
+    }
+
+    fn with_background_input(&mut self, action: impl FnOnce(&mut Self)) {
+        if self.background_input_allowed() {
+            action(self);
+        }
+    }
+
+    /// Ask owns an action at the shell's depth before the component root's Tab.
+    fn ask_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ask_open && self.ask_results_mounted
+            && self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette) {
+            self.ask.update(cx, |ask, cx| ask.focus_next(backwards, window, cx));
+        } else if self.ask_open || self.ask_presentation.blocks_background_input(self.ask_open) {
+            // The opening editor remains focused; a leaving plate keeps Tab
+            // from handing focus to a still-covered background control.
+        } else {
+            cx.propagate();
+        }
+    }
+
+    /// Find and Settings expose native field, row, and radio stops. Once a
+    /// native control owns focus, Tab follows that real control order.
+    fn folio_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = self.links.snapshot(cx);
+        if !self.background_input_allowed() || self.ask_open
+            || !self.reader.read(cx).native_input_for(snapshot.route(), snapshot.overlay()) { return; }
+        let find = matches!(snapshot.route(), Route::Orbit(crate::navigation::OrbitRoute::Browse(
+            crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_)
+        )));
+        if find && snapshot.overlay().is_none()
+            || matches!(snapshot.overlay(), Some(Overlay::Settings(_))) {
+            if self.focus.is_focused(window) {
+                // The custom shell hand still uses Tab to reach its zones.
+                self.cycle_zone(!backwards, window, cx);
+            } else if backwards { window.focus_prev(cx); } else { window.focus_next(cx); }
+        } else {
+            cx.propagate();
+        }
     }
 
     /// Esc: the topmost transient closes, one per press.
@@ -1041,6 +1209,7 @@ impl Shell {
         let (package, id) = match snapshot.route() {
             Route::Symbol(route) => (route.package.clone(), Some(route.id.clone())),
             Route::Package(route) => (route.package.clone(), None),
+            Route::CargoSource(route) => (route.package.clone(), None),
             Route::Orbit(_) | Route::World => return,
         };
         if let Some(id) = &id
@@ -1060,7 +1229,7 @@ impl Shell {
         let package = match self.links.snapshot(cx).route() {
             Route::Package(route) => route.package.clone(),
             Route::Symbol(route) if route.view != View::Graph => route.package.clone(),
-            Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
+            Route::CargoSource(_) | Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
         };
         self.links.dispatch(Intent::Tour(package), cx);
     }
@@ -1075,8 +1244,9 @@ impl Shell {
     /// Inside the open hand: ← / → walk the cards, ↵ goes, ⌫ lets go.
     /// Returns whether the key was the hand's.
     fn hand_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        let hand = self.links.snapshot(cx).session().hand.clone();
-        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let snapshot = self.links.snapshot(cx);
+        let hand = snapshot.session().hand.clone();
+        let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
         let count = view.cards.len();
         if count == 0 {
             return false;
@@ -1111,8 +1281,9 @@ impl Shell {
 
     /// ⌘1–⌘5: go to the hand's nth card, in the order it is shown.
     pub(crate) fn hand_card(&mut self, n: usize, cx: &mut Context<Self>) {
-        let hand = self.links.snapshot(cx).session().hand.clone();
-        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let snapshot = self.links.snapshot(cx);
+        let hand = snapshot.session().hand.clone();
+        let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
         let Some(card) = view.cards.get(n) else {
             return;
         };
@@ -1178,59 +1349,67 @@ impl Shell {
         Some(layer.into_any_element())
     }
 
-    /// Ask's results: a plate over the shelf's column below the titlebar
-    /// (which draws the query itself), a panel from 320 to 440 px as the
-    /// window grows and a sheet across it on a phone (`facet::tokens::fluid::ASK`,
-    /// held through its hysteresis band). The rest of the page is veiled; a click
-    /// on the veil puts Ask away.
-    fn ask_layer(&self, frame: &Frame, status: f32, viewport: gpui::Size<Pixels>, cx: &App) -> Option<AnyElement> {
-        if !self.ask_open {
+    /// The active overlay owns the query and results. During exit the same
+    /// rectangle holds only painted plate pixels: no Ask entity, result
+    /// callbacks, or native accessibility descendants survive the overlay.
+    fn ask_layer(&self, frame: &Frame, status: f32, scene: AskScene, cx: &App) -> Option<AnyElement> {
+        if !scene.visible() {
             return None;
         }
         let palette = cx.facet().palette();
         let links = self.links.clone();
-        let width = match self.modes.settle(&ASK, frame.room).mode {
-            Float::Panel => ASK_PANEL.at(frame.room),
-            Float::Sheet => viewport.width,
-        };
+        let mut veil = div()
+            .id(if self.ask_open { "ask-veil" } else { "ask-exit-veil" })
+            .absolute()
+            .top(frame.titlebar)
+            .bottom(px(status))
+            .left_0()
+            .right_0()
+            .bg(palette.veil.alpha(scene.veil));
+        if self.ask_open {
+            veil = veil.on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx));
+        } else {
+            // The page under a departing sheet is not yet available. Consume
+            // its pointer hit without reviving any of Ask's old actions.
+            veil = veil.on_click(|_, _, cx| cx.stop_propagation());
+        }
+        let plate = scene.geometry.map(|geometry| {
+            let mut plate = div()
+                .id(if !self.ask_open { "ask-exit-frame" } else if scene.live_results { "ask-frame" } else { "ask-enter-frame" })
+                .debug_selector(|| "ask-plate".to_owned())
+                .absolute()
+                .top(geometry.plate.origin.y)
+                .left(geometry.plate.origin.x)
+                .w(geometry.plate.size.width)
+                .h(geometry.plate.size.height)
+                .overflow_hidden()
+                .bg(palette.g2)
+                .border_r_1()
+                .border_color(palette.line2.hsla());
+            if scene.paint_results {
+                // The inner plate keeps its full readable measure while the
+                // outer occupied rectangle reveals it and Reader follows.
+                // An incomplete reveal paints the content but cannot expose
+                // clipped row actions or take focus from the titlebar editor.
+                let content = div().w(scene.content_width).h_full().child(self.ask.clone());
+                plate = plate.on_click(|_, _, cx| cx.stop_propagation());
+                plate = if scene.live_results {
+                    plate.child(content)
+                } else {
+                    plate.child(gpui::inert("entering-ask-results", "Search results are opening", content))
+                };
+            } else {
+                plate = plate.on_click(|_, _, cx| cx.stop_propagation());
+            }
+            plate
+        });
         Some(
             div()
-                .id("ask-veil")
+                .id(if self.ask_open { "ask-overlay" } else { "ask-exit" })
                 .absolute()
-                .top(frame.titlebar)
-                .bottom(px(status))
-                .left_0()
-                .right_0()
-                .bg(palette.veil)
-                .on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx))
-                // The plate is there once there is a query for it to answer:
-                // an empty plate is not something to look at.
-                .children(self.ask.read(cx).shows().then(|| {
-                    div()
-                        .id("ask-frame")
-                        .debug_selector(|| "ask-plate".to_owned())
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(width)
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .capture_key_down({
-                            let ask = self.ask.clone();
-                            move |event: &KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
-                                "up" => {
-                                    ask.update(cx, |ask, cx| ask.step(-1, cx));
-                                    cx.stop_propagation();
-                                }
-                                "down" => {
-                                    ask.update(cx, |ask, cx| ask.step(1, cx));
-                                    cx.stop_propagation();
-                                }
-                                _ => {}
-                            }
-                        })
-                        .child(self.ask.clone())
-                }))
+                .inset_0()
+                .child(veil)
+                .children(plate)
                 .into_any_element(),
         )
     }
@@ -1245,7 +1424,7 @@ fn run(act: super::focus::Act, window: &mut Window, cx: &mut App) {
 impl Shell {
     /// Publishes the transient layers as the float stack the harness checks
     /// (unique keys, at most one of each, nothing left once settled).
-    fn publish_stack(&self, ask: Option<Vec<facet::probe::BoundsSample>>, cx: &mut App) {
+    fn publish_stack(&self, ask: Option<(facet::probe::StackPhase, Vec<facet::probe::BoundsSample>)>, cx: &mut App) {
         let hints = self.hints.as_ref().map(HintMode::remaining);
         facet::probe::record_stack(cx, move || {
             let entry = |key: String, kind: &str, pinned: bool| facet::probe::StackEntry {
@@ -1259,8 +1438,13 @@ impl Shell {
             // Peeks and pins are W-Float's layer's own entries; the shell
             // adds its transients: Ask and hint mode.
             let mut entries = Vec::new();
-            for bounds in ask.into_iter().flatten() {
-                entries.push(facet::probe::StackEntry { bounds: Some(bounds.clone()), ..entry(bounds.key.clone(), "dialog", false) });
+            if let Some((phase, bounds)) = ask {
+                for bounds in bounds {
+                    entries.push(facet::probe::StackEntry {
+                        bounds: Some(bounds.clone()), phase,
+                        ..entry(bounds.key.clone(), "dialog", false)
+                    });
+                }
             }
             if let Some(count) = hints {
                 entries.push(entry(format!("hints:{count}"), "hints", false));
@@ -1339,14 +1523,47 @@ impl Render for Shell {
         let drawer = f32::from(frame.drawer);
         let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
 
+        let ask_scene = self.ask_presentation.sample(
+            self.ask_open,
+            self.ask_open && self.ask.read(cx).shows(),
+            &frame,
+            viewport,
+            px(status_height),
+            px(shelf_width),
+            &self.modes,
+            window,
+            cx,
+        );
+        self.ask_results_mounted = ask_scene.live_results;
+        let background_input_allowed = !self.ask_open && self.background_input_allowed();
+        self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background_input_allowed, cx));
+
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
+        if self.ask_open {
+            // The modal owns Tab, arrows, and result activation. Leave shell
+            // shortcuts available while its plain zone bindings step aside.
+            context.add("Ask");
+        } else if self.ask_presentation.blocks_background_input(false) {
+            context.add("AskLeaving");
+        }
+        if background_input_allowed
+            && (matches!(snapshot.overlay(), Some(Overlay::Settings(_)))
+                || snapshot.overlay().is_none() && matches!(snapshot.route(), Route::Orbit(
+                    crate::navigation::OrbitRoute::Browse(
+                        crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_)
+                    )
+                ))) {
+            context.add("NativeFolio");
+        }
         if self.hints.is_some() {
             context.add("hints");
         }
         // An open jump-bar menu owns the plain keys (arrows, ↵, type-ahead,
         // Esc): the shell's bindings step aside (`keys::binding`, `!Menu`).
         if super::titlebar::menu_open(window, cx) {
+            self.reader
+                .update(cx, |reader, _| reader.cancel_native_return());
             context.add("Menu");
         }
 
@@ -1355,10 +1572,15 @@ impl Render for Shell {
             .min_h(px(0.0))
             .flex()
             .children((shelf_width > 0.5).then(|| {
-                measured(
+                let shelf = measured(
                     &self.shelf,
                     StyleRefinement::default().w(px(shelf_width)).h_full().flex_none(),
-                )
+                );
+                if over {
+                    a11y_inert(shelf).into_any_element()
+                } else {
+                    shelf.into_any_element()
+                }
             }))
             .child(measured(
                 &self.reader,
@@ -1370,9 +1592,21 @@ impl Render for Shell {
                     StyleRefinement::default().w(px(pins_width)).h_full().flex_none(),
                 )
             }));
+        // Keep the page's native controls out until its pixels reappear from
+        // beneath the last painted plate, including Ask's inert exit.
+        let body: AnyElement = if ask_scene.visible() {
+            a11y_inert(body).into_any_element()
+        } else {
+            body.into_any_element()
+        };
 
         let mut root = div()
             .id("shell")
+            // This is the actual keyboard-focus owner for the four custom
+            // navigation zones. Their active target is reported as this
+            // application's descendant rather than falling back to Window.
+            .role(gpui::Role::Application)
+            .aria_label("Nudox")
             .debug_selector(|| "shell-root".to_owned())
             .relative()
             .size_full()
@@ -1382,52 +1616,59 @@ impl Render for Shell {
             .font_family(facet::fonts::family(facet::tokens::ty::BODY))
             .track_focus(&self.focus)
             .key_context(context)
-            .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.walk(1, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.walk(-1, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.activate(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.peek(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.peel(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.hint_mode(cx)))
+            .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.with_background_input(|shell| shell.walk(1, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.with_background_input(|shell| shell.walk(-1, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.with_background_input(|shell| shell.activate(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.with_background_input(|shell| shell.peek(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.with_background_input(|shell| shell.peel(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.with_background_input(|shell| shell.hint_mode(cx))))
             .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(cx)))
-            .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.links.dispatch(Intent::Back, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.links.dispatch(Intent::Forward, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.links.dispatch(Intent::ZoomOut, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| {
+            .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::Back, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::Forward, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::ZoomOut, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| shell.with_background_input(|shell| {
                 shell.zen = !shell.zen;
                 cx.notify();
-            }))
-            .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.toggle_shelf(cx)))
-            .on_action(cx.listener(|shell, _: &keys::NextZone, _, cx| shell.cycle_zone(true, cx)))
-            .on_action(cx.listener(|shell, _: &keys::PrevZone, _, cx| shell.cycle_zone(false, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.escape(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.depth(RouteDepth::Orbit, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.depth(RouteDepth::Package, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.depth(RouteDepth::Page, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.depth(RouteDepth::Source, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.toggle_graph(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.code_page(window, cx)))
-            .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.open_anatomy(open, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.hold(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.toggle_hand(cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.hand_card(0, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.hand_card(1, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| shell.hand_card(2, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.hand_card(3, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.hand_card(4, cx)))
-            .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.copy_address(cx)))
-            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.tour(cx)))
-            .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
+            })))
+            .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.with_background_input(|shell| shell.toggle_shelf(cx))))
+            .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::FolioNext, window, cx| shell.with_background_input(|shell| shell.folio_tab(false, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::FolioPrev, window, cx| shell.with_background_input(|shell| shell.folio_tab(true, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.with_background_input(|shell| shell.escape(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Orbit, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Package, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Page, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Source, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.with_background_input(|shell| shell.toggle_graph(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.with_background_input(|shell| shell.code_page(window, cx))))
+            .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.with_background_input(|shell| shell.open_anatomy(open, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::In, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Out, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Reset, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.with_background_input(|shell| shell.hold(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.with_background_input(|shell| shell.toggle_hand(cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.with_background_input(|shell| shell.hand_card(0, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.with_background_input(|shell| shell.hand_card(1, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| shell.with_background_input(|shell| shell.hand_card(2, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.with_background_input(|shell| shell.hand_card(3, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.with_background_input(|shell| shell.hand_card(4, cx))))
+            .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.with_background_input(|shell| shell.copy_address(cx))))
+            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.with_background_input(|shell| shell.tour(cx))))
+            .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| shell.with_background_input(|shell| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
-            }))
-            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.links.dispatch(Intent::OpenAddProject, cx)))
+            })))
+            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::OpenAddProject, cx))))
             .on_modifiers_changed(cx.listener(|shell, event: &ModifiersChangedEvent, _, cx| {
-                shell.modifiers(event.modifiers, cx);
+                shell.with_background_input(|shell| shell.modifiers(event.modifiers, cx));
             }))
             .capture_key_down(cx.listener(|shell, event: &KeyDownEvent, window, cx| {
                 shell.key_down(event, window, cx);
+            }))
+            .capture_any_mouse_down(cx.listener(|shell, _, _, cx| {
+                shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
             }))
             .child(ground())
             .child(
@@ -1449,7 +1690,7 @@ impl Render for Shell {
         // The hand opened (the Row rung), just above the foot.
         let hand = snapshot.session().hand.clone();
         if self.hand_open && !hand.is_empty() {
-            let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+            let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
             let measure = Measure::new(viewport.width, &facet);
             root = root.child(
                 div()
@@ -1469,6 +1710,12 @@ impl Render for Shell {
             // tiles paints deferred too, and must not cover the drawer) and
             // below the float layer's cards (`float::PRIORITY`).
             let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
+            let shelf_body = measured(&self.shelf_over, StyleRefinement::default().size_full());
+            let shelf_body: AnyElement = if over {
+                shelf_body.into_any_element()
+            } else {
+                a11y_inert(shelf_body).into_any_element()
+            };
             root = root.child(
                 gpui::deferred(
                     div()
@@ -1498,7 +1745,7 @@ impl Render for Shell {
                                 .left(px(over_x))
                                 .w(frame.drawer)
                                 .bg(palette.g2)
-                                .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
+                                .child(shelf_body),
                         ),
                 )
                 .with_priority(DRAWER_PRIORITY),
@@ -1515,13 +1762,9 @@ impl Render for Shell {
             self.pinned = pinned;
             self.pins.update(cx, |_, cx| cx.notify());
         }
-        let ask_width = match self.modes.settle(&ASK, frame.room).mode {
-            Float::Panel => ASK_PANEL.at(frame.room),
-            Float::Sheet => viewport.width,
-        };
         // Ask is a dialog over the veiled page: its field (the titlebar) and
         // its plate are what a person reads; the page under the veil is not.
-        let ask_bounds = self.ask_open.then(|| {
+        let ask_bounds = ask_scene.phase.map(|phase| {
             let sample = |key: &str, x: Pixels, y: Pixels, width: Pixels, height: Pixels| facet::probe::BoundsSample {
                 key: key.to_owned(),
                 x: f32::from(x),
@@ -1529,15 +1772,21 @@ impl Render for Shell {
                 width: f32::from(width),
                 height: f32::from(height),
             };
-            let mut parts = vec![sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar)];
-            // The plate is drawn once there is a query for it to answer
-            // (`ask_layer`): before that the page under the veil is all
-            // there is (J9's ask-open frame held the shelf's words to text
-            // contrast under a plate that was not there).
-            if self.ask.read(cx).shows() {
-                parts.push(sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
+            let mut parts = Vec::new();
+            if self.ask_open {
+                parts.push(sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar));
             }
-            parts
+            // The same measured plate may still be painted after its live
+            // query and results have been removed on exit.
+            if let Some(geometry) = ask_scene.geometry {
+                parts.push(sample("ask-plate", geometry.plate.origin.x, geometry.plate.origin.y,
+                    geometry.plate.size.width, geometry.plate.size.height));
+            }
+            if parts.is_empty() {
+                parts.push(sample("ask-veil", px(0.0), frame.titlebar, viewport.width,
+                    (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
+            }
+            (phase, parts)
         });
         self.publish_stack(ask_bounds, cx);
         let float = float::layer(window, cx);
@@ -1555,15 +1804,12 @@ impl Render for Shell {
             ];
             super::side::twin::rings(&regions, window.mouse_position(), cx)
         });
-        root.children(self.ask_layer(&frame, status_height, viewport, cx))
+        root.children(self.ask_layer(&frame, status_height, ask_scene, cx))
             .children(self.hint_layer(cx))
             .children(twins)
             .child(float)
     }
 }
-
-#[allow(dead_code)]
-fn _key(_: PageKey) {}
 
 /// The wall clock in unix ms (the hand's held and touched times).
 pub(crate) fn now_ms() -> u64 {
@@ -1585,6 +1831,7 @@ pub(crate) fn held_route(held: &crate::model::hand::Held) -> Option<Route> {
             selected: None,
         }),
         None => Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             package: held.package.clone(),
             lane: crate::navigation::PackageLane::Overview,

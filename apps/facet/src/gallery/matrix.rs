@@ -161,6 +161,7 @@ pub fn shoot(
         RgbaImage,
         crate::probe::Ledger,
         backend_gui_harness::Viewport,
+        Vec<gpui::PaintedText>,
     ),
     GalleryError,
 > {
@@ -180,7 +181,7 @@ pub fn shoot(
         .into_iter()
         .next()
         .ok_or_else(|| GalleryError(format!("{}: no frame", scene.id)))?;
-    Ok((frame.image, frame.ledger, frame.drawn.viewport))
+    Ok((frame.image, frame.ledger, frame.drawn.viewport, frame.painted_texts))
 }
 
 /// Runs the matrix for `scene`: every cell captured at `scale`, linted,
@@ -196,12 +197,12 @@ pub fn run(
 ) -> Result<Vec<CellResult>, GalleryError> {
     let mut results: Vec<CellResult> = Vec::new();
     for cell in axes.cells() {
-        let (image, ledger, viewport) = shoot(scene, cell, scale)?;
+        let (image, ledger, viewport, painted_texts) = shoot(scene, cell, scale)?;
         let ambient = ledger
             .tracks
             .iter()
             .any(|track| track.kind == TrackKind::Pulse);
-        let linted = lint::lint(&image, &ledger, viewport);
+        let linted = lint::lint_with_painted(&image, &ledger, viewport, &painted_texts);
         let mut result = CellResult {
             cell,
             image,

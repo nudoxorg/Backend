@@ -1,7 +1,7 @@
 //! The registry, home, and session surfaces, in the same shape as everything else.
 //!
-//! Twenty-four of the thirty-five registry rows answer with a
-//! [`SurfaceReply`] — registry packages, subscriptions, project folders,
+//! Many registry rows answer with a [`SurfaceReply`] — registry packages,
+//! subscriptions, project folders,
 //! session tree nodes, semantic generations, declaration diffs. Today both
 //! surfaces print those as pretty-printed JSON, which is the same failure as
 //! the outline: a wire value shown to a person.
@@ -12,21 +12,27 @@
 //! exactly the record shape the search and shelf renderings already use, so a
 //! reader learns it once.
 
+use crate::drive::ContinuationCursor;
 use crate::fault::Fault;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
-    IndexSearchPage, IndexSearchResultCount, PackageDependencyRecord, PackageReference,
-    ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet, RegistryMetadata,
-    RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
+    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, PackageDependencyRecord,
+    PackageReference, ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet,
+    RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
     RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
-    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticVersionFreshness,
-    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
-    TreeSubject, encode_id,
+    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticHistoryPublicationStatus,
+    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceReply,
+    TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+};
+use backend_library::{
+    IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
+    IndexJobProgressKind, IndexJobStage, IndexJobTerminal, IndexStartResult,
 };
 
 use crate::identity::KeyTag;
+use serde::{Deserialize, Serialize};
 
 /// One product record: a title, an operand to pass back, and its tags.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +45,7 @@ pub struct ProductRecord {
     forge_package_detail: Option<ForgePackageDetailRecord>,
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
+    history_status: Option<SemanticHistoryPublicationStatus>,
 }
 
 impl ProductRecord {
@@ -54,6 +61,7 @@ impl ProductRecord {
             forge_package_detail: None,
             discovery_details: None,
             package_group: None,
+            history_status: None,
         }
     }
 
@@ -89,6 +97,14 @@ impl ProductRecord {
     #[must_use]
     pub fn with_package_group(mut self, group: RegistryPackageSearchGroup) -> Self {
         self.package_group = Some(group);
+        self
+    }
+
+    /// Attaches the exact owner-reported derived-history state for one
+    /// immutable semantic generation.
+    #[must_use]
+    pub fn with_history_status(mut self, status: SemanticHistoryPublicationStatus) -> Self {
+        self.history_status = Some(status);
         self
     }
 
@@ -139,6 +155,12 @@ impl ProductRecord {
     pub fn package_group(&self) -> Option<&RegistryPackageSearchGroup> {
         self.package_group.as_ref()
     }
+
+    /// Returns the exact owner-reported derived-history state, when present.
+    #[must_use]
+    pub fn history_status(&self) -> Option<&SemanticHistoryPublicationStatus> {
+        self.history_status.as_ref()
+    }
 }
 
 /// One rendered product answer.
@@ -149,6 +171,48 @@ pub struct ProductView {
     note: Option<String>,
     fault: Option<Fault>,
     index_search_page: Option<IndexSearchPageInfo>,
+    index_job: Option<IndexJobProjection>,
+}
+
+/// Exact owner-issued indexing state retained alongside its readable projection.
+///
+/// Keeping the ticket and observation typed here lets every product adapter
+/// return the same resumable identity instead of reducing a job reply to a
+/// heading or debug string.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum IndexJobProjection {
+    /// Immediate start acknowledgement or terminal result.
+    Started(IndexStartResult),
+    /// Terminal owner receipt from the generic surface command.
+    Terminal(IndexJobTerminal),
+    /// Immediate progress, terminal, or unknown-ticket observation.
+    Progress(IndexJobObservation),
+    /// Immediate cancellation acknowledgement and exact requested identity.
+    Cancellation(IndexCancelReceipt),
+}
+
+impl IndexJobProjection {
+    /// Returns the exact ticket carried by this job result, when available.
+    #[must_use]
+    pub fn ticket(&self) -> Option<&backend_library::IndexJobTicket> {
+        match self {
+            Self::Started(IndexStartResult::Started { ticket, .. }) => Some(ticket),
+            Self::Started(IndexStartResult::Terminal(terminal))
+            | Self::Terminal(terminal)
+            | Self::Progress(IndexJobObservation::Terminal(terminal)) => Some(&terminal.ticket),
+            Self::Progress(IndexJobObservation::Pending(page)) => Some(&page.ticket),
+            Self::Progress(IndexJobObservation::Unknown { ticket, .. }) => Some(ticket),
+            Self::Cancellation(receipt) => Some(&receipt.ticket),
+        }
+    }
+
+    /// Returns the ticket's canonical JSON object, ready to pass to another
+    /// structured surface call.
+    #[must_use]
+    pub fn ticket_json(&self) -> Option<String> {
+        self.ticket().map(|ticket| index_ticket_json(ticket))
+    }
 }
 
 /// Page identity and continuation returned by index search.
@@ -157,7 +221,72 @@ pub struct IndexSearchPageInfo {
     snapshot: [u8; 32],
     evaluated_at_millis: u64,
     result_count: IndexSearchResultCount,
-    next_cursor: Option<String>,
+    next_cursor: Option<CursorProjection>,
+}
+
+/// Where a projected cursor should be passed on the next call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorTarget {
+    /// The CLI's `--cursor` option.
+    CliOption,
+    /// The `cursor` argument of `backend.index_search`.
+    McpIndexSearchTool,
+    /// The tagged `command.cursor` field accepted by `backend.surface`.
+    SurfaceCommand,
+}
+
+/// One typed owner cursor together with its adapter-facing token and usage.
+///
+/// The token is the only value that should be rendered or serialized. The
+/// family retains the owner cursor separately so an adapter can wrap it
+/// without confusing an opaque product token with a presentation cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CursorProjection {
+    family: ContinuationCursor,
+    token: String,
+    target: CursorTarget,
+}
+
+impl CursorProjection {
+    fn index_search(cursor: IndexSearchCursor) -> Self {
+        Self {
+            token: cursor.as_str().to_owned(),
+            family: ContinuationCursor::IndexSearch(cursor),
+            target: CursorTarget::CliOption,
+        }
+    }
+
+    /// Creates an adapter-facing projection of an owner cursor.
+    #[must_use]
+    pub fn projected(
+        family: ContinuationCursor,
+        token: impl Into<String>,
+        target: CursorTarget,
+    ) -> Self {
+        Self {
+            family,
+            token: token.into(),
+            target,
+        }
+    }
+
+    /// Returns the owner-issued cursor family.
+    #[must_use]
+    pub const fn family(&self) -> &ContinuationCursor {
+        &self.family
+    }
+
+    /// Returns the token exposed to this surface's caller.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Returns the caller's resume field or option.
+    #[must_use]
+    pub const fn target(&self) -> CursorTarget {
+        self.target
+    }
 }
 
 impl IndexSearchPageInfo {
@@ -179,10 +308,16 @@ impl IndexSearchPageInfo {
         self.result_count
     }
 
-    /// Opaque continuation for the following result page.
+    /// Caller-facing continuation for the following result page.
     #[must_use]
     pub fn next_cursor(&self) -> Option<&str> {
-        self.next_cursor.as_deref()
+        self.next_cursor.as_ref().map(CursorProjection::token)
+    }
+
+    /// Typed owner cursor retained behind the caller-facing projection.
+    #[must_use]
+    pub fn cursor_projection(&self) -> Option<&CursorProjection> {
+        self.next_cursor.as_ref()
     }
 }
 
@@ -217,6 +352,35 @@ impl ProductView {
         self.index_search_page.as_ref()
     }
 
+    /// Returns the exact owner indexing state carried by this product reply.
+    #[must_use]
+    pub const fn index_job(&self) -> Option<&IndexJobProjection> {
+        self.index_job.as_ref()
+    }
+
+    /// Returns this product answer's typed owner cursor, when it has one.
+    #[must_use]
+    pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
+        self.index_search_page
+            .as_ref()?
+            .cursor_projection()
+            .map(CursorProjection::family)
+    }
+
+    /// Replaces the caller-facing cursor while retaining its owner family.
+    #[must_use]
+    pub fn project_cursor(mut self, token: impl Into<String>, target: CursorTarget) -> Self {
+        let token = token.into();
+        if let Some(cursor) = self
+            .index_search_page
+            .as_mut()
+            .and_then(|page| page.next_cursor.as_mut())
+        {
+            *cursor = CursorProjection::projected(cursor.family.clone(), token, target);
+        }
+        self
+    }
+
     fn with_index_search_page(mut self, page: &IndexSearchPage) -> Self {
         self.index_search_page = Some(IndexSearchPageInfo {
             snapshot: page.snapshot,
@@ -225,8 +389,14 @@ impl ProductView {
             next_cursor: page
                 .next_cursor
                 .as_ref()
-                .map(|cursor| cursor.as_str().to_owned()),
+                .cloned()
+                .map(CursorProjection::index_search),
         });
+        self
+    }
+
+    fn with_index_job(mut self, index_job: IndexJobProjection) -> Self {
+        self.index_job = Some(index_job);
         self
     }
 
@@ -242,6 +412,7 @@ impl ProductView {
             note: None,
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -254,6 +425,7 @@ impl ProductView {
             note: Some(note.into()),
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -264,6 +436,7 @@ impl ProductView {
             note: None,
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -274,6 +447,7 @@ impl ProductView {
             note: Some(note.into()),
             fault: None,
             index_search_page: None,
+            index_job: None,
         }
     }
 
@@ -284,6 +458,7 @@ impl ProductView {
             note: None,
             fault: Some(fault),
             index_search_page: None,
+            index_job: None,
         }
     }
 }
@@ -349,8 +524,163 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::SemanticVersionSelected(record) => {
             ProductView::rows("select-semantic-version", vec![semantic_row(record)])
         }
+        SurfaceReply::IndexStarted(result) => {
+            index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
+        }
+        SurfaceReply::IndexTerminal(terminal) => index_terminal_view(terminal)
+            .with_index_job(IndexJobProjection::Terminal(terminal.clone())),
+        SurfaceReply::IndexProgress(observation) => index_observation_view(observation)
+            .with_index_job(IndexJobProjection::Progress(observation.clone())),
+        SurfaceReply::IndexCancellation(receipt) => index_cancellation_view(&receipt.status)
+            .with_index_job(IndexJobProjection::Cancellation(receipt.clone())),
         _ => return None,
     })
+}
+
+fn index_start_view(result: &IndexStartResult) -> ProductView {
+    match result {
+        IndexStartResult::Started { ticket, stage } => ProductView::rows(
+            "index-start",
+            vec![ProductRecord::new(
+                format!("index job {} started", ticket.id()),
+                Some(index_ticket_json(ticket)),
+                vec![
+                    format!("stage {}", index_stage(*stage)),
+                    "poll index_progress".to_owned(),
+                ],
+            )],
+        ),
+        IndexStartResult::Terminal(terminal) => index_terminal_view(terminal),
+    }
+}
+
+fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
+    let (state, detail) = match &terminal.outcome {
+        IndexJobOutcome::Published => ("published", None),
+        IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
+        IndexJobOutcome::Cancelled => ("cancelled", None),
+        IndexJobOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
+    };
+    let mut tags = vec![format!("outcome {state}")];
+    if let Some(detail) = detail {
+        tags.push(detail.to_owned());
+    }
+    ProductView::rows(
+        "index-job-terminal",
+        vec![ProductRecord::new(
+            format!("index job {} is {state}", terminal.ticket.id()),
+            Some(index_ticket_json(&terminal.ticket)),
+            tags,
+        )],
+    )
+}
+
+fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
+    match observation {
+        IndexJobObservation::Pending(page) => {
+            let mut tags = vec![
+                format!("stage {}", index_stage(page.stage)),
+                format!("next_sequence {}", page.next_sequence),
+            ];
+            if page.truncated {
+                tags.push("older progress events aged out".to_owned());
+            }
+            if page.has_more {
+                tags.push("more events available".to_owned());
+            }
+            let mut records = vec![ProductRecord::new(
+                format!("index job {} pending", page.ticket.id()),
+                Some(index_ticket_json(&page.ticket)),
+                tags,
+            )];
+            records.extend(page.events.iter().map(|event| {
+                let mut tags = vec![format!("sequence {}", event.sequence)];
+                let title = match &event.kind {
+                    IndexJobProgressKind::StageChanged { stage } => {
+                        format!("stage changed to {}", index_stage(*stage))
+                    }
+                    IndexJobProgressKind::ProfileStarted {
+                        profile,
+                        ordinal,
+                        total,
+                    } => {
+                        tags.push(format!("profile {ordinal}/{total}"));
+                        format!("{} profile started", profile.name().unwrap_or("unknown"))
+                    }
+                    IndexJobProgressKind::ProfileAdmitted {
+                        profile,
+                        ordinal,
+                        total,
+                    } => {
+                        tags.push(format!("profile {ordinal}/{total}"));
+                        format!("{} profile admitted", profile.name().unwrap_or("unknown"))
+                    }
+                };
+                ProductRecord::new(title, None, tags)
+            }));
+            ProductView::rows("index-progress", records)
+        }
+        IndexJobObservation::Terminal(terminal) => index_terminal_view(terminal),
+        IndexJobObservation::Unknown {
+            ticket,
+            current_owner_epoch,
+        } => {
+            let owner_restarted = ticket.owner_epoch() != *current_owner_epoch;
+            ProductView::rows(
+                "index-progress",
+                vec![ProductRecord::new(
+                    format!(
+                        "index job {} is unknown{}",
+                        ticket.id(),
+                        if owner_restarted {
+                            " after owner restart"
+                        } else {
+                            ""
+                        }
+                    ),
+                    Some(index_ticket_json(ticket)),
+                    vec![if owner_restarted {
+                        "ticket owner epoch differs from current owner".to_owned()
+                    } else {
+                        "ticket is no longer active or retained".to_owned()
+                    }],
+                )],
+            )
+        }
+    }
+}
+
+fn index_cancellation_view(status: &IndexCancelStatus) -> ProductView {
+    match status {
+        IndexCancelStatus::Requested => ProductView::scalar(
+            "index-cancel",
+            "cancellation was requested; poll index_progress",
+        ),
+        IndexCancelStatus::Terminal(terminal) => index_terminal_view(terminal),
+        IndexCancelStatus::Unknown => ProductView::scalar(
+            "index-cancel",
+            "no active or retained terminal job matched the exact ticket",
+        ),
+    }
+}
+
+fn index_stage(stage: IndexJobStage) -> &'static str {
+    match stage {
+        IndexJobStage::Acquiring => "acquiring",
+        IndexJobStage::Staging => "staging",
+        IndexJobStage::Scanning => "scanning",
+        IndexJobStage::Compiling => "compiling",
+        IndexJobStage::Publishing => "publishing",
+    }
+}
+
+fn index_ticket_json(ticket: &backend_library::IndexJobTicket) -> String {
+    serde_json::json!({
+        "id": ticket.id(),
+        "owner_epoch": ticket.owner_epoch(),
+        "package": ticket.package(),
+    })
+    .to_string()
 }
 
 fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> ProductRecord {
@@ -703,8 +1033,172 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
         SurfaceReply::TreeClosed(count) => {
             ProductView::scalar("tree-close", format!("{count} node(s) closed"))
         }
+        SurfaceReply::CargoPackageSourceFile(result) => match result {
+            backend_library::CargoPackageSourceFileResultV1::Read {
+                path,
+                contents,
+                semantic: backend_library::CargoPackageSourceSemanticStatusV1::NotIndexed,
+                ..
+            } => ProductView::scalar(
+                "cargo-source-file",
+                format!(
+                    "{} · source-only, not indexed\n\n{}",
+                    path.as_str(),
+                    fenced_source_text(contents)
+                ),
+            ),
+            backend_library::CargoPackageSourceFileResultV1::Stale { .. } => ProductView::scalar(
+                "cargo-source-file",
+                "The Cargo source receipt is stale. Reload the package tree before opening this file.",
+            ),
+            backend_library::CargoPackageSourceFileResultV1::Unavailable { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-source-file",
+                    format!("The owner could not read this source file: {reason:?}."),
+                )
+            }
+        },
+        SurfaceReply::CargoPackageSourceInventory(result) => match result {
+            backend_library::CargoPackageSourceInventoryResultV1::Listed(inventory) => {
+                let coverage = match inventory.coverage {
+                    backend_library::CargoPackageSourceInventoryCoverageV1::Complete => {
+                        "complete for supported regular source/document files; internal directories and links are excluded".to_owned()
+                    }
+                    backend_library::CargoPackageSourceInventoryCoverageV1::Truncated { limit } => {
+                        format!("truncated at {limit} paths; additional paths may exist")
+                    }
+                    backend_library::CargoPackageSourceInventoryCoverageV1::Partial { reason } => {
+                        format!("partial inventory ({reason:?}); additional paths may exist")
+                    }
+                };
+                let mut records = Vec::with_capacity(inventory.paths.len().saturating_add(1));
+                records.push(ProductRecord::new(
+                    format!(
+                        "{} · {} observed path(s)",
+                        inventory.package.as_str(),
+                        inventory.paths.len()
+                    ),
+                    None,
+                    vec![coverage],
+                ));
+                records.extend(inventory.paths.iter().map(|path| {
+                    ProductRecord::new(
+                        path.as_str(),
+                        Some(path.as_str().to_owned()),
+                        vec!["source-only address · revalidate before reading".to_owned()],
+                    )
+                }));
+                ProductView::assembled("cargo-source-inventory", records)
+            }
+            backend_library::CargoPackageSourceInventoryResultV1::Stale { .. } => {
+                ProductView::scalar(
+                    "cargo-source-inventory",
+                    "The Cargo source receipt is stale. Reload the package tree before listing files.",
+                )
+            }
+            backend_library::CargoPackageSourceInventoryResultV1::Unavailable {
+                reason, ..
+            } => ProductView::scalar(
+                "cargo-source-inventory",
+                format!("The owner could not list this source: {reason:?}."),
+            ),
+        },
+        SurfaceReply::CargoPackageReadme(result) => match result {
+            backend_library::CargoPackageReadmeResultV1::Read { readme, .. } => {
+                let origin = backend_library::CargoPackageReadmeOriginV1::from_result(result)
+                    .and_then(|origin| serde_json::to_string(&origin).ok())
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                ProductView::scalar(
+                    "cargo-package-readme",
+                    format!(
+                        "{:?}/{} · {:?}\nOrigin JSON: {}\n\n{}",
+                        readme.root_scope,
+                        readme.path.as_str(),
+                        readme.selection,
+                        origin,
+                        readme.contents
+                    ),
+                )
+            }
+            backend_library::CargoPackageReadmeResultV1::Absent { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme",
+                    format!("This exact Cargo package release has no README ({reason:?})."),
+                )
+            }
+            backend_library::CargoPackageReadmeResultV1::Stale { .. } => ProductView::scalar(
+                "cargo-package-readme",
+                "The Cargo source receipt is stale. Reload the package tree before opening its README.",
+            ),
+            backend_library::CargoPackageReadmeResultV1::Unavailable { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme",
+                    format!("The owner could not read this package README: {reason:?}."),
+                )
+            }
+        },
+        SurfaceReply::CargoPackageReadmeLink(result) => match result {
+            backend_library::CargoPackageReadmeLinkResultV1::Anchor { fragment, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme-link",
+                    format!("README anchor #{fragment}"),
+                )
+            }
+            backend_library::CargoPackageReadmeLinkResultV1::Read {
+                root_scope,
+                path,
+                fragment,
+                contents,
+                ..
+            } => ProductView::scalar(
+                "cargo-package-readme-link",
+                format!(
+                    "{root_scope:?}/{}{}\n\n{}",
+                    path.as_str(),
+                    fragment
+                        .as_deref()
+                        .map_or_else(String::new, |fragment| format!("#{fragment}")),
+                    contents
+                ),
+            ),
+            backend_library::CargoPackageReadmeLinkResultV1::Stale { .. } => ProductView::scalar(
+                "cargo-package-readme-link",
+                "The README link origin is stale. Reload the package README before following its links.",
+            ),
+            backend_library::CargoPackageReadmeLinkResultV1::Unavailable { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme-link",
+                    format!("The owner could not follow this README link: {reason:?}."),
+                )
+            }
+        },
         other => ProductView::scalar("surface", format!("{:?}", other.id())),
     }
+}
+
+fn fenced_source_text(contents: &str) -> String {
+    let longest_run = |needle: char| {
+        contents
+            .chars()
+            .fold((0_usize, 0_usize), |(longest, current), character| {
+                if character == needle {
+                    let current = current.saturating_add(1);
+                    (longest.max(current), current)
+                } else {
+                    (longest, 0)
+                }
+            })
+            .0
+    };
+    let backticks = longest_run('`');
+    let tildes = longest_run('~');
+    let (marker, length) = if backticks <= tildes {
+        ('`', backticks.saturating_add(1).max(3))
+    } else {
+        ('~', tildes.saturating_add(1).max(3))
+    };
+    let fence = std::iter::repeat_n(marker, length).collect::<String>();
+    format!("{fence}text\n{contents}\n{fence}")
 }
 
 /// A project's tree: the lede, what affects it, each role, then each package
@@ -713,7 +1207,7 @@ fn tree_view(tree: &backend_library::browse::ProjectTree) -> ProductView {
     let reading = crate::browse::read_tree(tree);
     let mut records = Vec::new();
     let mut tags = Vec::new();
-    tags.extend(reading.elsewhere.clone());
+    tags.extend(reading.locked_inactive_note.clone());
     tags.push(reading.health.clone());
     tags.extend(reading.twice_line.clone());
     records.push(ProductRecord::new(
@@ -792,6 +1286,11 @@ fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> Prod
         RegistryMetadata::Recorded(records) => {
             ProductView::rows("owner", records.iter().map(owner_row).collect())
         }
+        RegistryMetadata::Partial { value, reason } => {
+            let mut view = ProductView::rows("owner", value.iter().map(owner_row).collect());
+            view.note = Some(format!("Partial coverage: {}", reason.as_str()));
+            view
+        }
         RegistryMetadata::NotRecorded(reason) => metadata_view("owner", metadata),
     }
 }
@@ -820,6 +1319,11 @@ fn metadata_view(
 ) -> ProductView {
     match metadata {
         RegistryMetadata::Recorded(records) => ProductView::rows(heading, registry_rows(records)),
+        RegistryMetadata::Partial { value, reason } => {
+            let mut view = ProductView::rows(heading, registry_rows(value));
+            view.note = Some(format!("Partial coverage: {}", reason.as_str()));
+            view
+        }
         RegistryMetadata::NotRecorded(reason) => ProductView::refused(
             heading,
             Fault::new(
@@ -1337,11 +1841,94 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         ),
         SemanticVersionFreshness::Unverified => "freshness unverified".to_owned(),
     });
+    tags.push(semantic_history_label(&record.history_status).to_owned());
     ProductRecord::new(
         record.coordinate.as_str().to_owned(),
         Some(encode_id(&record.generation.to_bytes())),
         tags,
     )
+    .with_history_status(record.history_status.clone())
+}
+
+fn semantic_history_label(status: &SemanticHistoryPublicationStatus) -> &'static str {
+    match status {
+        SemanticHistoryPublicationStatus::NotSelected => "derived history not selected",
+        SemanticHistoryPublicationStatus::NotRequested { .. } => "derived history not requested",
+        SemanticHistoryPublicationStatus::Pending { .. } => "derived history pending",
+        SemanticHistoryPublicationStatus::Deferred { .. } => {
+            "derived history deferred · retry scheduled"
+        }
+        SemanticHistoryPublicationStatus::Published { .. } => "derived history published",
+        SemanticHistoryPublicationStatus::Refused { .. } => "derived history refused",
+        SemanticHistoryPublicationStatus::Superseded { .. } => "derived history superseded",
+    }
+}
+
+/// Renders bounded-cardinality semantic publication status as one readable
+/// line while retaining exact identifiers and references in the typed DTO.
+pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus) -> String {
+    match status {
+        SemanticHistoryPublicationStatus::NotSelected => {
+            "Derived history is not selected for this compiler generation.".to_owned()
+        }
+        SemanticHistoryPublicationStatus::NotRequested { selection_id } => format!(
+            "Derived history has not been requested for committed selection {}.",
+            full_digest(selection_id),
+        ),
+        SemanticHistoryPublicationStatus::Pending { selection_id } => format!(
+            "Derived history publication is pending for committed selection {}.",
+            full_digest(selection_id),
+        ),
+        SemanticHistoryPublicationStatus::Deferred {
+            selection_id,
+            reason,
+        } => format!(
+            "Derived history was deferred and is retryable; the owner will reschedule committed selection {}: {}",
+            full_digest(selection_id),
+            single_line(reason),
+        ),
+        SemanticHistoryPublicationStatus::Published {
+            selection_id,
+            commit,
+            reference,
+            proof,
+        } => format!(
+            "Derived history is published for committed selection {} at commit {} (reference: {}, verified tip: {}). Compiler input replay remains unproven.",
+            full_digest(selection_id),
+            full_digest(commit),
+            single_line(reference),
+            full_digest(&proof.reference_tip),
+        ),
+        SemanticHistoryPublicationStatus::Refused {
+            selection_id,
+            reason,
+        } => format!(
+            "Derived history publication was refused for committed selection {}: {}. The committed semantic generation remains selected.",
+            full_digest(selection_id),
+            single_line(reason),
+        ),
+        SemanticHistoryPublicationStatus::Superseded { selection_id } => format!(
+            "Derived history publication was superseded for selection {}; the owner will reconcile the current selection.",
+            full_digest(selection_id),
+        ),
+    }
+}
+
+fn full_digest(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn single_line(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn digest_prefix(digest: &[u8; 32]) -> String {
@@ -1476,10 +2063,428 @@ fn operand(package: &PackageReference) -> String {
 mod tests {
     use super::*;
     use backend_library::{
-        RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryNativeMetadata,
-        RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistryReleaseStanding,
-        RegistrySearchGroupKind,
+        PackageCoordinate, PackageReference, RegistryDownloadCount, RegistryEcosystem,
+        RegistryFactAvailability, RegistryNativeMetadata, RegistryPackageSearchGroup,
+        RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind,
+        SemanticGenerationId, SemanticLanguageProfile, SemanticVersionFreshness,
     };
+
+    #[test]
+    fn partial_registry_metadata_keeps_coverage_in_cli_and_mcp_without_hiding_rows() {
+        let metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test");
+        let record = RegistryPackageRecord {
+            coordinate: PackageReference::parse("pkg:cargo/proven@1.0.0").expect("coordinate"),
+            ecosystem: RegistryEcosystem::Cargo,
+            name: backend_library::ProductText::from_static("proven"),
+            version: backend_library::ProductText::from_static("1.0.0"),
+            bytes: 0,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            authority: None,
+            native_metadata_version: metadata.identity().expect("metadata identity"),
+            native_metadata: metadata,
+            forge_sources: Box::new([]),
+            advisory: backend_library::AdvisoryPackageDto::unknown(),
+        };
+        let reply = SurfaceReply::Dependents(RegistryMetadata::Partial {
+            value: Box::new([record]),
+            reason: backend_library::ProductText::from_static(
+                "some source authorities were unresolved",
+            ),
+        });
+        let projected = product_view(&reply);
+        assert_eq!(projected.records().len(), 1);
+        assert!(
+            projected
+                .note()
+                .is_some_and(|note| note.contains("Partial coverage"))
+        );
+        assert!(crate::dto::ProductDto::new(&projected).note.is_some());
+
+        let markdown = crate::markdown::product(&projected);
+        let terminal = crate::text::product(&projected, crate::Theme::plain());
+        assert!(
+            markdown.contains("Partial coverage") && markdown.contains("pkg:cargo/proven@1.0.0")
+        );
+        assert!(
+            terminal.contains("Partial coverage") && terminal.contains("pkg:cargo/proven@1.0.0")
+        );
+        let dto = crate::dto::ProductDto::new(&projected);
+        assert_eq!(dto.records.len(), 1);
+        assert!(dto.note.is_some());
+    }
+
+    #[test]
+    fn index_search_cursor_projection_keeps_owner_family_and_projects_both_renderings() {
+        let owner_cursor = IndexSearchCursor::new("owner-v4-token").expect("owner cursor");
+        let reply = SurfaceReply::IndexSearchPage(IndexSearchPage {
+            snapshot: [7; 32],
+            evaluated_at_millis: 11,
+            hits: Box::new([]),
+            next_cursor: Some(owner_cursor),
+            result_count: IndexSearchResultCount::AtLeast(1),
+        });
+        let view = product_view(&reply);
+        assert!(crate::markdown::product(&view).contains("pass `--cursor`"));
+        assert!(crate::markdown::product(&view).contains("owner-v4-token"));
+
+        let projected = view.project_cursor("mcp1-signed-token", CursorTarget::SurfaceCommand);
+        assert_eq!(
+            projected
+                .index_search_page()
+                .and_then(IndexSearchPageInfo::next_cursor),
+            Some("mcp1-signed-token")
+        );
+        assert!(
+            crate::markdown::product(&projected)
+                .contains("set `command.cursor` in `backend.surface`")
+        );
+        assert!(crate::markdown::product(&projected).contains("mcp1-signed-token"));
+        assert!(!crate::markdown::product(&projected).contains("owner-v4-token"));
+        assert!(matches!(
+            projected.cursor_family(),
+            Some(ContinuationCursor::IndexSearch(cursor))
+                if cursor.as_str() == "owner-v4-token"
+        ));
+        assert_eq!(
+            crate::dto::ProductDto::new(&projected)
+                .index_search_page
+                .and_then(|page| page.next_cursor)
+                .as_deref(),
+            Some("mcp1-signed-token")
+        );
+    }
+
+    fn semantic_version(
+        history_status: SemanticHistoryPublicationStatus,
+        selected: bool,
+        complete: bool,
+        freshness: SemanticVersionFreshness,
+    ) -> SemanticVersionRecord {
+        let coordinate = PackageCoordinate::parse("pkg:cargo/history-demo@1.0.0")
+            .expect("canonical Rust package coordinate");
+        SemanticVersionRecord {
+            package: PackageReference::Purl(coordinate.clone()),
+            coordinate,
+            profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+            generation: SemanticGenerationId::new([0x11; 32]),
+            generation_root: [0x22; 32],
+            dependency_set: [0x33; 32],
+            manifest: [0x44; 32],
+            artifacts: 3,
+            semantic_bytes: 4096,
+            complete,
+            selected,
+            freshness,
+            history_status,
+        }
+    }
+
+    fn semantic_versions_view(record: SemanticVersionRecord) -> ProductView {
+        product_view(&SurfaceReply::SemanticVersions(
+            vec![record].into_boxed_slice(),
+        ))
+    }
+
+    fn published_history_proof(
+        commit: [u8; 32],
+    ) -> backend_library::SemanticHistoryPublicationProof {
+        backend_library::SemanticHistoryPublicationProof {
+            selection: backend_library::SemanticHistorySelectionStamp {
+                namespace: [0x12; 16],
+                profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+                source_coordinate: [0x13; 32],
+                selection_revision: 17,
+                selected_root: [0x14; 32],
+                closure_id: [0x15; 32],
+                catalog_root: [0x16; 32],
+            },
+            image: backend_library::SemanticHistoryImageIdentity {
+                artifact_ordinal: 0,
+                semantic_generation: [0x17; 32],
+                manifest_root: [0x18; 32],
+                image_identity: [0x19; 32],
+            },
+            reference_tip: commit,
+            reachable_commit: commit,
+            parent_commits: Box::new([]),
+            input_replay_status: backend_library::SemanticHistoryInputReplayStatus::Unproven,
+        }
+    }
+
+    #[test]
+    fn every_semantic_history_state_survives_the_typed_product_projection() {
+        let cases = [
+            (
+                SemanticHistoryPublicationStatus::NotSelected,
+                false,
+                "derived history not selected",
+            ),
+            (
+                SemanticHistoryPublicationStatus::NotRequested {
+                    selection_id: [0x10; 32],
+                },
+                true,
+                "derived history not requested",
+            ),
+            (
+                SemanticHistoryPublicationStatus::Pending {
+                    selection_id: [0x20; 32],
+                },
+                true,
+                "derived history pending",
+            ),
+            (
+                SemanticHistoryPublicationStatus::Deferred {
+                    selection_id: [0x30; 32],
+                    reason: "queue pressure".to_owned(),
+                },
+                true,
+                "derived history deferred · retry scheduled",
+            ),
+            (
+                SemanticHistoryPublicationStatus::Published {
+                    selection_id: [0x40; 32],
+                    commit: [0x41; 32],
+                    reference: "selected-native-v3".to_owned(),
+                    proof: published_history_proof([0x41; 32]),
+                },
+                true,
+                "derived history published",
+            ),
+            (
+                SemanticHistoryPublicationStatus::Refused {
+                    selection_id: [0x50; 32],
+                    reason: "store unavailable".to_owned(),
+                },
+                true,
+                "derived history refused",
+            ),
+            (
+                SemanticHistoryPublicationStatus::Superseded {
+                    selection_id: [0x60; 32],
+                },
+                true,
+                "derived history superseded",
+            ),
+        ];
+        for (status, selected, label) in cases {
+            let view = semantic_versions_view(semantic_version(
+                status.clone(),
+                selected,
+                false,
+                SemanticVersionFreshness::Unverified,
+            ));
+            let row = view.records().first().expect("semantic generation row");
+            assert_eq!(row.history_status(), Some(&status));
+            assert!(row.tags().iter().any(|tag| tag == label));
+            let dto = crate::dto::ProductDto::new(&view);
+            assert_eq!(dto.records[0].history_status, Some(status));
+        }
+    }
+
+    #[test]
+    fn deferred_history_is_typed_retryable_and_inside_summary_and_full_budgets() {
+        let status = SemanticHistoryPublicationStatus::Deferred {
+            selection_id: [0x5a; 32],
+            reason: "bounded history worker queue is full".to_owned(),
+        };
+        let view = semantic_versions_view(semantic_version(
+            status.clone(),
+            true,
+            false,
+            SemanticVersionFreshness::Unverified,
+        ));
+        let row = view.records().first().expect("semantic generation row");
+        assert_eq!(row.history_status(), Some(&status));
+        assert!(row.tags().iter().any(|tag| tag == "partial"));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "derived history deferred · retry scheduled")
+        );
+        assert!(!row.tags().iter().any(|tag| tag == "complete"));
+        assert!(!row.tags().iter().any(|tag| tag == "current source input"));
+        let markdown = crate::markdown::product(&view);
+        assert!(markdown.contains("Derived history was deferred and is retryable"));
+        assert!(markdown.contains("bounded history worker queue is full"));
+        assert!(markdown.contains(&"5a".repeat(32)));
+        let terminal = crate::text::product(&view, crate::Theme::plain());
+        assert!(terminal.contains("Derived history was deferred and is retryable"));
+        assert!(terminal.contains("bounded history worker queue is full"));
+
+        let answer = crate::Answer::Product(Box::new(view.clone()));
+        for detail in [crate::Detail::Summary, crate::Detail::Full] {
+            let payload =
+                crate::encode_answer(&answer, detail, None, crate::DEFAULT_RESPONSE_BUDGET_BYTES)
+                    .expect("semantic history fits the typed response budget");
+            assert_eq!(payload.budget.bytes, payload.bytes.len());
+            let value: serde_json::Value =
+                serde_json::from_slice(&payload.bytes).expect("typed answer JSON");
+            assert_eq!(value["answer"], "product");
+            assert_eq!(value["records"][0]["history_status"]["state"], "deferred");
+            assert_eq!(
+                value["records"][0]["history_status"]["selection_id"],
+                serde_json::to_value([0x5a; 32]).expect("selection id JSON")
+            );
+            assert_eq!(
+                value["records"][0]["history_status"]["reason"],
+                "bounded history worker queue is full"
+            );
+        }
+    }
+
+    #[test]
+    fn published_history_preserves_the_exact_reference_without_claiming_input_completeness() {
+        let reference = "selected-native-v3/branch-00017".to_owned();
+        let status = SemanticHistoryPublicationStatus::Published {
+            selection_id: [0x6b; 32],
+            commit: [0x7c; 32],
+            reference: reference.clone(),
+            proof: published_history_proof([0x7c; 32]),
+        };
+        let view = semantic_versions_view(semantic_version(
+            status.clone(),
+            true,
+            false,
+            SemanticVersionFreshness::Unverified,
+        ));
+        let row = view.records().first().expect("semantic generation row");
+        assert_eq!(row.history_status(), Some(&status));
+        assert!(row.tags().iter().any(|tag| tag == "partial"));
+        assert!(row.tags().iter().any(|tag| tag == "freshness unverified"));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "derived history published")
+        );
+        assert!(!row.tags().iter().any(|tag| tag == "complete"));
+        assert!(!row.tags().iter().any(|tag| tag == "current source input"));
+        assert!(crate::markdown::product(&view).contains(&reference));
+        let details = semantic_history_details(&status);
+        assert!(details.contains(&format!("verified tip: {}", "7c".repeat(32))));
+        assert!(details.contains("Compiler input replay remains unproven"));
+
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.records[0].history_status, Some(status.clone()));
+        let value = serde_json::to_value(&dto).expect("semantic product DTO");
+        assert_eq!(value["records"][0]["history_status"]["state"], "published");
+        assert_eq!(
+            value["records"][0]["history_status"]["reference"],
+            reference
+        );
+        let decoded: crate::dto::ProductDto =
+            serde_json::from_value(value).expect("typed status DTO round trip");
+        assert_eq!(decoded.records[0].history_status, Some(status));
+    }
+
+    #[test]
+    fn refused_derived_history_stays_a_product_status_not_a_generation_fault() {
+        let status = SemanticHistoryPublicationStatus::Refused {
+            selection_id: [0x8d; 32],
+            reason: "the sidecar store refused publication".to_owned(),
+        };
+        let view = semantic_versions_view(semantic_version(
+            status.clone(),
+            true,
+            false,
+            SemanticVersionFreshness::Historical {
+                selected_input: [0x91; 32],
+                latest_input: [0xa2; 32],
+            },
+        ));
+        assert!(view.fault().is_none());
+        let row = view
+            .records()
+            .first()
+            .expect("selected compiler generation remains");
+        assert_eq!(row.history_status(), Some(&status));
+        assert!(row.tags().iter().any(|tag| tag == "partial"));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "historical source input 919191919191 · latest a2a2a2a2a2a2")
+        );
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "derived history refused")
+        );
+        let markdown = crate::markdown::product(&view);
+        assert!(markdown.contains("sidecar store refused publication"));
+        assert!(markdown.contains("The committed semantic generation remains selected"));
+        let value = serde_json::to_value(crate::dto::ProductDto::new(&view))
+            .expect("product is still returned as product data");
+        assert_eq!(value["records"][0]["history_status"]["state"], "refused");
+        assert!(value.get("fault").is_none());
+    }
+
+    #[test]
+    fn index_job_projection_preserves_exact_ticket_observation_through_summary_budget() {
+        let ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::new(9).expect("nonzero ticket"),
+            [6; 16],
+            PackageReference::parse("pkg:cargo/serde@1.0.228").expect("pinned package"),
+        );
+        let reply = SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Pending(
+            backend_library::IndexProgressPage {
+                ticket: ticket.clone(),
+                stage: backend_library::IndexJobStage::Compiling,
+                events: Box::new([]),
+                next_sequence: 5,
+                truncated: true,
+                has_more: false,
+            },
+        ));
+        let view = product_view(&reply);
+        let job = view.index_job().expect("typed job projection");
+        assert_eq!(job.ticket(), Some(&ticket));
+        assert!(crate::markdown::product(&view).contains("after_sequence 5"));
+        assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
+
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.index_job.as_ref(), Some(job));
+        let answer = crate::drive::Answer::Product(Box::new(view));
+        let encoded = crate::encode_answer(
+            &answer,
+            crate::Detail::Summary,
+            None,
+            crate::DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("bounded summary retains ticket and observation");
+        let value: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes).expect("typed summary JSON");
+        assert_eq!(value["index_job"]["kind"], "progress");
+        assert_eq!(value["index_job"]["value"]["detail"]["ticket"]["id"], 9);
+        assert_eq!(value["index_job"]["value"]["detail"]["next_sequence"], 5);
+        assert_eq!(value["index_job"]["value"]["detail"]["truncated"], true);
+    }
+
+    #[test]
+    fn cancellation_projection_keeps_the_receipt_ticket_even_for_requested_state() {
+        let ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::new(11).expect("nonzero ticket"),
+            [4; 16],
+            PackageReference::parse("/workspace/project").expect("local project"),
+        );
+        let reply = SurfaceReply::IndexCancellation(backend_library::IndexCancelReceipt {
+            ticket: ticket.clone(),
+            status: backend_library::IndexCancelStatus::Requested,
+        });
+        let view = product_view(&reply);
+        let job = view.index_job().expect("typed cancellation projection");
+        assert_eq!(job.ticket(), Some(&ticket));
+        assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
+        let encoded =
+            serde_json::to_value(crate::dto::ProductDto::new(&view)).expect("typed product DTO");
+        assert_eq!(encoded["index_job"]["kind"], "cancellation");
+        assert_eq!(encoded["index_job"]["value"]["ticket"]["id"], 11);
+        assert_eq!(
+            encoded["index_job"]["value"]["status"]["state"],
+            "requested"
+        );
+    }
 
     #[test]
     fn lineage_metadata_only_results_are_not_presented_as_release_matches() {

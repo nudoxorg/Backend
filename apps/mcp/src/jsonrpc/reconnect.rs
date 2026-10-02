@@ -86,6 +86,18 @@ impl<E: Endpoint> Reconnecting<E> {
         }
     }
 
+    /// Defers opening the first product connection until the first operation
+    /// that needs the owner. This lets the MCP handshake and static tool
+    /// discovery complete while the local daemon is unavailable; the first
+    /// owner-backed request then receives the ordinary typed connection
+    /// failure instead of the process exiting before it reads stdin.
+    pub(crate) const fn disconnected(endpoint: E) -> Self {
+        Self {
+            endpoint,
+            product: None,
+        }
+    }
+
     /// Runs one call, reopening the connection if it is gone.
     ///
     /// `call` is invoked at most twice and only ever a second time when the
@@ -179,6 +191,7 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::Dependencies { .. }
         | SurfaceCommand::Owner { .. }
         | SurfaceCommand::IndexSearch { .. }
+        | SurfaceCommand::IndexProgress { .. }
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
         | SurfaceCommand::PackageProfile { .. }
@@ -1013,6 +1026,14 @@ mod tests {
                 target: backend_library::ProductText::new("pkg::callee").expect("target text"),
             },
             SurfaceCommand::Releases { mark_seen: false },
+            SurfaceCommand::IndexProgress {
+                ticket: backend_library::IndexJobTicket::new(
+                    std::num::NonZeroU64::new(1).expect("nonzero ticket"),
+                    [3; 16],
+                    backend_library::PackageReference::parse("serde").expect("package reference"),
+                ),
+                after_sequence: 0,
+            },
         ];
         for command in reads {
             assert_eq!(

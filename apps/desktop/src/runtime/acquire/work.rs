@@ -195,7 +195,8 @@ pub(crate) enum Listed {
 /// added (its direct dependencies first, then by distance from its code),
 /// from the owner's own resolution of it: `SurfaceCommand::ProjectTree`,
 /// which is `cargo metadata --offline --locked` for this host (else its
-/// `Cargo.lock`). Packages that build only for other platforms are not in it.
+/// `Cargo.lock`). This target/features-filtered graph does not identify why
+/// other locked package rows are inactive.
 ///
 /// # Errors
 /// The owner's refusal to read the project's tree, in its words.
@@ -216,14 +217,25 @@ fn ordered(tree: &ProjectTree, source: &dyn RegistrySource) -> Vec<Dependency> {
         .into_iter()
         .filter_map(|package| {
             let release = Release::new(&package.name, &package.version).ok()?;
-            let origin = match &package.origin {
-                PackageOrigin::Registry => Origin::Registry(source.availability(&release)),
-                PackageOrigin::Git { url } => Origin::Elsewhere(Arc::from(format!("from git ({url}): only registry releases are added"))),
-                PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
-            };
+            let origin = dependency_origin(&package.origin, &release, source);
             Some(Dependency { release, direct: package.role == PackageRole::Direct, origin })
         })
         .collect()
+}
+
+pub(crate) fn dependency_origin(origin: &PackageOrigin, release: &Release, source: &dyn RegistrySource) -> Origin {
+    match origin {
+        PackageOrigin::Registry { .. } if origin.is_crates_io_registry() => Origin::Registry(source.availability(release)),
+        PackageOrigin::Registry { source } => Origin::Elsewhere(Arc::from(format!(
+            "from registry {source}: the configured source only offers crates.io releases"
+        ))),
+        PackageOrigin::Git { .. } => Origin::Elsewhere(Arc::from("from a Git source: only registry releases are added")),
+        PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
+        PackageOrigin::Unresolved { source } => Origin::Elsewhere(Arc::from(format!(
+            "source {} is unresolved: no release is offered",
+            source.as_deref().unwrap_or("not recorded")
+        ))),
+    }
 }
 
 /// Each of `found`'s registry packages the owner already lists (in any state,
@@ -268,7 +280,25 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
     match composition.source.availability(release) {
         Availability::Unpacked(_) => {}
         Availability::Archive(_) => post(Stage::Unpacking),
-        Availability::Download => return failed(format!("{release} is not on this machine; reading it needs a download")),
+        Availability::Download => {
+            return add_published_release(composition, release, skip, post);
+        }
+        Availability::Ambiguous { indexes } => {
+            let indexes = indexes
+                .iter()
+                .map(|index| index.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return failed(format!(
+                "{release} appears under conflicting Cargo registry sources ({indexes}). Set NUDOX_CARGO_ROOT to the intended source root, or NUDOX_CARGO_HOME to the intended Cargo home, then restart."
+            ));
+        }
+        Availability::UnverifiedArchive(path) => {
+            return failed(format!(
+                "the local archive {} has no trusted registry checksum, so it cannot be unpacked; use a verified Cargo archive or resolve the registry authority first",
+                path.display()
+            ));
+        }
     }
     let tree = match composition.source.resolve(release) {
         Ok(tree) => tree,
@@ -313,6 +343,146 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
         }
         (Err(error), _) => failed(format!("the index refused {release}: {error}")),
         (Ok(()), Err(error)) => failed(format!("{coordinate} is not a package address: {error:?}")),
+    }
+}
+
+/// Sends an explicitly requested published release through the owner's
+/// configured RegistryGateway. The owner enforces its online/offline policy,
+/// archive budget, verification, and compiler path; the desktop has no
+/// second network fetcher.
+fn add_published_release(
+    composition: &Composition,
+    release: &Release,
+    skip: Listed,
+    post: &dyn Fn(Stage),
+) -> Stage {
+    let purl = release.purl();
+    let mut session = match Session::connect(&composition.endpoint) {
+        Ok(session) => session,
+        Err(error) => {
+            post(Stage::Failed(Arc::from(format!(
+                "the local index could not be reached: {error}"
+            ))));
+            return Stage::Failed(Arc::from(format!(
+                "the local index could not be reached: {error}"
+            )));
+        }
+    };
+    match exact_listed_release(&mut session, release, composition) {
+        Ok(Some(package)) if is_listed(&mut session, package.as_str(), skip) => {
+            let coordinate = package.as_str().to_owned();
+            return finish_already_listed(composition, package, &coordinate, post);
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            let failed: Arc<str> = Arc::from(reason);
+            post(Stage::Failed(Arc::clone(&failed)));
+            return Stage::Failed(failed);
+        }
+    }
+
+    post(Stage::Indexing);
+    let indexed = session.index_with_execution_intent(
+        &purl,
+        backend_library::CompileExecutionIntent::Interactive,
+    );
+    match (indexed, exact_listed_release(&mut session, release, composition)) {
+        (Ok(_), Ok(Some(package))) => {
+            if let Some(refusals) = composition.refusals.as_deref() {
+                Refusals::at(refusals).forget(package.as_str());
+            }
+            let stage = Stage::Added(package);
+            post(stage.clone());
+            stage
+        }
+        (Err(error), Ok(Some(package))) => {
+            let words: Arc<str> = Arc::from(error.to_string());
+            if let Some(refusals) = composition.refusals.as_deref() {
+                Refusals::at(refusals).keep(package.as_str(), &words);
+            }
+            let stage = Stage::Partial {
+                page: package,
+                words,
+            };
+            post(stage.clone());
+            stage
+        }
+        (Err(error), Ok(None)) => {
+            let stage = Stage::Failed(Arc::from(format!(
+                "the local service could not add {release}: {error}"
+            )));
+            post(stage.clone());
+            stage
+        }
+        (Ok(_), Ok(None)) => {
+            let stage = Stage::Failed(Arc::from(format!(
+                "the owner accepted {release}, but the exact package is not in its current index"
+            )));
+            post(stage.clone());
+            stage
+        }
+        (_, Err(reason)) => {
+            let stage = Stage::Failed(Arc::from(reason));
+            post(stage.clone());
+            stage
+        }
+    }
+}
+
+fn finish_already_listed(
+    composition: &Composition,
+    package: PackageRef,
+    coordinate: &str,
+    post: &dyn Fn(Stage),
+) -> Stage {
+    let refusals = composition.refusals.as_deref().map(Refusals::at);
+    let stage = match refusals.as_ref().and_then(|refusals| refusals.words(coordinate)) {
+        Some(words) => Stage::Partial {
+            page: package,
+            words,
+        },
+        None => Stage::Added(package),
+    };
+    post(stage.clone());
+    stage
+}
+
+/// Reads the owner's exact package rows and resolves a release only when a
+/// single package identity names that exact registry release.
+fn exact_listed_release(
+    session: &mut Session,
+    release: &Release,
+    composition: &Composition,
+) -> Result<Option<PackageRef>, String> {
+    let reply = session
+        .packages()
+        .map_err(|error| format!("could not verify the owner's package listing: {error}"))?;
+    let backend_library::CommandReply::Packages(snapshot) = reply.reply else {
+        return Err("the owner returned an unexpected package listing".to_owned());
+    };
+    let mut exact = snapshot
+        .root
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            let package = PackageRef::parse(&row.label).ok()?;
+            let identity = package.release().or_else(|| {
+                composition
+                    .source
+                    .release_of(Path::new(package.as_str()))
+            });
+            (identity.as_ref() == Some(release)).then_some(package)
+        })
+        .collect::<Vec<_>>();
+    exact.sort();
+    exact.dedup();
+    match exact.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(Some(only.clone())),
+        _ => Err(format!(
+            "the owner lists {} distinct source roots for exact release {release}; resolve the Cargo registry authority before adding it",
+            exact.len()
+        )),
     }
 }
 

@@ -33,7 +33,7 @@
 //! shared_with(("gem", id), move |m| node(kind).glyph(m.t < 0.6))
 //! ```
 
-use super::{epoch as motion_epoch, now, reduced, request_frame};
+use super::{epoch as motion_epoch, now, reduced_in, request_frame};
 use crate::probe::{self, TrackKind, TrackSample};
 use crate::tokens::motion::{Bezier, GLIDE, SCENE};
 use gpui::{
@@ -92,6 +92,9 @@ struct Morph {
 /// is what tells a returning element from a newcomer.
 #[derive(Clone, Copy, Debug, Default)]
 struct State {
+    /// A retained traversal consumed its old handoff locally. It must not
+    /// replay that handoff on the first interactive traversal afterward.
+    retained: bool,
     morph: Option<Morph>,
     /// Where its layout was last frame, and when (the destination may move
     /// while a morph runs: a graph node under a flying camera).
@@ -480,8 +483,14 @@ impl gpui::Element for Shared {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let now = now(cx);
-        self.driven = driven(&self.key, window, cx);
-        if let (Some(owner), Some(_)) = (id, self.driven) {
+        let still = super::is_still_in(window, cx);
+        self.driven = if still { None } else { driven(&self.key, window, cx) };
+        if still {
+            self.morph = None;
+            if let Some(owner) = id {
+                window.with_element_state::<State, _>(owner, |_, _| ((), State { retained: true, ..State::default() }));
+            }
+        } else if let (Some(owner), Some(_)) = (id, self.driven) {
             // Driven: its own clock is off, and nothing it would have started
             // survives the drive.
             window.with_element_state::<State, _>(owner, |state, _| {
@@ -489,7 +498,7 @@ impl gpui::Element for Shared {
             });
             self.morph = None;
         } else if let Some(owner) = id {
-            let reduced = reduced(cx);
+            let reduced = reduced_in(window, cx);
             let slot = (window.window_handle().window_id(), self.key.clone());
             let departing = cx
                 .default_global::<Registry>()
@@ -507,11 +516,12 @@ impl gpui::Element for Shared {
             self.morph = window.with_element_state::<State, _>(owner, |state, _| {
                 let newcomer = state.is_none();
                 let mut state = state.unwrap_or_default();
-                if newcomer || departing.is_some_and(|(_, canvas)| canvas) {
+                if !state.retained && (newcomer || departing.is_some_and(|(_, canvas)| canvas)) {
                     state.morph = departing
                         .filter(|_| !reduced)
                         .map(|(from, _)| Morph { from, start: now });
                 }
+                state.retained = false;
                 (state.morph, state)
             });
         }
@@ -570,7 +580,7 @@ impl gpui::Element for Shared {
             }
             _ => LayerTransform::IDENTITY,
         };
-        if let Some(owner) = id.cloned() {
+        if !super::is_still_in(window, cx) && let Some(owner) = id.cloned() {
             // Register where it is painted, in window space.
             let painted = window
                 .layer_transform()

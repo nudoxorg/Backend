@@ -106,7 +106,9 @@ use crate::{App, Bounds, FocusId, Pixels, SharedString, Window};
 use accesskit::{Action, NodeId, TreeUpdate};
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
+use std::cell::Cell;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -128,6 +130,9 @@ pub(crate) struct A11y {
     ///
     /// [forcibly disabled]: crate::Application::new_inaccessible
     force_disabled: bool,
+    /// Whether to build a tree without a platform assistive-technology client.
+    /// The force-disabled state still takes precedence.
+    forced: bool,
     /// Whether a11y features have been requested by the system.
     ///
     /// Updated by AccessKit using callbacks provided to the adapter. Can change
@@ -145,6 +150,9 @@ pub(crate) struct A11y {
     /// At the end of the frame, we re-call [`Self::sync_active_flag`] to
     /// determine whether we should actually send the finished [`TreeUpdate`].
     active_this_frame: bool,
+    /// Scoped visual copies (for example, a departing page) still paint but
+    /// must not contribute nodes or action listeners to this frame's tree.
+    suppressed: Rc<Cell<usize>>,
     pub(crate) nodes: A11yNodeBuilder,
     pub(crate) focus_ids: FxHashMap<NodeId, FocusId>,
     pub(crate) node_bounds: FxHashMap<NodeId, Bounds<Pixels>>,
@@ -167,12 +175,15 @@ impl A11y {
     pub(crate) fn new(
         active_flag: Arc<AtomicBool>,
         force_disabled: bool,
+        forced: bool,
         window_title: Option<SharedString>,
     ) -> Self {
         Self {
             force_disabled,
+            forced,
             active_flag,
             active_this_frame: false,
+            suppressed: Rc::new(Cell::new(0)),
             nodes: A11yNodeBuilder::new(),
             focus_ids: FxHashMap::default(),
             node_bounds: FxHashMap::default(),
@@ -210,11 +221,23 @@ impl A11y {
     /// See the docs for [`Self::active_flag`] and [`Self::active_this_frame`]
     /// for more commentary.
     pub(crate) fn sync_active_flag(&mut self) {
-        self.active_this_frame = !self.force_disabled && self.active_flag.load(Ordering::SeqCst);
+        self.active_this_frame =
+            !self.force_disabled && (self.forced || self.active_flag.load(Ordering::SeqCst));
+    }
+
+    /// Force the tree to be built on the next frame.
+    pub(crate) fn set_forced(&mut self, forced: bool) {
+        self.forced = forced;
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.active_this_frame
+        self.active_this_frame && self.suppressed.get() == 0
+    }
+
+    pub(crate) fn suppress(&self) -> A11ySuppression {
+        let depth = Rc::clone(&self.suppressed);
+        depth.set(depth.get().checked_add(1).expect("accessibility suppression depth overflow"));
+        A11ySuppression { depth }
     }
 
     pub(crate) fn set_focusable(&mut self, node_id: NodeId, focus_id: FocusId) {
@@ -251,6 +274,10 @@ impl A11y {
         }
     }
 
+    pub(crate) fn is_node_inert(&self, node_id: NodeId) -> bool {
+        self.nodes.is_node_inert(node_id)
+    }
+
     pub(crate) fn set_active_descendant(&mut self, node_id: NodeId) {
         // The active descendant must be a descendant of the focused container,
         // not the focused node itself.
@@ -284,6 +311,7 @@ impl A11y {
             self.nodes.active_descendant,
             self.window_title.as_ref(),
             frame,
+            &self.node_bounds,
         );
         #[cfg(debug_assertions)]
         self.debug.capture_node_info(&self.nodes.node_info);
@@ -293,6 +321,18 @@ impl A11y {
     pub(crate) fn debug_tree_json(&self) -> Option<String> {
         self.debug.to_json()
     }
+
+    pub(crate) fn last_tree_update(&self) -> Option<&TreeUpdate> {
+        self.debug.last_tree_update()
+    }
+
+    pub(crate) fn last_node_bounds(&self, id: NodeId) -> Option<Bounds<Pixels>> {
+        self.debug.node_bounds(id)
+    }
+
+    pub(crate) fn frame_number(&self) -> u64 {
+        self.debug.frame_number()
+    }
 }
 
 /// Builder API for synthetic children. See the docs for
@@ -300,6 +340,7 @@ impl A11y {
 pub struct A11ySubtreeBuilder<'a> {
     parent_id: NodeId,
     nodes: &'a mut A11yNodeBuilder,
+    inert: bool,
     /// Provenance of the real element whose `a11y_synthetic_children` is
     /// running.
     #[cfg(debug_assertions)]
@@ -311,6 +352,7 @@ impl<'a> A11ySubtreeBuilder<'a> {
         Self {
             parent_id,
             nodes,
+            inert: false,
             #[cfg(debug_assertions)]
             creator: debug::NodeCreator::default(),
         }
@@ -319,6 +361,11 @@ impl<'a> A11ySubtreeBuilder<'a> {
     #[cfg(debug_assertions)]
     pub(crate) fn with_creator(mut self, creator: debug::NodeCreator) -> Self {
         self.creator = creator;
+        self
+    }
+
+    pub(crate) fn inert(mut self, inert: bool) -> Self {
+        self.inert = inert;
         self
     }
 
@@ -340,7 +387,11 @@ impl<'a> A11ySubtreeBuilder<'a> {
     /// Returns `false` if a node with this id is already present in the tree,
     /// in which case the node is discarded.
     pub fn push_child(&mut self, id: NodeId, node: accesskit::Node) -> bool {
-        let pushed = self.nodes.push_leaf(id, node);
+        let pushed = if self.inert {
+            self.nodes.push_leaf_inert(id, node)
+        } else {
+            self.nodes.push_leaf(id, node)
+        };
         #[cfg(debug_assertions)]
         if pushed {
             self.nodes.record_node_info(
@@ -379,6 +430,9 @@ pub(crate) struct A11yNodeBuilder {
     /// pattern, which allows a focused container to act as if a descendant is
     /// focused.
     active_descendant: Option<NodeId>,
+    /// Nodes rendered beneath an inert boundary. Kept through finalization so
+    /// parent callbacks cannot reattach an active-descendant path into them.
+    inert_nodes: FxHashSet<NodeId>,
     #[cfg(debug_assertions)]
     node_info: FxHashMap<NodeId, debug::NodeDebugInfo>,
 }
@@ -392,6 +446,7 @@ impl A11yNodeBuilder {
             seen_ids: FxHashSet::default(),
             focus: None,
             active_descendant: None,
+            inert_nodes: FxHashSet::default(),
             #[cfg(debug_assertions)]
             node_info: FxHashMap::default(),
         }
@@ -452,6 +507,40 @@ impl A11yNodeBuilder {
         true
     }
 
+    pub(crate) fn push_leaf_inert(&mut self, id: NodeId, mut node: accesskit::Node) -> bool {
+        make_node_inert(&mut node);
+        let pushed = self.push_leaf(id, node);
+        if pushed {
+            self.inert_nodes.insert(id);
+        }
+        pushed
+    }
+
+    /// Mark and sanitize the current node. Used after element a11y callbacks so
+    /// synthetic-child builders cannot restore actions or active descendants.
+    pub(crate) fn mark_current_inert(&mut self) {
+        let Some(id) = self.ids_stack.last().copied() else {
+            return;
+        };
+        if id == ROOT_NODE_ID {
+            return;
+        }
+        self.inert_nodes.insert(id);
+        if let Some(node) = self.nodes_stack.last_mut() {
+            make_node_inert(node);
+        }
+    }
+
+    pub(crate) fn mark_current_inert_if(&mut self, expected_id: NodeId) {
+        if self.ids_stack.last().copied() == Some(expected_id) {
+            self.mark_current_inert();
+        }
+    }
+
+    fn is_node_inert(&self, node_id: NodeId) -> bool {
+        self.inert_nodes.contains(&node_id)
+    }
+
     pub(crate) fn current_node_mut(&mut self) -> Option<&mut accesskit::Node> {
         self.nodes_stack.last_mut()
     }
@@ -461,7 +550,10 @@ impl A11yNodeBuilder {
     pub(crate) fn pop(&mut self) {
         debug_assert!(self.ids_stack.len() > 1, "pop would remove the root node");
 
-        if let (Some(id), Some(node)) = (self.ids_stack.pop(), self.nodes_stack.pop()) {
+        if let (Some(id), Some(mut node)) = (self.ids_stack.pop(), self.nodes_stack.pop()) {
+            if self.inert_nodes.contains(&id) {
+                make_node_inert(&mut node);
+            }
             self.all_nodes.push((id, node));
         }
     }
@@ -483,6 +575,7 @@ impl A11yNodeBuilder {
         self.nodes_stack.push(root_node);
         self.focus = None;
         self.active_descendant = None;
+        self.inert_nodes.clear();
     }
 
     /// Returns whether a node with the given ID has been pushed in this frame.
@@ -557,7 +650,33 @@ impl A11yNodeBuilder {
             }
         }
 
-        let focus = match self.active_descendant {
+        for (id, node) in &mut self.all_nodes {
+            if self.inert_nodes.contains(id) {
+                make_node_inert(node);
+            }
+            if node
+                .active_descendant()
+                .is_some_and(|active| self.inert_nodes.contains(&active))
+            {
+                node.clear_active_descendant();
+            }
+        }
+        for (id, node) in self.ids_stack.iter().zip(self.nodes_stack.iter_mut()) {
+            if self.inert_nodes.contains(id) {
+                make_node_inert(node);
+            }
+            if node
+                .active_descendant()
+                .is_some_and(|active| self.inert_nodes.contains(&active))
+            {
+                node.clear_active_descendant();
+            }
+        }
+
+        let active_descendant = self
+            .active_descendant
+            .filter(|id| !self.inert_nodes.contains(id));
+        let focus = match active_descendant {
             Some(id) if self.has_node(id) => id,
             Some(id) => {
                 if cfg!(debug_assertions) {
@@ -629,12 +748,31 @@ impl A11yNodeBuilder {
     }
 }
 
+/// Releases a visual-only subtree even when its draw unwinds.
+pub(crate) struct A11ySuppression {
+    depth: Rc<Cell<usize>>,
+}
+
+impl Drop for A11ySuppression {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get().checked_sub(1).expect("unbalanced accessibility suppression"));
+    }
+}
+
+fn make_node_inert(node: &mut accesskit::Node) {
+    node.set_disabled();
+    node.clear_actions();
+    node.clear_child_actions();
+    node.clear_custom_actions();
+    node.clear_active_descendant();
+}
+
 #[cfg(test)]
 mod tests {
     // Import specific items rather than glob-importing `super`, which would pull
     // in gpui's own `test` attribute macro and shadow the standard one.
     use super::{A11y, A11yNodeBuilder, ROOT_NODE_ID};
-    use crate::FocusId;
+    use crate::{Bounds, FocusId, point, px, size};
     use accesskit::{NodeId, Role};
     use std::sync::{Arc, atomic::AtomicBool};
 
@@ -649,9 +787,66 @@ mod tests {
     }
 
     fn new_a11y() -> A11y {
-        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false, None);
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false, false, None);
+        // Window::draw_roots snapshots activation before beginning the tree.
+        a11y.sync_active_flag();
         a11y.begin_frame();
         a11y
+    }
+
+    #[test]
+    fn forced_builds_the_tree_without_an_assistive_client() {
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(false)), false, true, None);
+        a11y.sync_active_flag();
+        assert!(a11y.is_active());
+
+        a11y.set_forced(false);
+        a11y.sync_active_flag();
+        assert!(!a11y.is_active());
+    }
+
+    #[test]
+    fn force_disabled_wins_over_forced() {
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), true, true, None);
+        a11y.sync_active_flag();
+        assert!(!a11y.is_active());
+    }
+
+    #[test]
+    fn nested_visual_only_scope_recovers_after_unwind() {
+        let a11y = new_a11y();
+        assert!(a11y.is_active());
+        let outer = a11y.suppress();
+        assert!(!a11y.is_active());
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = a11y.suppress();
+            assert!(!a11y.is_active());
+            panic!("interrupted visual copy");
+        }));
+        assert!(failed.is_err());
+        assert!(!a11y.is_active());
+        drop(outer);
+        assert!(a11y.is_active());
+    }
+
+    #[test]
+    fn captured_tree_retains_its_bounds_and_frame_number() {
+        let mut a11y = new_a11y();
+        let node = NodeId(42);
+        assert!(a11y.nodes.push(node, test_node()));
+        a11y.nodes.pop();
+        let expected_bounds = Bounds::new(point(px(3.), px(4.)), size(px(5.), px(6.)));
+        a11y.node_bounds.insert(node, expected_bounds);
+
+        let update = a11y.end_frame(Default::default());
+        assert_eq!(a11y.last_tree_update(), Some(&update));
+        assert_eq!(a11y.last_node_bounds(node), Some(expected_bounds));
+        assert_eq!(a11y.frame_number(), 1);
+
+        a11y.begin_frame();
+        assert!(a11y.node_bounds.is_empty());
+        assert_eq!(a11y.last_node_bounds(node), Some(expected_bounds));
+        assert_eq!(a11y.frame_number(), 1);
     }
 
     #[test]

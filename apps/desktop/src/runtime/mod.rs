@@ -7,14 +7,20 @@ pub(crate) mod browse_views;
 pub mod client;
 pub mod coordinator;
 pub mod debug_page;
+#[cfg(test)]
 pub(crate) mod fixture_releases;
+#[cfg(test)]
 pub(crate) mod fixture_world;
+pub(crate) mod hand;
+pub(crate) mod indexed_world;
 pub(crate) mod graph_focus;
+pub(crate) mod liveness;
 pub mod mailbox;
 pub mod mapping;
 pub(crate) mod offload;
 pub(crate) mod owner;
 pub mod page_mapping;
+pub(crate) mod releases;
 pub mod reads;
 pub(crate) mod snapshot;
 pub mod store;
@@ -39,7 +45,9 @@ pub use actor::{
     EngineFault, EngineRequest, LocalRead, ProjectDto,
 };
 pub use client::LocalEngineClient;
-pub use coordinator::{DesktopRuntime, RuntimeEvent};
+pub use coordinator::{
+    DesktopRuntime, RequestOutcome, RequestRefusalReason, RuntimeEvent,
+};
 pub use mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
 pub use mapping::{MappingError, map_event};
 pub use ui_graph::{UiEntityGraph, UiRootEntity};

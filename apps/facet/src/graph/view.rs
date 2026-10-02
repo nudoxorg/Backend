@@ -65,6 +65,19 @@ pub enum Start {
     Focus(NodeId),
 }
 
+/// Background work that keeps a mounted graph from being ready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphWorkStatus {
+    /// The graph's name/type/recipe discovery index is being prepared.
+    Discovery,
+    /// An interactive graph search is being computed.
+    Search,
+    /// A selected result is waiting for its owner-qualified acceptance.
+    PendingAccept,
+    /// No graph-owned asynchronous work remains.
+    Idle,
+}
+
 /// Opens a symbol's page (↵, double-click): the shell routes it.
 pub type OpenPage = Rc<dyn Fn(NodeId, &mut Window, &mut App)>;
 
@@ -395,6 +408,20 @@ impl GraphView {
     /// True when the map and its semantic query engine have no pending work.
     #[must_use]
     pub fn ready(&self) -> bool { self.scene.is_some() && self.discovery.is_some() && !self.searching && self.state.pending_accept.is_none() }
+
+    /// Which graph-owned asynchronous stage still prevents readiness.
+    #[must_use]
+    pub fn work_status(&self) -> GraphWorkStatus {
+        if self.discovery.is_none() {
+            GraphWorkStatus::Discovery
+        } else if self.searching {
+            GraphWorkStatus::Search
+        } else if self.state.pending_accept.is_some() {
+            GraphWorkStatus::PendingAccept
+        } else {
+            GraphWorkStatus::Idle
+        }
+    }
 
     /// Actual background semantic preparation time, excluding layout and mount.
     #[must_use]
@@ -2464,7 +2491,7 @@ pub fn backed_out(scene: &Scene, view: &View, i: NodeId) -> Camera {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, GraphView, Start};
+    use super::{Camera, GraphView, GraphWorkStatus, Start};
     use crate::graph::camera::View;
     use crate::graph::layout::Layout;
     use crate::graph::layout::tests_support::synthetic;
@@ -3367,6 +3394,11 @@ mod tests {
             graph
         });
         frame(cx);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.work_status()),
+            GraphWorkStatus::Discovery,
+            "the graph reports its actual cold discovery stage"
+        );
         cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
         cx.simulate_keystrokes("/");
         frame(cx);
@@ -3396,6 +3428,7 @@ mod tests {
         frames(cx, 20);
         view.read_with(cx, |v, cx| {
             assert!(v.ready() && v._search_task.is_none() && !v.state.find_open && !v.searching, "an obsolete cold-load query cannot reopen find or hang quiet readiness");
+            assert_eq!(v.work_status(), GraphWorkStatus::Idle);
             assert_eq!(v.find.read(cx).value().to_string(), after_blur, "stale completion cannot alter the field's post-blur value");
             assert!(v.results.is_empty());
         });

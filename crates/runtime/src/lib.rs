@@ -79,6 +79,7 @@ const LIVE_START_TIMEOUT: Duration = Duration::from_secs(90);
 /// window after an exit is short and the window before it is not.
 const EXITED_START_GRACE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+const PASSIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Domain separator so an endpoint digest can never be confused with another
 /// blake3 use of the same path bytes.
 const ENDPOINT_DOMAIN: &[u8] = b"backend-v2-local-endpoint\0";
@@ -223,13 +224,27 @@ impl WorkspacePaths {
     /// Returns an error for directory, randomness, permission, or credential
     /// admission failures.
     pub fn initialize(&self) -> Result<(), RuntimeError> {
+        self.initialize_data_directory()?;
+        ensure_authority_secret(&self.authority_secret)
+    }
+
+    /// Creates or verifies this workspace's private data directories without
+    /// creating a local-owner authority credential.
+    ///
+    /// This is useful for local client-only state such as a remote-index
+    /// identity, which needs a private workspace but does not start locald.
+    ///
+    /// # Errors
+    /// Returns an error when the workspace directories cannot be admitted as
+    /// private state.
+    pub fn initialize_data_directory(&self) -> Result<(), RuntimeError> {
         if let Some(application_root) = self.private_application_root.as_deref() {
             initialize_default_state(application_root, &self.data).map_err(RuntimeError::Io)?;
         } else {
             backend_platform::durable::ensure_private_directory(&self.data)
                 .map_err(RuntimeError::Io)?;
         }
-        ensure_authority_secret(&self.authority_secret)
+        Ok(())
     }
 }
 
@@ -309,6 +324,35 @@ pub fn try_attach(paths: &WorkspacePaths) -> Option<LiveEndpoint> {
         .map(|_probe| LiveEndpoint {
             endpoint: paths.endpoint().to_path_buf(),
         })
+}
+
+/// Connects to the selected local endpoint with a bounded dial and no
+/// composition or startup attempt.
+///
+/// Unlike [`ensure_locald`], this function never creates workspace state,
+/// removes a stale endpoint, locates a daemon executable, or starts a process.
+/// It is intended for health probes whose result must describe the configured
+/// service rather than cause that service to start. The caller should still
+/// authenticate and query the connected owner before treating it as healthy.
+///
+/// # Errors
+/// Returns the original connection error and endpoint path when no owner
+/// accepts the connection.
+#[cfg(any(unix, windows))]
+pub fn connect_existing_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    backend_platform::local::connect_timeout(paths.endpoint(), PASSIVE_CONNECT_TIMEOUT)
+        .map(|_probe| paths.endpoint().to_path_buf())
+        .map_err(|source| RuntimeError::EndpointUnavailable {
+            endpoint: paths.endpoint().to_path_buf(),
+            source,
+        })
+}
+
+/// Reports that passive local endpoint connections are unavailable on this
+/// platform.
+#[cfg(not(any(unix, windows)))]
+pub fn connect_existing_locald(_paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    Err(RuntimeError::Unsupported)
 }
 
 /// Reports that endpoint probing is unavailable on platforms without a local
@@ -805,12 +849,21 @@ fn locald_executable() -> Result<PathBuf, RuntimeError> {
 }
 
 fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
-    if path.exists() {
-        return validate_authority_secret(path);
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
+    match fs::symlink_metadata(path) {
+        Ok(_) => return validate_authority_secret(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RuntimeError::Io(error)),
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(RuntimeError::Io)?;
-    }
+    let parent = path.parent().ok_or_else(|| {
+        RuntimeError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "authority credential needs a parent directory",
+        ))
+    })?;
+    backend_platform::durable::ensure_private_directory(parent).map_err(RuntimeError::Io)?;
     let mut bytes = [0_u8; 32];
     #[cfg(unix)]
     fs::File::open("/dev/urandom")
@@ -832,10 +885,17 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
     let mut file = options.open(&temporary).map_err(RuntimeError::Io)?;
+    #[cfg(unix)]
+    let staged = file
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .and_then(|()| file.write_all(&bytes))
+        .and_then(|()| file.sync_all())
+        .map_err(RuntimeError::Io);
+    #[cfg(not(unix))]
     let staged = file
         .write_all(&bytes)
         .and_then(|()| file.sync_all())
@@ -853,7 +913,10 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     let published = fs::hard_link(&temporary, path);
     let _ = fs::remove_file(&temporary);
     match published {
-        Ok(()) => validate_authority_secret(path),
+        Ok(()) => {
+            backend_platform::durable::sync_parent(path).map_err(RuntimeError::Io)?;
+            validate_authority_secret(path)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             validate_authority_secret(path)
         }
@@ -862,18 +925,11 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
 }
 
 fn validate_authority_secret(path: &Path) -> Result<(), RuntimeError> {
-    let metadata = fs::metadata(path).map_err(RuntimeError::Io)?;
+    let file = backend_platform::durable::open_private_read(path).map_err(RuntimeError::Io)?;
+    let metadata = file.metadata().map_err(RuntimeError::Io)?;
     if !metadata.is_file() || metadata.len() != 32 {
         Err(RuntimeError::InvalidCredential(path.to_path_buf()))
     } else {
-        #[cfg(windows)]
-        {
-            use backend_platform::win32::identity;
-            let owner = identity::file_owner(path).map_err(RuntimeError::Io)?;
-            if !identity::is_owned_by_current_user(&owner).map_err(RuntimeError::Io)? {
-                return Err(RuntimeError::InvalidCredential(path.to_path_buf()));
-            }
-        }
         Ok(())
     }
 }
@@ -914,6 +970,13 @@ pub enum RuntimeError {
         /// Executable selected by discovery.
         executable: PathBuf,
         /// Process creation failure.
+        source: std::io::Error,
+    },
+    /// A passive connection could not reach the existing owner endpoint.
+    EndpointUnavailable {
+        /// Endpoint selected by the caller.
+        endpoint: PathBuf,
+        /// Original local-socket connection error, including its kind.
         source: std::io::Error,
     },
     /// The daemon exited before accepting clients.
@@ -962,6 +1025,11 @@ impl fmt::Display for RuntimeError {
             Self::Spawn { executable, source } => {
                 write!(formatter, "start {}: {source}", executable.display())
             }
+            Self::EndpointUnavailable { endpoint, source } => write!(
+                formatter,
+                "no existing local owner answered at {}: {source}",
+                endpoint.display()
+            ),
             Self::DaemonExited(code) => {
                 write!(formatter, "backend-locald exited during startup ({code:?})")
             }
@@ -975,12 +1043,98 @@ impl fmt::Display for RuntimeError {
     }
 }
 
-impl std::error::Error for RuntimeError {}
+impl std::error::Error for RuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(source)
+            | Self::EndpointUnavailable { source, .. }
+            | Self::Spawn { source, .. } => Some(source),
+            Self::InvalidPath(_)
+            | Self::WorkspaceProjectMismatch { .. }
+            | Self::InvalidCredential(_)
+            | Self::EndpointTooLong { .. }
+            | Self::MissingExecutable(_)
+            | Self::DaemonExited(_)
+            | Self::StartTimeout(_)
+            | Self::Unsupported => None,
+        }
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn passive_connect_preserves_missing_endpoint_cause_without_creating_state() {
+        let root = socket_test_directory("passive-owner-absent");
+        let project = root.join("project");
+        let workspace = root.join("state");
+        let endpoint = root.join("run").join("locald.sock");
+        fs::create_dir_all(&project).expect("create project only");
+        let paths = WorkspacePaths::discover(
+            Some(project),
+            Some(workspace.clone()),
+            Some(endpoint.clone()),
+        )
+        .expect("explicit passive paths");
+
+        let error = connect_existing_locald(&paths).expect_err("owner is absent");
+        assert!(matches!(
+            error,
+            RuntimeError::EndpointUnavailable { source, .. }
+                if source.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(
+            !workspace.exists(),
+            "passive connect created workspace state"
+        );
+        assert!(
+            !endpoint.parent().expect("endpoint parent").exists(),
+            "passive connect created the endpoint directory"
+        );
+
+        fs::remove_dir_all(root).expect("remove passive fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passive_connect_preserves_refused_stale_socket_cause() {
+        use std::os::unix::net::UnixListener;
+
+        let root = socket_test_directory("passive-owner-refused");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let project = root.join("project");
+        let workspace = root.join("state");
+        let endpoint = root.join("locald.sock");
+        fs::create_dir(&project).expect("create project only");
+        let paths = WorkspacePaths::discover(
+            Some(project),
+            Some(workspace.clone()),
+            Some(endpoint.clone()),
+        )
+        .expect("explicit passive paths");
+        drop(UnixListener::bind(&endpoint).expect("bind stale socket"));
+
+        let error = connect_existing_locald(&paths).expect_err("stale socket refuses connection");
+        assert!(matches!(
+            error,
+            RuntimeError::EndpointUnavailable { source, .. }
+                if source.kind() == std::io::ErrorKind::ConnectionRefused
+        ));
+        assert!(
+            endpoint.exists(),
+            "passive connect removed the stale socket while probing it"
+        );
+        assert!(
+            !workspace.exists(),
+            "passive connect created workspace state"
+        );
+
+        fs::remove_dir_all(root).expect("remove passive fixture");
+    }
 
     #[test]
     fn discover_rejects_an_endpoint_that_overflows_sun_path() {
@@ -1200,6 +1354,34 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn remote_client_data_initialization_does_not_create_owner_authority() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_directory("client-only-data");
+        fs::create_dir(&root).expect("create private fixture root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("set private fixture root");
+        let data = root.join("client-data");
+        let paths = WorkspacePaths::discover(
+            Some(root.clone()),
+            Some(data.clone()),
+            Some(root.join("locald.sock")),
+        )
+        .expect("discover client-only workspace");
+
+        paths
+            .initialize_data_directory()
+            .expect("initialize private client data");
+        assert!(data.is_dir());
+        assert!(
+            !paths.authority_secret().exists(),
+            "client-only setup must not create a local-owner authority credential"
+        );
+        fs::remove_dir_all(root).expect("remove client-only fixture");
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn a_dead_endpoint_is_unlinked_and_a_live_one_is_left_alone() {
         // A bindable endpoint must fit the platform `sun_path` budget, which
         // the per-session macOS temporary directory does not leave room for.
@@ -1228,6 +1410,15 @@ mod tests {
             "an absent endpoint is not a removal"
         );
         fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[cfg(unix)]
+    fn socket_test_directory(label: &str) -> PathBuf {
+        // Nix and macOS can put TMPDIR beyond sun_path's limit before the
+        // fixture adds its name. Keep only socket fixtures on a short root;
+        // ordinary path tests still exercise the configured temporary root.
+        let directory = test_directory(label);
+        Path::new("/tmp").join(directory.file_name().expect("fixture directory name"))
     }
 
     fn test_directory(label: &str) -> PathBuf {
@@ -1266,7 +1457,25 @@ mod tests {
 
     #[test]
     fn concurrent_initializers_publish_one_complete_authority_secret() {
-        let root = test_directory("concurrent-secret");
+        let fixture = test_directory("concurrent-secret");
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&fixture)
+            .expect("private concurrency fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
+                .expect("fixture remains private under umask");
+        }
+        let root = fixture.join("state");
+        backend_platform::durable::ensure_private_directory(&root)
+            .expect("create private secret parent");
         let secret = root.join("authority.secret");
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(24));
         let workers = (0..24)
@@ -1293,6 +1502,42 @@ mod tests {
                 .count(),
             1
         );
-        fs::remove_dir_all(root).expect("remove runtime fixture");
+        fs::remove_dir_all(fixture).expect("remove runtime fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authority_secret_admission_rejects_symlinks_without_replacing_them() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = test_directory("secret-symlink");
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+        builder.create(&fixture).expect("private secret fixture");
+        let state = fixture.join("state");
+        backend_platform::durable::ensure_private_directory(&state)
+            .expect("create private state directory");
+        let target = fixture.join("target");
+        fs::write(&target, [7_u8; 32]).expect("secret-shaped target");
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+            .expect("protect target fixture");
+        let secret = state.join("authority.secret");
+        symlink(&target, &secret).expect("credential symlink");
+
+        assert!(ensure_authority_secret(&secret).is_err());
+        assert!(
+            fs::symlink_metadata(&secret)
+                .expect("rejected credential remains present")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(&target).expect("target remains unchanged"),
+            [7_u8; 32]
+        );
+
+        fs::remove_dir_all(fixture).expect("remove secret fixture");
     }
 }

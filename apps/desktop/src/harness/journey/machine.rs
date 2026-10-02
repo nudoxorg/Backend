@@ -14,7 +14,7 @@
 //! **Fixture** is the scenes' machine: the harness's fixture index with its
 //! roots pre-admitted ([`super::super::boot`]). It is not an install.
 
-use super::super::{Booted, ROOT, adapt, annotate, private_umask, quiet, sample_state};
+use super::super::{Booted, ROOT, adapt, annotate, quiet, sample_state};
 use crate::host::launch::{self, Boot};
 use crate::host::owner::OwnerThread;
 use crate::runtime::UiEntityGraph;
@@ -50,28 +50,29 @@ fn err(error: impl std::fmt::Display) -> String {
 }
 
 fn options() -> SessionOptions {
-    SessionOptions { asset_source: std::sync::Arc::new(facet::icons::Assets), frame_ms: FRAME_MS }
+    SessionOptions {
+        asset_source: std::sync::Arc::new(facet::icons::Assets),
+        frame_ms: FRAME_MS,
+        capture_native_accessibility: false,
+    }
 }
 
-/// Opens a production window over the user root `root` (created if absent,
-/// owner-only), exactly as `main` launches from Finder.
+/// Opens a production window over the app root beneath the private fixture
+/// `root`, exactly as `main` launches from Finder.
 ///
 /// # Errors
 /// Fonts, the workspace paths, the engine actor, or GPUI failing.
 pub(super) fn open_production(root: &Path, size: (u32, u32), scale: u8) -> Result<(Session, Launched), String> {
     facet::fonts::verify().map_err(err)?;
-    private_umask();
     super::super::private_dir(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let root = root.canonicalize().map_err(|error| format!("{}: {error}", root.display()))?;
-    let paths = crate::host::paths::ambient_paths(&root).map_err(|error| format!("workspace paths under {}: {error}", root.display()))?;
+    let app_root = root.join("Nudox");
+    let paths = crate::host::paths::ambient_paths(&app_root).map_err(|error| format!("workspace paths under {}: {error}", app_root.display()))?;
     paths.initialize().map_err(|error| format!("initialize {}: {error}", root.display()))?;
     let mut boot = launch::prepare(Ok(paths), crate::host::owner::spawn);
     let owner = boot.owner.take();
     let reading = boot.keep.take();
-    let Boot { snapshot, persistence, client, endpoint, gate, owner: _, keep: _, world_need } = boot;
-    if let Some(need) = world_need {
-        crate::runtime::fixture_world::preload(need);
-    }
+    let Boot { snapshot, persistence, client, endpoint, gate, owner: _, keep: _ } = boot;
     let (runtime, reads) = launch::start_workers(snapshot, client, endpoint, &gate)
         .ok_or_else(|| "the engine actor did not start (backend-desktop said why on stderr)".to_owned())?;
     let viewport = Viewport::new(size.0, size.1, scale).map_err(err)?;

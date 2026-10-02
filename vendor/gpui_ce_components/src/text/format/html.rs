@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::{DefiniteLength, Hsla, SharedString, px, relative};
 use html5ever::tendril::TendrilSink;
@@ -76,7 +75,7 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
 
     Ok(ParsedDocument {
         source: source.to_string().into(),
-        blocks: Arc::new(vec![node]),
+        blocks: vec![node].into(),
     })
 }
 
@@ -659,7 +658,6 @@ fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {
 #[cfg(test)]
 mod tests {
     use gpui::{px, relative};
-    use std::sync::Arc;
 
     use crate::text::{
         document::ParsedDocument,
@@ -768,7 +766,7 @@ mod tests {
             node,
             ParsedDocument {
                 source: html.to_string().into(),
-                blocks: Arc::new(vec![BlockNode::Paragraph(Paragraph {
+                blocks: vec![BlockNode::Paragraph(Paragraph {
                     span: None,
                     children: vec![InlineNode::image(ImageNode {
                         url: "https://example.com/image.png".to_string().into(),
@@ -779,7 +777,8 @@ mod tests {
                         ..Default::default()
                     })],
                     ..Default::default()
-                })])
+                })]
+                .into()
             }
         );
 
@@ -789,7 +788,7 @@ mod tests {
             node,
             ParsedDocument {
                 source: html.to_string().into(),
-                blocks: Arc::new(vec![BlockNode::Paragraph(Paragraph {
+                blocks: vec![BlockNode::Paragraph(Paragraph {
                     span: None,
                     children: vec![InlineNode::image(ImageNode {
                         url: "https://example.com/image.png".to_string().into(),
@@ -800,7 +799,8 @@ mod tests {
                         ..Default::default()
                     })],
                     ..Default::default()
-                })])
+                })]
+                .into()
             }
         );
     }

@@ -6,7 +6,11 @@ use super::{k, roles};
 use crate::measure::{Measure, Set};
 use crate::semantics::types::{Spelled, Target};
 use crate::tokens::Palette;
-use gpui::{AnyElement, ElementId, IntoElement, ParentElement, SharedString, Styled, PathBuilder, canvas, point, px, div};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    ParentElement, PathBuilder, Pixels, Refineable, SharedString, Style, StyleRefinement, Styled, Window, div,
+    point, px,
+};
 use std::sync::Arc;
 
 /// Known inputs and result of one operation. Missing results stay unspecified;
@@ -77,15 +81,55 @@ pub fn operation(id: impl Into<ElementId>, data: Operation, measure: &Measure, l
 #[must_use]
 pub fn connector(measure: &Measure, color: gpui::Hsla, branch: bool) -> impl IntoElement {
     let scale = measure.scale();
-    canvas(|_, _, _| {}, move |bounds, (), window, _| {
-        let y = bounds.center().y;
-        let mut path = PathBuilder::stroke(px(1.0));
-        path.move_to(point(bounds.left(), if branch { bounds.top() } else { y }));
-        if branch { path.line_to(point(bounds.left() + px(7.0 * scale), y)); }
-        path.line_to(point(bounds.right() - px(4.0 * scale), y));
-        path.move_to(point(bounds.right() - px(8.0 * scale), y - px(3.0 * scale)));
-        path.line_to(point(bounds.right() - px(4.0 * scale), y));
-        path.line_to(point(bounds.right() - px(8.0 * scale), y + px(3.0 * scale)));
-        if let Ok(path) = path.build() { window.paint_path(path, color); }
-    }).flex_none().w(k(measure, 24.0)).h(k(measure, 20.0))
+    OperationConnector { scale, color, branch, style: StyleRefinement::default() }
+        .flex_none()
+        .w(k(measure, 24.0))
+        .h(k(measure, 20.0))
+}
+
+struct OperationConnector {
+    scale: f32,
+    color: Hsla,
+    branch: bool,
+    style: StyleRefinement,
+}
+
+impl Styled for OperationConnector {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for OperationConnector {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for OperationConnector {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (scale, branch, color) = (self.scale, self.branch, self.color);
+        style.paint(bounds, window, cx, |window, _| {
+            let y = bounds.center().y;
+            let mut path = PathBuilder::stroke(px(1.0));
+            path.move_to(point(bounds.left(), if branch { bounds.top() } else { y }));
+            if branch { path.line_to(point(bounds.left() + px(7.0 * scale), y)); }
+            path.line_to(point(bounds.right() - px(4.0 * scale), y));
+            path.move_to(point(bounds.right() - px(8.0 * scale), y - px(3.0 * scale)));
+            path.line_to(point(bounds.right() - px(4.0 * scale), y));
+            path.line_to(point(bounds.right() - px(8.0 * scale), y + px(3.0 * scale)));
+            if let Ok(path) = path.build() { window.paint_path(path, color); }
+        });
+    }
 }

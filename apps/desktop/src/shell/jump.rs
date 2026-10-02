@@ -8,7 +8,7 @@
 use super::kit::kind_of;
 use crate::model::pages::{OutlineNode, PackageRef, SymbolRef};
 use crate::model::AppSnapshot;
-use crate::navigation::{OrbitRoute, Overlay, Route, SettingsPage};
+use crate::navigation::{OrbitRoute, Overlay, Route};
 use crate::runtime::store::DataStore;
 use facet::icons::Kind;
 use gpui::SharedString;
@@ -44,7 +44,7 @@ pub(crate) fn here(snapshot: &AppSnapshot, store: &DataStore) -> Here {
         Some(Overlay::Settings(page)) => Here {
             mark: Mark::Place,
             name: "Settings".into(),
-            path: settings_name(page).into(),
+            path: page.menu_label().into(),
         },
         Some(Overlay::Inbox) => Here {
             mark: Mark::Place,
@@ -83,6 +83,7 @@ fn pinned_release(route: &Route, store: &DataStore) -> Option<String> {
     let package = match route {
         Route::Package(route) => PackageRef::parse(route.package.as_str()).ok()?,
         Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok()?,
+        Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()?,
         Route::Orbit(_) | Route::World => return None,
     };
     let current = store.package(&package).loaded_value().and_then(|dossier| {
@@ -130,12 +131,12 @@ pub(crate) fn bar_segments(snapshot: &AppSnapshot, store: &DataStore) -> Vec<Seg
             .map(|name| Segment { name: name.to_owned().into(), route: None, quiet: true })
             .collect();
     }
-    segments(&bar_route(snapshot, store), store)
+    segments(&bar_route(snapshot, store), snapshot, store)
 }
 
 /// The segments for a declaration route: its package, then each module and
 /// owner on the way down, then the declaration itself (the last).
-pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
+pub(crate) fn segments(route: &Route, snapshot: &AppSnapshot, store: &DataStore) -> Vec<Segment> {
     match route {
         Route::Symbol(symbol) => {
             let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Vec::new() };
@@ -148,14 +149,16 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
             // Modules and owners, found in the outline by name so each
             // opens its own page.
             let dossier = store.package(&package);
-            let tree = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned());
+            let tree = crate::core::admit_resource(&dossier, snapshot.key(), store.owner_serving())
+                .current_value()
+                .and_then(|dossier| dossier.outline.known().filter(|tree| tree.complete).cloned());
             let mut level: Option<&[OutlineNode]> = tree.as_ref().map(|tree| &tree.roots[..]);
             for name in crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())) {
                 let node = level.and_then(|nodes| nodes.iter().find(|node| super::shelf::shelf_name(node) == name));
                 out.push(Segment {
                     name: name.into(),
                     route: node.and_then(|node| super::kit::symbol_route(package.as_str(), &node.decl.coordinate)),
-                    quiet: false,
+                    quiet: node.is_none(),
                 });
                 level = node.map(|node| &node.children[..]);
             }
@@ -164,6 +167,12 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
         }
         Route::Package(package) => PackageRef::parse(package.package.as_str())
             .map(|package| vec![Segment { name: package.display_name().to_owned().into(), route: Some(route.clone()), quiet: false }])
+            .unwrap_or_default(),
+        Route::CargoSource(file) => PackageRef::parse(file.package.as_str())
+            .map(|package| vec![
+                Segment { name: package.display_name().to_owned().into(), route: Some(Route::Package(file.package_route())), quiet: false },
+                Segment { name: file.file.as_str().to_owned().into(), route: Some(route.clone()), quiet: false },
+            ])
             .unwrap_or_default(),
         Route::Orbit(_) | Route::World => Vec::new(),
     }
@@ -194,7 +203,11 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Siblin
     let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Siblings::default() };
     let identity = backend_present::Identity::parse(symbol.id.as_str());
     let dossier = store.package(&package);
-    let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else { return Siblings::default() };
+    let snapshot = store.snapshot();
+    let Some(tree) = crate::core::admit_resource(&dossier, snapshot.key(), store.owner_serving())
+        .current_value()
+        .and_then(|dossier| dossier.outline.known().filter(|tree| tree.complete).cloned())
+    else { return Siblings::default() };
     if index == 0 {
         return Siblings::default();
     }
@@ -215,22 +228,6 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Siblin
     Siblings {
         real: real.into_iter().map(segment).collect(),
         tests: tests.into_iter().map(segment).collect(),
-    }
-}
-
-/// A settings page's name.
-pub(crate) const fn settings_name(page: SettingsPage) -> &'static str {
-    match page {
-        SettingsPage::Appearance => "Appearance",
-        SettingsPage::Editor => "Editor",
-        SettingsPage::Agents => "Agents",
-        SettingsPage::Connections => "Connections",
-        SettingsPage::Privacy => "Privacy",
-        SettingsPage::Diagnostics => "Diagnostics",
-        SettingsPage::Index => "Index & registries",
-        SettingsPage::Registry => "Registries",
-        SettingsPage::Legend => "Legend",
-        SettingsPage::Help => "Keys",
     }
 }
 
@@ -269,6 +266,11 @@ fn route_here(route: &Route, store: &DataStore) -> Here {
                     .into(),
             }
         }
+        Route::CargoSource(route) => Here {
+            mark: Mark::Kind(Kind::Unknown),
+            name: route.file.as_str().to_owned().into(),
+            path: "Cargo source".into(),
+        },
         Route::Symbol(route) => symbol_here(route.id.as_str(), store, route.view),
     }
 }
@@ -382,6 +384,13 @@ pub(crate) fn address_parts(snapshot: &AppSnapshot) -> Address {
             PackageRef::parse(route.package.as_str())
                 .map_or_else(|_| route.package.as_str().to_owned(), |package| package.display_name().to_owned()),
         ),
+        Route::CargoSource(route) => {
+            let package = PackageRef::parse(route.package.as_str()).ok();
+            let name = route.file.as_str().to_owned();
+            let mut address = place(&[package.as_ref().map_or("Cargo", PackageRef::display_name)], name);
+            if let Some(line) = route.line { address.name.push_str(&format!("#L{line}")); }
+            address
+        }
         Route::Symbol(route) => {
             let mut address = symbol_parts(route.id.as_str());
             match route.view {

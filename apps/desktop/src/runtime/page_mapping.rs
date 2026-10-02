@@ -6,28 +6,33 @@
 //! keeps the engine's availability distinctions: a reply that could not
 //! answer becomes a typed [`Gap`], never an empty list.
 
-use crate::model::local_package::{DependencyKind, LocalPackage, LocalPackageSource};
+use crate::model::local_package::{
+    DependencyKind, LocalPackage, LocalPackageSource, ReadmeLink, rustdoc_link,
+};
 use crate::model::pages::{
     AdvisorySummary, Arrival, ByteSpan, DeclFacts, DeclRef, Dependency, DependencyScope,
-    Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
-    IdentifierSpan, IndexedPackage, IngestModel, Known, LanguageProgress, LineSpan, MatchReason,
-    Member, Members, MethodGroup, OrbitModel, OrbitProject, OutlineNode, OutlinePosition,
-    OutlineTree, PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, Receiver,
-    RecordSource, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SearchContinuation,
-    SearchPage, SearchRow, SignatureText, SignatureToken, SourceLocation, SourceOrigin,
-    SourceSite, SourceText, SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass,
-    TreeNode, TreeOpener, TreeSubject, VersionEntry,
+    Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress,
+    FileSpan, Gap, GapReason, HealthModel, IdentifierSpan, IndexedPackage, IngestModel, Known,
+    LanguageProgress, LineSpan, MatchReason, Member, Members, MembersCoverage, MethodGroup,
+    NameLinkCoverage, OrbitModel, OrbitProject, OutlineNode, OutlinePosition, OutlineTree,
+    PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, ReadmeExactKind,
+    ReadmeExactTarget, ReadmeExactTargets, Receiver, RecordSource, ReferenceScope, ReferenceSite,
+    Relation, RelationKind, Rose, SearchContinuation, SearchPage, SearchRow, SignatureText,
+    SignatureToken, SourceCoverage, SourceLocation, SourceOrigin, SourceSite, SourceText,
+    SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass, TreeNode, TreeOpener,
+    TreeSubject, VersionEntry,
 };
+use crate::model::pages::VerifiedRegistryRelease;
 use backend_client::ClientError;
 use backend_library::{
     DeclarationKind, Document, Fragment, GraphEdgeKind, GraphNodeId, GraphRelation, HealthReport,
-    RegistryDownloadCount, RegistryFactAvailability, RegistryPackageRecord,
+    RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryPackageRecord,
     RegistryReleaseStanding, Row, RowId, SemanticConfidence, SemanticLinkKind,
     SemanticLinkTarget, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SurfaceReply,
     SymbolKey, ViewSnapshot,
 };
 use backend_present::{CoverageLine, Language, TokenKind};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -44,6 +49,42 @@ pub struct OutlineIndex {
     children: HashMap<Option<SymbolKey>, Vec<usize>>,
     by_name: HashMap<String, Vec<usize>>,
     complete: bool,
+}
+
+/// Borrowed proof that name lookup covers the complete admitted outline.
+/// There is no public constructor that can upgrade a partial outline.
+pub struct CompleteNameLookup<'a> {
+    outline: &'a OutlineIndex,
+}
+
+impl<'a> CompleteNameLookup<'a> {
+    /// Resolves a name only across the complete package row set.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        name: &str,
+        accept: impl Fn(Option<DeclarationKind>) -> bool,
+    ) -> Option<&'a Row> {
+        let candidates = self.outline.by_name.get(name)?;
+        let mut best: Option<(u8, &Row)> = None;
+        let mut tie = false;
+        for index in candidates {
+            let row = &self.outline.rows[*index];
+            if !accept(row.kind) || is_encoded_signature(row.signature.as_deref().unwrap_or("")) {
+                continue;
+            }
+            let rank = name_rank(row.kind);
+            match best {
+                Some((current, _)) if rank > current => {}
+                Some((current, _)) if rank == current => tie = true,
+                _ => {
+                    best = Some((rank, row));
+                    tie = false;
+                }
+            }
+        }
+        if tie { None } else { best.map(|(_, row)| row) }
+    }
 }
 
 impl OutlineIndex {
@@ -88,6 +129,15 @@ impl OutlineIndex {
         self.complete
     }
 
+    /// Grants name-based resolution only when the package-wide index is
+    /// complete. Exact producer-key and coordinate lookups remain available
+    /// on a partial outline through [`Self::row`] and [`Self::row_by_label`].
+    #[must_use]
+    pub fn complete_names(&self) -> Option<CompleteNameLookup<'_>> {
+        self.complete
+            .then_some(CompleteNameLookup { outline: self })
+    }
+
     /// Returns the number of indexed rows.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -104,22 +154,65 @@ impl OutlineIndex {
     /// rows so names never stand in for missing type or signature evidence.
     pub fn comparison_api(&self, package: &PackageRef) -> crate::model::browse::PackageApi {
         const LIMIT: usize = 2048;
-        let mut candidates = self.rows.iter().filter_map(|row| {
-            let decl = DeclRef::from_row(row)?;
-            matches!(row.kind, Some(DeclarationKind::Module | DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor | DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Enum | DeclarationKind::Trait | DeclarationKind::Interface | DeclarationKind::Type | DeclarationKind::Union | DeclarationKind::Macro))
+        let mut candidates = self
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let decl = DeclRef::from_row(row)?;
+                matches!(
+                    row.kind,
+                    Some(
+                        DeclarationKind::Module
+                            | DeclarationKind::Function
+                            | DeclarationKind::Method
+                            | DeclarationKind::Constructor
+                            | DeclarationKind::Struct
+                            | DeclarationKind::Class
+                            | DeclarationKind::Enum
+                            | DeclarationKind::Trait
+                            | DeclarationKind::Interface
+                            | DeclarationKind::Type
+                            | DeclarationKind::Union
+                            | DeclarationKind::Macro
+                    )
+                )
                 .then_some((decl, row))
-        }).collect::<Vec<_>>();
-        candidates.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name).then_with(|| left.coordinate.cmp(&right.coordinate)));
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|(left, _), (right, _)| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.coordinate.cmp(&right.coordinate))
+        });
         let complete = self.complete && candidates.len() <= LIMIT;
-        let items = candidates.into_iter().take(LIMIT).map(|(decl, row)| {
-            let summary = row.document.iter().find_map(|fragment| match fragment {
-                Fragment::Text(text) if !text.trim().is_empty() && text != &row.label => Some(Arc::from(text.lines().next().unwrap_or_default().trim())),
-                _ => None,
-            });
-            let signature = signature_text(row.signature.as_deref(), decl.language, decl.key, Some(self));
-            crate::model::browse::ApiItem { decl, signature, summary }
-        }).collect::<Vec<_>>();
-        crate::model::browse::PackageApi { package: package.clone(), items: items.into(), complete }
+        let items = candidates
+            .into_iter()
+            .take(LIMIT)
+            .map(|(decl, row)| {
+                let summary = row.document.iter().find_map(|fragment| match fragment {
+                    Fragment::Text(text) if !text.trim().is_empty() && text != &row.label => {
+                        Some(Arc::from(text.lines().next().unwrap_or_default().trim()))
+                    }
+                    _ => None,
+                });
+                let signature = signature_text(
+                    row.signature.as_deref(),
+                    decl.language,
+                    decl.key,
+                    Some(self),
+                );
+                crate::model::browse::ApiItem {
+                    decl,
+                    signature,
+                    summary,
+                }
+            })
+            .collect::<Vec<_>>();
+        crate::model::browse::PackageApi {
+            package: package.clone(),
+            items: items.into(),
+            complete,
+        }
     }
 
     /// Returns one row by key.
@@ -171,26 +264,13 @@ impl OutlineIndex {
     /// Resolves an identifier to one declaration by name, preferring
     /// nominal types and contracts. Ambiguous names resolve to nothing.
     #[must_use]
-    pub fn resolve_name(&self, name: &str, accept: impl Fn(Option<DeclarationKind>) -> bool) -> Option<&Row> {
-        let candidates = self.by_name.get(name)?;
-        let mut best: Option<(u8, &Row)> = None;
-        let mut tie = false;
-        for index in candidates {
-            let row = &self.rows[*index];
-            if !accept(row.kind) || is_encoded_signature(row.signature.as_deref().unwrap_or("")) {
-                continue;
-            }
-            let rank = name_rank(row.kind);
-            match best {
-                Some((current, _)) if rank > current => {}
-                Some((current, _)) if rank == current => tie = true,
-                _ => {
-                    best = Some((rank, row));
-                    tie = false;
-                }
-            }
-        }
-        if tie { None } else { best.map(|(_, row)| row) }
+    pub fn resolve_name(
+        &self,
+        name: &str,
+        accept: impl Fn(Option<DeclarationKind>) -> bool,
+    ) -> Option<&Row> {
+        let complete = self.complete_names()?;
+        complete.resolve(name, accept)
     }
 
     /// Builds the mosaic forest.
@@ -299,11 +379,36 @@ fn leaf_name(label: &str) -> &str {
 #[must_use]
 pub fn is_encoded_signature(text: &str) -> bool {
     const HEADS: [&str; 30] = [
-        "annotated(", "applied(", "array(", "builtin(", "c-qualified(", "channel(",
-        "conditional(", "cxx-member-pointer(", "cxx-reference(", "entity(", "external(",
-        "fixed(", "function(parameters=", "import(", "indexed(", "infer(", "inferred(",
-        "map(", "mapped(", "namespace(", "nominal(", "package(", "pointer(", "qualified(",
-        "rectangular(", "reference(", "tuple(", "typeof(", "unknown(", "literal.",
+        "annotated(",
+        "applied(",
+        "array(",
+        "builtin(",
+        "c-qualified(",
+        "channel(",
+        "conditional(",
+        "cxx-member-pointer(",
+        "cxx-reference(",
+        "entity(",
+        "external(",
+        "fixed(",
+        "function(parameters=",
+        "import(",
+        "indexed(",
+        "infer(",
+        "inferred(",
+        "map(",
+        "mapped(",
+        "namespace(",
+        "nominal(",
+        "package(",
+        "pointer(",
+        "qualified(",
+        "rectangular(",
+        "reference(",
+        "tuple(",
+        "typeof(",
+        "unknown(",
+        "literal.",
     ];
     let text = text.trim_start();
     HEADS.iter().any(|head| text.starts_with(head))
@@ -378,6 +483,11 @@ pub fn signature_text(
     Known::Known(SignatureText {
         text: Arc::from(text),
         tokens: tokens.into(),
+        name_link_coverage: match outline {
+            Some(outline) if outline.is_complete() => NameLinkCoverage::Complete,
+            Some(_) => NameLinkCoverage::Partial,
+            None => NameLinkCoverage::Unavailable,
+        },
     })
 }
 
@@ -567,7 +677,10 @@ pub fn doc_sections(language: Language, fragments: &[DocFragment]) -> DocSection
         let role = if line.code_only && !line.fragments.is_empty() {
             backend_present::LineRole::Prose
         } else {
-            reader.line(&line.text, lines.get(index + 1).map(|next| next.text.as_str()))
+            reader.line(
+                &line.text,
+                lines.get(index + 1).map(|next| next.text.as_str()),
+            )
         };
         match role {
             backend_present::LineRole::Heading { kind, title } => {
@@ -722,11 +835,7 @@ pub fn receiver(signature: Option<&str>, language: Language) -> Receiver {
         return Receiver::Unknown;
     };
     let params = &signature[open + 1..];
-    let first = params
-        .split([',', ')'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let first = params.split([',', ')']).next().unwrap_or_default().trim();
     let compact: String = first.chars().filter(|c| !c.is_whitespace()).collect();
     if compact.starts_with("&mutself") || compact.starts_with("self:&mut") {
         return Receiver::Changes;
@@ -740,7 +849,11 @@ pub fn receiver(signature: Option<&str>, language: Language) -> Receiver {
     if compact.starts_with("&'") && compact.ends_with("mutself") {
         return Receiver::Changes;
     }
-    if compact == "self" || compact == "mutself" || compact.starts_with("self:") || compact.starts_with("mutself:") {
+    if compact == "self"
+        || compact == "mutself"
+        || compact.starts_with("self:")
+        || compact.starts_with("mutself:")
+    {
         return Receiver::Consumes;
     }
     Receiver::Makes
@@ -782,6 +895,7 @@ pub fn members(
     // A callable's children are its local bindings, not members.
     if is_callable(centre_kind) {
         return Members {
+            coverage: members_coverage(outline),
             made_of: Arc::from([]),
             does: Arc::from([]),
             other: Arc::from([]),
@@ -799,7 +913,9 @@ pub fn members(
             Some(DeclarationKind::Constant) if centre_kind == Some(DeclarationKind::Enum) => {
                 made_of.push(member);
             }
-            Some(DeclarationKind::Method | DeclarationKind::Function | DeclarationKind::Constructor) => {
+            Some(
+                DeclarationKind::Method | DeclarationKind::Function | DeclarationKind::Constructor,
+            ) => {
                 let receiver = receiver(row.signature.as_deref(), member.decl.language);
                 does.entry(receiver).or_default().push(member);
             }
@@ -817,9 +933,18 @@ pub fn members(
         })
         .collect::<Vec<_>>();
     Members {
+        coverage: members_coverage(outline),
         made_of: made_of.into(),
         does: does.into(),
         other: other.into(),
+    }
+}
+
+fn members_coverage(outline: Option<&OutlineIndex>) -> MembersCoverage {
+    match outline {
+        Some(outline) if outline.is_complete() => MembersCoverage::Complete,
+        Some(_) => MembersCoverage::Partial,
+        None => MembersCoverage::Unavailable,
     }
 }
 
@@ -857,7 +982,10 @@ impl<'a> Neighbourhood<'a> {
                 rich.edges.iter().find(|candidate| {
                     candidate.from == from
                         && candidate.to == to
-                        && candidate.kind == GraphEdgeKind::Code { relation: edge.relation }
+                        && candidate.kind
+                            == GraphEdgeKind::Code {
+                                relation: edge.relation,
+                            }
                 })
             })
             .and_then(|candidate| candidate.provenance.confidence)
@@ -894,7 +1022,10 @@ pub fn rose(
 ) -> Rose {
     let Some(neighbourhood) = neighbourhood else {
         let gap = failure.unwrap_or_else(|| {
-            Gap::new(GapReason::ReadFailed, "the related neighbourhood was not read")
+            Gap::new(
+                GapReason::ReadFailed,
+                "the related neighbourhood was not read",
+            )
         });
         return Rose {
             up: Known::Unknown(gap.clone()),
@@ -956,7 +1087,14 @@ pub fn rose(
             }
         }
     }
-    derive_impl_blocks(centre, centre_kind, &neighbourhood, edges, &mut up, &mut implemented_by);
+    derive_impl_blocks(
+        centre,
+        centre_kind,
+        &neighbourhood,
+        edges,
+        &mut up,
+        &mut implemented_by,
+    );
     Rose {
         up: Known::Known(up.into()),
         down: Known::Known(down.into()),
@@ -997,7 +1135,11 @@ fn derive_impl_blocks(
             edge.from == from && edge.relation == SemanticLinkKind::TypeReference
         })
     };
-    for block in neighbourhood.rows.iter().filter(|row| row.id != centre && is_impl_block(row)) {
+    for block in neighbourhood
+        .rows
+        .iter()
+        .filter(|row| row.id != centre && is_impl_block(row))
+    {
         let Some(via) = DeclRef::from_row(block) else {
             continue;
         };
@@ -1139,12 +1281,22 @@ pub fn client_gap(error: &ClientError) -> Gap {
 
 /// Places `centre` inside its package outline.
 #[must_use]
-pub fn outline_position(centre: RowId, outline: Option<&OutlineIndex>, failure: Option<Gap>) -> Known<OutlinePosition> {
+pub fn outline_position(
+    centre: RowId,
+    outline: Option<&OutlineIndex>,
+    failure: Option<Gap>,
+) -> Known<OutlinePosition> {
     let Some(outline) = outline else {
         return Known::Unknown(failure.unwrap_or_else(|| {
             Gap::new(GapReason::ReadFailed, "the package outline was not read")
         }));
     };
+    if !outline.is_complete() {
+        return Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; ancestry and sibling coverage are incomplete",
+        );
+    }
     let RowId::Symbol(key) = centre else {
         return Known::unknown(GapReason::NotCaptured, "the declaration has no symbol row");
     };
@@ -1215,7 +1367,11 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
     // The page's own row: a structural row echoes the document key; a
     // compiler-backed row is keyed by its compiler identity and found by label.
     let own_row = neighbourhood
-        .and_then(|hood| hood.rows.iter().find(|row| row.label == coordinate.as_str()))
+        .and_then(|hood| {
+            hood.rows
+                .iter()
+                .find(|row| row.label == coordinate.as_str())
+        })
         .or_else(|| outline.and_then(|outline| outline.row_by_label(coordinate.as_str())))
         .or_else(|| outline.and_then(|outline| outline.row(inputs.document.symbol)));
     let centre = own_row.map_or(RowId::Symbol(inputs.document.symbol), |row| row.id);
@@ -1271,17 +1427,20 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             })
             .unwrap_or_default(),
     };
-    let members_known = if outline.is_some() || neighbourhood.is_some() {
-        Known::Known(members(kind, &children, outline))
-    } else {
-        Known::Unknown(
-            inputs
-                .outline
-                .as_ref()
-                .err()
-                .cloned()
-                .unwrap_or_else(|| Gap::new(GapReason::ReadFailed, "members were not read")),
-        )
+    let members_known = match outline {
+        Some(outline) if outline.is_complete() => {
+            Known::Known(members(kind, &children, Some(outline)))
+        }
+        Some(_) => Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; the members ledger may omit declarations",
+        ),
+        None => Known::Unknown(inputs.outline.as_ref().err().cloned().unwrap_or_else(|| {
+            Gap::new(
+                GapReason::Unavailable,
+                "member coverage was not established",
+            )
+        })),
     };
     let references = references(inputs.references, outline);
     SymbolPage {
@@ -1342,32 +1501,66 @@ fn line_offset(text: &str, line: u32) -> Option<usize> {
 }
 
 /// Checks a local file against the engine's excerpt at the declared line.
-/// Returns the file text only when the excerpt is found starting on that line.
+/// Returns whether that exact excerpt is present at the declared line.
 #[must_use]
 pub fn verify_local_file(file: &str, excerpt: &str, line: u32) -> bool {
+    verified_local_excerpt(file, excerpt, line).is_some()
+}
+
+fn verified_local_excerpt(file: &str, excerpt: &str, line: u32) -> Option<ByteSpan> {
     let Some(start) = line_offset(file, line) else {
-        return false;
+        return None;
     };
     let rest = &file[start..];
     let excerpt = excerpt.trim_end();
     if excerpt.is_empty() {
-        return false;
+        return None;
     }
     // The excerpt may begin after indentation on its first line.
     let line_end = rest.find('\n').unwrap_or(rest.len());
     let first_line = &rest[..line_end];
-    first_line
-        .find(excerpt.lines().next().unwrap_or_default().trim_start())
-        .is_some_and(|column| rest[column..].starts_with(excerpt))
+    let column = first_line.find(excerpt.lines().next().unwrap_or_default().trim_start())?;
+    if !rest.get(column..)?.starts_with(excerpt) {
+        return None;
+    }
+    let matched_start = start.checked_add(column)?;
+    let matched_end = matched_start.checked_add(excerpt.len())?;
+    ByteSpan::new(
+        u32::try_from(matched_start).ok()?,
+        u32::try_from(matched_end).ok()?,
+    )
 }
 
+/// Builds name links only from a complete outline and a byte region whose
+/// source provenance is exact. Emitted spans are non-overlapping and in byte
+/// order because the scanner advances across each complete identifier token;
+/// the source renderer relies on that invariant for interval seeking.
 fn identifier_spans(
     text: &str,
     own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
+    verified_region: Option<ByteSpan>,
 ) -> Known<Arc<[IdentifierSpan]>> {
     let Some(outline) = outline else {
         return Known::unknown(GapReason::ReadFailed, "the package outline was not read");
+    };
+    if !outline.is_complete() {
+        return Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; name-based identifier links may be missing",
+        );
+    }
+    let (text, source_offset) = match verified_region {
+        Some(bytes) => {
+            let Some(region) = text.get(bytes.range()) else {
+                return Known::unknown(
+                    GapReason::Unavailable,
+                    "the verified source excerpt no longer matches its byte range",
+                );
+            };
+            (region, bytes.start as usize)
+        }
+        None => (text, 0),
     };
     let mut spans = Vec::new();
     let bytes = text.as_bytes();
@@ -1376,7 +1569,9 @@ fn identifier_spans(
         let byte = bytes[index];
         if byte.is_ascii_alphabetic() || byte == b'_' {
             let start = index;
-            while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
                 index += 1;
             }
             let word = &text[start..index];
@@ -1386,9 +1581,9 @@ fn identifier_spans(
                 })
                 && own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own))
                 && let (Some(span), Ok(target)) = (
-                    u32::try_from(start)
+                    u32::try_from(start.saturating_add(source_offset))
                         .ok()
-                        .zip(u32::try_from(index).ok())
+                        .zip(u32::try_from(index.saturating_add(source_offset)).ok())
                         .and_then(|(start, end)| ByteSpan::new(start, end)),
                     SymbolRef::new(&row.label),
                 )
@@ -1416,6 +1611,7 @@ pub fn source_view(
     coordinate: &SymbolRef,
     document: &Document,
     local_file: Option<&str>,
+    local_editor_path: Option<&str>,
     references: &Known<Arc<[ReferenceSite]>>,
     outline: Option<&OutlineIndex>,
 ) -> SourceView {
@@ -1440,31 +1636,44 @@ pub fn source_view(
             semantic: false,
             facts: DeclFacts::unread(),
         });
-    let file = site
-        .location
-        .clone()
-        .map(|location| location.path);
+    let file = site.location.clone().map(|location| location.path);
     let excerpt = site.excerpt.known().cloned();
     let location = site.location.known().cloned();
     let verified = match (local_file, &excerpt, &location) {
         (Some(file_text), Some(excerpt), Some(location)) => {
-            verify_local_file(file_text, &excerpt.text, location.line).then_some(file_text)
+            verified_local_excerpt(file_text, &excerpt.text, location.line)
+                .map(|bytes| (file_text, bytes))
         }
         _ => None,
     };
+    let editor_path = match (verified, local_editor_path) {
+        (Some(_), Some(path)) if !path.is_empty() => Known::Known(Arc::from(path)),
+        _ => Known::unknown(
+            GapReason::NotServed,
+            "a verified local source file is unavailable for editor handoff",
+        ),
+    };
     let text = match (verified, &excerpt, &location) {
-        (Some(file_text), Some(excerpt), _) => Known::Known(SourceText {
-            text: Arc::from(file_text),
-            first_line: 1,
-            origin: SourceOrigin::LocalFile,
-            complete: excerpt.complete,
-        }),
-        (None, Some(excerpt), location) => Known::Known(SourceText {
-            text: Arc::clone(&excerpt.text),
-            first_line: location.as_ref().map_or(1, |location| location.line),
-            origin: SourceOrigin::Excerpt,
-            complete: excerpt.complete,
-        }),
+        (Some((file_text, verified_bytes)), Some(excerpt), _) => SourceText::new(
+            Arc::from(file_text),
+            1,
+            SourceOrigin::LocalFile,
+            excerpt.complete,
+        )
+        .map_or_else(
+            |error| Known::unknown(GapReason::Unavailable, error.to_string()),
+            |source| Known::Known(source.with_verified_local_excerpt(verified_bytes)),
+        ),
+        (None, Some(excerpt), location) => SourceText::new(
+            Arc::clone(&excerpt.text),
+            location.as_ref().map_or(1, |location| location.line),
+            SourceOrigin::Excerpt,
+            excerpt.complete,
+        )
+        .map_or_else(
+            |error| Known::unknown(GapReason::Unavailable, error.to_string()),
+            Known::Known,
+        ),
         (_, None, _) => Known::Unknown(
             site.excerpt
                 .gap()
@@ -1476,36 +1685,50 @@ pub fn source_view(
         .as_ref()
         .and_then(|excerpt| excerpt.lines)
         .map_or_else(
-            || Known::unknown(GapReason::NotCaptured, "the declaration's lines are not known"),
+            || {
+                Known::unknown(
+                    GapReason::NotCaptured,
+                    "the declaration's lines are not known",
+                )
+            },
             Known::Known,
         );
     let identifiers = match &text {
-        Known::Known(source) => identifier_spans(&source.text, symbol.key, outline),
+        Known::Known(source) => match source.coverage() {
+            SourceCoverage::CapturedExcerpt => {
+                identifier_spans(source.text(), symbol.key, outline, None)
+            }
+            SourceCoverage::LiveFileExcerptVerified { bytes } => {
+                identifier_spans(source.text(), symbol.key, outline, Some(bytes))
+            }
+            SourceCoverage::Unverified => Known::unknown(
+                GapReason::Unavailable,
+                "source links are disabled because live source bytes have no verified excerpt",
+            ),
+        },
         Known::Unknown(gap) => Known::Unknown(gap.clone()),
     };
     let (uses, uses_elsewhere) = match (references, &text, &file) {
-        (Known::Known(sites), Known::Known(source), Known::Known(path)) => {
-            let mut here = Vec::new();
-            let mut elsewhere = Vec::new();
-            for span in sites.iter().filter_map(|site| site.span.known()) {
-                let in_text = source.origin == SourceOrigin::LocalFile
-                    && span.file.as_ref() == path.as_ref()
-                    && (span.bytes.end as usize) <= source.text.len();
-                if in_text {
-                    here.push(span.bytes);
-                } else {
-                    elsewhere.push(span.clone());
+        (Known::Known(sites), Known::Known(source), Known::Known(_path)) => {
+            let detail = match source.coverage() {
+                SourceCoverage::CapturedExcerpt => {
+                    "use spans are file byte offsets and the producer serves only a declaration excerpt"
                 }
-            }
-            let uses = if source.origin == SourceOrigin::LocalFile {
-                Known::Known(here.into())
-            } else {
-                Known::unknown(
-                    GapReason::NotServed,
-                    "use spans are file byte offsets and the engine serves only the declaration excerpt",
-                )
+                SourceCoverage::LiveFileExcerptVerified { .. } => {
+                    "the live file is excerpt-verified only; no full-file digest proves use offsets"
+                }
+                SourceCoverage::Unverified => {
+                    "the displayed source bytes are not verified against the indexed producer"
+                }
             };
-            (uses, elsewhere)
+            (
+                Known::unknown(GapReason::NotServed, detail),
+                sites
+                    .iter()
+                    .filter_map(|site| site.span.known())
+                    .cloned()
+                    .collect(),
+            )
         }
         (Known::Unknown(gap), _, _) => (Known::Unknown(gap.clone()), Vec::new()),
         _ => (
@@ -1516,6 +1739,7 @@ pub fn source_view(
     SourceView {
         symbol,
         file,
+        editor_path,
         text,
         declaration,
         identifiers,
@@ -1567,11 +1791,7 @@ fn local_gap(what: &str) -> Gap {
 #[must_use]
 pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
     let advisory = &record.advisory;
-    let worst = advisory
-        .advisories
-        .iter()
-        .map(|entry| entry.severity)
-        .max();
+    let worst = advisory.advisories.iter().map(|entry| entry.severity).max();
     let decision = match &advisory.decision {
         backend_library::AcquisitionDecision::Allow => "allow",
         backend_library::AcquisitionDecision::Warn(_) => "warn",
@@ -1582,7 +1802,7 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
         source: RecordSource::Registry,
         name: Arc::from(record.name.as_str()),
         version: Known::Known(Arc::from(record.version.as_str())),
-        ecosystem: Known::Known(Arc::from(record.ecosystem.as_str())),
+        ecosystem: Known::Known(record.ecosystem),
         standing: Known::Known(standing(record.standing)),
         downloads: match &record.downloads {
             RegistryDownloadCount::Exact(count) => Known::Known(Downloads::Exact(*count)),
@@ -1615,9 +1835,15 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
 /// the engine's own local-manifest fallback alike — see `not_served`
 /// above). For a package this session has also read locally (`compose_package`'s
 /// `local`, whether through `LocalPackageLoader::readme` or `::load`), the
-/// manifest already states them; without this merge, that local read is
-/// computed and then discarded; this was the toml/present package-page bug.
+/// Cargo manifest already states them; without this merge, that local read
+/// is computed and then discarded; this was the toml/present package-page bug.
+/// Other ecosystems never borrow fields from this Cargo-only projection.
 fn with_local_facts(mut record: PackageRecord, local: Option<&LocalPackage>) -> PackageRecord {
+    // This projection reads Cargo.toml only. A NuGet/npm/etc. record must not
+    // inherit an incidental Cargo manifest's description or licence.
+    if record.ecosystem.known() != Some(&RegistryEcosystem::Cargo) {
+        return record;
+    }
     let Some(local) = local else { return record };
     if record.description.known().is_none()
         && let Some(description) = &local.description
@@ -1644,7 +1870,7 @@ fn local_manifest_record(
     local: Option<&LocalPackage>,
     is_local: bool,
 ) -> Known<PackageRecord> {
-    if let Some(manifest) = local.filter(|manifest| local_manifest_facts(manifest)) {
+    if let Some(manifest) = local.filter(|manifest| is_local && local_manifest_facts(manifest)) {
         return Known::Known(local_record(package, manifest));
     }
     Known::Unknown(if is_local {
@@ -1666,7 +1892,7 @@ fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
             || Known::unknown(GapReason::NotRecorded, "the manifest states no version"),
             Known::Known,
         ),
-        ecosystem: Known::Known(Arc::from("cargo")),
+        ecosystem: Known::Known(RegistryEcosystem::Cargo),
         standing: Known::Unknown(local_gap("release standing")),
         downloads: Known::Unknown(local_gap("download count")),
         bytes: Known::Unknown(local_gap("archive size")),
@@ -1679,6 +1905,36 @@ fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
             || Known::unknown(GapReason::NotRecorded, "the manifest states no license"),
             Known::Known,
         ),
+    }
+}
+
+/// Selects a record for the requested route. A registry route is pinned by
+/// its exact PURL. A local path has no PURL identity, but the owner serves a
+/// single record read from that path's manifest. In either case its typed
+/// ecosystem must agree with the coordinate's package type.
+fn package_record_for<'a>(
+    records: &'a [RegistryPackageRecord],
+    package: &PackageRef,
+) -> Option<&'a RegistryPackageRecord> {
+    let admitted = |record: &RegistryPackageRecord| {
+        matches!(&record.coordinate,
+            backend_library::PackageReference::Purl(coordinate)
+                if coordinate.package_type() == record.ecosystem.package_type())
+    };
+    match package.reference() {
+        backend_library::PackageReference::Purl(_) => {
+            let mut exact = records
+                .iter()
+                .filter(|record| admitted(record) && record.coordinate == *package.reference());
+            match (exact.next(), exact.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        }
+        backend_library::PackageReference::Local(_) => match records {
+            [only] if admitted(only) => Some(only),
+            _ => None,
+        },
     }
 }
 
@@ -1732,10 +1988,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         other => Err(surface_gap(other, "package")),
     };
     let record = match &registry_records {
-        Ok(records) => records
-            .iter()
-            .find(|record| record.coordinate == *package.reference())
-            .or_else(|| records.first())
+        Ok(records) => package_record_for(records, package)
             .map_or_else(
                 || local_manifest_record(package, inputs.local, local),
                 |record| {
@@ -1749,7 +2002,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                     Known::Known(head)
                 },
             ),
-        Err(gap) => inputs.local.map_or_else(
+        Err(gap) => inputs.local.filter(|_| local).map_or_else(
             || Known::Unknown(gap.clone()),
             |manifest| {
                 if local_manifest_facts(manifest) {
@@ -1793,11 +2046,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                         requirement: Arc::from(row.target.requirement.as_str()),
                         scope: scope(row.scope),
                         optional: row.optional,
-                        resolved: row
-                            .target
-                            .resolved
-                            .clone()
-                            .map(PackageRef::from_reference),
+                        resolved: row.target.resolved.clone().map(PackageRef::from_reference),
                     })
                     .collect::<Vec<_>>()
                     .into(),
@@ -1833,26 +2082,82 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         ) => Known::unknown(GapReason::Unavailable, text.as_str()),
         (_, other) => Known::Unknown(surface_gap(other, "dependencies")),
     };
-    let dependents = match inputs.dependents {
+    let (dependents, observed_dependents) = match inputs.dependents {
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(records))) => {
-            Known::Known(records.iter().map(registry_record).collect::<Vec<_>>().into())
+            let observed: Arc<[PackageRecord]> = records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into();
+            (Known::Known(Arc::clone(&observed)), observed)
         }
-        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => {
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
+            value: records,
+            reason,
+        })) if !local => {
+            let observed = records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into();
+            (
+                Known::unknown(GapReason::Unknown, reason.as_str()),
+                observed,
+            )
+        }
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial { .. })) => (
+            Known::Unknown(local_gap("reverse dependencies")),
+            Arc::from([]),
+        ),
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => (
             if local {
                 Known::Unknown(local_gap("reverse dependencies"))
             } else {
                 Known::unknown(GapReason::NotRecorded, text.as_str())
-            }
-        }
-        other => Known::Unknown(surface_gap(other, "dependents")),
+            },
+            Arc::from([]),
+        ),
+        other => (
+            Known::Unknown(surface_gap(other, "dependents")),
+            Arc::from([]),
+        ),
     };
     let outline = match &inputs.outline {
         Ok(index) => Known::Known(index.tree()),
         Err(gap) => Known::Unknown(gap.clone()),
     };
+    let readme_exact_targets = match (inputs.local, inputs.outline.as_ref(), &outline) {
+        (Some(local), Ok(index), Known::Known(tree)) if index.is_complete() => {
+            local.readme_markdown.as_ref().map_or_else(
+                || {
+                    Known::unknown(
+                        GapReason::NotRecorded,
+                        "this package has no retained README source",
+                    )
+                },
+                |source| {
+                    Known::Known(prepare_readme_exact_targets(
+                        package,
+                        source,
+                        &local.readme_links,
+                        index,
+                        tree,
+                    ))
+                },
+            )
+        }
+        (Some(_), Ok(_), _) => {
+            Known::unknown(GapReason::Unknown, "the package outline is incomplete")
+        }
+        (Some(_), Err(gap), _) => Known::Unknown((*gap).clone()),
+        (None, _, _) => Known::Unknown(not_served("README exact declaration targets")),
+    };
     let readme = match inputs.local {
         Some(manifest) if !manifest.readme.is_empty() => Known::Known(Arc::clone(&manifest.readme)),
-        Some(_) => Known::unknown(GapReason::NotRecorded, "the project has no README the manifest names"),
+        Some(_) => Known::unknown(
+            GapReason::NotRecorded,
+            "the project has no README the manifest names",
+        ),
         None => Known::Unknown(not_served("README")),
     };
     PackageDossier {
@@ -1861,9 +2166,148 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         versions,
         dependencies,
         dependents,
+        observed_dependents,
         outline,
         readme,
+        readme_markdown: match inputs.local {
+            Some(manifest) => manifest.readme_markdown.clone().map_or_else(
+                || {
+                    Known::unknown(
+                        GapReason::NotRecorded,
+                        "the project has no retained README Markdown source",
+                    )
+                },
+                Known::Known,
+            ),
+            None => Known::Unknown(not_served("README Markdown source")),
+        },
+        readme_links: inputs.local.map_or_else(
+            || Known::Unknown(not_served("README link targets")),
+            |manifest| Known::Known(Arc::clone(&manifest.readme_links)),
+        ),
+        readme_headings: inputs.local.map_or_else(
+            || Known::Unknown(not_served("README heading targets")),
+            |manifest| Known::Known(Arc::clone(&manifest.readme_headings)),
+        ),
+        readme_exact_targets,
     }
+}
+
+fn readme_relative_source_path(package: &PackageRef, path: &std::path::Path) -> Option<String> {
+    path.strip_prefix(package.as_str())
+        .ok()?
+        // A replacement character is not the file's name: source proof must
+        // never alias a non-UTF-8 path to an indexed row.
+        .to_str()
+        .map(|relative| relative.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
+/// Resolves only worker-indexed, uniquely proved semantic destinations. The
+/// local source read and complete flat outline are already held by this read
+/// worker; no GUI paint or filesystem access participates in this lookup.
+fn prepare_readme_exact_targets(
+    package: &PackageRef,
+    source: &Arc<str>,
+    links: &[ReadmeLink],
+    index: &OutlineIndex,
+    tree: &OutlineTree,
+) -> ReadmeExactTargets {
+    const LIMIT: usize = 512;
+    let mut exact = Vec::new();
+    for (link_index, link) in links.iter().take(LIMIT).enumerate() {
+        let kind = if let Some(path) = link.local_file.as_deref() {
+            let line = link.line.unwrap_or(1);
+            let relative = readme_relative_source_path(package, std::path::Path::new(path));
+            relative.and_then(|relative| {
+                let mut candidates = index.rows.iter().filter(|row| {
+                    row.source.captured().is_some_and(|site| {
+                        site.path() == relative.as_str() && site.start_line() == line
+                    })
+                });
+                let first = candidates.next()?;
+                if line == 0 || candidates.next().is_some() {
+                    return None;
+                }
+                let decl = DeclRef::from_row(first)?;
+                (decl.path.as_deref() == Some(relative.as_str())
+                    && decl.line == Some(line)
+                    && decl
+                        .coordinate
+                        .as_str()
+                        .strip_prefix(package.as_str())
+                        .is_some_and(|rest| rest.starts_with("::")))
+                .then_some(ReadmeExactKind::Source {
+                    path: Arc::from(path),
+                    line,
+                    symbol: decl.coordinate,
+                })
+            })
+        } else {
+            rustdoc_link(link.destination.as_ref()).and_then(|parsed| {
+                let rows = index.by_name.get(parsed.name)?;
+                let mut found = None;
+                for row_index in rows {
+                    let row = &index.rows[*row_index];
+                    if row.kind.is_some_and(|kind| kind != parsed.kind) {
+                        continue;
+                    }
+                    let modules = checked_readme_module_path(index, row)?;
+                    if modules
+                        .iter()
+                        .map(String::as_str)
+                        .eq(parsed.modules.iter().copied())
+                    {
+                        if found.is_some() || row.kind.is_none() {
+                            return None;
+                        }
+                        found = Some(row);
+                    }
+                }
+                let decl = DeclRef::from_row(found?)?;
+                let in_package = decl
+                    .coordinate
+                    .as_str()
+                    .strip_prefix(package.as_str())
+                    .is_some_and(|rest| rest.starts_with("::"));
+                in_package.then_some(ReadmeExactKind::Rustdoc(decl.coordinate))
+            })
+        };
+        if let Some(kind) = kind {
+            if let Ok(link_index) = u16::try_from(link_index) {
+                exact.push(ReadmeExactTarget {
+                    link_index,
+                    destination: Arc::clone(&link.destination),
+                    kind,
+                });
+            }
+        }
+    }
+    ReadmeExactTargets {
+        package: package.clone(),
+        source: Arc::clone(source),
+        outline_roots: Arc::clone(&tree.roots),
+        links: exact.into(),
+    }
+}
+
+/// The exact module ancestry of one flat owner row. A missing parent, cycle,
+/// or unreadable module makes an apparent Rustdoc match unprovable.
+fn checked_readme_module_path(index: &OutlineIndex, row: &Row) -> Option<Vec<String>> {
+    let mut modules = Vec::new();
+    let mut seen = HashSet::new();
+    let mut parent = row.parent;
+    while let Some(key) = parent {
+        if !seen.insert(key) || seen.len() > index.rows.len() {
+            return None;
+        }
+        let ancestor = index.row(key)?;
+        if ancestor.kind == Some(DeclarationKind::Module) {
+            modules.push(DeclRef::from_row(ancestor)?.name.to_string());
+        }
+        parent = ancestor.parent;
+    }
+    modules.reverse();
+    Some(modules)
 }
 
 // ---------------------------------------------------------------------------
@@ -1899,7 +2343,9 @@ pub fn search_page(query: &str, snapshot: &ViewSnapshot, worker: usize) -> Searc
         query,
         snapshot.root.rows(),
         snapshot.root.coverage(),
-        snapshot.next.map(backend_library::PageContinuation::from_cursor),
+        snapshot
+            .next
+            .map(backend_library::PageContinuation::from_cursor),
         worker,
     )
 }
@@ -1926,9 +2372,17 @@ pub fn search_rows(
             let signature = signature_text(row.signature.as_deref(), decl.language, decl.key, None);
             Some(SearchRow {
                 rank,
-                package: decl.coordinate.package().map(|package| Arc::from(package.as_str())),
+                package: decl
+                    .coordinate
+                    .package()
+                    .map(|package| Arc::from(package.as_str())),
                 score: row.score.map_or_else(
-                    || Known::unknown(GapReason::NotServed, "the engine published no score for this row"),
+                    || {
+                        Known::unknown(
+                            GapReason::NotServed,
+                            "the engine published no score for this row",
+                        )
+                    },
                     Known::Known,
                 ),
                 signature,
@@ -1955,6 +2409,9 @@ pub fn search_rows(
 pub struct OrbitInputs<'a> {
     /// `packages` reply rows (the shelf).
     pub packages: Result<&'a [Row], &'a ClientError>,
+    /// Worker-admitted exact identities for local rows that belong to the
+    /// active registry source. Other local paths have no registry proof.
+    pub(crate) verified_registry_releases: &'a HashMap<PackageRef, VerifiedRegistryRelease>,
     /// `projects` surface reply.
     pub projects: Result<&'a SurfaceReply, &'a ClientError>,
     /// `explore` surface reply.
@@ -1974,7 +2431,9 @@ fn tree_subject(subject: &backend_library::TreeSubject) -> TreeSubject {
         backend_library::TreeSubject::Explore(query) => {
             TreeSubject::Explore(query.as_ref().map(|query| Arc::from(query.as_str())))
         }
-        backend_library::TreeSubject::Search(query) => TreeSubject::Search(Arc::from(query.as_str())),
+        backend_library::TreeSubject::Search(query) => {
+            TreeSubject::Search(Arc::from(query.as_str()))
+        }
         backend_library::TreeSubject::Owner(owner) => TreeSubject::Owner(Arc::from(owner.as_str())),
     }
 }
@@ -1991,6 +2450,10 @@ pub fn orbit_model(inputs: &OrbitInputs<'_>) -> OrbitModel {
                     let package = PackageRef::parse(&row.label).ok()?;
                     Some(IndexedPackage {
                         name: Arc::from(package.display_name()),
+                        verified_registry_release: inputs
+                            .verified_registry_releases
+                            .get(&package)
+                            .cloned(),
                         readiness: match row.state {
                             backend_library::RowState::Ready => Readiness::Ready,
                             backend_library::RowState::Loading => Readiness::Indexing,
@@ -2011,7 +2474,10 @@ pub fn orbit_model(inputs: &OrbitInputs<'_>) -> OrbitModel {
                 .map(|record| OrbitProject {
                     id: record.id.get(),
                     name: Arc::from(record.name.as_str()),
-                    lockfile: record.lockfile.as_ref().map(|path| Arc::from(path.as_str())),
+                    lockfile: record
+                        .lockfile
+                        .as_ref()
+                        .map(|path| Arc::from(path.as_str())),
                     members: record
                         .members
                         .iter()
@@ -2026,9 +2492,13 @@ pub fn orbit_model(inputs: &OrbitInputs<'_>) -> OrbitModel {
         other => Known::Unknown(surface_gap(other, "projects")),
     };
     let explore = match inputs.explore {
-        Ok(SurfaceReply::Explored(records)) => {
-            Known::Known(records.iter().map(registry_record).collect::<Vec<_>>().into())
-        }
+        Ok(SurfaceReply::Explored(records)) => Known::Known(
+            records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into(),
+        ),
         other => Known::Unknown(surface_gap(other, "explore")),
     };
     let tree = match inputs.tree {
@@ -2118,7 +2588,6 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
     }
 }
 
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 mod tests {
@@ -2138,6 +2607,31 @@ mod tests {
     const PRESENT: &str = "/work/crates/present";
     const RICH: &str = "/work/rich_project";
 
+    #[cfg(unix)]
+    #[test]
+    fn readme_source_proof_refuses_a_native_path_that_lossy_text_would_alias() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let invalid = std::path::Path::new(PRESENT)
+            .join("src")
+            .join(OsString::from_vec(b"\xff.rs".to_vec()));
+        let replacement = std::path::Path::new(PRESENT)
+            .join("src")
+            .join("\u{fffd}.rs");
+        assert_eq!(
+            invalid.to_string_lossy(),
+            replacement.to_string_lossy(),
+            "this is a real native-path collision under lossy conversion"
+        );
+        assert_eq!(readme_relative_source_path(&package, &invalid), None);
+        assert_eq!(
+            readme_relative_source_path(&package, &replacement).as_deref(),
+            Some("src/\u{fffd}.rs")
+        );
+    }
+
     fn basis() -> Basis {
         Basis::new(view_state_root(&[]), object_version(b"fixture"))
     }
@@ -2156,8 +2650,12 @@ mod tests {
     }
 
     fn row(spec: &RowSpec<'_>) -> Row {
-        let mut row = Row::new(RowId::Symbol(key(&spec.label)), basis(), spec.label.as_str())
-            .with_kind(spec.kind);
+        let mut row = Row::new(
+            RowId::Symbol(key(&spec.label)),
+            basis(),
+            spec.label.as_str(),
+        )
+        .with_kind(spec.kind);
         if let Some(signature) = spec.signature {
             row = row.with_signature(signature);
         }
@@ -2187,45 +2685,568 @@ mod tests {
         let identity = present("identity.rs:339::Identity");
         let prose = present("page.rs:26::Prose");
         let specs = vec![
-            RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("page.rs", 1)) },
-            RowSpec { label: page.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Page"), parent: Some(&module), doc: Some("One complete declaration page."), site: Some(("page.rs", 396)) },
-            RowSpec { label: present("page.rs:399::prose"), kind: DeclarationKind::Field, signature: Some("prose: Box<[Prose]>"), parent: Some(&page), doc: None, site: Some(("page.rs", 399)) },
-            RowSpec { label: present("page.rs:410::new"), kind: DeclarationKind::Method, signature: Some("pub fn new(identity: Identity, kind: Option<DeclarationKind>, source: Source) -> Self"), parent: Some(&page), doc: Some("Assembles one page from already-typed parts."), site: Some(("page.rs", 410)) },
-            RowSpec { label: present("page.rs:437::with_prose"), kind: DeclarationKind::Method, signature: Some("pub fn with_prose(mut self, prose: impl Into<Box<[Prose]>>) -> Self"), parent: Some(&page), doc: Some("Attaches the producer's captured documentation."), site: Some(("page.rs", 437)) },
-            RowSpec { label: present("page.rs:463::identity"), kind: DeclarationKind::Method, signature: Some("pub const fn identity(&self) -> &Identity"), parent: Some(&page), doc: Some("Returns the page's identity."), site: Some(("page.rs", 463)) },
-            RowSpec { label: present("page.rs:470::retitle"), kind: DeclarationKind::Method, signature: Some("pub fn retitle(&mut self, title: &str)"), parent: Some(&page), doc: None, site: Some(("page.rs", 470)) },
-            RowSpec { label: prose.clone(), kind: DeclarationKind::Enum, signature: Some("pub enum Prose"), parent: Some(&module), doc: Some("One block of producer-captured documentation."), site: Some(("page.rs", 26)) },
-            RowSpec { label: present("page.rs:28::Text"), kind: DeclarationKind::Variant, signature: Some("Text(String)"), parent: Some(&prose), doc: Some("A paragraph of readable text."), site: Some(("page.rs", 28)) },
-            RowSpec { label: identity_module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("identity.rs", 1)) },
-            RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
+            RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("page.rs", 1)),
+            },
+            RowSpec {
+                label: page.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Page"),
+                parent: Some(&module),
+                doc: Some("One complete declaration page."),
+                site: Some(("page.rs", 396)),
+            },
+            RowSpec {
+                label: present("page.rs:399::prose"),
+                kind: DeclarationKind::Field,
+                signature: Some("prose: Box<[Prose]>"),
+                parent: Some(&page),
+                doc: None,
+                site: Some(("page.rs", 399)),
+            },
+            RowSpec {
+                label: present("page.rs:410::new"),
+                kind: DeclarationKind::Method,
+                signature: Some(
+                    "pub fn new(identity: Identity, kind: Option<DeclarationKind>, source: Source) -> Self",
+                ),
+                parent: Some(&page),
+                doc: Some("Assembles one page from already-typed parts."),
+                site: Some(("page.rs", 410)),
+            },
+            RowSpec {
+                label: present("page.rs:437::with_prose"),
+                kind: DeclarationKind::Method,
+                signature: Some(
+                    "pub fn with_prose(mut self, prose: impl Into<Box<[Prose]>>) -> Self",
+                ),
+                parent: Some(&page),
+                doc: Some("Attaches the producer's captured documentation."),
+                site: Some(("page.rs", 437)),
+            },
+            RowSpec {
+                label: present("page.rs:463::identity"),
+                kind: DeclarationKind::Method,
+                signature: Some("pub const fn identity(&self) -> &Identity"),
+                parent: Some(&page),
+                doc: Some("Returns the page's identity."),
+                site: Some(("page.rs", 463)),
+            },
+            RowSpec {
+                label: present("page.rs:470::retitle"),
+                kind: DeclarationKind::Method,
+                signature: Some("pub fn retitle(&mut self, title: &str)"),
+                parent: Some(&page),
+                doc: None,
+                site: Some(("page.rs", 470)),
+            },
+            RowSpec {
+                label: prose.clone(),
+                kind: DeclarationKind::Enum,
+                signature: Some("pub enum Prose"),
+                parent: Some(&module),
+                doc: Some("One block of producer-captured documentation."),
+                site: Some(("page.rs", 26)),
+            },
+            RowSpec {
+                label: present("page.rs:28::Text"),
+                kind: DeclarationKind::Variant,
+                signature: Some("Text(String)"),
+                parent: Some(&prose),
+                doc: Some("A paragraph of readable text."),
+                site: Some(("page.rs", 28)),
+            },
+            RowSpec {
+                label: identity_module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("identity.rs", 1)),
+            },
+            RowSpec {
+                label: identity.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Identity"),
+                parent: Some(&identity_module),
+                doc: Some("One parsed row identity."),
+                site: Some(("identity.rs", 339)),
+            },
         ];
         specs.iter().map(row).collect()
     }
 
     #[test]
-    fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api() {
+    fn readme_worker_prepares_only_exact_complete_outline_destinations() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let module = present("src/lib.rs:1::api");
+        let widget = present("src/lib.rs:7::Widget");
+        let rows = vec![
+            row(&RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 1)),
+            }),
+            row(&RowSpec {
+                label: widget.clone(),
+                kind: DeclarationKind::Struct,
+                signature: None,
+                parent: Some(&module),
+                doc: None,
+                site: Some(("src/lib.rs", 7)),
+            }),
+        ];
+        let index = OutlineIndex::new(rows.clone(), true);
+        let tree = index.tree();
+        let source: Arc<str> = Arc::from("[item](api/struct.Widget.html) [code](src/lib.rs#L7)");
+        let links = [
+            ReadmeLink {
+                label: Arc::from("item"),
+                destination: Arc::from("api/struct.Widget.html"),
+                local_file: None,
+                line: None,
+            },
+            ReadmeLink {
+                label: Arc::from("code"),
+                destination: Arc::from("src/lib.rs#L7"),
+                local_file: Some(Arc::from(format!("{PRESENT}/src/lib.rs"))),
+                line: Some(7),
+            },
+        ];
+        let exact = prepare_readme_exact_targets(&package, &source, &links, &index, &tree);
+        assert_eq!(exact.links.len(), 2);
+        assert!(
+            matches!(&exact.links[0].kind, ReadmeExactKind::Rustdoc(symbol) if symbol.as_str() == widget)
+        );
+        assert!(
+            matches!(&exact.links[1].kind, ReadmeExactKind::Source { path, line: 7, symbol } if path.as_ref() == format!("{PRESENT}/src/lib.rs") && symbol.as_str() == widget)
+        );
+
+        let mut ambiguous = rows;
+        ambiguous.push(row(&RowSpec {
+            label: present("src/other.rs:7::Widget"),
+            kind: DeclarationKind::Struct,
+            signature: None,
+            parent: Some(&module),
+            doc: None,
+            site: Some(("src/other.rs", 7)),
+        }));
+        let ambiguous = OutlineIndex::new(ambiguous, true);
+        let exact =
+            prepare_readme_exact_targets(&package, &source, &links, &ambiguous, &ambiguous.tree());
+        assert_eq!(
+            exact.links.len(),
+            1,
+            "same-named Rustdoc targets cannot pick one"
+        );
+        assert_eq!(
+            exact.links[0].link_index, 1,
+            "exact source path still resolves"
+        );
+
+        let unknown_kind = OutlineIndex::new(
+            vec![
+                row(&RowSpec {
+                    label: module.clone(),
+                    kind: DeclarationKind::Module,
+                    signature: None,
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/lib.rs", 1)),
+                }),
+                row(&RowSpec {
+                    label: widget,
+                    kind: DeclarationKind::Struct,
+                    signature: None,
+                    parent: Some(&module),
+                    doc: None,
+                    site: Some(("src/lib.rs", 7)),
+                }),
+                Row::new(
+                    RowId::Symbol(key(&present("src/unknown.rs:9::Widget"))),
+                    basis(),
+                    present("src/unknown.rs:9::Widget"),
+                )
+                .with_parent(key(&module)),
+            ],
+            true,
+        );
+        let exact = prepare_readme_exact_targets(
+            &package,
+            &source,
+            &links,
+            &unknown_kind,
+            &unknown_kind.tree(),
+        );
+        assert_eq!(
+            exact.links.len(),
+            1,
+            "untyped same-name rows also block Rustdoc proof"
+        );
+    }
+
+    #[test]
+    fn readme_worker_finds_a_declaration_beyond_the_old_ui_outline_limit() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let module = present("src/lib.rs:1::api");
+        let mut rows = vec![row(&RowSpec {
+            label: module.clone(),
+            kind: DeclarationKind::Module,
+            signature: None,
+            parent: None,
+            doc: None,
+            site: Some(("src/lib.rs", 1)),
+        })];
+        for number in 0..8_200 {
+            rows.push(row(&RowSpec {
+                label: present(&format!("src/lib.rs:{}::Other{number}", number + 2)),
+                kind: DeclarationKind::Struct,
+                signature: None,
+                parent: Some(&module),
+                doc: None,
+                site: None,
+            }));
+        }
+        let widget = present("src/lib.rs:9000::Widget");
+        rows.push(row(&RowSpec {
+            label: widget.clone(),
+            kind: DeclarationKind::Struct,
+            signature: None,
+            parent: Some(&module),
+            doc: None,
+            site: Some(("src/lib.rs", 9_000)),
+        }));
+        let index = OutlineIndex::new(rows, true);
+        let source: Arc<str> = Arc::from("[item](api/struct.Widget.html)");
+        let links = [ReadmeLink {
+            label: Arc::from("item"),
+            destination: Arc::from("api/struct.Widget.html"),
+            local_file: None,
+            line: None,
+        }];
+        let exact = prepare_readme_exact_targets(&package, &source, &links, &index, &index.tree());
+        assert!(
+            matches!(&exact.links[0].kind, ReadmeExactKind::Rustdoc(symbol) if symbol.as_str() == widget)
+        );
+    }
+
+    #[test]
+    fn readme_exact_targets_require_live_complete_outline_and_drop_on_restore() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let module = present("src/lib.rs:1::api");
+        let rows = vec![
+            row(&RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 1)),
+            }),
+            row(&RowSpec {
+                label: present("src/lib.rs:7::Widget"),
+                kind: DeclarationKind::Struct,
+                signature: None,
+                parent: Some(&module),
+                doc: None,
+                site: Some(("src/lib.rs", 7)),
+            }),
+        ];
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Readme,
+            name: Arc::from("backend-present"),
+            version: None,
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([]),
+            readme_markdown: Some(Arc::from("[item](api/struct.Widget.html)")),
+            readme_links: Arc::from([ReadmeLink {
+                label: Arc::from("item"),
+                destination: Arc::from("api/struct.Widget.html"),
+                local_file: None,
+                line: None,
+            }]),
+            readme_headings: Arc::from([]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 0,
+        };
+        let failure = no_semantics();
+        let complete = OutlineIndex::new(rows.clone(), true);
+        let live = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&failure),
+            versions: Err(&failure),
+            dependencies: Err(&failure),
+            dependents: Err(&failure),
+            outline: Ok(&complete),
+            local: Some(&local),
+        });
+        assert_eq!(
+            live.readme_exact_targets
+                .known()
+                .map(|proof| proof.links.len()),
+            Some(1)
+        );
+        let wire = serde_json::to_string(&live).expect("save dossier");
+        let restored: PackageDossier = serde_json::from_str(&wire).expect("restore dossier");
+        assert_eq!(
+            restored.readme_exact_targets.gap().map(|gap| gap.reason),
+            Some(GapReason::NotCaptured)
+        );
+
+        let partial = OutlineIndex::new(rows, false);
+        let live = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&failure),
+            versions: Err(&failure),
+            dependencies: Err(&failure),
+            dependents: Err(&failure),
+            outline: Ok(&partial),
+            local: Some(&local),
+        });
+        assert!(
+            live.readme_exact_targets.known().is_none(),
+            "partial outline cannot prove name uniqueness"
+        );
+    }
+
+    #[test]
+    fn name_links_require_complete_outline_but_exact_doc_keys_survive_partial_coverage() {
+        let foo = format!("{PRESENT}::src/lib.rs:3::Foo");
+        let consumer = format!("{PRESENT}::src/lib.rs:8::consume");
+        let rows = vec![
+            row(&RowSpec {
+                label: foo.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Foo"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 3)),
+            }),
+            row(&RowSpec {
+                label: consumer.clone(),
+                kind: DeclarationKind::Function,
+                signature: Some("pub fn consume(value: Foo)"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 8)),
+            }),
+        ];
+        let complete = OutlineIndex::new(rows.clone(), true);
+        let partial = OutlineIndex::new(rows, false);
+        let complete_signature = signature_text(
+            Some("pub fn consume(value: Foo)"),
+            Language::Rust,
+            None,
+            Some(&complete),
+        );
+        let partial_signature = signature_text(
+            Some("pub fn consume(value: Foo)"),
+            Language::Rust,
+            None,
+            Some(&partial),
+        );
+        assert!(complete_signature.known().unwrap().links().next().is_some());
+        assert!(partial_signature.known().unwrap().links().next().is_none());
+        assert_eq!(
+            complete_signature.known().unwrap().name_link_coverage,
+            NameLinkCoverage::Complete
+        );
+        assert_eq!(
+            partial_signature.known().unwrap().name_link_coverage,
+            NameLinkCoverage::Partial
+        );
+        assert_eq!(
+            complete
+                .complete_names()
+                .unwrap()
+                .resolve("Foo", is_type_like)
+                .unwrap()
+                .label,
+            foo
+        );
+        assert!(partial.complete_names().is_none());
+        assert!(partial.resolve_name("Foo", is_type_like).is_none());
+
+        let duplicate = format!("{PRESENT}::src/other.rs:3::Foo");
+        let partial_duplicates = OutlineIndex::new(
+            vec![
+                row(&RowSpec {
+                    label: foo.clone(),
+                    kind: DeclarationKind::Struct,
+                    signature: Some("pub struct Foo"),
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/lib.rs", 3)),
+                }),
+                row(&RowSpec {
+                    label: duplicate,
+                    kind: DeclarationKind::Struct,
+                    signature: Some("pub struct Foo"),
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/other.rs", 3)),
+                }),
+            ],
+            false,
+        );
+        assert!(
+            partial_duplicates
+                .resolve_name("Foo", is_type_like)
+                .is_none()
+        );
+
+        let partial_spans = identifier_spans("Foo", None, Some(&partial), None);
+        assert_eq!(
+            partial_spans.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        let exact = doc_fragments(
+            &[Fragment::Link {
+                label: "Foo".to_owned(),
+                target: key(&foo),
+            }],
+            Some(&partial),
+        );
+        assert!(matches!(
+            exact.first(),
+            Some(DocFragment::Link { coordinate: Some(coordinate), .. })
+                if coordinate.as_str() == foo
+        ));
+    }
+
+    #[test]
+    fn partial_outline_never_claims_complete_members_or_ancestry() {
+        let rows = present_rows();
+        let outline = OutlineIndex::new(rows.clone(), false);
+        let page_label = present("page.rs:396::Page");
+        let centre = RowId::Symbol(key(&page_label));
+        let position = outline_position(centre, Some(&outline), None);
+        assert_eq!(
+            position.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        assert!(position.gap().unwrap().detail.contains("partial"));
+        let children = outline.children(key(&page_label)).collect::<Vec<_>>();
+        let observed_members = members(Some(DeclarationKind::Struct), &children, Some(&outline));
+        assert_eq!(observed_members.coverage, MembersCoverage::Partial);
+
+        let coordinate = SymbolRef::new(&page_label).expect("coordinate");
+        let document = present_document(
+            &page_label,
+            "pub struct Page",
+            "One complete declaration page.",
+            ("page.rs", 396),
+            "pub struct Page {\n    prose: Box<[Prose]>,\n}",
+        );
+        let related_rows = rows
+            .iter()
+            .filter(|row| {
+                row.label == page_label
+                    || row.label == present("page.rs")
+                    || row.parent == Some(key(&page_label))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let failure = no_semantics();
+        let page = symbol_page(&SymbolInputs {
+            coordinate: &coordinate,
+            document: &document,
+            related: Ok(Neighbourhood {
+                rows: &related_rows,
+                relations: None,
+                rich: None,
+            }),
+            references: Err(&failure),
+            outline: Ok(&outline),
+        });
+        assert_eq!(
+            page.members.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        assert!(page.members.gap().unwrap().detail.contains("partial"));
+        assert_eq!(
+            page.outline.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+    }
+
+    #[test]
+    fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api()
+     {
         let package = PackageRef::parse("/repo/crates/present").unwrap();
         let index = OutlineIndex::new(present_rows(), true);
         let api = index.comparison_api(&package);
         assert!(api.complete);
-        let method = api.items.iter().find(|item| item.decl.name.as_ref() == "retitle").unwrap();
+        let method = api
+            .items
+            .iter()
+            .find(|item| item.decl.name.as_ref() == "retitle")
+            .unwrap();
         assert_eq!(method.decl.kind, Some(DeclarationKind::Method));
-        assert_eq!(method.signature.known().unwrap().text.as_ref(), "pub fn retitle(&mut self, title: &str)");
+        assert_eq!(
+            method.signature.known().unwrap().text.as_ref(),
+            "pub fn retitle(&mut self, title: &str)"
+        );
         assert_eq!(method.summary, None);
-        let constructor = api.items.iter().find(|item| item.decl.name.as_ref() == "new").unwrap();
-        assert_eq!(constructor.summary.as_deref(), Some("Assembles one page from already-typed parts."));
-        assert_eq!(constructor.decl.coordinate.as_str(), present("page.rs:410::new"));
-        let modules = api.items.iter().filter(|item| item.decl.kind == Some(DeclarationKind::Module))
-            .map(|item| item.decl.coordinate.as_str()).collect::<Vec<_>>();
-        assert_eq!(modules.len(), 2, "both recorded file modules survive the comparison projection");
+        let constructor = api
+            .items
+            .iter()
+            .find(|item| item.decl.name.as_ref() == "new")
+            .unwrap();
+        assert_eq!(
+            constructor.summary.as_deref(),
+            Some("Assembles one page from already-typed parts.")
+        );
+        assert_eq!(
+            constructor.decl.coordinate.as_str(),
+            present("page.rs:410::new")
+        );
+        let modules = api
+            .items
+            .iter()
+            .filter(|item| item.decl.kind == Some(DeclarationKind::Module))
+            .map(|item| item.decl.coordinate.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            modules.len(),
+            2,
+            "both recorded file modules survive the comparison projection"
+        );
         assert!(modules.contains(&present("page.rs").as_str()));
         assert!(modules.contains(&present("identity.rs").as_str()));
-        assert!(!api.items.iter().any(|item| item.decl.name.as_ref() == "prose"));
+        assert!(
+            !api.items
+                .iter()
+                .any(|item| item.decl.name.as_ref() == "prose")
+        );
         let partial = OutlineIndex::new(present_rows(), false).comparison_api(&package);
         assert!(!partial.complete);
     }
 
-    fn present_document(label: &str, signature: &str, doc: &str, site: (&str, u32), excerpt: &str) -> Document {
+    fn present_document(
+        label: &str,
+        signature: &str,
+        doc: &str,
+        site: (&str, u32),
+        excerpt: &str,
+    ) -> Document {
         let mut document = Document::new(
             key(label),
             view_state_root(&[]),
@@ -2248,7 +3269,10 @@ mod tests {
     }
 
     fn names(members: &[Member]) -> Vec<&str> {
-        members.iter().map(|member| member.decl.name.as_ref()).collect()
+        members
+            .iter()
+            .map(|member| member.decl.name.as_ref())
+            .collect()
     }
 
     #[test]
@@ -2315,7 +3339,13 @@ mod tests {
         assert_eq!((location.path.as_ref(), location.line), ("page.rs", 396));
         let excerpt = page.site.excerpt.known().expect("captured excerpt");
         assert!(excerpt.text.starts_with("pub struct Page {"));
-        assert_eq!(excerpt.lines, Some(LineSpan { first: 396, last: 399 }));
+        assert_eq!(
+            excerpt.lines,
+            Some(LineSpan {
+                first: 396,
+                last: 399
+            })
+        );
 
         let members = page.members.known().expect("members");
         assert_eq!(names(&members.made_of), ["prose"]);
@@ -2323,7 +3353,12 @@ mod tests {
             members
                 .does
                 .iter()
-                .find(|group| group.members.iter().any(|member| member.decl.name.as_ref() == name))
+                .find(|group| {
+                    group
+                        .members
+                        .iter()
+                        .any(|member| member.decl.name.as_ref() == name)
+                })
                 .map(|group| group.receiver)
         };
         assert_eq!(receiver_of("new"), Some(Receiver::Makes));
@@ -2334,7 +3369,10 @@ mod tests {
             .all()
             .find(|member| member.decl.name.as_ref() == "identity")
             .expect("identity accessor");
-        assert_eq!(identity_member.summary.as_deref(), Some("Returns the page's identity."));
+        assert_eq!(
+            identity_member.summary.as_deref(),
+            Some("Returns the page's identity.")
+        );
         // `new(identity: Identity, …)` links the Identity type by name.
         let new_member = members
             .all()
@@ -2351,7 +3389,10 @@ mod tests {
 
         // Structural replies know containment and nothing typed.
         let down = page.rose.down.known().expect("containment");
-        assert!(down.iter().any(|relation| relation.decl.name.as_ref() == "prose"));
+        assert!(
+            down.iter()
+                .any(|relation| relation.decl.name.as_ref() == "prose")
+        );
         assert_eq!(
             page.rose.up.gap().map(|gap| gap.reason),
             Some(GapReason::NoSemanticPublication)
@@ -2366,10 +3407,18 @@ mod tests {
 
         let position = page.outline.known().expect("outline position");
         assert_eq!(
-            position.ancestors.iter().map(|decl| decl.name.as_ref()).collect::<Vec<_>>(),
+            position
+                .ancestors
+                .iter()
+                .map(|decl| decl.name.as_ref())
+                .collect::<Vec<_>>(),
             ["page.rs"]
         );
-        let siblings = position.siblings.iter().map(|decl| decl.name.as_ref()).collect::<Vec<_>>();
+        let siblings = position
+            .siblings
+            .iter()
+            .map(|decl| decl.name.as_ref())
+            .collect::<Vec<_>>();
         assert_eq!(siblings, ["Prose", "Page"], "outline order is source order");
         assert_eq!(position.index, Some(1));
     }
@@ -2378,7 +3427,9 @@ mod tests {
     fn an_enum_page_lists_its_variants_as_made_of() {
         let rows = present_rows();
         let outline = OutlineIndex::new(rows, true);
-        let children = outline.children(key(&present("page.rs:26::Prose"))).collect::<Vec<_>>();
+        let children = outline
+            .children(key(&present("page.rs:26::Prose")))
+            .collect::<Vec<_>>();
         let members = members(Some(DeclarationKind::Enum), &children, Some(&outline));
         assert_eq!(names(&members.made_of), ["Text"]);
         assert_eq!(
@@ -2397,14 +3448,54 @@ mod tests {
         let block = rich("b578f79d::Boxed");
         let boxed = rich("18207de4::Boxed");
         let rows = vec![
-            row(&RowSpec { label: marker.clone(), kind: DeclarationKind::Trait, signature: Some("pub trait Marker"), parent: None, doc: None, site: Some(("src/lib.rs", 26)) }),
-            row(&RowSpec { label: block.clone(), kind: DeclarationKind::Type, signature: Some("nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))"), parent: None, doc: None, site: None }),
-            row(&RowSpec { label: boxed.clone(), kind: DeclarationKind::Struct, signature: Some("nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))"), parent: None, doc: None, site: None }),
-            row(&RowSpec { label: rich("43a81a00::value"), kind: DeclarationKind::Field, signature: Some("pub value: i32"), parent: Some(&boxed), doc: None, site: Some(("src/lib.rs", 12)) }),
+            row(&RowSpec {
+                label: marker.clone(),
+                kind: DeclarationKind::Trait,
+                signature: Some("pub trait Marker"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 26)),
+            }),
+            row(&RowSpec {
+                label: block.clone(),
+                kind: DeclarationKind::Type,
+                signature: Some(
+                    "nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))",
+                ),
+                parent: None,
+                doc: None,
+                site: None,
+            }),
+            row(&RowSpec {
+                label: boxed.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some(
+                    "nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))",
+                ),
+                parent: None,
+                doc: None,
+                site: None,
+            }),
+            row(&RowSpec {
+                label: rich("43a81a00::value"),
+                kind: DeclarationKind::Field,
+                signature: Some("pub value: i32"),
+                parent: Some(&boxed),
+                doc: None,
+                site: Some(("src/lib.rs", 12)),
+            }),
         ];
         let relations = vec![
-            GraphRelation::new(RowId::Symbol(key(&block)), RowId::Symbol(key(&marker)), SemanticLinkKind::TypeReference),
-            GraphRelation::new(RowId::Symbol(key(&block)), RowId::Symbol(key(&boxed)), SemanticLinkKind::TypeReference),
+            GraphRelation::new(
+                RowId::Symbol(key(&block)),
+                RowId::Symbol(key(&marker)),
+                SemanticLinkKind::TypeReference,
+            ),
+            GraphRelation::new(
+                RowId::Symbol(key(&block)),
+                RowId::Symbol(key(&boxed)),
+                SemanticLinkKind::TypeReference,
+            ),
         ];
         (rows, relations)
     }
@@ -2418,11 +3509,19 @@ mod tests {
             relations: Some(&relations),
             rich: None,
         };
-        let rose = rose(RowId::Symbol(key(&boxed)), Some(DeclarationKind::Struct), Some(hood), None);
+        let rose = rose(
+            RowId::Symbol(key(&boxed)),
+            Some(DeclarationKind::Struct),
+            Some(hood),
+            None,
+        );
         let up = rose.up.known().expect("typed up");
         let marker = up.first().expect("Boxed is Marker");
         assert_eq!(marker.decl.name.as_ref(), "Marker");
-        assert_eq!(marker.kind, RelationKind::Semantic(SemanticLinkKind::Implements));
+        assert_eq!(
+            marker.kind,
+            RelationKind::Semantic(SemanticLinkKind::Implements)
+        );
         assert_eq!(
             marker.provenance,
             Provenance::Derived {
@@ -2438,13 +3537,19 @@ mod tests {
         // The impl block's own edge to the struct is an incoming type use.
         let left = rose.left.known().expect("typed left");
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].kind, RelationKind::Semantic(SemanticLinkKind::TypeReference));
+        assert_eq!(
+            left[0].kind,
+            RelationKind::Semantic(SemanticLinkKind::TypeReference)
+        );
         let down = rose.down.known().expect("containment");
         assert_eq!(down[0].decl.name.as_ref(), "value");
 
         // The struct's own signature is compiler-encoded, and says so.
         let signature = signature_text(rows[2].signature.as_deref(), Language::Rust, None, None);
-        assert_eq!(signature.gap().map(|gap| gap.reason), Some(GapReason::Encoded));
+        assert_eq!(
+            signature.gap().map(|gap| gap.reason),
+            Some(GapReason::Encoded)
+        );
     }
 
     #[test]
@@ -2456,16 +3561,27 @@ mod tests {
             relations: Some(&relations),
             rich: None,
         };
-        let rose = rose(RowId::Symbol(key(&marker)), Some(DeclarationKind::Trait), Some(hood), None);
+        let rose = rose(
+            RowId::Symbol(key(&marker)),
+            Some(DeclarationKind::Trait),
+            Some(hood),
+            None,
+        );
         let implementors = rose.implemented_by.known().expect("implementors");
         assert_eq!(implementors.len(), 1);
         assert_eq!(implementors[0].decl.name.as_ref(), "Boxed");
         assert_eq!(implementors[0].decl.kind, Some(DeclarationKind::Type));
         assert!(matches!(
             implementors[0].provenance,
-            Provenance::Derived { via: Derivation::ImplBlock, .. }
+            Provenance::Derived {
+                via: Derivation::ImplBlock,
+                ..
+            }
         ));
-        assert!(rose.up.known().expect("typed up").is_empty(), "Marker has no supertrait");
+        assert!(
+            rose.up.known().expect("typed up").is_empty(),
+            "Marker has no supertrait"
+        );
 
         let reply = SurfaceReply::References {
             target: backend_library::ProductText::new(marker.clone()).expect("target"),
@@ -2493,7 +3609,11 @@ mod tests {
         let sites = sites.known().expect("reference sites");
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].site.name.as_ref(), "Boxed");
-        assert_eq!(sites[0].site.kind, Some(DeclarationKind::Type), "resolved through the outline");
+        assert_eq!(
+            sites[0].site.kind,
+            Some(DeclarationKind::Type),
+            "resolved through the outline"
+        );
         assert_eq!(sites[0].confidence, SemanticConfidence::Compiler);
         assert_eq!(sites[0].scope, ReferenceScope::Local);
         let span = sites[0].span.known().expect("captured span");
@@ -2507,31 +3627,35 @@ mod tests {
         let record = crate::runtime::tests::registry_record("beta", "1.0.0");
         let mut yanked = crate::runtime::tests::registry_record("beta", "0.9.0");
         yanked.standing = RegistryReleaseStanding::Yanked;
-        yanked.downloads = RegistryDownloadCount::Unavailable(RegistryFactAvailability::NotRecorded);
+        yanked.downloads =
+            RegistryDownloadCount::Unavailable(RegistryFactAvailability::NotRecorded);
         let records = SurfaceReply::Package(Box::new([record.clone()]));
         let versions = SurfaceReply::PackageVersions(Box::new([yanked, record]));
-        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Known(Box::new([
-            backend_library::PackageDependencyRecord::new(
-                package.reference().clone(),
-                backend_library::PackageDependencyTarget::new(
-                    backend_library::RegistryEcosystem::Cargo,
-                    "serde",
-                    "^1.0",
-                    None,
-                )
-                .expect("target"),
-                backend_library::DependencyScope::Runtime,
-                false,
-                backend_library::DependencyEvidence {
-                    authority: backend_library::DependencyAuthority::RegistryMetadata,
-                    frontier: [7; 32],
-                    provenance: [8; 32],
-                },
-            ),
-        ])));
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Known(Box::new([
+                backend_library::PackageDependencyRecord::new(
+                    package.reference().clone(),
+                    backend_library::PackageDependencyTarget::new(
+                        backend_library::RegistryEcosystem::Cargo,
+                        "serde",
+                        "^1.0",
+                        None,
+                    )
+                    .expect("target"),
+                    backend_library::DependencyScope::Runtime,
+                    false,
+                    backend_library::DependencyEvidence {
+                        authority: backend_library::DependencyAuthority::RegistryMetadata,
+                        frontier: [7; 32],
+                        provenance: [8; 32],
+                    },
+                ),
+            ])));
         let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
-            backend_library::ProductText::new("the configured feed does not record dependency metadata")
-                .expect("reason"),
+            backend_library::ProductText::new(
+                "the configured feed does not record dependency metadata",
+            )
+            .expect("reason"),
         ));
         let dossier = package_dossier(&PackageInputs {
             package: &package,
@@ -2545,11 +3669,14 @@ mod tests {
         let head = dossier.record.known().expect("record");
         assert_eq!(head.name.as_ref(), "beta");
         assert_eq!(head.version.known().map(AsRef::as_ref), Some("1.0.0"));
-        assert_eq!(head.ecosystem.known().map(AsRef::as_ref), Some("cargo"));
+        assert_eq!(head.ecosystem.known(), Some(&RegistryEcosystem::Cargo));
         assert_eq!(head.standing.known(), Some(&Standing::Available));
         assert_eq!(head.downloads.known(), Some(&Downloads::Exact(42)));
         assert_eq!(head.bytes.known(), Some(&1_024));
-        assert_eq!(head.description.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(
+            head.description.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
         let versions = dossier.versions.known().expect("versions");
         let summary = versions
             .iter()
@@ -2557,17 +3684,133 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             summary,
-            [("0.9.0", Standing::Yanked, false), ("1.0.0", Standing::Available, true)]
+            [
+                ("0.9.0", Standing::Yanked, false),
+                ("1.0.0", Standing::Available, true)
+            ]
         );
         let dependencies = dossier.dependencies.known().expect("dependencies");
         assert_eq!(dependencies[0].name.as_ref(), "serde");
         assert_eq!(dependencies[0].requirement.as_ref(), "^1.0");
         assert_eq!(dependencies[0].scope, DependencyScope::Runtime);
-        let dependents = dossier.dependents.gap().expect("dependents are not recorded");
+        let dependents = dossier
+            .dependents
+            .gap()
+            .expect("dependents are not recorded");
         assert_eq!(dependents.reason, GapReason::NotRecorded);
-        assert_eq!(dependents.detail.as_ref(), "the configured feed does not record dependency metadata");
-        assert_eq!(dossier.readme.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
-        assert_eq!(dossier.outline.gap().map(|gap| gap.detail.as_ref()), Some("outline refused"));
+        assert_eq!(
+            dependents.detail.as_ref(),
+            "the configured feed does not record dependency metadata"
+        );
+        assert_eq!(
+            dossier.readme.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
+        assert_eq!(
+            dossier.outline.gap().map(|gap| gap.detail.as_ref()),
+            Some("outline refused")
+        );
+    }
+
+    #[test]
+    fn package_record_selection_keeps_all_seven_typed_ecosystems_on_their_exact_routes() {
+        use facet::marks::Eco;
+
+        let cases = [
+            (RegistryEcosystem::Cargo, "pkg:cargo/widget@1.0.0", "crates.io"),
+            (RegistryEcosystem::Npm, "pkg:npm/widget@1.0.0", "npm"),
+            (RegistryEcosystem::Pypi, "pkg:pypi/widget@1.0.0", "PyPI"),
+            (RegistryEcosystem::Maven, "pkg:maven/org.example/widget@1.0.0", "Maven"),
+            (RegistryEcosystem::Nuget, "pkg:nuget/widget@1.0.0", "NuGet"),
+            (RegistryEcosystem::Golang, "pkg:golang/example.com/widget@v1.0.0", "Go"),
+            (RegistryEcosystem::Cpp, "pkg:generic/widget@1.0.0", "source"),
+        ];
+        for (ecosystem, purl, mark) in cases {
+            let package = PackageRef::parse(purl).expect("canonical package route");
+            let mut row = crate::runtime::tests::registry_record("widget", "1.0.0");
+            row.coordinate = package.reference().clone();
+            row.ecosystem = ecosystem;
+            let native = backend_library::RegistryNativeMetadata::unavailable(ecosystem, "fixture");
+            row.native_metadata_version = native.identity().expect("native fact identity");
+            row.native_metadata = native;
+            let unrelated = crate::runtime::tests::registry_record("other", "1.0.0");
+            let rows = [unrelated, row];
+            let selected = package_record_for(&rows, &package).expect("exact record");
+            assert_eq!(selected.coordinate, *package.reference());
+            let mapped = registry_record(selected);
+            assert_eq!(mapped.ecosystem.known(), Some(&ecosystem));
+            assert_eq!(
+                mapped.ecosystem.known().and_then(|value| Eco::of(value.as_str())).map(Eco::word),
+                Some(mark),
+            );
+        }
+        assert!(serde_json::from_str::<RegistryEcosystem>("\"rust\"").is_err());
+    }
+
+    #[test]
+    fn a_purl_dossier_never_borrows_another_packages_ecosystem() {
+        let package = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("NuGet package");
+        let cargo = crate::runtime::tests::registry_record("widget", "1.0.0");
+        let records = SurfaceReply::Package(Box::new([cargo]));
+        let unavailable = no_semantics();
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Err(&unavailable),
+            dependencies: Err(&unavailable),
+            dependents: Err(&unavailable),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+        assert_eq!(dossier.record.gap().map(|gap| gap.reason), Some(GapReason::NotRecorded));
+        assert!(dossier.record.known().is_none());
+
+        let mut mismatched = crate::runtime::tests::registry_record("widget", "1.0.0");
+        mismatched.coordinate = package.reference().clone();
+        assert!(package_record_for(&[mismatched], &package).is_none(),
+            "the exact route cannot turn a Cargo record into NuGet");
+    }
+
+    #[test]
+    fn a_local_route_accepts_only_one_manifest_record_with_matching_ecosystem() {
+        let local = PackageRef::parse(PRESENT).expect("local package");
+        let mut nuget = crate::runtime::tests::registry_record("Widget", "1.0.0");
+        nuget.coordinate = PackageRef::parse("pkg:nuget/Widget@1.0.0")
+            .expect("manifest coordinate")
+            .reference()
+            .clone();
+        nuget.ecosystem = RegistryEcosystem::Nuget;
+        assert_eq!(package_record_for(&[nuget.clone()], &local).map(|record| record.ecosystem),
+            Some(RegistryEcosystem::Nuget));
+        assert!(package_record_for(&[nuget.clone(), nuget], &local).is_none());
+    }
+
+    #[test]
+    fn partial_reverse_dependencies_keep_observed_rows_without_claiming_completeness() {
+        let package = PackageRef::parse("pkg:cargo/beta@1.0.0").expect("package");
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
+            value: Box::new([crate::runtime::tests::registry_record("alpha", "2.0.0")]),
+            reason: backend_library::ProductText::from_static(
+                "some registry sources could not be queried",
+            ),
+        });
+        let unavailable = no_semantics();
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&unavailable),
+            versions: Err(&unavailable),
+            dependencies: Err(&unavailable),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+
+        assert!(dossier.dependents.known().is_none());
+        assert_eq!(dossier.observed_dependents.len(), 1);
+        assert_eq!(dossier.observed_dependents[0].name.as_ref(), "alpha");
+        let gap = dossier.dependents.gap().expect("partial coverage gap");
+        assert_eq!(gap.reason, GapReason::Unknown);
+        assert!(gap.detail.contains("some registry sources"));
     }
 
     /// The toml/present package-page bug: a package can be *both* registry-
@@ -2584,13 +3827,18 @@ mod tests {
         let record = crate::runtime::tests::registry_record("beta", "1.0.0");
         let records = SurfaceReply::Package(Box::new([record.clone()]));
         let versions = SurfaceReply::PackageVersions(Box::new([record]));
-        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
-            backend_library::ProductText::new("dependency facts are unavailable because the package is not recorded")
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new(
+                    "dependency facts are unavailable because the package is not recorded",
+                )
                 .expect("reason"),
-        ));
+            ));
         let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
-            backend_library::ProductText::new("the configured feed does not record dependency metadata")
-                .expect("reason"),
+            backend_library::ProductText::new(
+                "the configured feed does not record dependency metadata",
+            )
+            .expect("reason"),
         ));
         let local = LocalPackage {
             project: crate::core::LocalProjectId::new("beta").expect("project"),
@@ -2606,6 +3854,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -2631,6 +3882,18 @@ mod tests {
             Some("A native Rust encoder and decoder.")
         );
         assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT OR Apache-2.0"));
+
+        // A mixed root can also have another ecosystem's manifest. Cargo
+        // description and licence do not become that package's facts.
+        let mut nuget = crate::runtime::tests::registry_record("beta", "1.0.0");
+        nuget.coordinate = PackageRef::parse("pkg:nuget/beta@1.0.0")
+            .expect("NuGet package")
+            .reference()
+            .clone();
+        nuget.ecosystem = RegistryEcosystem::Nuget;
+        let mapped = with_local_facts(registry_record(&nuget), Some(&local));
+        assert_eq!(mapped.description.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(mapped.license.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
     }
 
     #[test]
@@ -2650,6 +3913,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Presentation model."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([LocalDependency {
                 name: Arc::from("backend-library"),
                 requirement: Arc::from("*"),
@@ -2660,11 +3926,17 @@ mod tests {
             members: 1,
         };
         let records = SurfaceReply::Package(Box::new([]));
+        let other = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("registry route");
+        assert!(local_manifest_record(&other, Some(&local), false).known().is_none(),
+            "a registry route cannot borrow this local Cargo manifest");
         let versions = SurfaceReply::PackageVersions(Box::new([]));
-        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
-            backend_library::ProductText::new("dependency facts are unavailable because the package is not recorded")
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new(
+                    "dependency facts are unavailable because the package is not recorded",
+                )
                 .expect("reason"),
-        ));
+            ));
         let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
             backend_library::ProductText::new("not recorded").expect("reason"),
         ));
@@ -2683,15 +3955,31 @@ mod tests {
         assert_eq!(head.name.as_ref(), "backend-present");
         assert_eq!(head.version.known().map(AsRef::as_ref), Some("0.3.0"));
         assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT"));
-        assert_eq!(head.downloads.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
-        assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
-        assert_eq!(dossier.dependents.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
         assert_eq!(
-            dossier.dependencies.known().map(|deps| deps[0].name.as_ref()),
+            head.downloads.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        assert_eq!(
+            dossier.versions.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        assert_eq!(
+            dossier.dependents.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        assert_eq!(
+            dossier
+                .dependencies
+                .known()
+                .map(|deps| deps[0].name.as_ref()),
             Some("backend-library")
         );
         let tree = dossier.outline.known().expect("mosaic tree");
-        let modules = tree.roots.iter().map(|node| node.decl.name.as_ref()).collect::<Vec<_>>();
+        let modules = tree
+            .roots
+            .iter()
+            .map(|node| node.decl.name.as_ref())
+            .collect::<Vec<_>>();
         assert_eq!(modules, ["identity.rs", "page.rs"]);
         let page_module = &tree.roots[1];
         let items = page_module
@@ -2701,7 +3989,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             items,
-            [("Prose", Some(DeclarationKind::Enum)), ("Page", Some(DeclarationKind::Struct))]
+            [
+                ("Prose", Some(DeclarationKind::Enum)),
+                ("Page", Some(DeclarationKind::Struct))
+            ]
         );
         assert_eq!(tree.count(), 11);
         assert!(matches!(
@@ -2727,6 +4018,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("From the checkout."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([LocalDependency {
                 name: Arc::from("local-only"),
                 requirement: Arc::from("0.1"),
@@ -2801,6 +4095,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Visible."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -2828,7 +4125,10 @@ mod tests {
             dossier.record.gap().map(|gap| gap.reason),
             Some(GapReason::LocalProject)
         );
-        let dependencies = dossier.dependencies.gap().expect("unavailable dependencies");
+        let dependencies = dossier
+            .dependencies
+            .gap()
+            .expect("unavailable dependencies");
         assert_eq!(dependencies.reason, GapReason::Unavailable);
         assert_eq!(dependencies.detail.as_ref(), reason);
         assert!(matches!(
@@ -2840,11 +4140,38 @@ mod tests {
     #[test]
     fn search_rows_keep_producer_order_and_say_why_each_matched() {
         let rows = vec![
-            row(&RowSpec { label: present("record.rs:91::from_row"), kind: DeclarationKind::Method, signature: Some("pub fn from_row(row: &Row) -> Self"), parent: None, doc: Some("Lowers one engine row into a result record."), site: Some(("record.rs", 91)) }),
-            row(&RowSpec { label: present("drive.rs:116::Engine"), kind: DeclarationKind::Trait, signature: Some("pub trait Engine"), parent: None, doc: Some("Whatever a surface talks to in order to read an admitted reply."), site: Some(("drive.rs", 116)) }),
-            row(&RowSpec { label: present("drive.rs:200::answer"), kind: DeclarationKind::Function, signature: Some("pub fn answer(engine: &mut dyn Engine) -> Answer"), parent: None, doc: None, site: Some(("drive.rs", 200)) }),
+            row(&RowSpec {
+                label: present("record.rs:91::from_row"),
+                kind: DeclarationKind::Method,
+                signature: Some("pub fn from_row(row: &Row) -> Self"),
+                parent: None,
+                doc: Some("Lowers one engine row into a result record."),
+                site: Some(("record.rs", 91)),
+            }),
+            row(&RowSpec {
+                label: present("drive.rs:116::Engine"),
+                kind: DeclarationKind::Trait,
+                signature: Some("pub trait Engine"),
+                parent: None,
+                doc: Some("Whatever a surface talks to in order to read an admitted reply."),
+                site: Some(("drive.rs", 116)),
+            }),
+            row(&RowSpec {
+                label: present("drive.rs:200::answer"),
+                kind: DeclarationKind::Function,
+                signature: Some("pub fn answer(engine: &mut dyn Engine) -> Answer"),
+                parent: None,
+                doc: None,
+                site: Some(("drive.rs", 200)),
+            }),
         ];
-        let page = search_rows("engine", &rows, &[backend_library::Coverage::Complete], None, 0);
+        let page = search_rows(
+            "engine",
+            &rows,
+            &[backend_library::Coverage::Complete],
+            None,
+            0,
+        );
         let summary = page
             .rows
             .iter()
@@ -2858,24 +4185,32 @@ mod tests {
                 (2, "answer", MatchReason::Signature),
             ]
         );
-        assert_eq!(page.rows[1].snippet.as_deref(), Some("Whatever a surface talks to in order to read an admitted reply."));
+        assert_eq!(
+            page.rows[1].snippet.as_deref(),
+            Some("Whatever a surface talks to in order to read an admitted reply.")
+        );
         assert_eq!(page.rows[1].package.as_deref(), Some(PRESENT));
-        assert_eq!(page.rows[1].score.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(
+            page.rows[1].score.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
         assert!(page.next.is_none());
     }
 
     #[test]
-    fn a_local_source_view_is_the_whole_verified_file_with_linked_identifiers() {
+    fn local_file_source_links_only_excerpt_verified_identifiers() {
         let rows = present_rows();
         let outline = OutlineIndex::new(rows, true);
         let label = present("page.rs:3::render");
         let file = "use crate::Page;\n\npub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}\n";
+        let captured_excerpt =
+            "pub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}";
         let mut document = present_document(
             &label,
             "pub fn render(page: &Page) -> Identity",
             "Renders one page.",
             ("page.rs", 3),
-            "pub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}",
+            captured_excerpt,
         );
         document.symbol = key(&label);
         let coordinate = SymbolRef::new(&label).expect("coordinate");
@@ -2889,45 +4224,123 @@ mod tests {
             }),
             scope: ReferenceScope::Local,
         }]));
-        let view = source_view(&coordinate, &document, Some(file), &uses, Some(&outline));
+        let view = source_view(
+            &coordinate,
+            &document,
+            Some(file),
+            Some("/fixture/page.rs"),
+            &uses,
+            Some(&outline),
+        );
         let text = view.text.known().expect("source text");
         assert_eq!(text.origin, SourceOrigin::LocalFile);
-        assert_eq!(text.first_line, 1);
-        assert_eq!(text.text.as_ref(), file);
-        assert_eq!(view.declaration.known(), Some(&LineSpan { first: 3, last: 5 }));
+        assert_eq!(text.first_line(), 1);
+        assert_eq!(text.text(), file);
+        let verified_start = u32::try_from(file.find("pub fn render").expect("excerpt start"))
+            .expect("source offset");
+        let verified_end = verified_start
+            + u32::try_from(captured_excerpt.trim_end().len()).expect("excerpt length");
+        assert_eq!(
+            text.coverage(),
+            SourceCoverage::LiveFileExcerptVerified {
+                bytes: ByteSpan::new(verified_start, verified_end).expect("verified range"),
+            }
+        );
+        assert_eq!(
+            view.declaration.known(),
+            Some(&LineSpan { first: 3, last: 5 })
+        );
         assert_eq!(view.file.known().map(AsRef::as_ref), Some("page.rs"));
+        assert_eq!(
+            view.editor_path.known().map(AsRef::as_ref),
+            Some("/fixture/page.rs")
+        );
         let linked = view
             .identifiers
             .known()
             .expect("identifiers")
             .iter()
-            .map(|span| (&text.text[span.span.range()], span.link.target.as_str().to_owned()))
+            .map(|span| {
+                (
+                    &text.text()[span.span.range()],
+                    span.link.target.as_str().to_owned(),
+                )
+            })
             .collect::<Vec<_>>();
+        assert!(
+            view.identifiers
+                .known()
+                .expect("identifiers")
+                .windows(2)
+                .all(|pair| pair[0].span.end <= pair[1].span.start)
+        );
         assert_eq!(
             linked,
             [
                 ("Page", present("page.rs:396::Page")),
-                ("Page", present("page.rs:396::Page")),
                 ("Identity", present("identity.rs:339::Identity")),
             ]
         );
-        let uses = view.uses.known().expect("uses in this file");
-        assert_eq!(&text.text[uses[0].range()], "Page");
+        let uses_gap = view.uses.gap().expect("whole-file offsets stay unplaced");
+        assert!(uses_gap.detail.contains("no full-file digest"));
+        assert_eq!(view.uses_elsewhere.len(), 1);
 
         // A file that no longer matches the excerpt is not trusted.
         let stale = "// edited since indexing\n";
-        let view = source_view(&coordinate, &document, Some(stale), &Known::Known(Arc::from([])), Some(&outline));
+        let view = source_view(
+            &coordinate,
+            &document,
+            Some(stale),
+            Some("/fixture/page.rs"),
+            &Known::Known(Arc::from([])),
+            Some(&outline),
+        );
         let text = view.text.known().expect("excerpt text");
         assert_eq!(text.origin, SourceOrigin::Excerpt);
-        assert_eq!(text.first_line, 3);
-        assert_eq!(view.uses.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert!(view.editor_path.known().is_none());
+        assert_eq!(text.first_line(), 3);
+        assert_eq!(
+            view.uses.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
+    }
+
+    #[test]
+    fn overflowing_producer_source_lines_are_an_explicit_gap() {
+        let label = present("page.rs:4294967295::render");
+        let document = present_document(
+            &label,
+            "pub fn render() {\n}",
+            "Renders.",
+            ("page.rs", u32::MAX),
+            "pub fn render() {\n}",
+        );
+        let coordinate = SymbolRef::new(&label).expect("coordinate");
+        let view = source_view(
+            &coordinate,
+            &document,
+            None,
+            None,
+            &Known::Known(Arc::from([])),
+            None,
+        );
+        let gap = view
+            .text
+            .gap()
+            .expect("overflow has no unique source-row identity");
+        assert_eq!(gap.reason, GapReason::Unavailable);
+        assert!(gap.detail.contains("line numbers"));
     }
 
     #[test]
     fn health_keeps_lane_reasons_and_ingest_counts() {
         let root = view_state_root(&[]);
         let report = HealthReport::from_admitted_parts(
-            backend_library::RevisionReceipt::new(root, backend_library::Cursor::at(root, 1), object_version(b"fixture")),
+            backend_library::RevisionReceipt::new(
+                root,
+                backend_library::Cursor::at(root, 1),
+                object_version(b"fixture"),
+            ),
             basis(),
             Box::new([
                 backend_library::Coverage::Complete,
@@ -2945,7 +4358,11 @@ mod tests {
                 22,
                 1,
                 1_269,
-                vec![backend_library::LanguageRows::new(backend_library::SourceLanguage::Rust, 22, 1_269)],
+                vec![backend_library::LanguageRows::new(
+                    backend_library::SourceLanguage::Rust,
+                    22,
+                    1_269,
+                )],
                 Vec::new(),
             )
             .expect("progress"),
@@ -2962,7 +4379,9 @@ mod tests {
         assert_eq!(semantic.name(), "semantic");
         assert!(matches!(
             semantic.state(),
-            backend_present::LaneState::Unavailable { reason: backend_library::Reason::Unconfigured }
+            backend_present::LaneState::Unavailable {
+                reason: backend_library::Reason::Unconfigured
+            }
         ));
         assert!(health.ready_capabilities.is_empty());
         assert!(!health.missing_capabilities.is_empty());
@@ -2998,7 +4417,11 @@ mod tests {
                     .entries
                     .iter()
                     .map(|entry| {
-                        format!("{}: {}", entry.subject, DocFragment::plain_text(&entry.body))
+                        format!(
+                            "{}: {}",
+                            entry.subject,
+                            DocFragment::plain_text(&entry.body)
+                        )
                     })
                     .collect::<Vec<_>>();
                 format!(
@@ -3034,8 +4457,22 @@ mod tests {
             }
         }
         let rows = vec![
-            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("service.rs", 1)) }),
-            row(&spec(service.clone(), DeclarationKind::Trait, "pub trait Service", &module, "A contract.", 3)),
+            row(&RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("service.rs", 1)),
+            }),
+            row(&spec(
+                service.clone(),
+                DeclarationKind::Trait,
+                "pub trait Service",
+                &module,
+                "A contract.",
+                3,
+            )),
             row(&spec(
                 present("service.rs:9::execute"),
                 DeclarationKind::Method,
@@ -3060,7 +4497,14 @@ mod tests {
                 deprecation: Fact::Present(Deprecation::new(Some("2.0.0"), Some("use `execute`"))),
                 obligation: Fact::Present(Obligation::Provided),
             }),
-            row(&spec(present("service.rs:20::unread"), DeclarationKind::Function, "fn unread()", &module, "Never looked at.", 20)),
+            row(&spec(
+                present("service.rs:20::unread"),
+                DeclarationKind::Function,
+                "fn unread()",
+                &module,
+                "Never looked at.",
+                20,
+            )),
         ];
         let outline = OutlineIndex::new(rows.clone(), true);
         let coordinate = SymbolRef::new(&service).expect("coordinate");
@@ -3089,7 +4533,10 @@ mod tests {
         });
 
         assert_eq!(
-            page.identity.facts.deprecated().and_then(|notice| notice.note.as_deref()),
+            page.identity
+                .facts
+                .deprecated()
+                .and_then(|notice| notice.note.as_deref()),
             Some("the old contract")
         );
         let members = page.members.known().expect("members");
@@ -3120,7 +4567,11 @@ mod tests {
             [r#"errors "Errors" body "Fails when stopped." entries []"#]
         );
         let describe = member("describe");
-        let notice = describe.decl.facts.deprecated().expect("describe is deprecated");
+        let notice = describe
+            .decl
+            .facts
+            .deprecated()
+            .expect("describe is deprecated");
         assert_eq!(notice.since.as_deref(), Some("2.0.0"));
         assert_eq!(notice.note.as_deref(), Some("use `execute`"));
         assert_eq!(

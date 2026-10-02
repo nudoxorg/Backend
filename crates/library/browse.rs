@@ -12,11 +12,15 @@ mod tree;
 #[cfg(test)]
 mod tests;
 
-pub use cargo::{CargoTreeError, lockfile_input, metadata_input};
+pub use cargo::{
+    CargoTreeError, MAX_CARGO_LOCKFILE_BYTES, MAX_CARGO_METADATA_BYTES, lockfile_input,
+    metadata_input, metadata_input_with_stable_source_witness,
+};
 pub use roles::{RoleEvidence, RoleId};
 pub use tree::{
     AdvisoryObserver, AdvisorySourceState, DirectDependency, Duplicate, DuplicateCopy,
-    MAX_TREE_PACKAGES, MemberEdge, PROJECT_TREE_SCHEMA, PackageOrigin, PackageRole, ProjectTree,
-    TreeAdvisory, TreeEdge, TreeHealth, TreeInput, TreeInputPackage, TreeMember, TreePackage,
-    TreeSource, WhyHop, build_tree,
+    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, MAX_TREE_PACKAGES,
+    MemberEdge, PROJECT_TREE_REQUEST_BINDING_SCHEMA, PROJECT_TREE_SCHEMA, PackageOrigin,
+    PackageRole, ProjectTree, ProjectTreeRequestBindingV1, TreeAdvisory, TreeEdge, TreeHealth,
+    TreeInput, TreeInputPackage, TreeMember, TreePackage, TreeSource, WhyHop, build_tree,
 };

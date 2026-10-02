@@ -11,6 +11,8 @@
 //!   `NUDOX_*` variables `development.sh` sets ([`ToolchainEnv`]); a run
 //!   without them refuses every root with `Toolchain { … }`, which says
 //!   nothing about a run with them;
+//! - the resolved Cargo authority: its effective home, source roots and
+//!   registry indexes select the package source trees ([`CargoAuthorityKey`]);
 //! - the root's own bytes ([`root_digest`]).
 //!
 //! A record made under one of those is never read back under another.
@@ -18,6 +20,7 @@
 use backend_client::ClientError;
 use backend_library::RowState;
 use backend_local_service::ProtocolError;
+use crate::host::registry::CargoAuthorityKey;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,7 +28,7 @@ use std::path::{Path, PathBuf};
 /// The record, under the state directory.
 const RECORD_FILE: &str = "harness-refusals.tsv";
 /// The first line of the record: its format, so another format is not read.
-const RECORD_HEADER: &str = "nudox-harness-refusals 2";
+const RECORD_HEADER: &str = "nudox-harness-refusals 3";
 /// The record an earlier harness wrote, keyed by the source tree only (it
 /// replayed a refusal made without the toolchain environment as a fact).
 const RETIRED_RECORD_FILE: &str = "harness-failed-roots.tsv";
@@ -87,12 +90,12 @@ impl ToolchainEnv {
 pub(super) struct Environment(String);
 
 impl Environment {
-    pub(super) fn of_process() -> Self {
-        Self::of(OwnerBuild::of_current_exe(), &ToolchainEnv::of_process())
+    pub(super) fn of_process(authority: &CargoAuthorityKey) -> Self {
+        Self::of(OwnerBuild::of_current_exe(), &ToolchainEnv::of_process(), authority.as_str())
     }
 
-    fn of(build: OwnerBuild, toolchain: &ToolchainEnv) -> Self {
-        let mut text = format!("owner {} {}\n", build.length, build.modified_ns);
+    fn of(build: OwnerBuild, toolchain: &ToolchainEnv, authority: &str) -> Self {
+        let mut text = format!("owner {} {}\ncargo-authority={authority}\n", build.length, build.modified_ns);
         for (name, value) in &toolchain.0 {
             text.push_str(&format!("{name}={value}\n"));
         }
@@ -130,7 +133,7 @@ fn root_digest(root: &Path) -> String {
 }
 
 /// The refusals recorded for this state directory that still hold: same
-/// owner, same toolchain environment, same root bytes.
+/// owner, toolchain, Cargo authority and root bytes.
 pub(super) struct Refusals {
     path: PathBuf,
     /// This run's key for each root.
@@ -140,9 +143,10 @@ pub(super) struct Refusals {
 }
 
 impl Refusals {
-    /// Reads `state`'s record for `roots` under this process's environment.
-    pub(super) fn load(state: &Path, roots: &[PathBuf]) -> Self {
-        Self::load_under(state, roots, &Environment::of_process())
+    /// Reads `state`'s record for `roots` under this process's owner, toolchain
+    /// and resolved Cargo authority.
+    pub(super) fn load(state: &Path, roots: &[PathBuf], authority: &CargoAuthorityKey) -> Self {
+        Self::load_under(state, roots, &Environment::of_process(authority))
     }
 
     fn load_under(state: &Path, roots: &[PathBuf], environment: &Environment) -> Self {
@@ -212,14 +216,13 @@ pub(super) enum Fate {
     Fatal,
 }
 
-/// The owner's own "no". A command it ran and rejected arrives typed
-/// (`CommandFailed`) or, from the older error frame, as the words
+/// The owner's own "no". A command it ran and rejected arrives as the words
 /// `command execution failed: …` (`ProtocolError::CommandExecution`, sent as
-/// `ClientError::Protocol`): a compile refusal arrives the second way today.
+/// `ClientError::Protocol`): an index compilation refusal arrives this way.
+/// Typed application/query failures do not prove the index request was run.
 pub(super) fn fate(error: &ClientError) -> Fate {
     let ran_and_failed = ProtocolError::CommandExecution(String::new()).to_string();
     match error {
-        ClientError::CommandFailed(failure) => Fate::Refused(failure.to_string()),
         ClientError::Protocol(words) if words.starts_with(&ran_and_failed) => Fate::Refused(format!("protocol: {words}")),
         ClientError::Io(_) | ClientError::Disconnected(_) | ClientError::Transport(_) => Fate::Retry,
         _ => Fate::Fatal,
@@ -287,7 +290,7 @@ pub(super) fn standing(reply: &Reply, row: Option<&Row>, listing: Listing) -> St
 
 /// The wait is over when no root is still pending.
 pub(super) fn settled(standings: &[Standing]) -> bool {
-    standings.iter().all(|standing| *standing != Standing::Pending)
+    !standings.is_empty() && standings.iter().all(|standing| *standing != Standing::Pending)
 }
 
 #[cfg(test)]
@@ -325,8 +328,14 @@ mod tests {
         ToolchainEnv::from_pairs(list.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())))
     }
 
+    const DEV_AUTHORITY: &str = "cargo-home=/cargo; registry-indices=/cargo/registry/index";
+
     fn dev_environment() -> Environment {
-        Environment::of(OwnerBuild { length: 100, modified_ns: 7 }, &pairs(&[("NUDOX_RUSTC", "/nix/store/x/bin/rustc"), ("NUDOX_GO", "/nix/store/y/bin/go"), ("LIBCLANG_PATH", "/nix/store/z/lib")]))
+        Environment::of(
+            OwnerBuild { length: 100, modified_ns: 7 },
+            &pairs(&[("NUDOX_RUSTC", "/nix/store/x/bin/rustc"), ("NUDOX_GO", "/nix/store/y/bin/go"), ("LIBCLANG_PATH", "/nix/store/z/lib")]),
+            DEV_AUTHORITY,
+        )
     }
 
     const WORDS: &str = "protocol: command execution failed: package semantic compilation failed";
@@ -340,7 +349,11 @@ mod tests {
         let read = Refusals::load_under(&scratch.0, &[root.clone()], &dev_environment());
         assert_eq!(read.recorded(&root), Some(format!("{WORDS}  with a tab").as_str()), "one line per root, whatever the owner's words held");
         // Another owner (a rebuilt binary) asks again.
-        let rebuilt = Environment::of(OwnerBuild { length: 101, modified_ns: 7 }, &pairs(&[("NUDOX_RUSTC", "/nix/store/x/bin/rustc"), ("NUDOX_GO", "/nix/store/y/bin/go"), ("LIBCLANG_PATH", "/nix/store/z/lib")]));
+        let rebuilt = Environment::of(
+            OwnerBuild { length: 101, modified_ns: 7 },
+            &pairs(&[("NUDOX_RUSTC", "/nix/store/x/bin/rustc"), ("NUDOX_GO", "/nix/store/y/bin/go"), ("LIBCLANG_PATH", "/nix/store/z/lib")]),
+            DEV_AUTHORITY,
+        );
         assert_eq!(Refusals::load_under(&scratch.0, &[root.clone()], &rebuilt).recorded(&root), None);
         // Another root content asks again; an untouched one does not.
         let other = scratch.root("runtime", "fn b() {}");
@@ -359,7 +372,7 @@ mod tests {
     fn a_run_without_the_toolchain_environment_never_poisons_a_later_run() {
         let scratch = Scratch::new("poison");
         let root = scratch.root("present", "fn a() {}");
-        let bare = Environment::of(OwnerBuild { length: 100, modified_ns: 7 }, &pairs(&[("HOME", "/Users/x"), ("PATH", "/usr/bin")]));
+        let bare = Environment::of(OwnerBuild { length: 100, modified_ns: 7 }, &pairs(&[("HOME", "/Users/x"), ("PATH", "/usr/bin")]), DEV_AUTHORITY);
         let toolchain = "protocol: command execution failed: … Toolchain { stage: LowerIr, selected: Rustc, configured: None }";
         Refusals::load_under(&scratch.0, &[root.clone()], &bare).save(&BTreeMap::from([(root.clone(), toolchain.to_owned())]));
         // The dev shell (the same executable, the toolchain variables set) is a different question.
@@ -383,10 +396,22 @@ mod tests {
         assert_eq!(env.0, [("LIBCLANG_PATH".to_owned(), "/l".to_owned()), ("NUDOX_RUSTC".to_owned(), "/r".to_owned())]);
         // Where this run keeps its state is not a toolchain: a cloned state dir keeps its record.
         assert_eq!(
-            Environment::of(OwnerBuild::default(), &pairs(&[("NUDOX_RUSTC", "/r"), ("NUDOX_HARNESS_STATE", "/state/a")])),
-            Environment::of(OwnerBuild::default(), &pairs(&[("NUDOX_RUSTC", "/r"), ("NUDOX_HARNESS_STATE", "/state/b")]))
+            Environment::of(OwnerBuild::default(), &pairs(&[("NUDOX_RUSTC", "/r"), ("NUDOX_HARNESS_STATE", "/state/a")]), DEV_AUTHORITY),
+            Environment::of(OwnerBuild::default(), &pairs(&[("NUDOX_RUSTC", "/r"), ("NUDOX_HARNESS_STATE", "/state/b")]), DEV_AUTHORITY)
         );
-        assert_ne!(dev_environment(), Environment::of(OwnerBuild { length: 100, modified_ns: 7 }, &ToolchainEnv::default()));
+        assert_ne!(
+            dev_environment(),
+            Environment::of(OwnerBuild { length: 100, modified_ns: 7 }, &ToolchainEnv::default(), DEV_AUTHORITY)
+        );
+        assert_ne!(
+            dev_environment(),
+            Environment::of(
+                OwnerBuild { length: 100, modified_ns: 7 },
+                &pairs(&[("NUDOX_RUSTC", "/nix/store/x/bin/rustc"), ("NUDOX_GO", "/nix/store/y/bin/go"), ("LIBCLANG_PATH", "/nix/store/z/lib")]),
+                "cargo-home=/different; registry-indices=/different/registry/index",
+            ),
+            "a different effective Cargo authority asks again",
+        );
     }
 
     #[test]
@@ -414,7 +439,9 @@ mod tests {
     fn only_the_owners_own_no_is_an_answer_and_a_dead_connection_is_asked_again() {
         let ran = ProtocolError::CommandExecution("local semantic compilation failed".to_owned()).to_string();
         assert_eq!(fate(&ClientError::Protocol(ran.clone())), Fate::Refused(format!("protocol: {ran}")));
-        assert!(matches!(fate(&ClientError::CommandFailed(CommandFailure::MutationRequiresOwner)), Fate::Refused(_)));
+        for failure in [CommandFailure::MutationRequiresOwner, CommandFailure::NotFound, CommandFailure::InvalidQuery("bad query".to_owned())] {
+            assert_eq!(fate(&ClientError::CommandFailed(failure)), Fate::Fatal, "a typed command/query rejection is not an index refusal");
+        }
         for dead in [ClientError::Io("Connection refused".to_owned()), ClientError::Disconnected(std::io::ErrorKind::BrokenPipe)] {
             assert_eq!(fate(&dead), Fate::Retry, "{dead}");
         }
@@ -466,6 +493,7 @@ mod tests {
         let failed = Standing::Failed("no".to_owned());
         assert!(settled(&[ready.clone(), preserved.clone(), failed.clone()]));
         assert!(!settled(&[ready, preserved, failed, Standing::Pending]));
+        assert!(!settled(&[]), "an empty fixture list cannot settle vacuously");
     }
 
     #[test]

@@ -8,14 +8,195 @@ use std::{
 };
 
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustFeatureControl, RustToolchain, RustWorkspace, RustWorkspaceFile,
-    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
-    SourceByteLimit,
+    CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustAnalysisControl,
+    RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, RustWorkspace,
+    RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
+    RustWorkspaceSessionLane, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_syntax::AstNode;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn workspace_session_key_orders_normalized_paths_by_spelling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "backend-rust-workspace-path-order-{nonce}-{sequence}"
+    ));
+    fs::create_dir_all(root.join("src/server/waiter"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"path_order_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    fs::write(root.join("src/server/waiter.rs"), "")?;
+    fs::write(root.join("src/server/waiter/tests.rs"), "")?;
+
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let make_key = |source_paths: &[PathBuf]| {
+            RustWorkspaceSessionKey::new(
+                &root,
+                &toolchain,
+                RustEdition::Rust2024,
+                Stage::LowerIr,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                None,
+                None,
+                None,
+                [0x72; 32],
+                source_paths,
+            )
+        };
+
+        let spelling_order = [
+            PathBuf::from("src/server/waiter.rs"),
+            PathBuf::from("src/server/waiter/tests.rs"),
+        ];
+        let key = make_key(&spelling_order)?;
+        assert_eq!(key.source_paths(), &spelling_order);
+
+        let reversed = [spelling_order[1].clone(), spelling_order[0].clone()];
+        assert!(matches!(
+            make_key(&reversed),
+            Err(RustAuthorityError::SessionSourcePath { .. })
+        ));
+
+        let duplicate = [spelling_order[0].clone(), spelling_order[0].clone()];
+        assert!(matches!(
+            make_key(&duplicate),
+            Err(RustAuthorityError::SessionSourcePath { .. })
+        ));
+
+        let non_normalized = [PathBuf::from("src/server/../server/waiter.rs")];
+        assert!(matches!(
+            make_key(&non_normalized),
+            Err(RustAuthorityError::SessionSourcePath { .. })
+        ));
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+
+    let _ = fs::remove_dir_all(&root);
+    outcome
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_lane_preserves_the_selected_cargo_metadata_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("backend-rust-workspace-policy-{nonce}-{sequence}"));
+    fs::create_dir_all(root.join("src"))?;
+    fs::create_dir_all(root.join("cargo-home"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"metadata_policy_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    fs::write(root.join("Cargo.lock"), "# fixture lockfile\n")?;
+    fs::write(root.join("src/lib.rs"), "pub fn fixture() {}\n")?;
+    let cargo = root.join("fake-cargo");
+    fs::write(
+        &cargo,
+        r##"#!/bin/sh
+printf '%s\t%s\n' "${CARGO_NET_OFFLINE-<unset>}" "$*" >> "$PWD/cargo-invocations.log"
+for arg do
+    if [ "$arg" = "--no-deps" ]; then
+        printf '{"workspace_root":"%s"}\n' "$PWD"
+        exit 0
+    fi
+done
+printf '{"workspace_root":"%s","resolve":null}\n' "$PWD"
+"##,
+    )?;
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700))?;
+
+    let outcome = (|| {
+        let mut toolchain = RustToolchain::discover(rustc_path())?;
+        toolchain.cargo = Some(cargo);
+        toolchain.cargo_home = Some(root.join("cargo-home"));
+        let source_paths = [PathBuf::from("src/lib.rs")];
+        let make_key = |policy| {
+            RustWorkspaceSessionKey::new(
+                &root,
+                &toolchain,
+                RustEdition::Rust2024,
+                Stage::LowerIr,
+                RustFeatureControl::default(),
+                policy,
+                None,
+                None,
+                None,
+                [0x71; 32],
+                &source_paths,
+            )
+        };
+        let online_key = make_key(RustCargoMetadataPolicy::Online)?;
+        let offline_key = make_key(RustCargoMetadataPolicy::Offline)?;
+        assert_ne!(
+            online_key, offline_key,
+            "metadata policy is part of the session operation identity"
+        );
+
+        let files = [RustWorkspaceFile {
+            relative_path: Path::new("src/lib.rs"),
+            source: "pub fn fixture() {}\n",
+        }];
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + Duration::from_secs(30),
+        };
+        for (key, expected_policy) in [
+            (online_key, RustCargoMetadataPolicy::Online),
+            (offline_key, RustCargoMetadataPolicy::Offline),
+        ] {
+            let mut lane = RustWorkspaceSessionLane::default();
+            let result = lane.begin(key, &files, control());
+            assert!(
+                matches!(
+                    &result,
+                    Err(RustAuthorityError::CargoMetadataIncomplete {
+                        policy,
+                        cause: CargoMetadataIncompleteCause::Preflight(
+                            CargoMetadataPreflightError::MissingResolutionGraph
+                        ),
+                        ..
+                    }) if *policy == expected_policy
+                ),
+                "the lane must fail closed under the exact selected metadata policy"
+            );
+        }
+
+        let invocations = fs::read_to_string(root.join("cargo-invocations.log"))?;
+        let lines = invocations.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 4, "each policy runs no-deps and full metadata");
+        for line in &lines[..2] {
+            assert!(line.starts_with("false\t"), "online environment: {line}");
+            assert!(
+                line.contains("--config net.offline=false"),
+                "online args: {line}"
+            );
+            assert!(!line.contains("--offline"), "online args: {line}");
+        }
+        for line in &lines[2..] {
+            assert!(line.starts_with("true\t"), "offline environment: {line}");
+            assert!(line.contains("--offline"), "offline args: {line}");
+            assert!(!line.contains("net.offline=false"), "offline args: {line}");
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+
+    fs::remove_dir_all(&root)?;
+    outcome
+}
 
 #[derive(Default)]
 struct RecordingReadFrontier {
@@ -163,6 +344,7 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
                 RustEdition::Rust2024,
                 Stage::LowerIr,
                 RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
                 Some([1; 32]),
                 Some([2; 32]),
                 Some([3; 32]),
@@ -339,7 +521,13 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
             );
             let lease = lane.begin(key_for(&current)?, &current, control())?;
             assert!(
-                nested_module_resolves(lease.workspace(), &root, renamed_root_source, control(),)?,
+                named_path_resolves(
+                    lease.workspace(),
+                    &root,
+                    renamed_root_source,
+                    "baz::value",
+                    control(),
+                )?,
                 "a renamed module buffer must resolve at its selected lexical path"
             );
             assert!(!root.join("src/foo/baz.rs").exists());
@@ -418,6 +606,153 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
     outcome
 }
 
+#[test]
+fn production_session_overlay_keeps_backend_present_unconditional_module_owned()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Exercise the whole package source frontier used by the live desktop
+    // path. `assemble.rs` remains an ordinary module reached from the crate's
+    // unconditional `mod assemble;` declaration in `lib.rs`.
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Rust frontend manifest is not nested in the workspace")?;
+    let package_root = repository_root.join("crates/present");
+    let manifest = fs::read_to_string(package_root.join("Cargo.toml"))?;
+    assert!(!manifest.lines().any(|line| line.trim() == "[features]"));
+    let root_source = fs::read_to_string(package_root.join("lib.rs"))?;
+    assert!(
+        root_source
+            .lines()
+            .any(|line| line.trim() == "mod assemble;")
+    );
+    let assemble_source = fs::read_to_string(package_root.join("assemble.rs"))?;
+
+    fn collect_rust_sources(
+        package_root: &Path,
+        directory: &Path,
+        rows: &mut Vec<(PathBuf, String)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let path = entry.path();
+            if kind.is_dir() {
+                collect_rust_sources(package_root, &path, rows)?;
+            } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "rs")
+            {
+                rows.push((
+                    path.strip_prefix(package_root)?.to_path_buf(),
+                    fs::read_to_string(path)?,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut source_rows = Vec::new();
+    collect_rust_sources(&package_root, &package_root, &mut source_rows)?;
+    source_rows.sort_unstable_by(|left, right| {
+        left.0
+            .to_str()
+            .expect("workspace source paths use UTF-8")
+            .cmp(right.0.to_str().expect("workspace source paths use UTF-8"))
+    });
+    assert!(
+        source_rows.len() > 2,
+        "fixture must cover the full package frontier"
+    );
+    assert!(
+        source_rows.iter().any(|(path, source)| {
+            path == Path::new("assemble.rs") && source == &assemble_source
+        })
+    );
+    assert!(
+        source_rows
+            .iter()
+            .any(|(path, source)| path == Path::new("lib.rs") && source == &root_source)
+    );
+    let source_paths = source_rows
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let files = source_rows
+        .iter()
+        .map(|(path, source)| RustWorkspaceFile {
+            relative_path: path,
+            source,
+        })
+        .collect::<Vec<_>>();
+
+    let toolchain = RustToolchain::discover(rustc_path())?;
+    let features = RustFeatureControl {
+        all_features: true,
+        no_default_features: false,
+        features: &[],
+    };
+    let key = RustWorkspaceSessionKey::new(
+        &package_root,
+        &toolchain,
+        RustEdition::Rust2024,
+        Stage::LowerIr,
+        features,
+        RustCargoMetadataPolicy::Offline,
+        None,
+        None,
+        None,
+        [0x51; 32],
+        &source_paths,
+    )?;
+    let cancelled = AtomicBool::new(false);
+    let control = RustAnalysisControl {
+        cancelled: &cancelled,
+        maximum_source_bytes: SourceByteLimit::from(64 * 1024 * 1024),
+        deadline: Instant::now() + Duration::from_secs(300),
+    };
+    let mut lane = RustWorkspaceSessionLane::default();
+    let mut observer = RecordingReadFrontier::default();
+    let (lease, _) = lane.begin_with_read_frontier_observer(key, &files, control, &mut observer)?;
+    assert_eq!(observer.editor_buffers.len(), source_rows.len());
+    for (path, source) in &source_rows {
+        assert_eq!(
+            observer.editor_buffers.get(path).map(Vec::as_slice),
+            Some(source.as_bytes()),
+            "selected editor buffer must match the complete package frontier: {}",
+            path.display()
+        );
+    }
+    let admitted = lease.workspace().analyze_source(
+        package_root.join("assemble.rs"),
+        assemble_source.as_bytes(),
+        control,
+        |authority| {
+            let has_page_lowering_entry = authority.declarations().any(|declaration| {
+                authority
+                    .declaration_name(&declaration)
+                    .ok()
+                    .and_then(|span| authority.source_at(span).ok())
+                    == Some(b"page_from_document")
+            });
+            Ok((authority.source_scope, has_page_lowering_entry))
+        },
+    )?;
+    assert_eq!(
+        admitted.0,
+        backend_frontend_rust::legacy::RustSourceScope::CargoModule
+    );
+    assert!(
+        admitted.1,
+        "HIR lowering must see the unconditional module's declarations"
+    );
+    assert!(
+        observer
+            .editor_buffers
+            .get(Path::new("assemble.rs"))
+            .is_some_and(|source| source.as_slice() == assemble_source.as_bytes())
+    );
+    lease.commit();
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_overlay_preserves_symlinked_module_vfs_identity()
@@ -433,8 +768,11 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
         root.join("Cargo.toml"),
         "[package]\nname = \"symlink_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )?;
-    let root_source =
-        "#[path = \"alias.rs\"] mod alias;\npub fn value() -> u8 { alias::value() }\n";
+    let root_source = concat!(
+        "#[path = \"alias.rs\"] mod alias;\n",
+        "#[path = \"real.rs\"] mod physical;\n",
+        "pub fn value() -> u8 { alias::value().wrapping_add(physical::physical_value()) }\n",
+    );
     let disk_target = "pub fn value() -> u8 { 1 }\n";
     let editor_buffer = "pub fn value() -> u8 { 9 }\n";
     let editor_target = "pub fn physical_value() -> u8 { 7 }\n";
@@ -455,6 +793,7 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
             RustEdition::Rust2024,
             Stage::LowerIr,
             RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
             Some([5; 32]),
             Some([6; 32]),
             Some([7; 32]),
@@ -490,6 +829,13 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
             "alias::value",
             control,
         )?);
+        assert!(named_path_resolves(
+            lease.workspace(),
+            &root,
+            root_source,
+            "physical::physical_value",
+            control,
+        )?);
         assert!(lease.workspace().analyze_source(
             root.join("src/alias.rs"),
             editor_buffer.as_bytes(),
@@ -504,6 +850,78 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
         )?);
         lease.commit();
         assert_eq!(lane.stats().overlay_sources_removed, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+
+    fs::remove_dir_all(&root)?;
+    outcome
+}
+
+#[test]
+fn workspace_session_rejects_selected_file_without_active_hir_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "backend-rust-workspace-detached-{nonce}-{sequence}"
+    ));
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"detached_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    let root_source = "pub fn value() -> u8 { 1 }\n";
+    let detached_source = "pub fn unowned() -> u8 { 2 }\n";
+    fs::write(root.join("src/lib.rs"), root_source)?;
+    fs::write(root.join("src/detached.rs"), detached_source)?;
+
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let source_paths = [
+            PathBuf::from("src/detached.rs"),
+            PathBuf::from("src/lib.rs"),
+        ];
+        let files = [
+            RustWorkspaceFile {
+                relative_path: Path::new("src/detached.rs"),
+                source: detached_source,
+            },
+            RustWorkspaceFile {
+                relative_path: Path::new("src/lib.rs"),
+                source: root_source,
+            },
+        ];
+        let key = RustWorkspaceSessionKey::new(
+            &root,
+            &toolchain,
+            RustEdition::Rust2024,
+            Stage::LowerIr,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            None,
+            None,
+            None,
+            [0x61; 32],
+            &source_paths,
+        )?;
+        let cancelled = AtomicBool::new(false);
+        let control = RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + Duration::from_secs(180),
+        };
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane.begin(key, &files, control)?;
+        let result = lease.workspace().analyze_source(
+            root.join("src/detached.rs"),
+            detached_source.as_bytes(),
+            control,
+            |_| Ok(()),
+        );
+        assert!(
+            matches!(result, Err(RustAuthorityError::DetachedSource { .. })),
+            "an exactly bound VFS buffer without active Cargo HIR ownership must remain rejected"
+        );
         Ok::<(), Box<dyn std::error::Error>>(())
     })();
 
@@ -552,6 +970,7 @@ fn workspace_overlay_updates_selected_files_across_package_roots()
             RustEdition::Rust2024,
             Stage::LowerIr,
             RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
             Some([9; 32]),
             Some([10; 32]),
             Some([11; 32]),

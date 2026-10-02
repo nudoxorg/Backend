@@ -11,8 +11,9 @@ use crate::semantics::members::Receiver;
 use crate::semantics::types::Piece;
 use crate::theme::ActiveFacet;
 use gpui::{
-    InteractiveElement,
-    App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
+    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    ParentElement, PathBuilder, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled, Window,
+    div, point, px,
 };
 use std::sync::Arc;
 
@@ -33,30 +34,60 @@ pub fn pipe(id: impl Into<ElementId>, pipe: Pipe, measure: &Measure, links: &Lin
 
 fn arrow(measure: &Measure, color: gpui::Hsla, head: gpui::Hsla) -> impl IntoElement {
     let s = measure.scale();
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
+    PipeArrow { scale: s, color, head, style: StyleRefinement::default() }
+        .flex_none()
+        .w(k(measure, 64.0))
+        .h(px(12.0 * s))
+}
+
+struct PipeArrow {
+    scale: f32,
+    color: Hsla,
+    head: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for PipeArrow {
+    fn style(&mut self) -> &mut StyleRefinement { &mut self.style }
+}
+
+impl IntoElement for PipeArrow {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for PipeArrow {
+    type RequestLayoutState = Style;
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Style) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        let layout = window.request_layout(style.clone(), [], cx);
+        (layout, style)
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Style, _: &mut Window, _: &mut App) {}
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, style: &mut Style, _: &mut (), window: &mut Window, cx: &mut App) {
+        let (s, color, head) = (self.scale, self.color, self.head);
+        style.paint(bounds, window, cx, |window, _| {
             let y = bounds.center().y;
             let right = bounds.right() - px(1.0 * s);
-            let mut shaft = gpui::PathBuilder::stroke(px(1.0));
+            let mut shaft = PathBuilder::stroke(px(1.0));
             shaft.move_to(point(bounds.left(), y));
             shaft.line_to(point(right - px(1.0), y));
-            if let Ok(path) = shaft.build() {
-                window.paint_path(path, color);
-            }
+            if let Ok(path) = shaft.build() { window.paint_path(path, color); }
             let r = px(4.5 * s);
-            let mut chevron = gpui::PathBuilder::stroke(px(1.0));
+            let mut chevron = PathBuilder::stroke(px(1.0));
             chevron.move_to(point(right - r, y - r));
             chevron.line_to(point(right, y));
             chevron.line_to(point(right - r, y + r));
-            if let Ok(path) = chevron.build() {
-                window.paint_path(path, head);
-            }
-        },
-    )
-    .flex_none()
-    .w(k(measure, 64.0))
-    .h(px(12.0 * s))
+            if let Ok(path) = chevron.build() { window.paint_path(path, head); }
+        });
+    }
 }
 
 impl RenderOnce for PipeView {

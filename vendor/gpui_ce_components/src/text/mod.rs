@@ -1,9 +1,12 @@
 mod document;
+mod document_storage;
 mod format;
 mod inline;
 mod inline_flow;
 mod markdown_ext;
 mod node;
+mod pending_update;
+mod reference_environment;
 pub(crate) mod selection;
 mod selection_adapter;
 mod state;

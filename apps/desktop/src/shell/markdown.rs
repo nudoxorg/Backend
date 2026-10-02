@@ -1,0 +1,166 @@
+//! Rich local Markdown rendering and its typed link-event bridge.
+//!
+//! The GPUI component owns Markdown parsing, inline layout, selection, code
+//! blocks, tables, and pointer hit testing. This small adapter adds stable
+//! heading endpoints and turns a clicked destination into an application
+//! action; the reader resolves that action against its admitted page data.
+
+use facet::ActiveFacet as _;
+use facet::tokens::ty;
+use facet::{Measure, Space};
+use gpui::{
+    App, ClickEvent, ElementId, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
+};
+use gpui_component::text::{MarkdownExtensions, MarkdownNode, PreparedMarkdown, TextView};
+use std::sync::OnceLock;
+
+/// Action dispatched by the Markdown component when a rendered link is
+/// activated. Keeping the URL in the action crosses GPUI's Send+Sync
+/// component callback without capturing shell entities in that callback.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = nudox, no_json, no_register)]
+pub(crate) struct FollowMarkdownLink {
+    /// Exact parsed Markdown destination; resolution stays with the reader.
+    pub destination: String,
+}
+
+/// Bridges the component's pointer callback into the reader's typed action
+/// listener. It does not open arbitrary schemes itself.
+pub(crate) fn emit_link_action(
+    url: &SharedString,
+    _: &ClickEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.dispatch_action(
+        Box::new(FollowMarkdownLink {
+            destination: url.to_string(),
+        }),
+        cx,
+    );
+}
+
+/// Builds one selectable Markdown document with stable heading anchors.
+pub(crate) fn view(id: impl Into<ElementId>, source: impl Into<SharedString>) -> TextView {
+    TextView::markdown(id, source)
+        .background_parse()
+        .selectable(true)
+        .on_link_click(emit_link_action)
+        .markdown_extensions(readme_extensions().clone())
+}
+
+fn readme_extensions() -> &'static MarkdownExtensions {
+    static EXTENSIONS: OnceLock<MarkdownExtensions> = OnceLock::new();
+    EXTENSIONS.get_or_init(|| {
+        MarkdownExtensions::default()
+            .block_parser(move |node, context| {
+                let markdown::mdast::Node::Heading(heading) = node else {
+                    return None;
+                };
+                let position = heading.position.as_ref()?;
+                let offset = position.start.offset.saturating_add(context.offset());
+                let element_id: SharedString = format!("readme-heading-{offset}").into();
+                let inline_id: SharedString = format!("readme-heading-{offset}:inline").into();
+                let raw = context.node_source(node)?;
+                let inline: SharedString = heading_inline_source(raw).into();
+                // This parser runs with the parent document on the worker.
+                // Prepare native inline marks once so the heading is complete
+                // in the parent's first published layout, without a child task.
+                let prepared = context.prepare_inline(&heading.children, inline.as_str());
+                Some(
+                    MarkdownNode::new(
+                        "readme-heading-anchor",
+                        HeadingData {
+                            element_id,
+                            inline_id,
+                            prepared,
+                            level: heading.depth,
+                        },
+                    )
+                    .markdown(inline),
+                )
+            })
+            .block_renderer("readme-heading-anchor", move |node, window, cx| {
+                let Some(data) = node.data::<HeadingData>() else {
+                    return div().into_any_element();
+                };
+                let id = data.element_id.clone();
+                let facet = cx.facet();
+                let measure = Measure::new(window.viewport_size().width, &facet);
+                let palette = facet.palette();
+                let role = measure.role(match data.level {
+                    1 => ty::HEAD,
+                    2 => ty::TITLE,
+                    _ => ty::PROSE,
+                });
+                let inline = TextView::prepared_markdown(
+                    ElementId::Name(data.inline_id.clone()),
+                    data.prepared.clone(),
+                )
+                .selectable(true)
+                .on_link_click(emit_link_action);
+                facet::motion::shared::shared(
+                    ElementId::Name(id),
+                    div()
+                        .w_full()
+                        .pt(measure.space(Space::Snug))
+                        .pb(measure.space(Space::Tight))
+                        .text_size(px(role.size))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(palette.ink0.hsla())
+                        .child(inline),
+                )
+                .into_any_element()
+            })
+    })
+}
+
+#[derive(Clone)]
+struct HeadingData {
+    element_id: SharedString,
+    inline_id: SharedString,
+    prepared: PreparedMarkdown,
+    level: u8,
+}
+
+fn heading_inline_source(source: &str) -> String {
+    let line = source.lines().next().unwrap_or_default().trim();
+    let content = line
+        .strip_prefix('#')
+        .map(|_| line.trim_start_matches('#').trim_start())
+        .unwrap_or(line);
+    let content = content.trim_end();
+    let suffix = content
+        .chars()
+        .rev()
+        .take_while(|character| *character == '#')
+        .count();
+    if suffix > 0 {
+        let before = &content[..content.len() - suffix];
+        if before.chars().last().is_some_and(char::is_whitespace) {
+            return before.trim_end().to_owned();
+        }
+    }
+    content.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{heading_inline_source, readme_extensions};
+
+    #[test]
+    fn heading_inline_preserves_unicode_links_and_setext_text() {
+        assert_eq!(
+            heading_inline_source("## 🦀 [Guide](#guide) ###"),
+            "🦀 [Guide](#guide)"
+        );
+        assert_eq!(heading_inline_source("Guide 🦀\n========"), "Guide 🦀");
+        assert_eq!(heading_inline_source("# C#"), "C#");
+        assert_eq!(heading_inline_source("# `#literal`"), "`#literal`");
+    }
+
+    #[test]
+    fn markdown_plugin_registration_is_stable_between_render_builds() {
+        assert!(std::ptr::eq(readme_extensions(), readme_extensions()));
+    }
+}

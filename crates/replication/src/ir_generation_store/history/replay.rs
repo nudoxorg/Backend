@@ -105,7 +105,7 @@ fn load_replay_node(
         return Err("semantic history commit belongs to another target".to_owned());
     }
     if !matches!(record.generation_root, HistoryGenerationRoot::NxfiV1(_)) {
-        return Err("typed V2 history requires typed replay".to_owned());
+        return Err("typed history requires proof-bearing typed replay".to_owned());
     }
     let generation_record = load_record(target_root, record.generation, target)?;
     validate_commit_generation(&record, &generation_record)?;
@@ -135,7 +135,7 @@ fn validate_replay_parent(
             parent_record.generation_root,
             HistoryGenerationRoot::NxfiV1(_)
         ) {
-            return Err("typed V2 history requires typed replay".to_owned());
+            return Err("typed history requires proof-bearing typed replay".to_owned());
         }
         let parent_generation_record = load_record(target_root, parent_record.generation, target)?;
         validate_commit_generation(&parent_record, &parent_generation_record)?;

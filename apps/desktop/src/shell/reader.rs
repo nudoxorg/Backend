@@ -19,8 +19,9 @@
 //! open retargets it from its painted value and velocity. The two pages are
 //! never drawn in the same place: the one outside the plate is cut to the
 //! region the plate has not reached, the one inside to the plate, so no
-//! frame shows two texts over each other. A view switch cuts (the Peel is a
-//! later slice); reduced motion cuts, and a Close still marks the row.
+//! frame shows two texts over each other. Page and Code peel around the
+//! measured declaration line; reduced motion cuts, and a Close still marks
+//! the row.
 //!
 //! The graph is the same space zoomed out. Going to it, the page **folds**:
 //! its body folds up with the graph not yet drawn, then its empty plate
@@ -34,22 +35,23 @@
 use super::bodies::{self, Ctx, Lens, Pages};
 use super::focus::Targets;
 use super::kit::HoverIntent;
-use super::region::{Links, Region, RegionCore};
-use super::jump::{route_package, route_symbol};
+use super::region::{Links, Region, RegionCore, a11y_inert};
+use super::jump::route_symbol;
 use crate::model::AppSnapshot;
-use crate::model::pages::PageKey;
-use crate::navigation::{Overlay, Route, View};
-use crate::runtime::store::{Branch, DataStore, StoreEvent};
+use crate::model::pages::{PageKey, Stamp};
+use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, View};
+use crate::runtime::store::{Branch, CargoReadAdmission, DataStore, OwnerAttachment, RouteDependencies, StoreEvent};
+use crate::core::ReadPhase as DestinationState;
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
 use facet::tokens::ty;
 use facet::tokens::fluid::{NOTES, Notes, READER_PAD, READER_TOP, WIDE_FOLIO};
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    AppContext as _, Bounds, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
+    App, AppContext as _, Bounds, Context, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, point, px, size,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -140,6 +142,9 @@ pub(crate) enum Verb {
     /// Graph → page: the node's plate opens into the page, the node becomes
     /// the gem, and the page prints once the plate covers the graph.
     Unfold,
+    /// The same declaration's page and source exchange through a strip
+    /// centred on its measured hero or source line.
+    Peel,
 }
 
 /// The row that carried a place change: which target drew it, where
@@ -224,7 +229,7 @@ impl Transit {
                 let ms = if now >= started { since(started) } else { -(started.saturating_duration_since(now).as_secs_f32() * 1000.0) };
                 Some(PRINT_SPEED * ms)
             }
-            (Verb::Close | Verb::Fold, None) => None,
+            (Verb::Close | Verb::Fold | Verb::Peel, None) => None,
         }
     }
 
@@ -237,6 +242,7 @@ impl Transit {
                 p >= 0.94 && self.edge_local(now, f32::from(reader.size.height)).is_none_or(|edge| edge >= f32::from(reader.size.height))
             }
             Verb::Close | Verb::Fold => p <= LANDED && now >= self.start + CLOSE_AFTER,
+            Verb::Peel => if self.carry.target() >= 0.5 { p >= 0.94 } else { p <= LANDED },
         }
     }
 }
@@ -353,6 +359,15 @@ fn plate_at(reader: Bounds<Pixels>, column: (Pixels, Pixels), row: Option<Bounds
     Bounds::from_corners(point(left, top), point(right.max(left), bottom.max(top)))
 }
 
+/// A Peel has no sideways travel: the source file opens above and below the
+/// actual declaration row, exposing exactly one page in every painted pixel.
+fn peel_at(reader: Bounds<Pixels>, row: Bounds<Pixels>, p: f32) -> Bounds<Pixels> {
+    let open = band(p, LANDED, 0.94);
+    let top = lerp(row.top().clamp(reader.top(), reader.bottom()), reader.top(), open);
+    let bottom = lerp(row.bottom().clamp(reader.top(), reader.bottom()), reader.bottom(), open);
+    Bounds::from_corners(point(reader.left(), top), point(reader.right(), bottom.max(top)))
+}
+
 /// What of the reader the plate leaves uncovered, as (at most) two bands.
 fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [Bounds<Pixels>; 2] {
     let none = Bounds::new(reader.origin, size(Pixels::ZERO, Pixels::ZERO));
@@ -366,18 +381,72 @@ fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [B
     }
 }
 
+#[derive(Clone)]
+struct NativeReturn {
+    place: u64,
+    route: Route,
+    root: crate::core::VersionedRoot,
+    id: SharedString,
+    attachment: OwnerAttachment,
+    read_stamp: Option<(PageKey, Stamp)>,
+}
+
+/// What permission a mounted Reader callback needs beyond its exact visit.
+/// Recovery and local presentation work through an unavailable owner;
+/// navigation from published bytes requires that owner and resource now.
+#[derive(Clone)]
+pub(crate) enum NativeActionLease {
+    LocalUi,
+    OwnerSnapshot(Option<OwnerAttachment>),
+    Resource { attachment: Option<OwnerAttachment>, stamp: Option<(PageKey, Stamp)> },
+}
+
+#[derive(Clone)]
+struct FindFocusReturn {
+    place: u64,
+    route: Route,
+    root: crate::core::VersionedRoot,
+    focused: FocusHandle,
+    interruption: u64,
+}
+
 /// The reader region.
 pub(crate) struct Reader {
     core: RegionCore,
+    /// The shell's occupied Ask rectangle for this frame, if results show.
+    ask_geometry: Option<super::frame::AskGeometry>,
+    /// The shell's painted Ask scene, rather than its already-cleared overlay,
+    /// decides when a newly arrived body may claim native keyboard focus.
+    ask_background_input_allowed: bool,
     map: Option<Entity<bodies::graph::Map>>,
     graph_source: Option<crate::model::pages::SymbolRef>,
     links: Links,
     pub(crate) targets: Targets,
     hover: HoverIntent,
     scroll: ScrollHandle,
+    /// Recent viewport offsets keyed by exact route and overlay.
+    scroll_memory: Vec<RouteScroll>,
+    /// Bounded source cursor/history memory keyed by exact code route and owner revision.
+    source_paging: SourcePagingMemory,
+    /// Shared empty handle for non-code bodies; they never write paging state.
+    empty_source_paging: Rc<RefCell<Option<bodies::PagingState>>>,
+    /// Bounded Library disclosure and virtual-list scroll state for exact trees.
+    library_state: LibraryStateMemory,
+    /// Applied only after the destination content can paint.
+    pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
     /// keyboard walk, or a reflow that may have moved it).
     reveal: Rc<Cell<bool>>,
+    /// Initial source-line focus, latched once per exact place and resource
+    /// revision so ordinary frames never steal focus back from the user.
+    source_focus_applied: Rc<Cell<Option<(u64, u32, Option<SourceGeneration>)>>>,
+    /// A Back return belongs to one visit, and waits for its live control to
+    /// mount before transferring native focus from the Shell.
+    native_return: Option<NativeReturn>,
+    /// The Find query's exact focused handle before Ask took the keyboard.
+    find_focus_return: Option<FindFocusReturn>,
+    /// Tab/J/overlay interruptions invalidate a deferred component return.
+    native_return_interruption: u64,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -398,6 +467,18 @@ pub(crate) struct Reader {
     /// page change leaves. A place no frame drew (a route another one
     /// superseded in the same instant) was never on screen.
     painted: Option<u64>,
+    /// The owner revision of the last painted place, for exact overlay returns.
+    painted_root: Option<crate::core::VersionedRoot>,
+    /// Exactly one indexed body, with only its selected resource handles.
+    retained: Option<RetainedPage>,
+    /// Requested identity while a distinct previous page remains visible.
+    pending_place: Option<u64>,
+    /// Deferred Back focus belongs to the requested place, never its predecessor.
+    pending_page_focus: Option<SettingsReturn>,
+    /// Reader focus when Settings covered a painted place.
+    settings_departure: Option<SettingsDeparture>,
+    /// One return focus attempt after the uncovered page actually registers targets.
+    pending_settings_focus: Option<SettingsReturn>,
     /// A place change seen, waiting for the next render to start it.
     arrival: Option<Arrival>,
     /// The place change in flight.
@@ -416,6 +497,7 @@ pub(crate) struct Reader {
     package_outline_expanded: bool,
     /// Up to four explicit Find choices survive Compare and Back.
     find_held: Vec<facet::browse::find::HeldPackage>,
+    find_held_root: Option<crate::core::VersionedRoot>,
     find_workspace: Option<crate::core::LocalProjectId>,
 }
 
@@ -425,15 +507,26 @@ impl Reader {
         Self {
             core: RegionCore::new(
                 store,
-                &[Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
+                &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
+            ask_geometry: None,
+            ask_background_input_allowed: true,
             links,
             map: None,
             graph_source: None,
             targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
+            scroll_memory: Vec::new(),
+            source_paging: SourcePagingMemory::default(),
+            empty_source_paging: Rc::new(RefCell::new(None)),
+            library_state: LibraryStateMemory::default(),
+            pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
+            source_focus_applied: Rc::new(Cell::new(None)),
+            native_return: None,
+            find_focus_return: None,
+            native_return_interruption: 0,
             laid_out: None,
             lens: Lens::Reference,
             route: snapshot.route().clone(),
@@ -441,6 +534,12 @@ impl Reader {
             descents: 0,
             last_way: None,
             painted: None,
+            painted_root: None,
+            retained: None,
+            pending_place: None,
+            pending_page_focus: None,
+            settings_departure: None,
+            pending_settings_focus: None,
             // The ring re-wraps as the library grows: a name that moves to
             // another line lands there, never flying across the others.
             ring_flow: facet::motion::Flow::new("orbit-ring").wrapped(),
@@ -465,12 +564,22 @@ impl Reader {
             symbol_disclosures: Vec::new(),
             package_outline_expanded: false,
             find_held: Vec::new(),
+            find_held_root: None,
             find_workspace: snapshot.workspace().host.clone(),
         }
     }
 
     pub(crate) fn graph_ready(&self, cx: &gpui::App) -> bool {
         self.map.as_ref().is_none_or(|map| map.read(cx).ready(cx))
+    }
+
+    pub(crate) fn graph_work_status(
+        &self,
+        cx: &gpui::App,
+    ) -> Option<bodies::graph::MapWorkStatus> {
+        self.map
+            .as_ref()
+            .and_then(|map| map.read(cx).work_status(cx))
     }
 
     pub(crate) fn graph_report(&self, cx: &gpui::App) -> String {
@@ -539,7 +648,7 @@ impl Reader {
 
     /// Pages drawn by the last render (the current one plus any leaving).
     pub(crate) fn pages_on_screen(&self) -> usize {
-        self.places.len()
+        self.places.iter().filter(|place| Some(place.key) != self.pending_place).count()
     }
 
     /// How many descents played, and which way the last one went.
@@ -590,6 +699,13 @@ impl Reader {
     }
 
     pub(crate) fn set_find_held(&mut self, held: Vec<facet::browse::find::HeldPackage>, cx: &mut Context<Self>) {
+        let root = self.links.snapshot(cx).key();
+        if self.find_held_root.is_some_and(|old| !old.same_authority(root)) {
+            self.find_held.clear();
+            self.find_held_root = None;
+            cx.notify();
+            return;
+        }
         let mut unique: Vec<facet::browse::find::HeldPackage> = Vec::with_capacity(4);
         for package in held {
             if !unique.iter().any(|item| item.key == package.key) { unique.push(package); }
@@ -597,6 +713,24 @@ impl Reader {
         }
         if self.find_held != unique {
             self.find_held = unique;
+            self.find_held_root = (!self.find_held.is_empty()).then_some(root);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn holds_find_packages_at(&self, keys: &[SharedString], root: crate::core::VersionedRoot) -> bool {
+        self.find_held_root.is_some_and(|held| held.same_authority(root))
+            && self.find_held.iter().map(|item| &item.key).eq(keys.iter())
+    }
+
+    /// A Compare removal edits the current held hand, never the hand captured
+    /// by an older painted callback or one stamped by a different owner.
+    pub(crate) fn remove_find_held_package(&mut self, key: &SharedString, root: crate::core::VersionedRoot, cx: &mut Context<Self>) {
+        if !self.find_held_root.is_some_and(|held| held.same_authority(root)) { return; }
+        let before = self.find_held.len();
+        self.find_held.retain(|package| package.key != *key);
+        if self.find_held.len() != before {
+            if self.find_held.is_empty() { self.find_held_root = None; }
             cx.notify();
         }
     }
@@ -624,12 +758,230 @@ impl Reader {
         self.reveal.set(true);
     }
 
+    /// Move through the mounted native controls in the Reader's existing
+    /// target order. A missing edge leaves Tab to the Shell zone walk.
+    pub(crate) fn step_native(&self, forward: bool, window: &mut Window, cx: &mut gpui::App) -> bool {
+        self.targets.native_step(forward, window, cx)
+    }
+
+    /// A pointer or native accessibility action can focus a mounted control
+    /// without walking the Shell's logical zone. Admit only the settled,
+    /// current place, then make that real handle the Reader walk origin.
+    pub(crate) fn adopt_mounted_native_focus(&self, window: &Window, cx: &gpui::App) -> Option<bool> {
+        let current = self.places.last()?;
+        let snapshot = self.links.snapshot(cx);
+        if !self.native_motion_settled()
+            || snapshot.route() != &current.route
+            || snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)) != current.overlay
+        {
+            return None;
+        }
+        let id = self.targets.native_focused(window)?;
+        let changed = self.targets.focused().as_ref() != Some(&id);
+        if changed { self.targets.focus(id); }
+        Some(changed)
+    }
+
+    pub(crate) fn focus_native_current(&self, window: &mut Window, cx: &mut gpui::App) -> bool {
+        self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
+    }
+
+    pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, cx: &mut Context<Self>) {
+        if self.route == route && self.overlay.is_none() {
+            if let Some(place) = self.places.last() {
+                let root = self.links.snapshot(cx).key();
+                let store = self.links.store.read(cx);
+                let Some(attachment) = store.current_owner_attachment() else { return };
+                let read_stamp = RouteDependencies::new(&route, None).native_stamp(store, false);
+                self.native_return = Some(NativeReturn { place: place.key, route, root, id, attachment, read_stamp });
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn cancel_native_return(&mut self) {
+        self.native_return = None;
+        self.find_focus_return = None;
+        self.native_return_interruption = self.native_return_interruption.wrapping_add(1);
+        for entry in &self.library_state.entries {
+            entry.state.borrow_mut().cancel_return();
+        }
+    }
+
+    pub(crate) fn cancel_find_focus_return(&mut self) {
+        self.find_focus_return = None;
+    }
+
+    pub(crate) fn begin_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) {
+        self.find_focus_return = None;
+        let Some(focused) = focused else { return; };
+        let Some(place) = self.places.last() else { return; };
+        if !matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_))))
+            || self.painted != Some(place.key) { return; }
+        self.find_focus_return = Some(FindFocusReturn {
+            place: place.key,
+            route: place.route.clone(),
+            root: self.links.snapshot(cx).key(),
+            focused,
+            interruption: self.native_return_interruption,
+        });
+    }
+
+    pub(crate) fn return_find_query_focus(
+        &mut self,
+        query: FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> facet::browse::library::ReturnDisposition {
+        use facet::browse::library::ReturnDisposition;
+        let Some(pending) = self.find_focus_return.clone() else { return ReturnDisposition::Invalid; };
+        let result = if pending.focused == query {
+            self.native_return_disposition(
+                pending.place, &pending.route, None, pending.root,
+                &NativeActionLease::LocalUi, pending.interruption, window, cx,
+            )
+        } else {
+            ReturnDisposition::Invalid
+        };
+        if result != ReturnDisposition::Waiting { self.find_focus_return = None; }
+        if result == ReturnDisposition::Applied { window.focus(&query, cx); }
+        result
+    }
+
+    pub(crate) fn admits_native_visit(
+        &self,
+        place: u64,
+        route: &Route,
+        overlay: Option<Overlay>,
+        root: crate::core::VersionedRoot,
+        lease: &NativeActionLease,
+        source: Option<SourceGeneration>,
+        inventory_revision: Option<[u8; 32]>,
+        cx: &gpui::App,
+    ) -> bool {
+        if self.places.last().is_none_or(|current| current.key != place)
+            || self.route != *route
+            || self.overlay != overlay
+            || self.links.snapshot(cx).route() != route
+            || self.links.snapshot(cx).overlay() != overlay
+        {
+            return false;
+        }
+        // Local setup and recovery belong to this mounted visit, not to a
+        // producer. A fresh installation has an intentionally unserved root.
+        if matches!(lease, NativeActionLease::LocalUi) { return true; }
+        if !self.links.snapshot(cx).key().same_authority(root) { return false; }
+        let store = self.links.store.read(cx);
+        if !store.snapshot().key().same_authority(root) { return false; }
+        let read_stamp = match lease {
+            NativeActionLease::LocalUi => unreachable!("local UI returned before owner admission"),
+            NativeActionLease::OwnerSnapshot(attachment) => {
+                if attachment.as_ref().is_none_or(|attachment| !store.admits_owner_attachment(attachment)) { return false; }
+                None
+            }
+            NativeActionLease::Resource { attachment, stamp } => {
+                if attachment.as_ref().is_none_or(|attachment| !store.admits_owner_attachment(attachment))
+                    || stamp.as_ref().is_none_or(|stamp| !RouteDependencies::new(route, overlay).admits_native_stamp(store, root, stamp))
+                { return false; }
+                stamp.as_ref()
+            }
+        };
+        if let Route::CargoSource(file) = route {
+            if !matches!(lease, NativeActionLease::Resource { .. }) || read_stamp.is_none() { return false; }
+            let Ok(package) = crate::model::pages::PackageRef::parse(file.package.as_str()) else { return false };
+            if file.browse.context().is_none() {
+                return source.is_none() && inventory_revision.is_none()
+                    && RouteDependencies::new(route, overlay).current_cargo_package(store, &package).is_some();
+            }
+            let Some(context) = file.browse.context() else { return false; };
+            match source {
+                Some(SourceGeneration::Cargo(digest)) => {
+                    let key = crate::model::pages::CargoSourceKey {
+                        context: context.clone(), package, file: file.file.clone(),
+                    };
+                    let resource = store.cargo_source(&key);
+                    if resource.loaded_value().is_none_or(|page| page.content_digest != digest)
+                    {
+                        return false;
+                    }
+                }
+                None => {
+                    let Some(revision) = inventory_revision else { return false };
+                    let key = crate::model::browse::BrowseKey::CargoSourceInventory(
+                        crate::model::browse::CargoSourceInventoryKey {
+                            context: context.clone(), package,
+                        },
+                    );
+                    let resource = store.pages().browse(&key);
+                    if !matches!(resource.loaded_value(), Some(crate::model::browse::BrowseValue::CargoSourceInventory(model)) if model.source_revision == revision)
+                    {
+                        return false;
+                    }
+                }
+                Some(SourceGeneration::Indexed(_)) => return false,
+            }
+        }
+        true
+    }
+
+    /// Facet supplies the exact mounted virtual-row handle, but this Reader
+    /// alone admits its deferred focus after the return page has settled.
+    pub(crate) fn native_return_disposition(
+        &self,
+        place: u64,
+        route: &Route,
+        overlay: Option<Overlay>,
+        root: crate::core::VersionedRoot,
+        lease: &NativeActionLease,
+        interruption: u64,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> facet::browse::library::ReturnDisposition {
+        use facet::browse::library::ReturnDisposition;
+        if self.native_return_interruption != interruption
+            || !self.admits_native_visit(place, route, overlay, root, lease, None, None, cx)
+            || !self
+                .links
+                .shell
+                .upgrade()
+                .is_some_and(|shell| shell.read(cx).allows_reader_native_return(window))
+            || super::titlebar::menu_open(window, cx)
+        {
+            return ReturnDisposition::Invalid;
+        }
+        if self.painted != Some(place) || !self.native_input_allowed() {
+            return ReturnDisposition::Waiting;
+        }
+        ReturnDisposition::Applied
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll.offset()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_scroll_offset(&self, offset: Point<Pixels>) {
+        self.scroll.set_offset(offset);
+    }
+
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
+        // The first Tree departure records the opened release. A later
+        // departure from its returning visit abandons that pending focus,
+        // even when no virtual row mounted to schedule a deferred callback.
+        if let Some(current) = self.places.last()
+            && self.library_state.return_pending_for(&current.route, current.key)
+        {
+            self.cancel_native_return();
+        }
         // A place no frame drew was never on screen, so it is not what this
         // change leaves: three routes in one instant (A, B, C) are one change
         // from A to C, not a skeleton for B leaving and one for C arriving.
         // Drop each unpainted place (the first one, before any frame, stays:
         // there is nothing older) and arrive from the last one painted.
+        if let Some(current) = self.places.last().filter(|place| Some(place.key) == self.painted) {
+            self.remember_scroll(current.route.clone(), current.overlay, self.scroll.offset());
+        }
         let collapsed = drop_unpainted(&mut self.places, self.painted);
         if collapsed && let Some(last) = self.places.last() {
             self.route = last.route.clone();
@@ -672,13 +1024,45 @@ impl Reader {
         });
         if !view_switch {
             self.lens = Lens::Reference;
-            // Back puts the parent where it was, so its row is where you left it.
-            let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
-            let scroll = back.and_then(|_| self.places.iter().rev().nth(1)).and_then(|leaving| leaving.opened.clone().flatten());
-            self.scroll.set_offset(scroll.map_or(point(px(0.0), px(0.0)), |origin| origin.scroll));
         }
+        // Back puts the parent where it was, so its opened row takes
+        // precedence. Other visits restore this exact route's recent offset.
+        let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
+        let opened = back
+            .and_then(|_| self.places.iter().rev().nth(1))
+            .and_then(|leaving| leaving.opened.clone().flatten());
+        let restored = opened
+            .map(|origin| origin.scroll)
+            .or_else(|| self.saved_scroll(next, overlay));
+        self.pending_scroll_restore = Some((
+            self.descents,
+            restored.unwrap_or(point(px(0.0), px(0.0))),
+        ));
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
+        self.native_return = None;
+        self.find_focus_return = None;
+    }
+
+    fn remember_scroll(&mut self, route: Route, overlay: Option<Overlay>, offset: Point<Pixels>) {
+        self.scroll_memory
+            .retain(|saved| saved.route != route || saved.overlay != overlay);
+        self.scroll_memory.push(RouteScroll { route, overlay, offset });
+        if self.scroll_memory.len() > MAX_ROUTE_SCROLL_MEMORY {
+            let excess = self.scroll_memory.len() - MAX_ROUTE_SCROLL_MEMORY;
+            self.scroll_memory.drain(..excess);
+        }
+    }
+
+    fn saved_scroll(&mut self, route: &Route, overlay: Option<Overlay>) -> Option<Point<Pixels>> {
+        let index = self
+            .scroll_memory
+            .iter()
+            .position(|saved| saved.route == *route && saved.overlay == overlay)?;
+        let saved = self.scroll_memory.remove(index);
+        let offset = saved.offset;
+        self.scroll_memory.push(saved);
+        Some(offset)
     }
 
     /// Which plate move a place change plays, and what it needs from the
@@ -706,7 +1090,13 @@ impl Reader {
             (true, true) => return None,
             (false, false) => {}
         }
-        if matches!(way, Way::View | Way::GraphPage) {
+        if way == Way::View {
+            let page_code = matches!((&self.route, next), (Route::Symbol(from), Route::Symbol(to))
+                if from.same_place(to)
+                    && matches!((from.view, to.view), (View::Page, View::Code) | (View::Code, View::Page)));
+            return page_code.then(|| arrival(Verb::Peel, Vec::new(), None));
+        }
+        if way == Way::GraphPage {
             return None;
         }
         let leaving = place_keys(&current.route, current.overlay).into_iter().next();
@@ -755,6 +1145,64 @@ impl Reader {
             rect.size.height > Pixels::ZERO && rect.top() >= reader.top() - px(1.0) && rect.bottom() <= reader.bottom() + px(1.0)
         };
         match arrival.verb {
+            Verb::Peel => {
+                let Some((route, _)) = route_of(&self.places, arrival.leaving) else { return };
+                let Some(symbol) = route_symbol(&route) else { return };
+                let Some((target_route, target_overlay)) = arriving.as_ref() else { return };
+                if !RouteDependencies::new(target_route, *target_overlay).content_loaded(self.links.store.read(cx)) {
+                    // A source or page still loading must show its honest
+                    // loading state; never unroll a skeleton as if it were
+                    // the arrived declaration.
+                    return;
+                }
+                let code = if matches!(&route, Route::Symbol(symbol) if symbol.view == View::Code) {
+                    Some(route.clone())
+                } else {
+                    arriving.as_ref().map(|(route, _)| route.clone())
+                };
+                let source_line = code.as_ref().and_then(|route| {
+                    let Route::Symbol(route) = route else { return None };
+                    route.line.or_else(|| self.links.store.read(cx).source(&symbol).loaded_value()
+                        .and_then(|view| view.declaration.known().map(|span| span.first)))
+                });
+                let code_row = source_line.and_then(|line| self.targets.bounds_of(source_line_shared_id(line).as_str()));
+                let hero = facet::motion::shared::last_bounds(crate::shell::kit::shared_id(&symbol), window, cx);
+                let row = if matches!(&route, Route::Symbol(symbol) if symbol.view == View::Code) {
+                    code_row.or(hero)
+                } else {
+                    hero.or(code_row)
+                }.filter(shown);
+                let Some(row) = row else { return };
+                let reversed = live.as_ref().filter(|transit| transit.verb == Verb::Peel
+                    && transit.inside == arrival.leaving && route_of(&self.places, transit.outside) == arriving);
+                let resumed = live.as_ref().filter(|transit| transit.verb == Verb::Peel
+                    && transit.outside == arrival.leaving && route_of(&self.places, transit.inside) == arriving);
+                self.transit = Some(if let Some(transit) = reversed.or(resumed) {
+                    let mut transit = transit.clone();
+                    transit.carry.retarget(if reversed.is_some() { 0.0 } else { 1.0 }, now);
+                    if reversed.is_some() { transit.outside = arrival.key; }
+                    else { transit.inside = arrival.key; }
+                    transit.start = now;
+                    transit.scroll = arrival.scroll;
+                    transit
+                } else {
+                    Transit {
+                        verb: Verb::Peel,
+                        inside: arrival.key,
+                        outside: arrival.leaving,
+                        row: Some(row),
+                        row_id: None,
+                        find: None,
+                        carry: Carry::new(0.0, 1.0, now),
+                        start: now,
+                        scroll: arrival.scroll,
+                        fold: None,
+                        print_after: Duration::ZERO,
+                        gem: None,
+                        symbol: None,
+                    }
+                });
+            }
             Verb::Open => {
                 // The row under the pointer, else the one the keyboard stood
                 // on, else the first on screen that links here.
@@ -929,17 +1377,23 @@ impl Reader {
         }
     }
 
-    /// The reader's column geometry for a snapshot's place.
-    fn layout(&self, snapshot: &AppSnapshot, measure: &Measure, facet: &facet::Facet) -> Layout {
+    /// The reader's column geometry for one exact place.
+    fn layout(&self, route: &Route, overlay: Option<Overlay>, measure: &Measure, facet: &facet::Facet) -> Layout {
         let width = self.core.width();
-        let room = measure.fluid_room();
+        // Ask's plate and this preview use one occupied rectangle. Reserve
+        // the part of the reader beneath that plate before choosing the
+        // folio and margin-note modes.
+        let reserved = self.ask_geometry.and_then(|ask| ask.preview_left.map(|left|
+            (left - ask.reader_left).max(px(0.0)))).unwrap_or(px(0.0)).min(width);
+        let room = facet::fluid::Room::new((width - reserved).max(px(0.0)), measure.scale());
         // The gutters glide from 16 px on a phone to the design's 40; nothing
         // here compares the width with a number.
-        let pad = READER_PAD.at(room);
-        let content = (width - pad * 2.0).max(px(0.0));
+        let right_pad = READER_PAD.at(room);
+        let pad = right_pad.max(reserved);
+        let content = (width - pad - right_pad).max(px(0.0));
         let scale = measure.scale();
-        let notes_possible = matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Code)
-            && snapshot.overlay().is_none();
+        let notes_possible = matches!(route, Route::Symbol(route) if route.view == View::Code)
+            && overlay.is_none();
         let margin_notes = self.core.modes().settle(&NOTES, room).mode == Notes::Beside;
         let wide = margin_notes && notes_possible;
         let gutter = px(GUTTER * facet.density.space() * scale);
@@ -948,10 +1402,11 @@ impl Reader {
         // A declaration page (the simple symbol page) lays out its own
         // column and rail from the whole room; every other page reads at the
         // folio's measure.
-        let own_width = matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Page) && snapshot.overlay().is_none();
+        let own_width = matches!(route, Route::Symbol(route) if route.view == View::Page) && overlay.is_none();
         let folio = if own_width { content } else { px(FOLIO * scale).min((content - beside).max(px(0.0))) };
         Layout {
             pad,
+            right_pad,
             top: READER_TOP.at(room),
             wide_measure: Measure::new(WIDE_FOLIO.at(room).min(content), facet),
             folio,
@@ -960,7 +1415,7 @@ impl Reader {
             wide,
             gutter,
             margin,
-            measure: *measure,
+            measure: Measure::new((width - reserved).max(px(0.0)), facet),
             folio_measure: Measure::new(folio, facet),
         }
     }
@@ -978,10 +1433,14 @@ impl Reader {
         snapshot: &AppSnapshot,
         layout: &Layout,
         facet: &facet::Facet,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let body = self.body(place, false, snapshot, layout, facet, edge, cx);
-        div().absolute().top_0().left_0().right_0().bottom_0().child(masked(
+        let still = facet::motion::still(cx);
+        let body = self.body(place, false, snapshot, layout, facet, edge, None, window, cx);
+        drop(still);
+        let body = gpui::inert(("leaving-page", place.key), format!("Previous page: {}", place_name(&place.route)), body);
+        div().absolute().top_0().left_0().right_0().bottom_0().child(a11y_inert(masked(
             mask,
             offset(
                 div()
@@ -989,12 +1448,13 @@ impl Reader {
                     .left_0()
                     .right_0()
                     .top(scroll.y)
-                    .px(layout.pad)
+                    .pl(layout.pad)
+                    .pr(layout.right_pad)
                     .pt(layout.top)
                     .child(div().relative().w_full().flex().justify_center().child(body)),
             )
             .x(drift),
-        ))
+        )))
     }
 
     /// This frame of the change in flight, in window space (and the change
@@ -1016,14 +1476,19 @@ impl Reader {
             (true, Some(node)) => (node.left(), node.right()),
             _ => column,
         };
-        let plate = plate_at(reader, column, transit.row, p);
-        let plate_course = Course::of(|p| plate_at(reader, column, transit.row, p), p, transit.carry.target());
+        let plate_at = |p| match (transit.verb, transit.row) {
+            (Verb::Peel, Some(row)) => peel_at(reader, row, p),
+            _ => plate_at(reader, column, transit.row, p),
+        };
+        let plate = plate_at(p);
+        let plate_course = Course::of(plate_at, p, transit.carry.target());
         let height = f32::from(reader.size.height);
         let edge = transit.edge_local(now, height).map(|local| {
             let y = reader.top() + px(local);
             match transit.verb {
                 Verb::Open | Verb::Unfold => Edge::down(y, px(PRINT_SETTLE * scale), px(PRINT_SPEED * scale * 32.0)),
                 Verb::Close | Verb::Fold => Edge::fold(y),
+                Verb::Peel => unreachable!("Peel has no print edge"),
             }
         });
         // The gem travels between the hero and the node on the plate's own
@@ -1040,7 +1505,7 @@ impl Reader {
         };
         let gem = ends.map(|(kind, node, hero)| (kind, lerp_rect(node, hero, band(p, LANDED, 0.9))));
         let gem_course = ends.map(|(_, node, hero)| Course::of(|p| lerp_rect(node, hero, band(p, LANDED, 0.9)), p, transit.carry.target()));
-        let drift = if graph { 0.0 } else { DRIFT * scale };
+        let drift = if graph || transit.verb == Verb::Peel { 0.0 } else { DRIFT * scale };
         Some(Staged {
             verb: transit.verb,
             p,
@@ -1093,6 +1558,7 @@ impl Reader {
     fn compose(leaves: Vec<bodies::Leaf>, layout: &Layout, palette: &facet::Palette, edge: Option<Edge>) -> gpui::Div {
         let Layout {
             pad: _,
+            right_pad: _,
             top: _,
             folio,
             beside,
@@ -1160,24 +1626,30 @@ impl Reader {
     }
 }
 
+fn place_name(route: &Route) -> String {
+    let (name, release) = match route {
+        Route::Symbol(symbol) => (
+            format!("{}{}", symbol.id.as_str(), if symbol.view == View::Code { " source" } else { "" }),
+            symbol.at.as_ref(),
+        ),
+        Route::Package(package) => (package.package.as_str().to_owned(), package.at.as_ref()),
+        Route::Orbit(_) => return "Library".to_owned(),
+        Route::World => return "Graph".to_owned(),
+        Route::CargoSource(source) => return format!("{} · {}", source.package.as_str(), source.file.as_str()),
+    };
+    release.map_or(name.clone(), |at| format!("{name} @ {}", at.as_str()))
+}
+
+/// Stable shared-element key for a one-based source row.
+pub(crate) fn source_line_shared_id(line: u32) -> SharedString {
+    format!("source-line-{line}").into()
+}
+
 /// Drops from the end of `places` every place no frame drew (`painted` is the
 /// key of the one the last frame drew as current): a route another one
 /// superseded before the reader rendered was never on screen, so it is not a
 /// page that can leave. The oldest place stays whether or not it was drawn
 /// (there is nothing older). Whether any went.
-/// Whether the pages `keys` name have their content in the store (a
-/// declaration, a package, the Library): what a reader that draws them shows
-/// is the page, not its skeleton. Pages with no read of their own (the
-/// graph, Find, settings) are always their content.
-fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
-    keys.iter().all(|key| match key {
-        PageKey::Symbol(symbol) => store.symbol(symbol).is_loaded(),
-        PageKey::Package(package) => store.package(package).is_loaded(),
-        PageKey::Orbit => store.orbit().is_loaded(),
-        PageKey::Source(_) | PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
-    })
-}
-
 fn drop_unpainted(places: &mut Vec<Place>, painted: Option<u64>) -> bool {
     let mut dropped = false;
     while places.len() > 1 && places.last().is_some_and(|place| Some(place.key) != painted) {
@@ -1205,11 +1677,339 @@ struct Place {
     hop: bool,
 }
 
+/// Last-good indexed content, captured at one exact producer root. Cargo file
+/// capabilities are intentionally excluded: their revocation is independent
+/// of the index root and requires a live resource subscription.
+#[derive(Clone)]
+struct RetainedPage {
+    place: Place,
+    root: crate::core::VersionedRoot,
+    snapshot: std::sync::Arc<AppSnapshot>,
+    pages: Pages,
+    words: Vec<SharedString>,
+}
+
+fn retainable(place: &Place) -> bool {
+    place.overlay.is_none() && matches!(&place.route,
+        Route::Package(_) | Route::Symbol(crate::navigation::SymbolRoute { view: View::Page | View::Code, .. }))
+}
+
+struct SettingsDeparture {
+    route: Route,
+    root: crate::core::VersionedRoot,
+    target: Option<SharedString>,
+}
+
+struct SettingsReturn {
+    place: u64,
+    root: crate::core::VersionedRoot,
+    target: Option<SharedString>,
+}
+
+impl SettingsReturn {
+    fn has_same_authority(&self, root: crate::core::VersionedRoot) -> bool {
+        self.root.same_authority(root)
+    }
+}
+
+#[cfg(test)]
+mod settings_return_tests {
+    use super::SettingsReturn;
+    use crate::core::VersionedRoot;
+    use gpui::SharedString;
+
+    fn root(tag: &str, epoch: u64, sequence: u64, observation: u64) -> VersionedRoot {
+        let digest = backend_library::view_state_root(&[("settings".to_owned(), tag.to_owned())]);
+        VersionedRoot::from_revision(
+            epoch,
+            backend_library::Cursor::at(digest, sequence),
+            observation,
+        )
+    }
+
+    #[test]
+    fn settings_return_survives_observation_only_updates_and_rejects_other_authority() {
+        let captured = root("same", 2, 8, 1);
+        let return_to = SettingsReturn {
+            place: 17,
+            root: captured,
+            target: Some(SharedString::from("graph-target")),
+        };
+        assert!(return_to.has_same_authority(root("same", 2, 8, 9)));
+        assert!(!return_to.has_same_authority(root("different", 2, 8, 9)));
+        assert!(!return_to.has_same_authority(root("same", 3, 8, 9)));
+        assert!(!return_to.has_same_authority(root("same", 2, 9, 9)));
+    }
+}
+
+const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
+const MAX_SOURCE_PAGING_MEMORY: usize = 32;
+const MAX_LIBRARY_STATE_MEMORY: usize = 8;
+
+#[derive(Default)]
+struct LibraryStateMemory {
+    entries: Vec<LibraryStateEntry>,
+}
+
+struct LibraryStateEntry {
+    route: Route,
+    revision: Option<crate::core::VersionedRoot>,
+    attachment: Option<OwnerAttachment>,
+    state: Rc<RefCell<facet::browse::library::State>>,
+}
+
+impl LibraryStateMemory {
+    fn return_pending_for(&self, route: &Route, place_key: u64) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.route == *route && entry.state.borrow().pending_return_for(place_key)
+        })
+    }
+
+    fn for_route(
+        &mut self,
+        route: &Route,
+        revision: Option<crate::core::VersionedRoot>,
+        attachment: Option<OwnerAttachment>,
+        active: bool,
+    ) -> Rc<RefCell<facet::browse::library::State>> {
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.route == *route && match (entry.revision, revision) {
+                (Some(earlier), Some(current)) => earlier.same_authority(current),
+                (None, None) => true,
+                _ => false,
+            }
+        })
+        {
+            // Observation is diagnostic metadata. Local scroll/disclosure
+            // follows producer authority; action intent remains attachment-
+            // and stamp-gated by the current Reader visit.
+            self.entries[index].revision = revision;
+            if self.entries[index].attachment != attachment {
+                // Scroll and disclosure are local reading state. Only the
+                // actionable return intent is tied to the old attachment.
+                self.entries[index].state.borrow_mut().cancel_return();
+                self.entries[index].attachment = attachment;
+            }
+            if active {
+                let entry = self.entries.remove(index);
+                let state = Rc::clone(&entry.state);
+                self.entries.push(entry);
+                return state;
+            }
+            return Rc::clone(&self.entries[index].state);
+        }
+        let state = Rc::new(RefCell::new(facet::browse::library::State::default()));
+        if active {
+            self.entries.push(LibraryStateEntry {
+                route: route.clone(),
+                revision,
+                attachment,
+                state: Rc::clone(&state),
+            });
+            if self.entries.len() > MAX_LIBRARY_STATE_MEMORY {
+                self.entries.remove(0);
+            }
+        }
+        state
+    }
+}
+
+#[cfg(test)]
+mod library_state_memory_tests {
+    use super::{LibraryStateMemory, MAX_LIBRARY_STATE_MEMORY};
+    use crate::core::{LocalProjectId, VersionedRoot};
+    use crate::navigation::{BrowseRoute, OrbitRoute, Route};
+    use std::path::Path;
+    use std::rc::Rc;
+
+    fn tree(name: &str) -> Route {
+        let project = LocalProjectId::from_path(Path::new(name)).expect("tree identity");
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project)))
+    }
+
+    #[test]
+    fn library_state_survives_observation_bumps_but_not_tree_authority() {
+        let mut memory = LibraryStateMemory::default();
+        let route = tree("/tmp/library-memory-one");
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("library".to_owned(), "same".to_owned())]), 7,
+        );
+        let changed = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("library".to_owned(), "changed".to_owned())]), 7,
+        );
+        let first = memory.for_route(&route, Some(root), None, true);
+        assert!(Rc::ptr_eq(
+            &first,
+            &memory.for_route(&route, Some(root), None, true)
+        ));
+        for observation in 1..=16 {
+            let observed = root.observed_at(observation);
+            assert!(Rc::ptr_eq(&first, &memory.for_route(&route, Some(observed), None, true)));
+            assert_eq!(memory.entries.len(), 1, "diagnostic observations cannot multiply neutral cache entries");
+            assert_eq!(memory.entries[0].revision, Some(observed));
+        }
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_route(&route, Some(changed), None, true)
+        ));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_route(&tree("/tmp/library-memory-two"), Some(root), None, true)
+        ));
+    }
+
+    #[test]
+    fn leaving_tree_does_not_admit_state_and_old_trees_are_evicted() {
+        let mut memory = LibraryStateMemory::default();
+        let first_route = tree("/tmp/library-memory-first");
+        let transient = memory.for_route(&first_route, None, None, false);
+        let first = memory.for_route(&first_route, None, None, true);
+        assert!(!Rc::ptr_eq(&transient, &first));
+        for at in 0..MAX_LIBRARY_STATE_MEMORY {
+            memory.for_route(
+                &tree(&format!("/tmp/library-memory-{at}")),
+                None,
+                None,
+                true,
+            );
+        }
+        assert_eq!(memory.entries.len(), MAX_LIBRARY_STATE_MEMORY);
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_route(&first_route, None, None, true)
+        ));
+    }
+}
+
+/// Source pager identity. Cargo file contents can change without advancing
+/// the indexed view root, so their independent owner-verified digest is used.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceGeneration {
+    Indexed(crate::core::VersionedRoot),
+    Cargo([u8; 32]),
+}
+
+#[derive(Default)]
+struct SourcePagingMemory {
+    entries: Vec<SourcePagingEntry>,
+}
+
+impl SourcePagingMemory {
+    fn for_route(
+        &mut self,
+        route: &Route,
+        revision: Option<SourceGeneration>,
+        active: bool,
+    ) -> Rc<RefCell<Option<bodies::PagingState>>> {
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.route == *route && entry.revision == revision
+        }) {
+            // The leaving page can still paint, but cannot reorder the current page's recency.
+            if active {
+                let entry = self.entries.remove(index);
+                let state = Rc::clone(&entry.state);
+                self.entries.push(entry);
+                return state;
+            }
+            return Rc::clone(&self.entries[index].state);
+        }
+        let state = Rc::new(RefCell::new(None));
+        if active {
+            self.entries.push(SourcePagingEntry {
+                route: route.clone(),
+                revision,
+                state: Rc::clone(&state),
+            });
+            if self.entries.len() > MAX_SOURCE_PAGING_MEMORY {
+                self.entries.remove(0);
+            }
+        }
+        state
+    }
+}
+
+struct SourcePagingEntry {
+    route: Route,
+    revision: Option<SourceGeneration>,
+    state: Rc<RefCell<Option<bodies::PagingState>>>,
+}
+
+#[cfg(test)]
+mod source_paging_memory_tests {
+    use super::{SourceGeneration, SourcePagingMemory, MAX_SOURCE_PAGING_MEMORY};
+    use crate::core::VersionedRoot;
+    use crate::navigation::{Route, View};
+    use crate::shell::tests::view_route;
+    use std::rc::Rc;
+
+    #[test]
+    fn exact_source_route_and_owner_revision_retain_only_their_own_page_state() {
+        let mut memory = SourcePagingMemory::default();
+        let route = view_route("RelationLabel", View::Code);
+        let first_root = VersionedRoot::unserved();
+        let changed_root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("paging".to_owned(), "replacement".to_owned())]),
+            5,
+        );
+        let saved = memory.for_route(&route, Some(SourceGeneration::Indexed(first_root)), true);
+        let revisit = memory.for_route(&route, Some(SourceGeneration::Indexed(first_root)), true);
+        assert!(Rc::ptr_eq(&saved, &revisit));
+        assert!(!Rc::ptr_eq(&saved, &memory.for_route(&route, Some(SourceGeneration::Indexed(changed_root)), true)));
+
+        let Route::Symbol(mut different_line) = route.clone() else { unreachable!() };
+        different_line.line = Some(42);
+        assert!(!Rc::ptr_eq(
+            &saved,
+            &memory.for_route(&Route::Symbol(different_line), Some(SourceGeneration::Indexed(first_root)), true),
+        ));
+    }
+
+    #[test]
+    fn cargo_file_pager_follows_verified_content_not_index_root() {
+        use crate::navigation::{CargoSourcePath, CargoSourceRoute};
+        let mut memory = SourcePagingMemory::default();
+        let package = crate::core::PackageId::new(
+            "pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).expect("authority address");
+        let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-reader").expect("tree address");
+        let file = CargoSourcePath::new("src/lib.rs").expect("file");
+        let route = Route::CargoSource(CargoSourceRoute::new(crate::navigation::cargo_browse::fixture_context(project), package, file, Some(77)).expect("route"));
+        let original = memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true);
+        assert!(Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true)));
+        assert!(!Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([2; 32])), true)));
+    }
+
+    #[test]
+    fn leaving_pages_do_not_admit_entries_and_long_sessions_evict_old_pages() {
+        let mut memory = SourcePagingMemory::default();
+        let route = view_route("RelationLabel", View::Code);
+        let transient = memory.for_route(&route, None, false);
+        assert_eq!(memory.entries.len(), 0);
+        let saved = memory.for_route(&route, None, true);
+        assert!(!Rc::ptr_eq(&transient, &saved));
+        for line in 1..=MAX_SOURCE_PAGING_MEMORY as u32 {
+            let Route::Symbol(mut different_line) = route.clone() else { unreachable!() };
+            different_line.line = Some(line);
+            memory.for_route(&Route::Symbol(different_line), None, true);
+        }
+        assert_eq!(memory.entries.len(), MAX_SOURCE_PAGING_MEMORY);
+        assert!(!Rc::ptr_eq(&saved, &memory.for_route(&route, None, true)));
+    }
+}
+
+#[derive(Clone)]
+struct RouteScroll {
+    route: Route,
+    overlay: Option<Overlay>,
+    offset: Point<Pixels>,
+}
+
 /// The reader's column geometry for one frame.
 #[derive(Clone, Copy)]
 struct Layout {
-    /// The scroller's side padding and top padding.
+    /// The scroller's left and right padding, then top padding.
     pad: Pixels,
+    right_pad: Pixels,
     top: Pixels,
     folio: Pixels,
     beside: Pixels,
@@ -1237,7 +2037,7 @@ impl Region for Reader {
             let snapshot = store.snapshot();
             let overlay = snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox));
             if *snapshot.route() != self.route || overlay != self.overlay {
-                if overlay == self.overlay && find_refinement(&self.route, snapshot.route()) {
+                if overlay == self.overlay && (find_refinement(&self.route, snapshot.route()) || cargo_binding_refinement(&self.route, snapshot.route())) {
                     // Typing refines one place. Keeping its keyed surface
                     // holds the live input and selection while results reflow.
                     self.route = snapshot.route().clone();
@@ -1246,10 +2046,42 @@ impl Region for Reader {
                 }
                 // (A release change or a view switch replaces the entry; it
                 // still arrives as a new page.)
+                let opening_settings = !matches!(self.overlay, Some(Overlay::Settings(_)))
+                    && matches!(overlay, Some(Overlay::Settings(_)));
+                let closing_settings = matches!(self.overlay, Some(Overlay::Settings(_)))
+                    && !matches!(overlay, Some(Overlay::Settings(_)));
+                if opening_settings {
+                    self.settings_departure = self.painted_root
+                        .filter(|_| self.places.last().is_some_and(|place| Some(place.key) == self.painted))
+                        .map(|root| SettingsDeparture {
+                            route: self.route.clone(),
+                            root,
+                            target: self.targets.is_active().then(|| self.targets.focused()).flatten(),
+                        });
+                }
+                let departure = if closing_settings { self.settings_departure.take() } else { None };
                 self.arrive(snapshot.route(), overlay);
+                self.pending_settings_focus = if closing_settings && overlay.is_none() {
+                    Some(SettingsReturn {
+                        place: self.descents,
+                        root: snapshot.key(),
+                        target: departure.filter(|departure| {
+                            departure.route == *snapshot.route()
+                                && departure.root.same_authority(snapshot.key())
+                        })
+                            .and_then(|departure| departure.target),
+                    })
+                } else {
+                    None
+                };
             }
         }
     }
+}
+
+fn cargo_binding_refinement(previous: &Route, next: &Route) -> bool {
+    let (Route::CargoSource(previous), Route::CargoSource(next)) = (previous, next) else { return false };
+    next.browse.context().cloned().and_then(|context| previous.resolve_context(context)).as_ref() == Some(next)
 }
 
 fn find_refinement(previous: &Route, next: &Route) -> bool {
@@ -1273,6 +2105,35 @@ pub(crate) fn reader_keys(snapshot: &AppSnapshot) -> Vec<PageKey> {
 }
 
 impl Reader {
+    /// The page cannot claim native input while its arrival still lacks a
+    /// measured frame or any of its departure/arrival plate is in flight.
+    /// A Find field may still focus before its read completes, so resource
+    /// readiness and `painted` are intentionally separate from this gate.
+    pub(crate) fn native_motion_settled(&self) -> bool {
+        self.arrival.is_none() && self.transit.is_none()
+    }
+
+    pub(crate) fn native_input_allowed(&self) -> bool {
+        self.ask_background_input_allowed && self.native_motion_settled()
+    }
+
+    pub(crate) fn native_input_for(&self, route: &Route, overlay: Option<Overlay>) -> bool {
+        self.native_input_allowed() && self.route == *route && self.overlay == overlay
+            && self.places.last().is_some_and(|place| self.painted == Some(place.key))
+    }
+
+    pub(crate) fn current_place_key(&self) -> Option<u64> {
+        self.places.last().map(|place| place.key)
+    }
+
+    pub(crate) fn set_ask_scene(&mut self, geometry: Option<super::frame::AskGeometry>, background_input_allowed: bool, cx: &mut Context<Self>) {
+        if self.ask_geometry != geometry || self.ask_background_input_allowed != background_input_allowed {
+            self.ask_geometry = geometry;
+            self.ask_background_input_allowed = background_input_allowed;
+            cx.notify();
+        }
+    }
+
     /// Builds one place's body. The current place registers its targets and
     /// records its words; a leaving place is inert.
     #[allow(clippy::too_many_arguments)]
@@ -1284,21 +2145,52 @@ impl Reader {
         layout: &Layout,
         facet: &facet::Facet,
         edge: Option<Edge>,
+        retained_pages: Option<&Pages>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let palette = facet.palette();
-        let keys = place_keys(&place.route, place.overlay);
-        let pages = Pages::gather(self.links.store.read(cx), &keys);
+        let dependencies = RouteDependencies::new(&place.route, place.overlay);
+        let pages = retained_pages.cloned().unwrap_or_else(|| Pages::gather(self.links.store.read(cx), &dependencies));
         let links = self.links.clone();
         let targets = if current { self.targets.clone() } else { Targets::default() };
         let mut said = Vec::new();
         let mut hero = Vec::new();
         let mut scratch_hover = HoverIntent::default();
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
+        let source_generation = match &place.route {
+            Route::CargoSource(_) => dependencies.cargo().and_then(|cargo| {
+                let store = self.links.store.read(cx);
+                let resource = store.cargo_source(&cargo.file);
+                (store.cargo_read_admission(&PageKey::CargoSource(cargo.file.clone()), &resource)
+                    == CargoReadAdmission::Current)
+                    .then(|| resource.loaded_value().map(|page| SourceGeneration::Cargo(page.content_digest)))
+                    .flatten()
+            }),
+            _ => route_symbol(&place.route).and_then(|symbol| pages.source(&symbol).value_root().map(SourceGeneration::Indexed)),
+        };
+        let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code)
+            || matches!(&place.route, Route::CargoSource(_)) {
+            self.source_paging.for_route(&place.route, source_generation, current)
+        } else {
+            Rc::clone(&self.empty_source_paging)
+        };
+        let library_state = match &place.route {
+            Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project))) => {
+                let revision = pages
+                    .browse(&crate::model::browse::BrowseKey::Tree(project.clone()))
+                    .value_root();
+                let attachment = self.links.store.read(cx).current_owner_attachment();
+                self.library_state
+                    .for_route(&place.route, revision, attachment, current)
+            }
+            _ => Rc::new(RefCell::new(facet::browse::library::State::default())),
+        };
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
                 active: current,
+                native_input_active: current && self.native_input_allowed(),
                 measure: layout.folio_measure,
                 note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
                 wide: layout.wide_measure,
@@ -1310,6 +2202,13 @@ impl Reader {
                 links: &links,
                 targets: &targets,
                 reader_scroll: self.scroll.clone(),
+                reader_reveal: Rc::clone(&self.reveal),
+                source_focus_applied: Rc::clone(&self.source_focus_applied),
+                place_key: place.key,
+                native_return_interruption: self.native_return_interruption,
+                source_generation,
+                source_paging,
+                library_state,
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,
@@ -1323,7 +2222,7 @@ impl Reader {
                     .filter(|from| route_symbol(&place.route).as_ref() != Some(from)),
             };
             let hover = if current { &mut hover } else { &mut scratch_hover };
-            bodies::build(&place.route, place.overlay, snapshot, &pages, &mut ctx, hover, cx)
+            bodies::build(&place.route, place.overlay, snapshot, &pages, &mut ctx, hover, window, cx)
         };
         if current {
             self.hover = hover;
@@ -1336,23 +2235,7 @@ impl Reader {
 
 /// The page keys a place draws.
 fn place_keys(route: &Route, overlay: Option<Overlay>) -> Vec<PageKey> {
-    match overlay {
-        Some(Overlay::Settings(_)) => return vec![PageKey::Health],
-        Some(Overlay::Inbox) => return Vec::new(),
-        _ => {}
-    }
-    match route {
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => vec![PageKey::Browse(browse.into())],
-        Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
-        Route::World => Vec::new(),
-        Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
-        Route::Symbol(symbol) => match symbol.view {
-            View::Page | View::Graph => route_symbol(route).map(PageKey::Symbol).into_iter().collect(),
-            View::Code => route_symbol(route)
-                .map(|id| vec![PageKey::Source(id.clone()), PageKey::Symbol(id)])
-                .unwrap_or_default(),
-        },
-    }
+    RouteDependencies::new(route, overlay).into_keys()
 }
 
 impl Render for Reader {
@@ -1371,26 +2254,83 @@ impl Render for Reader {
         self.laid_out = Some(laid_out);
         let palette = facet.palette();
         let snapshot = self.links.snapshot(cx);
-        if self.find_workspace.as_ref() != snapshot.workspace().host.as_ref() {
+        if self.find_workspace.as_ref() != snapshot.workspace().host.as_ref()
+            || self.find_held_root.is_some_and(|held| !held.same_authority(snapshot.key())) {
             self.find_workspace = snapshot.workspace().host.clone();
             self.find_held.clear();
+            self.find_held_root = None;
         }
-        let on_graph = bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none();
-        let layout = self.layout(&snapshot, &measure, &facet);
-        let Layout { pad, top, folio, beside, content, .. } = layout;
+        let Some(requested) = self.places.last().cloned() else { return div(); };
+        let readiness = RouteDependencies::new(&requested.route, requested.overlay).content_phase(self.links.store.read(cx));
+        let waiting = readiness == DestinationState::Pending;
+        let was_waiting = self.pending_place.is_some();
+        self.pending_place = None;
+        if self.retained.as_ref().is_some_and(|page| !page.root.same_authority(snapshot.key())) {
+            self.retained = None;
+            self.arrival = None;
+            self.transit = None;
+            self.pending_page_focus = None;
+        }
+        if readiness == DestinationState::Terminal {
+            // One fault wins over every other pending key. Draw the exact
+            // destination's fault instead of hiding it behind the predecessor.
+            self.retained = None;
+            self.arrival = None;
+            self.transit = None;
+            self.tint = None;
+            self.pending_page_focus = None;
+            self.pending_scroll_restore = None;
+            self.scroll.set_offset(point(px(0.0), px(0.0)));
+        }
+        let previous = waiting.then(|| self.retained.clone()).flatten()
+            .filter(|page| page.place.key != requested.key);
+        let current = previous.as_ref().map_or_else(|| requested.clone(), |page| page.place.clone());
+        let body_snapshot = previous.as_ref().map_or_else(|| snapshot.clone(), |page| page.snapshot.clone());
+        if waiting {
+            if let Some(target) = self.targets.focused() {
+                self.pending_page_focus = Some(SettingsReturn { place: requested.key, root: snapshot.key(), target: Some(target) });
+                self.targets.clear_focus();
+            }
+            if previous.is_some() {
+                self.pending_place = Some(requested.key);
+            } else {
+                // First sighting, revoked Cargo capability, or incompatible
+                // root: there is no admissible old body to keep on screen.
+                self.arrival = None;
+                self.transit = None;
+            }
+        }
+        if self.pending_page_focus.as_ref().is_some_and(|focus| focus.place != requested.key || !focus.root.same_authority(snapshot.key())) {
+            self.pending_page_focus = None;
+        }
+        let on_graph = bodies::graph::is_graph(&current.route) && current.overlay.is_none();
+        let layout = self.layout(&current.route, current.overlay, &measure, &facet);
+        let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
-        let Some(current) = self.places.last().cloned() else {
-            return div();
-        };
         // A page counts as painted once it drew its content: a skeleton "on its
         // way" is not a page that can leave (a route that supersedes it cuts
         // past it, and the change in flight goes on to the newer route).
-        if content_loaded(self.links.store.read(cx), &place_keys(&current.route, current.overlay)) {
+        if !waiting && RouteDependencies::new(&current.route, current.overlay).content_loaded(self.links.store.read(cx)) {
+            if let Some((key, offset)) = self.pending_scroll_restore.take() {
+                if key == current.key {
+                    self.scroll.set_offset(offset);
+                } else {
+                    self.pending_scroll_restore = Some((key, offset));
+                }
+            }
             self.painted = Some(current.key);
+            self.painted_root = Some(snapshot.key());
+        } else if !waiting && self
+            .pending_scroll_restore
+            .as_ref()
+            .is_some_and(|(key, _)| *key != current.key)
+        {
+            self.pending_scroll_restore = None;
         }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
-        if let Some(arrival) = self.arrival.take()
+        if !waiting
+            && let Some(arrival) = self.arrival.take()
             && let Some(reader) = reader
         {
             self.begin(arrival, reader, window, cx);
@@ -1408,7 +2348,7 @@ impl Render for Reader {
             facet::motion::request_frame(window, cx);
         }
         let transit = self.transit.clone().filter(|_| staged.is_some());
-        let keep = |key: u64| key == current.key || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
+        let keep = |key: u64| key == current.key || key == requested.key || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
         self.places.retain(|place| keep(place.key));
         // The page drawn away from the scroller this frame (the one leaving
         // an Open, the one folding on a Close's or a Fold's plate).
@@ -1417,6 +2357,7 @@ impl Render for Reader {
                 Verb::Open => transit.outside,
                 Verb::Close | Verb::Fold => transit.inside,
                 Verb::Unfold => return None,
+                Verb::Peel => if current.key == transit.inside { transit.outside } else { transit.inside },
             };
             self.places.iter().find(|place| place.key == key).cloned()
         });
@@ -1480,7 +2421,8 @@ impl Render for Reader {
                 land: Vec::new(),
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
-            let mut root = div().relative().size_full().text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
+            let mut root = div().relative().size_full()
+                .text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
             match (staged, transit.as_ref(), leaving, reader) {
                 (Some(staged), Some(transit), Some(leaving), Some(reader)) if staged.verb == Verb::Fold => {
                     // The graph was always behind the page: it is uncovered
@@ -1493,7 +2435,7 @@ impl Render for Reader {
                         staged.outside[0]
                     };
                     root = root.child(masked(map_mask, framed));
-                    let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, Pixels::ZERO, &snapshot, &layout, &facet, cx);
+                    let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, Pixels::ZERO, &snapshot, &layout, &facet, window, cx);
                     root = root
                         .child(plate_ground(&staged))
                         .child(div().id("folding-plate").absolute().top_0().left_0().size_full().child(page))
@@ -1501,7 +2443,15 @@ impl Render for Reader {
                 }
                 _ => root = root.child(framed),
             }
-            return root;
+            // A sheet (including an unreadably narrow transitional panel)
+            // leaves no Reader pixels. Keep the map and route state above
+            // current, but do not mount descendants under a zero-opacity
+            // wrapper: they still enter the painted-text probe.
+            return if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
+                div().size_full()
+            } else {
+                root
+            };
         }
         if let Some(map) = &self.map { map.update(cx, |map, cx| map.suspend(window, cx)); }
 
@@ -1516,13 +2466,96 @@ impl Render for Reader {
         if !on_the_library {
             self.ring_flow.forget(cx);
         }
-        let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge, cx);
+        let still = previous.as_ref().map(|_| facet::motion::still(cx));
+        // Without an admissible predecessor, pending indexed content is a
+        // loading state; never paint stale resource bytes under a new root.
+        let pending_pages = if waiting && previous.is_none() {
+            Some(Pages::default())
+        } else if readiness == DestinationState::Terminal {
+            let mut pages = Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&requested.route, requested.overlay));
+            pages.expose_terminal();
+            Some(pages)
+        } else { None };
+        let body = self.body(&current, previous.is_none(), &body_snapshot, &layout, &facet, current_edge,
+            previous.as_ref().map(|page| &page.pages).or(pending_pages.as_ref()), window, cx);
+        drop(still);
+        if !waiting && readiness == DestinationState::Ready {
+            self.retained = retainable(&current).then(|| RetainedPage {
+                place: Place { lens: self.lens, ..current.clone() },
+                root: snapshot.key(),
+                snapshot: snapshot.clone(),
+                pages: Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&current.route, current.overlay)),
+                words: self.said.clone(),
+            });
+        }
+        if !waiting && staged.is_some() && (was_waiting || self.pending_page_focus.is_some()) {
+            if self.pending_page_focus.is_none() && let Some(target) = self.targets.focused() {
+                self.pending_page_focus = Some(SettingsReturn { place: current.key, root: snapshot.key(), target: Some(target) });
+            }
+            self.targets.clear_focus();
+        }
+        if !waiting && staged.is_none() && self.native_input_allowed()
+            && let Some(focus) = self.pending_page_focus.take()
+            && focus.place == current.key && focus.root.same_authority(snapshot.key())
+            && let Some(target) = focus.target
+        {
+            self.targets.focus(target);
+            if self.targets.current().is_none() { self.targets.clear_focus(); }
+            else { self.reveal.set(true); cx.notify(); }
+        }
+        self.targets.finish_native();
+        if let Some(pending) = self.native_return.clone() {
+            let store = self.links.store.read(cx);
+            let dependencies = RouteDependencies::new(&pending.route, None);
+            let resources_current = store.admits_owner_attachment(&pending.attachment)
+                && pending.read_stamp.as_ref().is_none_or(|stamp| dependencies.admits_native_stamp(store, pending.root, stamp));
+            let input_owned = self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).allows_reader_native_return(window));
+            if pending.place != current.key || pending.route != current.route || !pending.root.same_authority(snapshot.key()) || current.overlay.is_some()
+                || !resources_current || !input_owned || super::titlebar::menu_open(window, cx)
+                || self.targets.native_focused(window).is_some_and(|focused| focused != pending.id)
+            {
+                self.native_return = None;
+            } else if self.painted == Some(current.key)
+                && staged.is_none() && self.transit.is_none() && self.arrival.is_none()
+                && self.targets.focus_native(&pending.id, window, cx)
+            {
+                self.targets.focus(pending.id);
+                self.native_return = None;
+                self.reveal.set(true);
+                cx.notify();
+            }
+        }
+        if let Some(mut pending) = self.pending_settings_focus.take()
+            && pending.place == current.key
+        {
+            if self.painted == Some(current.key) && self.native_input_allowed() {
+                if !pending.has_same_authority(snapshot.key()) { pending.target = None; }
+                if self.targets.is_active() {
+                    if let Some(target) = pending.target {
+                        self.targets.focus(target);
+                        if self.targets.current().is_none() {
+                            self.targets.clear_focus();
+                            self.targets.walk(1);
+                        }
+                    } else {
+                        self.targets.walk(1);
+                    }
+                    if self.targets.focused().is_some() {
+                        self.reveal.set(true);
+                        cx.notify();
+                    }
+                }
+            } else {
+                self.pending_settings_focus = Some(pending);
+            }
+        }
         if let Some(reader) = reader {
             self.follow(reader, cx);
         }
         let drift = staged.map_or(Pixels::ZERO, |staged| match staged.verb {
             Verb::Open | Verb::Unfold => staged.inside_drift,
             Verb::Close | Verb::Fold => staged.outside_drift,
+            Verb::Peel => Pixels::ZERO,
         });
         let stack = div()
             .relative()
@@ -1532,13 +2565,18 @@ impl Render for Reader {
             .child(offset(div().id(("place", current.key)).child(body)).x(drift));
 
         let glow = self.targets.glow(&measure);
+        // Focus is parked while the destination is pending. Settle its old
+        // geometry beneath the same native still scope as the retained body.
+        let glow = if waiting {
+            gpui::inert("waiting-focus-glow", "Focus resumes when the destination arrives", glow).into_any_element()
+        } else { glow.into_any_element() };
         let scroller = div()
             .id("reader-scroll")
             .debug_selector(|| "reader-scroll".to_owned())
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .child(div().w_full().px(pad).pt(top).pb(px(96.0 * scale)).child(stack));
+            .child(div().w_full().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale)).child(stack));
         // A reflow that scrolls to keep the focus in view lands the page's
         // moving parts: a flight from where they were would carry the focus
         // back off screen.
@@ -1551,14 +2589,18 @@ impl Render for Reader {
         } else {
             Vec::new()
         };
-        let scroller = Reveal {
+        let scroller = facet::probe::scroll_scope("reader-scroll", Reveal {
             pending: Rc::clone(&self.reveal),
             targets: self.targets.clone(),
             scroll: self.scroll.clone(),
             frame: Rc::clone(&self.frame),
             land,
             child: scroller.into_any_element(),
-        };
+        });
+        let scroller = if let Some(previous) = &previous {
+            gpui::inert(("waiting-previous-page", previous.place.key),
+                format!("Previous page: {}. Opening {}.", place_name(&previous.place.route), place_name(&requested.route)), scroller).into_any_element()
+        } else { scroller.into_any_element() };
         let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
@@ -1575,12 +2617,29 @@ impl Render for Reader {
             );
         }
         match (staged, transit.as_ref(), leaving) {
+            (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Peel => {
+                let frame = reader.unwrap_or(staged.plate);
+                let leaving_layout = self.layout(&leaving.route, leaving.overlay, &measure, &facet);
+                if current.key == transit.inside {
+                    // Entering Code or Page: the old view remains outside the
+                    // unrolling strip. Its pixels are covered by one opaque
+                    // plate before the arriving text is drawn inside it.
+                    let old = self.still_page(&leaving, transit.scroll, frame, None, Pixels::ZERO, &snapshot, &leaving_layout, &facet, window, cx);
+                    root = root.child(old).child(plate_ground(&staged)).child(masked(staged.plate, scroller));
+                } else {
+                    // A mid-flight Back contracts the same strip from its
+                    // painted position and velocity; the newly current view
+                    // is already visible around it.
+                    let old = self.still_page(&leaving, transit.scroll, staged.plate, None, Pixels::ZERO, &snapshot, &leaving_layout, &facet, window, cx);
+                    root = root.child(scroller).child(plate_ground(&staged)).child(old);
+                }
+            }
             (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Open => {
                 // The old page stays where it was, drifting left, cut to what
                 // the plate has not reached; the new page is on the plate.
                 for (index, mask) in staged.outside.into_iter().enumerate() {
                     if mask.size.height > Pixels::ZERO && mask.size.width > Pixels::ZERO {
-                        let page = self.still_page(&leaving, transit.scroll, mask, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                        let page = self.still_page(&leaving, transit.scroll, mask, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
                         root = root.child(div().id(("leaving", index)).absolute().top_0().left_0().size_full().child(page));
                     }
                 }
@@ -1592,7 +2651,7 @@ impl Render for Reader {
                 let [above, below] = staged.outside;
                 root = root.child(masked(above, scroller));
                 if below.size.height > Pixels::ZERO && below.size.width > Pixels::ZERO {
-                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
                     root = root.child(div().id("parent-below").absolute().top_0().left_0().size_full().child(page));
                 }
                 // What the fold has taken from the plate is the parent, not an
@@ -1603,10 +2662,10 @@ impl Render for Reader {
                     let top = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
                     Bounds::from_corners(point(staged.plate.left(), top), staged.plate.bottom_right())
                 });
-                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, cx);
+                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, window, cx);
                 root = root.child(plate_ground(&staged));
                 if let Some(folded) = folded.filter(|folded| folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO) {
-                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
                     root = root.child(div().id("parent-folded").absolute().top_0().left_0().size_full().child(parent));
                 }
                 root = root.child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
@@ -1623,13 +2682,30 @@ impl Render for Reader {
                     } else {
                         staged.outside[0]
                     };
-                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(masked(map_mask, div().size_full().child(map.clone()))));
+                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(a11y_inert(masked(map_mask, div().size_full().child(map.clone())))));
                 }
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller)).children(gem(&staged));
             }
             _ => root = root.child(scroller),
         }
-        root.child(super::kit::scroll_probe("reader-scroll", self.scroll.clone()))
+        if let Some(previous) = previous {
+            let message: SharedString = format!("Opening {} · previous page: {}", place_name(&requested.route), place_name(&previous.place.route)).into();
+            self.said = previous.words;
+            self.said.push(message.clone());
+            let role = measure.role(ty::MONO_SMALL);
+            let lines = super::text_fit::wrap_identifier(&message, &role, (measure.width() - pad * 2.0).max(px(1.0)), cx);
+            root = root.child(div().id("reader-pending-destination").absolute().left_0().top_0().w_full()
+                .role(gpui::Role::Status).aria_label(message).px(pad).py(px(8.0 * scale))
+                .bg(palette.g1.hsla()).child(super::text_fit::name_lines(&lines, role, palette.ink2.hsla())));
+        }
+        // A full Ask sheet or a transitional plate with less than the
+        // readable preview minimum owns these pixels. Preserve the Reader's
+        // route, body, and motion state above, then omit its visual subtree
+        // until the same sampled Ask geometry exposes room beside the plate.
+        if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
+            return div().size_full();
+        }
+        root.child(facet::probe::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))
@@ -1855,6 +2931,30 @@ mod transit_tests {
     use std::collections::BTreeSet;
     use std::time::Duration;
 
+    #[test]
+    fn page_code_peel_opens_from_the_measured_line_and_reverses_without_lateral_motion() {
+        let reader = Bounds::new(point(px(24.0), px(40.0)), size(px(320.0), px(520.0)));
+        let row = Bounds::new(point(px(86.0), px(292.0)), size(px(178.0), px(22.0)));
+        let start = super::peel_at(reader, row, 0.0);
+        assert_eq!((start.left(), start.right()), (reader.left(), reader.right()));
+        assert_eq!((start.top(), start.bottom()), (row.top(), row.bottom()));
+        let mut prior = start;
+        for progress in [0.12, 0.35, 0.62, 0.84, 0.94, 1.0] {
+            let plate = super::peel_at(reader, row, progress);
+            assert_eq!((plate.left(), plate.right()), (reader.left(), reader.right()));
+            assert!(plate.top() <= prior.top() && plate.bottom() >= prior.bottom(), "the same plate grows around the line");
+            assert!(plate.top() <= row.top() && plate.bottom() >= row.bottom(), "the declaration line stays covered");
+            prior = plate;
+        }
+        assert_eq!(prior, reader);
+        for progress in [0.84, 0.62, 0.35, 0.12, 0.0] {
+            let plate = super::peel_at(reader, row, progress);
+            assert!(plate.top() >= prior.top() && plate.bottom() <= prior.bottom(), "Back contracts the same plate");
+            prior = plate;
+        }
+        assert_eq!(prior, start);
+    }
+
     /// One drawn frame: the plate (if a change is in flight), the driver, the
     /// tints, the targets and every painted text line.
     #[derive(Debug)]
@@ -1896,6 +2996,7 @@ mod transit_tests {
 
     fn package() -> Route {
         Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             at: None,
             package: crate::core::PackageId::new(PACKAGE).expect("package"),
@@ -2547,6 +3648,7 @@ mod transit_ledger {
     fn route_film(cx: &mut TestAppContext) {
         let Some(dir) = std::env::var_os("NUDOX_TRANSIT_LEDGER") else { return };
         let package = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             at: None,
             package: crate::core::PackageId::new(PACKAGE).expect("package"),
@@ -2592,5 +3694,19 @@ mod transit_ledger {
         let path = std::path::PathBuf::from(dir).join("route-film.ledger");
         std::fs::write(&path, &ledger).expect("write the ledger");
         eprint!("{ledger}");
+    }
+}
+
+#[cfg(test)]
+mod retained_destination_tests {
+    use super::retainable;
+    use crate::navigation::{OrbitRoute, Route};
+
+    #[test]
+    fn non_document_destinations_cannot_enter_last_good_retention() {
+        for route in [Route::Orbit(OrbitRoute::Home), Route::World] {
+            let place = super::Place { key: 1, route, overlay: None, way: super::Way::Down, lens: super::Lens::Reference, from: None, opened: None, hop: false };
+            assert!(!retainable(&place));
+        }
     }
 }

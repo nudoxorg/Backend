@@ -155,8 +155,24 @@ pub enum CommandId {
     TreeClose,
     /// Read a project's dependency tree.
     ProjectTree,
+    /// Read one file under owner-revalidated Cargo package source authority.
+    CargoPackageSourceFile,
+    /// Read bounded source-file addresses under an owner-revalidated Cargo package authority.
+    CargoPackageSourceInventory,
+    /// Read the README selected by one exact Cargo package manifest.
+    CargoPackageReadme,
+    /// Follow one relative link from an owner-admitted package README.
+    CargoPackageReadmeLink,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
+    /// Begin one owner-managed local package index job.
+    IndexStart,
+    /// Await one owner-issued index job ticket.
+    IndexAwait,
+    /// Cancel one owner-issued index job ticket.
+    IndexCancel,
+    /// Read one bounded page of progress for an owner-issued index job ticket.
+    IndexProgress,
     /// Read one package graph page fenced to its selected root and facts witness.
     PackageGraphPage,
     /// Read engine health.

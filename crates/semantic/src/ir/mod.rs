@@ -212,9 +212,11 @@ pub use semantic_generation::{
     SemanticGenerationProofError, SemanticGenerationRootV2, SemanticTypedPlaneVerificationTierV2,
     SemanticTypedPlaneWorkLimitsV2, TypedPlaneSegmentSourceV2, UntrustedSemanticContentRootV2,
     UntrustedSemanticGenerationRootV2, VerifiedTypedPlaneContentV2,
-    derive_typed_plane_content_v2_from_admitted_reader, typed_plane_work_limits_v2,
+    VerifiedTypedPlaneHistoryContentV3, derive_typed_plane_content_v2_from_admitted_reader,
+    derive_typed_plane_history_content_v3, typed_plane_work_limits_v2,
     verify_typed_plane_content_v2, verify_typed_plane_content_v2_with_jumbo_segment_source,
     verify_typed_plane_content_v2_with_jumbo_source, verify_typed_plane_content_v2_with_tier,
+    verify_typed_plane_history_content_v3_with_jumbo_segment_source,
 };
 pub use semantic_image::{
     CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
@@ -229,7 +231,9 @@ pub use semantic_image::{
 #[cfg(feature = "mmap")]
 pub use semantic_image::{
     MappedSemanticImage, MappedSemanticImageError, MappedSemanticImageIoPhase,
-    load_semantic_image_mmap, open_semantic_image_mmap,
+    MappedSemanticImageRangeError, MappedSemanticImageRangeMetrics,
+    SEMANTIC_IMAGE_MMAP_RANGE_BYTES, load_semantic_image_mmap,
+    load_semantic_image_mmap_from_ranges, open_semantic_image_mmap,
 };
 pub use semantic_render::{
     CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, CanonicalTypeRenderError,

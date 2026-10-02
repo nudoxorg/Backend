@@ -146,3 +146,75 @@ fn ingest_execution_errors_are_not_labeled_as_invalid_command_frames() {
     assert!(message.contains("typed TooLarge diagnostic"));
     assert!(!message.contains("invalid command frame"));
 }
+
+#[test]
+fn owner_restart_rejects_old_subscription_lease_and_reacquires_distinct_identity() {
+    let cursor = b"same-cursor-after-restart";
+    let mut previous_identity = OwnerLeaseIdentity {
+        boot_nonce: Some(OwnerBootNonce([0x11; 32])),
+        next_nonce: 0,
+    };
+    let mut previous_leases = BTreeMap::new();
+    let previous = previous_identity
+        .allocate(17, cursor, &previous_leases)
+        .expect("first owner lease");
+    previous_leases.insert(
+        previous,
+        DurableLease {
+            cursor: cursor.to_vec().into_boxed_slice(),
+            credit: 1,
+            expires_at: Instant::now() + Duration::from_secs(30),
+            snapshot: None,
+        },
+    );
+    assert!(retained_lease(&previous_leases, previous).is_ok());
+
+    // A new process can serve the same endpoint path and receive the same
+    // request ID and cursor. Its active map starts empty, and its OS-minted
+    // boot namespace must make the first new lease distinct from the old one.
+    let mut restarted_identity = OwnerLeaseIdentity {
+        boot_nonce: Some(OwnerBootNonce([0x22; 32])),
+        next_nonce: 0,
+    };
+    let mut restarted_leases = BTreeMap::new();
+    assert!(matches!(
+        retained_lease(&restarted_leases, previous),
+        Err(ProtocolError::InvalidControl("unknown subscription lease"))
+    ));
+    let reacquired = restarted_identity
+        .allocate(17, cursor, &restarted_leases)
+        .expect("new owner lease");
+    assert_ne!(previous, reacquired);
+    restarted_leases.insert(
+        reacquired,
+        DurableLease {
+            cursor: cursor.to_vec().into_boxed_slice(),
+            credit: 1,
+            expires_at: Instant::now() + Duration::from_secs(30),
+            snapshot: None,
+        },
+    );
+    assert!(retained_lease(&restarted_leases, reacquired).is_ok());
+    assert!(matches!(
+        retained_lease(&restarted_leases, previous),
+        Err(ProtocolError::InvalidControl("unknown subscription lease"))
+    ));
+    assert_ne!(
+        restarted_identity
+            .allocate(17, cursor, &restarted_leases)
+            .expect("next owner lease"),
+        reacquired
+    );
+}
+
+#[test]
+fn subscription_lease_counter_never_wraps_to_reissue_an_old_identity() {
+    let mut identity = OwnerLeaseIdentity {
+        boot_nonce: Some(OwnerBootNonce([0x33; 32])),
+        next_nonce: u64::MAX,
+    };
+    assert_eq!(
+        identity.allocate(17, b"cursor", &BTreeMap::new()),
+        Err(ProtocolError::LeaseIdsExhausted)
+    );
+}

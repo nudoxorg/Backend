@@ -3,11 +3,15 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest};
-use super::coordinator::{DesktopRuntime, RuntimeEvent};
+use super::coordinator::{
+    DesktopRuntime, RequestOutcome, RequestRefusalReason, RuntimeEvent,
+};
 use super::wait;
 use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::navigation::{Intent, RequestId};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
 struct EchoClient;
 
@@ -87,6 +91,242 @@ fn snapshot() -> AppSnapshot {
     ))
 }
 
+fn request_terminals(events: Vec<RuntimeEvent>) -> Vec<(RequestId, RequestOutcome)> {
+    events
+        .into_iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::RequestCompleted { request, outcome } => Some((request, outcome)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn superseding_a_root_refresh_emits_one_typed_terminal_for_the_old_request() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let actor = super::actor::EngineActor::start(
+        GatedClient {
+            entered: entered_tx,
+            release: release_rx,
+        },
+        2,
+    )
+    .expect("actor thread");
+    let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    // Dropped before `runtime` on unwinding, releasing any gate wait before
+    // the runtime joins its actor thread.
+    let mut gate = TestGate::new(release_tx, 3);
+    let basis = runtime.snapshot().key();
+    let blocker = RequestId::new(800);
+    let first = RequestId::new(801);
+    let second = RequestId::new(802);
+
+    let _ = dispatch_object(&mut runtime, blocker, 800);
+    assert_eq!(
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("blocker entered"),
+        blocker
+    );
+    let _ = runtime.dispatch(Intent::RefreshRoot {
+        basis,
+        request: first,
+    });
+    let replacement = runtime.dispatch(Intent::RefreshRoot {
+        basis,
+        request: second,
+    });
+    assert!(!runtime.is_inflight(first));
+    assert!(runtime.is_inflight(second));
+    assert_eq!(
+        request_terminals(replacement),
+        [(first, RequestOutcome::Superseded)]
+    );
+
+    let mut old_terminals = 1;
+    gate.release_all();
+    let mut outcomes = Vec::new();
+    wait::until("the blocker and replacement root reached terminal results", || {
+        for (request, outcome) in request_terminals(runtime.poll()) {
+            if request == first {
+                old_terminals += 1;
+            } else {
+                outcomes.push((request, outcome));
+            }
+        }
+        !runtime.is_inflight(blocker) && !runtime.is_inflight(second)
+    });
+    assert_eq!(
+        old_terminals, 1,
+        "a retired request has exactly one terminal event"
+    );
+    assert_eq!(
+        outcomes,
+        [
+            (blocker, RequestOutcome::Succeeded),
+            (second, RequestOutcome::Succeeded),
+        ]
+    );
+}
+
+struct FailingClient;
+
+impl EngineClient for FailingClient {
+    fn execute(&mut self, _request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        Err(EngineFault::Failed(crate::core::ErrorValue::new(
+            crate::core::FaultCode::Transport,
+            "owner unavailable",
+        )))
+    }
+}
+
+#[test]
+fn actor_failure_is_a_failed_terminal_not_a_success_or_stuck_request() {
+    let actor = super::actor::EngineActor::start(FailingClient, 2).expect("actor thread");
+    let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    let request = RequestId::new(803);
+    let basis = runtime.snapshot().key();
+    let _ = runtime.dispatch(Intent::RefreshRoot { basis, request });
+
+    let mut outcomes = Vec::new();
+    wait::until("the failed root request retired", || {
+        outcomes.extend(request_terminals(runtime.poll()).into_iter().map(|(_, outcome)| outcome));
+        !runtime.is_inflight(request)
+    });
+    assert_eq!(outcomes, [RequestOutcome::Failed]);
+}
+
+#[test]
+fn a_closed_actor_refuses_the_request_and_emits_its_terminal_once() {
+    let actor = super::actor::EngineActor::start(EchoClient, 2).expect("actor thread");
+    actor.close_request_channels_for_test();
+    let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    let request = RequestId::new(804);
+    let basis = runtime.snapshot().key();
+
+    let events = runtime.dispatch(Intent::RefreshRoot { basis, request });
+    assert!(!runtime.is_inflight(request));
+    assert_eq!(
+        request_terminals(events),
+        [(request, RequestOutcome::Refused(RequestRefusalReason::Closed))]
+    );
+    assert!(request_terminals(runtime.poll()).is_empty());
+}
+
+struct GatedClient {
+    entered: Sender<RequestId>,
+    release: Receiver<()>,
+}
+
+/// Releases a gated actor before its runtime is dropped, including when an
+/// assertion unwinds before the test reaches its normal release point.
+struct TestGate {
+    release: Sender<()>,
+    permits: usize,
+    released: bool,
+}
+
+impl TestGate {
+    fn new(release: Sender<()>, permits: usize) -> Self {
+        Self {
+            release,
+            permits,
+            released: false,
+        }
+    }
+
+    fn release_all(&mut self) {
+        if self.released {
+            return;
+        }
+        for _ in 0..self.permits {
+            let _ = self.release.send(());
+        }
+        self.released = true;
+    }
+}
+
+impl Drop for TestGate {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+impl EngineClient for GatedClient {
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        self.entered
+            .send(request.request())
+            .map_err(|_| EngineFault::Cancelled)?;
+        self.release.recv().map_err(|_| EngineFault::Cancelled)?;
+        EchoClient.execute(request)
+    }
+}
+
+fn dispatch_object(
+    runtime: &mut DesktopRuntime,
+    request: RequestId,
+    object: u64,
+) -> Vec<RuntimeEvent> {
+    runtime.dispatch(Intent::RefreshObject {
+        object: crate::model::ObjectId::test(object),
+        delta: crate::model::DeltaId::test(object),
+        basis: runtime.snapshot().key(),
+        request,
+    })
+}
+
+#[test]
+fn a_full_actor_queue_refuses_new_work_without_leaking_an_inflight_request() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let actor = super::actor::EngineActor::start(
+        GatedClient {
+            entered: entered_tx,
+            release: release_rx,
+        },
+        1,
+    )
+    .expect("actor thread");
+    let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    // This guard runs before the runtime's actor join if an assertion fails.
+    let mut gate = TestGate::new(release_tx, 2);
+    let first = RequestId::new(805);
+    let queued = RequestId::new(806);
+    let refused = RequestId::new(807);
+
+    let _ = dispatch_object(&mut runtime, first, 805);
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("first request entered"),
+        first
+    );
+    let _ = dispatch_object(&mut runtime, queued, 806);
+    let refusal = dispatch_object(&mut runtime, refused, 807);
+    let refused_terminal = request_terminals(refusal);
+
+    // Always release the worker before assertions so a failed test cannot
+    // leave the actor join waiting on a fixture gate.
+    gate.release_all();
+    let mut admitted_outcomes = Vec::new();
+    wait::until("the admitted queue entries reached terminal results", || {
+        admitted_outcomes.extend(request_terminals(runtime.poll()));
+        !runtime.is_inflight(first) && !runtime.is_inflight(queued)
+    });
+
+    assert_eq!(
+        refused_terminal,
+        [(refused, RequestOutcome::Refused(RequestRefusalReason::QueueFull))]
+    );
+    assert!(!runtime.is_inflight(refused));
+    assert_eq!(
+        admitted_outcomes,
+        [
+            (first, RequestOutcome::Succeeded),
+            (queued, RequestOutcome::Succeeded),
+        ]
+    );
+}
+
 #[test]
 fn latest_root_supersedes_older_refreshes_without_ui_waiting() {
     let actor = super::actor::EngineActor::start(EchoClient, 2).expect("actor thread");
@@ -119,8 +359,13 @@ fn stop_cancels_owned_requests_without_waiting_for_the_actor() {
     let basis = runtime.snapshot().key();
     runtime.dispatch(Intent::RefreshRoot { basis, request });
     assert!(runtime.is_inflight(request));
-    runtime.dispatch(Intent::Stop);
+    let stopped = runtime.dispatch(Intent::Stop);
     assert!(!runtime.is_inflight(request));
+    assert_eq!(
+        request_terminals(stopped),
+        [(request, RequestOutcome::Cancelled)]
+    );
+    assert!(request_terminals(runtime.poll()).is_empty());
 }
 
 #[test]

@@ -9,6 +9,7 @@ use backend_advisory::{
     normalize_package,
 };
 use std::collections::BTreeSet;
+use std::path::Path;
 
 const METADATA: &[u8] = include_bytes!("fixtures/tree-2026-09-27/metadata.json");
 const LOCKFILE: &str = include_str!("fixtures/tree-2026-09-27/Cargo.lock");
@@ -51,6 +52,49 @@ fn path(hops: &[WhyHop]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" → ")
+}
+
+#[test]
+fn owner_tree_binding_accepts_requested_subdirectory_and_rejects_other_projects() {
+    let mut tree = tree(&rustsec());
+    let requested = Path::new("/workspace/backend/crates/library");
+    tree.request_binding = Some(
+        ProjectTreeRequestBindingV1::for_paths(requested, &tree.root)
+            .expect("the requested directory and workspace root are absolute"),
+    );
+
+    assert!(tree.has_admissible_shape());
+    let binding = tree.request_binding.expect("owner bound request");
+    assert!(binding.matches_requested_root(requested));
+    assert_eq!(
+        ProjectTreeRequestBindingV1::requested_root_digest_for(requested),
+        Some(binding.requested_root_digest)
+    );
+    assert!(binding.matches_effective_workspace_root(&tree.root));
+    assert!(
+        !binding.matches_requested_root(Path::new("/workspace/backend/crates/present")),
+        "a response for a different requested project must not rehydrate"
+    );
+}
+
+#[test]
+fn project_tree_request_binding_separates_subdirectory_from_effective_workspace() {
+    let requested = Path::new("/work/crates/present");
+    let binding = ProjectTreeRequestBindingV1::for_paths(requested, "/work")
+        .expect("absolute UTF-8 requested and effective roots");
+
+    assert!(binding.has_admissible_shape());
+    assert!(binding.matches_requested_root(requested));
+    assert!(binding.matches_effective_workspace_root("/work"));
+    assert!(!binding.matches_requested_root(Path::new("/work/crates/runtime")));
+    assert!(
+        !binding.matches_effective_workspace_root("/work/crates/present"),
+        "the requested package directory must not be confused with Cargo's workspace root"
+    );
+    assert!(
+        !binding.matches_effective_workspace_root("/other-workspace"),
+        "a response from a different workspace must fail the binding"
+    );
 }
 
 #[test]
@@ -111,7 +155,7 @@ fn toml_is_here_twice_and_each_copy_has_its_own_reason() {
 }
 
 #[test]
-fn counts_are_what_builds_on_this_machine() {
+fn counts_follow_the_selected_target_feature_resolution() {
     let tree = tree(&rustsec());
     assert_eq!(
         tree.source,
@@ -123,7 +167,11 @@ fn counts_are_what_builds_on_this_machine() {
     assert_eq!(tree.members.len(), 44);
     assert_eq!(tree.direct.len(), 75);
     assert_eq!(tree.packages.len(), 884);
-    assert_eq!(tree.other_platforms, 309);
+    assert_eq!(tree.locked_inactive, 309);
+    assert_eq!(
+        tree.locked_inactive_coverage,
+        LockedInactiveCoverage::Complete
+    );
     assert_eq!(tree.twice.len(), 60);
     let desktop = tree
         .members
@@ -139,6 +187,18 @@ fn counts_are_what_builds_on_this_machine() {
             path: "vendor/gpui-ce".to_owned()
         }
     );
+    let registry = tree.package("toml", "0.8.23").expect("toml");
+    assert_eq!(
+        registry.origin,
+        PackageOrigin::Registry {
+            source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+        }
+    );
+    assert!(registry.origin.is_crates_io_registry());
+    assert_eq!(tree.schema, PROJECT_TREE_SCHEMA);
+    let wire = serde_json::to_vec(&registry.origin).expect("origin wire");
+    let reopened: PackageOrigin = serde_json::from_slice(&wire).expect("origin decode");
+    assert_eq!(reopened, registry.origin);
 }
 
 #[test]
@@ -268,11 +328,54 @@ fn bincode_is_unmaintained_and_the_path_says_how_it_got_here() {
     );
     assert_eq!(
         tree.health.coverage,
-        AdvisoryCoverage::Partial,
-        "one advisory is not a full check"
+        AdvisoryCoverage::Unknown,
+        "vendored sources have no proven crates.io advisory coverage"
     );
     assert_eq!(tree.health.checked, 0);
     assert_eq!(tree.health.of, 884);
+}
+
+#[test]
+fn an_alternative_registry_does_not_inherit_crates_io_advisories() {
+    let mut input = metadata_input(METADATA, "aarch64-apple-darwin", None).expect("metadata");
+    let package = input
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "bincode" && package.version == "1.3.3")
+        .expect("bincode");
+    package.origin = Some(PackageOrigin::Registry {
+        source: "registry+https://packages.example.test/index".to_owned(),
+    });
+    let authority = rustsec();
+    let observe = |name: &str, version: &str| {
+        let package = normalize_package("cargo", name).expect("identity");
+        authority.observe(&package, version, false, false, 1, false)
+    };
+    let tree = build_tree(&input, &observe);
+    assert!(
+        !tree
+            .health
+            .affecting
+            .iter()
+            .any(|advisory| advisory.package == "bincode")
+    );
+    assert_eq!(tree.health.coverage, AdvisoryCoverage::Unknown);
+}
+
+#[test]
+fn a_name_and_version_without_authority_cannot_select_one_registry_package() {
+    let mut tree = tree(&rustsec());
+    let mut alternate = tree
+        .package("toml", "0.8.23")
+        .expect("fixture release")
+        .clone();
+    alternate.origin = PackageOrigin::Registry {
+        source: "registry+https://packages.example.test/index".to_owned(),
+    };
+    let mut packages = tree.packages.to_vec();
+    packages.push(alternate);
+    tree.packages = packages.into();
+    assert!(tree.package("toml", "0.8.23").is_none());
 }
 
 #[test]
@@ -281,7 +384,11 @@ fn with_no_advisory_source_nothing_is_claimed() {
     let tree = build_tree(&input, &no_source);
     assert!(tree.health.affecting.is_empty());
     assert_eq!(tree.health.coverage, AdvisoryCoverage::Unknown);
-    assert_eq!(tree.other_platforms, 0, "no lockfile, no count");
+    assert_eq!(tree.locked_inactive, 0, "no lockfile, no count");
+    assert_eq!(
+        tree.locked_inactive_coverage,
+        LockedInactiveCoverage::Unavailable
+    );
 }
 
 #[test]
@@ -306,17 +413,38 @@ fn the_lockfile_alone_still_explains_the_tree() {
     assert_eq!(
         tree.source,
         TreeSource::Lockfile {
-            reason: "cargo was not found".to_owned()
+            reason: "cargo was not found".to_owned(),
+            coverage: LockfileGraphCoverage::Complete,
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
         }
     );
-    assert_eq!(tree.members.len(), 44);
-    assert_eq!(tree.packages.len(), 1193, "every platform counts");
-    let toml = tree.package("toml", "0.8.23").expect("toml");
-    assert_eq!(toml.why.len(), 2, "{}", path(&toml.why));
     assert!(
-        tree.direct
+        tree.members.is_empty(),
+        "Cargo.lock does not identify members"
+    );
+    assert_eq!(
+        tree.packages.len(),
+        1237,
+        "every Cargo.lock package row counts"
+    );
+    assert!(
+        tree.direct.is_empty(),
+        "no direct member edge is proven from Cargo.lock"
+    );
+    let toml = tree.package("toml", "0.8.23").expect("toml");
+    assert_eq!(
+        toml.origin,
+        PackageOrigin::Registry {
+            source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+        }
+    );
+    assert!(
+        toml.why.is_empty(),
+        "no member root is proven from Cargo.lock"
+    );
+    assert!(
+        tree.packages
             .iter()
-            .all(|dependency| dependency.role == RoleId::Other),
-        "no package states its metadata in a lockfile, so no role is claimed"
+            .all(|package| package.why.is_empty() && package.role == PackageRole::Unknown)
     );
 }

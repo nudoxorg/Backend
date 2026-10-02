@@ -27,9 +27,23 @@ pub(crate) const VIEWED: &str = "1.1.6+spec-1.1.0";
 
 /// `2014-11-11T05:37:45Z` read as an age against the scenes' today
 /// (2026-09).
-fn age(at: &str) -> SharedString {
-    let year: i32 = at.get(0..4).and_then(|y| y.parse().ok()).unwrap_or(2026);
-    let month: i32 = at.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(9);
+fn age(at: &release::RegistryFact<SharedString>) -> SharedString {
+    let release::RegistryFact::Known(at) = at else {
+        return match at {
+            release::RegistryFact::Missing => "date unavailable".into(),
+            release::RegistryFact::Ambiguous => "date conflicts".into(),
+            release::RegistryFact::Known(_) => unreachable!(),
+        };
+    };
+    let (Some(year), Some(month)) = (
+        at.get(0..4).and_then(|year| year.parse::<i32>().ok()),
+        at.get(5..7).and_then(|month| month.parse::<i32>().ok()),
+    ) else {
+        return "date unavailable".into();
+    };
+    if !(1..=12).contains(&month) {
+        return "date unavailable".into();
+    }
     let months = (2026 * 12 + 9) - (year * 12 + month);
     SharedString::from(match months {
         ..=0 => "this month".to_owned(),
@@ -45,8 +59,21 @@ fn shelf(krate: &release::Crate, to: &str, cx: &mut App) -> AnyElement {
     let palette = facet.palette();
     let s = facet.text_scale;
     let m = facet.measure(px(230.0 * s));
-    let versions: Vec<&release::Version> =
-        krate.versions.iter().filter(|v| !v.yanked || v.v == krate.pinned).collect();
+    let versions: Vec<&release::Version> = krate
+        .versions
+        .iter()
+        .filter(|v| v.v == krate.pinned || matches!(&v.yanked, release::RegistryFact::Known(false)))
+        .collect();
+    let missing_yanked = krate
+        .versions
+        .iter()
+        .filter(|v| v.v != krate.pinned && matches!(&v.yanked, release::RegistryFact::Missing))
+        .count();
+    let ambiguous_yanked = krate
+        .versions
+        .iter()
+        .filter(|v| v.v != krate.pinned && matches!(&v.yanked, release::RegistryFact::Ambiguous))
+        .count();
     let releases: Vec<Release> = versions
         .iter()
         .map(|v| Release {
@@ -58,7 +85,13 @@ fn shelf(krate: &release::Crate, to: &str, cx: &mut App) -> AnyElement {
         .collect();
     let index = |v: &str| versions.iter().position(|x| x.v == v);
     let touches = krate.touches();
+    let yanked = versions
+        .iter()
+        .enumerate()
+        .filter(|(_, version)| matches!(&version.yanked, release::RegistryFact::Known(true)))
+        .map(|(index, _)| index);
     let mut comb = version_comb("upgrade-comb", releases, &m)
+        .yanked(yanked)
         .touches(versions.iter().enumerate().filter(|(_, v)| touches.contains(&v.v)).map(|(k, _)| k));
     if let Some(pin) = index(&krate.pinned) {
         comb = comb.pinned(pin);
@@ -94,6 +127,20 @@ fn shelf(krate: &release::Crate, to: &str, cx: &mut App) -> AnyElement {
                 ),
         )
         .child(comb)
+        .children([
+            (missing_yanked > 0).then(|| {
+                div()
+                    .set(NOTE, &m)
+                    .text_color(palette.ink3.hsla())
+                    .child(format!("{missing_yanked} releases omitted: yanked status unavailable"))
+            }),
+            (ambiguous_yanked > 0).then(|| {
+                div()
+                    .set(NOTE, &m)
+                    .text_color(palette.ink3.hsla())
+                    .child(format!("{ambiguous_yanked} releases omitted: yanked status conflicts"))
+            }),
+        ].into_iter().flatten())
         .child(view::shelf_line("upgrade-shelf", &summary, &krate.pinned, to, &m, palette))
         .into_any_element()
 }

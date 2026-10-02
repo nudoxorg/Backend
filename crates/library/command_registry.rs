@@ -55,6 +55,14 @@ impl CommandSpec {
                 | CommandId::TreeOpen
                 | CommandId::TreeClose
                 | CommandId::ProjectTree
+                | CommandId::CargoPackageSourceFile
+                | CommandId::CargoPackageSourceInventory
+                | CommandId::CargoPackageReadme
+                | CommandId::CargoPackageReadmeLink
+                | CommandId::IndexStart
+                | CommandId::IndexAwait
+                | CommandId::IndexCancel
+                | CommandId::IndexProgress
                 | CommandId::AdvisoryRefresh
                 | CommandId::PackageGraphPage
         )
@@ -87,7 +95,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 43] = [
+pub const COMMANDS: [CommandSpec; 51] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -432,6 +440,70 @@ pub const COMMANDS: [CommandSpec; 43] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Registry,
     },
+    CommandSpec {
+        id: CommandId::CargoPackageSourceFile,
+        name: "cargo-source-file",
+        title: "Cargo Source File",
+        description: "Read one bounded source or documentation file using the exact Cargo package authority and ProjectTree root binding currently observed by the owner.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexStart,
+        name: "index_start",
+        title: "Start Indexing",
+        description: "Start one package indexing job and return its owner-issued ticket.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexAwait,
+        name: "index_await",
+        title: "Wait for Indexing",
+        description: "Wait for the terminal receipt of one owner-issued package indexing job.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexCancel,
+        name: "index_cancel",
+        title: "Cancel Indexing",
+        description: "Request cancellation of one exact owner-issued package indexing job.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::IndexProgress,
+        name: "index_progress",
+        title: "Index Progress",
+        description: "Read the next bounded page of typed progress facts for one owner-issued package indexing job.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::CargoPackageSourceInventory,
+        name: "cargo-source-inventory",
+        title: "Cargo Source Inventory",
+        description: "List a bounded set of currently observed source and documentation paths under one exact Cargo package authority and ProjectTree root binding.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::CargoPackageReadme,
+        name: "cargo-package-readme",
+        title: "Cargo Package README",
+        description: "Read the bounded README Cargo selects from one exact package release's observed manifest and source authority.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::CargoPackageReadmeLink,
+        name: "cargo-package-readme-link",
+        title: "Cargo README Link",
+        description: "Read one bounded relative link from a current owner-admitted package README under its exact package or workspace root.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one registry row.
@@ -480,7 +552,15 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::ForgeReference => 39,
         CommandId::ProjectTree => 40,
         CommandId::AdvisoryRefresh => 41,
+        CommandId::CargoPackageSourceFile => 43,
+        CommandId::IndexStart => 44,
+        CommandId::IndexAwait => 45,
+        CommandId::IndexCancel => 46,
+        CommandId::IndexProgress => 47,
         CommandId::PackageGraphPage => 42,
+        CommandId::CargoPackageSourceInventory => 48,
+        CommandId::CargoPackageReadme => 49,
+        CommandId::CargoPackageReadmeLink => 50,
     };
     COMMANDS[index]
 }

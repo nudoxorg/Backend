@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
 use gpui::SharedString;
 use markdown::mdast::{self, Node};
@@ -18,6 +18,36 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
     markdown::to_mdast(&source, &options)
         .map(|n| ast_to_document(source, n, cx))
         .map_err(|e| e.to_string().into())
+}
+
+pub(crate) fn prepare_inline(
+    children: &[mdast::Node],
+    source: &str,
+    context: &NodeContext,
+) -> crate::text::state::PreparedMarkdown {
+    let mut node_cx = context.clone();
+    // This is an immutable projection of the current reference table, not part
+    // of its parent parse's before-image bookkeeping.
+    node_cx.link_refs.begin_update();
+    node_cx.offset = 0;
+    let mut paragraph = Paragraph::default();
+    for child in children {
+        parse_paragraph(&mut paragraph, child, &mut node_cx);
+    }
+    // This derived projection stores the exact inline source as its own
+    // document; its containing block span must be relative to that source.
+    paragraph.span = Some(Span {
+        start: 0,
+        end: source.len(),
+    });
+    node_cx.link_refs.finish_update();
+    let document = ParsedDocument {
+        source: source.to_string().into(),
+        blocks: vec![BlockNode::Paragraph(paragraph)].into(),
+    };
+    crate::text::state::PreparedMarkdown::from_content(
+        crate::text::state::ParsedContent::from_document(document, node_cx),
+    )
 }
 
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeContext) {
@@ -240,7 +270,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
         Node::Html(val) => match super::html::parse(&val.value, cx) {
             Ok(el) => {
                 if let Some(inline_text) =
-                    append_inline_html_blocks(paragraph, Arc::unwrap_or_clone(el.blocks))
+                    append_inline_html_blocks(paragraph, el.blocks.into_vec())
                 {
                     text = inline_text;
                 } else {
@@ -268,10 +298,11 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             )]));
         }
         Node::LinkReference(link) => {
+            let identifier: SharedString = link.identifier.clone().into();
             let link_mark = LinkMark {
                 url: "".into(),
                 title: link.label.clone().map(Into::into),
-                identifier: Some(link.identifier.clone().into()),
+                identifier: Some(identifier),
             };
 
             text = merge_children_with_mark(
@@ -300,14 +331,48 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
         _ => panic!("expected root node"),
     };
 
+    fn references(node: &mdast::Node, context: &mut NodeContext) {
+        match node {
+            Node::LinkReference(_) | Node::ImageReference(_) => {
+                context.reference_dependencies.record_link();
+            }
+            Node::Text(text) => context.reference_dependencies.record_text(&text.value),
+            _ => {}
+        }
+        if let Node::Definition(def) = node {
+            let position = def.position.as_ref();
+            context.add_ref(
+                def.identifier.clone().into(),
+                LinkMark {
+                    url: def.url.clone().into(),
+                    identifier: Some(def.identifier.clone().into()),
+                    title: def.title.clone().map(Into::into),
+                },
+                context.offset + position.map_or(0, |position| position.start.offset),
+                context.offset + position.map_or(0, |position| position.end.offset),
+            );
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                references(child, context);
+            }
+        }
+    }
+    // References may occur after a custom heading, including in nested blocks.
+    // Publish their authority and collect dependencies before conversion,
+    // including children whose containing block a plugin will claim.
+    for child in &root.children {
+        references(child, cx);
+    }
+
     let blocks = root
         .children
         .into_iter()
         .map(|c| ast_to_node(source, c, cx))
-        .collect();
+        .collect::<Vec<_>>();
     ParsedDocument {
         source: source.to_string().into(),
-        blocks: Arc::new(blocks),
+        blocks: blocks.into(),
     }
 }
 
@@ -322,7 +387,7 @@ fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<
 
 fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockNode {
     let span = new_span(value.position().cloned(), cx);
-    let parse_cx = MarkdownParseContext::new(source, cx.offset);
+    let parse_cx = MarkdownParseContext::new(source, cx);
     if let Some(mut node) = cx.markdown_extensions.parse_block(&value, &parse_cx) {
         node.set_span(span);
         return BlockNode::Custom(node);
@@ -402,7 +467,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
         )),
         Node::Html(val) => match super::html::parse(&val.value, cx) {
             Ok(el) => BlockNode::Root {
-                children: Arc::unwrap_or_clone(el.blocks),
+                children: el.blocks.into_vec(),
                 span: new_span(val.position, cx),
             },
             Err(err) => {
@@ -481,23 +546,12 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             paragraph.span = new_span(def.position, cx);
             BlockNode::Paragraph(paragraph)
         }
-        Node::Definition(def) => {
-            cx.add_ref(
-                def.identifier.clone().into(),
-                LinkMark {
-                    url: def.url.clone().into(),
-                    identifier: Some(def.identifier.clone().into()),
-                    title: def.title.clone().map(Into::into),
-                },
-            );
-
-            BlockNode::Definition {
-                identifier: def.identifier.clone().into(),
-                url: def.url.clone().into(),
-                title: def.title.clone().map(|s| s.into()),
-                span: new_span(def.position, cx),
-            }
-        }
+        Node::Definition(def) => BlockNode::Definition {
+            identifier: def.identifier.clone().into(),
+            url: def.url.clone().into(),
+            title: def.title.clone().map(|s| s.into()),
+            span: new_span(def.position, cx),
+        },
         _ => {
             if cfg!(debug_assertions) {
                 tracing::warn!("unsupported node: {:#?}", value);

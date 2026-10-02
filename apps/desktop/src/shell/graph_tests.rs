@@ -23,7 +23,8 @@ pub(super) fn world_rig(cx: &mut TestAppContext, route: Route) -> Rig {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     let world = anatomy_tests::world();
     let identities = Arc::new(IdentityAdapter::synthetic(&world, PackageRef::parse(PACKAGE).expect("package")));
-    rig.cx.update(|_, cx| super::bodies::graph::install_test_world(world, identities, cx));
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
     anatomy_tests::install(&mut rig);
     rig.go(Intent::Navigate(route));
     rig
@@ -152,6 +153,10 @@ fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.status_marks(cx)), 1, "the held card is still in the foot");
+    let origin = rig.graph.store.read_with(rig.cx, |store, _| {
+        store.graph_focus().map(|focus| focus.origin.fixture_identity().map(str::to_owned))
+    });
+    assert_eq!(origin.flatten().as_deref(), Some("single-package anatomy fixture"), "the test owner is explicit and app-scoped");
     let ledger = painted(&mut rig);
     let open = ledger.texts.iter().find(|text| text.key == "hand-open").expect("the hand's chevron");
     let line = ledger.texts.iter().find(|text| text.key.starts_with("address:0:")).expect("the graph's line");

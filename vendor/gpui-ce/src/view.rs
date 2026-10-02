@@ -289,6 +289,14 @@ struct ViewElementState {
     accessed_entities: FxHashSet<EntityId>,
 }
 
+/// Internal per-frame layout state for a retained view element.
+#[doc(hidden)]
+pub struct ViewElementRequestLayoutState {
+    element: Option<AnyElement>,
+    accessed_entities: FxHashSet<EntityId>,
+}
+
+#[derive(Clone)]
 struct ViewElementCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
@@ -296,10 +304,13 @@ struct ViewElementCacheKey {
     /// NUDOX: replayed primitives carry the transform and opacity they were painted under.
     layer_transform: crate::LayerTransform,
     opacity: f32,
+    /// Inert subtrees are always freshly registered; this fence forces one fresh
+    /// traversal when a retained child becomes interactive again.
+    inert: bool,
 }
 
 impl<V: View> Element for ViewElement<V> {
-    type RequestLayoutState = Option<AnyElement>;
+    type RequestLayoutState = ViewElementRequestLayoutState;
     type PrepaintState = Option<AnyElement>;
 
     fn id(&self) -> Option<ElementId> {
@@ -324,23 +335,40 @@ impl<V: View> Element for ViewElement<V> {
         if let Some(entity_id) = self.entity_id {
             // Stateful path: create a reactive boundary.
             window.with_rendered_view(entity_id, |window| {
-                let caching_disabled = window.is_inspector_picking(cx);
+                let inert = window.is_inert_subtree();
+                let caching_disabled = window.is_inspector_picking(cx) || inert;
                 match self.cached_style.as_ref() {
                     Some(style) if !caching_disabled => {
                         let mut root_style = Style::default();
                         root_style.refine(style);
                         let layout_id = window.request_layout(root_style, None, cx);
-                        (layout_id, None)
+                        (
+                            layout_id,
+                            ViewElementRequestLayoutState {
+                                element: None,
+                                accessed_entities: FxHashSet::default(),
+                            },
+                        )
                     }
                     _ => {
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
-                        let layout_id = element.request_layout(window, cx);
-                        (layout_id, Some(element))
+                        let ((layout_id, element), accessed_entities) = cx
+                            .detect_accessed_entities(|cx| {
+                                let mut element = self
+                                    .view
+                                    .take()
+                                    .unwrap()
+                                    .render(window, cx)
+                                    .into_any_element();
+                                let layout_id = element.request_layout(window, cx);
+                                (layout_id, element)
+                            });
+                        (
+                            layout_id,
+                            ViewElementRequestLayoutState {
+                                element: Some(element),
+                                accessed_entities,
+                            },
+                        )
                     }
                 }
             })
@@ -356,7 +384,13 @@ impl<V: View> Element for ViewElement<V> {
                         .render(window, cx)
                         .into_any_element();
                     let layout_id = element.request_layout(window, cx);
-                    (layout_id, Some(element))
+                    (
+                        layout_id,
+                        ViewElementRequestLayoutState {
+                            element: Some(element),
+                            accessed_entities: FxHashSet::default(),
+                        },
+                    )
                 },
             )
         }
@@ -367,7 +401,7 @@ impl<V: View> Element for ViewElement<V> {
         global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
+        request_state: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
@@ -375,7 +409,40 @@ impl<V: View> Element for ViewElement<V> {
             // Stateful path.
             window.set_view_id(entity_id);
             window.with_rendered_view(entity_id, |window| {
-                if let Some(mut element) = element.take() {
+                if let Some(mut element) = request_state.element.take() {
+                    if self.cached_style.is_some() && window.is_inert_subtree() {
+                        let prepaint_start = window.prepaint_index();
+                        element.prepaint(window, cx);
+                        let prepaint_end = window.prepaint_index();
+                        let accessed_entities =
+                            std::mem::take(&mut request_state.accessed_entities);
+                        let cache_key = ViewElementCacheKey {
+                            bounds,
+                            content_mask: window.content_mask(),
+                            text_style: window.text_style(),
+                            layer_transform: window.layer_transform(),
+                            opacity: window.element_opacity(),
+                            inert: true,
+                        };
+
+                        return window.with_element_state::<ViewElementState, _>(
+                            global_id.unwrap(),
+                            |state, _window| {
+                                let mut state = state.unwrap_or_else(|| ViewElementState {
+                                    accessed_entities: FxHashSet::default(),
+                                    prepaint_range: prepaint_start.clone()..prepaint_end.clone(),
+                                    paint_range: PaintIndex::default()..PaintIndex::default(),
+                                    cache_key: cache_key.clone(),
+                                });
+                                state.accessed_entities = accessed_entities;
+                                state.prepaint_range = prepaint_start..prepaint_end;
+                                state.paint_range = PaintIndex::default()..PaintIndex::default();
+                                state.cache_key = cache_key;
+                                (Some(element), state)
+                            },
+                        );
+                    }
+
                     element.prepaint(window, cx);
                     return Some(element);
                 }
@@ -394,8 +461,13 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.text_style == text_style
                             && element_state.cache_key.layer_transform == layer_transform
                             && element_state.cache_key.opacity == opacity
+                            && element_state.cache_key.inert == window.is_inert_subtree()
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
+                            // Replayed prepaint/paint ranges do not contain AccessKit nodes or
+                            // action listeners. Rebuild the mounted subtree while accessibility
+                            // is active so every frame reports the actual visible controls.
+                            && !window.is_a11y_active()
                         {
                             let prepaint_start = window.prepaint_index();
                             window.reuse_prepaint(element_state.prepaint_range.clone());
@@ -436,6 +508,7 @@ impl<V: View> Element for ViewElement<V> {
                                     text_style,
                                     layer_transform,
                                     opacity,
+                                    inert: window.is_inert_subtree(),
                                 },
                             },
                         )
@@ -447,10 +520,10 @@ impl<V: View> Element for ViewElement<V> {
             window.with_id(
                 ElementId::Name(std::any::type_name::<V>().into()),
                 |window| {
-                    element.as_mut().unwrap().prepaint(window, cx);
+                    request_state.element.as_mut().unwrap().prepaint(window, cx);
                 },
             );
-            Some(element.take().unwrap())
+            Some(request_state.element.take().unwrap())
         }
     }
 
@@ -467,7 +540,7 @@ impl<V: View> Element for ViewElement<V> {
         if let Some(entity_id) = self.entity_id {
             // Stateful path.
             window.with_rendered_view(entity_id, |window| {
-                let caching_disabled = window.is_inspector_picking(cx);
+                let caching_disabled = window.is_inspector_picking(cx) || window.is_inert_subtree();
                 if self.cached_style.is_some() && !caching_disabled {
                     window.with_element_state::<ViewElementState, _>(
                         global_id.unwrap(),

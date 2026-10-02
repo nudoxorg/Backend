@@ -8,4 +8,4 @@ pub mod find;
 pub mod compare;
 mod view;
 
-pub use library::{Alert, Library, TWICE_AT_REST, Model as LibraryModel, Role as LibraryRole, Row as LibraryRow, Tone as AlertTone, Twice, library};
+pub use library::{Actions as LibraryActions, Alert, Library, ReleaseLink as LibraryReleaseLink, TWICE_AT_REST, Model as LibraryModel, Role as LibraryRole, Row as LibraryRow, Tone as AlertTone, Twice, library};

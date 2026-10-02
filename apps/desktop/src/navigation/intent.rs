@@ -74,6 +74,14 @@ pub enum FolderPickerOutcome {
 pub enum Intent {
     /// Replace the current typed route.
     Navigate(Route),
+    /// Replace a legacy source address after the current Tree admits its exact
+    /// package and full binding. The callback must carry the current read lease.
+    ResolveCargoBrowse {
+        /// Exact unbound source visit that owns this resolution.
+        expected: super::CargoSourceRoute,
+        /// Address projected from that visit's current Tree observation.
+        context: super::CargoBrowseContext,
+    },
     /// Refine the current Find page without adding a history stop per keystroke.
     /// An old field callback cannot replace a different page or newer query.
     RefineFind {
@@ -155,10 +163,16 @@ pub enum Intent {
     OpenInbox,
     /// Toggle local-only versus registry metadata policy.
     TogglePrivacy,
+    /// Set the exact registry metadata policy selected in Settings.
+    SetPrivacy(crate::model::PrivacyPreference),
     /// Toggle registry advisory fetching.
     ToggleAdvisories,
+    /// Set whether explicit advisory-feed refreshes are enabled.
+    SetAdvisoriesEnabled(bool),
     /// Toggle immutable registry cache usage.
     ToggleCache,
+    /// Set whether recent immutable registry results may be reused.
+    SetCacheEnabled(bool),
     /// Move the immutable registry cache retention through its supported days.
     SetCacheDays {
         /// Move toward a longer or shorter retention window.
@@ -220,6 +234,12 @@ pub enum Intent {
     ConnectionResult {
         /// Whether the service answered.
         connected: bool,
+    },
+    /// Retire an interrupted connection probe and restore the state it
+    /// temporarily replaced, unless a newer owner observation won meanwhile.
+    ConnectionProbeAborted {
+        /// Connection state before this probe entered `Testing`.
+        previous: crate::model::ConnectionStatus,
     },
     /// The index owner answered for the first time (W-Open I1): the window
     /// opened before it, at the unserved root, and adopts this one.

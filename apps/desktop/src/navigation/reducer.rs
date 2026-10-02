@@ -30,6 +30,14 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             navigate(&mut next, route);
             effects.push(Effect::Persist);
         }
+        Intent::ResolveCargoBrowse { expected, context } => {
+            if snapshot.route() == &Route::CargoSource(expected.clone())
+                && let Some(route) = expected.resolve_context(context)
+            {
+                replace(&mut next, Route::CargoSource(route));
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::Preview(route) => {
             let mut session = next.session().clone();
             if session.preview.is_none() {
@@ -114,6 +122,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 let current = session.route.clone();
                 let forward = session.forward.push(current);
                 session.route = previous;
+                session.pending_selection = None;
                 session.back = back;
                 session.forward = forward;
                 next = next.with_session(session);
@@ -127,6 +136,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 let current = session.route.clone();
                 let back = session.back.push(current);
                 session.route = forward_route;
+                session.pending_selection = None;
                 session.back = back;
                 session.forward = forward;
                 next = next.with_session(session);
@@ -136,11 +146,13 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::Select(object) => {
             let mut session = next.session().clone();
             session.selected = Some(super::route::Selection::Object(object));
+            session.pending_selection = None;
             next = next.with_session(session);
         }
         Intent::SelectDocument(document) => {
             let mut session = next.session().clone();
             session.selected = Some(super::route::Selection::Document(document));
+            session.pending_selection = None;
             next = next.with_session(session);
         }
         Intent::OpenCommandPalette => {
@@ -227,8 +239,11 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::SetMotion(_)
         | Intent::OpenInbox
         | Intent::TogglePrivacy
+        | Intent::SetPrivacy(_)
         | Intent::ToggleAdvisories
+        | Intent::SetAdvisoriesEnabled(_)
         | Intent::ToggleCache
+        | Intent::SetCacheEnabled(_)
         | Intent::SetCacheDays { .. }
         | Intent::OpenAddProject
         | Intent::OpenFolderPicker
@@ -244,6 +259,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::CancelIndex(_)
         | Intent::TestConnection
         | Intent::ConnectionResult { .. }
+        | Intent::ConnectionProbeAborted { .. }
         | Intent::OwnerReady { .. }
         | Intent::DismissNote(_)
         | Intent::LibraryRebuilding { .. }
@@ -268,6 +284,7 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     let mut session = snapshot.session().clone();
     let back = session.back.push(session.route.clone());
     session.route = route;
+    session.pending_selection = None;
     session.overlay = None;
     session.back = back;
     session.forward = Default::default();
@@ -303,6 +320,7 @@ fn end_preview(snapshot: &mut crate::model::AppSnapshot, close: bool) {
 fn replace(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     let mut session = snapshot.session().clone();
     session.route = route;
+    session.pending_selection = None;
     session.overlay = None;
     *snapshot = snapshot.with_session(session);
 }
@@ -324,6 +342,7 @@ mod tests {
 
     fn package_route(selected: Option<crate::model::ObjectId>) -> Route {
         Route::Package(PackageRoute {
+            cargo: None,
             project: None,
             package: crate::core::PackageId::new("pkg").expect("package"),
             lane: PackageLane::Overview,

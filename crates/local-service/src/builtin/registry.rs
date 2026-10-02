@@ -16,15 +16,16 @@ use backend_engine::registry::{
     admit_registry_coordinate,
 };
 use backend_library::is_hard_ignored_path;
+use backend_platform::directory::{DirectoryCapability, DirectoryEntry, EntryKind};
 use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -35,6 +36,12 @@ const PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS: u64 = 60_000;
 /// Bound process-local freshness evidence so long-lived owners do not retain
 /// an observation for every package version they have ever fetched.
 const MAX_FRESH_PACKAGE_FACT_OBSERVATIONS: usize = 4_096;
+const MAX_OSV_ZIP_MEMBERS: usize = 1_001_024;
+const MAX_OSV_ZIP_COMPRESSED_BYTES: usize = 4 * 1024 * 1024 * 1024;
+const MAX_OSV_ZIP_EXPANDED_BYTES: usize = 64 * 1024 * 1024 * 1024;
+const MAX_OSV_ZIP_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RUSTSEC_TREE_ENTRIES: usize = 1_000_000;
+const MAX_RUSTSEC_TREE_DEPTH: usize = 64;
 
 /// Durable registry state attached to one local owner loop.
 pub(super) struct RegistryGateway {
@@ -321,9 +328,57 @@ struct RegistrySlot {
     service: Option<AcquisitionService>,
 }
 
+/// Failure to create the registry owner without losing its operation, path,
+/// or underlying platform error.
+#[derive(Debug)]
+pub(super) enum RegistryGatewayOpenError {
+    /// The workspace-local registry namespace could not be securely opened or
+    /// created.
+    RegistryRoot {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// The durable advisory authority could not be opened or initialized.
+    AdvisoryAuthority {
+        path: PathBuf,
+        source: backend_engine::advisory::AuthorityStorageError,
+    },
+}
+
+impl fmt::Display for RegistryGatewayOpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RegistryRoot { path, source } => write!(
+                formatter,
+                "open or create private registry root {} ({}): {source}",
+                path.display(),
+                source.kind()
+            ),
+            Self::AdvisoryAuthority { path, source } => write!(
+                formatter,
+                "open or initialize advisory authority {}: {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RegistryGatewayOpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RegistryRoot { source, .. } => Some(source),
+            Self::AdvisoryAuthority { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Typed terminal state returned while satisfying a remote package add.
 #[derive(Debug)]
 pub(super) enum RegistryAddError {
+    /// The owner observed cancellation between bounded acquisition stages.
+    Cancelled,
+    /// A registry acquisition worker panicked before it could return a receipt.
+    WorkerPanicked,
     /// The endpoint policy explicitly forbids network effects.
     Offline,
     /// The endpoint could not be reached within its configured deadline.
@@ -345,6 +400,10 @@ pub(super) enum RegistryAddError {
 impl fmt::Display for RegistryAddError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => formatter.write_str("registry acquisition was cancelled"),
+            Self::WorkerPanicked => {
+                formatter.write_str("registry acquisition worker ended unexpectedly")
+            }
             Self::Offline => formatter.write_str("registry acquisition is offline"),
             Self::Unavailable => formatter.write_str("registry is unavailable"),
             Self::RetryAfter(delay) => {
@@ -379,6 +438,12 @@ impl RegistryGateway {
         &self.advisory
     }
 
+    /// Shares the selected immutable authority with an admitted background
+    /// browse read. Refresh installs a new Arc without changing this snapshot.
+    pub(super) fn advisory_snapshot(&self) -> Arc<backend_engine::advisory::AdvisoryAuthority> {
+        Arc::clone(&self.advisory)
+    }
+
     /// Refreshes every configured advisory source, persists the result, and
     /// makes it the authority for every later read and acquisition.
     ///
@@ -387,32 +452,77 @@ impl RegistryGateway {
     pub(super) fn refresh_advisories(
         &mut self,
     ) -> Result<Vec<backend_library::browse::AdvisorySourceState>, String> {
+        if !self.advisory_config.refresh_enabled {
+            return Err("advisory feed refresh is disabled by the saved desktop policy".to_owned());
+        }
         let mut authority = (*self.advisory).clone();
         let mut states = Vec::new();
+        let mut changed = false;
+        let osv_snapshot_root =
+            backend_engine::advisory::AdvisoryAuthority::osv_snapshot_root(&self.advisory_path);
         for source in &self.advisory_config.sources {
-            let error = match refresh_authority_source(
-                &authority,
-                source,
-                self.advisory_config.max_feed_bytes,
-            ) {
-                Ok(feed) => authority.apply(feed).err().map(|error| error.to_string()),
-                Err(error) => Some(error),
+            let policy_blocked =
+                self.advisory_config.offline && advisory_location_is_remote(&source.location);
+            let error = if policy_blocked {
+                Some("network refresh is disabled by the local service policy".to_owned())
+            } else {
+                match refresh_authority_source(
+                    &authority,
+                    source,
+                    self.advisory_config.osv_scope,
+                    self.advisory_config.max_feed_bytes,
+                    &osv_snapshot_root,
+                ) {
+                    Ok(feed) => {
+                        changed = true;
+                        authority
+                            .apply(feed)
+                            .err()
+                            .map(|error| bounded_advisory_error(error.to_string()))
+                    }
+                    Err(error) => Some(bounded_advisory_error(error)),
+                }
             };
-            if error.is_some() {
+            if error.is_some() && !policy_blocked {
+                let before = authority.frontier(source.source).cloned();
                 authority.mark_unavailable(source.source, advisory_now());
+                changed |= before.as_ref() != authority.frontier(source.source);
             }
             let frontier = authority.frontier(source.source);
             states.push(backend_library::browse::AdvisorySourceState {
                 source: format!("{:?}", source.source).to_ascii_lowercase(),
+                scope: (source.source == backend_engine::advisory::AdvisorySource::Osv).then(
+                    || {
+                        self.advisory_config.osv_scope.map_or_else(
+                            || "unspecified".to_owned(),
+                            |scope| scope.label().to_owned(),
+                        )
+                    },
+                ),
                 complete: frontier.is_some_and(|frontier| frontier.complete),
                 advisories: frontier.map_or(0, |frontier| frontier.entries),
                 observed_at: frontier.map_or(0, |frontier| frontier.observed_at),
+                expires_at: frontier.and_then(|frontier| frontier.expires_at),
                 error,
             });
         }
-        authority
-            .persist(&self.advisory_path)
-            .map_err(|error| error.to_string())?;
+        if !changed {
+            return Ok(states);
+        }
+        if let Err(error) = authority.persist(&self.advisory_path) {
+            if error.publication_committed() {
+                // The authority pathname now refers to this candidate, but a
+                // post-commit durability, lease, or retention operation failed.
+                // Keep the candidate and both generations available to retry;
+                // reads remain unavailable until persistence is confirmed.
+                authority.mark_persistence_uncertain();
+                self.advisory = Arc::new(authority);
+                self.slots.clear();
+                self.projection = None;
+            }
+            return Err(error.to_string());
+        }
+        authority.clear_persistence_uncertain();
         self.advisory = Arc::new(authority);
         // Open owners hold the previous authority as their resolver; they
         // reopen lazily with the new one.
@@ -661,11 +771,26 @@ impl RegistryGateway {
         config: &RegistryConfig,
         root: impl AsRef<Path>,
         advisory_config: &AdvisoryConfig,
-    ) -> Result<Option<Self>, AcquisitionError> {
+    ) -> Result<Option<Self>, RegistryGatewayOpenError> {
         let workspace_root = root.as_ref().to_path_buf();
+        // The authority journal lives directly under this namespace. Create
+        // the namespace through a held parent capability before the authority
+        // initializer writes its first durable state; persist itself must not
+        // create ancestors by re-walking their pathnames.
+        let registry_directory = DirectoryCapability::open_or_create_private(&workspace_root)
+            .map_err(|source| RegistryGatewayOpenError::RegistryRoot {
+                path: workspace_root.clone(),
+                source,
+            })?;
+        drop(registry_directory);
         let advisory_path = workspace_root.join("advisory-authority.json");
-        let advisory = open_advisory_authority(&advisory_path, advisory_config)
-            .map_err(|error| AcquisitionError::Io(std::io::Error::other(error)))?;
+        let advisory =
+            open_advisory_authority(&advisory_path, advisory_config).map_err(|source| {
+                RegistryGatewayOpenError::AdvisoryAuthority {
+                    path: advisory_path.clone(),
+                    source,
+                }
+            })?;
         // Every source, including a legacy endpoint override, is composed
         // below the versioned router root. This keeps cache migration and
         // owner identity independent of the process adapter that selected it.
@@ -756,6 +881,7 @@ impl RegistryGateway {
         hasher.update(&1_u16.to_be_bytes());
         hasher.update(&self.advisory.max_age_secs.to_be_bytes());
         hasher.update(&[u8::from(self.advisory_config.offline)]);
+        hasher.update(&[u8::from(self.advisory.persistence_is_uncertain())]);
         let now = advisory_now();
         for source in &self.advisory_config.sources {
             let source_identity = backend_engine::serde_json::to_vec(&source.source)
@@ -783,6 +909,10 @@ impl RegistryGateway {
                 }
             }
         }
+        let osv_scope = backend_engine::serde_json::to_vec(&self.advisory_config.osv_scope)
+            .map_err(|error| error.to_string())?;
+        hasher.update(&(osv_scope.len() as u64).to_be_bytes());
+        hasher.update(&osv_scope);
         Ok(*hasher.finalize().as_bytes())
     }
 
@@ -805,6 +935,28 @@ impl RegistryGateway {
         &mut self,
         coordinate: &PackageCoordinate,
     ) -> Result<Vec<u8>, RegistryAddError> {
+        self.acquire_with_cancellation(coordinate, None)
+    }
+
+    /// Acquires an exact coordinate while checking cancellation between
+    /// configured source requests. An in-flight HTTP request is bounded by
+    /// the transport's connect and read deadlines before cancellation is seen.
+    pub(super) fn acquire_cancellable(
+        &mut self,
+        coordinate: &PackageCoordinate,
+        cancellation: &AtomicBool,
+    ) -> Result<Vec<u8>, RegistryAddError> {
+        self.acquire_with_cancellation(coordinate, Some(cancellation))
+    }
+
+    fn acquire_with_cancellation(
+        &mut self,
+        coordinate: &PackageCoordinate,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, RegistryAddError> {
+        if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+            return Err(RegistryAddError::Cancelled);
+        }
         self.prune_expired_package_facts(current_millis());
         let route = self
             .sources
@@ -812,7 +964,13 @@ impl RegistryGateway {
             .map_err(RegistryAddError::Acquisition)?;
         let mut last_fallback = None;
         for source in route.candidates().iter().cloned() {
+            if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err(RegistryAddError::Cancelled);
+            }
             let outcome = self.acquire_from_source(&source, coordinate)?;
+            if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err(RegistryAddError::Cancelled);
+            }
             match outcome {
                 CandidateOutcome::Done(bytes) => return Ok(bytes),
                 CandidateOutcome::Fallback(error) => last_fallback = Some(error),
@@ -828,15 +986,24 @@ impl RegistryGateway {
         coordinate: &PackageCoordinate,
     ) -> Result<CandidateOutcome, RegistryAddError> {
         let source_id = self.service_for(source)?.source_id();
-        let request =
-            AcquisitionRequest::for_coordinate(source_id, coordinate.to_string(), 1, 0)
-                .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
+        let max_age_millis = self.config.cache_max_age_millis.unwrap_or(0);
+        let request = AcquisitionRequest::for_coordinate(source_id, coordinate.to_string(), 1, 0)
+            .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?
+            .with_fact_freshness(backend_engine::acquisition::FactFreshness::max_age_millis(
+                max_age_millis,
+            ));
         let live_observation = !matches!(source.policy(), AcquisitionPolicy::Offline);
         let outcome = if !live_observation {
             // An explicitly offline add is a cache read. Rehydrate it from
-            // the durable catalog while preserving its historical freshness.
+            // the durable catalog. A desktop's explicit horizon requires a
+            // recent authenticated receipt; standalone locald keeps its
+            // original unbounded offline-cache behavior.
+            let cache_max_age_millis = self.config.cache_max_age_millis;
             let service = self.service_for(source)?;
-            service.ensure(&request)
+            match cache_max_age_millis {
+                Some(max_age_millis) => service.ensure_with_max_age(&request, max_age_millis),
+                None => service.ensure(&request),
+            }
         } else {
             let mut transport = self.transport(source, coordinate)?;
             let service = self.service_for(source)?;
@@ -1090,7 +1257,7 @@ impl RegistryGateway {
                     CorruptReason::Journal => AcquisitionError::CorruptJournal,
                 }))
             }
-            TypedAcquisitionOutcome::Cancelled => Err(RegistryAddError::Unavailable),
+            TypedAcquisitionOutcome::Cancelled => Err(RegistryAddError::Cancelled),
         }
     }
 
@@ -1393,28 +1560,365 @@ fn native_adapter(
 fn open_advisory_authority(
     path: &Path,
     config: &AdvisoryConfig,
-) -> Result<Arc<backend_engine::advisory::AdvisoryAuthority>, String> {
-    let mut authority =
-        backend_engine::advisory::AdvisoryAuthority::open(path, config.max_age_secs)
-            .map_err(|error| error.to_string())?;
+) -> Result<
+    Arc<backend_engine::advisory::AdvisoryAuthority>,
+    backend_engine::advisory::AuthorityStorageError,
+> {
+    let maximum_state_bytes = u64::try_from(config.max_feed_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(4)
+        .clamp(
+            64 * 1024 * 1024,
+            backend_engine::advisory::MAX_ADVISORY_AUTHORITY_STATE_BYTES,
+        );
+    let mut authority = backend_engine::advisory::AdvisoryAuthority::open_with_limit(
+        path,
+        config.max_age_secs,
+        maximum_state_bytes,
+    )?;
     authority.set_max_age_secs(config.max_age_secs);
     authority.set_offline(config.offline);
     authority.configure_sources(config.sources.iter().map(|source| source.source));
+    authority.configure_osv_scope(config.osv_scope);
+    authority.configure_source_identities(config.sources.iter().map(|source| {
+        (
+            source.source,
+            advisory_source_identity(source.source, &source.location, config.osv_scope),
+        )
+    }));
     // Advisory refresh is intentionally not part of process composition.
     // A daemon must be able to bind and serve local/cached reads with no
     // startup network dependency; a future explicit refresh command can use
     // the existing bounded source adapter.
-    authority.persist(path).map_err(|error| error.to_string())?;
+    authority.persist(path)?;
     Ok(Arc::new(authority))
+}
+
+/// A bounded, seekable compressed OSV response staged outside the authority
+/// journal. The anonymous temporary file is removed when this handle closes.
+struct AdvisoryZipSpool {
+    file: File,
+    digest: [u8; 32],
+}
+
+fn spool_advisory_zip(mut input: impl Read, maximum: usize) -> Result<AdvisoryZipSpool, String> {
+    if maximum == 0 {
+        return Err("OSV ZIP compressed bound is zero".to_owned());
+    }
+    let mut file = tempfile::tempfile()
+        .map_err(|_| "could not create private bounded OSV ZIP spool".to_owned())?;
+    let mut hasher = blake3::Hasher::new();
+    let mut total = 0usize;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if total == maximum {
+            let mut extra = [0_u8; 1];
+            match input.read(&mut extra) {
+                Ok(0) => {}
+                Ok(_) => {
+                    drop(file);
+                    return Err("OSV ZIP compressed body exceeds bound".to_owned());
+                }
+                Err(_) => {
+                    drop(file);
+                    return Err("could not read bounded OSV ZIP body".to_owned());
+                }
+            }
+            break;
+        }
+        let available = (maximum - total).min(buffer.len());
+        let read = match input.read(&mut buffer[..available]) {
+            Ok(read) => read,
+            Err(_) => {
+                drop(file);
+                return Err("could not read bounded OSV ZIP body".to_owned());
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        let Some(next_total) = total.checked_add(read) else {
+            drop(file);
+            return Err("OSV ZIP compressed length overflow".to_owned());
+        };
+        total = next_total;
+        hasher.update(&buffer[..read]);
+        if file.write_all(&buffer[..read]).is_err() {
+            drop(file);
+            return Err("could not write bounded OSV ZIP spool".to_owned());
+        }
+    }
+    if file.sync_all().is_err() {
+        drop(file);
+        return Err("could not sync bounded OSV ZIP spool".to_owned());
+    }
+    Ok(AdvisoryZipSpool {
+        file,
+        digest: *hasher.finalize().as_bytes(),
+    })
+}
+
+fn advisory_location_is_osv_zip(source: &AdvisorySourceConfig) -> bool {
+    if source.source != backend_engine::advisory::AdvisorySource::Osv {
+        return false;
+    }
+    let location = source.location.split(['?', '#']).next().unwrap_or_default();
+    Path::new(location)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+}
+
+fn advisory_location_is_remote(location: &str) -> bool {
+    location
+        .parse::<ureq::http::Uri>()
+        .ok()
+        .and_then(|uri| uri.scheme_str().map(str::to_ascii_lowercase))
+        .is_some_and(|scheme| scheme == "http" || scheme == "https")
+}
+
+/// Keeps diagnostics useful while preventing an endpoint's userinfo or query
+/// token from being copied into the durable/user-visible source status.
+fn public_advisory_request_error(error: ureq::Error) -> String {
+    let message = match error {
+        ureq::Error::StatusCode(status) => {
+            format!("advisory source returned HTTP {status}")
+        }
+        ureq::Error::Timeout(_) => "advisory source request timed out".to_owned(),
+        ureq::Error::HostNotFound => "advisory source host could not be resolved".to_owned(),
+        ureq::Error::ConnectionFailed | ureq::Error::Io(_) => {
+            "advisory source connection failed".to_owned()
+        }
+        ureq::Error::TooManyRedirects | ureq::Error::RedirectFailed => {
+            "advisory source redirect was rejected".to_owned()
+        }
+        ureq::Error::BadUri(_) | ureq::Error::InvalidProxyUrl => {
+            "advisory source endpoint configuration is invalid".to_owned()
+        }
+        ureq::Error::Tls(_) | ureq::Error::TlsRequired => {
+            "advisory source TLS validation failed".to_owned()
+        }
+        ureq::Error::Protocol(_) => "advisory source response was malformed".to_owned(),
+        _ => "advisory source request failed".to_owned(),
+    };
+    bounded_advisory_error(message)
+}
+
+fn bounded_advisory_error(mut error: String) -> String {
+    const MAX_ERROR_BYTES: usize = 256;
+    if error.len() > MAX_ERROR_BYTES {
+        let mut end = MAX_ERROR_BYTES - 3;
+        while !error.is_char_boundary(end) {
+            end -= 1;
+        }
+        error.truncate(end);
+        error.push_str("...");
+    }
+    error
+}
+
+fn advisory_http_expiry(
+    cache_control: Option<&str>,
+    age: Option<&str>,
+    expires: Option<&str>,
+    observed_at: u64,
+) -> Option<u64> {
+    let mut deadlines = Vec::new();
+    if let Some(cache_control) = cache_control {
+        for directive in cache_control.split(',').map(str::trim) {
+            let (name, value) = directive
+                .split_once('=')
+                .map_or((directive, None), |(name, value)| {
+                    (name.trim(), Some(value.trim()))
+                });
+            if name.eq_ignore_ascii_case("no-cache") || name.eq_ignore_ascii_case("no-store") {
+                return Some(observed_at);
+            }
+            if name.eq_ignore_ascii_case("max-age") {
+                if let Some(max_age) = value
+                    .map(|value| value.trim_matches('"'))
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    let response_age = age
+                        .and_then(|age| age.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+                    deadlines
+                        .push(observed_at.saturating_add(max_age.saturating_sub(response_age)));
+                }
+            }
+        }
+    }
+    if let Some(expires) = expires
+        && let Ok(deadline) = httpdate::parse_http_date(expires)
+    {
+        let seconds = deadline
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        deadlines.push(seconds);
+    }
+    deadlines.into_iter().min()
+}
+
+fn parse_osv_zip(
+    spool: &mut AdvisoryZipSpool,
+    observed_at: u64,
+    maximum_expanded_bytes: usize,
+    snapshot_root: &Path,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    scope: Option<backend_engine::advisory::OsvFeedScope>,
+) -> Result<backend_engine::advisory::AuthorityFeed, String> {
+    let scope = scope
+        .ok_or_else(|| "OSV ZIP requires an explicit --advisory-osv-scope selection".to_owned())?;
+    spool
+        .file
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| "could not rewind private OSV ZIP spool".to_owned())?;
+    parse_osv_zip_reader(
+        &mut spool.file,
+        spool.digest,
+        observed_at,
+        maximum_expanded_bytes,
+        snapshot_root,
+        backend_engine::advisory::MAX_OSV_SNAPSHOT_STORAGE_BYTES,
+        etag,
+        last_modified,
+        scope,
+    )
+}
+
+fn parse_osv_zip_reader(
+    input: impl Read + Seek,
+    digest: [u8; 32],
+    observed_at: u64,
+    maximum_expanded_bytes: usize,
+    snapshot_root: &Path,
+    maximum_snapshot_bytes: u64,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    scope: backend_engine::advisory::OsvFeedScope,
+) -> Result<backend_engine::advisory::AuthorityFeed, String> {
+    use backend_engine::advisory::{
+        MAX_OSV_SNAPSHOT_OBJECTS, MAX_OSV_SNAPSHOT_PACKAGE_ROWS, MAX_OSV_SNAPSHOT_PACKAGES,
+        OsvSnapshotBuilder, parse_osv_scoped,
+    };
+
+    let mut archive = zip::ZipArchive::new(input)
+        .map_err(|_| "OSV advisory archive is not a valid ZIP container".to_owned())?;
+    if archive.len() > MAX_OSV_ZIP_MEMBERS {
+        return Err("OSV advisory ZIP member count is outside bounds".to_owned());
+    }
+    let mut builder = OsvSnapshotBuilder::create(
+        snapshot_root,
+        scope,
+        MAX_OSV_SNAPSHOT_OBJECTS,
+        MAX_OSV_SNAPSHOT_PACKAGES,
+        MAX_OSV_SNAPSHOT_PACKAGE_ROWS,
+        maximum_snapshot_bytes,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut documents = 0usize;
+    let mut expanded = 0usize;
+    for index in 0..archive.len() {
+        let mut member = archive
+            .by_index(index)
+            .map_err(|_| "OSV advisory ZIP member is unreadable".to_owned())?;
+        let name = member.name();
+        if member
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("OSV advisory ZIP contains a symbolic-link member".to_owned());
+        }
+        let declared = usize::try_from(member.size())
+            .map_err(|_| "OSV advisory ZIP member size is oversized".to_owned())?;
+        expanded = expanded
+            .checked_add(declared)
+            .filter(|total| *total <= maximum_expanded_bytes)
+            .ok_or_else(|| "OSV advisory ZIP expanded size exceeds bound".to_owned())?;
+        let is_json = !member.is_dir()
+            && name
+                .rsplit('/')
+                .next()
+                .unwrap_or(name)
+                .to_ascii_lowercase()
+                .ends_with(".json");
+        if !is_json {
+            // Drain every non-JSON member too: zip's CRC validation happens
+            // only when its stream reaches EOF. A corrupt ignored member must
+            // never allow a complete absence snapshot to be selected.
+            let read = std::io::copy(
+                &mut member.by_ref().take(
+                    u64::try_from(declared)
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(1),
+                ),
+                &mut std::io::sink(),
+            )
+            .map_err(|_| "OSV advisory ZIP member could not be verified".to_owned())?;
+            if read != u64::try_from(declared).unwrap_or(u64::MAX) {
+                return Err("OSV advisory ZIP member size did not match its directory".to_owned());
+            }
+            continue;
+        }
+        if declared == 0 || declared > MAX_OSV_ZIP_DOCUMENT_BYTES {
+            return Err("OSV advisory ZIP document is outside bounds".to_owned());
+        }
+        let mut document = Vec::with_capacity(declared);
+        member
+            .by_ref()
+            .take(
+                u64::try_from(declared)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .read_to_end(&mut document)
+            .map_err(|_| "OSV advisory ZIP document could not be read".to_owned())?;
+        if document.len() != declared {
+            return Err("OSV advisory ZIP document size did not match its directory".to_owned());
+        }
+        documents = documents.saturating_add(1);
+        if u64::try_from(documents).unwrap_or(u64::MAX) > MAX_OSV_SNAPSHOT_OBJECTS {
+            return Err("OSV advisory ZIP contains too many JSON documents".to_owned());
+        }
+        let mut advisory = parse_osv_scoped(&document, observed_at, scope)
+            .map_err(|_| "OSV advisory ZIP contains an invalid advisory document".to_owned())?;
+        advisory.evidence.snapshot = Some(format!(
+            "blake3:{}",
+            blake3::Hash::from_bytes(digest).to_hex()
+        ));
+        builder.push(&advisory).map_err(|error| error.to_string())?;
+    }
+    if documents == 0 {
+        return Err("OSV advisory ZIP contains no advisory JSON documents".to_owned());
+    }
+    let snapshot = builder.finish(digest).map_err(|error| error.to_string())?;
+    Ok(backend_engine::advisory::AuthorityFeed::from_osv_snapshot(
+        snapshot,
+        observed_at,
+        etag,
+        last_modified,
+    ))
 }
 
 fn refresh_authority_source(
     authority: &backend_engine::advisory::AdvisoryAuthority,
     source: &AdvisorySourceConfig,
+    osv_scope: Option<backend_engine::advisory::OsvFeedScope>,
     maximum: usize,
+    snapshot_root: &Path,
 ) -> Result<backend_engine::advisory::AuthorityFeed, String> {
-    let previous = authority.frontier(source.source);
+    let source_identity = advisory_source_identity(source.source, &source.location, osv_scope);
+    let previous = authority.frontier(source.source).filter(|frontier| {
+        frontier.source_identity == Some(source_identity)
+            && (source.source != backend_engine::advisory::AdvisorySource::Osv
+                || frontier.osv_scope == osv_scope)
+    });
     let observed_at = advisory_now();
+    let is_osv_zip = advisory_location_is_osv_zip(source);
+    let mut zip_spool = None;
+    let mut response_expires_at = None;
     let (bytes, etag, last_modified, not_modified) = if source.location.starts_with("https://")
         || source.location.starts_with("http://localhost")
         || source.location.starts_with("http://127.0.0.1")
@@ -1429,14 +1933,32 @@ fn refresh_authority_source(
         let mut request = agent
             .get(&source.location)
             .header("accept-encoding", "identity");
+        let mut conditional_request_sent = false;
         if let Some(etag) = previous.and_then(|frontier| frontier.etag.as_deref()) {
             request = request.header("if-none-match", etag);
+            conditional_request_sent = true;
         }
         if let Some(last_modified) = previous.and_then(|frontier| frontier.last_modified.as_deref())
         {
             request = request.header("if-modified-since", last_modified);
+            conditional_request_sent = true;
         }
-        let mut response = request.call().map_err(|error| error.to_string())?;
+        let mut response = request.call().map_err(public_advisory_request_error)?;
+        response_expires_at = advisory_http_expiry(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            response
+                .headers()
+                .get("age")
+                .and_then(|value| value.to_str().ok()),
+            response
+                .headers()
+                .get("expires")
+                .and_then(|value| value.to_str().ok()),
+            observed_at,
+        );
         let status = response.status().as_u16();
         let etag = response
             .headers()
@@ -1451,19 +1973,32 @@ fn refresh_authority_source(
             .map(str::to_owned)
             .or_else(|| previous.and_then(|frontier| frontier.last_modified.clone()));
         if status == 304 {
+            if !conditional_request_sent {
+                return Err(
+                    "advisory source returned 304 without a conditional validator".to_owned(),
+                );
+            }
             (Vec::new(), etag, last_modified, true)
         } else if (200..300).contains(&status) {
-            let mut bytes = Vec::new();
-            response
-                .body_mut()
-                .as_reader()
-                .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(|error| error.to_string())?;
-            if bytes.len() > maximum {
-                return Err("advisory authority body exceeds bound".to_owned());
+            if is_osv_zip {
+                zip_spool = Some(spool_advisory_zip(
+                    response.body_mut().as_reader(),
+                    MAX_OSV_ZIP_COMPRESSED_BYTES,
+                )?);
+                (Vec::new(), etag, last_modified, false)
+            } else {
+                let mut bytes = Vec::new();
+                response
+                    .body_mut()
+                    .as_reader()
+                    .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "advisory authority response body could not be read".to_owned())?;
+                if bytes.len() > maximum {
+                    return Err("advisory authority body exceeds bound".to_owned());
+                }
+                (bytes, etag, last_modified, false)
             }
-            (bytes, etag, last_modified, false)
         } else {
             return Err(format!("advisory authority returned HTTP {status}"));
         }
@@ -1471,39 +2006,98 @@ fn refresh_authority_source(
         let path = Path::new(&source.location);
         if source.source == backend_engine::advisory::AdvisorySource::RustSec && path.is_dir() {
             let entries = read_rustsec_tree(path, maximum, observed_at)?;
-            return Ok(backend_engine::advisory::AuthorityFeed::from_entries(
+            let mut feed = backend_engine::advisory::AuthorityFeed::from_entries(
                 source.source,
                 entries,
                 observed_at,
                 previous.and_then(|frontier| frontier.etag.clone()),
                 previous.and_then(|frontier| frontier.last_modified.clone()),
-            ));
+            );
+            feed.source_identity = Some(source_identity);
+            return Ok(feed);
         }
-        (
-            backend_engine::advisory::read_feed(path, maximum)
-                .map_err(|error| error.to_string())?,
-            previous.and_then(|frontier| frontier.etag.clone()),
-            previous.and_then(|frontier| frontier.last_modified.clone()),
-            false,
-        )
+        let etag = previous.and_then(|frontier| frontier.etag.clone());
+        let last_modified = previous.and_then(|frontier| frontier.last_modified.clone());
+        if is_osv_zip {
+            zip_spool = Some(spool_advisory_zip(
+                File::open(path)
+                    .map_err(|_| "could not open OSV ZIP advisory source".to_owned())?,
+                MAX_OSV_ZIP_COMPRESSED_BYTES,
+            )?);
+            (Vec::new(), etag, last_modified, false)
+        } else {
+            (
+                backend_engine::advisory::read_feed(path, maximum)
+                    .map_err(|error| error.to_string())?,
+                etag,
+                last_modified,
+                false,
+            )
+        }
     };
-    if not_modified {
-        Ok(backend_engine::advisory::AuthorityFeed::not_modified(
+    let mut feed = if not_modified {
+        backend_engine::advisory::AuthorityFeed::not_modified(
             source.source,
-            observed_at,
-            etag,
-            last_modified,
-        ))
-    } else {
-        backend_engine::advisory::AuthorityFeed::parse(
-            source.source,
-            &bytes,
             observed_at,
             etag,
             last_modified,
         )
-        .map_err(|error| error.to_string())
+    } else {
+        if let Some(spool) = zip_spool.as_mut() {
+            parse_osv_zip(
+                spool,
+                observed_at,
+                MAX_OSV_ZIP_EXPANDED_BYTES,
+                snapshot_root,
+                etag,
+                last_modified,
+                osv_scope,
+            )?
+        } else {
+            let mut feed = backend_engine::advisory::AuthorityFeed::parse(
+                source.source,
+                &bytes,
+                observed_at,
+                etag,
+                last_modified,
+            )
+            .map_err(|error| error.to_string())?;
+            if source.source == backend_engine::advisory::AdvisorySource::Osv {
+                // An individual JSON document or arbitrary batch cannot prove
+                // that absent advisories are clean. Only an admitted ZIP with
+                // an explicit selection is a complete OSV snapshot.
+                feed.complete = false;
+            }
+            feed
+        }
+    };
+    feed.freshness.expires_at = response_expires_at;
+    feed.source_identity = Some(source_identity);
+    Ok(feed)
+}
+
+/// Hashes the configured source location and, for OSV only, selected partition without
+/// storing the raw URL/path (which can contain credentials) in authority state.
+fn advisory_source_identity(
+    source: backend_engine::advisory::AdvisorySource,
+    location: &str,
+    osv_scope: Option<backend_engine::advisory::OsvFeedScope>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.advisory.source-identity.v1\0");
+    hasher.update(&[match source {
+        backend_engine::advisory::AdvisorySource::Osv => 1,
+        backend_engine::advisory::AdvisorySource::RustSec => 2,
+        backend_engine::advisory::AdvisorySource::Ghsa => 3,
+    }]);
+    hasher.update(location.as_bytes());
+    hasher.update(&[0]);
+    if source == backend_engine::advisory::AdvisorySource::Osv
+        && let Some(scope) = osv_scope
+    {
+        hasher.update(scope.label().as_bytes());
     }
+    *hasher.finalize().as_bytes()
 }
 
 fn read_rustsec_tree(
@@ -1511,45 +2105,288 @@ fn read_rustsec_tree(
     maximum: usize,
     observed_at: u64,
 ) -> Result<Vec<backend_engine::advisory::Advisory>, String> {
+    #[derive(Clone)]
+    struct DirectorySnapshot {
+        directory: DirectoryCapability,
+        count: usize,
+        digest: [u8; 32],
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct FileStamp {
+        len: u64,
+        modified: Option<std::time::SystemTime>,
+        #[cfg(unix)]
+        device: u64,
+        #[cfg(unix)]
+        inode: u64,
+        #[cfg(unix)]
+        mtime: i64,
+        #[cfg(unix)]
+        mtime_nsec: i64,
+        #[cfg(windows)]
+        volume: Option<u32>,
+        #[cfg(windows)]
+        index: Option<u64>,
+        #[cfg(windows)]
+        last_write: u64,
+    }
+
+    impl FileStamp {
+        fn capture(metadata: &std::fs::Metadata) -> Self {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                Self {
+                    len: metadata.len(),
+                    modified: metadata.modified().ok(),
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                    mtime: metadata.mtime(),
+                    mtime_nsec: metadata.mtime_nsec(),
+                }
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                Self {
+                    len: metadata.len(),
+                    modified: metadata.modified().ok(),
+                    volume: metadata.volume_serial_number(),
+                    index: metadata.file_index(),
+                    last_write: metadata.last_write_time(),
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                Self {
+                    len: metadata.len(),
+                    modified: metadata.modified().ok(),
+                }
+            }
+        }
+    }
+
+    struct FileSnapshot {
+        directory: DirectoryCapability,
+        name: String,
+        stamp: FileStamp,
+        digest: [u8; 32],
+    }
+
+    fn listing_digest(entries: &[DirectoryEntry]) -> Result<[u8; 32], String> {
+        let mut hasher = blake3::Hasher::new();
+        for entry in entries {
+            let name = entry
+                .name
+                .to_str()
+                .ok_or_else(|| "RustSec authority tree has a non-UTF-8 name".to_owned())?;
+            hasher.update(&u64::try_from(name.len()).unwrap_or(u64::MAX).to_be_bytes());
+            hasher.update(name.as_bytes());
+            hasher.update(&[match entry.kind {
+                EntryKind::File => 1,
+                EntryKind::Directory => 2,
+                EntryKind::Link => 3,
+                EntryKind::Special => 4,
+            }]);
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    fn read_file_snapshot(
+        directory: &DirectoryCapability,
+        name: &str,
+        maximum: usize,
+    ) -> Result<(Vec<u8>, FileStamp, [u8; 32]), String> {
+        let file = directory
+            .open_file_read(name)
+            .map_err(|error| error.to_string())?;
+        let before = file.metadata().map_err(|error| error.to_string())?;
+        if !before.is_file() || before.len() > u64::try_from(maximum).unwrap_or(u64::MAX) {
+            return Err("RustSec authority tree exceeds bound".to_owned());
+        }
+        let stamp = FileStamp::capture(&before);
+        let mut reader = file.take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1));
+        let mut bytes = Vec::with_capacity(usize::try_from(before.len()).unwrap_or(maximum));
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        let after = reader
+            .get_ref()
+            .metadata()
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > maximum
+            || u64::try_from(bytes.len()).unwrap_or(u64::MAX) != before.len()
+            || FileStamp::capture(&after) != stamp
+        {
+            return Err("RustSec authority file changed during admission".to_owned());
+        }
+        let digest = *blake3::hash(&bytes).as_bytes();
+        Ok((bytes, stamp, digest))
+    }
+
     fn visit(
-        path: &Path,
+        directory: &DirectoryCapability,
+        depth: usize,
         maximum: usize,
         observed_at: u64,
         total: &mut usize,
+        visited: &mut usize,
         output: &mut Vec<backend_engine::advisory::Advisory>,
+        directories: &mut Vec<DirectorySnapshot>,
+        files: &mut Vec<FileSnapshot>,
     ) -> Result<(), String> {
-        let entries = std::fs::read_dir(path).map_err(|error| error.to_string())?;
+        let entries = directory
+            .entries(MAX_RUSTSEC_TREE_ENTRIES.saturating_sub(*visited))
+            .map_err(|error| error.to_string())?;
+        directories.push(DirectorySnapshot {
+            directory: directory.clone(),
+            count: entries.len(),
+            digest: listing_digest(&entries)?,
+        });
         for entry in entries {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if path.is_dir() {
+            *visited = (*visited)
+                .checked_add(1)
+                .filter(|count| *count <= MAX_RUSTSEC_TREE_ENTRIES)
+                .ok_or_else(|| "RustSec authority tree contains too many entries".to_owned())?;
+            let name = entry
+                .name
+                .to_str()
+                .ok_or_else(|| "RustSec authority tree has a non-UTF-8 name".to_owned())?
+                .to_owned();
+            if entry.kind == EntryKind::Directory {
                 // `.git` and other dot directories hold no advisories.
                 if !name.starts_with('.') {
-                    visit(&path, maximum, observed_at, total, output)?;
+                    if depth >= MAX_RUSTSEC_TREE_DEPTH {
+                        return Err("RustSec authority tree is nested too deeply".to_owned());
+                    }
+                    let child = directory
+                        .open_dir(&name)
+                        .map_err(|error| error.to_string())?;
+                    visit(
+                        &child,
+                        depth + 1,
+                        maximum,
+                        observed_at,
+                        total,
+                        visited,
+                        output,
+                        directories,
+                        files,
+                    )?;
                 }
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("toml")
-                // advisory-db keeps each advisory as `RUSTSEC-*.md`: fenced TOML
-                // front matter, then prose. README/CONTRIBUTING are not advisories.
-                || (name.starts_with("RUSTSEC-") && name.ends_with(".md"))
+            } else if entry.kind == EntryKind::File
+                && (name.rsplit_once('.').is_some_and(|(_, extension)| extension == "toml")
+                    // advisory-db keeps each advisory as `RUSTSEC-*.md`: fenced TOML
+                    // front matter, then prose. README/CONTRIBUTING are not advisories.
+                    || (name.starts_with("RUSTSEC-") && name.ends_with(".md")))
             {
-                let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-                *total = total.saturating_add(bytes.len());
-                if *total > maximum {
-                    return Err("RustSec authority tree exceeds bound".to_owned());
+                let remaining = maximum.saturating_sub(*total);
+                let per_document =
+                    remaining.min(backend_engine::advisory::MAX_ADVISORY_DOCUMENT_BYTES);
+                let (bytes, stamp, digest) = read_file_snapshot(directory, &name, per_document)?;
+                *total = (*total)
+                    .checked_add(bytes.len())
+                    .filter(|total| *total <= maximum)
+                    .ok_or_else(|| "RustSec authority tree exceeds bound".to_owned())?;
+                if output.len() >= backend_engine::advisory::MAX_ADVISORY_BATCH_OBJECTS {
+                    return Err("RustSec authority tree contains too many advisories".to_owned());
                 }
-                output.push(
-                    backend_engine::advisory::parse_rustsec(&bytes, observed_at)
-                        .map_err(|error| format!("{error:?}"))?,
-                );
+                let mut advisory = backend_engine::advisory::parse_rustsec(&bytes, observed_at)
+                    .map_err(|error| format!("{error:?}"))?;
+                advisory.evidence.snapshot = Some(format!("blake3:{}", hex_digest(digest)));
+                output.push(advisory);
+                files.push(FileSnapshot {
+                    directory: directory.clone(),
+                    name,
+                    stamp,
+                    digest,
+                });
+            } else if !matches!(entry.kind, EntryKind::File | EntryKind::Directory) {
+                return Err("RustSec authority tree contains a link or special file".to_owned());
             }
         }
         Ok(())
     }
+
+    fn hex_digest(bytes: [u8; 32]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut text = String::with_capacity(64);
+        for byte in bytes {
+            text.push(char::from(HEX[usize::from(byte >> 4)]));
+            text.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        text
+    }
+
     let mut total = 0;
+    let mut visited = 0;
     let mut output = Vec::new();
-    visit(root, maximum, observed_at, &mut total, &mut output)?;
+    let mut directories = Vec::new();
+    let mut files = Vec::new();
+    let root_directory =
+        DirectoryCapability::open_read_only_source(root).map_err(|error| error.to_string())?;
+    visit(
+        &root_directory,
+        0,
+        maximum,
+        observed_at,
+        &mut total,
+        &mut visited,
+        &mut output,
+        &mut directories,
+        &mut files,
+    )?;
+    for snapshot in directories {
+        let current = snapshot
+            .directory
+            .entries(MAX_RUSTSEC_TREE_ENTRIES)
+            .map_err(|error| error.to_string())?;
+        if current.len() != snapshot.count || listing_digest(&current)? != snapshot.digest {
+            return Err("RustSec authority tree changed during snapshot admission".to_owned());
+        }
+    }
+    for snapshot in files {
+        let file = snapshot
+            .directory
+            .open_file_read(&snapshot.name)
+            .map_err(|error| error.to_string())?;
+        if FileStamp::capture(&file.metadata().map_err(|error| error.to_string())?)
+            != snapshot.stamp
+        {
+            return Err("RustSec authority file changed during snapshot admission".to_owned());
+        }
+        let mut hasher = blake3::Hasher::new();
+        let mut total_bytes = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut reader = file.take(
+            u64::try_from(backend_engine::advisory::MAX_ADVISORY_DOCUMENT_BYTES)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        );
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| error.to_string())?;
+            if read == 0 {
+                break;
+            }
+            total_bytes = total_bytes
+                .checked_add(u64::try_from(read).unwrap_or(u64::MAX))
+                .ok_or_else(|| "RustSec authority tree exceeds bound".to_owned())?;
+            hasher.update(&buffer[..read]);
+        }
+        let after = reader
+            .get_ref()
+            .metadata()
+            .map_err(|error| error.to_string())?;
+        if total_bytes != snapshot.stamp.len
+            || FileStamp::capture(&after) != snapshot.stamp
+            || *hasher.finalize().as_bytes() != snapshot.digest
+        {
+            return Err("RustSec authority file changed during snapshot admission".to_owned());
+        }
+    }
     Ok(output)
 }
 
@@ -2423,6 +3260,44 @@ mod tests {
         panic!("registry fixture directory capacity exhausted")
     }
 
+    #[test]
+    fn gateway_bootstraps_absent_registry_root_as_private_state() {
+        let parent = scratch();
+        let root = parent.join("registry");
+        let config = registry_config("http://127.0.0.1:9".to_owned());
+
+        let gateway = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open gateway with a new registry namespace")
+            .expect("configured source set");
+
+        assert!(root.is_dir());
+        let directory = DirectoryCapability::open(&root).expect("private registry directory");
+        let authority = directory
+            .open_private_file("advisory-authority.json")
+            .expect("initialized private advisory authority");
+        assert!(authority.metadata().expect("authority metadata").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(directory_mode(&root) & 0o077, 0);
+            assert_eq!(
+                authority.metadata().expect("authority metadata").mode() & 0o077,
+                0
+            );
+        }
+
+        drop(gateway);
+        drop(authority);
+        drop(directory);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(unix)]
+    fn directory_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).expect("registry root metadata").mode()
+    }
+
     fn tar_file(name: &str, bytes: &[u8]) -> Vec<u8> {
         tar_files(&[(name, bytes)])
     }
@@ -2478,6 +3353,101 @@ mod tests {
         }
     }
 
+    #[test]
+    fn advisory_refresh_errors_do_not_retain_endpoint_credentials() {
+        let error = public_advisory_request_error(ureq::Error::BadUri(
+            "https://operator:secret@example.test/feed.zip?token=hidden".to_owned(),
+        ));
+        assert_eq!(error, "advisory source endpoint configuration is invalid");
+        assert!(error.len() <= 256);
+        assert!(!error.contains("secret"));
+        assert!(!error.contains("hidden"));
+    }
+
+    #[test]
+    fn advisory_304_without_a_sent_validator_cannot_refresh_prior_facts() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local authority");
+        let endpoint = format!("http://{}/advisories.json", listener.local_addr().unwrap());
+        let body = br#"{"schema_version":"1.3.1","id":"OSV-NO-VALIDATOR-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#
+            .to_vec();
+        let server = thread::spawn(move || {
+            for response in [
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes(),
+                b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_vec(),
+            ]
+            .into_iter()
+            {
+                let (mut stream, _) = listener.accept().expect("accept authority request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).expect("read request headers");
+                    assert_ne!(count, 0, "request headers complete");
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                assert!(
+                    !request.contains("if-none-match:") && !request.contains("if-modified-since:"),
+                    "both requests are unconditional because the first response had no validators"
+                );
+                stream.write_all(&response).expect("write HTTP response");
+                if response.starts_with(b"HTTP/1.1 200") {
+                    stream.write_all(&body).expect("write authority body");
+                }
+            }
+        });
+
+        let source = AdvisorySourceConfig {
+            source: backend_engine::advisory::AdvisorySource::Osv,
+            location: endpoint,
+        };
+        let scope = Some(backend_engine::advisory::OsvFeedScope::All);
+        let mut authority = backend_engine::advisory::AdvisoryAuthority::new(60_000);
+        authority.configure_sources([source.source]);
+        let directory = scratch();
+        let first = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
+            .expect("initial body without validators");
+        assert_eq!(first.freshness.etag, None);
+        assert_eq!(first.freshness.last_modified, None);
+        authority.apply(first).expect("select initial feed");
+        assert_eq!(authority.frontier(source.source).unwrap().etag, None);
+
+        let error = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
+            .expect_err("unconditional 304 cannot refresh old facts");
+        assert_eq!(
+            error,
+            "advisory source returned 304 without a conditional validator"
+        );
+        server.join().expect("authority server thread");
+        fs::remove_dir_all(directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn advisory_expiry_uses_cache_age_and_absolute_expiry_conservatively() {
+        assert_eq!(
+            advisory_http_expiry(Some("public, max-age=120"), Some("20"), None, 1_000),
+            Some(1_100)
+        );
+        assert_eq!(
+            advisory_http_expiry(
+                Some("max-age=120"),
+                Some("20"),
+                Some("Thu, 01 Jan 1970 00:18:00 GMT"),
+                1_000,
+            ),
+            Some(1_080)
+        );
+        assert_eq!(
+            advisory_http_expiry(Some("no-cache"), None, None, 1_000),
+            Some(1_000)
+        );
+    }
+
     fn empty_product_view() -> backend_engine::ViewRoot {
         let root = backend_engine::view_state_root(&[]);
         let basis = backend_engine::Basis::new(
@@ -2507,8 +3477,10 @@ mod tests {
                     }]
                 })
                 .unwrap_or_default(),
+            osv_scope: Some(backend_engine::advisory::OsvFeedScope::All),
             max_age_secs: 60 * 60,
             offline: false,
+            refresh_enabled: true,
             gate,
             max_feed_bytes: 1024 * 1024,
         }
@@ -2534,6 +3506,7 @@ mod tests {
             advisory_gate: backend_engine::advisory::AcquisitionGate {
                 offline: backend_engine::advisory::OfflinePolicy::Warn,
             },
+            cache_max_age_millis: None,
         }
     }
 
@@ -2573,7 +3546,86 @@ mod tests {
     }
 
     #[test]
-    fn advisory_refresh_overlays_the_same_release_after_cold_reopen() {
+    fn bounded_offline_cache_reuse_survives_a_cold_gateway_reopen() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local registry listener");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let online = registry_config(endpoint);
+        let archive = b"cold restart cache proof".to_vec();
+        let digest =
+            *backend_engine::capability::CapabilityArtifactId::from_value(&archive).as_bytes();
+        let feed = format!(
+            r#"{{"schema":1,"next":"{}","items":[{{"name":"demo","version":"1.0.0","blake3":"{}","provenance":"{}","archive":"/archive"}}]}}"#,
+            "07".repeat(32),
+            digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            "09".repeat(32),
+        )
+        .into_bytes();
+        let server = local_registry_server(listener, feed, archive.clone());
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
+        let mut first = RegistryGateway::open(&online, &root, &advisory_config(None))
+            .expect("compose online gateway")
+            .expect("configured gateway");
+        assert_eq!(
+            first.acquire(&coordinate).expect("initial acquisition"),
+            archive
+        );
+        server.join().expect("initial registry requests");
+        drop(first);
+
+        let mut offline = online;
+        offline.policy = AcquisitionPolicy::Offline;
+        offline.sources = offline.sources.clone().offline();
+        offline.cache_max_age_millis = Some(14 * 86_400_000);
+        let mut reopened = RegistryGateway::open(&offline, &root, &advisory_config(None))
+            .expect("compose cold offline gateway")
+            .expect("configured gateway");
+        assert_eq!(
+            reopened
+                .acquire(&coordinate)
+                .expect("fresh bounded cache hit"),
+            archive,
+            "a cold owner uses the original authenticated receipt timestamp, not a new observation"
+        );
+        drop(reopened);
+
+        offline.cache_max_age_millis = Some(0);
+        let mut expired = RegistryGateway::open(&offline, &root, &advisory_config(None))
+            .expect("compose expired offline gateway")
+            .expect("configured gateway");
+        assert!(
+            expired.acquire(&coordinate).is_err(),
+            "an offline owner refuses an entry outside a zero-age cache window"
+        );
+        drop(expired);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pre_cancelled_registry_job_never_starts_acquisition() {
+        let root = scratch();
+        let config = registry_config("http://127.0.0.1:9".to_owned());
+        let mut gateway = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open registry gateway")
+            .expect("configured registry gateway");
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0")
+            .expect("valid exact package coordinate");
+        let cancelled = AtomicBool::new(true);
+
+        assert!(matches!(
+            gateway.acquire_cancellable(&coordinate, &cancelled),
+            Err(RegistryAddError::Cancelled)
+        ));
+        drop(gateway);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_advisory_refresh_cold_reopen_keeps_findings_and_marks_unavailable() {
         const ADVISORY_ID: &str = "OSV-REGRESSION-1";
         let root = scratch();
         fs::create_dir_all(&root).expect("workspace root");
@@ -2635,7 +3687,7 @@ mod tests {
         assert_eq!(clean_projection.records.len(), 1);
         assert_eq!(
             clean_projection.records[0].advisory.coverage,
-            backend_engine::advisory::AdvisoryCoverage::Complete
+            backend_engine::advisory::AdvisoryCoverage::Partial
         );
         assert!(clean_projection.records[0].advisory.advisories.is_empty());
         assert_eq!(
@@ -2809,6 +3861,14 @@ mod tests {
             .refresh_advisories()
             .expect("persist unavailable source state");
         assert!(states[0].error.is_some());
+        assert_eq!(
+            unavailable_gateway
+                .advisory()
+                .frontier(backend_engine::advisory::AdvisorySource::Osv)
+                .map(|frontier| frontier.availability),
+            Some(backend_engine::advisory::AuthorityAvailability::Unavailable),
+            "a failed non-policy-blocked refresh updates the source frontier"
+        );
         drop(unavailable_gateway);
         let mut unavailable_gateway =
             RegistryGateway::open(&config, &root, &advisory_config(Some(&advisory_feed)))
@@ -2831,6 +3891,96 @@ mod tests {
 
         drop(unavailable_gateway);
         fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn policy_blocked_advisory_refresh_preserves_the_durable_frontier() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind advisory endpoint");
+        let endpoint = format!(
+            "http://{}/osv.json",
+            listener.local_addr().expect("advisory endpoint address")
+        );
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept initial refresh");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read refresh request");
+                assert_ne!(read, 0, "refresh request headers complete");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body = br#"{"vulns":[]}"#;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .expect("write response headers");
+            stream.write_all(body).expect("write advisory response");
+        });
+
+        let registry = registry_config("http://127.0.0.1:9".to_owned());
+        let source = AdvisorySourceConfig {
+            source: backend_engine::advisory::AdvisorySource::Osv,
+            location: endpoint.clone(),
+        };
+        let config = |offline| {
+            let mut config = advisory_config(None);
+            config.sources = vec![source.clone()];
+            config.offline = offline;
+            config
+        };
+
+        let mut online = RegistryGateway::open(&registry, &root, &config(false))
+            .expect("open online gateway")
+            .expect("configured registry gateway");
+        online
+            .refresh_advisories()
+            .expect("admit initial remote feed");
+        server.join().expect("initial remote refresh");
+        let initial = online
+            .advisory()
+            .frontier(source.source)
+            .cloned()
+            .expect("admitted source frontier");
+        assert_eq!(
+            initial.availability,
+            backend_engine::advisory::AuthorityAvailability::Available
+        );
+        drop(online);
+
+        let mut offline = RegistryGateway::open(&registry, &root, &config(true))
+            .expect("open offline gateway")
+            .expect("configured registry gateway");
+        let states = offline
+            .refresh_advisories()
+            .expect("policy-blocked refresh is reported, not treated as storage failure");
+        assert!(
+            states[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("disabled"))
+        );
+        assert_eq!(
+            offline.advisory().frontier(source.source),
+            Some(&initial),
+            "policy blocking reports the refusal without changing available evidence"
+        );
+        drop(offline);
+
+        let offline = RegistryGateway::open(&registry, &root, &config(true))
+            .expect("cold reopen offline gateway")
+            .expect("configured registry gateway");
+        assert_eq!(
+            offline.advisory().frontier(source.source),
+            Some(&initial),
+            "policy-blocked refresh leaves the durable source frontier unchanged"
+        );
+        drop(offline);
+        fs::remove_dir_all(root).expect("remove workspace fixture");
     }
 
     #[test]
@@ -3577,6 +4727,351 @@ mod tests {
             Err(RegistryAddError::UnsupportedArchive)
         ));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn osv_zip_is_a_complete_bounded_snapshot_with_content_provenance() {
+        use zip::write::SimpleFileOptions;
+
+        let root = scratch();
+        let snapshot_root = root.join("advisory-snapshots");
+        let authority_path = root.join("advisory-authority.json");
+        let document = br#"{"id":"OSV-TEST-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#;
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        writer
+            .start_file("osv/CARGO/OSV-TEST-1.json", SimpleFileOptions::default())
+            .expect("start OSV JSON member");
+        writer.write_all(document).expect("write OSV JSON member");
+        let bytes = writer.finish().expect("finish OSV ZIP").into_inner();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let expected_snapshot = format!("blake3:{}", blake3::Hash::from_bytes(digest).to_hex());
+        let feed = parse_osv_zip_reader(
+            Cursor::new(bytes),
+            digest,
+            17,
+            1024,
+            &snapshot_root,
+            128 * 1024 * 1024,
+            None,
+            None,
+            backend_engine::advisory::OsvFeedScope::Ecosystem(
+                backend_engine::advisory::OsvEcosystem::Cargo,
+            ),
+        )
+        .expect("complete OSV ZIP snapshot");
+        assert!(feed.complete);
+        assert_eq!(feed.freshness.observed_at, 17);
+        assert!(feed.entries.is_empty());
+        assert_eq!(
+            feed.osv_snapshot.as_ref().map(|snapshot| format!(
+                "blake3:{}",
+                blake3::Hash::from_bytes(snapshot.source_digest()).to_hex()
+            )),
+            Some(expected_snapshot)
+        );
+
+        let mut authority = backend_engine::advisory::AdvisoryAuthority::new(100);
+        let scope = backend_engine::advisory::OsvFeedScope::Ecosystem(
+            backend_engine::advisory::OsvEcosystem::Cargo,
+        );
+        authority.configure_sources([backend_engine::advisory::AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority.apply(feed).expect("admit OSV snapshot");
+        let package =
+            backend_engine::advisory::normalize_package("cargo", "demo").expect("Cargo identity");
+        let observation = authority.observe(&package, "1.0.0", false, false, 17, false);
+        assert_eq!(
+            observation.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Complete
+        );
+        assert_eq!(observation.advisories.len(), 1);
+        assert_eq!(
+            authority
+                .frontier(backend_engine::advisory::AdvisorySource::Osv)
+                .expect("selected OSV frontier")
+                .entries,
+            1
+        );
+        authority
+            .persist(&authority_path)
+            .expect("persist snapshot authority");
+        let reopened = backend_engine::advisory::AdvisoryAuthority::open(&authority_path, 100)
+            .expect("cold-open snapshot authority");
+        let reopened = reopened.observe(&package, "1.0.0", false, false, 17, false);
+        assert_eq!(
+            reopened.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Complete
+        );
+        assert_eq!(reopened.advisories.len(), 1);
+        let generation = fs::read_dir(&snapshot_root)
+            .expect("snapshot root")
+            .map(|entry| entry.expect("snapshot root entry"))
+            .find(|entry| entry.file_type().expect("snapshot entry type").is_dir())
+            .map(|entry| entry.path())
+            .expect("published generation directory");
+        let index_path = generation.join("package-index.bin");
+        let mut index = fs::read(&index_path).expect("package index");
+        index[0] ^= 1;
+        fs::write(index_path, index).expect("tamper package index");
+        let corrupted = backend_engine::advisory::AdvisoryAuthority::open(&authority_path, 100)
+            .expect("authority state remains parseable");
+        let corrupted = corrupted.observe(&package, "1.0.0", false, false, 17, false);
+        assert_eq!(
+            corrupted.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Unavailable
+        );
+        assert_eq!(corrupted.advisories.len(), 0);
+
+        let cursor = Cursor::new(Vec::new());
+        let empty = zip::ZipWriter::new(cursor)
+            .finish()
+            .expect("finish empty ZIP")
+            .into_inner();
+        let empty = parse_osv_zip_reader(
+            Cursor::new(empty),
+            [0; 32],
+            17,
+            1024,
+            root.join("empty-snapshot").as_path(),
+            128 * 1024 * 1024,
+            None,
+            None,
+            backend_engine::advisory::OsvFeedScope::Ecosystem(
+                backend_engine::advisory::OsvEcosystem::Cargo,
+            ),
+        );
+        assert!(empty.is_err(), "empty ZIP cannot assert a clean feed");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn osv_zip_rejects_malformed_declared_overrun_and_crc_corruption() {
+        let root = scratch();
+        let snapshot_root = root.join("advisory-snapshots");
+        let scope = backend_engine::advisory::OsvFeedScope::Ecosystem(
+            backend_engine::advisory::OsvEcosystem::Cargo,
+        );
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(b"not a ZIP"),
+                [0; 32],
+                17,
+                1024,
+                &snapshot_root,
+                128 * 1024 * 1024,
+                None,
+                None,
+                scope,
+            )
+            .is_err()
+        );
+
+        let document = br#"{"id":"OSV-TEST-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "osv/CARGO/OSV-TEST-1.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("start OSV JSON member");
+        writer.write_all(document).expect("write OSV JSON member");
+        let valid = writer.finish().expect("finish OSV ZIP").into_inner();
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(valid.clone()),
+                *blake3::hash(&valid).as_bytes(),
+                17,
+                document.len() - 1,
+                &snapshot_root,
+                128 * 1024 * 1024,
+                None,
+                None,
+                scope,
+            )
+            .is_err(),
+            "declared expansion beyond the configured bound must fail before allocation"
+        );
+
+        let mut corrupt = valid;
+        let local_header = corrupt
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x03\x04")
+            .expect("local ZIP header");
+        let central_header = corrupt
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x01\x02")
+            .expect("central ZIP header");
+        corrupt[local_header + 14] ^= 1;
+        corrupt[central_header + 16] ^= 1;
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(corrupt),
+                [0; 32],
+                17,
+                1024,
+                &snapshot_root,
+                128 * 1024 * 1024,
+                None,
+                None,
+                scope,
+            )
+            .is_err(),
+            "archive checksum corruption must not be admitted"
+        );
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("README.txt", zip::write::SimpleFileOptions::default())
+            .expect("start ignored archive member");
+        writer
+            .write_all(b"ignored archive metadata")
+            .expect("write ignored archive member");
+        let mut ignored_member = writer.finish().expect("finish ignored ZIP").into_inner();
+        let local_header = ignored_member
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x03\x04")
+            .expect("ignored local ZIP header");
+        let central_header = ignored_member
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x01\x02")
+            .expect("ignored central ZIP header");
+        ignored_member[local_header + 14] ^= 1;
+        ignored_member[central_header + 16] ^= 1;
+        assert!(
+            parse_osv_zip_reader(
+                Cursor::new(ignored_member),
+                [0; 32],
+                17,
+                1024,
+                &snapshot_root,
+                128 * 1024 * 1024,
+                None,
+                None,
+                scope,
+            )
+            .is_err(),
+            "corrupt ignored ZIP members are still source corruption"
+        );
+        for entry in fs::read_dir(&snapshot_root).expect("staging root") {
+            let entry = entry.expect("snapshot root entry");
+            assert!(
+                !entry.file_type().expect("snapshot entry type").is_dir(),
+                "failed feeds leave no staging or published generation directories: {:?}",
+                entry.file_name()
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn osv_zip_spool_hashes_a_bounded_stream_and_rejects_overrun() {
+        let bytes = b"bounded OSV archive";
+        let mut spool = spool_advisory_zip(Cursor::new(bytes), bytes.len()).expect("exact bound");
+        assert_eq!(spool.digest, *blake3::hash(bytes).as_bytes());
+        spool.file.seek(SeekFrom::Start(0)).expect("rewind spool");
+        let mut contents = Vec::new();
+        spool.file.read_to_end(&mut contents).expect("read spool");
+        assert_eq!(contents, bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                spool
+                    .file
+                    .metadata()
+                    .expect("spool metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        assert!(spool_advisory_zip(Cursor::new(bytes), bytes.len() - 1).is_err());
+    }
+
+    #[test]
+    fn rustsec_tree_rejects_symlinks_and_bounds_each_file_before_reading() {
+        let oversized_root = scratch();
+        fs::write(oversized_root.join("RUSTSEC-TEST-1.toml"), b"12345")
+            .expect("write oversized RustSec file");
+        assert!(read_rustsec_tree(&oversized_root, 4, 17).is_err());
+        let _ = fs::remove_dir_all(&oversized_root);
+
+        #[cfg(unix)]
+        {
+            let symlink_root = scratch();
+            fs::write(
+                symlink_root.join("RUSTSEC-2025-0141.md"),
+                include_bytes!("../../../../crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md"),
+            )
+            .expect("write RustSec fixture");
+            std::os::unix::fs::symlink(".", symlink_root.join("loop"))
+                .expect("create recursive RustSec symlink");
+            assert!(read_rustsec_tree(&symlink_root, 1024 * 1024, 17).is_err());
+            let _ = fs::remove_dir_all(&symlink_root);
+        }
+    }
+
+    #[test]
+    fn advisory_source_identity_only_binds_osv_to_its_selected_scope() {
+        use backend_engine::advisory::{
+            AdvisoryAuthority, AdvisorySource, AuthorityFeed, OsvEcosystem, OsvFeedScope,
+            PackageIdentity,
+        };
+
+        let all = Some(OsvFeedScope::All);
+        let cargo = Some(OsvFeedScope::Ecosystem(OsvEcosystem::Cargo));
+        assert_ne!(
+            advisory_source_identity(AdvisorySource::Osv, "https://osv.example/feed", all),
+            advisory_source_identity(AdvisorySource::Osv, "https://osv.example/feed", cargo),
+            "OSV cache validators are partition-specific"
+        );
+        for source in [AdvisorySource::RustSec, AdvisorySource::Ghsa] {
+            assert_eq!(
+                advisory_source_identity(source, "https://advisories.example/feed", all),
+                advisory_source_identity(source, "https://advisories.example/feed", cargo),
+                "an OSV-only scope change cannot invalidate another authority"
+            );
+        }
+
+        let ghsa_endpoint = "https://advisories.example/feed";
+        let initial_identity = advisory_source_identity(AdvisorySource::Ghsa, ghsa_endpoint, all);
+        let mut feed = AuthorityFeed::parse(
+            AdvisorySource::Ghsa,
+            br#"{"ghsa_id":"GHSA-test","malware_coverage":false,"vulnerabilities":[{"package":{"ecosystem":"npm","name":"demo"},"vulnerable_version_range":">= 1.0.0, < 2.0.0"}]}"#,
+            10,
+            None,
+            None,
+        )
+        .expect("valid GHSA source object");
+        feed.source_identity = Some(initial_identity);
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Ghsa]);
+        authority.configure_source_identities([(AdvisorySource::Ghsa, initial_identity)]);
+        authority.apply(feed).expect("admit GHSA source");
+
+        authority.configure_osv_scope(cargo);
+        let selected_identity =
+            advisory_source_identity(AdvisorySource::Ghsa, ghsa_endpoint, cargo);
+        authority.configure_source_identities([(AdvisorySource::Ghsa, selected_identity)]);
+        let observation = authority.observe(
+            &PackageIdentity {
+                ecosystem: "npm".to_owned(),
+                name: "demo".to_owned(),
+                canonical_purl: None,
+            },
+            "1.1.0",
+            false,
+            false,
+            10,
+            false,
+        );
+        assert_eq!(
+            observation.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Complete
+        );
+        assert_eq!(observation.advisories.len(), 1);
+        assert_eq!(observation.advisories[0].key.native.id, "GHSA-test");
     }
 
     #[test]

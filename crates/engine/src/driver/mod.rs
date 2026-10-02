@@ -13,6 +13,7 @@ mod native;
 mod types;
 
 pub use self::database::{DatabaseCompileFailure, compile_database_translation_unit};
+pub(crate) use self::types::rust_authority_diagnostic;
 pub use self::types::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
     AuthorityProfileMismatch, ClangProjectionFault, CompileControl, CompileFailure, CompileOutput,

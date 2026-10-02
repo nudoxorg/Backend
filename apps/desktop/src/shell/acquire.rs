@@ -32,6 +32,7 @@ pub(crate) fn add_actions(links: &Links, view: EntityId) -> AddActions {
                 opening.dispatch(Intent::Navigate(route), cx);
             }
         }),
+        cancel: None,
     }
 }
 
@@ -54,10 +55,16 @@ pub(crate) fn facet_offer(offer: &Offer) -> facet::browse::acquire::Offer {
     facet::browse::acquire::Offer {
         release: offer.release.purl().into(),
         label: offer.release.to_string().into(),
-        place: match offer.availability {
+        place: match &offer.availability {
             Availability::Unpacked(_) => Place::Unpacked,
             Availability::Archive(_) => Place::Archive,
             Availability::Download => Place::Download,
+            Availability::Ambiguous { indexes } => Place::Ambiguous {
+                indexes: indexes.clone(),
+            },
+            Availability::UnverifiedArchive(path) => {
+                Place::UnverifiedArchive(path.clone())
+            }
         },
         library: offer.library.as_ref().map(|package| package.as_str().to_owned().into()),
     }

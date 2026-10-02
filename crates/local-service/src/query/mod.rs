@@ -5,7 +5,9 @@
 //! may contribute only locally resolved canonical IDs under a bounded policy,
 //! so provider availability and recall never become coverage authority.
 
+mod embedding_cache;
 mod local;
+mod projection_state;
 mod remote;
 mod semantic;
 
@@ -14,11 +16,11 @@ pub use local::{
     QueryError, QueryResult, RankedRow, SearchSnapshotOwner, SemanticDocument, SourceBasis,
 };
 pub use remote::{
-    ActiveQdrant, ConfiguredQdrant, EMBEDDING_DIMENSIONS_ENV, EMBEDDING_DOCUMENT_TREATMENT_ENV,
-    EMBEDDING_MODEL_ENV, EMBEDDING_MODEL_FILE_ENV, EMBEDDING_PROGRAM_ENV,
-    EMBEDDING_QUERY_TREATMENT_ENV, EMBEDDING_TOKENIZER_ENV, EMBEDDING_TOKENIZER_FILE_ENV,
-    QDRANT_API_KEY_ENV, QDRANT_COLLECTION_ENV, QDRANT_ENDPOINT_ENV, QdrantDocument,
-    RemoteConfigError, RemoteSemantic,
+    ActiveQdrant, ConfiguredQdrant, EMBEDDING_DEVICE_ENV, EMBEDDING_DIMENSIONS_ENV,
+    EMBEDDING_DOCUMENT_TREATMENT_ENV, EMBEDDING_MODEL_ENV, EMBEDDING_MODEL_FILE_ENV,
+    EMBEDDING_PROGRAM_ENV, EMBEDDING_QUERY_TREATMENT_ENV, EMBEDDING_TOKENIZER_ENV,
+    EMBEDDING_TOKENIZER_FILE_ENV, QDRANT_API_KEY_ENV, QDRANT_COLLECTION_ENV, QDRANT_ENDPOINT_ENV,
+    QdrantDocument, RemoteConfigError, RemoteSemantic,
 };
 pub use semantic::{CompositionPolicy, SemanticAcceleration, SemanticError};
 

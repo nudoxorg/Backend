@@ -163,7 +163,8 @@ fn map_store_error(error: &backend_store::StoreError) -> ReplicationError {
         | backend_store::StoreError::PublicationAuthorityBusy
         | backend_store::StoreError::PreparedWithSyncPending { .. }
         | backend_store::StoreError::PublishedWithSyncPending(_)
-        | backend_store::StoreError::Io(_) => ReplicationError::CorruptFrame,
+        | backend_store::StoreError::Io(_)
+        | backend_store::StoreError::TemporaryIo(_) => ReplicationError::CorruptFrame,
     }
 }
 

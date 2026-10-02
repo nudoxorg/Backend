@@ -1,16 +1,101 @@
 workspace_root="$(@git@ rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+invoking_workspace_root="$workspace_root"
+invoking_default_target_dir="$invoking_workspace_root/.local/target"
+target_dir_was_workspace_default=false
+if [ "${CARGO_TARGET_DIR:-}" = "$invoking_default_target_dir" ] \
+  && [ ! -L "$invoking_workspace_root/.local" ] \
+  && [ ! -L "$invoking_default_target_dir" ]; then
+  target_dir_was_workspace_default=true
+fi
+
+# Cargo accepts --manifest-path independently of the caller's cwd. Make the
+# manifest's actual worktree the source, cache, and default-target identity so
+# two trees cannot share one mutable Cargo graph accidentally.
+manifest_path=""
+manifest_seen=false
+expect_manifest=false
+for argument in "$@"; do
+  if [ "$expect_manifest" = true ]; then
+    if [ "$manifest_seen" = true ] || [ -z "$argument" ]; then
+      echo "nudox cargo: invalid or repeated --manifest-path" >&2
+      exit 64
+    fi
+    manifest_path="$argument"
+    manifest_seen=true
+    expect_manifest=false
+    continue
+  fi
+  case "$argument" in
+    --) break ;;
+    --manifest-path)
+      expect_manifest=true
+      ;;
+    --manifest-path=*)
+      if [ "$manifest_seen" = true ] || [ -z "${argument#--manifest-path=}" ]; then
+        echo "nudox cargo: invalid or repeated --manifest-path" >&2
+        exit 64
+      fi
+      manifest_path="${argument#--manifest-path=}"
+      manifest_seen=true
+      ;;
+  esac
+done
+if [ "$expect_manifest" = true ]; then
+  echo "nudox cargo: --manifest-path requires a value" >&2
+  exit 64
+fi
+if [ -n "$manifest_path" ]; then
+  case "$manifest_path" in
+    /*) manifest_absolute="$manifest_path" ;;
+    *) manifest_absolute="$PWD/$manifest_path" ;;
+  esac
+  case "$manifest_absolute" in
+    */*) manifest_directory="${manifest_absolute%/*}" ;;
+    *) manifest_directory="$PWD" ;;
+  esac
+  [ -n "$manifest_directory" ] || manifest_directory="/"
+  if [ ! -d "$manifest_directory" ]; then
+    echo "nudox cargo: manifest directory does not exist: $manifest_directory" >&2
+    exit 64
+  fi
+  manifest_root="$(@git@ -C "$manifest_directory" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$manifest_root" ]; then
+    workspace_root="$manifest_root"
+  else
+    workspace_root="$(CDPATH= cd -P "$manifest_directory" 2>/dev/null && pwd -P)" || {
+      echo "nudox cargo: unable to resolve the manifest directory" >&2
+      exit 64
+    }
+  fi
+fi
+
+if [ "$target_dir_was_workspace_default" = true ]; then
+  export CARGO_TARGET_DIR="$workspace_root/.local/target"
+fi
+default_target_dir="$workspace_root/.local/target"
+explicit_target_dir="${CARGO_TARGET_DIR:-}"
+# The Nix shell exports this exact path before invoking Cargo. Treat that
+# canonical in-worktree location as the wrapper-managed default even though it
+# arrives through the environment; role-specific or caller-chosen paths remain
+# explicit and must already be empty or stamped for this worktree.
+if [ "$explicit_target_dir" = "$default_target_dir" ] \
+  && [ ! -L "$workspace_root/.local" ] \
+  && [ ! -L "$default_target_dir" ]; then
+  explicit_target_dir=""
+fi
+
 cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 cache_root="${NUDOX_BUILD_CACHE_ROOT:-$cache_home/nudox/cargo-1.97}"
 slot_count="${NUDOX_CARGO_BUILD_SLOTS:-4}"
 
 case "$slot_count" in
   ""|*[!0-9]*)
-    echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 32" >&2
+    echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 4" >&2
     exit 64
     ;;
 esac
-if [ "$slot_count" -lt 1 ] || [ "$slot_count" -gt 32 ]; then
-  echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 32" >&2
+if [ "$slot_count" -lt 1 ] || [ "$slot_count" -gt 4 ]; then
+  echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 4" >&2
   exit 64
 fi
 
@@ -60,12 +145,43 @@ case "$cargo_command" in
     ;;
 esac
 
-export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@sccache@}"
+export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@rustc_cache_wrapper@}"
 export SCCACHE_DIR="${SCCACHE_DIR:-$cache_root/sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-8G}"
 export SCCACHE_CLIENT_SIDE="${SCCACHE_CLIENT_SIDE:-1}"
-export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-$cache_root/sccache.sock}"
-worktree_lines="$(@git@ worktree list --porcelain 2>/dev/null || true)"
+# The substituted provider is an immutable Nix-store executable. Its exact
+# path partitions daemon protocols, while the content cache remains shared.
+# An old daemon at the unversioned socket must not intercept a new client.
+if [ -z "${SCCACHE_SERVER_UDS:-}" ]; then
+  # Darwin limits Unix socket paths to 104 bytes. A short private runtime
+  # directory also works when a worktree/cache root or TMPDIR is very long.
+  SCCACHE_SERVER_UDS="$(@python3@ - '@sccache@' "$SCCACHE_DIR" <<'PY'
+import hashlib
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path('/tmp') / f'nudox-sccache-{os.getuid()}'
+try:
+    root.mkdir(mode=0o700)
+except FileExistsError:
+    pass
+descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    metadata = os.fstat(descriptor)
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise PermissionError('compiler-cache runtime directory must be private and owned by this user')
+finally:
+    os.close(descriptor)
+identity = hashlib.sha256(os.fsencode(sys.argv[1]) + b'\0' + os.fsencode(sys.argv[2])).hexdigest()[:24]
+print(root / f'{identity}.sock')
+PY
+)" || exit 75
+fi
+export SCCACHE_SERVER_UDS
+sccache_endpoint_key="$(@python3@ -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:24])' "$SCCACHE_SERVER_UDS")"
+worktree_lines="$(@git@ -C "$workspace_root" worktree list --porcelain 2>/dev/null || true)"
 worktree_bases="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' | paste -sd: -)"
 export SCCACHE_BASEDIRS="${SCCACHE_BASEDIRS:-${worktree_bases:-$workspace_root}}"
 
@@ -98,7 +214,7 @@ lock_owner_is_stale() {
 # same Unix socket. Elect exactly one starter; peers wait only for the socket,
 # never for compilation or a Cargo build lock.
 if [ ! -S "$SCCACHE_SERVER_UDS" ]; then
-  server_lock="$cache_root/locks/sccache-server.lock"
+  server_lock="$cache_root/locks/sccache-server-$sccache_endpoint_key.lock"
   attempts=0
   while [ ! -S "$SCCACHE_SERVER_UDS" ] && [ "$attempts" -lt 100 ]; do
     if mkdir "$server_lock" 2>/dev/null; then
@@ -130,11 +246,90 @@ if [ ! -S "$SCCACHE_SERVER_UDS" ]; then
   fi
 fi
 
-# Explicit callers retain full control over placement. This check intentionally
-# happens after sccache setup, preserving the old wrapper's compiler-cache
-# behavior without ever changing the caller's build directory.
-if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
-  exec @cargo@ "$@"
+# An override names a role root, never an exact shared Cargo graph. Explicit
+# roots retain up to four worktree-stamped graphs of their own. The host
+# capacity permit and each role-graph lease are independent: graph identity
+# must not change merely because the host scheduler grants another permit.
+explicit_build_dir="${CARGO_BUILD_BUILD_DIR:-}"
+explicit_graph_slot_count=4
+
+# Explicit roots and target paths remain exact Cargo inputs, but they may not
+# alias one of the wrapper's pooled intermediate graphs. Resolve symlinked
+# parents for this safety check without creating caller-owned directories.
+canonical_path_for_guard() {
+  _canonical_input="$1"
+  _canonical_newline='
+'
+  case "$_canonical_input" in
+    *"$_canonical_newline"*) return 1 ;;
+  esac
+  case "$_canonical_input" in
+    /*) _canonical_rest="${_canonical_input#/}" ;;
+    *) _canonical_rest="${PWD}/${_canonical_input}" ; _canonical_rest="${_canonical_rest#/}" ;;
+  esac
+  _canonical_current="/"
+  while [ -n "$_canonical_rest" ]; do
+    case "$_canonical_rest" in
+      */*)
+        _canonical_component="${_canonical_rest%%/*}"
+        _canonical_rest="${_canonical_rest#*/}"
+        ;;
+      *)
+        _canonical_component="$_canonical_rest"
+        _canonical_rest=""
+        ;;
+    esac
+    case "$_canonical_component" in
+      ""|.) continue ;;
+      ..)
+        _canonical_current="${_canonical_current%/*}"
+        [ -n "$_canonical_current" ] || _canonical_current="/"
+        ;;
+      *)
+        if [ "$_canonical_current" = / ]; then
+          _canonical_next="/$_canonical_component"
+        else
+          _canonical_next="$_canonical_current/$_canonical_component"
+        fi
+        if [ -d "$_canonical_next" ]; then
+          _canonical_current="$(CDPATH= cd -P "$_canonical_next" 2>/dev/null && pwd -P)" || return 1
+        elif [ -e "$_canonical_next" ] || [ -L "$_canonical_next" ]; then
+          return 1
+        else
+          _canonical_current="$_canonical_next"
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$_canonical_current"
+}
+
+if [ -n "$explicit_build_dir" ] || [ -n "$explicit_target_dir" ]; then
+  pooled_build_root="$(canonical_path_for_guard "$cache_root/build")" || {
+    echo "nudox cargo: cannot safely resolve pooled build root" >&2
+    exit 64
+  }
+  candidate=0
+  while [ "$candidate" -lt "$slot_count" ]; do
+    pooled_slot="$(canonical_path_for_guard "$pooled_build_root/slot-$candidate")" || {
+      echo "nudox cargo: cannot safely resolve pooled build slot" >&2
+      exit 64
+    }
+    for explicit_path in "$explicit_build_dir" "$explicit_target_dir"; do
+      [ -n "$explicit_path" ] || continue
+      explicit_path_canonical="$(canonical_path_for_guard "$explicit_path")" || {
+        echo "nudox cargo: cannot safely resolve explicit build or target directory" >&2
+        exit 64
+      }
+      case "$explicit_path_canonical" in
+        "$pooled_slot"|"$pooled_slot"/*)
+          echo "nudox cargo: explicit build or target directory aliases pooled slot $candidate" >&2
+          exit 64
+          ;;
+      esac
+    done
+    candidate="$((candidate + 1))"
+  done
 fi
 
 # cksum is present in the minimal Nix runtime and the length makes accidental
@@ -144,19 +339,148 @@ worktree_key="$(printf '%s' "$workspace_root" | cksum | awk '{print $1 "-" $2}')
 worktree_lock="$cache_root/locks/worktree-$worktree_key.lock"
 affinity_file="$cache_root/affinity/$worktree_key"
 
+# Stamp every mutable target with the canonical worktree that produced it.
+# Explicit build directories are role roots, not permission to share one Cargo
+# graph: up to four role-local graphs are independently leased and reused by
+# their owner even when the host capacity permit changes. Explicit target
+# directories keep their exact caller-selected path when empty or already
+# stamped for this worktree; mismatched or unmarked non-empty directories are
+# refused without mutation.
+claim_mutable_build_dir() {
+  build_dir="$1"
+  legacy_owner="${2:-}"
+  missing_stamp_policy="${3:-reset}"
+  if [ -L "$build_dir" ]; then
+    echo "nudox cargo: refusing symlinked mutable build directory" >&2
+    return 1
+  fi
+  if [ -e "$build_dir" ] && [ ! -d "$build_dir" ]; then
+    echo "nudox cargo: refusing non-directory mutable build path" >&2
+    return 1
+  fi
+  mkdir -p "$build_dir" || return 1
+  stamp="$build_dir/.nudox-worktree-root"
+  if [ -L "$stamp" ]; then
+    echo "nudox cargo: refusing symlinked mutable build stamp" >&2
+    return 1
+  fi
+  if [ -f "$stamp" ]; then
+    previous_owner="$(cat "$stamp" 2>/dev/null || true)"
+    if [ -z "$previous_owner" ]; then
+      echo "nudox cargo: refusing malformed mutable build stamp" >&2
+      return 1
+    fi
+    if [ "$previous_owner" != "$workspace_root" ]; then
+      # This path is a wrapper-managed lane directory and the host slot lease
+      # is held. Retire only this lane's Cargo graph; never clean the caller's
+      # role root or any other worktree's target directory.
+      if ! find "$build_dir" -mindepth 1 -depth -delete 2>/dev/null; then
+        echo "nudox cargo: unable to retire the previous lane graph" >&2
+        return 1
+      fi
+      if ! (set -C; printf '%s\n' "$workspace_root" > "$stamp") 2>/dev/null; then
+        echo "nudox cargo: unable to stamp the claimed lane graph" >&2
+        return 1
+      fi
+    fi
+    return 0
+  fi
+  existing="$(find "$build_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    # Older pooled lanes have a separate affinity-owner record. It is safe to
+    # adopt their existing contents only when that record names this root;
+    # otherwise they are cleared as one managed lane before use.
+    if [ "$legacy_owner" = "$workspace_root" ]; then
+      if ! (set -C; printf '%s\n' "$workspace_root" > "$stamp") 2>/dev/null; then
+        echo "nudox cargo: unable to adopt the existing lane graph" >&2
+        return 1
+      fi
+      return 0
+    fi
+    if [ "$missing_stamp_policy" = refuse ]; then
+      echo "nudox cargo: refusing unmarked mutable build directory" >&2
+      return 1
+    fi
+    if ! find "$build_dir" -mindepth 1 -depth -delete 2>/dev/null; then
+      echo "nudox cargo: unable to retire an unowned lane graph" >&2
+      return 1
+    fi
+  fi
+  if ! (set -C; printf '%s\n' "$workspace_root" > "$stamp") 2>/dev/null; then
+    echo "nudox cargo: unable to stamp the lane graph" >&2
+    return 1
+  fi
+}
+
+claim_explicit_target_dir() {
+  target_dir="$1"
+  if [ -L "$target_dir" ]; then
+    echo "nudox cargo: refusing symlinked explicit target directory" >&2
+    return 1
+  fi
+  if [ -e "$target_dir" ] && [ ! -d "$target_dir" ]; then
+    echo "nudox cargo: refusing non-directory explicit target path" >&2
+    return 1
+  fi
+  mkdir -p "$target_dir" || return 1
+  stamp="$target_dir/.nudox-worktree-root"
+  if [ -L "$stamp" ]; then
+    echo "nudox cargo: refusing symlinked explicit target stamp" >&2
+    return 1
+  fi
+  if [ -f "$stamp" ]; then
+    if [ "$(cat "$stamp" 2>/dev/null || true)" != "$workspace_root" ]; then
+      echo "nudox cargo: explicit target directory belongs to another worktree" >&2
+      return 1
+    fi
+  else
+    existing="$(find "$target_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+    if [ -n "$existing" ]; then
+      echo "nudox cargo: refusing unmarked explicit target directory" >&2
+      return 1
+    fi
+    if ! (set -C; printf '%s\n' "$workspace_root" > "$stamp") 2>/dev/null; then
+      if [ "$(cat "$stamp" 2>/dev/null || true)" != "$workspace_root" ]; then
+        echo "nudox cargo: unable to stamp explicit target directory" >&2
+        return 1
+      fi
+    fi
+  fi
+  printf '%s\n' "$target_dir"
+}
+
 selected=""
 selected_lock=""
 selected_slot=""
 selected_lock_acquired=false
+selected_graph_lock=""
+selected_graph_slot=""
+selected_graph_lock_acquired=false
 released=false
 worktree_lock_acquired=false
 cargo_pid=""
+provenance_start=""
+provenance_identity_refused=false
+
+release_explicit_graph_lock() {
+  if [ "$selected_graph_lock_acquired" = true ] && [ -n "$selected_graph_lock" ]; then
+    if [ ! -e "$selected_graph_lock/pid" ] \
+      || [ "$(cat "$selected_graph_lock/pid" 2>/dev/null || true)" = "$$" ]; then
+      rm -f "$selected_graph_lock/pid" "$selected_graph_lock/start" "$selected_graph_lock/workspace"
+      rmdir "$selected_graph_lock" 2>/dev/null || true
+    fi
+  fi
+  selected_graph_lock=""
+  selected_graph_slot=""
+  selected_graph_lock_acquired=false
+}
 
 # Invoked by the EXIT trap installed below.
 # shellcheck disable=SC2329
 release_all() {
   [ "$released" = true ] && return
   released=true
+  release_explicit_graph_lock
   if [ "$selected_lock_acquired" = true ] && [ -n "$selected_lock" ]; then
     rm -f "$selected_lock/pid" "$selected_lock/start" "$selected_lock/workspace"
     rmdir "$selected_lock" 2>/dev/null || true
@@ -180,7 +504,34 @@ forward_signal() {
     wait "$cargo_pid" 2>/dev/null || true
     cargo_pid=""
   fi
+  finish_provenance "$status"
   exit "$status"
+}
+
+finish_provenance() {
+  status="$1"
+  if [ -n "$provenance_start" ]; then
+    start_path="$provenance_start"
+    provenance_start=""
+    if provenance_path="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ finish "$start_path" "$status")"; then
+      if [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
+        echo "nudox cargo: provenance $provenance_path" >&2
+      fi
+    else
+      provenance_status="$?"
+      if [ "$provenance_status" -eq 74 ]; then
+        provenance_identity_refused=true
+        if [ -n "$provenance_path" ]; then
+          echo "nudox cargo: refusing Cargo result; selected tool identity changed or became unreadable: $provenance_path" >&2
+        else
+          echo "nudox cargo: refusing Cargo result; exact provenance finalization failed" >&2
+        fi
+      else
+        provenance_identity_refused=true
+        echo "nudox cargo: refusing Cargo result; build provenance could not be finalized (status $provenance_status)" >&2
+      fi
+    fi
+  fi
 }
 
 # Install cleanup before acquiring the worktree lease. Signals during slot
@@ -214,6 +565,162 @@ wait_attempts_for() {
   fi
 }
 
+acquire_explicit_graph_lock() {
+  candidate="$1"
+  lock="$explicit_graph_lock_root/slot-$candidate.lock"
+  if [ -L "$lock" ]; then
+    echo "nudox cargo: refusing symlinked role-graph lease" >&2
+    return 2
+  fi
+  if mkdir "$lock" 2>/dev/null; then
+    # Publish ownership before writing metadata so the EXIT trap can release
+    # a lease even if a signal lands during initialization.
+    selected_graph_lock="$lock"
+    selected_graph_slot="$candidate"
+    selected_graph_lock_acquired=true
+    printf '%s\n' "$$" > "$lock/pid"
+    process_start_token "$$" > "$lock/start"
+    printf '%s\n' "$workspace_root" > "$lock/workspace"
+    return 0
+  fi
+  recover_stale_lock "$lock" || true
+  if [ -L "$lock" ]; then
+    echo "nudox cargo: refusing symlinked role-graph lease" >&2
+    return 2
+  fi
+  if mkdir "$lock" 2>/dev/null; then
+    selected_graph_lock="$lock"
+    selected_graph_slot="$candidate"
+    selected_graph_lock_acquired=true
+    printf '%s\n' "$$" > "$lock/pid"
+    process_start_token "$$" > "$lock/start"
+    printf '%s\n' "$workspace_root" > "$lock/workspace"
+    return 0
+  fi
+  return 1
+}
+
+inspect_explicit_graph() {
+  graph_dir="$explicit_lane_root/slot-$1"
+  graph_stamp="$graph_dir/.nudox-worktree-root"
+  graph_state=""
+  graph_owner=""
+  if [ -L "$graph_dir" ]; then
+    echo "nudox cargo: refusing symlinked role graph" >&2
+    return 2
+  fi
+  if [ -e "$graph_dir" ] && [ ! -d "$graph_dir" ]; then
+    echo "nudox cargo: refusing non-directory role graph" >&2
+    return 2
+  fi
+  if [ ! -e "$graph_dir" ]; then
+    graph_state=empty
+    return 0
+  fi
+  if [ -L "$graph_stamp" ]; then
+    echo "nudox cargo: refusing symlinked role-graph stamp" >&2
+    return 2
+  fi
+  if [ -f "$graph_stamp" ]; then
+    graph_owner="$(cat "$graph_stamp" 2>/dev/null || true)"
+    if [ -z "$graph_owner" ]; then
+      echo "nudox cargo: refusing malformed role-graph stamp" >&2
+      return 2
+    fi
+    if [ "$graph_owner" = "$workspace_root" ]; then
+      graph_state=owned
+    else
+      graph_state=other
+    fi
+    return 0
+  fi
+  existing="$(find "$graph_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    graph_state=unmarked
+  else
+    graph_state=empty
+  fi
+}
+
+select_explicit_graph() {
+  if [ -L "$explicit_build_dir" ]; then
+    echo "nudox cargo: refusing symlinked explicit build root" >&2
+    return 73
+  fi
+  explicit_lane_root="$explicit_build_dir/.nudox-cargo"
+  if [ -L "$explicit_lane_root" ]; then
+    echo "nudox cargo: refusing symlinked explicit build namespace" >&2
+    return 73
+  fi
+  explicit_graph_lock_root="$explicit_lane_root/leases"
+  if [ -L "$explicit_graph_lock_root" ]; then
+    echo "nudox cargo: refusing symlinked role-graph lease root" >&2
+    return 73
+  fi
+  mkdir -p "$explicit_graph_lock_root" || return 73
+
+  graph_wait_attempts="$(wait_attempts_for "$slot_wait_ms")"
+  graph_waited=0
+  while :; do
+    graph_busy_count=0
+    for mode in owned empty other; do
+      candidate=0
+      while [ "$candidate" -lt "$explicit_graph_slot_count" ]; do
+        graph_lock_status=0
+        acquire_explicit_graph_lock "$candidate" || graph_lock_status="$?"
+        if [ "$graph_lock_status" -eq 2 ]; then return 73; fi
+        if [ "$graph_lock_status" -ne 0 ]; then
+          graph_busy_count="$((graph_busy_count + 1))"
+          candidate="$((candidate + 1))"
+          continue
+        fi
+
+        inspect_status=0
+        inspect_explicit_graph "$candidate" || inspect_status="$?"
+        if [ "$inspect_status" -ne 0 ]; then
+          release_explicit_graph_lock
+          return 73
+        fi
+
+        # Unknown non-empty graph data is never adopted, erased, or silently
+        # bypassed. The caller must inspect/remove it explicitly before this
+        # role root can be used again.
+        if [ "$graph_state" = unmarked ]; then
+          release_explicit_graph_lock
+          echo "nudox cargo: refusing unmarked mutable role graph" >&2
+          return 73
+        fi
+
+        choose_graph=false
+        case "$mode:$graph_state" in
+          owned:owned|empty:empty|other:other) choose_graph=true ;;
+        esac
+        if [ "$choose_graph" = true ]; then
+          selected="$explicit_lane_root/slot-$candidate"
+          if ! claim_mutable_build_dir "$selected" "" refuse; then
+            release_explicit_graph_lock
+            return 73
+          fi
+          return 0
+        fi
+        release_explicit_graph_lock
+        candidate="$((candidate + 1))"
+      done
+    done
+
+    if [ "$graph_busy_count" -eq 0 ]; then
+      echo "nudox cargo: no safe role-graph slot is available" >&2
+      return 73
+    fi
+    if [ "$graph_waited" -ge "$graph_wait_attempts" ]; then
+      echo "nudox cargo: all role-graph slots are busy; waited ${slot_wait_ms}ms" >&2
+      return 75
+    fi
+    sleep 0.05
+    graph_waited="$((graph_waited + 1))"
+  done
+}
+
 worktree_wait_attempts="$(wait_attempts_for "$wait_ms")"
 worktree_waited=0
 while ! mkdir "$worktree_lock" 2>/dev/null; do
@@ -237,34 +744,12 @@ acquire_slot() {
     # Publish ownership to the EXIT trap before any metadata write. A signal
     # in the tiny initialization window must still remove this fresh lock.
     selected_lock="$lock"
-    selected="$cache_root/build/slot-$candidate"
+    selected="$candidate"
     selected_slot="$candidate"
     selected_lock_acquired=true
     printf '%s\n' "$$" > "$lock/pid"
     process_start_token "$$" > "$lock/start"
     printf '%s\n' "$workspace_root" > "$lock/workspace"
-    slot_identity="$cache_root/affinity/slot-$candidate.owner"
-    previous_workspace="$(cat "$slot_identity" 2>/dev/null || true)"
-    # Cargo's intermediate graph is only reusable within one canonical
-    # worktree. Cross-worktree reuse is correctness-unsafe: an old rmeta can
-    # satisfy a path-compatible crate while omitting the current public API.
-    # sccache remains the cross-worktree reuse layer; reset the mutable Cargo
-    # graph before handing this slot to a different workspace.
-    if [ -e "$selected" ] && { [ -z "$previous_workspace" ] || [ "$previous_workspace" != "$workspace_root" ]; }; then
-      if ! find "$selected" -depth -delete 2>/dev/null; then
-        echo "nudox cargo: unable to reset build slot $candidate" >&2
-        rm -f "$lock/pid" "$lock/start" "$lock/workspace"
-        rmdir "$lock" 2>/dev/null || true
-        selected=""
-        selected_lock=""
-        selected_slot=""
-        selected_lock_acquired=false
-        return 75
-      fi
-    fi
-    affinity_tmp="$slot_identity.tmp.$$"
-    printf '%s\n' "$workspace_root" > "$affinity_tmp"
-    mv -f "$affinity_tmp" "$slot_identity"
     return 0
   fi
   recover_stale_lock "$lock" || true
@@ -308,20 +793,123 @@ while [ -z "$selected" ]; do
   slot_waited="$((slot_waited + 1))"
 done
 
-if [ -n "$selected_slot" ]; then
+if [ -n "$selected_slot" ] && [ -z "$explicit_build_dir" ]; then
   affinity_tmp="$affinity_file.tmp.$$"
   printf '%s\n' "$selected_slot" > "$affinity_tmp"
   mv -f "$affinity_tmp" "$affinity_file"
-elif [ -z "$selected" ]; then
+fi
+if [ -z "$selected_slot" ]; then
   # The warm-lane count is also the host-wide compiler concurrency ceiling.
   # Never manufacture an overflow lane: it defeats the memory bound precisely
   # when contention is highest. A caller may retry after a lease is released.
   echo "nudox cargo: all $slot_count build slots are busy; waited ${slot_wait_ms}ms" >&2
   exit 75
 elif [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
-  echo "nudox cargo: using warm build slot $selected" >&2
+  if [ -n "$explicit_build_dir" ]; then
+    echo "nudox cargo: using host capacity permit $selected_slot" >&2
+  else
+    echo "nudox cargo: using warm build slot $selected_slot" >&2
+  fi
 fi
+
+if [ -n "$explicit_build_dir" ]; then
+  select_explicit_graph || exit "$?"
+  if [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
+    echo "nudox cargo: using explicit role graph slot $selected_graph_slot" >&2
+  fi
+else
+  selected="$cache_root/build/slot-$selected_slot"
+  slot_identity="$cache_root/affinity/slot-$selected_slot.owner"
+  previous_workspace="$(cat "$slot_identity" 2>/dev/null || true)"
+  if ! claim_mutable_build_dir "$selected" "$previous_workspace"; then exit 73; fi
+  affinity_tmp="$slot_identity.tmp.$$"
+  printf '%s\n' "$workspace_root" > "$affinity_tmp"
+  mv -f "$affinity_tmp" "$slot_identity"
+fi
+
+if [ -n "$explicit_target_dir" ]; then
+  CARGO_TARGET_DIR="$(claim_explicit_target_dir "$explicit_target_dir")" || exit 73
+else
+  if [ -L "$CARGO_TARGET_DIR" ]; then
+    echo "nudox cargo: refusing symlinked workspace target directory" >&2
+    exit 73
+  fi
+  mkdir -p "$CARGO_TARGET_DIR" || exit 73
+  target_stamp="$CARGO_TARGET_DIR/.nudox-worktree-root"
+  if [ -L "$target_stamp" ]; then
+    echo "nudox cargo: refusing symlinked workspace target stamp" >&2
+    exit 73
+  fi
+  if [ -f "$target_stamp" ]; then
+    if [ "$(cat "$target_stamp" 2>/dev/null || true)" != "$workspace_root" ]; then
+      echo "nudox cargo: workspace target directory belongs to another worktree" >&2
+      exit 73
+    fi
+  elif ! (set -C; printf '%s\n' "$workspace_root" > "$target_stamp") 2>/dev/null; then
+    if [ "$(cat "$target_stamp" 2>/dev/null || true)" != "$workspace_root" ]; then
+      echo "nudox cargo: unable to stamp workspace target directory" >&2
+      exit 73
+    fi
+  fi
+fi
+
 export CARGO_BUILD_BUILD_DIR="$selected"
+export CARGO_TARGET_DIR
+
+# Cargo otherwise resolves rustc and rustdoc from PATH. The wrapped Cargo
+# executable has a pinned toolchain available as @rustc@; use it by default so
+# provenance cannot claim that compiler while Cargo silently runs an ambient
+# one. Preserve explicit caller overrides, but resolve each to one absolute
+# executable before Cargo observes it; provenance records the selected RUSTC
+# path and version.
+resolve_rust_tool() {
+  tool_name="$1"
+  tool_value="$2"
+  case "$tool_value" in
+    */*)
+      case "$tool_value" in
+        /*) resolved_tool="$tool_value" ;;
+        *) resolved_tool="$PWD/$tool_value" ;;
+      esac
+      ;;
+    *) resolved_tool="$(command -v "$tool_value" 2>/dev/null || true)" ;;
+  esac
+  case "$resolved_tool" in
+    /*) ;;
+    *)
+      echo "nudox cargo: cannot resolve $tool_name to an absolute executable" >&2
+      return 1
+      ;;
+  esac
+  if [ ! -f "$resolved_tool" ] || [ ! -x "$resolved_tool" ]; then
+    echo "nudox cargo: $tool_name is not an executable file: $resolved_tool" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved_tool"
+}
+
+RUSTC="$(resolve_rust_tool RUSTC "${RUSTC:-@rustc@}")" || exit 64
+export RUSTC
+if [ -n "${RUSTDOC:-}" ]; then
+  RUSTDOC="$(resolve_rust_tool RUSTDOC "$RUSTDOC")" || exit 64
+else
+  RUSTDOC="${RUSTC%/*}/rustdoc"
+  if [ ! -f "$RUSTDOC" ] || [ ! -x "$RUSTDOC" ]; then
+    echo "nudox cargo: selected rustc has no executable sibling rustdoc: $RUSTDOC" >&2
+    exit 64
+  fi
+fi
+export RUSTDOC
+
+if provenance_start="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ begin \
+  "$workspace_root" "$CARGO_BUILD_BUILD_DIR" "$CARGO_TARGET_DIR" "$0" \
+  "@wrapper_source@" "@cargo@" "$RUSTC" "$RUSTDOC" "$RUSTC_WRAPPER" "$@")"; then
+  :
+else
+  provenance_status="$?"
+  echo "nudox cargo: refusing Cargo invocation; exact toolchain provenance could not start (status $provenance_status)" >&2
+  exit 74
+fi
 
 # Cargo runs under the already-installed signal traps. A normal exit is
 # reaped below; a cancellation handler reaps the child before EXIT cleanup.
@@ -340,4 +928,8 @@ else
   cargo_status="$?"
 fi
 cargo_pid=""
+finish_provenance "$cargo_status"
+if [ "$provenance_identity_refused" = true ]; then
+  exit 74
+fi
 exit "$cargo_status"

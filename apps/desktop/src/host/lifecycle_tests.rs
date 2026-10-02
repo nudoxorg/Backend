@@ -93,6 +93,7 @@ fn left_as_it_was(parent: &Path) -> (AppSnapshot, LocalProjectId, LocalProjectId
         snapshot = go(&snapshot, intent);
     }
     let page = Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new("/fixture/present").expect("package id"),
         lane: PackageLane::Overview,
@@ -271,7 +272,6 @@ fn window_before_its_owner(cx: &mut TestAppContext, gate: &OwnerGate) -> (UiEnti
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
-        crate::shell::bodies::graph::install_test_fixture(cx);
     });
     let snapshot = AppSnapshot::empty(VersionedRoot::unserved());
     let runtime = DesktopRuntime::new(snapshot, EngineActor::start(WaitsForOwner(gate.clone()), 8).expect("actor"));

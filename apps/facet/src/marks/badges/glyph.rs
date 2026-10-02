@@ -10,7 +10,10 @@
 //! double-blend).
 
 use crate::paint::geom::{Fill, Poly, Pt, pt};
-use gpui::{Bounds, Hsla, IntoElement, Pixels, Styled, Window, canvas, px};
+use gpui::{
+    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    Pixels, Refineable, Style, StyleRefinement, Styled, Window, px,
+};
 
 /// Every glyph a badge or a chip can wear.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -341,9 +344,81 @@ pub fn paint(window: &mut Window, bounds: Bounds<Pixels>, glyph: Glyph, color: H
 }
 
 /// A glyph as an element, `size` px square, in `color`.
-pub fn glyph(glyph: Glyph, size: f32, color: impl Into<Hsla>) -> impl IntoElement {
-    let color = color.into();
-    canvas(|_, _, _| {}, move |bounds, (), window, _| paint(window, bounds, glyph, color))
+pub fn glyph(glyph: Glyph, size: f32, color: impl Into<Hsla>) -> impl IntoElement + Styled {
+    GlyphElement { glyph, size, color: color.into(), style: StyleRefinement::default() }
         .flex_none()
         .size(px(size))
+}
+
+struct GlyphElement {
+    glyph: Glyph,
+    size: f32,
+    color: Hsla,
+    style: StyleRefinement,
+}
+
+impl Styled for GlyphElement {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for GlyphElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for GlyphElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = px(self.size).into();
+        style.size.height = px(self.size).into();
+        style.flex_shrink = 0.0;
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        paint(window, bounds, self.glyph, self.color);
+    }
 }
