@@ -23,7 +23,8 @@ use crate::tokens::{Face, Palette, TypeRole, Voice, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Bounds, Element, ElementId, Entity, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
-    ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled, Window, div, px,
+    ParentElement, Pixels, Refineable, RenderOnce, SharedString, StatefulInteractiveElement, Style, StyleRefinement, Styled,
+    Window, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;

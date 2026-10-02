@@ -2548,7 +2548,7 @@ fn row_view(
         }
         if let Some(source) = &release.source_detail {
             detail = detail.child(words(
-                child(child(id, release.key.clone()), "source-detail"),
+                child(&child(id, release.key.clone()), "source-detail"),
                 source.clone(),
                 ty::CAPTION,
                 palette.ink3,
