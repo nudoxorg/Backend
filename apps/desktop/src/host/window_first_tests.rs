@@ -447,6 +447,10 @@ mod launch_snapshot {
     struct Latch(Arc<(Mutex<(bool, Vec<PageKey>)>, Condvar)>);
 
     impl Latch {
+        fn close(&self) {
+            self.0 .0.lock().unwrap_or_else(PoisonError::into_inner).0 = false;
+        }
+
         fn open(&self) {
             let (state, opened) = &*self.0;
             state.lock().unwrap_or_else(PoisonError::into_inner).0 = true;
@@ -468,7 +472,13 @@ mod launch_snapshot {
             let (state, opened) = &*self.1 .0;
             let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
             while !state.0 {
-                state = opened.wait(state).unwrap_or_else(PoisonError::into_inner);
+                if context.cancel.is_cancelled() {
+                    return Err(ReadFailure::Cancelled);
+                }
+                state = opened
+                    .wait_timeout(state, Duration::from_millis(5))
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
             }
             state.1.push(match request {
                 ReadRequest::Symbol(id) => PageKey::Symbol(id.clone()),
@@ -651,6 +661,18 @@ mod launch_snapshot {
         );
         assert_eq!(opened.submitted(), 0, "painted from the snapshot, not from a read");
         let before = opened.stamps();
+        opened.graph.store.read_with(opened.cx, |store, _| {
+            assert!(
+                store.snapshot().key().is_unserved(),
+                "this exercises the actual unserved boot"
+            );
+            let symbol = store.symbol(&symbol(NAME));
+            let package = store.package(&package());
+            assert!(symbol.value_root().is_some_and(VersionedRoot::is_unserved));
+            assert!(package.value_root().is_some_and(VersionedRoot::is_unserved));
+            assert!(!crate::core::admit_resource(&symbol, root, true).allows_actions());
+            assert!(!crate::core::admit_resource(&package, root, true).allows_actions());
+        });
 
         // The owner serves the root the pages were read at: they are current
         // as they are, and nothing is fetched or redrawn.
@@ -682,6 +704,95 @@ mod launch_snapshot {
             (0, 0),
             "and nothing woke for it"
         );
+
+        let captured = opened.graph.store.read_with(opened.cx, |store, _| {
+            assert!(
+                crate::core::admit_resource(
+                    &store.symbol(&symbol(NAME)),
+                    root,
+                    store.owner_serving()
+                )
+                .allows_actions()
+            );
+            assert!(
+                crate::core::admit_resource(
+                    &store.package(&package()),
+                    root,
+                    store.owner_serving()
+                )
+                .allows_actions()
+            );
+            store.current_owner_attachment().expect("first real owner")
+        });
+        opened.events.borrow_mut().clear();
+        opened.latch.close();
+        // No UI turn between publications: the watcher sees only the second
+        // Ready at the same producer root, not the intervening Starting.
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready {
+            key: root,
+            mode: ServiceMode::Attached,
+        });
+        wait::until("the replacement owner was admitted", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                store.owner_serving() && !store.admits_owner_attachment(&captured)
+            })
+        });
+        opened.graph.store.read_with(opened.cx, |store, _| {
+            for key in [symbol_key(), package_key(), PageKey::Orbit] {
+                assert!(store.pages().is_owner_read_revoked(&key));
+            }
+            let symbol = store.symbol(&symbol(NAME));
+            let package = store.package(&package());
+            let symbol = crate::core::admit_resource(&symbol, root, store.owner_serving());
+            let package = crate::core::admit_resource(&package, root, store.owner_serving());
+            assert!(!symbol.allows_actions() && symbol.retained_value().is_some());
+            assert!(!package.allows_actions() && package.retained_value().is_some());
+        });
+        assert_ne!(opened.stamps().0, before.0);
+        assert_ne!(opened.stamps().1, before.1);
+        assert!(opened.events_for(&symbol_key()) > 0);
+        assert!(opened.events_for(&package_key()) > 0);
+        assert!(
+            opened.events_for(&PageKey::Orbit) > 0,
+            "inactive retained reads publish revocation too"
+        );
+        assert!(
+            !opened.latch.asked().contains(&package_key()),
+            "inactive Package renewal stays lazy"
+        );
+        opened.latch.open();
+        wait::until("the visible symbol was renewed", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                crate::core::admit_resource(
+                    &store.symbol(&symbol(NAME)),
+                    root,
+                    store.owner_serving(),
+                )
+                .allows_actions()
+            })
+        });
+        opened
+            .graph
+            .store
+            .update(opened.cx, |store, cx| store.ensure(package_key(), cx));
+        wait::until("the lazily requested Package was renewed", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                crate::core::admit_resource(&store.package(&package()), root, store.owner_serving())
+                    .allows_actions()
+            })
+        });
+        assert!(opened.latch.asked().contains(&symbol_key()));
+        assert!(opened.latch.asked().contains(&package_key()));
+        opened.graph.store.read_with(opened.cx, |store, _| {
+            assert!(
+                !store.admits_owner_attachment(&captured),
+                "old callbacks stay fenced after renewed bytes land"
+            );
+        });
     }
 
     /// Answers the owner at `now` and lets its root, project and mode be

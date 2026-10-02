@@ -890,10 +890,14 @@ impl DataStore {
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
         let answer = self.owner.prepare_answer();
-        if answer.attachment_changed {
+        if answer.replaces_served_owner {
             // The watcher may see only the new Ready. Completed bytes from
             // the previous same-root attachment still need a fresh read.
             self.revoke_owner_reads(cx);
+        } else if answer.attachment_changed {
+            // A first owner can confirm launch seeds without fetching or
+            // redrawing them. Only obsolete generations need cancellation.
+            self.revoke_inflight(cx);
         }
         let mut keys = self.owner.answered(answer);
         keys.extend(self.focused.iter().cloned());
