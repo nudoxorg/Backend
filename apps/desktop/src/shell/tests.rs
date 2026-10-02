@@ -144,7 +144,7 @@ pub(crate) fn dossier() -> PackageDossier {
             source: RecordSource::LocalManifest,
             name: Arc::from("present"),
             version: Known::Known(Arc::from("0.4.2")),
-            ecosystem: Known::Known(Arc::from("cargo")),
+            ecosystem: Known::Known(backend_library::RegistryEcosystem::Cargo),
             standing: Known::Unknown(unknown(GapReason::LocalProject)),
             downloads: Known::Unknown(unknown(GapReason::LocalProject)),
             bytes: Known::Unknown(unknown(GapReason::LocalProject)),

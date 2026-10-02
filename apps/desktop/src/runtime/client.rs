@@ -505,7 +505,7 @@ pub(crate) fn package_summary(
         coordinate,
         name: Arc::from(record.name.as_str()),
         version: Arc::from(record.version.as_str()),
-        ecosystem: Arc::from(format!("{:?}", record.ecosystem)),
+        ecosystem: Arc::from(record.ecosystem.as_str()),
         bytes: record.bytes,
         standing: Arc::from(format!("{:?}", record.standing)),
         downloads: Arc::from(downloads),

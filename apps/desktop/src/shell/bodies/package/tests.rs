@@ -251,6 +251,54 @@ fn a_page_whose_source_is_missing_says_so_instead_of_inventing_facts(cx: &mut Te
     );
 }
 
+struct NonCargoPackage;
+
+impl crate::runtime::reads::PageReader for NonCargoPackage {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        use crate::model::pages::{Known, PageValue};
+        if matches!(request, crate::runtime::reads::ReadRequest::Package(_)) {
+            let mut about = dossier();
+            if let Known::Known(record) = &mut about.record {
+                record.ecosystem = Known::Known(backend_library::RegistryEcosystem::Nuget);
+                record.advisory = Known::unknown(
+                    crate::model::pages::GapReason::NotRecorded,
+                    "no advisory coverage for this release",
+                );
+            }
+            return Ok(PageValue::Package(about));
+        }
+        crate::shell::tests::Fixture.read(request, context)
+    }
+}
+
+#[gpui::test]
+fn a_non_cargo_package_does_not_borrow_cached_cargo_source_facts(cx: &mut TestAppContext) {
+    use crate::runtime::reads::ReadPool;
+
+    let pool = ReadPool::start(1, |_| NonCargoPackage).expect("page reader");
+    let mut rig = crate::shell::tests::rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    let facts = source_facts::read(&krate(), &std::collections::HashMap::new(), None)
+        .expect("incidental Cargo source");
+    rig.cx.update(|_, cx| {
+        facet::probe::enable(cx);
+        source_facts::install(&package(), Reading::Ready(Arc::new(facts)), cx);
+    });
+    rig.go(Intent::Navigate(package_route()));
+    let ledger = painted(&mut rig);
+    assert!(said(&ledger, "heads-words").iter().any(|word|
+        word.contains("Source analysis is unavailable for this package ecosystem")));
+    assert!(!ledger.texts.iter().any(|text|
+        text.content.contains("Rust 2021") || text.content.contains("Ada Lovelace")
+            || text.content.contains("RustSec")),
+        "an incidental Cargo.toml cannot create Rust byline or source facts");
+    assert_eq!(super::data::lang_of(backend_present::Language::CSharp), facet::marks::badges::Lang::Csharp);
+    assert_eq!(super::data::lang_of(backend_present::Language::Unknown), facet::marks::badges::Lang::Unknown);
+}
+
 #[gpui::test]
 fn the_outline_is_the_territory_its_modules_are_regions_and_a_module_opens_into_cards_that_say_badges_never_code(
     cx: &mut TestAppContext,
