@@ -355,6 +355,32 @@ impl LocalSubscriptionTransport {
         self.lease_request(LocalSubscriptionOperation::Cancel { lease })
     }
 
+    /// Best-effort terminal release on this exact socket. Never reconnects
+    /// or rotates a connection during teardown. The two socket waits each
+    /// use the caller's short timeout; native configuration is not preemptible.
+    pub(crate) fn cancel_lease_current(
+        &mut self,
+        lease: LocalSubscriptionId,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.client.stream().set_read_timeout(Some(timeout))
+            .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)))
+            .map_err(|error| ClientError::Io(error.to_string()))?;
+        let request_id = self.next_request_id;
+        self.next_request_id = request_id.checked_add(1)
+            .ok_or_else(|| ClientError::Protocol("subscription request id exhausted".into()))?;
+        let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+            request_id,
+            operation: LocalSubscriptionOperation::Cancel { lease },
+        });
+        match self.client.request(&request).map_err(map_control_error)? {
+            LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                request_id: observed, lease: acknowledged,
+            }) if observed == request_id && acknowledged == lease => Ok(()),
+            _ => Err(ClientError::Protocol("exact-socket lease cancellation was not acknowledged".into())),
+        }
+    }
+
     /// Requests one bounded snapshot page for a reset descriptor. The page
     /// token is empty for the first page and must otherwise be copied exactly
     /// from the preceding [`LocalSubscriptionResponse::SnapshotPage`] reply.

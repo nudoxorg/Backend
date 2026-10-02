@@ -103,7 +103,10 @@ impl LocalSubscriptionTransport {
             cursor,
             root,
         };
-        self.admit_publications(&mut state, response, cancelled)?;
+        if let Err(error) = self.admit_publications(&mut state, response, cancelled) {
+            let _ = self.cancel_publications_current(&state);
+            return Err(error);
+        }
         Ok(state)
     }
 
@@ -145,6 +148,19 @@ impl LocalSubscriptionTransport {
             LocalSubscriptionResponse::Cancelled { .. } => Ok(()),
             _ => Err(protocol("publication cancellation was not acknowledged")),
         }
+    }
+
+    /// Terminal best-effort release without opening a replacement socket.
+    /// Read and write each have a 50ms socket timeout; this does not promise
+    /// preemption of native syscalls, scheduling, or decoding.
+    /// # Errors
+    /// Returns an I/O or protocol error when this exact socket cannot release
+    /// the lease; the caller must not assume successful producer cleanup.
+    pub fn cancel_publications_current(
+        &mut self,
+        state: &PublicationLease,
+    ) -> Result<(), ClientError> {
+        self.cancel_lease_current(state.lease, Duration::from_millis(50))
     }
 
     fn admit_publications(
@@ -587,6 +603,41 @@ mod tests {
             excessive.page(MAX_RESET_ROWS, started).expect("page cap");
         }
         assert!(excessive.page(MAX_RESET_ROWS, started).is_err());
+    }
+
+    #[test]
+    fn terminal_cancel_uses_the_exact_existing_socket() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let state = PublicationLease {
+            lease,
+            cursor,
+            root,
+        };
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, operation) = request(stream);
+            assert!(
+                matches!(operation, LocalSubscriptionOperation::Cancel { lease: sent } if sent == lease)
+            );
+            reply(
+                stream,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                    request_id,
+                    lease,
+                }),
+            );
+        });
+        transport
+            .cancel_publications_current(&state)
+            .expect("terminal cancel");
+        owner.join().expect("owner");
+        // A socket already interrupted by cancellation fails promptly; it
+        // must never dial an endpoint to perform terminal cleanup.
+        let (mut transport, owner) = pair(|_| {});
+        transport.interrupt_handle().expect("socket").interrupt();
+        assert!(transport.cancel_publications_current(&state).is_err());
+        owner.join().expect("owner");
     }
 
     #[test]

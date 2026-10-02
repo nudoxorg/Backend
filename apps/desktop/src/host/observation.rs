@@ -168,8 +168,12 @@ pub(super) fn serve(gate: &OwnerGate, endpoint: &Path) -> bool {
             break;
         }
     }
-    // A cancelled exact socket is dropped, never used for another blocking
-    // teardown call. Finite producer expiry bounds its residual retention.
+    // Worker-only terminal Cancel uses the exact retained socket without
+    // reconnecting, with short read/write limits. An interrupted socket may
+    // reject it; independent producer lease expiry must reclaim that case.
+    if let (Some(transport), Some(state)) = (&mut connection, &lease) {
+        let _ = transport.cancel_publications_current(state);
+    }
     drop(connection);
     gate.await_close_or_restart()
 }
