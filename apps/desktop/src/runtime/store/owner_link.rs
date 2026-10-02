@@ -57,6 +57,27 @@ impl OwnerLink {
         self.phase == OwnerPhase::Serving
     }
 
+    /// Paint checks the gate itself as well as the UI-observed phase: owner
+    /// publications can precede the watcher or coalesce into a same-root Ready.
+    pub(super) fn is_current_serving(&self) -> bool {
+        self.is_serving()
+            && !self.attachment_changed()
+            && self.gate.as_ref().is_none_or(|gate| matches!(gate.state(), OwnerState::Ready { .. }))
+    }
+
+    pub(super) fn current_fault(&self) -> Option<OwnerFault> {
+        if let Some(gate) = &self.gate {
+            return match gate.state() {
+                OwnerState::Failed(fault) => Some(fault),
+                OwnerState::Starting | OwnerState::Ready { .. } => None,
+            };
+        }
+        match &self.phase {
+            OwnerPhase::Failed(fault) => Some(fault.clone()),
+            OwnerPhase::Serving | OwnerPhase::Starting => None,
+        }
+    }
+
     /// A same-root reattachment still changes the authority for in-flight
     /// results. Check the gate directly, since several state publications
     /// can coalesce before the UI watcher runs.
