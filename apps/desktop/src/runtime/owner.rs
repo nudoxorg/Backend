@@ -138,6 +138,8 @@ struct Inner {
     publication: Option<(Arc<backend_library::ViewRoot>, backend_library::Cursor)>,
     observation_cancel: super::actor::CancellationToken,
     observation_suspended: bool,
+    /// Set only by fresh certified admission for this serving attachment.
+    fresh_publication: Option<Epoch>,
     /// The UI watcher, parked until the next publish.
     waker: Option<Waker>,
     /// A restart was asked for (the page's "Try again" after a failure).
@@ -171,6 +173,7 @@ impl OwnerGate {
                 publication: None,
                 observation_cancel: super::actor::CancellationToken::new(),
                 observation_suspended: false,
+                fresh_publication: None,
                 waker: None,
                 restart: false,
                 since: Instant::now(),
@@ -221,7 +224,7 @@ impl OwnerGate {
     /// Reports confirmed endpoint loss only for the attached generation that
     /// issued the failed read. This is atomic with the epoch/state check.
     pub(crate) fn attached_lost_at(&self, expected: Epoch, reason: Arc<str>) -> bool {
-        let waker = {
+        let (waker, cancel) = {
             let mut inner = self.lock();
             if inner.closed || inner.attachment != expected
                 || !matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })
@@ -233,9 +236,11 @@ impl OwnerGate {
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
             inner.publication = None;
-            inner.observation_cancel.cancel();
-            inner.waker.take()
+            let cancel = inner.observation_cancel.clone();
+            (inner.waker.take(), cancel)
         };
+        // Callbacks may reenter the gate; never invoke them under its mutex.
+        cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker { waker.wake(); }
         crate::runtime::trace::mark("owner.failed", OwnerFault::Lost(reason));
@@ -244,7 +249,7 @@ impl OwnerGate {
 
     /// Publishes a new state: wakes every waiting worker and the UI.
     pub fn publish(&self, state: OwnerState) {
-        let waker = {
+        let (waker, cancel) = {
             let mut inner = self.lock();
             if inner.closed {
                 return;
@@ -254,16 +259,19 @@ impl OwnerGate {
                 OwnerState::Failed(fault) => crate::runtime::trace::mark("owner.failed", fault),
                 OwnerState::Starting => crate::runtime::trace::mark("owner.starting", "gate"),
             }
-            inner.observation_cancel.cancel();
+            let cancel = inner.observation_cancel.clone();
             inner.observation_cancel = super::actor::CancellationToken::new();
             inner.publication = None;
             inner.observation_suspended = false;
+            inner.fresh_publication = None;
             inner.state = state;
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            inner.waker.take()
+            (inner.waker.take(), cancel)
         };
+        // Callbacks may reenter the gate; never invoke them under its mutex.
+        cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -358,6 +366,7 @@ impl OwnerGate {
                 return PublicationAdmission::Invalid;
             }
             let changed = !next.same_authority(key);
+            inner.fresh_publication = Some(expected);
             inner.publication = Some((view, cursor));
             if !changed {
                 self.0.changed.notify_all();
@@ -384,7 +393,7 @@ impl OwnerGate {
         &self,
         expected: Epoch,
     ) -> Option<(Epoch, super::actor::CancellationToken)> {
-        let (attachment, cancel, waker) = {
+        let (attachment, cancel, waker, retired) = {
             let mut inner = self.lock();
             if inner.closed
                 || inner.attachment != expected
@@ -392,9 +401,10 @@ impl OwnerGate {
             {
                 return None;
             }
-            inner.observation_cancel.cancel();
+            let retired = inner.observation_cancel.clone();
             inner.observation_cancel = super::actor::CancellationToken::new();
             inner.observation_suspended = true;
+            inner.fresh_publication = None;
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
@@ -402,8 +412,10 @@ impl OwnerGate {
                 inner.attachment,
                 inner.observation_cancel.clone(),
                 inner.waker.take(),
+                retired,
             )
         };
+        retired.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -418,12 +430,13 @@ impl OwnerGate {
             if inner.closed
                 || inner.attachment != expected
                 || !inner.observation_suspended
-                || inner.publication.is_none()
+                || inner.fresh_publication != Some(expected)
                 || !matches!(inner.state, OwnerState::Ready { .. })
             {
                 return false;
             }
             inner.observation_suspended = false;
+            inner.fresh_publication = None;
             inner.epoch = inner.epoch.next();
             inner.waker.take()
         };
@@ -451,7 +464,7 @@ impl OwnerGate {
     pub(crate) fn observation_failed(&self, expected: Epoch, reason: Arc<str>) -> bool {
         // The publication worker is the only writer until this attachment is
         // withdrawn. Use one lock rather than a check followed by `publish`.
-        let waker = {
+        let (waker, cancel) = {
             let mut inner = self.lock();
             if inner.closed
                 || inner.attachment != expected
@@ -460,12 +473,14 @@ impl OwnerGate {
                 return false;
             }
             inner.state = OwnerState::Failed(OwnerFault::Observation(reason));
-            inner.observation_cancel.cancel();
+            let cancel = inner.observation_cancel.clone();
             inner.publication = None;
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            inner.waker.take()
+            (inner.waker.take(), cancel)
         };
+        // Callbacks may reenter the gate; never invoke them under its mutex.
+        cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -583,16 +598,18 @@ impl OwnerGate {
 
     /// The app is quitting: releases the owner thread and every waiter.
     pub fn close(&self) {
-        let waker = {
+        let (waker, cancel) = {
             let mut inner = self.lock();
             inner.closed = true;
-            inner.observation_cancel.cancel();
+            let cancel = inner.observation_cancel.clone();
             inner.publication = None;
             inner.state = OwnerState::Failed(OwnerFault::Closed);
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            inner.waker.take()
+            (inner.waker.take(), cancel)
         };
+        // Callbacks may reenter the gate; never invoke them under its mutex.
+        cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -1005,6 +1022,8 @@ mod publication_tests {
         assert!(pending.is_cancelled());
         assert!(!active.is_cancelled());
         assert_eq!(gate.attached_ready_epoch(), None);
+        assert!(!gate.complete_observation(new), "retained basis is not a fresh admission");
+        assert_eq!(gate.publish_view(new, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
         assert!(gate.complete_observation(new));
         assert_eq!(gate.attached_ready_epoch(), Some(new));
         let (kept, current) = gate.publication(new).expect("same healthy root");
@@ -1017,6 +1036,48 @@ mod publication_tests {
             gate.publish_view(old, root, cursor),
             PublicationAdmission::Withdrawn
         );
+    }
+
+    #[test]
+    fn regressed_replacement_cannot_restore_serving_readiness() {
+        let root = view();
+        let cursor = Cursor::for_view_root_at(&root, 5);
+        let gate = OwnerGate::ready(VersionedRoot::from_revision(7, cursor, 0), ServiceMode::Attached);
+        let old = gate.ready_epoch().expect("attachment");
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
+        let (new, _) = gate.replace_observation(old).expect("replacement");
+        assert!(!gate.complete_observation(new));
+        let regressed = Cursor::for_view_root_at(&root, 4);
+        assert_eq!(gate.publish_view(new, Arc::clone(&root), regressed), PublicationAdmission::Obsolete);
+        assert!(!gate.complete_observation(new));
+        assert_eq!(gate.ready_epoch(), None);
+        assert_eq!(gate.publish_view(new, root, cursor), PublicationAdmission::Admitted);
+        assert!(gate.complete_observation(new));
+        assert!(matches!(gate.state(), OwnerState::Ready { key, .. } if key.producer_epoch() == 7));
+    }
+
+    #[test]
+    fn cancellation_callbacks_can_reenter_the_gate() {
+        let root = view();
+        for transition in 0..5 {
+            let (gate, attachment, _) = attached(&root);
+            let scope = gate.observation_scope(attachment).expect("scope");
+            let reentrant = gate.clone();
+            let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observed = Arc::clone(&called);
+            let _wake = scope.on_cancel(move || {
+                let _ = reentrant.state();
+                observed.store(true, std::sync::atomic::Ordering::Release);
+            });
+            match transition {
+                0 => gate.close(),
+                1 => gate.publish(OwnerState::Starting),
+                2 => { let _ = gate.replace_observation(attachment); }
+                3 => { let _ = gate.observation_failed(attachment, "fixture".into()); }
+                _ => { let _ = gate.attached_lost_at(attachment, "fixture".into()); }
+            }
+            assert!(called.load(std::sync::atomic::Ordering::Acquire));
+        }
     }
 
     #[test]
