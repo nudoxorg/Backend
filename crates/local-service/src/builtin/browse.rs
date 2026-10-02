@@ -4449,7 +4449,28 @@ mod tests {
                     }
                     _ => None,
                 })
-                .expect("Cargo metadata source receipt");
+                .unwrap_or_else(|| {
+                    let row_states = entry
+                        .input
+                        .packages
+                        .iter()
+                        .map(|row| {
+                            let state = match &row.source_authority {
+                                CargoPackageSourceAuthorityStateV1::Admitted(_) => {
+                                    "Admitted".to_owned()
+                                }
+                                CargoPackageSourceAuthorityStateV1::Unavailable(reason) => {
+                                    format!("Unavailable({reason:?})")
+                                }
+                            };
+                            (row.name.as_str(), row.version.as_str(), state)
+                        })
+                        .collect::<Vec<_>>();
+                    panic!(
+                        "Cargo metadata source receipt for {name}; tree source: {:?}; package rows: {row_states:?}",
+                        entry.input.source
+                    )
+                });
             backend_library::CargoPackageSourceRequestV1::from_tree(
                 authority
                     .package_reference()
