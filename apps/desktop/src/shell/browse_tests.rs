@@ -460,6 +460,7 @@ fn find_callback_never_revives_on_a_new_same_route_visit_or_owner_attachment(cx:
     let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
     land_find(&mut rig, &browse, "RelationLabel", true);
     let old_visit = find_callback(&mut rig, &browse);
+    let old_open = super::find_symbol_action(old_visit.clone(), false);
     assert!(rig.cx.update(|_, cx| old_visit.current(cx, |_| Some(())).is_ok()));
 
     rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
@@ -468,13 +469,17 @@ fn find_callback_never_revives_on_a_new_same_route_visit_or_owner_attachment(cx:
     rig.settle();
     land_find(&mut rig, &browse, "RelationLabel", true);
     assert!(rig.cx.update(|_, cx| old_visit.current(cx, |_| Some(())).is_err()), "a renewed identical route revived its old row");
+    rig.cx.update(|window, cx| old_open("/fixture/present::glyph.rs:138::RelationLabel".into(), window, cx));
+    assert_eq!(rig.route(), route, "the painted old visit opened a symbol on the new visit");
     let old_attachment = find_callback(&mut rig, &browse);
+    let old_attachment_open = super::find_symbol_action(old_attachment.clone(), false);
     assert!(rig.cx.update(|_, cx| old_attachment.current(cx, |_| Some(())).is_ok()));
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
     rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
     land_find(&mut rig, &browse, "RelationLabel", true);
     assert!(rig.cx.update(|_, cx| old_attachment.current(cx, |_| Some(())).is_err()),
         "same route/root/content under a new owner attachment revived its old row");
+    rig.cx.update(|window, cx| old_attachment_open("/fixture/present::glyph.rs:138::RelationLabel".into(), window, cx));
     assert_eq!(rig.route(), route);
 }
 
@@ -533,6 +538,7 @@ fn compare_callback_never_revives_on_a_new_same_route_visit(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
     land_compare(&mut rig, &selection, true, true);
     let old = compare_callback(&mut rig, &selection);
+    let old_open = super::compare_package_action(old.clone());
     assert!(rig.cx.update(|_, cx| old.current(cx, |_| Some(())).is_ok()));
     rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.settle();
@@ -540,6 +546,8 @@ fn compare_callback_never_revives_on_a_new_same_route_visit(cx: &mut TestAppCont
     rig.settle();
     land_compare(&mut rig, &selection, true, true);
     assert!(rig.cx.update(|_, cx| old.current(cx, |_| Some(())).is_err()));
+    rig.cx.update(|window, cx| old_open("/fixture/second".into(), window, cx));
+    assert_eq!(rig.route(), route, "the painted old Compare choice opened after a new visit");
     let current = compare_callback(&mut rig, &selection);
     assert!(rig.cx.update(|_, cx| current.current(cx, |_| Some(())).is_ok()));
 }
