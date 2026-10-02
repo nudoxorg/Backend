@@ -27,6 +27,7 @@ use crate::core::LocalProjectId;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub use readme::{ReadmeBlock, ReadmeHeading, ReadmeLink};
@@ -102,8 +103,10 @@ pub enum LocalPackageSource {
 pub enum CargoFailure {
     /// The loader was configured without a Cargo program.
     Disabled,
-    /// Bounded child capture is not yet available on this platform.
+    /// Bounded child capture is not available on this platform.
     UnsupportedCapture,
+    /// Every bounded child-capture slot was in use; Cargo was not started.
+    Busy,
     /// The requesting worker withdrew while Cargo was running.
     Cancelled,
     /// The Cargo program could not be started.
@@ -296,20 +299,22 @@ impl LocalPackageLoader {
     /// canonical package record use [`Self::readme`] instead.
     #[must_use]
     pub fn load(&self, project: &LocalProjectId) -> LocalPackage {
-        self.load_with_cancel(project, &|| false).unwrap_or_else(|| {
-            // The closure above never cancels; keep the ordinary loader's
+        self.load_with_cancel(project, &AtomicBool::new(false)).unwrap_or_else(|| {
+            // The flag above never cancels; keep the ordinary loader's
             // return type total if the cancellation implementation changes.
             manifest::project(project.clone(), &project.path(), CargoFailure::Cancelled)
         })
     }
 
-    /// Loads on a worker and stops its subprocess when that worker closes.
+    /// Loads on a worker and stops its subprocess when that worker closes:
+    /// the bounded capture polls `cancel` and retires Cargo once it is set.
     /// `None` is a withdrawn read and must never be published as package data.
     pub(crate) fn load_with_cancel(
         &self,
         project: &LocalProjectId,
-        cancelled: &dyn Fn() -> bool,
+        cancel: &AtomicBool,
     ) -> Option<LocalPackage> {
+        let cancelled = || cancel.load(Ordering::Acquire);
         if cancelled() { return None; }
         let root = project.path();
         let manifest = root.join("Cargo.toml");
@@ -321,7 +326,7 @@ impl LocalPackageLoader {
         let failure = match self.cargo.as_deref() {
             None => CargoFailure::Disabled,
             Some(program) => {
-                match cargo::metadata(program, &manifest, self.timeout, self.max_output, cancelled) {
+                match cargo::metadata(program, &manifest, self.timeout, self.max_output, cancel) {
                     Ok(metadata) => return (!cancelled()).then(|| cargo::project(project.clone(), &root, metadata)),
                     Err(failure) => failure,
                 }

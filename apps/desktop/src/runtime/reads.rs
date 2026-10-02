@@ -1744,7 +1744,7 @@ fn compose_package(
             if engine_record {
                 loader.readme(&project)
             } else {
-                loader.load_with_cancel(&project, &|| context.cancel.is_cancelled())
+                loader.load_with_cancel(&project, context.cancel.flag())
             }
         });
     check(context.cancel)?;
