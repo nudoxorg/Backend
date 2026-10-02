@@ -58,7 +58,7 @@ pub(crate) fn launcher(cx: &App) -> Rc<dyn Launch> {
 
 /// VS Code's command-line launcher. On Windows it is the batch file
 /// `code.cmd`, which `std::process::Command` finds on `PATH` only by that name.
-const VS_CODE: &str = if cfg!(windows) { "code.cmd" } else { "code" };
+pub(crate) const VS_CODE: &str = if cfg!(windows) { "code.cmd" } else { "code" };
 
 /// What the platform opens a file with: Finder's `open`, Explorer, or the
 /// desktop's `xdg-open` (Windows has no `xdg-open`).

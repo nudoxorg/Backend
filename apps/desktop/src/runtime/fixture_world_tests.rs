@@ -302,8 +302,11 @@ fn boot_of(route: crate::model::PersistedRoute, hand: Vec<crate::model::persiste
     let state = crate::model::PersistedDesktopState { route, hand, ..crate::model::PersistedDesktopState::default() };
     // Scratch lives under the repo's `.local/` (never /tmp), private (0700), and goes when the test does.
     let id = NEXT.fetch_add(1, Ordering::SeqCst);
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.local/scratch")
+    // The repository root without `..` components: the private walk refuses
+    // parent traversal on Windows.
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("apps/desktop is two below the repository");
+    let root = repository
+        .join(".local/scratch")
         .join(format!("i3-boot-{}-{id}", std::process::id()));
     // Unix sockets have a short sockaddr path limit; keep only this endpoint outside the deep repo path.
     let endpoint =
