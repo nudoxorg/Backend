@@ -471,7 +471,7 @@ impl RenderOnce for Stamp {
         let plate = if live {
             let toggle: crate::controls::button::Handler = Rc::new(move |_, cx| {
                 choice.update(cx, |choice, cx| {
-                    *choice = Some(!choice.unwrap_or(false));
+                    *choice = Some(!choice.unwrap_or(requested));
                     cx.notify();
                 });
             });
