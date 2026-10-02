@@ -15,7 +15,7 @@ derive_more.workspace = true
 fearless_simd = { workspace = true, features = ["libm"] }
 loom = { workspace = true, optional = true }
 strum.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 zerocopy.workspace = true
 
 [target.'cfg(unix)'.dependencies]

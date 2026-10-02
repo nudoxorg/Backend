@@ -830,7 +830,11 @@ mod imp {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(StoreError::UnsafePath);
         }
-        File::open(path).map_err(|error| io_error(&error))
+        // Windows refuses `File::open` on a directory and refuses to flush a
+        // read-only directory handle; the platform seam opens one that can be
+        // flushed, rejects reparse points, and checks the type on that handle.
+        backend_platform::durability::open_directory_nofollow(path)
+            .map_err(|error| io_error(&error))
     }
 
     fn ensure_directory(path: &Path) -> Result<File, StoreError> {
@@ -1059,6 +1063,20 @@ mod imp {
         Ok(())
     }
 
+    /// Marks an object's bytes immutable and flushes them. The read-only
+    /// attribute is the closest portable seal; a hard link to the sealed file
+    /// shares it, so the published name is sealed too.
+    fn seal_immutable_file(file: &File) -> Result<(), StoreError> {
+        let mut permissions = file
+            .metadata()
+            .map_err(|error| io_error(&error))?
+            .permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)
+            .map_err(|error| io_error(&error))?;
+        file.sync_all().map_err(|error| io_error(&error))
+    }
+
     pub(in crate::durable) fn link_stage_object(
         staging: &ArtifactDirectory,
         staging_name: &str,
@@ -1068,17 +1086,13 @@ mod imp {
     ) -> Result<bool, StoreError> {
         let staged_path = staging.path.join(staging_name);
         check_regular(&staged_path, source)?;
-        source
-            .set_permissions(std::fs::Permissions::from_readonly(true))
-            .map_err(|error| io_error(&error))?;
+        seal_immutable_file(source)?;
         source.sync_all().map_err(|error| io_error(&error))?;
         let objects = store.root.join("objects");
         let destination = store.object_path(id);
         match fs::hard_link(&staged_path, &destination) {
             Ok(()) => {
-                fs::File::open(&objects)
-                    .and_then(|directory| directory.sync_all())
-                    .map_err(|error| io_error(&error))?;
+                crate::durable::sync_directory(&objects)?;
                 super::wait_test_link_barrier();
                 if take_test_fault(12) {
                     return Err(StoreError::Io(
@@ -1100,11 +1114,9 @@ mod imp {
         bytes: &[u8],
     ) -> Result<bool, StoreError> {
         let temp_path = staging.path.join(CLOSURE_TEMP_FILE);
-        let temp = create_stage_file(staging, CLOSURE_TEMP_FILE)?;
+        let mut temp = create_stage_file(staging, CLOSURE_TEMP_FILE)?;
         temp.write_all(bytes).map_err(|error| io_error(&error))?;
-        temp.set_permissions(std::fs::Permissions::from_readonly(true))
-            .map_err(|error| io_error(&error))?;
-        temp.sync_all().map_err(|error| io_error(&error))?;
+        seal_immutable_file(&temp)?;
         drop(temp);
         let destination = store.closure_path(id);
         let created = match fs::hard_link(&temp_path, &destination) {
@@ -1128,9 +1140,7 @@ mod imp {
             Err(error) => return Err(io_error(&error)),
         };
         if created {
-            fs::File::open(store.root.join("closures"))
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| io_error(&error))?;
+            crate::durable::sync_directory(&store.root.join("closures"))?;
             super::wait_test_link_barrier();
             if take_test_fault(13) {
                 return Err(StoreError::Io(
