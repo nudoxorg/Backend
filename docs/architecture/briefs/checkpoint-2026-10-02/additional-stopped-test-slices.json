@@ -1,0 +1,22 @@
+{
+  "recorded_utc": "2026-10-02T04:36:38.647644+00:00",
+  "scope": "Supplement to workspaces.json from the final live-agent inventory. Older isolated source/test changes; no runtime acceptance or automatic integration. Neither head is an ancestor of the two code checkpoints.",
+  "workspaces": [
+    {
+      "path": "/private/tmp/backend-sol-fluid-native-repair",
+      "head": "b05c8767a666f7cc6d5fdfbfdc36b6573136b42d",
+      "tree": "6203f31fd7b56271c04f339140ff4e2c43a7ce6b",
+      "branch": "codex/sol-fluid-native-repair",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/private/tmp/sol-ask-mounted-tab",
+      "head": "06fc0204aadf09be553b1e9087f4aafa481ad72b",
+      "tree": "957b3887befc6b680e3637f247d8c140bff83598",
+      "branch": "codex/sol-ask-mounted-tab",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    }
+  ]
+}

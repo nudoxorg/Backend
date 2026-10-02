@@ -1,0 +1,154 @@
+{
+  "recorded_utc": "2026-10-02T04:18:15.318675+00:00",
+  "scope": "Source state before documentation commit. No status implies runtime acceptance. Original cwd has an unresolved unborn canonical branch; not repaired.",
+  "workspaces": [
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-index-compiler-tentpole",
+      "head": "93d7260403d0ba7af44705dd7ac3a9e03ef2a0c1",
+      "tree": "4952d51dcd3c9b529a39615836ccfd7ee88e5b72",
+      "branch": "codex/index-compiler-tentpole",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/private/tmp/nudox-gui-flow-integration-20261002",
+      "head": "3bab7869eb843cbd404ef9fb9a9e152e2ad0d4c1",
+      "tree": "183ba2931a73b7db080713150d33e99d4f7bcac1",
+      "branch": "codex/gui-flow-integration-20261002",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/Users/mileswirht/Downloads/backend",
+      "head": "f9c158af0dfc229c4567bf5cd725c5c0828043fa",
+      "tree": "2f216eaa58b232dd948b127169f5709c31ad79b6",
+      "branch": "canonical",
+      "status_porcelain": "M .config/nix/tools.nix",
+      "cargo_lock_sha256": "4f6a6518190bd58c98b6e72a72d2bbdee8a5759f37fc87d188b92613a528d091"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend",
+      "head": {
+        "exit": 128,
+        "error": "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'"
+      },
+      "tree": {
+        "exit": 128,
+        "error": "fatal: ambiguous argument 'HEAD^{tree}': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'"
+      },
+      "branch": "canonical",
+      "status_porcelain": "?? crates/\n?? docs/\n?? extensions/\n?? implementation/\n?? redesign/",
+      "cargo_lock_sha256": null
+    },
+    {
+      "path": "/private/tmp/backend-cargo-source-observation-boundary",
+      "head": "262b2eef8bd0a59a13d935eae1be56de54c122e5",
+      "tree": "b9dd753aee5ecadb5970ee42ca083652e05cc2d0",
+      "branch": "codex/cargo-source-observation-boundary",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "15e42752ce7a6cc072058cb7f0df77be60e3220be7419d0e38a25508678adc17"
+    },
+    {
+      "path": "/private/tmp/backend-lease-expiry-reclamation",
+      "head": "6a54f65ea65f0c1b4a9e839233c7e2b231ff2ac3",
+      "tree": "8abed53a9b632077512c0da90de0014bfb6fd2b8",
+      "branch": "codex/lease-expiry-reclamation",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "15e42752ce7a6cc072058cb7f0df77be60e3220be7419d0e38a25508678adc17"
+    },
+    {
+      "path": "/private/tmp/sol-owner-publication",
+      "head": "579f24992221b8a5ea0fb0459e60d2b9fc5bdec8",
+      "tree": "1460f0b1b8c4e25948c2bfd7a6da4833906f9882",
+      "branch": "codex/sol-owner-publication",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/private/tmp/backend-sol-find-pending",
+      "head": "90b11cd80807bb864df3d97b844eff386dcae18e",
+      "tree": "7091817a90d9c168ece74d8976a72b29dc164205",
+      "branch": "codex/sol-find-pending",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/private/tmp/backend-joined-live-ingest-readiness",
+      "head": "56ba612cedc4cdcffc008e5742167ce2907325ae",
+      "tree": "f77e7fa7f4fd775e24c50155d371642790c17547",
+      "branch": "codex/real-live-ingest-readiness",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/private/tmp/sol-bounded-read-results-368b",
+      "head": "368bc35b4bfb0b021dc088c4ec0918a3d16b26bc",
+      "tree": "167b9d8474137c90c756af042db1394819b5093c",
+      "branch": "codex/sol-bounded-read-results",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/private/tmp/backend-sol-find-current",
+      "head": "178452bf286e388770d160d488bf00da056e449f",
+      "tree": "a84c40511e08f02875fff5c864c6abbb6e9c94f6",
+      "branch": "codex/sol-find-current",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-sol-cargo-route-dependencies",
+      "head": "b7ec91ed775f1f6a19228109b10fd8aba1e1f56f",
+      "tree": "962569ed543542ecb03a68da346147bda7e13704",
+      "branch": "codex/sol-cargo-route-dependencies",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "15e42752ce7a6cc072058cb7f0df77be60e3220be7419d0e38a25508678adc17"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-sol-cargo-queued-admission",
+      "head": "eefd5b38841ea0ed0a8d92fbd529e50423a0816b",
+      "tree": "9b638de30e14c339e6bc9043042acf42ed50b67e",
+      "branch": "codex/sol-cargo-queued-admission",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "15e42752ce7a6cc072058cb7f0df77be60e3220be7419d0e38a25508678adc17"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-sol-gui-action-coherence",
+      "head": "70e2ee14e44a4721da667b0de81ebb0735e71b30",
+      "tree": "880b0ed766ed88929c2598ed2172e50a739cfb09",
+      "branch": "codex/sol-gui-action-coherence",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-sol-gui-ecosystem-language",
+      "head": "b4d8c790bbd23442cf6a342e3b05ec888d84ae7a",
+      "tree": "7b0a2ceafc30e135cc6216ae42d9b9749f3a7d4d",
+      "branch": "codex/sol-gui-ecosystem-language",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-sol-geometry-clearance",
+      "head": "60a8c11648dbb025bf2e5d84eca0ae140ba9a290",
+      "tree": "d2cfb7022368f06e75dc5a8af9837bf3c1f84452",
+      "branch": "codex/sol-geometry-clearance",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "d747fe5381bb0006934581c41d9985620c142119adff019ac5ba84a9fb5701ad"
+    },
+    {
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-sol-native-navigation",
+      "head": "57d3c82c6c0f5d77127b812a6b79927dacbff620",
+      "tree": "49bcb9e3e0a20aae93db714e48cd4ee86e0424fa",
+      "branch": "codex/sol-native-navigation",
+      "status_porcelain": "",
+      "cargo_lock_sha256": "15e42752ce7a6cc072058cb7f0df77be60e3220be7419d0e38a25508678adc17"
+    }
+  ],
+  "evidence_manifest": {
+    "path": "/Users/mileswirht/Documents/ChatGPT/backend-index-compiler-tentpole/.local/readiness/evidence/20261001-gui-state-and-live-gates/manifest.json",
+    "records": 143,
+    "verified_copied_files": 720,
+    "sha256": "318393e91746dc909dad3f334877d976ad8e501f90f43b02afbbe1f3226b0bcb"
+  }
+}
