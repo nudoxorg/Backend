@@ -8,10 +8,10 @@
 //! parent module's tests.
 
 use super::{
-    BACKOFF, EntryKind, ExistingName, IfUnlinked, NewName, RenameInformation, Sharing,
-    WorkspaceRoot, ensure_private_handle, ensure_regular_file_handle_with, file_from_handle,
-    flush_handle, is_full_control, open_admitted_file, open_relative, rename_information_length,
-    sid_text,
+    BACKOFF, EntryKind, EnumeratedEntry, ExistingName, FileId128, IfUnlinked, NewName,
+    RenameInformation, Sharing, WorkspaceRoot, decode_directory_records, ensure_private_handle,
+    ensure_regular_file_handle_with, enumerate_names, file_from_handle, flush_handle,
+    is_full_control, open_admitted_file, open_relative, rename_information_length, sid_text,
 };
 use std::fs;
 use std::io::{self, Read as _, Write as _};
@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
@@ -1480,6 +1481,189 @@ fn a_short_name_alias_opens_the_entry_it_aliases() {
         .create_file_exclusive(&["LONGFI~1.TXT"])
         .expect_err("the alias is taken");
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+// ---- directory enumeration identity ------------------------------------------------------------
+
+/// Lays out `FILE_ID_EXTD_DIR_INFO` records the way `GetFileInformationByHandleEx` does: each
+/// padded to the record alignment and chained by `NextEntryOffset`, the last one ending the chain.
+fn forged_directory_buffer(records: &[(&str, [u8; 16])], capacity_words: usize) -> Vec<u64> {
+    use std::mem::offset_of;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ID_EXTD_DIR_INFO;
+
+    let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+    let alignment = align_of::<FILE_ID_EXTD_DIR_INFO>();
+    let mut bytes = Vec::<u8>::new();
+    for (index, (name, id)) in records.iter().enumerate() {
+        let wide = name.encode_utf16().collect::<Vec<_>>();
+        let name_bytes = wide.len() * 2;
+        let length = (name_offset + name_bytes).next_multiple_of(alignment);
+        let mut record = vec![0_u8; length];
+        let last = index + 1 == records.len();
+        let next = if last {
+            0
+        } else {
+            u32::try_from(length).expect("record fits")
+        };
+        record[..4].copy_from_slice(&next.to_le_bytes());
+        let id_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileId);
+        record[id_offset..id_offset + 16].copy_from_slice(id);
+        let length_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileNameLength);
+        record[length_offset..length_offset + 4]
+            .copy_from_slice(&u32::try_from(name_bytes).expect("name fits").to_le_bytes());
+        for (unit, chunk) in wide.iter().zip(record[name_offset..].chunks_exact_mut(2)) {
+            chunk.copy_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&record);
+    }
+    let mut buffer = vec![0_u64; capacity_words.max(bytes.len().div_ceil(8))];
+    for (word, chunk) in buffer.iter_mut().zip(bytes.chunks(8)) {
+        let mut padded = [0_u8; 8];
+        padded[..chunk.len()].copy_from_slice(chunk);
+        *word = u64::from_le_bytes(padded);
+    }
+    buffer
+}
+
+fn decode(buffer: &[u64], maximum: usize) -> io::Result<Vec<EnumeratedEntry>> {
+    let mut names = Vec::new();
+    decode_directory_records(buffer, &mut names, maximum)?;
+    Ok(names)
+}
+
+#[test]
+fn enumerated_ids_keep_all_128_bits_so_objects_that_differ_above_the_low_half_stay_distinct() {
+    // ReFS ids use the whole 128 bits. These two differ only above the low eight bytes, which is
+    // all an eight-byte comparison looks at.
+    let mut first = [0_u8; 16];
+    first[0] = 7;
+    let mut second = first;
+    second[15] = 0x40;
+    assert_eq!(
+        first[..8],
+        second[..8],
+        "the fixture hides the difference from a low-half test"
+    );
+
+    let buffer = forged_directory_buffer(&[("first", first), ("second", second)], 64);
+    let entries = decode(&buffer, 10).expect("well-formed records decode");
+    assert_eq!(
+        entries,
+        [
+            EnumeratedEntry {
+                name: "first".to_owned(),
+                id: FileId128(first)
+            },
+            EnumeratedEntry {
+                name: "second".to_owned(),
+                id: FileId128(second)
+            },
+        ]
+    );
+    assert_ne!(entries[0].id, entries[1].id);
+}
+
+#[test]
+fn dot_entries_are_skipped_and_the_entry_limit_is_enforced() {
+    let id = [3_u8; 16];
+    let buffer = forged_directory_buffer(&[(".", id), ("..", id), ("a", id), ("b", id)], 64);
+    let names = decode(&buffer, 2)
+        .expect("two real entries fit a limit of two")
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["a", "b"]);
+    let error = decode(&buffer, 1).expect_err("a third entry exceeds the limit");
+    assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
+}
+
+#[test]
+fn malformed_enumeration_buffers_are_refused_without_reading_out_of_bounds() {
+    use std::mem::offset_of;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ID_EXTD_DIR_INFO;
+
+    let id = [1_u8; 16];
+    let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+    let length_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileNameLength);
+    let word = |buffer: &mut Vec<u64>, byte: usize, value: u32| {
+        let index = byte / 8;
+        let shift = (byte % 8) * 8;
+        buffer[index] = (buffer[index] & !(0xffff_ffff_u64 << shift)) | (u64::from(value) << shift);
+    };
+
+    // A name that claims to run past the end of the buffer.
+    let mut buffer = forged_directory_buffer(&[("a", id)], 8);
+    word(&mut buffer, length_offset, 4096);
+    assert_eq!(
+        decode(&buffer, 10).expect_err("oversized name").kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    // A name length that is not a whole number of UTF-16 units.
+    let mut buffer = forged_directory_buffer(&[("ab", id)], 8);
+    word(&mut buffer, length_offset, 3);
+    assert_eq!(
+        decode(&buffer, 10).expect_err("odd name length").kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    // A name that is not valid UTF-16 (a lone surrogate).
+    let mut buffer = forged_directory_buffer(&[("a", id)], 8);
+    buffer[name_offset / 8] |= 0xD800_u64 << ((name_offset % 8) * 8);
+    assert_eq!(
+        decode(&buffer, 10).expect_err("lone surrogate").kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    // Chain offsets that loop, are not aligned, or leave the buffer.
+    for next in [0x1_u32, 0x3, 0x10_0000, u32::MAX] {
+        let mut buffer = forged_directory_buffer(&[("a", id), ("b", id)], 8);
+        word(&mut buffer, 0, next);
+        assert_eq!(
+            decode(&buffer, 10).expect_err("bad chain offset").kind(),
+            std::io::ErrorKind::InvalidData,
+            "next entry offset {next:#x}"
+        );
+    }
+
+    // A buffer too small to hold even one record header.
+    assert_eq!(
+        decode(&[0_u64; 2], 10)
+            .expect_err("a truncated header")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn a_real_enumeration_reports_the_ids_its_handles_report() {
+    let (root, path) = private_root("enumeration-ids");
+    for name in ["alpha", "beta", "gamma.txt"] {
+        put(&root, &[name], name.as_bytes());
+    }
+    root.create_child_dir_exclusive("delta")
+        .expect("create a directory");
+
+    let entries = enumerate_names(root.handle(), 100).expect("enumerate");
+    assert_eq!(entries.len(), 4);
+    for entry in entries {
+        let handle = open_relative(
+            root.handle(),
+            ExistingName::parse(&entry.name).expect("a valid name"),
+            FILE_READ_ATTRIBUTES,
+            0,
+            Sharing::Transient,
+        )
+        .expect("open an enumerated child");
+        assert_eq!(
+            FileId128::of_handle(handle.as_raw_handle()).expect("handle id"),
+            entry.id,
+            "{}",
+            entry.name
+        );
+    }
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }

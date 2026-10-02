@@ -43,11 +43,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO,
+    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_EXTD_DIR_INFO,
     FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_READ_DATA, FILE_STANDARD_INFO, FILE_TRAVERSE, FILE_WRITE_DATA, FileAttributeTagInfo,
-    FileDispositionInfo, FileDispositionInfoEx, FileIdBothDirectoryInfo,
-    FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
+    FileDispositionInfo, FileDispositionInfoEx, FileIdExtdDirectoryInfo,
+    FileIdExtdDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
     GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
@@ -744,7 +744,7 @@ impl WorkspaceRoot {
         let directory = self.reopen_current_directory(purpose)?;
         let names = enumerate_names(directory.handle(), maximum)?;
         let mut entries = Vec::with_capacity(names.len());
-        for (name, enumerated_file_id) in names {
+        for EnumeratedEntry { name, id } in names {
             let handle = open_relative(
                 directory.handle(),
                 ExistingName::parse(&name)?,
@@ -766,9 +766,7 @@ impl WorkspaceRoot {
             if standard.NumberOfLinks != 1 {
                 return Err(invalid_data("workspace child has multiple hard links"));
             }
-            if identity_info(handle.as_raw_handle())?.FileId.Identifier[..8]
-                != enumerated_file_id.to_le_bytes()
-            {
+            if FileId128::of_handle(handle.as_raw_handle())? != id {
                 return Err(invalid_data(
                     "workspace entry changed during directory enumeration",
                 ));
@@ -1858,15 +1856,36 @@ fn identity_info(handle: *mut c_void) -> io::Result<FILE_ID_INFO> {
     }
 }
 
-fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i64)>> {
+/// The 128-bit object id NTFS and ReFS report for a file or directory
+/// (`FILE_ID_128`). ReFS ids use all 128 bits, so comparing only the low eight
+/// bytes would let two distinct objects look identical; NTFS ids occupy the low
+/// eight bytes and leave the rest zero, which compares exactly the same way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileId128([u8; 16]);
+
+impl FileId128 {
+    /// The id of the object an open handle holds.
+    fn of_handle(handle: *mut c_void) -> io::Result<Self> {
+        Ok(Self(identity_info(handle)?.FileId.Identifier))
+    }
+}
+
+/// One directory entry as enumeration reported it.
+#[derive(Debug, Eq, PartialEq)]
+struct EnumeratedEntry {
+    name: String,
+    id: FileId128,
+}
+
+fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<EnumeratedEntry>> {
     let mut buffer = vec![0_u64; 8192];
     let mut restart = true;
     let mut names = Vec::new();
     loop {
         let class: FILE_INFO_BY_HANDLE_CLASS = if restart {
-            FileIdBothDirectoryRestartInfo
+            FileIdExtdDirectoryRestartInfo
         } else {
-            FileIdBothDirectoryInfo
+            FileIdExtdDirectoryInfo
         };
         // SAFETY: `handle` is a live directory handle and `buffer` is aligned
         // writable storage passed with its exact byte capacity.
@@ -1886,76 +1905,91 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i6
             return Err(error);
         }
         restart = false;
-        let bytes = buffer.len() * size_of::<u64>();
-        let mut offset = 0usize;
-        loop {
-            if offset % align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
-                || offset
-                    .checked_add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileName))
-                    .is_none_or(|end| end > bytes)
-            {
-                return Err(invalid_data("Windows returned a malformed directory entry"));
-            }
-            // SAFETY: offset bounds are checked and each record is returned by
-            // GetFileInformationByHandleEx in this aligned buffer.
-            let entry = unsafe {
-                &*buffer
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(offset)
-                    .cast::<FILE_ID_BOTH_DIR_INFO>()
-            };
-            let name_bytes = entry.FileNameLength as usize;
-            let name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-            let end = offset
-                .checked_add(name_offset)
-                .and_then(|start| start.checked_add(name_bytes))
-                .ok_or_else(|| invalid_data("Windows returned an oversized directory name"))?;
-            if name_bytes % 2 != 0
-                || end > bytes
-                || (buffer.as_ptr() as usize + offset + name_offset) % align_of::<u16>() != 0
-            {
-                return Err(invalid_data(
-                    "Windows returned an invalid UTF-16 directory name",
-                ));
-            }
-            // SAFETY: validated byte length and aligned pointer within the result buffer.
-            let wide = unsafe {
-                std::slice::from_raw_parts(
-                    buffer
-                        .as_ptr()
-                        .cast::<u8>()
-                        .add(offset + name_offset)
-                        .cast::<u16>(),
-                    name_bytes / 2,
-                )
-            };
-            let name = String::from_utf16(wide)
-                .map_err(|_| invalid_data("workspace child name is not valid UTF-16"))?;
-            if name != "." && name != ".." {
-                if names.len() >= maximum {
-                    return Err(io::Error::new(
-                        io::ErrorKind::FileTooLarge,
-                        "workspace directory entry limit exceeded",
-                    ));
-                }
-                names.push((name, entry.FileId));
-            }
-            if entry.NextEntryOffset == 0 {
-                break;
-            }
-            let next = usize::try_from(entry.NextEntryOffset)
-                .map_err(|_| invalid_data("invalid directory offset"))?;
-            if next == 0
-                || next % align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
-                || offset.checked_add(next).is_none_or(|end| end >= bytes)
-            {
-                return Err(invalid_data("Windows returned an invalid directory offset"));
-            }
-            offset += next;
-        }
+        decode_directory_records(&buffer, &mut names, maximum)?;
     }
     Ok(names)
+}
+
+/// Decodes the `FILE_ID_EXTD_DIR_INFO` records of one enumeration result into
+/// `names`, refusing a malformed chain. `buffer` is the whole result buffer;
+/// the chain ends at the first record whose `NextEntryOffset` is zero.
+fn decode_directory_records(
+    buffer: &[u64],
+    names: &mut Vec<EnumeratedEntry>,
+    maximum: usize,
+) -> io::Result<()> {
+    let bytes = std::mem::size_of_val(buffer);
+    let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+    let mut offset = 0usize;
+    loop {
+        if offset % align_of::<FILE_ID_EXTD_DIR_INFO>() != 0
+            || offset
+                .checked_add(name_offset)
+                .is_none_or(|end| end > bytes)
+        {
+            return Err(invalid_data("Windows returned a malformed directory entry"));
+        }
+        // SAFETY: the offset is aligned for the record and the record header
+        // lies inside `buffer` (checked above); every bit pattern is a valid
+        // `FILE_ID_EXTD_DIR_INFO`, which has only integer fields.
+        let entry = unsafe {
+            &*buffer
+                .as_ptr()
+                .cast::<u8>()
+                .add(offset)
+                .cast::<FILE_ID_EXTD_DIR_INFO>()
+        };
+        let name_bytes = entry.FileNameLength as usize;
+        let end = offset
+            .checked_add(name_offset)
+            .and_then(|start| start.checked_add(name_bytes))
+            .ok_or_else(|| invalid_data("Windows returned an oversized directory name"))?;
+        if name_bytes % 2 != 0
+            || end > bytes
+            || (buffer.as_ptr() as usize + offset + name_offset) % align_of::<u16>() != 0
+        {
+            return Err(invalid_data(
+                "Windows returned an invalid UTF-16 directory name",
+            ));
+        }
+        // SAFETY: validated byte length and aligned pointer within the result buffer.
+        let wide = unsafe {
+            std::slice::from_raw_parts(
+                buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset + name_offset)
+                    .cast::<u16>(),
+                name_bytes / 2,
+            )
+        };
+        let name = String::from_utf16(wide)
+            .map_err(|_| invalid_data("workspace child name is not valid UTF-16"))?;
+        if name != "." && name != ".." {
+            if names.len() >= maximum {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "workspace directory entry limit exceeded",
+                ));
+            }
+            names.push(EnumeratedEntry {
+                name,
+                id: FileId128(entry.FileId.Identifier),
+            });
+        }
+        if entry.NextEntryOffset == 0 {
+            return Ok(());
+        }
+        let next = usize::try_from(entry.NextEntryOffset)
+            .map_err(|_| invalid_data("invalid directory offset"))?;
+        if next == 0
+            || next % align_of::<FILE_ID_EXTD_DIR_INFO>() != 0
+            || offset.checked_add(next).is_none_or(|end| end >= bytes)
+        {
+            return Err(invalid_data("Windows returned an invalid directory offset"));
+        }
+        offset += next;
+    }
 }
 
 fn remove_tree_contents(
@@ -1967,7 +2001,7 @@ fn remove_tree_contents(
         directory.handle.as_raw_handle().cast(),
         maximum_entries.saturating_sub(*visited),
     )?;
-    for (name, enumerated_file_id) in names {
+    for EnumeratedEntry { name, id } in names {
         *visited = (*visited)
             .checked_add(1)
             .filter(|count| *count <= maximum_entries)
@@ -2004,9 +2038,7 @@ fn remove_tree_contents(
                 "refusing to remove a multiply linked workspace child",
             ));
         }
-        if identity_info(handle.as_raw_handle())?.FileId.Identifier[..8]
-            != enumerated_file_id.to_le_bytes()
-        {
+        if FileId128::of_handle(handle.as_raw_handle())? != id {
             return Err(invalid_data(
                 "workspace entry changed during directory enumeration",
             ));
