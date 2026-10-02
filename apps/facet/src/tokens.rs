@@ -1062,6 +1062,12 @@ pub mod fluid {
     /// 262 px at 100 % text (240 on a phone, so one column fills a 320 window).
     pub const FOLIO_CARDS: Grid = Grid::new(ModeId::Folio, Length::new(&[stop(320.0, 240.0), stop(480.0, 262.0)]), 6);
 
+    /// The Features card's header: its manifest note shares the label's row
+    /// from 360; below that, on narrow and enlarged layouts, it takes a
+    /// full-width row of its own so it cannot paint past the reader mask.
+    pub const FEATURES_HEAD: Ladder<Split> =
+        Ladder::new(ModeId::Folio, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 360.0)]);
+
     /// How Ask's results sit over the page.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub enum Float {
