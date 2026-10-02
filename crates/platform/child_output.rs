@@ -103,6 +103,11 @@ pub fn capture(
     return capture_unix(command, limits, cancelled);
     #[cfg(windows)]
     return crate::windows_child_output::capture(command, limits, cancelled);
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (command, limits, cancelled);
+        Err(CaptureError::Unsupported)
+    }
 }
 
 #[cfg(unix)]
