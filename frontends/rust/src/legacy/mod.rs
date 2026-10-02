@@ -327,7 +327,20 @@ pub enum LoadError {
     },
 }
 
+/// Resolves a requested tool spelling to the file a child process should execute.
+///
+/// An absolute or multi-component spelling is used as given; a bare name is searched in `PATH`.
+/// A bare name also matches `name` plus the host executable suffix, because Windows installs
+/// `rustc.exe` and a process search that adds `.exe` implicitly does not exist here.
 fn resolve_executable(requested: &std::path::Path) -> Option<PathBuf> {
+    resolve_executable_in(requested, &std::env::var_os("PATH")?)
+}
+
+/// [`resolve_executable`] against an explicit search path.
+fn resolve_executable_in(
+    requested: &std::path::Path,
+    search_path: &std::ffi::OsStr,
+) -> Option<PathBuf> {
     let candidate = if requested.is_absolute() || requested.components().count() > 1 {
         Some(if requested.is_absolute() {
             requested.to_path_buf()
@@ -335,12 +348,58 @@ fn resolve_executable(requested: &std::path::Path) -> Option<PathBuf> {
             std::env::current_dir().ok()?.join(requested)
         })
     } else {
-        let path = std::env::var_os("PATH")?;
-        std::env::split_paths(&path)
-            .map(|directory| directory.join(requested))
+        std::env::split_paths(search_path)
+            .flat_map(|directory| {
+                let bare = directory.join(requested);
+                let suffixed = (!std::env::consts::EXE_SUFFIX.is_empty()
+                    && requested.extension().is_none())
+                .then(|| {
+                    let mut name = requested.as_os_str().to_owned();
+                    name.push(std::env::consts::EXE_SUFFIX);
+                    directory.join(name)
+                });
+                [Some(bare), suffixed]
+            })
+            .flatten()
             .find(|candidate| candidate.is_file())
     }?;
-    candidate.canonicalize().ok().filter(|path| path.is_file())
+    canonical_executable(&candidate)
+        .ok()
+        .filter(|path| path.is_file())
+}
+
+/// Resolves `path` to the real file behind it, except for a rustup proxy.
+///
+/// Symbolic links are resolved so the identity of a tool names a real file. The one exception
+/// is rustup's: `rustc`, `cargo`, `rustdoc` and the other proxies are links to a single
+/// multi-call `rustup` binary that decides what to do from the name it was started under.
+/// Resolving such a link to its target would start the toolchain manager itself, which answers
+/// `--print sysroot` with "unexpected argument" and `--version` with its own version. The proxy
+/// therefore keeps its own file name inside its canonical directory.
+///
+/// # Errors
+///
+/// Returns the operating-system error when `path` or its directory cannot be resolved.
+pub fn canonical_executable(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    let canonical = path.canonicalize()?;
+    let link_name = path.file_name();
+    let is_proxy = is_rustup_binary(&canonical)
+        && link_name.is_some_and(|name| !is_rustup_binary(std::path::Path::new(name)));
+    let (Some(name), true) = (link_name, is_proxy) else {
+        return Ok(canonical);
+    };
+    let directory = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .canonicalize()?;
+    Ok(directory.join(name))
+}
+
+/// Whether `path` names the rustup binary itself, by file stem.
+fn is_rustup_binary(path: &std::path::Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("rustup"))
 }
 
 fn rustup_selection(sysroot: &std::path::Path) -> (Option<PathBuf>, Option<String>) {
@@ -408,5 +467,120 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A temporary directory whose children are removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "nudox-rust-executable-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_nanos())
+            ));
+            std::fs::create_dir_all(&path).expect("scratch directory");
+            Self(path.canonicalize().expect("resolve scratch directory"))
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Creates a file symlink. Windows needs Developer Mode or the symbolic-link privilege, and
+    /// a refusal fails the test with the operating-system error rather than skipping it.
+    fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link)
+        }
+    }
+
+    fn named(stem: &str) -> String {
+        format!("{stem}{}", std::env::consts::EXE_SUFFIX)
+    }
+
+    /// The failure that stopped the Windows owner: rustup installs `rustc` as a link to its
+    /// multi-call binary, and resolving the link ran `rustup --print sysroot`.
+    #[test]
+    fn a_rustup_proxy_keeps_its_own_name_in_the_canonical_directory() {
+        let scratch = Scratch::new("proxy");
+        let rustup = scratch.0.join(named("rustup"));
+        std::fs::write(&rustup, b"multi-call binary").expect("rustup fixture");
+        let proxy = scratch.0.join(named("rustc"));
+        symlink_file(&rustup, &proxy).expect("proxy symlink");
+
+        let resolved = super::canonical_executable(&proxy).expect("resolve the proxy");
+
+        assert_eq!(resolved, scratch.0.join(named("rustc")));
+        assert!(resolved.is_file(), "the proxy name still opens the binary");
+    }
+
+    #[test]
+    fn rustup_itself_resolves_to_its_canonical_file() {
+        let scratch = Scratch::new("rustup-itself");
+        let rustup = scratch.0.join(named("rustup"));
+        std::fs::write(&rustup, b"multi-call binary").expect("rustup fixture");
+        let alias = scratch.0.join(named("rustup-alias"));
+        symlink_file(&rustup, &alias).expect("alias symlink");
+
+        assert_eq!(
+            super::canonical_executable(&rustup).expect("resolve rustup"),
+            rustup.canonicalize().expect("canonical rustup")
+        );
+        // A differently named link to rustup is a proxy too, whatever its name.
+        assert_eq!(
+            super::canonical_executable(&alias).expect("resolve alias"),
+            alias
+        );
+    }
+
+    #[test]
+    fn any_other_link_resolves_to_its_target() {
+        let scratch = Scratch::new("other-link");
+        let target = scratch.0.join(named("compiler-18"));
+        std::fs::write(&target, b"compiler").expect("target fixture");
+        let link = scratch.0.join(named("compiler"));
+        symlink_file(&target, &link).expect("link");
+
+        assert_eq!(
+            super::canonical_executable(&link).expect("resolve the link"),
+            target.canonicalize().expect("canonical target")
+        );
+    }
+
+    #[test]
+    fn a_regular_file_resolves_to_itself_and_a_missing_one_is_an_error() {
+        let scratch = Scratch::new("plain");
+        let tool = scratch.0.join(named("rustc"));
+        std::fs::write(&tool, b"compiler").expect("tool fixture");
+
+        assert_eq!(
+            super::canonical_executable(&tool).expect("resolve the file"),
+            tool.canonicalize().expect("canonical file")
+        );
+        assert!(super::canonical_executable(&scratch.0.join(named("absent"))).is_err());
+    }
+
+    /// A bare name is found through `PATH` with the host executable suffix.
+    #[test]
+    fn a_bare_name_is_found_with_the_host_executable_suffix() {
+        let scratch = Scratch::new("path-search");
+        std::fs::write(scratch.0.join(named("nudox-fixture-tool")), b"tool").expect("tool");
+        let found = super::resolve_executable_in(
+            std::path::Path::new("nudox-fixture-tool"),
+            &std::env::join_paths([scratch.0.as_path()]).expect("search path"),
+        )
+        .expect("the suffixed file is found");
+        assert_eq!(found, scratch.0.join(named("nudox-fixture-tool")));
     }
 }
