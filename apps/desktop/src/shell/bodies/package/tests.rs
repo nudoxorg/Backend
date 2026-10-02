@@ -938,6 +938,10 @@ fn focused(rig: &mut Rig) -> Option<String> {
 
 fn native_licence_expanded(rig: &mut Rig) -> bool {
     rig.settle();
+    // Rig does not opt its headless window into native accessibility at
+    // construction. Force it before the render that supplies this tree.
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json())
         .expect("mounted package native AccessKit tree");
     let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
