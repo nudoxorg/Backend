@@ -102,6 +102,58 @@ fn read(request: &ReadRequest) -> PageValue {
     Fixture.read(request, &context).unwrap_or_else(|failure| panic!("the fixture read {request:?}: {failure:?}"))
 }
 
+#[test]
+fn launch_seeds_cannot_claim_a_served_root_or_be_readmitted_by_cancelling_quiet_work() {
+    let symbol = symbol("RelationLabel");
+    let package = PackageRef::parse(PACKAGE).expect("package");
+    for key in [
+        PageKey::Symbol(symbol.clone()),
+        PageKey::Source(symbol),
+        PageKey::Package(package),
+        PageKey::Orbit,
+    ] {
+        let request = ReadRequest::for_key(&key);
+        let entry = match (key.clone(), read(&request)) {
+            (PageKey::Symbol(symbol), PageValue::Symbol(page)) => SeedEntry::Symbol(symbol, Arc::new(page)),
+            (PageKey::Source(symbol), PageValue::Source(page)) => SeedEntry::Source(symbol, Arc::new(page)),
+            (PageKey::Package(package), PageValue::Package(page)) => SeedEntry::Package(package, Arc::new(page)),
+            (PageKey::Orbit, PageValue::Orbit(page)) => SeedEntry::Orbit(Arc::new(page)),
+            other => panic!("fixture seed family: {other:?}"),
+        };
+        let mut store = PageStore::default();
+        assert!(store.seed(entry), "seed has no caller-supplied served root");
+        let stamp = store.stamp(&key);
+        dispatch_ref!(store, &key, |slots, k| {
+            let slot = slots.map.get(k).expect("seeded slot");
+            assert_eq!(slot.asked_at, Some(VersionedRoot::unserved()));
+            assert!(slot.resource.value_root().is_some_and(VersionedRoot::is_unserved));
+            assert!(slot.resource.is_loaded(), "complete retained bytes can still be painted");
+            assert!(!crate::core::admit_resource(&slot.resource, root(), true).allows_actions());
+        });
+        let first = store.begin(&key, root()).expect("quiet validation");
+        assert_eq!(store.stamp(&key), stamp);
+        assert_eq!(store.cancel(&key), Some(first));
+        assert!(store.is_seeded(&key));
+        assert!(!store.revoke_owner_read(&key), "unconfirmed launch seeds keep their unserved admission");
+        dispatch_ref!(store, &key, |slots, k| {
+            let resource = &slots.map.get(k).expect("retained seed").resource;
+            assert_eq!(resource.activity(), crate::core::Activity::Rest);
+            let admission = crate::core::admit_resource(resource, root(), true);
+            assert!(!admission.allows_actions(), "idle/inflight flags cannot admit the seed");
+            assert!(admission.retained_value().is_some());
+        });
+        let next = store.begin(&key, root()).expect("fresh quiet validation");
+        assert_eq!(store.land(&key, first, Ok(read(&request))), Landing::Superseded);
+        assert_eq!(store.land(&key, next, Ok(read(&request))), Landing::Unchanged);
+        assert!(!store.is_seeded(&key));
+        assert_eq!(store.stamp(&key), stamp, "equal confirmation keeps the launch paint unchanged");
+        dispatch_ref!(store, &key, |slots, k| {
+            let resource = &slots.map.get(k).expect("freshly validated slot").resource;
+            assert!(crate::core::admit_resource(resource, root(), true).allows_actions());
+        });
+    }
+}
+
 /// Asks for `key` at the test root (forced, as a retry or "load more" is, so a
 /// slot that is already current fetches again) and lands `value` in the slot
 /// that asked.
@@ -185,8 +237,7 @@ fn quiet_source_revalidation_replaces_saved_unverified_coverage() {
 
     let mut store = PageStore::default();
     assert!(store.seed(
-        SeedEntry::Source(source_ref.clone(), Arc::new(saved)),
-        root()
+        SeedEntry::Source(source_ref.clone(), Arc::new(saved))
     ));
     let seeded_stamp = store.stamp(&key);
     let next_root = root().with_generation(2);

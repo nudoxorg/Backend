@@ -294,9 +294,10 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         Some(generation)
     }
 
-    /// Fills a slot from the launch snapshot, current at `root` (the
-    /// unserved root at launch). A slot a fetch already owns is left alone.
-    fn seed(&mut self, key: &K, value: T, root: VersionedRoot, clock: Tick) -> bool {
+    /// Launch bytes are unserved by construction. Their persisted root claim
+    /// belongs to the keeper, never to a seeded resource's read admission.
+    /// A slot a fetch already owns is left alone.
+    fn seed(&mut self, key: &K, value: T, clock: Tick) -> bool {
         if !self.map.contains_key(key) {
             self.evict_for_insert();
             self.map.insert(key.clone(), Slot::new(clock));
@@ -308,6 +309,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             return false;
         }
         slot.used = clock;
+        let root = VersionedRoot::unserved();
         slot.asked_at = Some(root);
         slot.resource = Resource::loaded_at(value, root);
         slot.provenance = Provenance::Seeded;
@@ -733,21 +735,22 @@ impl PageStore {
         started
     }
 
-    /// Fills `key`'s slot with a launch-snapshot value, current at `root`
-    /// until an owner confirms it ([`Self::confirm`]) or revalidates it (its
-    /// next fetch is quiet: [`Landing::Unchanged`] when the value is equal).
+    /// Fills `key`'s slot with unserved launch bytes. A persisted root claim
+    /// cannot admit them: an owner must confirm them ([`Self::confirm`]) or
+    /// revalidate them (the next fetch is quiet: [`Landing::Unchanged`] when
+    /// the value is equal).
     /// Returns whether the slot took it (a family the snapshot does not
     /// keep, a slot in flight or already holding a value, does not).
-    pub fn seed(&mut self, entry: SeedEntry, root: VersionedRoot) -> bool {
+    pub fn seed(&mut self, entry: SeedEntry) -> bool {
         self.clock = self.clock.next();
         let clock = self.clock;
         match entry {
-            SeedEntry::Symbol(symbol, page) => self.symbols.seed(&symbol, Arc::unwrap_or_clone(page), root, clock),
-            SeedEntry::Source(symbol, view) => self.sources.seed(&symbol, Arc::unwrap_or_clone(view), root, clock),
+            SeedEntry::Symbol(symbol, page) => self.symbols.seed(&symbol, Arc::unwrap_or_clone(page), clock),
+            SeedEntry::Source(symbol, view) => self.sources.seed(&symbol, Arc::unwrap_or_clone(view), clock),
             SeedEntry::Package(package, dossier) => {
-                self.packages.seed(&package, Arc::unwrap_or_clone(dossier), root, clock)
+                self.packages.seed(&package, Arc::unwrap_or_clone(dossier), clock)
             }
-            SeedEntry::Orbit(model) => self.orbit.seed(&(), Arc::unwrap_or_clone(model), root, clock),
+            SeedEntry::Orbit(model) => self.orbit.seed(&(), Arc::unwrap_or_clone(model), clock),
         }
     }
 

@@ -47,14 +47,14 @@ pub(super) struct SnapshotKeeper {
 }
 
 impl SnapshotKeeper {
-    /// Seeds the launch snapshot's pages at `root` (the unserved root at
-    /// launch) and remembers where to save them.
-    pub(super) fn keep(&mut self, pages: &mut PageStore, root: VersionedRoot, keep: Keep) {
+    /// Seeds unserved launch bytes, keeps their persisted root claim for
+    /// owner confirmation, and remembers where to save them.
+    pub(super) fn keep(&mut self, pages: &mut PageStore, keep: Keep) {
         if let Some(seed) = keep.seed {
             let mut seeded = 0_usize;
             for entry in seed.pages {
                 let key = crate::runtime::trace::enabled().then(|| entry.key());
-                if pages.seed(entry, root) {
+                if pages.seed(entry) {
                     seeded += 1;
                     if let Some(key) = key {
                         crate::runtime::trace::mark("snapshot.seed", format_args!("{key:?}"));
@@ -261,7 +261,6 @@ mod tests {
         let mut pages = PageStore::default();
         keeper.keep(
             &mut pages,
-            VersionedRoot::unserved(),
             Keep {
                 file,
                 seed: Some(seed),
@@ -295,8 +294,7 @@ mod tests {
             SeedEntry::Symbol(
                 symbol.clone(),
                 Arc::new(crate::shell::tests::page("LocalSource"))
-            ),
-            VersionedRoot::unserved()
+            )
         ));
         use crate::runtime::reads::{OutlineCache, PageReader as _, ReadContext, ReadRequest};
         let cancel = crate::runtime::actor::CancellationToken::new();
@@ -314,8 +312,7 @@ mod tests {
             panic!("source page family")
         };
         assert!(pages.seed(
-            SeedEntry::Source(symbol.clone(), Arc::new(source)),
-            VersionedRoot::unserved()
+            SeedEntry::Source(symbol.clone(), Arc::new(source))
         ));
         assert_eq!(confirm_index_pages(&mut pages, root), 1);
         assert!(!pages.is_seeded(&PageKey::Symbol(symbol.clone())));

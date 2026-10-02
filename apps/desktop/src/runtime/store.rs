@@ -464,8 +464,7 @@ impl DataStore {
                 store.owner = OwnerLink::behind(gate);
             }
             if let Some(keep) = keep {
-                let root = store.snapshot.key();
-                store.keeper.keep(&mut store.pages, root, keep);
+                store.keeper.keep(&mut store.pages, keep);
             }
             store.start(cx);
             // The first route is focused like every later one.
