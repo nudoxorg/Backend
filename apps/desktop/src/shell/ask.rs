@@ -887,14 +887,15 @@ mod tests {
     #[gpui::test]
     fn component_root_tab_cycles_editor_link_and_all_results_inside_ask(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("shell".to_owned(), "ask-tab".to_owned())]), 4,
+        );
         cx.update(|cx| {
             gpui_component::init(cx);
             let _ = facet::fonts::install(cx);
-            crate::shell::bodies::graph::install_test_fixture(cx);
+            crate::shell::bodies::graph::install_test_fixture(root, cx);
         });
-        let mut snapshot = AppSnapshot::empty(VersionedRoot::synthetic(
-            backend_library::view_state_root(&[("shell".to_owned(), "ask-tab".to_owned())]), 4,
-        ));
+        let mut snapshot = AppSnapshot::empty(root);
         let folder = std::env::temp_dir().join(format!("nudox-ask-tab-{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("fixture root");
         let mut workspace = snapshot.workspace().clone();
