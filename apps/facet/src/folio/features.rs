@@ -7,6 +7,7 @@ use super::text::{key, one, wrap};
 use crate::measure::{Measure, Space};
 use crate::paint::geom::{Fill, Poly, pt};
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::{FEATURES_HEAD, Split};
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
     App, Bounds, ColorExt as _, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
@@ -402,14 +403,13 @@ impl RenderOnce for FeaturePreview {
         let profile = wrap(key(&self.id, "profile"), "read only · manifest defaults", SMALL, palette.ink3, &measure, None);
         let mut head = div().w(self.width).min_w_0().flex().flex_wrap().items_baseline().gap_x(measure.space(Space::Snug));
         head = head.child(one(key(&self.id, "label"), "Features", LABEL, palette.ink3, &measure));
-        if measure.effective() < 360.0 {
+        head = match FEATURES_HEAD.at(measure.fluid_room()) {
             // Keep the manifest fact in a real full-width row on narrow,
             // enlarged layouts. As an intrinsic flex item, this status could
             // otherwise paint past the reader mask.
-            head = head.child(div().w_full().min_w_0().child(profile));
-        } else {
-            head = head.child(profile);
-        }
+            Split::Stacked => head.child(div().w_full().min_w_0().child(profile)),
+            Split::Beside => head.child(profile),
+        };
         head = head
             .child(one(key(&self.id, "on"), resolved.on.len().to_string(), NUMBER, palette.ink0, &measure))
             .child(one(key(&self.id, "of"), format!("of {} on", facts.names.len()), LABEL, palette.ink3, &measure));
