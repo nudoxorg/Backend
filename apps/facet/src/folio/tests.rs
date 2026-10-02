@@ -107,6 +107,8 @@ fn click(cx: &mut VisualTestContext, x: f32, y: f32) {
 }
 
 fn native_stamp_state(cx: &mut VisualTestContext) -> (bool, bool) {
+    // The gallery test window is not accessibility-forced by `open`.
+    cx.update(|window, _| window.set_a11y_forced(true));
     frame(cx);
     let json = cx.update(|window, _| window.debug_a11y_tree_json())
         .expect("the mounted stamp has a native AccessKit tree");
