@@ -32,7 +32,7 @@ pub(super) fn leaf(
     if model.request_binding != context.request_binding() || model.package.as_str() != route.package.as_str() {
         return Leaf::new(quiet("This Cargo file list belongs to a different browse observation.", &ctx.measure, ctx.palette));
     }
-    let selected = model.paths.binary_search(&route.file).ok();
+    let selected = route.target.package_file().and_then(|path| model.paths.binary_search(path).ok());
     let initial = selected.map_or(0, |at| page_start(at));
     let pager_id: ElementId = format!(
         "cargo-inventory-page-{}-{:x?}",
@@ -57,7 +57,9 @@ pub(super) fn leaf(
             palette,
         ));
     }
-    if selected.is_none() && !model.paths.is_empty() {
+    if route.target.package_file().is_none() {
+        column = column.child(quiet("These are package-relative files. The open README target retains its separate owner-selected root scope.", &measure, palette));
+    } else if selected.is_none() && !model.paths.is_empty() {
         column = column.child(quiet(
             "The open file is outside this bounded listing or changed since it was listed.",
             &measure,
@@ -129,7 +131,7 @@ pub(super) fn leaf(
             .px(measure.space(Space::Tight))
             .py(measure.space(Space::Tight))
             .border_l_2()
-            .border_color(if path == &route.file { palette.peri.line.hsla() } else { palette.line1.hsla() })
+            .border_color(if route.target.package_file() == Some(path) { palette.peri.line.hsla() } else { palette.line1.hsla() })
             .cursor_pointer()
             .child(words);
         column = column.child(ctx.targets.track(id, row));

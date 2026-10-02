@@ -1,7 +1,7 @@
 //! One owner-revalidated Cargo file, kept separate from indexed declarations.
 
 use super::{PackageRef, SourceText};
-use crate::navigation::CargoSourcePath;
+use crate::navigation::CargoSourceTarget;
 
 /// Current file bytes read under the exact Cargo metadata authority in the
 /// package reference. This page is never seeded from a launch snapshot:
@@ -12,8 +12,8 @@ pub struct CargoSourcePage {
     pub package: PackageRef,
     /// Exact requested/effective root binding of this owner reply.
     pub request_binding: backend_library::browse::ProjectTreeRequestBindingV1,
-    /// Package-relative path the owner read.
-    pub file: CargoSourcePath,
+    /// Exact owner-read address retaining package or inherited workspace scope.
+    pub target: CargoSourceTarget,
     /// Current UTF-8 text with an immutable sparse line index.
     pub source: SourceText,
     /// BLAKE3 of the exact returned bytes, independent of the metadata receipt.

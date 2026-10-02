@@ -36,6 +36,7 @@ mod data;
 mod fluid;
 mod folio;
 mod readme_links;
+mod cargo_readme;
 mod target;
 use target::PageTarget;
 #[cfg(test)]
@@ -63,15 +64,17 @@ pub(super) fn body(
     let serving = live.owner_serving();
     drop(live);
     let cargo_offer = cargo_manifest_offer(&package, place, snapshot, ctx, cx);
+    let owner_readme = cargo_readme::body(place, ctx, cx);
+    let qualified_cargo = crate::core::PackageId::new(package.as_str()).ok().is_some_and(|package| CargoSourceRoute::supports_package(&package));
     let dossier = match admit_resource(&resource, snapshot.key(), serving) {
         ResourceAdmission::Current(dossier) => dossier.clone(),
         ResourceAdmission::Retained { value, .. } => {
             let words = ctx.say(format!("Earlier reading of {} is retained while the current package is checked. Its semantic links are unavailable.", value.package.display_name()));
-            return with_cargo_offer(vec![Leaf::new(quiet(words, &ctx.measure, ctx.palette))], cargo_offer);
+            return with_cargo_offer(vec![Leaf::new(quiet(words, &ctx.measure, ctx.palette))], cargo_offer, owner_readme);
         }
         ResourceAdmission::Pending(_) => {
             let leaves = not_ready(&Shown::<PackageDossier>::Pending, &PageKey::Package(package), "The indexed package", ctx, cx);
-            return with_cargo_offer(leaves, cargo_offer);
+            return with_cargo_offer(leaves, cargo_offer, owner_readme);
         }
         ResourceAdmission::Failed { retained, terminal } => {
             let mut leaves = Vec::new();
@@ -84,7 +87,7 @@ pub(super) fn body(
                 ResourceTerminal::Unavailable(reason) => leaves.extend(not_ready(&Shown::<PackageDossier>::Unavailable(reason, None), &PageKey::Package(package), "The package", ctx, cx)),
                 ResourceTerminal::Complete | ResourceTerminal::Partial => {}
             }
-            return with_cargo_offer(leaves, cargo_offer);
+            return with_cargo_offer(leaves, cargo_offer, owner_readme);
         }
     };
     // The reader's own workspace project, not the package whose page is
@@ -270,14 +273,16 @@ pub(super) fn body(
     {
         leaves.insert(0, Leaf::new(offer));
     }
-    if let Some(leaf) = readme(&dossier, place, ctx, cx) {
+    leaves.extend(owner_readme);
+    if !qualified_cargo && let Some(leaf) = readme(&dossier, place, ctx, cx) {
         leaves.push(leaf);
     }
     leaves
 }
 
-fn with_cargo_offer(mut leaves: Vec<Leaf>, offer: Option<Leaf>) -> Vec<Leaf> {
+fn with_cargo_offer(mut leaves: Vec<Leaf>, offer: Option<Leaf>, readme: Vec<Leaf>) -> Vec<Leaf> {
     if let Some(offer) = offer { leaves.push(offer); }
+    leaves.extend(readme);
     leaves
 }
 
@@ -1048,7 +1053,7 @@ fn route_page_key(route: &Route) -> Option<crate::model::pages::PageKey> {
                 }
             }),
         Route::CargoSource(route) => route.browse.context().cloned().zip(PackageRef::parse(route.package.as_str()).ok())
-            .map(|(context, package)| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { context, package, file: route.file.clone() })),
+            .map(|(context, package)| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { context, package, target: route.target.clone() })),
         Route::Orbit(_) | Route::World => None,
     }
 }

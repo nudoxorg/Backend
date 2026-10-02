@@ -357,6 +357,7 @@ fn is_cargo_source_resource(key: &PageKey) -> bool {
         key,
         PageKey::CargoSource(_)
             | PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_))
+            | PageKey::Browse(crate::model::browse::BrowseKey::CargoReadme(_))
     )
 }
 
@@ -703,6 +704,9 @@ impl DataStore {
                     PageKey::CargoSource(file) => self.pages.revoke_cargo_source(file),
                     PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
                         self.pages.revoke_cargo_source_inventory(inventory);
+                    }
+                    PageKey::Browse(crate::model::browse::BrowseKey::CargoReadme(_)) => {
+                        self.pages.revoke_owner_read(&key);
                     }
                     _ => {}
                 }

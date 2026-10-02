@@ -5,7 +5,7 @@
 //! zoom-out operation can retain the selected thing without parsing a URL.
 
 use crate::core::{DocumentId, LocalProjectId, PackageId, ProjectId};
-use super::{CargoBrowseAddress, CargoBrowseContext};
+use super::{CargoBrowseAddress, CargoBrowseContext, CargoReadmeLinkAddress, CargoSourceTarget};
 use crate::model::ObjectId;
 use std::cmp::Ordering;
 use std::fmt;
@@ -253,8 +253,8 @@ pub struct CargoSourceRoute {
     pub browse: CargoBrowseAddress,
     /// Full source-qualified package coordinate, including its authority digest.
     pub package: PackageId,
-    /// Canonical package-relative file spelling.
-    pub file: CargoSourcePath,
+    /// Exact relative address and its owner-held package or README root scope.
+    pub target: CargoSourceTarget,
     /// Optional one-based line to reveal.
     pub line: Option<u32>,
 }
@@ -279,7 +279,15 @@ impl CargoSourceRoute {
         if !Self::supports_package(&package) || line == Some(0) {
             return None;
         }
-        Some(Self { browse: CargoBrowseAddress::Bound(context), package, file, line })
+        Some(Self { browse: CargoBrowseAddress::Bound(context), package, target: CargoSourceTarget::PackageFile(file), line })
+    }
+
+    /// Retains the complete owner README origin, including workspace scope.
+    pub(crate) fn readme_link(context: CargoBrowseContext, package: PackageId, link: CargoReadmeLinkAddress, line: Option<u32>) -> Option<Self> {
+        if !Self::supports_package(&package) || line == Some(0)
+            || link.origin().package.as_str() != package.as_str()
+            || link.origin().request_binding != context.request_binding() { return None; }
+        Some(Self { browse: CargoBrowseAddress::Bound(context), package, target: CargoSourceTarget::ReadmeLink(link), line })
     }
 
     /// Retains an old saved address without inventing its effective binding.
@@ -288,7 +296,7 @@ impl CargoSourceRoute {
         if backend_library::ProductText::new(coordinate).ok()?.as_str() != coordinate
             || !std::path::Path::new(coordinate).is_absolute()
             || !Self::supports_package(&package) || line == Some(0) { return None; }
-        Some(Self { browse: CargoBrowseAddress::AwaitingTree { requested_project: project }, package, file, line })
+        Some(Self { browse: CargoBrowseAddress::AwaitingTree { requested_project: project }, package, target: CargoSourceTarget::PackageFile(file), line })
     }
 
     /// The package page returned to by zoom-out and Back.
@@ -309,12 +317,12 @@ impl CargoSourceRoute {
         if !matches!(self.browse, CargoBrowseAddress::AwaitingTree { .. })
             || self.browse.requested_project() != context.requested_project()
         { return None; }
-        Self::new(context, self.package.clone(), self.file.clone(), self.line)
+        Self::new(context, self.package.clone(), self.target.package_file()?.clone(), self.line)
     }
 }
 
-/// A bounded, canonical relative file address. Its bytes never act as a
-/// filesystem capability; only the owner's held source root can read it.
+/// A bounded, canonical relative file address. Its enclosing source target
+/// preserves the owner-held root scope; its bytes are never a capability.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CargoSourcePath(Arc<str>);
 
@@ -533,7 +541,7 @@ impl Route {
     pub fn same_place(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Symbol(a), Self::Symbol(b)) => a.same_place(b),
-            (Self::CargoSource(a), Self::CargoSource(b)) => a.browse == b.browse && a.package == b.package && a.file == b.file,
+            (Self::CargoSource(a), Self::CargoSource(b)) => a.browse == b.browse && a.package == b.package && a.target == b.target,
             _ => self == other,
         }
     }
@@ -579,7 +587,7 @@ impl Route {
                 route.id.clone(),
                 route.at.clone(),
             ),
-            Self::CargoSource(route) => RouteKey::CargoSource(route.browse.clone(), route.package.clone(), route.file.clone()),
+            Self::CargoSource(route) => RouteKey::CargoSource(route.browse.clone(), route.package.clone(), route.target.clone()),
             Self::Orbit(OrbitRoute::Browse(route)) => RouteKey::Browse(route.clone()),
             Self::World => RouteKey::World,
         }
@@ -597,8 +605,8 @@ pub enum RouteKey {
     Package(Option<ProjectId>, PackageId, PackageLane, Option<CargoBrowseContext>),
     /// Declaration coordinate and release.
     Symbol(Option<ProjectId>, PackageId, Coordinate, Option<ReleaseId>),
-    /// Exact Cargo source package and package-relative file.
-    CargoSource(CargoBrowseAddress, PackageId, CargoSourcePath),
+    /// Exact Cargo source package and root-scoped relative target.
+    CargoSource(CargoBrowseAddress, PackageId, CargoSourceTarget),
     /// The whole graph.
     World,
     /// A browsing page.

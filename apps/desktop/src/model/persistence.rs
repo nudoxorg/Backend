@@ -7,7 +7,7 @@ use super::workspace::{
     ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
-use crate::navigation::{BrowseRoute, CargoBrowseContext, CargoSourcePath, CargoSourceRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
+use crate::navigation::{BrowseRoute, CargoBrowseContext, CargoReadmeLinkAddress, CargoSourcePath, CargoSourceRoute, CargoSourceTarget, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -449,6 +449,19 @@ pub enum PersistedRoute {
         /// One-based line to reveal after revalidation.
         line: Option<u32>,
     },
+    /// A README link address retaining the owner's exact package/workspace scope.
+    CargoReadmeLink {
+        /// Exact submitted project and complete root commitments.
+        browse: PersistedCargoBrowse,
+        /// Full source-qualified Cargo package address.
+        package: String,
+        /// Complete original README receipt, revalidated before reading bytes.
+        origin: backend_library::CargoPackageReadmeOriginV1,
+        /// Authored href resolved relative to the original README directory.
+        href: String,
+        /// Optional one-based source line address.
+        line: Option<u32>,
+    },
     /// The whole dependency graph.
     World,
     /// A declaration page route (older files; read as a page view).
@@ -545,15 +558,23 @@ fn persist_route(route: &Route) -> PersistedRoute {
             view: route.view.as_str().to_owned(),
             line: route.line,
         },
-        Route::CargoSource(route) => PersistedRoute::CargoSource {
-            request_binding: route.browse.context().map(CargoBrowseContext::request_binding),
-            project: route.browse.requested_project().service_coordinate().ok().map(str::to_owned),
-            package: route.package.as_str().to_owned(),
-            file: route.file.as_str().to_owned(),
-            line: route.line,
+        Route::CargoSource(route) => match &route.target {
+            CargoSourceTarget::PackageFile(file) => PersistedRoute::CargoSource {
+                request_binding: route.browse.context().map(CargoBrowseContext::request_binding),
+                project: route.browse.requested_project().service_coordinate().ok().map(str::to_owned),
+                package: route.package.as_str().to_owned(), file: file.as_str().to_owned(), line: route.line,
+            },
+            CargoSourceTarget::ReadmeLink(link) => route.browse.context().and_then(PersistedCargoBrowse::project)
+                .map_or(PersistedRoute::Home, |browse| PersistedRoute::CargoReadmeLink {
+                    browse, package: route.package.as_str().to_owned(), origin: link.origin().clone(), href: link.href().to_owned(), line: route.line,
+                }),
         },
         Route::World => PersistedRoute::World,
     }
+}
+
+fn restore_cargo_readme_link(browse: &PersistedCargoBrowse, package: &str, origin: &backend_library::CargoPackageReadmeOriginV1, href: &str, line: Option<u32>) -> Option<CargoSourceRoute> {
+    CargoSourceRoute::readme_link(browse.restore()?, crate::core::PackageId::new(package).ok()?, CargoReadmeLinkAddress::new(origin.clone(), href)?, line)
 }
 
 fn restore_cargo_source_address(
@@ -578,6 +599,8 @@ impl PersistedDesktopState {
         match &self.route {
             PersistedRoute::CargoSource { project, request_binding, package, file, line }
                 if restore_cargo_source_address(project.as_deref(), *request_binding, package, file, *line).is_none() => Some(crate::model::workspace::Note::CargoSourceAddressUnread),
+            PersistedRoute::CargoReadmeLink { browse, package, origin, href, line }
+                if restore_cargo_readme_link(browse, package, origin, href, *line).is_none() => Some(crate::model::workspace::Note::CargoSourceAddressUnread),
             _ => None,
         }
     }
@@ -1072,6 +1095,10 @@ impl PersistentState {
                 restore_cargo_source_address(project.as_deref(), *request_binding, package, file, *line)
                     .map(Route::CargoSource)
                     .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
+            }
+            PersistedRoute::CargoReadmeLink { browse, package, origin, href, line } => {
+                restore_cargo_readme_link(browse, package, origin, href, *line)
+                    .map(Route::CargoSource).unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
             }
         };
         let pending_selection = state.selected_claim.as_ref().and_then(|claim| {

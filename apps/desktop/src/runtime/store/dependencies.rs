@@ -2,7 +2,7 @@
 
 use super::{CargoReadAdmission, DataStore, OwnerAttachment, route_package, route_symbol};
 use crate::core::{LocalProjectId, VersionedRoot, admit_resource};
-use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey, TreeModel};
+use crate::model::browse::{BrowseKey, BrowseValue, CargoReadmeKey, CargoReadmeModel, CargoSourceInventoryKey, TreeModel};
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{CargoBrowseContext, Overlay, Route, View};
 use std::sync::Arc;
@@ -72,6 +72,18 @@ impl CurrentCargoPackage {
     pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) { (self.dependency.clone(), self.stamp) }
 }
 
+/// A transient projection of the selected current owner README observation.
+pub(crate) struct CurrentCargoReadme {
+    model: Arc<CargoReadmeModel>,
+    dependency: PageKey,
+    stamp: Stamp,
+}
+
+impl CurrentCargoReadme {
+    pub(crate) fn model(&self) -> &CargoReadmeModel { &self.model }
+    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) { (self.dependency.clone(), self.stamp) }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeDependency {
     requested_project: LocalProjectId,
@@ -88,12 +100,14 @@ pub(crate) struct RouteDependencies {
     content: Vec<PageKey>,
     cargo: Option<CargoSourceDependencies>,
     tree: Option<TreeDependency>,
+    readme: Option<CargoReadmeKey>,
 }
 
 impl RouteDependencies {
     pub(crate) fn new(route: &Route, overlay: Option<Overlay>) -> Self {
         let mut cargo = None;
         let mut tree = None;
+        let mut readme = None;
         let (mut keys, content) = match overlay {
             Some(Overlay::Settings(_)) => (vec![PageKey::Health], Vec::new()),
             Some(Overlay::Inbox) => (Vec::new(), Vec::new()),
@@ -115,6 +129,11 @@ impl RouteDependencies {
                         tree = Some(TreeDependency { requested_project: context.requested_project().clone(), expected: Some(context.clone()), package: route_package(route) });
                         let mut keys = route_package(route).map(PageKey::Package).into_iter().collect::<Vec<_>>();
                         keys.push(key.clone());
+                        if let Some(package) = route_package(route) {
+                            let selected = CargoReadmeKey { context: context.clone(), package };
+                            keys.push(PageKey::Browse(BrowseKey::CargoReadme(selected.clone())));
+                            readme = Some(selected);
+                        }
                         (keys, vec![key])
                     } else {
                         let keys = route_package(route).map(PageKey::Package).into_iter().collect::<Vec<_>>();
@@ -125,7 +144,7 @@ impl RouteDependencies {
                     if let Some(context) = source.browse.context() {
                         PackageRef::parse(source.package.as_str()).ok().map(|package| {
                             let pair = CargoSourceDependencies {
-                                file: CargoSourceKey { context: context.clone(), package: package.clone(), file: source.file.clone() },
+                                file: CargoSourceKey { context: context.clone(), package: package.clone(), target: source.target.clone() },
                                 inventory: CargoSourceInventoryKey { context: context.clone(), package },
                             };
                             let file = PageKey::CargoSource(pair.file.clone());
@@ -152,7 +171,7 @@ impl RouteDependencies {
         for key in Self::chrome_keys(route) {
             if !keys.contains(&key) { keys.push(key); }
         }
-        Self { keys, content, cargo, tree }
+        Self { keys, content, cargo, tree, readme }
     }
 
     /// The titlebar consumes the same route mapping as the owner renewal plan.
@@ -165,6 +184,18 @@ impl RouteDependencies {
     pub(crate) fn keys(&self) -> &[PageKey] { &self.keys }
     pub(crate) fn into_keys(self) -> Vec<PageKey> { self.keys }
     pub(crate) fn cargo(&self) -> Option<&CargoSourceDependencies> { self.cargo.as_ref() }
+    pub(crate) fn readme(&self) -> Option<&CargoReadmeKey> { self.readme.as_ref() }
+
+    pub(crate) fn current_cargo_readme(&self, store: &DataStore) -> Option<CurrentCargoReadme> {
+        let selected = self.readme.as_ref()?;
+        let browse = BrowseKey::CargoReadme(selected.clone());
+        let dependency = PageKey::Browse(browse.clone());
+        let resource = store.pages().browse(&browse);
+        if store.cargo_read_admission(&dependency, &resource) != CargoReadAdmission::Current { return None; }
+        let BrowseValue::CargoReadme(model) = resource.loaded_value()? else { return None; };
+        if model.package != selected.package || model.request_binding != selected.context.request_binding() { return None; }
+        Some(CurrentCargoReadme { model: Arc::clone(model), stamp: store.stamp(&dependency), dependency })
+    }
 
     pub(crate) fn current_tree(&self, store: &DataStore) -> Option<CurrentTreeRead> {
         let selected = self.tree.as_ref()?;
@@ -188,7 +219,7 @@ impl RouteDependencies {
             let resource = store.cargo_source(&cargo.file);
             if store.cargo_read_admission(&dependency, &resource) != CargoReadAdmission::Current { return None; }
             let page = resource.loaded_value()?;
-            if &page.package != package || page.request_binding != cargo.file.context.request_binding() || page.file != cargo.file.file { return None; }
+            if &page.package != package || page.request_binding != cargo.file.context.request_binding() || page.target != cargo.file.target { return None; }
             return Some(CurrentCargoPackage { context: cargo.file.context.clone(), package: package.clone(), stamp: store.stamp(&dependency), dependency });
         }
         if self.tree.as_ref()?.package.as_ref().is_some_and(|selected| selected != package) { return None; }
@@ -218,7 +249,7 @@ impl RouteDependencies {
         match key {
             PageKey::Orbit => admit_resource(&store.orbit(), root, serving).allows_actions(),
             PageKey::Package(package) => admit_resource(&store.package(package), root, serving).allows_actions(),
-            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => store.cargo_read_admission(key, &store.pages().browse(browse)) == CargoReadAdmission::Current,
+            PageKey::Browse(browse @ (BrowseKey::CargoSourceInventory(_) | BrowseKey::CargoReadme(_))) => store.cargo_read_admission(key, &store.pages().browse(browse)) == CargoReadAdmission::Current,
             PageKey::Browse(BrowseKey::Tree(project)) if self.tree.as_ref().is_some_and(|tree| &tree.requested_project == project && tree.expected.is_some()) => {
                 root.same_authority(store.snapshot().key()) && self.current_tree(store).is_some()
             }

@@ -207,7 +207,7 @@ fn place_words(route: &Route) -> String {
         }
         Route::Package(package) => crate::model::pages::PackageRef::parse(package.package.as_str())
             .map_or_else(|_| package.package.as_str().to_owned(), |package| package.display_name().to_owned()),
-        Route::CargoSource(file) => file.file.as_str().to_owned(),
+        Route::CargoSource(file) => file.target.path().as_str().to_owned(),
         Route::Orbit(_) => "Orbit".to_owned(),
         Route::World => "Graph".to_owned(),
     }

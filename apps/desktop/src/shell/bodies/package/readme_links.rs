@@ -2,7 +2,7 @@
 //! The Markdown component owns parsing and hit testing. This plan only turns
 //! worker-indexed destinations into actions, once per loaded page identity.
 
-use super::{decode_fragment, hex};
+use super::decode_fragment;
 use crate::model::local_package::{ReadmeHeading, ReadmeLink, readme_fragment_slug, rustdoc_link};
 use crate::model::pages::{OutlineTree, PackageRef, ReadmeExactKind, ReadmeExactTargets};
 use crate::navigation::{Route, View};
@@ -334,7 +334,7 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
     let lower = destination.to_ascii_lowercase();
     if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
     {
-        return if valid_external(destination, &lower) {
+        return if crate::model::local_package::readme_external_address(destination).is_some() {
             Candidate::External(Arc::from(destination))
         } else {
             Candidate::Unavailable("This external link has an invalid address.")
@@ -401,42 +401,6 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
         return Candidate::Unavailable("This Rustdoc page is not an exact declaration link.");
     }
     Candidate::Rustdoc
-}
-
-fn valid_external(destination: &str, lower: &str) -> bool {
-    if destination.chars().any(char::is_whitespace) || destination.contains('\\') {
-        return false;
-    }
-    let bytes = destination.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let (Some(high), Some(low)) = (bytes.get(index + 1), bytes.get(index + 2)) else {
-                return false;
-            };
-            let (Some(high), Some(low)) = (hex(*high), hex(*low)) else {
-                return false;
-            };
-            let decoded = (high << 4) | low;
-            if decoded.is_ascii_control() {
-                return false;
-            }
-            index += 3;
-        } else {
-            index += 1;
-        }
-    }
-    if lower.starts_with("mailto:") {
-        return destination[7..]
-            .split(['?', '#'])
-            .next()
-            .is_some_and(|recipient| recipient.contains('@'));
-    }
-    let start = if lower.starts_with("https://") { 8 } else { 7 };
-    destination[start..]
-        .split(['/', '?', '#'])
-        .next()
-        .is_some_and(|host| !host.is_empty() && !host.contains('@'))
 }
 
 fn valid_line_fragment(fragment: &str, line: u32) -> bool {

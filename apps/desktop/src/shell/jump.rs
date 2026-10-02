@@ -169,7 +169,7 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
         Route::CargoSource(file) => PackageRef::parse(file.package.as_str())
             .map(|package| vec![
                 Segment { name: package.display_name().to_owned().into(), route: Some(Route::Package(file.package_route())), quiet: false },
-                Segment { name: file.file.as_str().to_owned().into(), route: Some(route.clone()), quiet: false },
+                Segment { name: file.target.path().as_str().to_owned().into(), route: Some(route.clone()), quiet: false },
             ])
             .unwrap_or_default(),
         Route::Orbit(_) | Route::World => Vec::new(),
@@ -262,7 +262,7 @@ fn route_here(route: &Route, store: &DataStore) -> Here {
         }
         Route::CargoSource(route) => Here {
             mark: Mark::Kind(Kind::Unknown),
-            name: route.file.as_str().to_owned().into(),
+            name: route.target.path().as_str().to_owned().into(),
             path: "Cargo source".into(),
         },
         Route::Symbol(route) => symbol_here(route.id.as_str(), store, route.view),
@@ -380,7 +380,7 @@ pub(crate) fn address_parts(snapshot: &AppSnapshot) -> Address {
         ),
         Route::CargoSource(route) => {
             let package = PackageRef::parse(route.package.as_str()).ok();
-            let name = route.file.as_str().to_owned();
+            let name = route.target.path().as_str().to_owned();
             let mut address = place(&[package.as_ref().map_or("Cargo", PackageRef::display_name)], name);
             if let Some(line) = route.line { address.name.push_str(&format!("#L{line}")); }
             address

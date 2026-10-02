@@ -3,6 +3,7 @@
 pub mod action;
 pub mod browse;
 pub mod cargo_browse;
+pub mod cargo_source_target;
 pub mod history;
 pub mod intent;
 pub mod journey_specs;
@@ -12,6 +13,7 @@ mod workspace_reducer;
 
 pub use browse::{BrowseRoute, CompareError, CompareSet};
 pub use cargo_browse::{CargoBrowseAddress, CargoBrowseContext};
+pub use cargo_source_target::{CargoReadmeLinkAddress, CargoSourceTarget};
 pub use action::{
     AccessibilityRole, ActionId, ActionNode, ActionSpec, CommandPaletteState, KeyChord,
     SemanticFamily, SemanticState, VoiceChannel,
