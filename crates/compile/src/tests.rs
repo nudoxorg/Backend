@@ -1988,7 +1988,7 @@ while True:
         initial_pid, pid,
         "the changed environment must not reuse the prior process"
     );
-    let initial_alive = Command::new("/bin/kill")
+    let initial_alive = Command::new(test_coreutils_executable("kill"))
         .arg("-0")
         .arg(initial_pid.to_string())
         .status()
@@ -1998,7 +1998,7 @@ while True:
         "the incompatible process recipe must be retired"
     );
     assert!(
-        Command::new("/bin/kill")
+        Command::new(test_coreutils_executable("kill"))
             .arg("-9")
             .arg(pid.to_string())
             .status()?
