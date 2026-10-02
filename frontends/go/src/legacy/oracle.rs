@@ -1028,11 +1028,11 @@ impl GoOracleChildEnvironment {
         // `go run` builds the vendored helper outside the selected project
         // workspace. The helper receives a separate private value and applies
         // it to `packages.Config.Env` after it starts. A prebuilt oracle can
-        // receive the selected GOWORK directly.
+        // receive the selected GOWORK directly, but its package loader reads
+        // the same private value, which it requires in either mode.
+        command.env("NUDOX_GO_AUTHORITY_GOWORK", work.go_work_value());
         if toolchain_mode {
-            command
-                .env("GOWORK", "off")
-                .env("NUDOX_GO_AUTHORITY_GOWORK", work.go_work_value());
+            command.env("GOWORK", "off");
         } else {
             command.env("GOWORK", work.go_work_value());
         }
