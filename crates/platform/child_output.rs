@@ -1,9 +1,13 @@
 //! Bounded capture of both output streams from one owned child process.
 //!
 //! Unix polls nonblocking pipes without reader threads. The child remains
-//! unreaped until both pipes close, so cancellation can retire the original
-//! process group before its leader PID is reused. Windows uses a separate
+//! unreaped until both pipes close. A non-reaping exit observation then lets
+//! capture retire the original process group even on ordinary success before
+//! its leader PID is reused. Windows uses a separate
 //! owned Job Object and overlapped-pipe implementation.
+//! Unix targets must support waitid(WNOWAIT) and process groups; an OS refusal
+//! is a typed capture failure, never an unbounded reader fallback. Targets
+//! outside Unix and Windows return Unsupported before starting a child.
 
 use std::{
     ffi::OsString, io, path::PathBuf, process::ExitStatus, sync::atomic::AtomicBool, time::Instant,
@@ -223,16 +227,14 @@ fn capture_unix(
                     }
                 }
             }
-            // try_wait reaps on success. Never call it while a descendant
-            // might retain a pipe: deadline cleanup needs the unreaped leader.
-            if out_closed && err_closed {
-                if let Some(status) = child.try_wait().map_err(CaptureError::Wait)? {
-                    return Ok(CapturedOutput {
-                        status,
-                        stdout: out,
-                        stderr: err,
-                    });
-                }
+            // waitid(WNOWAIT) proves leader exit without reaping it. Even a
+            // descendant that closed both pipes remains in the original group
+            // until retirement, while the unreaped leader pins that PGID.
+            if out_closed
+                && err_closed
+                && leader_finished(child.id()).map_err(CaptureError::Wait)?
+            {
+                return Ok((out, err));
             }
             if !progressed {
                 thread::sleep(POLL_INTERVAL);
@@ -240,14 +242,38 @@ fn capture_unix(
         }
     })();
     match transaction {
-        Ok(output) => Ok(output),
+        Ok((stdout, stderr)) => stop(&mut child)
+            .map(|status| CapturedOutput {
+                status,
+                stdout,
+                stderr,
+            })
+            .map_err(CaptureError::Wait),
         Err(primary) => match stop(&mut child) {
-            Ok(()) => Err(primary),
+            Ok(_) => Err(primary),
             Err(source) => Err(CaptureError::Cleanup {
                 primary: Box::new(primary),
                 source,
             }),
         },
+    }
+}
+
+#[cfg(unix)]
+fn leader_finished(id: u32) -> io::Result<bool> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let pid = i32::try_from(id)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| io::Error::other("invalid child PID"))?;
+    match waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::NOHANG | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    ) {
+        Ok(Some(status)) => Ok(status.exited() || status.killed() || status.dumped()),
+        Ok(None) => Ok(false),
+        Err(error) if error == rustix::io::Errno::INTR => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -290,7 +316,7 @@ fn read_available(pipe: &mut impl Read, buffer: &mut [u8]) -> io::Result<Option<
 /// then reaps it. Never call this after try_wait returned an exit status.
 /// Descendants that escape the group/session require an outer OS sandbox.
 #[cfg(unix)]
-pub fn stop(child: &mut std::process::Child) -> io::Result<()> {
+pub fn stop(child: &mut std::process::Child) -> io::Result<ExitStatus> {
     #[cfg(target_os = "macos")]
     let group_result = crate::macos_process::retire_process_group(child.id())
         .map_err(|error| io::Error::other(format!("Darwin group retirement failed: {error:?}")));
@@ -311,8 +337,9 @@ pub fn stop(child: &mut std::process::Child) -> io::Result<()> {
                 .map_err(io::Error::from)
         });
     let _ = child.kill();
-    let reap_result = child.wait().map(|_| ());
-    group_result.and(reap_result)
+    let status = child.wait()?;
+    group_result?;
+    Ok(status)
 }
 
 #[cfg(test)]
@@ -321,20 +348,33 @@ mod tests {
     use std::time::Duration;
 
     #[cfg(unix)]
-    fn shell(
-        script: &str,
+    const FIXTURE: &str = "child_output::tests::native_fixture";
+
+    #[cfg(unix)]
+    fn fixture(
+        mode: &str,
+        root: Option<&std::path::Path>,
         timeout: Duration,
         stdout_bytes: usize,
         stderr_bytes: usize,
         cancelled: &AtomicBool,
     ) -> Result<CapturedOutput, CaptureError> {
+        let mut overrides = vec![("BACKEND_CAPTURE_MODE".into(), Some(mode.into()))];
+        if let Some(root) = root {
+            overrides.push((
+                "BACKEND_CAPTURE_ROOT".into(),
+                Some(root.as_os_str().to_os_string()),
+            ));
+        }
         capture(
             &CaptureCommand {
-                program: "/bin/sh".into(),
-                args: vec!["-c".into(), script.into()],
+                program: std::env::current_exe()
+                    .expect("test executable")
+                    .into_os_string(),
+                args: vec!["--exact".into(), FIXTURE.into(), "--nocapture".into()],
                 cwd: None,
                 environment: CaptureEnvironment::Inherit,
-                overrides: Vec::new(),
+                overrides,
             },
             CaptureLimits {
                 deadline: Instant::now() + timeout,
@@ -347,44 +387,165 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn native_fixture() {
+        use std::{fs, io::Write as _, process::Stdio};
+        let Ok(mode) = std::env::var("BACKEND_CAPTURE_MODE") else {
+            return;
+        };
+        match mode.as_str() {
+            "dual" => {
+                std::io::stdout()
+                    .write_all(b"capture-stdout-token")
+                    .expect("stdout");
+                std::io::stderr()
+                    .write_all(b"capture-stderr-token")
+                    .expect("stderr");
+            }
+            "large-out" => std::io::stdout()
+                .write_all(&[b'x'; 16 * 1024])
+                .expect("stdout"),
+            "large-err" => std::io::stderr()
+                .write_all(&[b'y'; 16 * 1024])
+                .expect("stderr"),
+            "leader-inherit" | "leader-closed" => {
+                let root = std::path::PathBuf::from(
+                    std::env::var_os("BACKEND_CAPTURE_ROOT").expect("fixture root"),
+                );
+                let mut command =
+                    std::process::Command::new(std::env::current_exe().expect("executable"));
+                command
+                    .args(["--exact", FIXTURE, "--nocapture"])
+                    .env(
+                        "BACKEND_CAPTURE_MODE",
+                        if mode == "leader-closed" {
+                            "sleep-marker"
+                        } else {
+                            "sleep-marker-long"
+                        },
+                    )
+                    .env("BACKEND_CAPTURE_ROOT", &root)
+                    .stdin(Stdio::null());
+                if mode == "leader-closed" {
+                    command.stdout(Stdio::null()).stderr(Stdio::null());
+                } else {
+                    command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+                }
+                let _descendant = command.spawn().expect("descendant");
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !root.join("started").exists() {
+                    assert!(Instant::now() < deadline, "descendant did not start");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+            "sleep-marker" | "sleep-marker-long" => {
+                let root = std::path::PathBuf::from(
+                    std::env::var_os("BACKEND_CAPTURE_ROOT").expect("fixture root"),
+                );
+                fs::write(root.join("started"), b"started").expect("started marker");
+                std::thread::sleep(if mode == "sleep-marker" {
+                    Duration::from_secs(2)
+                } else {
+                    Duration::from_secs(5)
+                });
+                fs::write(root.join("survived"), b"survived").expect("survival marker");
+            }
+            _ => panic!("unknown fixture mode"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "backend-capture-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("scratch root");
+        root
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn captures_both_streams_after_an_early_leader_exit() {
-        let output = shell(
-            "printf out; printf err >&2",
+        let output = fixture(
+            "dual",
+            None,
             Duration::from_secs(2),
-            16,
-            16,
+            4096,
+            4096,
             &AtomicBool::new(false),
         )
         .expect("bounded capture");
         assert!(output.status.success());
-        assert_eq!(output.stdout, b"out");
-        assert_eq!(output.stderr, b"err");
+        assert!(
+            output
+                .stdout
+                .windows(b"capture-stdout-token".len())
+                .any(|part| part == b"capture-stdout-token")
+        );
+        assert!(
+            output
+                .stderr
+                .windows(b"capture-stderr-token".len())
+                .any(|part| part == b"capture-stderr-token")
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn a_descendant_holding_both_pipes_reaches_one_deadline() {
+        let root = scratch("held-pipes");
         let started = Instant::now();
-        let result = shell(
-            "sleep 10 & exit 0",
-            Duration::from_millis(100),
-            16,
-            16,
+        let result = fixture(
+            "leader-inherit",
+            Some(&root),
+            Duration::from_secs(1),
+            4096,
+            4096,
             &AtomicBool::new(false),
         );
         assert!(matches!(result, Err(CaptureError::Deadline)));
+        assert!(root.join("started").exists(), "descendant fixture started");
         assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_leader_exit_retires_a_descendant_that_closed_both_pipes() {
+        let root = scratch("closed-pipes");
+        let output = fixture(
+            "leader-closed",
+            Some(&root),
+            Duration::from_secs(2),
+            4096,
+            4096,
+            &AtomicBool::new(false),
+        )
+        .expect("successful capture");
+        assert!(output.status.success());
+        assert!(root.join("started").exists(), "descendant fixture started");
+        std::thread::sleep(Duration::from_millis(2300));
+        assert!(
+            !root.join("survived").exists(),
+            "contained descendant survived successful capture"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
     #[test]
     fn oversized_stdout_and_stderr_are_rejected_independently() {
         assert!(matches!(
-            shell(
-                "printf 123456789",
+            fixture(
+                "large-out",
+                None,
                 Duration::from_secs(2),
-                4,
-                16,
+                1024,
+                65536,
                 &AtomicBool::new(false)
             ),
             Err(CaptureError::OutputLimit {
@@ -393,11 +554,12 @@ mod tests {
             })
         ));
         assert!(matches!(
-            shell(
-                "printf 123456789 >&2",
+            fixture(
+                "large-err",
+                None,
                 Duration::from_secs(2),
-                16,
-                4,
+                65536,
+                1024,
                 &AtomicBool::new(false)
             ),
             Err(CaptureError::OutputLimit {
@@ -411,22 +573,30 @@ mod tests {
     #[test]
     fn cancellation_retires_a_child_with_descendants() {
         use std::sync::{Arc, atomic::Ordering};
+        let root = scratch("cancel");
         let cancelled = Arc::new(AtomicBool::new(false));
         let trigger = Arc::clone(&cancelled);
+        let marker = root.join("started");
         let timer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "descendant did not start");
+                std::thread::sleep(Duration::from_millis(2));
+            }
             trigger.store(true, Ordering::Release);
         });
         let started = Instant::now();
-        let result = shell(
-            "sleep 10 & wait",
-            Duration::from_secs(2),
-            16,
-            16,
+        let result = fixture(
+            "leader-inherit",
+            Some(&root),
+            Duration::from_secs(3),
+            4096,
+            4096,
             &cancelled,
         );
         timer.join().expect("cancel trigger");
         assert!(matches!(result, Err(CaptureError::Cancelled)));
         assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
