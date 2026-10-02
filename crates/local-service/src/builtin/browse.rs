@@ -67,6 +67,8 @@ const BROWSE_CACHE_INDEX_RETAINED_BYTES: usize = 256 * 1024;
 pub(super) struct ObservationControl {
     cancelled: AtomicBool,
     deadline: Instant,
+    #[cfg(test)]
+    force_expired: AtomicBool,
 }
 
 impl ObservationControl {
@@ -74,6 +76,8 @@ impl ObservationControl {
         Self {
             cancelled: AtomicBool::new(false),
             deadline: Instant::now() + CARGO_DEADLINE,
+            #[cfg(test)]
+            force_expired: AtomicBool::new(false),
         }
     }
 
@@ -86,7 +90,16 @@ impl ObservationControl {
     }
 
     pub(super) fn is_expired(&self) -> bool {
+        #[cfg(test)]
+        if self.force_expired.load(Ordering::Acquire) {
+            return true;
+        }
         Instant::now() >= self.deadline
+    }
+
+    #[cfg(test)]
+    pub(super) fn expire_for_test(&self) {
+        self.force_expired.store(true, Ordering::Release);
     }
 }
 
