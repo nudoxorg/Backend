@@ -1145,7 +1145,14 @@ mod tests {
     #[test]
     fn appends_keep_reference_first_wins_order() {
         let initial = replace_markdown("[link][id]\n\n[id]: first");
-        let appended = append_markdown(initial, "\n\n[id]: second");
+        let initial_link_block = initial.document.blocks.get(0).unwrap() as *const node::BlockNode;
+        let appended = append_markdown(initial.clone(), "\n\n[id]: second");
+        assert_eq!(
+            appended.document.blocks.get(0).unwrap() as *const node::BlockNode,
+            initial_link_block,
+            "reparsing the final definition must retain the earlier reference paragraph"
+        );
+        assert_eq!(initial.document.blocks.len(), 2);
         assert_eq!(
             appended
                 .node_cx

@@ -147,7 +147,7 @@ impl std::fmt::Display for SourceSnapshot {
 
 #[derive(Clone, Debug)]
 struct StoredBlock(Arc<BlockNode>);
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct BlockCount(usize);
 impl sum_tree::ContextLessSummary for BlockCount {
     fn zero() -> Self {
@@ -163,15 +163,6 @@ impl sum_tree::Item for StoredBlock {
         BlockCount(1)
     }
 }
-impl<'a> sum_tree::Dimension<'a, BlockCount> for usize {
-    fn zero((): ()) -> Self {
-        0
-    }
-    fn add_summary(&mut self, summary: &'a BlockCount, (): ()) {
-        *self += summary.0;
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BlockSequence(sum_tree::SumTree<StoredBlock>);
 impl From<Vec<BlockNode>> for BlockSequence {
@@ -198,8 +189,8 @@ impl BlockSequence {
         if index >= self.len() {
             return None;
         }
-        let mut cursor = self.0.cursor::<usize>(());
-        cursor.seek(&index, sum_tree::Bias::Right);
+        let mut cursor = self.0.cursor::<BlockCount>(());
+        cursor.seek(&BlockCount(index), sum_tree::Bias::Right);
         cursor.item().map(|block| block.0.as_ref())
     }
     pub(crate) fn last(&self) -> Option<&BlockNode> {
@@ -210,8 +201,10 @@ impl BlockSequence {
             return;
         }
         let prefix = {
-            let mut cursor = self.0.cursor::<usize>(());
-            cursor.slice(&(self.len() - 1), sum_tree::Bias::Left)
+            let mut cursor = self.0.cursor::<BlockCount>(());
+            // Include every block ending at the retained prefix boundary.
+            // Left bias excludes that block too, deleting two rather than one.
+            cursor.slice(&BlockCount(self.len() - 1), sum_tree::Bias::Right)
         };
         self.0 = prefix;
     }
@@ -222,8 +215,8 @@ impl BlockSequence {
         self.0.iter().map(|block| block.0.as_ref())
     }
     pub(crate) fn iter_from(&self, index: usize) -> impl Iterator<Item = (usize, &BlockNode)> {
-        let mut cursor = self.0.cursor::<usize>(());
-        cursor.seek(&index, sum_tree::Bias::Right);
+        let mut cursor = self.0.cursor::<BlockCount>(());
+        cursor.seek(&BlockCount(index), sum_tree::Bias::Right);
         cursor
             .enumerate()
             .map(move |(offset, block)| (index + offset, block.0.as_ref()))
@@ -242,6 +235,33 @@ impl Index<usize> for BlockSequence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pop_removes_exactly_one_block_and_keeps_snapshot_identity() {
+        let original: BlockSequence = (0..3)
+            .map(|_| BlockNode::HorizontalRule { span: None })
+            .collect::<Vec<_>>()
+            .into();
+        let addresses: Vec<_> = original
+            .iter()
+            .map(|block| block as *const BlockNode)
+            .collect();
+        let mut shortened = original.clone();
+        for remaining in (0..3).rev() {
+            shortened.pop();
+            assert_eq!(shortened.len(), remaining);
+            assert_eq!(
+                shortened
+                    .iter()
+                    .map(|block| block as *const BlockNode)
+                    .collect::<Vec<_>>(),
+                addresses[..remaining]
+            );
+            assert_eq!(original.len(), 3);
+        }
+        shortened.pop();
+        assert!(shortened.is_empty());
+    }
 
     #[test]
     fn persistent_blocks_keep_prefix_identity_and_balanced_paths() {
@@ -263,8 +283,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             [4094, 4095, 4096]
         );
-        for _ in 0..4096 {
+        for remaining in (1..4097).rev() {
             grown.pop();
+            assert_eq!(grown.len(), remaining);
         }
         assert_eq!(grown.get(0).unwrap() as *const BlockNode, first_address);
         assert_eq!(grown.len(), 1);
