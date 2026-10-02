@@ -36,15 +36,95 @@ use backend_gui_harness::{
     AnimationFrame, CaptureConfig, CaptureError, CaptureSession, GpuiCaptureOptions, GuiState,
     InputStep, ThemeState, Viewport, capture_gpui_state_with_adapters_result_and_semantics,
 };
-use backend_library::{CommandReply, DeclarationKind, RowState};
+use backend_library::{
+    CommandReply, DeclarationKind, PackageReference, RegistryEcosystem, RowState, SurfaceCommand,
+    SurfaceReply,
+};
 use gpui::{
     App, AppContext as _, Context, Entity, IntoElement, Modifiers, Render, Styled, WeakEntity,
     Window, div, rgb,
 };
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveGuiHandoff {
+    schema: String,
+    workspace: PathBuf,
+    endpoint: PathBuf,
+    packages: Vec<String>,
+    root: String,
+    joined_receipt: PathBuf,
+    joined_receipt_blake3: String,
+    build_receipt: PathBuf,
+    build_receipt_blake3: String,
+    capture: String,
+    requires_native_frame_and_accesskit: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JoinedLiveReceipt {
+    schema: String,
+    git_head: String,
+    git_tree: String,
+    cargo_lock_sha256: String,
+    build_receipt: PathBuf,
+    build_receipt_blake3: String,
+    workspace: PathBuf,
+    endpoint: PathBuf,
+    owner_pid: u32,
+    mcp_pid: u32,
+    root: String,
+    packages: Vec<String>,
+    turso_backup: LiveTursoBackup,
+    registry_facts: Vec<LiveRegistryFact>,
+    cold_restart: String,
+    turso_restore: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveTursoBackup {
+    projection: String,
+    index_authority: String,
+    tursodb: String,
+    tursodb_path: PathBuf,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveRegistryFact {
+    lane: String,
+    coordinate: String,
+    archive_bytes: u64,
+    registry_record: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductBuildReceipt {
+    schema: String,
+    created_at: String,
+    git_head: String,
+    git_tree: String,
+    cargo_lock_sha256: String,
+    cargo_version: String,
+    rustc_version: String,
+    target_dir: PathBuf,
+    binaries: BTreeMap<String, ProductBinaryReceipt>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductBinaryReceipt {
+    path: PathBuf,
+    sha256: String,
+}
 
 const INDEX_DEADLINE: Duration = Duration::from_mins(15);
 
@@ -885,6 +965,556 @@ fn capture(
 
 fn frames_index(label: &str) -> usize {
     label[1..3].parse().unwrap_or(0)
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn hex_root(root: &[u8; 32]) -> String {
+    hex_bytes(root)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    hex_bytes(&Sha256::digest(bytes))
+}
+
+fn read_typed_json<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> T {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| panic!("read {label} {}: {error}", path.display()));
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("decode {label} {}: {error}", path.display()))
+}
+
+fn current_git_value(repository: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(args)
+        .output()
+        .expect("read current desktop capture source identity");
+    assert!(output.status.success(), "git {} failed", args.join(" "));
+    String::from_utf8(output.stdout).expect("git output UTF-8").trim().to_owned()
+}
+
+fn current_process_command(pid: u32) -> String {
+    let pid = pid.to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-ww", "-p", pid.as_str(), "-o", "command="])
+        .output()
+        .expect("read exact owner process identity");
+    assert!(output.status.success(), "ps could not inspect owner PID {pid}");
+    String::from_utf8(output.stdout)
+        .expect("ps command output UTF-8")
+        .trim()
+        .to_owned()
+}
+
+fn checked_capture_artifact(root: &Path, relative: &str) -> PathBuf {
+    let relative = Path::new(relative);
+    assert!(!relative.is_absolute(), "capture manifest artifact path must be relative");
+    assert!(
+        relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "capture manifest artifact path contains traversal"
+    );
+    let canonical_root = root.canonicalize().expect("canonical capture root");
+    let artifact = root
+        .join(relative)
+        .canonicalize()
+        .expect("canonical manifest artifact");
+    assert!(artifact.starts_with(&canonical_root), "capture artifact escaped its evidence root");
+    artifact
+}
+
+fn capture_tree_evidence(root: &Path) -> Vec<serde_json::Value> {
+    fn visit(root: &Path, directory: &Path, files: &mut Vec<serde_json::Value>) {
+        let mut entries = std::fs::read_dir(directory)
+            .expect("read capture artifact directory")
+            .map(|entry| entry.expect("capture artifact entry"))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path).expect("capture artifact metadata");
+            assert!(!metadata.file_type().is_symlink(), "capture artifact tree contains a symlink");
+            if metadata.is_dir() {
+                visit(root, &path, files);
+            } else {
+                let bytes = std::fs::read(&path).expect("read capture artifact bytes");
+                files.push(serde_json::json!({
+                    "path": path.strip_prefix(root).expect("capture-relative path").display().to_string(),
+                    "bytes": bytes.len(),
+                    "sha256": sha256_hex(&bytes),
+                }));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    visit(root, root, &mut files);
+    files
+}
+
+/// Consumes the joined real-registry receipt while its exact owner is still
+/// serving, then captures the selected pinned package through the real GPUI
+/// shell and its post-frame AccessKit readback.
+#[test]
+#[ignore = "requires the joined public-registry runner and a live product owner"]
+fn live_registry_handoff_receipt_is_consumed_by_real_gpui_capture() {
+    let handoff_path = std::env::var_os("NUDOX_LIVE_GUI_HANDOFF")
+        .map(PathBuf::from)
+        .expect("NUDOX_LIVE_GUI_HANDOFF is required");
+    let handoff: LiveGuiHandoff = read_typed_json(&handoff_path, "typed GUI handoff");
+    assert_eq!(handoff.schema, "nudox.gui.live-handoff.v2");
+    assert!(handoff.requires_native_frame_and_accesskit);
+    assert_eq!(
+        handoff.capture,
+        "apps/desktop shell_capture live_registry_handoff_receipt_is_consumed_by_real_gpui_capture"
+    );
+
+    let joined_bytes = std::fs::read(&handoff.joined_receipt).expect("read joined producer receipt");
+    assert_eq!(
+        blake3::hash(&joined_bytes).to_hex().to_string(),
+        handoff.joined_receipt_blake3,
+        "joined receipt bytes do not match the GUI handoff"
+    );
+    let joined: JoinedLiveReceipt = serde_json::from_slice(&joined_bytes)
+        .expect("decode typed joined producer receipt");
+    assert_eq!(joined.schema, "nudox.live.joined-registry-receipt.v1");
+    assert_eq!(joined.workspace, handoff.workspace);
+    assert_eq!(joined.endpoint, handoff.endpoint);
+    assert_eq!(joined.root, handoff.root);
+    assert_eq!(joined.packages, handoff.packages);
+    assert_eq!(joined.build_receipt, handoff.build_receipt);
+    assert_eq!(joined.build_receipt_blake3, handoff.build_receipt_blake3);
+    assert!(joined.owner_pid > 0 && joined.mcp_pid > 0);
+    assert_eq!(joined.cold_restart, "passed-on-same-workspace-and-mcp-process");
+    assert_eq!(joined.turso_restore, "passed-in-place-from-vacuum-into-images");
+    assert_eq!(joined.registry_facts.len(), 7);
+    assert!(joined.registry_facts.iter().all(|fact| {
+        fact.archive_bytes > 0
+            && !fact.lane.is_empty()
+            && fact.registry_record.is_object()
+            && joined.packages.contains(&fact.coordinate)
+    }));
+    for digest in [
+        &joined.turso_backup.projection,
+        &joined.turso_backup.index_authority,
+        &joined.turso_backup.tursodb,
+    ] {
+        assert_eq!(digest.len(), 64, "Turso evidence hash must be SHA-256");
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    let expected_packages = [
+        "pkg:cargo/hashbrown@0.14.5",
+        "pkg:npm/@babel/parser@7.26.8",
+        "pkg:pypi/tomli@2.2.1",
+        "pkg:maven/com.fasterxml.jackson.core/jackson-annotations@2.16.1",
+        "pkg:nuget/nullable@1.3.1",
+        "pkg:golang/github.com/BurntSushi/toml@v1.4.0",
+        "pkg:generic/conan/zlib@1.3.1",
+    ];
+    let expected_registry_facts = [
+        ("rust", expected_packages[0]),
+        ("typescript", expected_packages[1]),
+        ("python", expected_packages[2]),
+        ("java", expected_packages[3]),
+        ("csharp", expected_packages[4]),
+        ("golang", expected_packages[5]),
+        ("cpp", expected_packages[6]),
+    ]
+    .map(|(lane, coordinate)| (lane.to_owned(), coordinate.to_owned()));
+    let observed_registry_facts = joined
+        .registry_facts
+        .iter()
+        .map(|fact| (fact.lane.clone(), fact.coordinate.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observed_registry_facts, expected_registry_facts,
+        "producer receipt must bind exactly one public registry fact record to each exact pin"
+    );
+    assert_eq!(
+        handoff.packages,
+        expected_packages.map(ToOwned::to_owned),
+        "handoff must contain exactly the seven pinned public releases"
+    );
+    assert!(joined.turso_backup.tursodb_path.is_absolute());
+    let tursodb = joined
+        .turso_backup
+        .tursodb_path
+        .canonicalize()
+        .expect("canonical tursodb binary from producer receipt");
+    assert_eq!(tursodb, joined.turso_backup.tursodb_path);
+    assert_eq!(
+        sha256_hex(&std::fs::read(&tursodb).expect("read receipt-bound tursodb")),
+        joined.turso_backup.tursodb,
+        "the recorded Turso executable differs from the one used for backup and restore"
+    );
+
+    let workspace = handoff.workspace.canonicalize().expect("canonical live workspace");
+    assert_eq!(workspace, handoff.workspace, "handoff workspace must be canonical");
+    assert!(workspace.is_dir(), "handoff workspace is absent");
+    let endpoint = backend_runtime::derive_endpoint(&workspace);
+    assert_eq!(endpoint, handoff.endpoint, "handoff endpoint is not derived from its exact workspace");
+    assert!(endpoint.exists(), "joined product owner endpoint is not live");
+
+    let repository = repo();
+    assert!(
+        current_git_value(&repository, &["status", "--porcelain", "--untracked-files=all"]).is_empty(),
+        "GUI receipt consumer requires the same clean source tree"
+    );
+    let build_bytes = std::fs::read(&handoff.build_receipt).expect("read product build receipt");
+    assert_eq!(
+        blake3::hash(&build_bytes).to_hex().to_string(),
+        handoff.build_receipt_blake3,
+        "product build receipt hash changed after the live stage"
+    );
+    let build: ProductBuildReceipt = serde_json::from_slice(&build_bytes)
+        .expect("decode typed product build receipt");
+    assert_eq!(build.schema, "nudox.live.product-build.v1");
+    assert!(!build.created_at.is_empty());
+    assert!(!build.cargo_version.is_empty() && !build.rustc_version.is_empty());
+    assert_eq!(build.git_head, joined.git_head);
+    assert_eq!(build.git_tree, joined.git_tree);
+    assert_eq!(build.cargo_lock_sha256, joined.cargo_lock_sha256);
+    assert_eq!(build.target_dir.canonicalize().expect("canonical target"), build.target_dir);
+    assert_eq!(
+        sha256_hex(&std::fs::read(repository.join("Cargo.lock")).expect("read Cargo.lock")),
+        joined.cargo_lock_sha256,
+        "the product build lockfile changed before GUI consumption"
+    );
+    assert_eq!(current_git_value(&repository, &["rev-parse", "HEAD"]), joined.git_head);
+    assert_eq!(current_git_value(&repository, &["rev-parse", "HEAD^{tree}"]), joined.git_tree);
+    for name in ["locald", "cli", "mcp"] {
+        let binary = build.binaries.get(name).unwrap_or_else(|| panic!("build receipt omitted {name}"));
+        let path = binary.path.canonicalize().unwrap_or_else(|error| panic!("{name} binary: {error}"));
+        assert_eq!(path, binary.path);
+        assert!(path.starts_with(&build.target_dir), "{name} binary is outside the fresh target");
+        assert_eq!(sha256_hex(&std::fs::read(path).expect("read current product binary")), binary.sha256);
+    }
+
+    let owner_command = current_process_command(joined.owner_pid);
+    let owner_binary = &build.binaries["locald"].path;
+    let expected_owner_prefix = format!(
+        "{} --workspace {} --endpoint {}",
+        owner_binary.display(),
+        workspace.display(),
+        endpoint.display(),
+    );
+    assert!(
+        owner_command.starts_with(&expected_owner_prefix),
+        "receipt owner PID is not the product locald for the exact workspace and endpoint: {owner_command}"
+    );
+
+    let mut owner_session = Session::connect(&endpoint).expect("connect the exact receipt-bound owner");
+    let revision = owner_session.revision().expect("read the exact owner revision");
+    assert_eq!(hex_root(revision.root.as_bytes()), handoff.root, "owner root differs from producer receipt");
+    let package_snapshot = owner_session.packages().expect("read owner package view");
+    let CommandReply::Packages(package_snapshot) = package_snapshot.reply else {
+        panic!("owner package snapshot reply changed shape");
+    };
+    assert_eq!(hex_root(package_snapshot.root.root().as_bytes()), handoff.root);
+    let expected_ecosystems = [
+        RegistryEcosystem::Cargo,
+        RegistryEcosystem::Npm,
+        RegistryEcosystem::Pypi,
+        RegistryEcosystem::Maven,
+        RegistryEcosystem::Nuget,
+        RegistryEcosystem::Golang,
+        RegistryEcosystem::Cpp,
+    ];
+    for (coordinate, ecosystem) in handoff.packages.iter().zip(expected_ecosystems) {
+        let package = PackageReference::parse(coordinate).expect("exact receipt package reference");
+        let details = owner_session
+            .surface(SurfaceCommand::Package { package: package.clone() })
+            .expect("exact receipt package details");
+        let SurfaceReply::Package(records) = details else {
+            panic!("owner package details changed shape for {coordinate}: {details:?}");
+        };
+        assert_eq!(records.len(), 1, "owner returned duplicate package records for {coordinate}");
+        assert_eq!(records[0].coordinate.as_str(), coordinate);
+        assert_eq!(
+            records[0].ecosystem, ecosystem,
+            "package details for {coordinate} came from the wrong registry ecosystem"
+        );
+        let reply = owner_session
+            .surface(SurfaceCommand::PackageProfile {
+                package,
+            })
+            .expect("exact receipt package profile");
+        let SurfaceReply::PackageProfile { latest: Some(latest), versions, .. } = reply else {
+            panic!("owner omitted exact package profile for {coordinate}: {reply:?}");
+        };
+        assert_eq!(latest.coordinate.as_str(), coordinate);
+        assert!(versions > 0, "owner returned an empty version history for {coordinate}");
+    }
+    assert_eq!(
+        hex_root(owner_session.revision().expect("re-read exact owner revision").root.as_bytes()),
+        handoff.root,
+        "package checks did not remain on the handoff root"
+    );
+
+    let output = handoff
+        .joined_receipt
+        .parent()
+        .expect("joined evidence directory")
+        .join("gui");
+    std::fs::create_dir(&output).expect("create unique GPUI evidence directory");
+    let probe_evidence = output.join("probe");
+    let capture_evidence = output.join("capture");
+    std::fs::create_dir(&probe_evidence).expect("create native probe evidence directory");
+    std::fs::create_dir(&capture_evidence).expect("create GPUI capture directory");
+    // Select NuGet as the desktop consumer lane: it exercises the typed
+    // package-record ecosystem projection alongside the route's exact PURL.
+    let selected = handoff.packages[4].clone();
+    assert_eq!(selected, "pkg:nuget/nullable@1.3.1");
+    let package = PackageId::new(&selected).expect("exact pinned package route");
+    let route = Route::Package(PackageRoute {
+        project: None,
+        package,
+        lane: PackageLane::Overview,
+        selected: None,
+        at: None,
+    });
+    let snapshot_key = VersionedRoot::from_revision(1, revision.cursor(), 0);
+    let project = LocalProjectId::from_path(&workspace).expect("owner workspace project identity");
+    let viewport = Viewport::new(1440, 900, 1).expect("live registry viewport");
+    let frames = [
+        AnimationFrame { label: "f00-0ms".to_owned(), time_ms: 0 },
+        AnimationFrame { label: "f01-400ms".to_owned(), time_ms: 400 },
+    ];
+    let graph_slot: Rc<RefCell<Option<(WeakEntity<DataStore>, WeakEntity<Shell>)>>> =
+        Rc::new(RefCell::new(None));
+    let build_slot = Rc::clone(&graph_slot);
+    let frame_slot = Rc::clone(&graph_slot);
+    let capture_endpoint = endpoint.clone();
+    let expected_root = handoff.root.clone();
+    let probe_out = probe_evidence.clone();
+    let mut set = capture_gpui_state_with_adapters_result_and_semantics(
+        viewport,
+        GuiState::new("live-registry-package", None, None),
+        &[],
+        &frames,
+        GpuiCaptureOptions {
+            asset_source: std::sync::Arc::new(facet::icons::Assets),
+            capture_native_accessibility: true,
+            ..GpuiCaptureOptions::default()
+        },
+        |_frame, _window, _cx| Ok(()),
+        |_step, _window, _cx| {},
+        move |frame, image, _viewport, window, cx| {
+            let handles = frame_slot.borrow();
+            let (store_weak, shell_weak) = handles
+                .as_ref()
+                .ok_or_else(|| CaptureError::Gpui("live registry graph was not built".to_owned()))?;
+            let store = upgrade_capture_entity(store_weak, "live registry data store")?;
+            let shell = upgrade_capture_entity(shell_weak, "live registry shell")?;
+            let snapshot = store.read(cx).snapshot();
+            let actual_root = hex_root(snapshot.key().root().as_bytes());
+            let route_text = format!("{:?}", snapshot.route());
+            let reader = shell
+                .read(cx)
+                .reader_text(cx)
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>();
+            let label = &frame.label;
+            image
+                .save(probe_out.join(format!("frame-{label}.png")))
+                .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            std::fs::write(
+                probe_out.join(format!("reader-{label}.json")),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "root": actual_root,
+                    "route": route_text,
+                    "reader": reader,
+                }))
+                .map_err(|error| CaptureError::Gpui(error.to_string()))?,
+            )
+            .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            let tree = window.debug_a11y_tree_json().ok_or_else(|| {
+                CaptureError::Accessibility("the live registry frame has no GPUI AccessKit readback".to_owned())
+            })?;
+            std::fs::write(probe_out.join(format!("accesskit-{label}.json")), &tree)
+                .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            if actual_root != expected_root {
+                return Err(CaptureError::Gpui("live GPUI frame observed a different owner root".to_owned()));
+            }
+            if !route_text.contains("pkg:nuget/nullable@1.3.1") {
+                return Err(CaptureError::Gpui("live GPUI route lost the selected pinned package".to_owned()));
+            }
+            Ok(())
+        },
+        move |window, cx| {
+            let mut session = SessionState::default();
+            session.route = route.clone();
+            let snapshot = AppSnapshot::empty(snapshot_key).with_session(session);
+            let actor = EngineActor::start(LocalEngineClient::new(&capture_endpoint, project.clone()), 32)
+                .expect("start live registry UI actor");
+            let runtime = DesktopRuntime::new(snapshot, actor);
+            let read_endpoint = capture_endpoint.clone();
+            let pool = ReadPool::start(3, move |_| SessionReader::connect(&read_endpoint))
+                .expect("start live registry UI read pool");
+            let graph = UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool));
+            let shell = backend_desktop::shell::open_shell(&graph, window, cx);
+            land(&graph.store, cx);
+            *build_slot.borrow_mut() = Some((graph.store.downgrade(), shell.downgrade()));
+            cx.new(|cx| gpui_component::Root::new(shell.clone(), window, cx).bordered(false))
+        },
+    )
+    .expect("capture exact live-registry GPUI package page");
+
+    let mut config = CaptureConfig::deterministic(viewport);
+    config.data_revision = format!("live-owner-root:{}", handoff.root);
+    let capture_session = CaptureSession::new(config, &capture_evidence).expect("create GPUI receipt session");
+    capture_session
+        .write_set(&mut set, Some("joined-live-registry|package=nullable@1.3.1|root"), None)
+        .expect("write actual GPUI frame, AccessKit tree, and capture manifest");
+    assert_eq!(set.frames.len(), frames.len(), "every declared live frame must be captured");
+    assert!(set.frames.iter().all(|frame| frame.native_accessibility.is_some()), "every frame needs its paired native AccessKit tree");
+    let capture_manifest = capture_evidence.join("manifests/live-registry-package.json");
+    let manifest: serde_json::Value = read_typed_json(&capture_manifest, "real GPUI capture manifest");
+    assert_eq!(manifest["schema"], 1);
+    assert_eq!(manifest["state"]["id"], "live-registry-package");
+    assert_eq!(manifest["config"]["data_revision"], format!("live-owner-root:{}", handoff.root));
+    assert_eq!(manifest["provenance"]["source_revision"], joined.git_head);
+    assert_eq!(manifest["provenance"]["dirty"], false, "GPUI capture provenance is dirty");
+    let manifest_frames = manifest["frames"].as_array().expect("capture manifest frame array");
+    assert_eq!(manifest_frames.len(), frames.len(), "capture manifest must bind every requested frame");
+    let mut frame_evidence = Vec::with_capacity(frames.len());
+    for (index, (requested, recorded)) in frames.iter().zip(manifest_frames).enumerate() {
+        assert_eq!(recorded["label"], requested.label, "manifest frame label/order changed");
+        assert_eq!(recorded["time_ms"], requested.time_ms);
+        let persisted_path = checked_capture_artifact(
+            &capture_evidence,
+            recorded["path"].as_str().expect("manifest frame path"),
+        );
+        let persisted_bytes = std::fs::read(&persisted_path).expect("read manifest-bound GPUI frame");
+        assert_eq!(
+            sha256_hex(&persisted_bytes),
+            recorded["sha256"].as_str().expect("frame SHA-256"),
+            "persisted GPUI frame digest differs from its manifest"
+        );
+        let persisted_image = image::load_from_memory(&persisted_bytes)
+            .expect("decode persisted GPUI frame")
+            .to_rgba8();
+        let probe_frame_path = probe_evidence.join(format!("frame-{}.png", requested.label));
+        let probe_frame_bytes = std::fs::read(&probe_frame_path).expect("read raw GPUI frame probe");
+        let probe_image = image::load_from_memory(&probe_frame_bytes)
+            .expect("decode raw GPUI frame probe")
+            .to_rgba8();
+        assert_eq!(persisted_image, probe_image, "manifest frame differs from the exact GPUI probe pixels");
+        assert_eq!(persisted_image.dimensions(), (1440, 900));
+
+        let native = recorded["native_accessibility"].as_object()
+            .expect("manifest must bind native AccessKit evidence for every frame");
+        let accesskit_path = checked_capture_artifact(
+            &capture_evidence,
+            native["path"].as_str().expect("native AccessKit manifest path"),
+        );
+        let accesskit_bytes = std::fs::read(&accesskit_path).expect("read manifest-bound AccessKit tree");
+        assert_eq!(
+            sha256_hex(&accesskit_bytes),
+            native["sha256"].as_str().expect("native AccessKit SHA-256"),
+            "native AccessKit bytes differ from their capture manifest"
+        );
+        let accesskit: serde_json::Value = serde_json::from_slice(&accesskit_bytes)
+            .expect("decode manifest-bound AccessKit tree");
+        let native_nodes = accesskit["nodes"].as_object().expect("native AccessKit node map");
+        assert!(!native_nodes.is_empty(), "native AccessKit readback is empty for {}", requested.label);
+
+        let reader_path = probe_evidence.join(format!("reader-{}.json", requested.label));
+        let reader_bytes = std::fs::read(&reader_path).expect("read per-frame rendered package evidence");
+        let reader: serde_json::Value = serde_json::from_slice(&reader_bytes)
+            .expect("decode per-frame rendered package evidence");
+        let rendered = serde_json::to_string(&reader).expect("rendered reader JSON");
+        assert_eq!(reader["root"], handoff.root, "rendered page evidence has the wrong owner root");
+        assert!(
+            reader["route"].as_str().is_some_and(|route| route.contains("pkg:nuget/nullable@1.3.1")),
+            "the exact package route did not reach the GPUI frame: {reader}"
+        );
+        assert!(rendered.contains("nullable"), "the exact NuGet package did not reach the rendered Reader: {reader}");
+        assert!(rendered.contains("1.3.1"), "the exact NuGet version did not reach the rendered Reader: {reader}");
+        assert!(rendered.contains("NuGet"), "the rendered dossier did not retain its NuGet ecosystem identity: {reader}");
+        frame_evidence.push(serde_json::json!({
+            "label": requested.label,
+            "time_ms": requested.time_ms,
+            "probe_png": {
+                "path": probe_frame_path.display().to_string(),
+                "sha256": sha256_hex(&probe_frame_bytes),
+                "bytes": probe_frame_bytes.len(),
+            },
+            "manifest_png": {
+                "path": persisted_path.display().to_string(),
+                "sha256": sha256_hex(&persisted_bytes),
+                "bytes": persisted_bytes.len(),
+            },
+            "accesskit": {
+                "path": accesskit_path.display().to_string(),
+                "sha256": sha256_hex(&accesskit_bytes),
+                "bytes": accesskit_bytes.len(),
+                "nodes": native_nodes.len(),
+                "focus": accesskit["accesskit_focus"],
+            },
+            "reader": {
+                "path": reader_path.display().to_string(),
+                "sha256": sha256_hex(&reader_bytes),
+            },
+            "manifest_index": index,
+        }));
+    }
+    let capture_manifest_bytes = std::fs::read(&capture_manifest).expect("read GPUI capture manifest bytes");
+    let capture_files = capture_tree_evidence(&capture_evidence);
+    let consumer_receipt = serde_json::json!({
+        "schema": "nudox.gui.live-consumer-receipt.v1",
+        "handoff": handoff_path.display().to_string(),
+        "handoff_blake3": blake3::hash(&std::fs::read(&handoff_path).expect("read handoff bytes")).to_hex().to_string(),
+        "joined_receipt_blake3": handoff.joined_receipt_blake3,
+        "workspace": workspace.display().to_string(),
+        "endpoint": endpoint.display().to_string(),
+        "packages_verified": handoff.packages,
+        "root": handoff.root,
+        "selected_package": "pkg:nuget/nullable@1.3.1",
+        "frames": frame_evidence,
+        "capture_manifest": capture_manifest.display().to_string(),
+        "capture_manifest_sha256": sha256_hex(&capture_manifest_bytes),
+        "capture_entries": capture_files,
+        "outcome": "passed",
+    });
+    let receipt_path = handoff
+        .joined_receipt
+        .parent()
+        .expect("joined receipt parent")
+        .join("gui-consumer-receipt.json");
+    std::fs::write(
+        &receipt_path,
+        serde_json::to_vec_pretty(&consumer_receipt).expect("encode GUI consumer receipt"),
+    )
+    .expect("preserve native GPUI consumer receipt");
+
+    let mut run: serde_json::Value = read_typed_json(
+        &handoff.joined_receipt.parent().expect("run evidence parent").join("run.json"),
+        "joined run progress",
+    );
+    run["phase"] = serde_json::json!("complete");
+    run["gui_consumer_receipt"] = serde_json::json!(receipt_path.display().to_string());
+    std::fs::write(
+        handoff.joined_receipt.parent().expect("run evidence parent").join("run.json"),
+        serde_json::to_vec_pretty(&run).expect("encode completed run evidence"),
+    )
+    .expect("mark joined readiness complete");
+
+    assert_eq!(
+        hex_root(owner_session.revision().expect("final live owner revision").root.as_bytes()),
+        handoff.root,
+        "GPUI capture must remain attached to the exact owner root"
+    );
 }
 
 #[test]
