@@ -944,6 +944,23 @@ fn mounted_tree_back_return_waits_for_settlement_and_tab_interrupts_it(cx: &mut 
 }
 
 #[gpui::test]
+fn mounted_tree_back_return_is_cancelled_by_a_new_navigation(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("cmd-[");
+    rig.frame(16);
+    let next = Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Tree(
+            LocalProjectId::new("/fixture/interrupted-tree").expect("next Tree project"),
+        ),
+    ));
+    rig.go(Intent::Navigate(next.clone()));
+    assert_eq!(rig.route(), next, "the new Tree replaced the returning visit");
+    assert!(native_tree_release_mounted(&mut rig), "the new Tree mounted its own release");
+    assert!(!native_tree_return_focused(&mut rig), "the interrupted Back cannot focus a new Tree's release");
+}
+
+#[gpui::test]
 fn mounted_tree_back_return_does_not_steal_ask_focus(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
     open_native_tree_release(&mut rig);
