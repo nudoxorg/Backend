@@ -16,7 +16,9 @@ use crate::model::browse::{ApiItem, BrowseKey, BrowseValue, CompareModel, FindMo
 use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PackageRef, SearchPage, SearchQuery, SearchRow, SignatureText};
 use crate::navigation::{BrowseRoute, CompareSet, OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::reads::{ReadPool, SessionReader};
-use crate::shell::tests::{rig, rig_with_reads};
+use crate::shell::tests::{Fixture, RootOnly, rig, rig_with_engine_gate, rig_with_reads};
+use crate::runtime::owner::{OwnerGate, OwnerState};
+use crate::model::ServiceMode;
 use backend_client::Session;
 use backend_library::{DeclarationKind, SurfaceCommand, SurfaceReply};
 use gpui::{SharedString, TestAppContext};
@@ -550,6 +552,28 @@ fn compare_callback_never_revives_on_a_new_same_route_visit(cx: &mut TestAppCont
     assert_eq!(rig.route(), route, "the painted old Compare choice opened after a new visit");
     let current = compare_callback(&mut rig, &selection);
     assert!(rig.cx.update(|_, cx| current.current(cx, |_| Some(())).is_ok()));
+}
+
+#[gpui::test]
+fn compare_painted_callback_cannot_cross_same_root_owner_attachment(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, ServiceMode::Attached);
+    let pool = ReadPool::start(2, |_| Fixture).expect("fixture pool");
+    let mut rig = rig_with_engine_gate(cx, None, 1200.0, 800.0, pool, RootOnly, Some(gate.clone()));
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    land_compare(&mut rig, &selection, true, true);
+    let painted = compare_callback(&mut rig, &selection);
+    let open = super::compare_package_action(painted.clone());
+    assert!(rig.cx.update(|_, cx| painted.current(cx, |_| Some(())).is_ok()));
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+    rig.cx.update(|window, cx| open("/fixture/second".into(), window, cx));
+    assert_eq!(rig.route(), route,
+        "a painted Compare choice from the old owner attachment opened on the renewed same root");
 }
 
 fn browse_visit(rig: &mut crate::shell::tests::Rig) -> super::CurrentBrowseVisit {
