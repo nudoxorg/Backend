@@ -332,9 +332,14 @@ impl RenderOnce for Stamp {
         let measure = self.measure;
         let scale = measure.scale();
         let verdict = verdict(&self.facts);
-        let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
+        let live = self.held == Pose::Live;
+        let touch = Touch::read(&self.id, crate::controls::Look::LIVE, live, window, cx);
         let motion = touch.motion.clone();
-        let disclosure = DisclosureFlow::read(&self.id, &touch, self.held, window, cx);
+        // Hover and focus can reveal the details; activation pins an explicit
+        // choice and can close them while the pointer or focus remains here.
+        let choice = window.use_keyed_state(key(&self.id, "disclosure"), cx, |_, _| None::<bool>);
+        let requested = self.held == Pose::Held || choice.read(cx).unwrap_or(touch.hovered || touch.focused);
+        let disclosure = DisclosureFlow::read(&self.id, &touch, requested, window, cx);
         let open = disclosure.progress;
         let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let tone = ink_of(verdict.tone, palette);
@@ -463,8 +468,24 @@ impl RenderOnce for Stamp {
             .child(face)
             .children(more_item)
             .id(self.id.clone());
-        let plate = crate::controls::button::wire(plate, &touch, None);
-        div().flex_none().w(self.width).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
+        let plate = if live {
+            let toggle: crate::controls::button::Handler = Rc::new(move |_, cx| {
+                choice.update(cx, |choice, cx| {
+                    *choice = Some(!choice.unwrap_or(false));
+                    cx.notify();
+                });
+            });
+            crate::controls::button::wire(
+                plate.role(gpui::Role::Button)
+                    .aria_label("Toggle licence details")
+                    .aria_expanded(requested),
+                &touch,
+                Some(toggle),
+            )
+        } else {
+            plate.role(gpui::Role::Label).aria_label("Licence details expanded")
+        };
+        div().flex_none().w(self.width).child(hover_zone(plate, &touch, 9.0 * scale, live)).into_any_element()
     }
 }
 
