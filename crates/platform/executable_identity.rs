@@ -59,6 +59,7 @@ pub struct RunningExecutable {
 }
 
 impl RunningExecutable {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn new(file: File) -> io::Result<Self> {
         let stamp = FileStamp::capture(&file)?;
         Ok(Self { file, stamp })
@@ -72,7 +73,7 @@ impl RunningExecutable {
     ) -> io::Result<T> {
         self.stamp.verify(&self.file)?;
         use std::io::Seek as _;
-        self.file.seek(std::io::SeekFrom::Start(0))?;
+        self.file.seek(io::SeekFrom::Start(0))?;
         let value = read(&mut self.file)?;
         self.stamp.verify(&self.file)?;
         Ok(value)
