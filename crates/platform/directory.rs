@@ -880,14 +880,6 @@ fn validate_regular_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn validate_regular_file(file: &File) -> io::Result<()> {
-    if !file.metadata()?.is_file() {
-        return Err(invalid("child is not a regular file"));
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 fn validate_private_file(file: &File) -> io::Result<()> {
     use rustix::process::geteuid;
