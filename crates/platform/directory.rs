@@ -11,6 +11,8 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::linkage::{IfUnlinked, Linkage, open_admitted};
+
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
@@ -391,14 +393,18 @@ impl DirectoryCapability {
     }
 
     /// Opens a direct regular file and validates owner-only permissions.
+    ///
+    /// A writer that publishes with a replacing rename may unlink the file between this open and
+    /// its checks. The reader keeps the complete generation it opened instead of failing or
+    /// chasing the name: see [`IfUnlinked::Keep`].
     pub fn open_private_file(&self, name: &str) -> io::Result<File> {
         validate_component(name)?;
-        #[cfg(windows)]
-        let file = self.handle.open_file_read_checked(&[name])?;
-        #[cfg(not(windows))]
-        let file = self.open_file_read(name)?;
-        validate_private_file(&file)?;
-        Ok(file)
+        open_private(IfUnlinked::Keep, || {
+            #[cfg(windows)]
+            return self.handle.open_file_read_checked(&[name]);
+            #[cfg(not(windows))]
+            return self.open_file_read(name);
+        })
     }
 
     /// Opens or creates a direct regular file for reading and writing. New
@@ -435,10 +441,13 @@ impl DirectoryCapability {
     }
 
     /// Opens or creates a direct private file for reading and writing.
+    ///
+    /// A writer must act on the file the name refers to now, so a file unlinked between the open
+    /// and its checks is discarded and the name is opened again: see [`IfUnlinked::Reopen`].
     pub fn open_private_file_read_write(&self, name: &str, create: bool) -> io::Result<File> {
-        let file = self.open_file_read_write(name, create)?;
-        validate_private_file(&file)?;
-        Ok(file)
+        open_private(IfUnlinked::Reopen, || {
+            self.open_file_read_write(name, create)
+        })
     }
 
     /// Creates one direct regular file exclusively with owner-only mode or ACL.
@@ -456,7 +465,7 @@ impl DirectoryCapability {
             )?;
             let file = File::from(file);
             rustix::fs::fchmod(&file, Mode::from_bits_truncate(0o600))?;
-            validate_private_file(&file)?;
+            validate_private_file(&file, Linkage::Named)?;
             return Ok(file);
         }
         #[cfg(windows)]
@@ -880,15 +889,27 @@ fn validate_regular_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Opens a private file and admits it, applying `if_unlinked` when a replacing rename removes its
+/// last name between the open and the checks.
+fn open_private(if_unlinked: IfUnlinked, open: impl Fn() -> io::Result<File>) -> io::Result<File> {
+    open_admitted(
+        if_unlinked,
+        open,
+        validate_private_file,
+        file_is_unlinked,
+        std::thread::sleep,
+    )
+}
+
 #[cfg(unix)]
-fn validate_private_file(file: &File) -> io::Result<()> {
+fn validate_private_file(file: &File, linkage: Linkage) -> io::Result<()> {
     use rustix::process::geteuid;
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.uid() != geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
+        || !linkage.admits(metadata.nlink())
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -898,12 +919,26 @@ fn validate_private_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether the file's last name was removed since it was opened.
+#[cfg(unix)]
+fn file_is_unlinked(file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().is_ok_and(|metadata| metadata.nlink() == 0)
+}
+
+/// The Windows workspace opens admit link counts and ownership on the handle themselves.
 #[cfg(windows)]
-fn validate_private_file(file: &File) -> io::Result<()> {
+fn validate_private_file(file: &File, _linkage: Linkage) -> io::Result<()> {
     if !file.metadata()?.is_file() {
         return Err(invalid("child is not a regular file"));
     }
     Ok(())
+}
+
+/// The Windows workspace opens reopen a replaced name themselves.
+#[cfg(windows)]
+fn file_is_unlinked(_file: &File) -> bool {
+    false
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -912,8 +947,13 @@ fn validate_regular_file(_file: &File) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn validate_private_file(_file: &File) -> io::Result<()> {
+fn validate_private_file(_file: &File, _linkage: Linkage) -> io::Result<()> {
     Err(unsupported())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_is_unlinked(_file: &File) -> bool {
+    false
 }
 
 #[cfg(all(test, unix))]

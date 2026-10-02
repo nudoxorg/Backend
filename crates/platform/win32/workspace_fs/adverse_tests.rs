@@ -8,11 +8,13 @@
 //! parent module's tests.
 
 use super::{
-    BACKOFF, EntryKind, EnumeratedEntry, ExistingName, FileId128, IfUnlinked, NewName,
-    RenameInformation, Sharing, WorkspaceRoot, decode_directory_records, ensure_private_handle,
+    EntryKind, EnumeratedEntry, ExistingName, FileId128, NewName, RenameInformation, Sharing,
+    WorkspaceRoot, decode_directory_records, ensure_private_handle,
     ensure_regular_file_handle_with, enumerate_names, file_from_handle, flush_handle,
     is_full_control, open_admitted_file, open_relative, rename_information_length, sid_text,
 };
+use crate::linkage::IfUnlinked;
+use crate::retry::BACKOFF;
 use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::os::windows::io::AsRawHandle as _;

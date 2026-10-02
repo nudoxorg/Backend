@@ -16,10 +16,11 @@
     reason = "reviewed NT relative-open and handle metadata boundary for Windows workspace files"
 )]
 
-use super::busy::{BACKOFF, retry_when, retry_while_busy, retry_while_busy_pausing};
+use super::busy::{retry_while_busy, retry_while_busy_pausing};
 use super::identity::{current_user, is_owned_by_current_user, owner_of};
 use super::security::restrict_handle_to_current_user;
 use crate::directory::DirectoryRenameError;
+use crate::linkage::{Attempt, IfUnlinked, Linkage, open_admitted, reopen_while_replaced};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
@@ -1087,86 +1088,20 @@ fn open_directory_child_with_delete(
     }))
 }
 
-/// How many directory entries may still name an object an admission check
-/// inspects.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Linkage {
-    /// Exactly one: the object is the live entry that was opened by name, and
-    /// no second name can reach (and mutate) its bytes.
-    Named,
-    /// One, or none because a replacing rename or a delete removed the last
-    /// name after the open. An unlinked object has no names at all, so it
-    /// cannot be reached through an alias either; a reader that already holds
-    /// it has exactly what a POSIX reader of an unlinked inode has.
-    NamedOrUnlinked,
-}
-
-impl Linkage {
-    fn admits(self, standard: &FILE_STANDARD_INFO) -> bool {
-        standard.NumberOfLinks == 1 || (self == Self::NamedOrUnlinked && is_unlinked(standard))
+/// The number of names that reach the object `standard` describes, counting a delete-pending
+/// object (whose name is already gone for every new lookup) as unlinked.
+fn links_of(standard: &FILE_STANDARD_INFO) -> u64 {
+    if standard.DeletePending {
+        0
+    } else {
+        u64::from(standard.NumberOfLinks)
     }
 }
 
-/// Whether the object lost its last name since it was opened: a replacing
-/// rename or a delete unlinked it (zero links) or left it delete-pending.
-fn is_unlinked(standard: &FILE_STANDARD_INFO) -> bool {
-    standard.NumberOfLinks == 0 || standard.DeletePending
-}
-
-/// Whether the object `handle` holds lost its last name since it was opened.
+/// Whether the object `handle` holds lost its last name since it was opened: a replacing rename
+/// or a delete unlinked it (zero links) or left it delete-pending.
 fn handle_is_unlinked(handle: *mut c_void) -> bool {
-    standard_info(handle).is_ok_and(|standard| is_unlinked(&standard))
-}
-
-/// What an open does when the object it holds lost its last name before the
-/// admission checks ran.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IfUnlinked {
-    /// Keep the handle. A reader then has the complete generation that was
-    /// published under the name when it opened it. No second open is needed,
-    /// so a publisher that replaces the name in a loop cannot starve it.
-    Keep,
-    /// Discard the handle and open the name again after a short pause. A
-    /// writer must act on the object the name refers to now; a handle to the
-    /// replaced generation would swallow its writes.
-    Reopen,
-}
-
-impl IfUnlinked {
-    const fn linkage(self) -> Linkage {
-        match self {
-            Self::Keep => Linkage::NamedOrUnlinked,
-            Self::Reopen => Linkage::Named,
-        }
-    }
-}
-
-/// One attempt that can lose a race to a replacing rename.
-enum Attempt<T> {
-    /// The attempt produced its result.
-    Done(T),
-    /// A replacing rename unlinked what the attempt inspected; look again.
-    Replaced,
-}
-
-/// Repeats `attempt` after a short pause while it reports that a replacing
-/// rename got there first. A name replaced faster than the schedule can open
-/// it is reported as busy rather than spun against.
-fn reopen_while_replaced<T>(
-    attempt: impl FnMut() -> io::Result<Attempt<T>>,
-    pause: impl FnMut(Duration),
-    exhausted: &'static str,
-) -> io::Result<T> {
-    let outcome = retry_when(
-        attempt,
-        |outcome| matches!(outcome, Ok(Attempt::Replaced)),
-        &BACKOFF,
-        pause,
-    );
-    match outcome? {
-        Attempt::Done(value) => Ok(value),
-        Attempt::Replaced => Err(io::Error::new(io::ErrorKind::ResourceBusy, exhausted)),
-    }
+    standard_info(handle).is_ok_and(|standard| links_of(&standard) == 0)
 }
 
 /// Opens the file `leaf` and runs `admit` on the opened handle.
@@ -1183,28 +1118,20 @@ fn open_admitted_file(
     if_unlinked: IfUnlinked,
     admit: impl Fn(*mut c_void, Linkage) -> io::Result<()>,
 ) -> io::Result<OwnedHandle> {
-    reopen_while_replaced(
+    open_admitted(
+        if_unlinked,
         || {
-            let handle = open_relative(
+            open_relative(
                 parent,
                 leaf,
                 access,
                 FILE_NON_DIRECTORY_FILE,
                 Sharing::Transient,
-            )?;
-            match admit(handle.as_raw_handle(), if_unlinked.linkage()) {
-                Ok(()) => Ok(Attempt::Done(handle)),
-                Err(_)
-                    if if_unlinked == IfUnlinked::Reopen
-                        && handle_is_unlinked(handle.as_raw_handle()) =>
-                {
-                    Ok(Attempt::Replaced)
-                }
-                Err(error) => Err(error),
-            }
+            )
         },
+        |handle, linkage| admit(handle.as_raw_handle(), linkage),
+        |handle| handle_is_unlinked(handle.as_raw_handle()),
         thread::sleep,
-        "file was replaced faster than it could be opened",
     )
 }
 
@@ -1650,7 +1577,7 @@ fn ensure_regular_file_handle_with(handle: *mut c_void, linkage: Linkage) -> io:
     if standard.Directory || attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Err(invalid_data("workspace object is not a regular file"));
     }
-    if !linkage.admits(&standard) {
+    if !linkage.admits(links_of(&standard)) {
         return Err(invalid_data("workspace file has multiple hard links"));
     }
     Ok(())
