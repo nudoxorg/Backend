@@ -114,8 +114,20 @@ def main [
     # "private-debug" makes the CLI write the child's stdout/stderr beside its
     # manifest; the default "metadata-only" keeps just byte counts, so a
     # failure would reach CI as a bare exit status.
-    let tests = (with-env {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"} {
-        step "backend test pr" {|| run-external "backend" "test" "pr" }
+    # The owner keeps its state only under a parent this user alone can open
+    # (`private state parent is not owned by this user with owner-only
+    # access`). Tests make their scratch roots under /tmp with the default
+    # 022 umask, so every daemon they start exited at once; macOS's per-user
+    # TMPDIR hid this. 077 makes what the tests and their children create
+    # owner-only, as the product's own state directories are.
+    #
+    # The owner's Rust authority also needs a Cargo home, which the dev shell
+    # cannot name because it is per-user.
+    let cargo_home = ($env.CARGO_HOME? | default ($nu.home-path | path join ".cargo"))
+    let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"}
+        | merge (if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} })
+    let tests = (with-env $test_env {
+        step "backend test pr" {|| run-external "sh" "-c" "umask 077 && exec backend test pr" }
     })
     if not $tests { print-captured-failures }
 

@@ -127,6 +127,10 @@ in
   NUDOX_PYREFLY_BIN = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYTHON = "${compilers.python}/bin/python3";
   NUDOX_RUSTC = "${toolchains.stable}/bin/rustc";
+  # The owner's Rust authority needs rustc, Cargo and a Cargo home together;
+  # with any one missing it compiles no Rust ("Unavailable { language: Rust }").
+  # The Cargo home is a per-user directory, so the CI runner names it.
+  NUDOX_CARGO = "${toolchains.stable}/bin/cargo";
   NUDOX_TSC = "${compilers.typescript}/bin/tsc";
   NUDOX_TYPESCRIPT_MODULE_ROOT = "${compilers.typescript}/lib/node_modules";
   NUDOX_TYPESCRIPT_NODE = "${compilers.node}/bin/node";
