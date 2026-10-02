@@ -2776,9 +2776,13 @@ fn tool_script_witness(path: &Path) -> Result<(CargoToolFileWitness, Vec<u8>), S
 fn recognized_nudox_dependency_cache_wrapper(script: &[u8]) -> Option<(PathBuf, PathBuf)> {
     const TEMPLATE: &[u8] = include_bytes!("../../../../.config/scripts/cargo-rustc-cache.sh");
     const PLACEHOLDER: &[u8] = b"@sccache@";
+    let source_shebang_end = TEMPLATE.iter().position(|byte| *byte == b'\n')? + 1;
     let placeholder = TEMPLATE
         .windows(PLACEHOLDER.len())
         .position(|window| window == PLACEHOLDER)?;
+    if placeholder < source_shebang_end {
+        return None;
+    }
     if TEMPLATE[placeholder + PLACEHOLDER.len()..]
         .windows(PLACEHOLDER.len())
         .any(|window| window == PLACEHOLDER)
@@ -2790,19 +2794,31 @@ fn recognized_nudox_dependency_cache_wrapper(script: &[u8]) -> Option<(PathBuf, 
     }
     let line_end = script.iter().position(|byte| *byte == b'\n')?;
     let shebang = std::str::from_utf8(script.get(2..line_end)?).ok()?;
-    let interpreter = PathBuf::from(shebang);
-    if !script.starts_with(b"#!") || !is_supported_nudox_cache_interpreter(&interpreter) {
-        return None;
-    }
-    let mut body = script;
-    // `writeShellScript` may prepend its store Bash shebang to a source file
-    // that already starts with `#!/bin/sh`; accept that one known generation
-    // shape while still requiring the complete tracked source body.
-    if !body.starts_with(&TEMPLATE[..placeholder]) {
-        let line_end = body.iter().position(|byte| *byte == b'\n')?;
-        body = body.get(line_end + 1..)?;
-    }
-    let prefix = &TEMPLATE[..placeholder];
+    let (interpreter, body, template_start) = if shebang == "/bin/sh" {
+        (PathBuf::from("/bin/sh"), script, 0)
+    } else {
+        // `writeShellScript` can either prepend its Nix Bash shebang or
+        // replace the source shebang. Its generated `bash -e` line is admitted
+        // only with the exact tracked body; no other arguments are accepted.
+        let (interpreter, argument) = shebang
+            .split_once(' ')
+            .map_or((shebang, None), |(path, argument)| (path, Some(argument)));
+        let interpreter = PathBuf::from(interpreter);
+        if interpreter == Path::new("/bin/sh")
+            || !is_supported_nudox_cache_interpreter(&interpreter)
+            || !matches!(argument, None | Some("-e"))
+        {
+            return None;
+        }
+        let body = script.get(line_end + 1..)?;
+        let template_start = if body.starts_with(&TEMPLATE[..source_shebang_end]) {
+            0
+        } else {
+            source_shebang_end
+        };
+        (interpreter, body, template_start)
+    };
+    let prefix = &TEMPLATE[template_start..placeholder];
     let suffix = &TEMPLATE[placeholder + PLACEHOLDER.len()..];
     if !body.starts_with(prefix)
         || !body.ends_with(suffix)
@@ -5469,8 +5485,43 @@ mod tests {
 
         let mut with_nix_bash =
             b"#!/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-bash-5.2/bin/bash\n".to_vec();
-        with_nix_bash.extend_from_slice(template);
+        with_nix_bash.extend_from_slice(&generated);
         assert!(recognized_nudox_dependency_cache_wrapper(&with_nix_bash).is_some());
+
+        let mut write_shell_script =
+            b"#!/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-bash-5.2/bin/bash -e\n".to_vec();
+        let source_body = &template[template
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .expect("source shebang")
+            + 1..];
+        let source_placeholder = source_body
+            .windows(b"@sccache@".len())
+            .position(|window| window == b"@sccache@")
+            .expect("source body placeholder");
+        write_shell_script.extend_from_slice(&source_body[..source_placeholder]);
+        write_shell_script.extend_from_slice(
+            b"/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0/bin/sccache",
+        );
+        write_shell_script
+            .extend_from_slice(&source_body[source_placeholder + b"@sccache@".len()..]);
+        assert_eq!(
+            recognized_nudox_dependency_cache_wrapper(&write_shell_script),
+            Some((
+                PathBuf::from("/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-bash-5.2/bin/bash"),
+                PathBuf::from(
+                    "/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0/bin/sccache"
+                )
+            ))
+        );
+        let generated = String::from_utf8(write_shell_script).expect("ASCII generated wrapper");
+        for altered in [
+            generated.replace(" -e\n", " -x\n"),
+            generated.replace("set -eu\n", "set -e\n"),
+            generated.replace("/bin/sccache", "/bin/other"),
+        ] {
+            assert!(recognized_nudox_dependency_cache_wrapper(altered.as_bytes()).is_none());
+        }
 
         for shebang in [
             b"#!/bin/sh -e\n".as_slice(),
