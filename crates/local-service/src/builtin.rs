@@ -459,6 +459,42 @@ pub(crate) fn genesis() -> Result<WorkspaceHead, BuiltinModelError> {
     head_for_intent(None)
 }
 
+/// The owner adapter [`open_empty_owner`] builds: a real product daemon whose
+/// command lane answers every command with an empty reply.
+#[cfg(test)]
+pub(crate) type EmptyOwner = crate::service::LocaldOwner<
+    BuiltinModel,
+    BuiltinValidator,
+    BuiltinAuthorityVerifier,
+    fn(
+        &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        &[u8],
+    ) -> Result<Vec<u8>, String>,
+>;
+
+/// Opens a real, empty product owner at `workspace`, for tests of the layers
+/// that front it (leases, listeners) which need a daemon but not a project.
+#[cfg(test)]
+pub(crate) fn open_empty_owner(workspace: &Path) -> Result<EmptyOwner, String> {
+    let profile = profile_descriptor(BuiltinProfile::Product)?;
+    let dispatcher = builtin_dispatcher(Some([0x3C; 32]), profile, 1)?;
+    let registry = RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| format!("register source relation: {error:?}"))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let daemon = crate::Locald::open_with_dispatcher_and_registry(
+        workspace,
+        BuiltinModel,
+        genesis().map_err(|error| error.to_string())?,
+        dispatcher,
+        DaemonConfig::default(),
+        registry,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(daemon.into_owner(|_, _| Ok(Vec::new())))
+}
+
 /// Builds the checked head a workspace holding exactly `intent` would have.
 ///
 /// The manifest root is a pure function of the selected relations, so this is

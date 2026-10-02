@@ -1303,7 +1303,7 @@ impl Schema for BuiltinIntentSchema {
 /// exact bytes and returns retaining publication evidence, including the
 /// shared owner used by remote admission.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct BuiltinOutputValidator;
+pub(crate) struct BuiltinOutputValidator;
 
 impl backend_engine::OutputAdmissionValidator for BuiltinOutputValidator {
     fn validate(
@@ -1331,12 +1331,12 @@ impl backend_engine::OutputAdmissionValidator for BuiltinOutputValidator {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct BuiltinSemanticAuthority {
+pub(crate) struct BuiltinSemanticAuthority {
     profile: Arc<ProfileDescriptor>,
 }
-pub(super) type BuiltinValidator =
+pub(crate) type BuiltinValidator =
     CompositeAdmissionValidator<BuiltinOutputValidator, BuiltinSemanticAuthority>;
-pub(super) type BuiltinAuthorityVerifier = Blake3AuthorityVerifier;
+pub(crate) type BuiltinAuthorityVerifier = Blake3AuthorityVerifier;
 
 pub(super) fn builtin_output_check(
     output: OutputVersion,
