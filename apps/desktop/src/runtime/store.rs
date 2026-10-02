@@ -29,6 +29,8 @@ mod keeper;
 mod owner_link;
 #[cfg(test)]
 mod cargo_tests;
+#[cfg(test)]
+mod owner_read_tests;
 
 pub(crate) use self::dependencies::RouteDependencies;
 pub(crate) use self::owner_link::OwnerAttachment;
@@ -38,7 +40,7 @@ use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
-use crate::core::{ErrorValue, FaultCode, Resource, ResourceTerminal, UnavailableReason};
+use crate::core::{ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, admit_resource};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
     Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore,
@@ -491,7 +493,7 @@ impl DataStore {
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
     pub(crate) fn save_now(&self) -> std::io::Result<usize> {
-        self.keeper.save_now(&self.pages, &self.snapshot)
+        self.keeper.save_now(&self.pages, &self.snapshot, self.owner_serving())
     }
 
     /// Emits `key`'s change only when its visible state moved.
@@ -887,13 +889,13 @@ impl DataStore {
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
-        let (mut keys, attachment_changed) = self.owner.answered();
-        if attachment_changed {
-            self.revoke_inflight(cx);
+        let answer = self.owner.prepare_answer();
+        if answer.attachment_changed {
             // The watcher may see only the new Ready. Completed bytes from
             // the previous same-root attachment still need a fresh read.
-            self.revoke_cargo_resources(cx);
+            self.revoke_owner_reads(cx);
         }
+        let mut keys = self.owner.answered(answer);
         keys.extend(self.focused.iter().cloned());
         for key in keys {
             self.ensure(key, cx);
@@ -907,8 +909,7 @@ impl DataStore {
         // of their generations before faulting visible pages: a late reply
         // from the lost owner must not land after Retry, even at the same
         // producer root. Quiet snapshot reads keep their last painted value.
-        self.revoke_inflight(cx);
-        self.revoke_cargo_resources(cx);
+        self.revoke_owner_reads(cx);
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -953,36 +954,24 @@ impl DataStore {
         self.prefetching.clear();
     }
 
-    /// Revokes both Cargo resource families and publishes each changed slot,
-    /// including an idle page whose read finished before the owner restarted.
-    fn revoke_cargo_resources(&mut self, cx: &mut Context<Self>) {
-        let keys = self.pages.keys().into_iter()
-            .filter(is_cargo_source_resource)
-            .collect::<Vec<_>>();
-        for key in keys {
+    /// A replacement owner must renew each prior live read. Immutable values
+    /// stay resident as nonactionable predecessors; only visible dependencies
+    /// are requested again when the new owner answers.
+    fn revoke_owner_reads(&mut self, cx: &mut Context<Self>) {
+        for key in self.pages.keys() {
             self.cancel_key(&key, cx);
-            if self.pages.activity(&key) == crate::core::Activity::NotYet {
-                continue;
-            }
             let before = self.pages.stamp(&key);
-            match &key {
-                PageKey::CargoSource(file) => self.pages.revoke_cargo_source(file),
-                PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
-                    self.pages.revoke_cargo_source_inventory(inventory);
-                }
-                _ => continue,
+            if self.pages.revoke_owner_read(&key) {
+                self.emit_moved(key, before, cx);
             }
-            self.emit_moved(key, before, cx);
         }
+        self.prefetching.clear();
     }
 
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
-        if self.owner.attachment_changed() {
-            self.revoke_inflight(cx);
-        }
         let changed = self.owner.starting();
-        self.revoke_cargo_resources(cx);
+        self.revoke_owner_reads(cx);
         if changed {
             cx.notify();
         }
@@ -1107,16 +1096,17 @@ impl DataStore {
                 ))
             });
         }
-        if self.is_loading(key)
-            || resource.value_root().is_some_and(|root| !root.same_authority(self.snapshot.key()))
-        {
+        if self.is_loading(key) {
             return CargoReadAdmission::Checking;
         }
-        match resource.terminal() {
-            ResourceTerminal::Fault(error) => CargoReadAdmission::Fault(error.clone()),
-            ResourceTerminal::Unavailable(reason) => CargoReadAdmission::Unavailable(reason.clone()),
-            ResourceTerminal::Complete if resource.is_loaded() => CargoReadAdmission::Current,
-            ResourceTerminal::Complete | ResourceTerminal::Partial => CargoReadAdmission::Checking,
+        match admit_resource(resource, self.snapshot.key(), self.owner_serving()) {
+            ResourceAdmission::Current(_) => CargoReadAdmission::Current,
+            ResourceAdmission::Failed { terminal, .. } => match terminal {
+                ResourceTerminal::Fault(error) => CargoReadAdmission::Fault(error.clone()),
+                ResourceTerminal::Unavailable(reason) => CargoReadAdmission::Unavailable(reason.clone()),
+                ResourceTerminal::Complete | ResourceTerminal::Partial => CargoReadAdmission::Checking,
+            },
+            ResourceAdmission::Retained { .. } | ResourceAdmission::Pending(_) => CargoReadAdmission::Checking,
         }
     }
 

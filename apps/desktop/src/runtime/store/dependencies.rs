@@ -1,6 +1,7 @@
 //! The exact resources read by one visible route, shared by the store and Reader.
 
 use super::{CargoReadAdmission, DataStore, route_package, route_symbol};
+use crate::core::admit_resource;
 use crate::model::browse::{BrowseKey, CargoSourceInventoryKey};
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey};
 use crate::navigation::{Overlay, Route, View};
@@ -89,15 +90,35 @@ impl RouteDependencies {
         self.cargo.as_ref()
     }
 
-    /// Keeps the existing page readiness rules alongside the resource plan.
+    /// Keeps current page readiness alongside the resource plan.
     /// The independently arriving Cargo inventory does not hold up file bytes.
     pub(crate) fn content_loaded(&self, store: &DataStore) -> bool {
         !self.waits_for_content
             || self.keys.iter().all(|key| match key {
-                PageKey::Symbol(symbol) => store.symbol(symbol).is_loaded(),
-                PageKey::Package(package) => store.package(package).is_loaded(),
-                PageKey::Orbit => store.orbit().is_loaded(),
-                PageKey::Source(symbol) => store.source(symbol).is_loaded(),
+                PageKey::Symbol(symbol) => admit_resource(
+                    &store.symbol(symbol),
+                    store.snapshot().key(),
+                    store.owner_serving(),
+                )
+                .allows_actions(),
+                PageKey::Package(package) => admit_resource(
+                    &store.package(package),
+                    store.snapshot().key(),
+                    store.owner_serving(),
+                )
+                .allows_actions(),
+                PageKey::Orbit => admit_resource(
+                    &store.orbit(),
+                    store.snapshot().key(),
+                    store.owner_serving(),
+                )
+                .allows_actions(),
+                PageKey::Source(symbol) => admit_resource(
+                    &store.source(symbol),
+                    store.snapshot().key(),
+                    store.owner_serving(),
+                )
+                .allows_actions(),
                 PageKey::CargoSource(file) => {
                     store.cargo_read_admission(key, &store.cargo_source(file))
                         == CargoReadAdmission::Current
