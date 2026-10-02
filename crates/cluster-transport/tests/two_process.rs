@@ -11,7 +11,7 @@ use backend_cluster_transport::{
     CapabilityClaims, CapabilityIssuer, ChunkRange, ClusterListener, ControlAdmissionPolicy,
     ControlChannel, ControlMessage, ControlResultReceipt, ControlRole, MAX_RANGE_CHUNKS,
     MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN,
-    RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
+    RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
     RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
     RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog, StoreObjectMapping,
     TransferScope, TransportError, accept_remote_index, bind_direct, connect_control, fetch_range,

@@ -14,7 +14,7 @@ use crate::semantics::model::Pipe;
 use crate::theme::ActiveFacet;
 use crate::tokens::fluid::{FIND, FIND_INSPECTOR, Split};
 use crate::tokens::ty;
-use gpui::{AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
+use gpui::{AnyElement, App, AppContext as _, Context, ElementId, Entity, Focusable as _, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px};
 use gpui_component::input::{Input, InputEvent, InputState};
 use std::rc::Rc;

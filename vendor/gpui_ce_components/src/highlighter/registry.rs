@@ -573,6 +573,7 @@ impl LanguageRegistry {
 mod tests {
     use crate::highlighter::LanguageConfig;
 
+    #[cfg(feature = "tree-sitter-json")]
     #[test]
     fn test_registry() {
         use super::LanguageRegistry;

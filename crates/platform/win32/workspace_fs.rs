@@ -784,7 +784,10 @@ impl WorkspaceRoot {
         Ok((parent, *leaf))
     }
 
-    fn parent_and_leaf_source(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf_source<'a>(
+        &self,
+        path: &[&'a str],
+    ) -> io::Result<(Arc<DirectoryNode>, &'a str)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -797,7 +800,7 @@ impl WorkspaceRoot {
             validate_component(part)?;
             parent = open_directory_child_unchecked(&parent, part)?;
         }
-        Ok((parent, leaf))
+        Ok((parent, *leaf))
     }
 }
 

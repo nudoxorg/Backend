@@ -874,6 +874,8 @@ impl ClusterWorker {
             match event {
                 None => return Err(ClusterWorkerError::UnexpectedControl),
                 Some(Err(_rejected_connection)) => continue,
+                // A worker serves no remote index; drop the stray grant.
+                Some(Ok(AcceptedClusterConnection::RemoteIndex(_))) => continue,
                 Some(Ok(AcceptedClusterConnection::Probe(connection))) => {
                     let channel = match tokio::time::timeout(
                         self.policy.io_timeout,
@@ -2430,6 +2432,8 @@ impl ClusterWorker {
                     match event {
                         None => break Err(ClusterWorkerError::UnexpectedControl),
                         Some(Err(_rejected_connection)) => continue,
+                        // A worker serves no remote index; drop the stray grant.
+                        Some(Ok(AcceptedClusterConnection::RemoteIndex(_))) => continue,
                         Some(Ok(AcceptedClusterConnection::Artifact(connection))) => {
                             if connection.peer() != result.coordinator {
                                 break 'transfer Err(ClusterWorkerError::PeerNotAllowed);

@@ -684,16 +684,6 @@ impl ProcessGroupRetirement {
     }
 }
 
-#[cfg(all(
-    unix,
-    not(any(
-        target_os = "cygwin",
-        target_os = "horizon",
-        target_os = "openbsd",
-        target_os = "redox",
-        target_os = "wasi"
-    ))
-))]
 fn wait_for_child_exit_without_reaping(pid: u32) -> Result<bool, ProcessError> {
     let deadline = Instant::now()
         .checked_add(CHILD_REAP_TIMEOUT)

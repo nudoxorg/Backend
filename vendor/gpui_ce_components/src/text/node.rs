@@ -3112,7 +3112,7 @@ mod tests {
         assert_ne!(first, second);
     }
 
-    #[cfg(feature = "tree-sitter")]
+    #[cfg(feature = "tree-sitter-json")]
     #[test]
     fn code_block_highlighter_cache_refreshes_after_language_registration() {
         let lang = SharedString::from("json-cache-test");
@@ -3163,7 +3163,7 @@ mod tests {
         assert_eq!(cached_language.as_deref(), Some(lang.as_ref()));
     }
 
-    #[cfg(feature = "tree-sitter")]
+    #[cfg(feature = "tree-sitter-json")]
     #[test]
     fn code_block_styles_follow_the_current_highlight_theme() {
         let lang = SharedString::from("json-theme-cache-test");
@@ -3234,7 +3234,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tree-sitter")]
+    #[cfg(feature = "tree-sitter-json")]
     #[gpui::test]
     fn rendered_markdown_code_block_follows_theme_without_reparsing(cx: &mut TestAppContext) {
         struct CodeBlockThemeRoot {

@@ -674,7 +674,7 @@ mod mounted_tests {
     fn queued_return_cannot_focus_after_cancel_or_replacement(cx: &mut TestAppContext) {
         let (host, cx) = cx.add_window_view(|_, cx| DeferredTarget { focus: cx.focus_handle() });
         draw(cx);
-        let focus = host.read(cx).focus.clone();
+        let focus = host.read_with(cx, |host, _| host.focus.clone());
         let state = Rc::new(RefCell::new(State::default()));
         let calls = Rc::new(RefCell::new(0));
         let observed = Rc::clone(&calls);
@@ -1424,7 +1424,7 @@ mod mounted_tests {
             list_state.logical_scroll_top().item_ix > 0,
             "wheel reached retained rows"
         );
-        cx.update(|cx| {
+        cx.update(|_, cx| {
             set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
         });
         host.update(cx, |host, cx| {
@@ -2548,7 +2548,7 @@ fn row_view(
         }
         if let Some(source) = &release.source_detail {
             detail = detail.child(words(
-                child(child(id, release.key.clone()), "source-detail"),
+                child(&child(id, release.key.clone()), "source-detail"),
                 source.clone(),
                 ty::CAPTION,
                 palette.ink3,

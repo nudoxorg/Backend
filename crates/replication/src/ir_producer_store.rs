@@ -3364,8 +3364,8 @@ mod tests {
             )
             .expect_err("Types plan exceeds the one aggregate row left after prior families");
         assert!(
-            error.contains("RowBudgetExceeded"),
-            "unexpected error: {error}"
+            matches!(error, SelectedTypedPlaneProductionError::ResourceLimit(_)),
+            "a row budget overrun is a resource limit: {error:?}"
         );
         drop(pass);
         drop(jumbo_sink);
