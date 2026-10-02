@@ -8,6 +8,8 @@
 //! Unix targets must support waitid(WNOWAIT) and process groups; an OS refusal
 //! is a typed capture failure, never an unbounded reader fallback. Targets
 //! outside Unix and Windows return Unsupported before starting a child.
+//! The capture deadline bounds reads and leader exit; Darwin's verified group
+//! retirement has its own 500 ms cleanup bound after that terminal.
 
 use std::{
     ffi::OsString, io, path::PathBuf, process::ExitStatus, sync::atomic::AtomicBool, time::Instant,
