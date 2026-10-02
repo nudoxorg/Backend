@@ -156,6 +156,8 @@ struct JourneyFrame {
     reader_text: Vec<String>,
     reader_hero: Vec<String>,
     reader_pages: usize,
+    /// Paint probes drained beside these exact native pixels.
+    ledger: facet::probe::Ledger,
 }
 
 struct Places {
@@ -492,8 +494,11 @@ fn capture(
                     reader_text: Vec::new(),
                     reader_hero: Vec::new(),
                     reader_pages: 0,
+                    ledger: facet::probe::Ledger::default(),
                 });
             }
+            // Discard input/intermediate paint records before this capture.
+            let _ = facet::probe::take(cx);
             Ok(())
         },
         |_, _, _| {},
@@ -529,6 +534,9 @@ fn capture(
                 state.reader_text = reader_text;
                 state.reader_hero = reader_hero;
                 state.reader_pages = reader_pages;
+                state.ledger = facet::probe::take(cx);
+                std::fs::write(frame_dir.join("motion.txt"), format!("label={}\ntime_ms={}\n{:#?}\n", frame.label, frame.time_ms, state.ledger))
+                    .map_err(|error| CaptureError::Gpui(error.to_string()))?;
                 std::fs::write(frame_dir.join("reader.txt"), format!("pages={}\nhero={:?}\ntext={:?}\n",
                     state.reader_pages, state.reader_hero, state.reader_text))
                     .map_err(|error| CaptureError::Gpui(error.to_string()))?;
@@ -549,6 +557,7 @@ fn capture(
         move |window: &mut Window, cx: &mut App| {
             gpui_component::init(cx);
             facet::fonts::install(cx).expect("fonts");
+            facet::probe::enable(cx);
             let mut settings = SettingsState {
                 density: shot_build.density,
                 appearance: shot_build.appearance,
@@ -852,7 +861,7 @@ fn capture(
         };
         assert!(native_has_results(17), "the earlier populated Ask never exposed its results");
         let entering = &set.frames[24];
-        let plate = entering.ledger.stacks.iter().flat_map(|stack| stack.entries.iter())
+        let plate = observed[24].ledger.stacks.iter().rev().flat_map(|stack| stack.entries.iter().rev())
             .find(|entry| entry.key == "ask-plate").expect("entering Ask plate stack entry");
         assert_eq!(plate.phase, facet::probe::StackPhase::Entering,
             "the interrupted Ask entry was mislabeled Open");
