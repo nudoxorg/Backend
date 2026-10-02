@@ -228,10 +228,15 @@ mod tests {
         use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 
         // A lone high surrogate is a legal Windows file name but not Unicode.
-        let units = "C:\nudox-"
+        // A raw string: `"C:\nudox-"` would put a newline in the path.
+        let units = r"C:\nudox-"
             .encode_utf16()
             .chain([0xD800])
             .collect::<Vec<u16>>();
+        assert!(
+            !units.contains(&u16::from(b'\n')),
+            "the fixture is a backslash path, not one with a line break"
+        );
         let path = PathBuf::from(OsString::from_wide(&units));
         let native = NativePath::from_path(&path).expect("native path");
         assert!(native.to_str().is_err());
