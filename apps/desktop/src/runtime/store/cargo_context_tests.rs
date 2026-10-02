@@ -53,6 +53,11 @@ fn land(store: &mut DataStore, key: &PageKey, value: PageValue) {
     assert_eq!(store.pages.land(key, generation, Ok(value)), Landing::Applied);
 }
 
+pub(crate) fn force_land(store: &mut DataStore, key: &PageKey, value: PageValue) {
+    let generation = store.pages.begin_forced(key, store.snapshot().key()).expect("new selected fixture read");
+    assert_eq!(store.pages.land(key, generation, Ok(value)), Landing::Applied);
+}
+
 #[test]
 fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     let requested = LocalProjectId::new("/workspace/backend/member").expect("member");

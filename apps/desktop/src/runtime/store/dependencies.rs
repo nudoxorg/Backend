@@ -1,11 +1,40 @@
 //! The exact visible resources and admitted Cargo observations of one route.
 
-use super::{CargoReadAdmission, DataStore, route_package, route_symbol};
+use super::{CargoReadAdmission, DataStore, OwnerAttachment, route_package, route_symbol};
 use crate::core::{LocalProjectId, VersionedRoot, admit_resource};
 use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey, TreeModel};
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{CargoBrowseContext, Overlay, Route, View};
 use std::sync::Arc;
+
+/// One read-backed input's admission across the deferred intent boundary.
+/// No-gate harness attachments are synthetic and prove no real-owner acceptance.
+#[derive(Clone, Debug)]
+pub(crate) struct RouteReadLease {
+    route: Route,
+    overlay: Option<Overlay>,
+    root: VersionedRoot,
+    attachment: Option<OwnerAttachment>,
+    dependency: (PageKey, Stamp),
+}
+
+impl RouteReadLease {
+    pub(crate) fn capture(store: &DataStore, dependency: (PageKey, Stamp)) -> Option<Self> {
+        let snapshot = store.snapshot();
+        let lease = Self { route: snapshot.route().clone(), overlay: snapshot.overlay(), root: snapshot.key(),
+            attachment: store.current_owner_attachment(), dependency };
+        lease.admits(store).then_some(lease)
+    }
+
+    pub(crate) fn admits(&self, store: &DataStore) -> bool {
+        let snapshot = store.snapshot();
+        snapshot.route() == &self.route && snapshot.overlay() == self.overlay
+            && self.root.same_authority(snapshot.key()) && store.owner_serving()
+            && store.current_owner_attachment() == self.attachment
+            && self.attachment.as_ref().is_none_or(|attachment| store.admits_owner_attachment(attachment))
+            && RouteDependencies::new(&self.route, self.overlay).admits_native_stamp(store, self.root, &self.dependency)
+    }
+}
 
 /// A Cargo file and its independently arriving current path inventory.
 #[derive(Clone, Debug, Eq, PartialEq)]

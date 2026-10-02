@@ -274,6 +274,13 @@ impl Links {
         }
     }
 
+    /// Read-backed navigation keeps its selected receipt through deferred flush.
+    pub(crate) fn dispatch_read(&self, intent: Intent, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut App) {
+        if let Some(root) = self.root.upgrade() {
+            root.update(cx, |root, cx| root.queue_read(intent, dependency, cx));
+        }
+    }
+
     /// The current snapshot.
     pub(crate) fn snapshot(&self, cx: &App) -> Arc<AppSnapshot> {
         self.store.read(cx).snapshot()
