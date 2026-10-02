@@ -3,7 +3,7 @@
 use super::{Pager, PagingState, SourceCursor, SourcePage, initial_cursor, pager_controls};
 use crate::model::browse::{BrowseKey, BrowseValue};
 use crate::model::pages::{PackageRef, PageKey, SourceText};
-use crate::navigation::{CargoSourceRoute, Intent, Route};
+use crate::navigation::{CargoSourceRoute, CargoSourceTarget, Intent, Route};
 use crate::runtime::store::CargoReadAdmission;
 use crate::shell::bodies::state::{Shown, not_ready, shown};
 use crate::shell::bodies::{Ctx, Leaf, Pages};
@@ -45,7 +45,14 @@ pub(super) fn body(
     let inventory_resource = live.pages().browse(&inventory_key);
     let inventory_admission = live.cargo_read_admission(inventory_page_key, &inventory_resource);
     drop(live);
-    let heading = ctx.say(format!("{}  ›  {}", cargo.file.package.display_name(), route.file.as_str()));
+    let scope = match &route.target {
+        CargoSourceTarget::PackageFile(_) => "package file",
+        CargoSourceTarget::ReadmeLink(link) => match link.origin().root_scope {
+            backend_library::CargoPackageReadmeRootScopeV1::Package => "README package file",
+            backend_library::CargoPackageReadmeRootScopeV1::EffectiveWorkspace => "README workspace file",
+        },
+    };
+    let heading = ctx.say(format!("{}  ›  {scope}  ›  {}", cargo.file.package.display_name(), route.target.path().as_str()));
     let mut leaves = vec![Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).child(heading))];
     match inventory_admission {
         CargoReadAdmission::Checking => {
@@ -82,23 +89,28 @@ pub(super) fn body(
             return leaves;
         }
         CargoReadAdmission::Fault(error) => {
-            leaves.extend(not_ready::<crate::model::pages::CargoSourcePage>(&Shown::Fault(&error), page_key, route.file.as_str(), ctx, cx));
+            leaves.extend(not_ready::<crate::model::pages::CargoSourcePage>(&Shown::Fault(&error), page_key, route.target.path().as_str(), ctx, cx));
             return leaves;
         }
         CargoReadAdmission::Unavailable(reason) => {
-            leaves.extend(not_ready::<crate::model::pages::CargoSourcePage>(&Shown::Unavailable(&reason, None), page_key, route.file.as_str(), ctx, cx));
+            leaves.extend(not_ready::<crate::model::pages::CargoSourcePage>(&Shown::Unavailable(&reason, None), page_key, route.target.path().as_str(), ctx, cx));
             return leaves;
         }
         CargoReadAdmission::Current => {}
     }
     let Some(page) = resource.loaded_value() else { return leaves; };
-    if page.package != cargo.file.package || page.request_binding != cargo.file.context.request_binding() || page.file != route.file {
+    if page.package != cargo.file.package || page.request_binding != cargo.file.context.request_binding() || page.target != route.target {
         leaves.push(Leaf::new(quiet("The Cargo file reply belongs to a different browse observation.", &ctx.measure, ctx.palette)));
         return leaves;
     }
     let status = ctx.say("Current Cargo file · source bytes checked by the owner. Declaration links are unavailable until this exact file is indexed.");
     leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
     leaves.push(Leaf::new(code(&page.source, route, ctx, window, cx)));
+    if let CargoSourceTarget::ReadmeLink(link) = &route.target
+        && link.fragment().is_some() && link.source_line().is_none()
+    {
+        leaves.push(Leaf::new(quiet("The README link's fragment has no verified heading or declaration target in this source byte view.", &ctx.measure, ctx.palette)));
+    }
     leaves
 }
 
@@ -165,7 +177,7 @@ fn code(
     let initial = requested.map_or(SourceCursor { line: range.first, byte: 0 }, |line| initial_cursor(source, line, 0));
     let pager_key: ElementId = format!(
         "cargo-source-pager-{}-{}-{:?}-{:?}",
-        ctx.place_key, route.file.as_str(), route.line, ctx.source_generation
+        ctx.place_key, route.target.path().as_str(), route.line, ctx.source_generation
     ).into();
     let paging = Rc::clone(&ctx.source_paging);
     {
@@ -178,7 +190,7 @@ fn code(
     let mut hasher = Sha256::new();
     hasher.update(route.package.as_str().as_bytes());
     hasher.update(&[0]);
-    hasher.update(route.file.as_str().as_bytes());
+    hasher.update(route.target.path().as_str().as_bytes());
     let digest = hasher.finalize();
     let digest = digest[..16].iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let prefix: Rc<str> = Rc::from(format!("cargo-source-line-{digest}"));
@@ -207,7 +219,7 @@ fn code(
     let gap = measure.space(Space::Gutter);
     let number_width = crate::shell::text_fit::text_width(&"0".repeat(digits), &role, cx);
     let columns = crate::shell::text_fit::columns(measure.width() - number_width - gap, &role, cx);
-    let highlights = route.file.as_str().ends_with(".rs")
+    let highlights = route.target.path().as_str().ends_with(".rs")
         .then(|| facet::code::highlight(facet::code::Lang::Rust, shown.clone(), window, cx))
         .flatten()
         .map(|highlighted| highlighted.styles(&palette));

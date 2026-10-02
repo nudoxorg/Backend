@@ -949,6 +949,8 @@ pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::ProjectTree { .. }
             | SurfaceCommand::CargoPackageSourceFile { .. }
             | SurfaceCommand::CargoPackageSourceInventory { .. }
+            | SurfaceCommand::CargoPackageReadme { .. }
+            | SurfaceCommand::CargoPackageReadmeLink { .. }
     )
 }
 
@@ -1095,6 +1097,9 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
                 crate::model::browse::BrowseKey::CargoSourceInventory(key) => {
                     compose_cargo_source_inventory(&mut self.engine, key, context)
                 }
+                crate::model::browse::BrowseKey::CargoReadme(key) => {
+                    super::cargo_readme_reads::compose(&mut self.engine, key, context)
+                }
                 crate::model::browse::BrowseKey::FindHome => {
                     compose_find(&mut self.engine, None, context).map(|page| {
                         PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
@@ -1172,14 +1177,14 @@ pub fn failure(error: &ClientError) -> ReadFailure {
     ReadFailure::Fault(ErrorValue::new(code, error.to_string()))
 }
 
-fn shape(what: &str) -> ReadFailure {
+pub(super) fn shape(what: &str) -> ReadFailure {
     ReadFailure::Fault(ErrorValue::new(
         FaultCode::Protocol,
         format!("the {what} reply changed shape"),
     ))
 }
 
-fn check(cancel: &CancellationToken) -> Result<(), ReadFailure> {
+pub(super) fn check(cancel: &CancellationToken) -> Result<(), ReadFailure> {
     if cancel.is_cancelled() {
         Err(ReadFailure::Cancelled)
     } else {
@@ -1541,11 +1546,11 @@ fn compose_cargo_source(
     context: &ReadContext<'_>,
 ) -> Result<PageValue, ReadFailure> {
     check(context.cancel)?;
-    let path = CargoPackageSourcePathV1::new(key.file.as_str()).map_err(|_| {
-        ReadFailure::Fault(ErrorValue::new(
-            FaultCode::Protocol,
-            "invalid Cargo source file address",
-        ))
+    if matches!(key.target, crate::navigation::CargoSourceTarget::ReadmeLink(_)) {
+        return super::cargo_readme_reads::compose_link(engine, key, context);
+    }
+    let path = CargoPackageSourcePathV1::new(key.target.path().as_str()).map_err(|_| {
+        ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "invalid Cargo source file address"))
     })?;
     let reply = request_cargo_source_file(engine, key, &path)?;
     check(context.cancel)?;
@@ -1604,7 +1609,7 @@ fn cargo_source_request(
     }
 }
 
-fn rehydrate_cargo_source_authority(
+pub(super) fn rehydrate_cargo_source_authority(
     engine: &mut dyn Engine,
     browse: &crate::navigation::CargoBrowseContext,
     package: &PackageRef,
@@ -1667,21 +1672,21 @@ fn cargo_source_page(
             semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
             ..
         } => {
-            let text = crate::model::pages::SourceText::new(
-                Arc::from(contents),
-                1,
-                crate::model::pages::SourceOrigin::LocalFile,
-                true,
-            )
-            .map_err(|_| shape("Cargo source line range"))?;
-            Ok(PageValue::CargoSource(CargoSourcePage {
-                package: key.package.clone(),
-                request_binding,
-                file: key.file.clone(),
-                source: text,
-                content_digest,
-                source_revision: authority.source_revision(),
-            }))
+                let text = crate::model::pages::SourceText::new(
+                    Arc::from(contents),
+                    1,
+                    crate::model::pages::SourceOrigin::LocalFile,
+                    true,
+                )
+                .map_err(|_| shape("Cargo source line range"))?;
+                Ok(PageValue::CargoSource(CargoSourcePage {
+                    package: key.package.clone(),
+                    request_binding,
+                    target: key.target.clone(),
+                    source: text,
+                    content_digest,
+                    source_revision: authority.source_revision(),
+                }))
         }
         CargoPackageSourceFileResultV1::Stale { .. } => Err(ReadFailure::Fault(ErrorValue::new(
             FaultCode::Missing,
@@ -1696,38 +1701,16 @@ fn cargo_source_page(
 
 /// A valid submitted selector must be echoed even on a negative reply. A
 /// missing selector is not a current owner observation for this request.
-fn validate_cargo_file_reply(
-    key: &CargoSourceKey,
-    result: &CargoPackageSourceFileResultV1,
-) -> Result<(), ReadFailure> {
-    if !result.has_admissible_shape() {
-        return Err(shape("Cargo source file proof"));
-    }
+fn validate_cargo_file_reply(key: &CargoSourceKey, result: &CargoPackageSourceFileResultV1) -> Result<(), ReadFailure> {
+    if key.target.package_file().is_none() { return Err(shape("package file scope")); }
+    if !result.has_admissible_shape() { return Err(shape("Cargo source file proof")); }
     let exact = match result {
-        CargoPackageSourceFileResultV1::Read {
-            package,
-            request_binding,
-            path,
-            ..
-        } => {
-            package == key.package.reference()
-                && *request_binding == key.context.request_binding()
-                && path.as_str() == key.file.as_str()
-        }
-        CargoPackageSourceFileResultV1::Stale {
-            package,
-            request_binding,
-        } => {
-            package == key.package.reference() && *request_binding == key.context.request_binding()
-        }
-        CargoPackageSourceFileResultV1::Unavailable {
-            package,
-            request_binding,
-            ..
-        } => {
-            package.as_ref() == Some(key.package.reference())
-                && *request_binding == Some(key.context.request_binding())
-        }
+        CargoPackageSourceFileResultV1::Read { package, request_binding, path, .. } =>
+            package == key.package.reference() && *request_binding == key.context.request_binding() && path.as_str() == key.target.path().as_str(),
+        CargoPackageSourceFileResultV1::Stale { package, request_binding } =>
+            package == key.package.reference() && *request_binding == key.context.request_binding(),
+        CargoPackageSourceFileResultV1::Unavailable { package, request_binding, .. } =>
+            package.as_ref() == Some(key.package.reference()) && *request_binding == Some(key.context.request_binding()),
     };
     if exact {
         Ok(())
@@ -2447,7 +2430,7 @@ mod tests {
             context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding)
                 .expect("bound address"),
             package: PackageRef::from_reference(reference.clone()),
-            file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path"),
+            target: crate::navigation::CargoSourceTarget::PackageFile(crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path")),
         };
         let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
         let digest = *blake3::hash(contents.as_bytes()).as_bytes();
@@ -2465,7 +2448,7 @@ mod tests {
             panic!("Cargo file page")
         };
         assert_eq!(page.package, key.package);
-        assert_eq!(page.file, key.file);
+        assert_eq!(page.target, key.target);
         assert_eq!(page.content_digest, digest);
         assert_eq!(page.source.text(), contents.as_ref());
         assert_eq!(
@@ -2632,7 +2615,7 @@ mod tests {
             )
             .expect("bound member"),
             package: PackageRef::from_reference(package),
-            file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("path"),
+            target: crate::navigation::CargoSourceTarget::PackageFile(crate::navigation::CargoSourcePath::new(path.as_str()).expect("path")),
         };
         let cancel = CancellationToken::new();
         let outlines = OutlineCache::default();

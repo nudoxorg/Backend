@@ -32,6 +32,7 @@ use std::time::Duration;
 
 pub use readme::{ReadmeBlock, ReadmeHeading, ReadmeLink};
 pub(crate) use readme::rustdoc_link;
+pub(crate) use readme::{external_address as readme_external_address, owner_navigation_index as owner_readme_navigation};
 
 /// Normalizes a Markdown heading fragment using the README index's spelling.
 pub(crate) fn readme_fragment_slug(value: &str) -> String {

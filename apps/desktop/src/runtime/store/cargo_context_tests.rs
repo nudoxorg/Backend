@@ -67,7 +67,7 @@ fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     let plan = RouteDependencies::new(&route, None);
     let tree_key = PageKey::Browse(BrowseKey::Tree(requested.clone()));
     let dossier_key = PageKey::Package(package.clone());
-    assert_eq!(plan.keys(), &[dossier_key.clone(), tree_key.clone()]);
+    assert_eq!(plan.keys(), &[dossier_key.clone(), tree_key.clone(), PageKey::Browse(BrowseKey::CargoReadme(crate::model::browse::CargoReadmeKey { context: context.clone(), package: package.clone() }))]);
     let mut store = DataStore::new(Arc::new(at(route)), None);
     assert!(store.snapshot().session().back.is_empty());
     assert!(plan.current_cargo_package(&store, &package).is_none());
@@ -124,7 +124,7 @@ fn source_zoom_out_preserves_address_and_evicted_tree_requires_fresh_observation
     let source_key = PageKey::CargoSource(pair.file.clone());
     let mut store = DataStore::new(Arc::new(at(Route::CargoSource(source.clone()))), None);
     land(&mut store, &source_key, PageValue::CargoSource(CargoSourcePage {
-        package: package.clone(), request_binding: context.request_binding(), file: source.file.clone(),
+        package: package.clone(), request_binding: context.request_binding(), target: source.target.clone(),
         source: SourceText::new("pub fn observed() {}\n".into(), 1, SourceOrigin::LocalFile, true).expect("unindexed bytes"),
         content_digest: [7; 32], source_revision: [9; 32],
     }));

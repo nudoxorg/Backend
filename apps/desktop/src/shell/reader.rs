@@ -897,7 +897,7 @@ impl Reader {
             match source {
                 Some(SourceGeneration::Cargo(digest)) => {
                     let key = crate::model::pages::CargoSourceKey {
-                        context: context.clone(), package, file: file.file.clone(),
+                        context: context.clone(), package, target: file.target.clone(),
                     };
                     let resource = store.cargo_source(&key);
                     if resource.loaded_value().is_none_or(|page| page.content_digest != digest)

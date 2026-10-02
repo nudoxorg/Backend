@@ -15,6 +15,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
+mod cargo_readme;
+pub use cargo_readme::{CargoReadmeDestination, CargoReadmeDocument, CargoReadmeKey, CargoReadmeLink, CargoReadmeModel, CargoReadmeState};
+
 /// Identity of one browsing resource.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BrowseKey {
@@ -22,6 +25,8 @@ pub enum BrowseKey {
     Tree(LocalProjectId),
     /// Bounded current package-relative file addresses from one exact owner tree.
     CargoSourceInventory(CargoSourceInventoryKey),
+    /// Exact Cargo-selected README with its owner-held root scope.
+    CargoReadme(CargoReadmeKey),
     /// Local package discovery before a query is entered.
     FindHome,
     /// Indexed answers to one query.
@@ -51,6 +56,7 @@ impl fmt::Display for BrowseKey {
                 key.package,
                 key.context.requested_project().display_lossy()
             ),
+            Self::CargoReadme(key) => write!(formatter, "Cargo README {} in {}", key.package, key.context.requested_project().display_lossy()),
             Self::FindHome => formatter.write_str("find"),
             Self::Find(query) => write!(formatter, "find {:?}", query.text),
             Self::Compare(selection) => write!(formatter, "compare {:?}", selection.packages()),
@@ -65,6 +71,8 @@ pub enum BrowseValue {
     Tree(Arc<TreeModel>),
     /// Paths observed under one current Cargo source receipt, without file bytes.
     CargoSourceInventory(Arc<CargoSourceInventoryModel>),
+    /// Owner-selected Markdown or exact manifest/default absence.
+    CargoReadme(Arc<CargoReadmeModel>),
     /// Search results with their original coverage evidence.
     Find(Arc<FindModel>),
     /// Package dossiers read for this comparison.
@@ -77,7 +85,7 @@ impl BrowseValue {
     pub fn tree(&self) -> Option<&TreeModel> {
         match self {
             Self::Tree(tree) => Some(tree),
-            Self::CargoSourceInventory(_) | Self::Find(_) | Self::Compare(_) => None,
+            Self::CargoSourceInventory(_) | Self::CargoReadme(_) | Self::Find(_) | Self::Compare(_) => None,
         }
     }
 }

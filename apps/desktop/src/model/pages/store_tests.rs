@@ -27,8 +27,8 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     )).expect("qualified package");
     let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store").expect("project");
     let context = crate::navigation::cargo_browse::fixture_context(project);
-    let first = CargoSourceKey { context: context.clone(), package: qualified('a'), file: file.clone() };
-    let second = CargoSourceKey { context: context.clone(), package: qualified('b'), file };
+    let first = CargoSourceKey { context: context.clone(), package: qualified('a'), target: crate::navigation::CargoSourceTarget::PackageFile(file.clone()) };
+    let second = CargoSourceKey { context: context.clone(), package: qualified('b'), target: crate::navigation::CargoSourceTarget::PackageFile(file) };
     let mut store = PageStore::default();
     let first_key = PageKey::CargoSource(first.clone());
     let second_key = PageKey::CargoSource(second.clone());
@@ -37,7 +37,7 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     let source = SourceText::new(Arc::from("[package]\nname = \"demo\"\n"), 1, SourceOrigin::LocalFile, true)
         .expect("valid source");
     let page = |key: &CargoSourceKey| CargoSourcePage {
-        package: key.package.clone(), request_binding: key.context.request_binding(), file: key.file.clone(), source: source.clone(),
+        package: key.package.clone(), request_binding: key.context.request_binding(), target: key.target.clone(), source: source.clone(),
         content_digest: [7; 32], source_revision: [9; 32],
     };
     assert_eq!(store.land(&second_key, second_generation, Ok(PageValue::CargoSource(page(&second)))), Landing::Applied);
@@ -50,7 +50,7 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     let other_project = CargoSourceKey {
         context: crate::navigation::cargo_browse::fixture_context(crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store-other").expect("other tree")),
         package: first.package.clone(),
-        file: first.file.clone(),
+        target: first.target.clone(),
     };
     assert_ne!(first, other_project, "a cold owner rehydrates against the selected tree, not an arbitrary matching package");
     assert!(store.cargo_source(&other_project).loaded_value().is_none());

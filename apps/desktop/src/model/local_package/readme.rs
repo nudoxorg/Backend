@@ -225,23 +225,7 @@ pub(super) fn navigation_index(
     project_root: &Path,
     readme_path: &Path,
 ) -> (Arc<[ReadmeLink]>, Arc<[ReadmeHeading]>) {
-    let Ok(ast) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
-        return (Arc::from([]), Arc::from([]));
-    };
-    let mut definitions = std::collections::BTreeMap::new();
-    collect_definitions(&ast, &mut definitions);
-    let mut links = Vec::new();
-    let mut headings = Vec::new();
-    let mut slug_counts = std::collections::BTreeMap::<String, usize>::new();
-    let mut used_slugs = BTreeSet::<String>::new();
-    collect_navigation(
-        &ast,
-        &definitions,
-        &mut slug_counts,
-        &mut used_slugs,
-        &mut links,
-        &mut headings,
-    );
+    let (mut links, headings) = navigation_nodes(source);
     let Ok(root_capability) = DirectoryCapability::open_read_only_source(project_root) else {
         return (links.into(), headings.into());
     };
@@ -261,6 +245,60 @@ pub(super) fn navigation_index(
         link.line = line;
     }
     (links.into(), headings.into())
+}
+
+/// Indexes owner-returned Markdown without opening or inferring local paths.
+pub(crate) fn owner_navigation_index(source: &str) -> (Arc<[ReadmeLink]>, Arc<[ReadmeHeading]>) {
+    let (links, headings) = navigation_nodes(source);
+    (links.into(), headings.into())
+}
+
+fn navigation_nodes(source: &str) -> (Vec<ReadmeLink>, Vec<ReadmeHeading>) {
+    let Ok(ast) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut definitions = std::collections::BTreeMap::new();
+    collect_definitions(&ast, &mut definitions);
+    let mut links = Vec::new();
+    let mut headings = Vec::new();
+    let mut slug_counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut used_slugs = BTreeSet::<String>::new();
+    collect_navigation(
+        &ast,
+        &definitions,
+        &mut slug_counts,
+        &mut used_slugs,
+        &mut links,
+        &mut headings,
+    );
+    (links, headings)
+}
+
+/// External Markdown addresses share the same bounded spelling admission
+/// across owner and ordinary README plans; they never imply local scope.
+pub(crate) fn external_address(destination: &str) -> Option<&str> {
+    if destination.is_empty() || destination.len() > super::MAX_README_LINK_DESTINATION_BYTES
+        || destination.chars().any(|character| character.is_control() || character.is_whitespace())
+        || destination.contains('\\') { return None; }
+    let lower = destination.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")) { return None; }
+    let bytes = destination.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex(*bytes.get(index + 1)?)?;
+            let low = hex(*bytes.get(index + 2)?)?;
+            if ((high << 4) | low).is_ascii_control() { return None; }
+            index += 3;
+        } else { index += 1; }
+    }
+    let valid = if lower.starts_with("mailto:") {
+        destination[7..].split(['?', '#']).next().is_some_and(|recipient| recipient.contains('@'))
+    } else {
+        let start = if lower.starts_with("https://") { 8 } else { 7 };
+        destination[start..].split(['/', '?', '#']).next().is_some_and(|host| !host.is_empty() && !host.contains('@'))
+    };
+    valid.then_some(destination)
 }
 
 fn resolve_local_file(

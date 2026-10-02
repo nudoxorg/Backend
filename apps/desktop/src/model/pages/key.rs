@@ -1,7 +1,7 @@
 //! Identity keys for page resources.
 
 use super::common::{KeyError, PackageRef, SymbolRef};
-use crate::navigation::{CargoBrowseContext, CargoSourcePath};
+use crate::navigation::{CargoBrowseContext, CargoSourceTarget};
 use std::fmt;
 use std::sync::Arc;
 
@@ -23,8 +23,8 @@ pub struct CargoSourceKey {
     pub context: CargoBrowseContext,
     /// Full source-qualified Cargo package reference.
     pub package: PackageRef,
-    /// Canonical package-relative file path.
-    pub file: CargoSourcePath,
+    /// Exact relative address with its package or README root scope.
+    pub target: CargoSourceTarget,
 }
 
 impl SearchQuery {
@@ -93,7 +93,7 @@ impl fmt::Display for PageKey {
         match self {
             Self::Symbol(symbol) => write!(formatter, "symbol {symbol}"),
             Self::Source(symbol) => write!(formatter, "source {symbol}"),
-            Self::CargoSource(key) => write!(formatter, "Cargo source {}#{}", key.package, key.file.as_str()),
+            Self::CargoSource(key) => write!(formatter, "Cargo source {}#{}", key.package, key.target.path().as_str()),
             Self::Package(package) => write!(formatter, "package {package}"),
             Self::Search(query) => write!(formatter, "search {:?} x{}", query.text, query.limit),
             Self::Orbit => formatter.write_str("orbit"),

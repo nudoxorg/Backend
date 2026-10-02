@@ -39,7 +39,7 @@ impl PageReader for ScheduledReader {
                 Ok(PageValue::CargoSource(CargoSourcePage {
                     package: key.package.clone(),
                     request_binding: key.context.request_binding(),
-                    file: key.file.clone(),
+                    target: key.target.clone(),
                     source: SourceText::new(contents.into(), 1, SourceOrigin::LocalFile, true)
                         .expect("fixture bytes"),
                     content_digest,

@@ -474,6 +474,7 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
             }
         }
         BrowseKey::CargoSourceInventory(_)
+        | BrowseKey::CargoReadme(_)
         | BrowseKey::FindHome
         | BrowseKey::Find(_)
         | BrowseKey::Compare(_) => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
