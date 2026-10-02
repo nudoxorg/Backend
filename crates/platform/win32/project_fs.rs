@@ -180,7 +180,10 @@ impl ProjectRoot {
         file_from_handle(handle)
     }
 
-    fn parent_and_leaf(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf<'path>(
+        &self,
+        path: &[&'path str],
+    ) -> io::Result<(Arc<DirectoryNode>, &'path str)> {
         let (leaf, parents) = path
             .split_last()
             .ok_or_else(|| invalid_name("relative path must contain at least one component"))?;
