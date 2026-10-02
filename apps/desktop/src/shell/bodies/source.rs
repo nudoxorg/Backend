@@ -1208,6 +1208,61 @@ mod tests {
         rig.settle();
     }
 
+    /// The pager changes the visible source page without leaving its route,
+    /// so a real pointer click can test who owns the following key.
+    fn pointer_focus_current_pager(rig: &mut crate::shell::tests::Rig) -> crate::shell::focus::Targets {
+        use crate::shell::focus::Zone;
+        rig.shell.update(rig.cx, |shell, cx| shell.set_zone(Zone::Shelf, cx));
+        rig.draw();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let bounds = targets.bounds_of("source-page-top-next").expect("mounted next-page control");
+        let before = rig.route();
+        rig.cx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::none());
+        rig.draw();
+        rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.route(), before, "the pager stays on this Source route");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0), Zone::Shelf,
+            "pointer focus did not perform a Shell zone walk");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
+            Some("source-page-top-next"), "the pointer focused the mounted pager button");
+        targets
+    }
+
+    #[gpui::test]
+    fn pointer_focused_source_pager_gives_tab_to_the_next_reader_control(cx: &mut TestAppContext) {
+        use crate::shell::focus::Zone;
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 720.0, 700.0, pool);
+        let targets = pointer_focus_current_pager(&mut rig);
+        let order = targets.native_keys();
+        let at = order.iter().position(|id| id == "source-page-top-next").expect("pager in native order");
+        let next = order.get(at + 1).expect("another mounted native control follows the pager").clone();
+        rig.keys("tab");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next.clone())));
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(next));
+    }
+
+    #[gpui::test]
+    fn pointer_focused_source_pager_gives_j_and_k_the_reader_walk(cx: &mut TestAppContext) {
+        use crate::shell::focus::Zone;
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 720.0, 700.0, pool);
+        let targets = pointer_focus_current_pager(&mut rig);
+        let list = targets.list_probe().upgrade().expect("Reader target list");
+        let order: Vec<_> = list.borrow().iter().map(|target| target.id.clone()).collect();
+        let at = order.iter().position(|id| id == "source-page-top-next").expect("pager in Reader walk order");
+        let next = order.get(at + 1).expect("Reader walk continues after pager").clone();
+        rig.keys("j");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next)));
+        rig.keys("k");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("source-page-top-next"));
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("source-page-top-next"));
+    }
+
     #[gpui::test]
     fn narrow_native_reader_opens_an_exact_deep_line(cx: &mut TestAppContext) {
         let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code)

@@ -751,6 +751,23 @@ impl Reader {
         self.targets.native_step(forward, window, cx)
     }
 
+    /// A pointer or native accessibility action can focus a mounted control
+    /// without walking the Shell's logical zone. Admit only the settled,
+    /// current place, then make that real handle the Reader walk origin.
+    pub(crate) fn adopt_mounted_native_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        let Some(current) = self.places.last() else { return false };
+        let snapshot = self.links.snapshot(cx);
+        if self.arrival.is_some() || self.transit.is_some()
+            || snapshot.route() != &current.route
+            || snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)) != current.overlay
+        {
+            return false;
+        }
+        let Some(id) = self.targets.native_focused(window) else { return false };
+        self.targets.focus(id);
+        true
+    }
+
     pub(crate) fn focus_native_current(&self, window: &mut Window, cx: &mut gpui::App) -> bool {
         self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
     }

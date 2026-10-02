@@ -772,6 +772,7 @@ impl Shell {
     /// re-renders; the glow springs to the next target).
     pub fn walk(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        self.adopt_reader_native_zone(window, cx);
         if let Some(key) = self.peeking.take() {
             // The keyboard's peek belongs to where the keyboard stood.
             float::close(&peeks::float_key(&key), window, cx);
@@ -807,6 +808,7 @@ impl Shell {
     /// Tab: the next zone takes the keyboard.
     pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        self.adopt_reader_native_zone(window, cx);
         if self.zone == Zone::Reader
             && self.reader.read(cx).step_native(forward, window, cx)
         {
@@ -825,6 +827,17 @@ impl Shell {
             || !self.reader.read(cx).focus_native_current(window, cx)
         {
             self.focus.focus(window, cx);
+        }
+    }
+
+    /// The mounted native handle is the input origin even when a pointer or
+    /// accessibility client moved it without a Shell zone action.
+    fn adopt_reader_native_zone(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.ask_open || super::titlebar::menu_open(window, cx) {
+            return;
+        }
+        if self.reader.read(cx).adopt_mounted_native_focus(window, cx) {
+            self.set_zone(Zone::Reader, cx);
         }
     }
 
