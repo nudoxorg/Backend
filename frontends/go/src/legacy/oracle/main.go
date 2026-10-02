@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -363,6 +364,12 @@ func packagesAuthorityEnvironment() ([]string, error) {
 // cgo source that CGO_ENABLED=0 moved out of the package. Without this check a
 // best-effort go/packages load could serialize a partial package as complete.
 func firstIgnoredCgoPackage(roots []*packages.Package) (string, error) {
+	// Only an ignored file that cgo would bring back was moved out by
+	// CGO_ENABLED=0. One excluded for another reason (another GOOS, or
+	// `//go:build ignore` like the runtime's cgo -godefs inputs, which import
+	// "C") is never built, and must not mark the package as cgo.
+	withCgo := build.Default
+	withCgo.CgoEnabled = true
 	visited := make(map[*packages.Package]bool)
 	var visit func(*packages.Package) (string, error)
 	visit = func(pkg *packages.Package) (string, error) {
@@ -370,7 +377,19 @@ func firstIgnoredCgoPackage(roots []*packages.Package) (string, error) {
 			return "", nil
 		}
 		visited[pkg] = true
-		files := append([]string(nil), pkg.IgnoredFiles...)
+		files := make([]string, 0, len(pkg.IgnoredFiles)+len(pkg.GoFiles))
+		for _, filename := range pkg.IgnoredFiles {
+			if !strings.HasSuffix(filename, ".go") {
+				continue
+			}
+			built, err := withCgo.MatchFile(filepath.Dir(filename), filepath.Base(filename))
+			if err != nil {
+				return "", fmt.Errorf("evaluating build constraints of ignored Go source %s: %w", filename, err)
+			}
+			if built {
+				files = append(files, filename)
+			}
+		}
 		files = append(files, pkg.GoFiles...)
 		sort.Strings(files)
 		previous := ""
