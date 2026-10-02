@@ -1,10 +1,11 @@
 //! Current Cargo file bytes with no inferred indexed-symbol links.
 
 use super::{Pager, PagingState, SourceCursor, SourcePage, initial_cursor, pager_controls};
-use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey};
-use crate::model::pages::{CargoSourceKey, PageKey, PackageRef, SourceText};
+use crate::model::browse::{BrowseKey, BrowseValue};
+use crate::model::pages::SourceText;
 use crate::navigation::CargoSourceRoute;
-use crate::shell::bodies::state::{Shown, not_ready, shown};
+use crate::runtime::store::CargoReadAdmission;
+use crate::shell::bodies::state::{Shown, not_ready};
 use crate::shell::bodies::{Ctx, Leaf, Pages};
 use crate::shell::focus::Target;
 use crate::shell::kit::{quiet, text};
@@ -22,62 +23,69 @@ mod inventory;
 
 pub(super) fn body(
     route: &CargoSourceRoute,
-    _store: &Pages,
+    store: &Pages,
     ctx: &mut Ctx<'_>,
     window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
-    let Ok(package) = PackageRef::parse(route.package.as_str()) else {
+    let Some(dependencies) = store.dependencies() else {
+        return vec![Leaf::new(quiet("This Cargo source address has no resource plan.", &ctx.measure, ctx.palette))];
+    };
+    let Some(cargo) = dependencies.cargo() else {
         return vec![Leaf::new(quiet("This Cargo source address is invalid.", &ctx.measure, ctx.palette))];
     };
-    let inventory_key = BrowseKey::CargoSourceInventory(CargoSourceInventoryKey {
-        project: route.project.clone(),
-        package: package.clone(),
-    });
-    let key = CargoSourceKey { project: route.project.clone(), package, file: route.file.clone() };
-    let page_key = PageKey::CargoSource(key.clone());
-    let inventory_page_key = PageKey::Browse(inventory_key.clone());
+    let [page_key, inventory_page_key] = dependencies.keys() else {
+        return vec![Leaf::new(quiet("This Cargo source address has no resource plan.", &ctx.measure, ctx.palette))];
+    };
+    let inventory_key = BrowseKey::CargoSourceInventory(cargo.inventory.clone());
     // Transition plates may retain a captured Pages snapshot. Source bytes
     // must always come from the live store after its owner revocation fence.
     let live = ctx.links.store.read(cx);
-    let resource = live.cargo_source(&key);
-    let checking = live.is_loading(&page_key);
+    let resource = live.cargo_source(&cargo.file);
+    let admission = live.cargo_read_admission(page_key, &resource);
     let inventory_resource = live.pages().browse(&inventory_key);
-    let inventory_checking = live.is_loading(&inventory_page_key);
+    let inventory_admission = live.cargo_read_admission(inventory_page_key, &inventory_resource);
     drop(live);
-    let current_root = ctx.links.snapshot(cx).key();
     let heading = ctx.say(format!("{}  ›  {}", route.package.as_str(), route.file.as_str()));
     let mut leaves = vec![Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).child(heading))];
-    if inventory_checking
-        || inventory_resource.value_root().is_some_and(|root| root != current_root)
-    {
-        leaves.push(Leaf::new(quiet("Finding the current Cargo files…", &ctx.measure, ctx.palette)));
-    } else {
-        match shown(&inventory_resource) {
-            Shown::Ready(BrowseValue::CargoSourceInventory(model)) => {
+    match inventory_admission {
+        CargoReadAdmission::Checking => {
+            leaves.push(Leaf::new(quiet("Finding the current Cargo files…", &ctx.measure, ctx.palette)));
+        }
+        CargoReadAdmission::Current => {
+            if let Some(BrowseValue::CargoSourceInventory(model)) = inventory_resource.loaded_value() {
                 leaves.push(inventory::leaf(model, route, ctx, window, cx));
-            }
-            Shown::Ready(_) => {
+            } else {
                 leaves.push(Leaf::new(quiet("The Cargo file list reply changed shape.", &ctx.measure, ctx.palette)));
             }
-            other => leaves.extend(not_ready(&other, &inventory_page_key, "Cargo files", ctx, cx)),
+        }
+        CargoReadAdmission::Fault(error) => {
+            leaves.extend(not_ready::<BrowseValue>(&Shown::Fault(&error), inventory_page_key, "Cargo files", ctx, cx));
+        }
+        CargoReadAdmission::Unavailable(reason) => {
+            leaves.extend(not_ready::<BrowseValue>(&Shown::Unavailable(&reason, None), inventory_page_key, "Cargo files", ctx, cx));
         }
     }
     // A formerly valid file cannot be painted as current while the owner is
     // checking a newer observation or a forced revalidation is in flight.
-    if checking
-        || resource.value_root().is_some_and(|root| root != current_root)
-    {
-        let status = ctx.say("Checking the current Cargo source and file bytes…");
-        leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
-        return leaves;
-    }
-    let page = match shown(&resource) {
-        Shown::Ready(page) => page.clone(),
-        other => {
-            leaves.extend(not_ready(&other, &page_key, route.file.as_str(), ctx, cx));
+    match admission {
+        CargoReadAdmission::Checking => {
+            let status = ctx.say("Checking the current Cargo source and file bytes…");
+            leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
             return leaves;
         }
+        CargoReadAdmission::Fault(error) => {
+            leaves.extend(not_ready::<crate::model::pages::CargoSourcePage>(&Shown::Fault(&error), page_key, route.file.as_str(), ctx, cx));
+            return leaves;
+        }
+        CargoReadAdmission::Unavailable(reason) => {
+            leaves.extend(not_ready::<crate::model::pages::CargoSourcePage>(&Shown::Unavailable(&reason, None), page_key, route.file.as_str(), ctx, cx));
+            return leaves;
+        }
+        CargoReadAdmission::Current => {}
+    }
+    let Some(page) = resource.loaded_value() else {
+        return leaves;
     };
     let status = ctx.say("Current Cargo file · source bytes checked by the owner. Declaration links are unavailable until this exact file is indexed.");
     leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
