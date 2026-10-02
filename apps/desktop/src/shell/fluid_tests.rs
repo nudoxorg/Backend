@@ -13,6 +13,8 @@ use super::focus::Zone;
 use super::root::Shell;
 use super::tests::{Rig, page_route, rig, view_route};
 use super::ShelfMode;
+use crate::core::admit_resource;
+use crate::model::pages::{SearchQuery, SearchRow};
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage, View};
 use facet::probe::{Ledger, TextSample};
 use facet::probe::StackPhase;
@@ -24,6 +26,43 @@ const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)]
 
 fn frame(rig: &mut Rig) -> super::Frame {
     rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
+}
+
+/// The current owner-certified row, rather than a name inferred from the
+/// route that was on screen before Ask opened.
+fn ask_result(rig: &mut Rig) -> SearchRow {
+    let query = SearchQuery::new("relation", SearchQuery::DEFAULT_LIMIT).expect("Ask fixture query");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        let resource = store.search(&query);
+        let page = admit_resource(&resource, store.snapshot().key(), store.owner_serving())
+            .current_value().expect("current owner-certified Ask results");
+        assert_eq!(page.query.as_ref(), query.text.as_ref());
+        let rows = &page.rows;
+        assert_eq!(rows.len(), 1, "this fixture must expose one unambiguous preview destination");
+        rows[0].clone()
+    })
+}
+
+fn preview_name(rig: &mut Rig) -> String {
+    let row = ask_result(rig);
+    let route = rig.route();
+    let Route::Symbol(symbol) = &route else { panic!("Ask did not preview its exact result: {route:?}"); };
+    assert_eq!(symbol.id.as_str(), row.decl.coordinate.as_str(),
+        "the Reader preview differs from the current search result coordinate");
+    assert_eq!(Some(symbol.package.as_str()), row.package.as_deref(),
+        "the Reader preview differs from the result's owning package");
+    row.decl.name.to_string()
+}
+
+fn reader_name(rig: &mut Rig) -> String {
+    let previewing = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().preview.is_some());
+    if previewing {
+        return preview_name(rig);
+    }
+    let route = rig.route();
+    let Route::Symbol(symbol) = route else { panic!("Ask's Reader has no symbol page: {route:?}"); };
+    crate::model::pages::SymbolRef::new(symbol.id.as_str())
+        .expect("Reader symbol coordinate").identity().name().to_owned()
 }
 
 fn native_tree(rig: &mut Rig) -> serde_json::Value {
@@ -296,10 +335,11 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
             "the plate at {width} px is {bounds:?}, want {plate} wide at (0, {titlebar})"
         );
         // A result row is drawn below it, over the shelf's column, inside the plate.
+        let result_name = ask_result(&mut rig).decl.name.to_string();
         let row = words
             .iter()
-            .find(|text| text.text.contains("RelationLabel") && f32::from(text.bounds.origin.y) > titlebar && f32::from(text.bounds.origin.x) < plate)
-            .unwrap_or_else(|| panic!("no result row for `relation` at {width} px: {:?}", words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()));
+            .find(|text| text.text.as_ref() == result_name.as_str() && f32::from(text.bounds.origin.y) > titlebar && f32::from(text.bounds.origin.x) < plate)
+            .unwrap_or_else(|| panic!("no result row for {result_name:?} at {width} px: {:?}", words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()));
         assert!(
             f32::from(row.bounds.right()) <= plate + 0.5 && f32::from(row.bounds.right()) <= width,
             "the result row {:?} is outside the {plate} px plate at {width} px",
@@ -345,6 +385,7 @@ fn ask_preview_stays_beside_its_plate_through_zoom_and_resize(cx: &mut TestAppCo
 }
 
 fn assert_ask_geometry(rig: &mut Rig, settled: bool) {
+    let expected_name = reader_name(rig);
     let ledger = painted(rig);
     let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
     let viewport_width = rig.cx.update(|window, _| f32::from(window.viewport_size().width));
@@ -354,8 +395,14 @@ fn assert_ask_geometry(rig: &mut Rig, settled: bool) {
         return;
     }
     let hero = ledger.texts.iter()
-        .find(|text| text.key.starts_with("name:0:") && text.content == "RelationLabel");
-    if settled { assert!(hero.is_some(), "the settled Reader drew no symbol hero beside Ask"); }
+        .find(|text| text.key.starts_with("name:0:") && text.content == expected_name);
+    if settled {
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1,
+            "the exact preview has not settled to one mounted Reader page");
+        assert!(rig.said().iter().any(|line| line == &expected_name),
+            "the mounted Reader has no words for its exact preview result {expected_name:?}");
+        assert!(hero.is_some(), "the settled Reader drew no {expected_name:?} hero beside Ask");
+    }
     if let Some(hero) = hero {
         assert!(hero.bounds.x >= f32::from(plate.right()) + 8.0,
             "Reader hero {:?} crosses Ask plate {plate:?}", hero.bounds);
@@ -587,6 +634,7 @@ fn reader_clearance_follows_the_plate_that_was_painted_mid_flight(cx: &mut TestA
     rig.settle();
     rig.keys("down");
     rig.settle();
+    let expected_name = preview_name(&mut rig);
     assert!((f32::from(rig.cx.debug_bounds("ask-plate").expect("sheet").size.width) - 670.0).abs() < 1.0);
     rig.cx.simulate_resize(gpui::size(px(800.0), px(700.0)));
     rig.draw();
@@ -598,7 +646,7 @@ fn reader_clearance_follows_the_plate_that_was_painted_mid_flight(cx: &mut TestA
         let width = f32::from(plate.size.width);
         widths.push(width);
         if let Some(hero) = ledger.texts.iter().find(|text|
-            text.key.starts_with("name:0:") && text.content == "RelationLabel") {
+            text.key.starts_with("name:0:") && text.content == expected_name) {
             assert!(hero.bounds.x >= f32::from(plate.right()) + 8.0,
                 "frame hero {:?} crossed its actually painted plate {plate:?}", hero.bounds);
         }
