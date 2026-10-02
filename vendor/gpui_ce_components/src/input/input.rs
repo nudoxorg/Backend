@@ -395,6 +395,12 @@ impl Input {
         let Some(gpui::accesskit::ActionData::Value(value)) = data else {
             return;
         };
+        // Accessibility actions are user edits. A previously advertised
+        // action can arrive after the field becomes disabled or read-only;
+        // replace_all is a programmatic API that deliberately permits both.
+        if !state.presentation(cx).is_editable() {
+            return;
+        }
         state.replace_all(value.to_string(), window, cx);
     }
 
@@ -646,7 +652,7 @@ impl RenderOnce for Input {
                 this.aria_placeholder(placeholder)
             })
             .when_some(accessibility_value, |this, value| this.aria_value(value))
-            .when(!disabled, |this| {
+            .when(presentation.is_editable(), |this| {
                 this.on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
                     Self::handle_accessibility_set_value(&accessibility_state, data, window, cx);
                 })
@@ -939,6 +945,7 @@ mod tests {
             other: FocusHandle,
             show: bool,
             disabled: bool,
+            readonly: bool,
         }
 
         impl Render for Probe {
@@ -955,6 +962,7 @@ mod tests {
                         Input::new(&self.input)
                             .aria_label("Ask anything, or find a package")
                             .disabled(self.disabled)
+                            .readonly(self.readonly)
                     }))
             }
         }
@@ -972,8 +980,7 @@ mod tests {
             let nodes = tree["nodes"].as_object().expect("native nodes");
             let mut matches = nodes.iter().filter(|(_, node)| {
                 node["aria"]["role"].as_str() == Some("TextInput")
-                    && node["aria"]["label"].as_str()
-                        == Some("Ask anything, or find a package")
+                    && node["aria"]["label"].as_str() == Some("Ask anything, or find a package")
             });
             let (id, node) = matches.next().expect("named native input");
             assert!(matches.next().is_none(), "input has one semantic owner");
@@ -988,6 +995,7 @@ mod tests {
                 other: cx.focus_handle().tab_stop(true),
                 show: true,
                 disabled: false,
+                readonly: false,
             }
         });
         let input = probe.read_with(cx, |probe, _| probe.input.clone());
@@ -1002,11 +1010,13 @@ mod tests {
             let (id, node) = input_node(&tree);
             assert_eq!(tree["gpui_focus"].as_str(), Some(id));
             assert_eq!(tree["accesskit_focus"].as_str(), Some(id));
-            assert!(node["aria"]["on_action"]
-                .as_array()
-                .expect("native actions")
-                .iter()
-                .any(|action| action.as_str() == Some("SetValue")));
+            assert!(
+                node["aria"]["on_action"]
+                    .as_array()
+                    .expect("native actions")
+                    .iter()
+                    .any(|action| action.as_str() == Some("SetValue"))
+            );
         }
 
         cx.simulate_input("a");
@@ -1023,29 +1033,131 @@ mod tests {
         let (input_id, _) = input_node(&blurred);
         assert_ne!(blurred["gpui_focus"].as_str(), Some(input_id));
 
-        cx.update(|_, cx| probe.update(cx, |probe, cx| {
-            probe.disabled = true;
-            cx.notify();
-        }));
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.disabled = true;
+                cx.notify();
+            })
+        });
         let disabled = draw_tree(cx);
         let (_, node) = input_node(&disabled);
         assert_eq!(node["aria"]["disabled"].as_bool(), Some(true));
-        assert!(!node["aria"]["on_action"]
-            .as_array()
-            .is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("SetValue"))));
+        assert!(
+            !node["aria"]["on_action"]
+                .as_array()
+                .is_some_and(|actions| actions
+                    .iter()
+                    .any(|action| action.as_str() == Some("SetValue")))
+        );
 
-        cx.update(|_, cx| probe.update(cx, |probe, cx| {
-            probe.show = false;
+        let stale_action = gpui::accesskit::ActionData::Value("forbidden stale edit".into());
+        cx.update(|window, cx| {
+            Input::handle_accessibility_set_value(
+                &input.clone().into(),
+                Some(&stale_action),
+                window,
+                cx,
+            );
+        });
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "replaced");
+
+        probe.update(cx, |probe, cx| {
             probe.disabled = false;
             cx.notify();
-        }));
-        assert!(!draw_tree(cx)["nodes"].as_object().expect("native nodes").values().any(|node| {
-            node["aria"]["role"].as_str() == Some("TextInput")
-        }));
-        cx.update(|_, cx| probe.update(cx, |probe, cx| {
-            probe.show = true;
+        });
+        let enabled = draw_tree(cx);
+        let (_, node) = input_node(&enabled);
+        assert_eq!(node["aria"]["disabled"].as_bool(), Some(false));
+        assert!(
+            node["aria"]["on_action"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action.as_str() == Some("SetValue"))
+        );
+
+        probe.update(cx, |probe, cx| {
+            probe.readonly = true;
             cx.notify();
-        }));
+        });
+        let readonly = draw_tree(cx);
+        let (_, node) = input_node(&readonly);
+        assert_eq!(node["aria"]["disabled"].as_bool(), Some(false));
+        assert!(
+            !node["aria"]["on_action"]
+                .as_array()
+                .is_some_and(|actions| actions
+                    .iter()
+                    .any(|action| action.as_str() == Some("SetValue")))
+        );
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
+            Input::handle_accessibility_set_value(
+                &input.clone().into(),
+                Some(&stale_action),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let focused_readonly = draw_tree(cx);
+        let (id, _) = input_node(&focused_readonly);
+        assert_eq!(focused_readonly["gpui_focus"].as_str(), Some(id));
+        assert_eq!(focused_readonly["accesskit_focus"].as_str(), Some(id));
+        cx.simulate_input("blocked typing");
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "replaced");
+        cx.dispatch_action(crate::input::SelectAll);
+        cx.dispatch_action(crate::input::Copy);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("replaced".into())
+            );
+        });
+        probe.update(cx, |probe, cx| {
+            probe.readonly = false;
+            cx.notify();
+        });
+        let editable_again = draw_tree(cx);
+        let (_, node) = input_node(&editable_again);
+        assert!(
+            node["aria"]["on_action"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action.as_str() == Some("SetValue"))
+        );
+        let resumed_action = gpui::accesskit::ActionData::Value("resumed".into());
+        cx.update(|window, cx| {
+            Input::handle_accessibility_set_value(
+                &input.clone().into(),
+                Some(&resumed_action),
+                window,
+                cx,
+            );
+        });
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "resumed");
+
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.show = false;
+                probe.disabled = false;
+                cx.notify();
+            })
+        });
+        assert!(
+            !draw_tree(cx)["nodes"]
+                .as_object()
+                .expect("native nodes")
+                .values()
+                .any(|node| { node["aria"]["role"].as_str() == Some("TextInput") })
+        );
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.show = true;
+                cx.notify();
+            })
+        });
         let _ = draw_tree(cx);
         cx.update(|window, cx| {
             other.focus(window, cx);
