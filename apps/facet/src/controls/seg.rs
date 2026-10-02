@@ -725,8 +725,8 @@ mod tests {
         let point_ = cx.update(|window, cx| {
             let measure = Measure::new(px(300.0), &cx.facet());
             let scale = f32::from(measure.control(Control::Small)) / 24.0;
-            let first = text::width(&"One".into(), STONE_LABEL, &measure, window) + px(26.0 * scale);
-            let second = text::width(&"Two".into(), STONE_LABEL, &measure, window) + px(26.0 * scale);
+            let first = text::width("One", STONE_LABEL, &measure, window) + px(26.0 * scale);
+            let second = text::width("Two", STONE_LABEL, &measure, window) + px(26.0 * scale);
             point(first + px(4.0 * scale) + second / 2.0, measure.control(Control::Medium) / 2.0)
         });
         cx.simulate_click(point_, Modifiers::default());
