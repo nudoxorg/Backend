@@ -172,7 +172,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             });
             reader.update(cx, |_, cx| cx.notify());
         });
-        let act = ctx.native_snapshot_action(act, cx);
+        let act = ctx.native_local_action(act, cx);
         ctx.targets.push(Target { id: door.clone().into(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
         let focus = ctx.native_handle(&SharedString::from(door.clone()), cx);
         let face = native_control(door.clone().into(), label.clone(), gpui::Role::Button, focus, Rc::clone(&act))
@@ -208,7 +208,7 @@ fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalPr
     let links = ctx.links.clone();
     let intent = command.intent(project);
     let act: Act = Rc::new(move |_, cx| links.dispatch(intent.clone(), cx));
-    let act = ctx.native_snapshot_action(act, cx);
+    let act = ctx.native_local_action(act, cx);
     ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), act: Rc::clone(&act), peek: None, source: None });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
     let control = button(gpui::SharedString::from(id.clone()), command.label(), &ctx.measure).on_click(move |window, cx| act(window, cx));

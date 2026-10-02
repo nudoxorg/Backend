@@ -390,6 +390,16 @@ struct NativeReturn {
     read_stamp: Option<(PageKey, Stamp)>,
 }
 
+/// What permission a mounted Reader callback needs beyond its exact visit.
+/// Recovery and local presentation work through an unavailable owner;
+/// navigation from published bytes requires that owner and resource now.
+#[derive(Clone)]
+pub(crate) enum NativeActionLease {
+    LocalUi,
+    OwnerSnapshot(Option<OwnerAttachment>),
+    Resource { attachment: Option<OwnerAttachment>, stamp: Option<(PageKey, Stamp)> },
+}
+
 /// The reader region.
 pub(crate) struct Reader {
     core: RegionCore,
@@ -711,29 +721,39 @@ impl Reader {
         &self,
         place: u64,
         route: &Route,
+        overlay: Option<Overlay>,
         root: crate::core::VersionedRoot,
-        attachment: Option<&OwnerAttachment>,
-        read_stamp: Option<&(PageKey, Stamp)>,
+        lease: &NativeActionLease,
         source: Option<SourceGeneration>,
         inventory_revision: Option<[u8; 32]>,
         cx: &gpui::App,
     ) -> bool {
         if self.places.last().is_none_or(|current| current.key != place)
             || self.route != *route
-            || self.overlay.is_some()
+            || self.overlay != overlay
+            || self.links.snapshot(cx).overlay() != overlay
             || !self.links.snapshot(cx).key().same_authority(root)
         {
             return false;
         }
         let store = self.links.store.read(cx);
-        if attachment.is_none_or(|attachment| !store.admits_owner_attachment(attachment))
-            || !store.snapshot().key().same_authority(root)
-            || read_stamp.is_some_and(|stamp| !RouteDependencies::new(route, None).admits_native_stamp(store, root, stamp))
-        {
-            return false;
-        }
+        if !store.snapshot().key().same_authority(root) { return false; }
+        let read_stamp = match lease {
+            NativeActionLease::LocalUi => None,
+            NativeActionLease::OwnerSnapshot(attachment) => {
+                if attachment.as_ref().is_none_or(|attachment| !store.admits_owner_attachment(attachment)) { return false; }
+                None
+            }
+            NativeActionLease::Resource { attachment, stamp } => {
+                if attachment.as_ref().is_none_or(|attachment| !store.admits_owner_attachment(attachment))
+                    || stamp.as_ref().is_none_or(|stamp| !RouteDependencies::new(route, overlay).admits_native_stamp(store, root, stamp))
+                { return false; }
+                stamp.as_ref()
+            }
+        };
+        if matches!(lease, NativeActionLease::LocalUi) { return true; }
         if let Route::CargoSource(file) = route {
-            if read_stamp.is_none() { return false; }
+            if !matches!(lease, NativeActionLease::Resource { .. }) || read_stamp.is_none() { return false; }
             let Ok(package) = crate::model::pages::PackageRef::parse(file.package.as_str()) else { return false };
             match source {
                 Some(SourceGeneration::Cargo(digest)) => {

@@ -50,6 +50,10 @@ pub(super) fn body(
     let mut leaves = vec![Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).child(heading))];
     match inventory_admission {
         CargoReadAdmission::Checking => {
+            if let Some(BrowseValue::CargoSourceInventory(previous)) = inventory_resource.loaded_value() {
+                let words = ctx.say(format!("Earlier Cargo file list retained ({} paths). File links are unavailable while the current owner checks it.", previous.paths.len()));
+                leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
+            }
             leaves.push(Leaf::new(quiet("Finding the current Cargo files…", &ctx.measure, ctx.palette)));
         }
         CargoReadAdmission::Current => {
@@ -70,6 +74,10 @@ pub(super) fn body(
     // checking a newer observation or a forced revalidation is in flight.
     match admission {
         CargoReadAdmission::Checking => {
+            if resource.loaded_value().is_some() {
+                let words = ctx.say("Earlier Cargo source bytes are retained. Copy and source navigation are unavailable until the current owner checks them.");
+                leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
+            }
             let status = ctx.say("Checking the current Cargo source and file bytes…");
             leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
             return leaves;
