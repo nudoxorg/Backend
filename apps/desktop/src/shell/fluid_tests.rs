@@ -549,7 +549,7 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
     let selected = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(selected, (Zone::Reader, Some("source-copy-excerpt".into())),
         "the keyboard did not stand on the visible Code control");
-    rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("ask-exit-sentinel"));
+    rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("ask-exit-sentinel".into()));
 
     rig.keys("cmd-k");
     rig.keys("r e l a t i o n");
