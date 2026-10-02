@@ -1035,8 +1035,9 @@ impl Shell {
             // key context gates its actions; this also stops raw child keys.
             // A new Ask and the platform's close shortcuts stay available.
             let key = event.keystroke.key.as_str();
-            let platform = event.keystroke.modifiers.platform;
-            if !(platform && matches!(key, "k" | "q" | "w")) {
+            // `secondary`: the shortcut modifier the shell's chords use (⌘/Ctrl).
+            let command = event.keystroke.modifiers.secondary();
+            if !(command && matches!(key, "k" | "q" | "w")) {
                 cx.stop_propagation();
             }
             return;

@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(press("up"), Some(SideKey::Up));
         assert_eq!(press("down"), Some(SideKey::Down));
         assert_eq!(press("space"), Some(SideKey::Space));
-        for shell_key in ["enter", "tab", "cmd-d", "ctrl-1", "alt-x", "cmd-k", "cmd-up", "shift-tab"] {
+        for shell_key in ["enter", "tab", "secondary-d", "ctrl-1", "alt-x", "secondary-k", "secondary-up", "shift-tab"] {
             assert_eq!(press(shell_key), None, "{shell_key} is not the sidebar's to read");
         }
         let typed = Keystroke { key: "a".into(), key_char: Some("é".into()), modifiers: gpui::Modifiers::none() };

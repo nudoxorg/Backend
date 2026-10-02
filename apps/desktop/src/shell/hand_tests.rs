@@ -11,9 +11,9 @@ use gpui::TestAppContext;
 fn two_held(cx: &mut TestAppContext) -> Rig {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig);
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.go(Intent::Navigate(page_route("relation_label")));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig
 }
@@ -43,7 +43,7 @@ fn the_hand_arranges_what_you_hold_by_what_feeds_what(cx: &mut TestAppContext) {
 fn letting_go_re_routes_the_road(cx: &mut TestAppContext) {
     let mut rig = two_held(cx);
     rig.go(Intent::Navigate(page_route("SemanticLinkKind")));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.keys("h");
     assert_eq!(
         row(&mut rig),
@@ -71,11 +71,11 @@ fn enter_in_the_open_hand_goes_to_the_card(cx: &mut TestAppContext) {
 #[gpui::test]
 fn cmd_1_and_cmd_2_go_to_the_cards_in_the_order_they_are_shown(cx: &mut TestAppContext) {
     let mut rig = two_held(cx);
-    rig.keys("cmd-1");
+    rig.keys("secondary-1");
     assert_eq!(rig.route(), page_route("relation_label"));
-    rig.keys("cmd-2");
+    rig.keys("secondary-2");
     assert_eq!(rig.route(), page_route("RelationLabel"));
-    rig.keys("cmd-3");
+    rig.keys("secondary-3");
     assert_eq!(rig.route(), page_route("RelationLabel"), "no third card: nothing moves");
 }
 
@@ -139,10 +139,10 @@ fn the_first_card_is_whispered_once(cx: &mut TestAppContext) {
         texts.windows(2).find(|pair| pair[1] == "in hand").map(|pair| pair[0].clone())
     };
     assert_eq!(whisper(&mut rig), None, "nothing held, nothing said");
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     assert_eq!(whisper(&mut rig).as_deref(), Some("RelationLabel"), "the first card");
     rig.go(Intent::Navigate(page_route("relation_label")));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     assert_ne!(whisper(&mut rig).as_deref(), Some("relation_label"), "the second card is never whispered");
     for _ in 0..160 {
         rig.frame(16);
@@ -168,7 +168,7 @@ fn the_whisper_is_spent_when_its_timer_fires(cx: &mut TestAppContext) {
         let texts: Vec<String> = ledger.texts.iter().map(|text| text.content.clone()).collect();
         texts.windows(2).any(|pair| pair[1] == "in hand")
     };
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     assert!(whisper(&mut rig), "the first card is whispered");
     rig.cx.executor().advance_clock(std::time::Duration::from_millis(3_000));
     rig.cx.run_until_parked();
@@ -185,7 +185,7 @@ fn a_taken_card_travels_from_the_hero_stone_to_the_foot(cx: &mut TestAppContext)
     rig.repaint();
     let hero = rig.cx.debug_bounds("decl:/fixture/present::glyph.rs:138::RelationLabel").expect("the hero stone");
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-    rig.cx.simulate_keystrokes("cmd-d");
+    rig.cx.simulate_keystrokes("secondary-d");
     for _ in 0..40 {
         rig.frame(16);
     }
@@ -237,7 +237,7 @@ fn holding_cmd_shows_each_cards_digit(cx: &mut TestAppContext) {
         ledger.texts.iter().filter(|text| text.key.starts_with("hand-digit:")).map(|text| text.content.clone()).collect()
     };
     assert!(digits(&mut rig).is_empty(), "no digits at rest");
-    rig.cx.simulate_modifiers_change(gpui::Modifiers { platform: true, ..gpui::Modifiers::default() });
+    rig.cx.simulate_modifiers_change(gpui::Modifiers::secondary_key());
     rig.cx.executor().advance_clock(super::reveal::HOLD + std::time::Duration::from_millis(10));
     rig.cx.run_until_parked();
     rig.draw();

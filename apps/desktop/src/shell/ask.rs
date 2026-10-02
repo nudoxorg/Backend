@@ -1022,7 +1022,7 @@ mod tests {
         let mut rig = rig_with_reads(cx, Some(page_route("RelationDirection")), 1440.0, 900.0,
             ReadPool::start(2, |_| Fixture).expect("fixture pool"));
         let committed = rig.route();
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("RelationLabel", window, cx)));
@@ -1079,7 +1079,7 @@ mod tests {
     fn rapid_blank_invalid_valid_typing_only_requests_the_current_query(cx: &mut TestAppContext) {
         let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
             ReadPool::start(2, |_| Fixture).expect("fixture pool"));
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         let oversized = "🧭".repeat(257);
@@ -1178,7 +1178,7 @@ mod tests {
             visual.run_until_parked();
         };
         draw(visual);
-        visual.simulate_keystrokes("cmd-k");
+        visual.simulate_keystrokes("secondary-k");
         draw(visual);
         let ask = shell.read_with(visual, |shell, _| shell.ask_entity());
         let input = ask.read_with(visual, |ask, _| ask.input().clone());
@@ -1298,7 +1298,7 @@ mod tests {
     fn a_row_with_no_place_speaks_through_the_notice_on_enter(cx: &mut TestAppContext) {
         let pool = ReadPool::start(2, |_| NoPlaceSearch).expect("pool");
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         // Open with nothing typed, Ask is its field: no plate is drawn, and
         // none is said to be (the page under the veil is what shows).
         let dialogs = |ledger: &facet::probe::Ledger| -> Vec<String> {

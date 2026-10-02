@@ -113,11 +113,11 @@ fn the_shelf_folds_test_only_modules_into_a_trailing_tests_row(cx: &mut TestAppC
 #[gpui::test]
 fn cmd_shift_c_copies_the_address(cx: &mut TestAppContext) {
     let mut rig = open(cx, "RelationLabel");
-    rig.keys("cmd-shift-c");
+    rig.keys("secondary-shift-c");
     let copied = rig.cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(copied.as_deref(), Some("nudox://present/glyph/RelationLabel"));
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
-    rig.keys("cmd-shift-c");
+    rig.keys("secondary-shift-c");
     assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("nudox://orbit"));
 }
 

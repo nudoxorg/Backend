@@ -1327,7 +1327,7 @@ mod tests {
             .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
         activate_reader_target(&mut rig, "source-reference-0");
         assert_ne!(rig.route(), route, "the verified link must navigate");
-        rig.keys("cmd-[");
+        rig.keys("secondary-[");
         assert_eq!(rig.route(), route);
         assert!(
             rig.said().iter().any(|word| word.contains("Lines 564")),
@@ -1379,7 +1379,7 @@ mod tests {
         let pool = ReadPool::start(2, |_| LongWrappedLine).expect("wrapped source pool");
         let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 260.0, 700.0, pool);
         for _ in 0..5 {
-            rig.keys("cmd-=");
+            rig.keys("secondary-=");
         }
         let scale = rig
             .cx
