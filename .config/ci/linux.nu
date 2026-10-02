@@ -28,14 +28,36 @@ def print-captured-failures []: nothing -> nothing {
             print '== nextest failure summary =='
             $verdicts | last 100 | str join (char nl) | print
         }
-        # Each failing test's own output comes long before the tail (nextest
-        # prints it as the test fails), so pull every panic with the lines
-        # that explain it: the assertion, left/right, and the message.
-        let panics = ($output | enumerate | where {|row| ($row.item | str contains 'panicked at') or ($row.item | str contains 'stderr ───') } | get index)
-        if not ($panics | is-empty) {
-            print $"== ($panics | length) panics \(first 60, 25 lines each\) =="
-            for start in ($panics | first 60) {
-                $output | skip ([($start - 3) 0] | math max) | first 28 | str join (char nl) | print
+        # Each failing test's own output comes long before the tail, and nextest
+        # prints it twice (as the test fails, then in its final summary). Key
+        # every stderr block by the FAIL/TIMEOUT line above it and keep one per
+        # test, so every failure gets its reason, not just the first few dozen.
+        let headers = ($output | enumerate | where {|row| $row.item =~ '^\s+(FAIL|TIMEOUT) \[' })
+        let blocks = (
+            $output
+            | enumerate
+            | where {|row| $row.item | str contains 'stderr ───' }
+            | each {|row|
+                let above = ($headers | where index < $row.index)
+                if ($above | is-empty) {
+                    null
+                } else {
+                    let header = ($above | last)
+                    {
+                        key: ($header.item | str replace --regex '^\s+(FAIL|TIMEOUT) \[[^\]]*\]\s+\(\s*\d+/\d+\)\s+' '')
+                        header: $header.item
+                        start: $row.index
+                    }
+                }
+            }
+            | compact
+            | uniq-by key
+        )
+        if not ($blocks | is-empty) {
+            print $"== ($blocks | length) failing tests' stderr \(first 300, 20 lines each\) =="
+            for block in ($blocks | first 300) {
+                print $block.header
+                $output | skip $block.start | first 20 | str join (char nl) | print
                 print '--'
             }
         }
