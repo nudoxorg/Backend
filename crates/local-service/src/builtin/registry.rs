@@ -438,6 +438,12 @@ impl RegistryGateway {
         &self.advisory
     }
 
+    /// Shares the selected immutable authority with an admitted background
+    /// browse read. Refresh installs a new Arc without changing this snapshot.
+    pub(super) fn advisory_snapshot(&self) -> Arc<backend_engine::advisory::AdvisoryAuthority> {
+        Arc::clone(&self.advisory)
+    }
+
     /// Refreshes every configured advisory source, persists the result, and
     /// makes it the authority for every later read and acquisition.
     ///

@@ -1,6 +1,7 @@
 //! Product command admission and the atomic intent/view/projection pipeline.
 
 mod adapter;
+mod browse_lane;
 mod diff;
 mod graph;
 mod index;
