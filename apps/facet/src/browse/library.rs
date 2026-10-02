@@ -662,6 +662,60 @@ mod mounted_tests {
         cx.simulate_click(at, Modifiers::none());
     }
 
+    struct DeferredTarget { focus: FocusHandle }
+
+    impl Render for DeferredTarget {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().id("mounted-return-target").track_focus(&self.focus).w(px(80.0)).h(px(30.0))
+        }
+    }
+
+    #[gpui::test]
+    fn queued_return_cannot_focus_after_cancel_or_replacement(cx: &mut TestAppContext) {
+        let (host, cx) = cx.add_window_view(|_, cx| DeferredTarget { focus: cx.focus_handle() });
+        draw(cx);
+        let focus = host.read(cx).focus.clone();
+        let state = Rc::new(RefCell::new(State::default()));
+        let calls = Rc::new(RefCell::new(0));
+        let observed = Rc::clone(&calls);
+        let actions = Actions {
+            open_package: Rc::new(|_, _, _| {}),
+            open_inventory: Rc::new(|_, _, _| {}),
+            return_focus: Rc::new(move |focus, window, cx| {
+                *observed.borrow_mut() += 1;
+                window.focus(&focus, cx);
+                ReturnDisposition::Applied
+            }),
+        };
+        let first = ReleaseHandle::identified(0, 0, 0, "formats", "row", "first");
+        let replacement = ReleaseHandle::identified(0, 0, 1, "formats", "row", "second");
+
+        state.borrow_mut().remember_open(first.clone(), 1);
+        cx.update(|window, cx| {
+            defer_return_focus(&state, &actions, focus.clone(), window, cx);
+            state.borrow_mut().cancel_return();
+        });
+        cx.run_until_parked();
+        assert_eq!(*calls.borrow(), 0, "a cancelled queued callback never reaches the host");
+        assert!(!cx.update(|window, _| focus.is_focused(window)));
+
+        state.borrow_mut().remember_open(first, 1);
+        cx.update(|window, cx| {
+            defer_return_focus(&state, &actions, focus.clone(), window, cx);
+            state.borrow_mut().remember_open(replacement.clone(), 1);
+        });
+        cx.run_until_parked();
+        assert_eq!(*calls.borrow(), 0, "the old closure cannot focus after a new return replaces it");
+        assert_eq!(state.borrow().return_target(2, true), Some(replacement.identity));
+        assert!(!cx.update(|window, _| focus.is_focused(window)));
+
+        cx.update(|window, cx| defer_return_focus(&state, &actions, focus.clone(), window, cx));
+        cx.run_until_parked();
+        assert_eq!(*calls.borrow(), 1, "only the replacement intent may reach the host");
+        assert!(cx.update(|window, _| focus.is_focused(window)));
+        assert!(state.borrow().return_focus.is_none());
+    }
+
     #[gpui::test]
     fn back_focuses_the_exact_opened_release_after_its_button_was_unmounted(
         cx: &mut TestAppContext,
@@ -1965,6 +2019,11 @@ fn defer_return_focus(
     let restore = Rc::clone(&actions.return_focus);
     let focused_before = window.focused(cx);
     window.defer(cx, move |window, cx| {
+        // A new open or interruption may replace this intent before GPUI
+        // drains the effect cycle. Do not call the host with its old handle.
+        if state.borrow().return_scheduled != Some(generation) {
+            return;
+        }
         let result = if window.focused(cx) == focused_before {
             restore(focus, window, cx)
         } else {
