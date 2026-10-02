@@ -159,20 +159,7 @@ pub(super) fn body(
             .map(|pin| data::past(pin, at.as_str(), ctx.links.snapshot(cx).key(), cx))
     });
     // What the source on disk says (read off the UI thread; cached).
-    let hints: std::collections::HashMap<String, String> = dossier
-        .dependencies
-        .known()
-        .map(|list| {
-            list.iter()
-                .filter_map(|d| {
-                    d.resolved
-                        .as_ref()
-                        .and_then(|r| r.version())
-                        .map(|v| (d.name.to_string(), v.to_owned()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let hints = dependency_hints(&dossier);
     let project_path = workspace_active.map(|project| project.path());
     let source =
         crate::model::source_facts::reading(&dossier.package, &hints, project_path.as_deref(), cx);
@@ -430,6 +417,21 @@ fn page_measure(ctx: &Ctx<'_>) -> Measure {
 /// The widest the folio grows, px at 100 % text.
 const PAGE_MAX: f32 = 1800.0;
 
+fn dependency_hints(dossier: &PackageDossier) -> std::collections::HashMap<String, String> {
+    dossier
+        .dependencies
+        .known()
+        .map(|list| {
+            list.iter()
+                .filter_map(|dependency| {
+                    dependency.resolved.as_ref().and_then(|release| release.version())
+                        .map(|version| (dependency.name.to_string(), version.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A header URL is owned jointly by this exact page and its exact source
 /// reading. A retained dossier or a changed source read can still be shown,
 /// but cannot open a captured destination.
@@ -457,12 +459,18 @@ impl HeaderTicket {
         if snapshot.route() != &self.route
             || snapshot.overlay() != self.overlay
             || !snapshot.key().same_authority(self.root)
-            || !crate::core::admit_resource(
-                &store.package(&self.package),
-                snapshot.key(),
-                store.owner_serving(),
-            )
-            .allows_actions()
+        {
+            return;
+        }
+        let current_resource = store.package(&self.package);
+        let Some(dossier) = crate::core::admit_resource(
+            &current_resource, snapshot.key(), store.owner_serving(),
+        ).current_value() else { return; };
+        let current_hints = dependency_hints(dossier);
+        let current_project_path = snapshot.workspace().active.as_ref().map(|project| project.path());
+        if dossier.package != self.package
+            || current_hints != self.hints
+            || current_project_path != self.project_path
         {
             return;
         }
@@ -470,8 +478,8 @@ impl HeaderTicket {
         if let crate::model::source_facts::Reading::Ready(facts) =
             crate::model::source_facts::reading(
                 &self.package,
-                &self.hints,
-                self.project_path.as_deref(),
+                &current_hints,
+                current_project_path.as_deref(),
                 cx,
             )
             && facts.root == self.source_root
@@ -617,8 +625,8 @@ fn hero(
                             .aria_label(label)
                             .focusable()
                             .cursor_pointer()
-                            .on_click(move |_: &ClickEvent, window, cx| {
-                                if !window.last_input_was_keyboard() {
+                            .on_click(move |event: &ClickEvent, window, cx| {
+                                if !matches!(event, ClickEvent::Keyboard(_)) {
                                     click_act(window, cx);
                                 }
                             })
