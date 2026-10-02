@@ -836,26 +836,157 @@ fn live_motion_families_settle_under_inert_and_restart_for_new_targets(cx: &mut 
 }
 
 
+struct SeededFlights {
+    flights: super::Flights,
+    seed: bool,
+    guarded: bool,
+    target: super::Camera,
+    seen: Rc<Cell<Option<[super::flight::Shot; 2]>>>,
+}
+
+impl Render for SeededFlights {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let requested = frames_requested(cx);
+        let guard = self.guarded.then(|| super::still(cx));
+        let shots = if self.seed {
+            self.seed = false;
+            let from = super::Camera::new(0.0, 0.0, 100.0);
+            [
+                self.flights
+                    .fly_from("seed", from, (10.0, 5.0, 0.2), self.target, window, cx),
+                self.flights.fly_travel_from(
+                    "travel",
+                    from,
+                    (10.0, 5.0, 0.2),
+                    self.target,
+                    super::flight::Travel::Reframe,
+                    window,
+                    cx,
+                ),
+            ]
+        } else {
+            [
+                self.flights.fly("seed", self.target, window, cx),
+                self.flights.fly_travel(
+                    "travel",
+                    self.target,
+                    super::flight::Travel::Reframe,
+                    window,
+                    cx,
+                ),
+            ]
+        };
+        if self.guarded {
+            assert_eq!(
+                frames_requested(cx),
+                requested,
+                "still sampling cannot request a wake"
+            );
+        }
+        drop(guard);
+        assert!(
+            !super::is_still_in(window, cx),
+            "the local guard released its scope"
+        );
+        self.seen.set(Some(shots));
+        div().size_full()
+    }
+}
+
 #[gpui::test]
 fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppContext) {
-    let (_view, cx) = cx.add_window_view(|_, _| Tweened { seen: Rc::new(Cell::new(0.0)) });
-    let flights = super::Flights::new();
-    let from = super::Camera::new(0.0, 0.0, 100.0);
+    use crate::theme::ActiveFacet as _;
+    let seen = Rc::new(Cell::new(None));
     let target = super::Camera::new(100.0, 40.0, 50.0);
-    cx.update(|window, cx| {
-        let requested = frames_requested(cx);
-        let guard = super::still(cx);
-        for shot in [
-            flights.fly_from("seed", from, (10.0, 5.0, 0.2), target, window, cx),
-            flights.fly_travel_from("travel", from, (10.0, 5.0, 0.2), target, super::flight::Travel::Reframe, window, cx),
-        ] {
+    let (view, cx) = cx.add_window_view({
+        let seen = seen.clone();
+        move |_, _| SeededFlights {
+            flights: super::Flights::new(),
+            seed: true,
+            guarded: true,
+            target,
+            seen,
+        }
+    });
+    let preference = cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion()));
+    assert_eq!(preference, (false, false));
+    let assert_landed = |target| {
+        for shot in seen.get().expect("mounted flights sampled") {
             assert_eq!(shot.camera, target);
             assert!(!shot.live && shot.from.is_none() && shot.fade == 1.0);
         }
-        assert_eq!(frames_requested(cx), requested);
-        drop(guard);
-        assert!(!super::is_still_in(window, cx));
-        let next = super::Camera::new(200.0, 0.0, 80.0);
-        assert!(flights.fly("seed", next, window, cx).live);
+    };
+    frame(cx);
+    assert_landed(target);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0);
+
+    // Releasing policy cannot replay either seed or its carried velocity.
+    view.update(cx, |view, cx| {
+        view.guarded = false;
+        cx.notify();
     });
+    frame(cx);
+    assert_landed(target);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0);
+
+    let next = super::Camera::new(200.0, 0.0, 80.0);
+    view.update(cx, |view, cx| {
+        view.target = next;
+        cx.notify();
+    });
+    frame(cx);
+    assert!(seen.get().unwrap().iter().all(|shot| shot.live));
+    assert!(cx.update(|_, cx| frames_requested(cx)) > 0);
+    advance(cx, 16);
+    frame(cx);
+    for shot in seen.get().unwrap() {
+        assert!(shot.live);
+        assert_ne!(
+            shot.camera, target,
+            "the executor clock advances the mounted flight"
+        );
+        assert_ne!(shot.camera, next);
+    }
+
+    // The still policy also lands an existing flight at its unchanged target.
+    view.update(cx, |view, cx| {
+        view.guarded = true;
+        cx.notify();
+    });
+    frame(cx);
+    assert_landed(next);
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    advance(cx, 16);
+    assert_eq!(frame(cx), 0, "the pending wake drained without renewing");
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    view.update(cx, |view, cx| {
+        view.guarded = false;
+        cx.notify();
+    });
+    frame(cx);
+    assert_landed(next);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    assert_eq!(
+        cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion())),
+        preference
+    );
+
+    let final_target = super::Camera::new(300.0, 20.0, 60.0);
+    view.update(cx, |view, cx| {
+        view.target = final_target;
+        cx.notify();
+    });
+    frame(cx);
+    assert!(seen.get().unwrap().iter().all(|shot| shot.live));
+    assert!(cx.update(|_, cx| frames_requested(cx)) > requested);
+    advance(cx, 10_000);
+    frame(cx);
+    assert_landed(final_target);
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    assert_eq!(frame(cx), 0, "landed flights leave no frame demand");
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    assert_eq!(
+        cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion())),
+        preference
+    );
 }
