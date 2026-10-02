@@ -19,15 +19,14 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle as _, IntoRawHandle as _, 
 use std::path::{Component, Path, Prefix};
 use std::ptr;
 use std::sync::Arc;
-use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE};
+use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, GENERIC_ALL, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION,
-    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-    GetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
-    SECURITY_DESCRIPTOR_CONTROL,
+    ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION,
+    GetAce, GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+    PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY,
@@ -54,8 +53,6 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-const ACL_INFORMATION_CLASS_SIZE: u32 = 2;
-const GENERIC_ALL: u32 = 0x1000_0000;
 
 #[repr(C)]
 struct UnicodeString {
@@ -268,7 +265,9 @@ impl WorkspaceRoot {
             ));
         }
 
-        match open_directory_child(&parent, name) {
+        let parent = Self(parent);
+        let open_existing = || open_directory_child(&parent.0, name).map(Self);
+        match open_existing() {
             Ok(child) => {
                 child.flush_dir()?;
                 parent.flush_dir()
@@ -280,7 +279,7 @@ impl WorkspaceRoot {
                         parent.flush_dir()
                     }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        let child = open_directory_child(&parent, name)?;
+                        let child = open_existing()?;
                         child.flush_dir()?;
                         parent.flush_dir()
                     }
@@ -767,7 +766,10 @@ impl WorkspaceRoot {
         self.0.handle.as_raw_handle().cast()
     }
 
-    fn parent_and_leaf(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf<'path>(
+        &self,
+        path: &[&'path str],
+    ) -> io::Result<(Arc<DirectoryNode>, &'path str)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -783,7 +785,10 @@ impl WorkspaceRoot {
         Ok((parent, leaf))
     }
 
-    fn parent_and_leaf_source(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf_source<'path>(
+        &self,
+        path: &[&'path str],
+    ) -> io::Result<(Arc<DirectoryNode>, &'path str)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1305,7 +1310,7 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
             dacl_from_sd,
             (&raw mut info).cast(),
             mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
-            ACL_INFORMATION_CLASS_SIZE,
+            AclSizeInformation,
         )
     } == 0
     {
@@ -1324,7 +1329,7 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
     // ACCESS_ALLOWED_ACE begins with ACE_HEADER and a mask followed by SID.
     // SAFETY: GetAce returned the sole ACE in a valid ACL.
     let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if allowed.Header.AceType != ACCESS_ALLOWED_ACE_TYPE || allowed.Mask != GENERIC_ALL {
+    if u32::from(allowed.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE || allowed.Mask != GENERIC_ALL {
         return Err(invalid_data("workspace DACL is not current-user-only"));
     }
     let sid = current_user()?;
