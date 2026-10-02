@@ -10,30 +10,18 @@
 //! seconds. Unix has no equivalent: a rename never waits on a reader.
 //!
 //! The wait is short and bounded. A holder that outlasts it is reported with
-//! the original operating-system error, so a genuine permission problem or a
-//! genuinely long-lived handle still fails closed instead of hanging.
+//! the operating-system error of the final attempt (the request is repeated
+//! unchanged, so that is the holder's own code), so a genuine permission
+//! problem or a genuinely long-lived handle still fails closed instead of
+//! hanging.
 
+use crate::retry::{BACKOFF, retry_when};
 use std::io;
 use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
 };
-
-/// Pause before each retry. The total (about 320 ms) is far longer than a scan
-/// of a small state file and far shorter than any caller's own deadline.
-const BACKOFF: [Duration; 10] = [
-    Duration::from_millis(1),
-    Duration::from_millis(2),
-    Duration::from_millis(4),
-    Duration::from_millis(8),
-    Duration::from_millis(16),
-    Duration::from_millis(32),
-    Duration::from_millis(64),
-    Duration::from_millis(64),
-    Duration::from_millis(64),
-    Duration::from_millis(64),
-];
 
 /// Whether `error` is one of the codes Windows reports while a file is held
 /// open by another handle that does not share what the caller needs.
@@ -54,23 +42,32 @@ pub(crate) fn is_busy(error: &io::Error) -> bool {
 /// holds for every open and rename in this crate: the kernel either performs
 /// the call or refuses it before changing anything.
 pub(crate) fn retry_while_busy<T>(operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    retry_with(operation, &BACKOFF, thread::sleep)
+    retry_while_busy_pausing(operation, thread::sleep)
 }
 
-/// The retry loop with its schedule and clock injected, so tests can drive it
-/// without sleeping.
-fn retry_with<T>(
-    mut operation: impl FnMut() -> io::Result<T>,
-    backoff: &[Duration],
-    mut pause: impl FnMut(Duration),
+/// [`retry_while_busy`] with the pause injected, so a test can release the
+/// holder at the exact moment the first attempt was refused instead of
+/// guessing a duration.
+pub(crate) fn retry_while_busy_pausing<T>(
+    operation: impl FnMut() -> io::Result<T>,
+    pause: impl FnMut(Duration),
 ) -> io::Result<T> {
-    for delay in backoff {
-        match operation() {
-            Err(error) if is_busy(&error) => pause(*delay),
-            outcome => return outcome,
-        }
-    }
-    operation()
+    retry_with(operation, &BACKOFF, pause)
+}
+
+/// The busy-file retry with its schedule and clock injected, so tests can
+/// drive it without sleeping.
+fn retry_with<T>(
+    operation: impl FnMut() -> io::Result<T>,
+    backoff: &[Duration],
+    pause: impl FnMut(Duration),
+) -> io::Result<T> {
+    retry_when(
+        operation,
+        |outcome| matches!(outcome, Err(error) if is_busy(error)),
+        backoff,
+        pause,
+    )
 }
 
 #[cfg(test)]

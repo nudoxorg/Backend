@@ -19,13 +19,15 @@ pub mod child_output;
 pub mod directory;
 pub mod durability;
 pub mod durable;
-#[cfg_attr(target_os = "macos", allow(unsafe_code))]
+#[cfg_attr(any(windows, target_os = "macos"), allow(unsafe_code))]
 pub mod executable_identity;
 pub mod file_identity;
+mod linkage;
 pub mod local;
 #[cfg(target_os = "macos")]
 pub mod macos_process;
 mod native_path;
+mod retry;
 #[cfg(windows)]
 pub mod win32;
 #[cfg(windows)]
