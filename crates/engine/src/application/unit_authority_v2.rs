@@ -1499,7 +1499,7 @@ mod tests {
         use std::path::PathBuf;
 
         let configuration =
-            GoOracleConfiguration::oracle_binary(PathBuf::from("/opt/compiler/go-oracle"))
+            GoOracleConfiguration::oracle_binary(crate::test_support::host_absolute("/opt/compiler/go-oracle"))
                 .expect("absolute test oracle path");
         let oracle = GoOracle::default().with_configuration(configuration);
         assert_eq!(
