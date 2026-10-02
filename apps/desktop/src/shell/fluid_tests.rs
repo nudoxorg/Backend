@@ -441,6 +441,11 @@ fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestA
     let plate = rig.cx.debug_bounds("ask-plate").expect("entering plate");
     assert!(f32::from(plate.size.width) > 1.0 && f32::from(plate.size.width) < 439.0,
         "the test must sample an actually clipped entry: {plate:?}");
+    rig.frame(168);
+    let plate = rig.cx.debug_bounds("ask-plate").expect("spring plate after veil tween");
+    assert!(f32::from(plate.size.width) < 439.0, "the plate unexpectedly settled with the veil: {plate:?}");
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Entering),
+        "a settled veil mislabeled the still-moving plate Open");
     let native = |rig: &mut Rig| {
         rig.repaint();
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Ask tree");
@@ -458,6 +463,7 @@ fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestA
     assert_eq!(tree["nodes"][focus]["aria"]["role"].as_str(), Some("TextInput"),
         "Tab escaped the editor into a clipped result");
     rig.settle();
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Open));
     assert!(actionable_links(&native(&mut rig)) > 0, "settled results never became actionable");
 }
 

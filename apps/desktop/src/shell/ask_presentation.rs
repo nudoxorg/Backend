@@ -73,12 +73,12 @@ impl AskPresentation {
         let geometry = (width > 0.5).then(|| AskGeometry::resolve(
             frame, viewport, status, reader_left, px(width),
         ));
+        // Both values were sampled from this presentation's one motion store.
+        // A settled veil cannot call the scene Open while the occupied plate
+        // is still moving beside the Reader.
+        let tracks_settled = !self.motion.is_live(cx);
         let phase = if active {
-            Some(if veil < 0.999 {
-                StackPhase::Entering
-            } else {
-                StackPhase::Open
-            })
+            Some(if tracks_settled { StackPhase::Open } else { StackPhase::Entering })
         } else if veil > 0.001 || geometry.is_some() {
             Some(StackPhase::Leaving)
         } else {
