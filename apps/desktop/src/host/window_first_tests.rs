@@ -40,8 +40,27 @@ fn scratch(tag: &str) -> PathBuf {
         .unwrap_or_default()
         .as_nanos();
     // `/tmp`, not `temp_dir()`: under nix the latter makes the socket path
-    // longer than `sockaddr_un` allows.
-    PathBuf::from("/tmp").join(format!("nx-w1-{tag}-{}-{nonce}", std::process::id()))
+    // longer than `sockaddr_un` allows. Windows has no `/tmp`; its per-user
+    // temporary directory is an absolute, short-enough parent.
+    #[cfg(unix)]
+    let base = PathBuf::from("/tmp");
+    #[cfg(not(unix))]
+    let base = std::env::temp_dir();
+    base.join(format!("nx-w1-{tag}-{}-{nonce}", std::process::id()))
+}
+
+/// Creates `root` with owner-only access, as the owner requires of the
+/// directory above its private state.
+fn private_root(root: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new().mode(0o700).create(root).expect("owner-only root");
+    }
+    // The per-user temporary directory is this user's own; the root is its
+    // new owner-only child.
+    #[cfg(windows)]
+    backend_platform::durable::ensure_private_child_directory(root).expect("owner-only root");
 }
 
 /// A project, its data directory holding a session left on a package page,
@@ -316,6 +335,8 @@ fn a_window_before_its_owner_holds_its_reads_then_says_why_the_owner_failed(cx: 
 #[test]
 fn the_owners_revision_is_the_root_its_subscription_hydrates() {
     let root = scratch("revision");
+    // The owner keeps its private state under an owner-only parent.
+    private_root(&root);
     let project = root.join("project");
     let data = root.join("data");
     let endpoint = root.with_extension("sock");
@@ -326,9 +347,6 @@ fn the_owners_revision_is_the_root_its_subscription_hydrates() {
     )
     .expect("manifest");
     std::fs::write(project.join("src/lib.rs"), b"pub struct RevisionProof;\n").expect("source");
-    // The owner keeps its private state under an owner-only parent.
-    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-        .expect("owner-only root");
     let paths = WorkspacePaths::discover(Some(project.clone()), Some(data), Some(endpoint.clone()))
         .expect("paths");
     let host = super::lease::DesktopHost::start_with_paths(paths).expect("embedded owner");
