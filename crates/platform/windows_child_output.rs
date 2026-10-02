@@ -326,8 +326,11 @@ impl Pipe {
                 return Err(io::Error::from_raw_os_error(error as i32));
             }
         }
+        // Two runnable threads allow a retirement sweeper to dequeue after the
+        // original caller returns while still associated with the port. A slot
+        // CAS ensures there is only one sweeper. Neither call waits.
         // SAFETY: associate this sole owned server handle with a new owned port.
-        let port = Handle::new(unsafe { CreateIoCompletionPort(handle.0, ptr::null_mut(), 0, 1) })?;
+        let port = Handle::new(unsafe { CreateIoCompletionPort(handle.0, ptr::null_mut(), 0, 2) })?;
         Ok((
             Self {
                 handle: Some(handle),
