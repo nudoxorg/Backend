@@ -73,16 +73,16 @@ impl DisclosureFlow {
         minimum.at(1.0)
     }
 
-    /// Read the common hover/focus/held state and animate its open track.
+    /// Animate the requested disclosure state. The owning control resolves
+    /// hover, focus and an explicit user toggle before asking for motion.
     #[must_use]
     pub(crate) fn read(
         id: &ElementId,
         touch: &Touch,
-        pose: Pose,
+        wanted: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
-        let wanted = touch.hovered || touch.focused || pose == Pose::Held;
         let progress = touch
             .motion
             .animate(
