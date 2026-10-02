@@ -766,6 +766,26 @@ fn mounted_tree_back_return_does_not_steal_ask_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn mounted_tree_back_return_does_not_resume_after_jump_menu(cx: &mut TestAppContext) {
+    let mut rig = native_tree_rig(cx, None);
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("cmd-[");
+    rig.frame(16);
+    let ledger = crate::shell::anatomy_tests::painted(&mut rig);
+    let back = ledger.targets.iter().find(|target| target.key == "jump-back")
+        .expect("mounted Jump Back target");
+    let at = point(px(back.bounds.x + back.bounds.width / 2.0), px(back.bounds.y + back.bounds.height / 2.0));
+    rig.cx.simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::none());
+    rig.cx.simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::none());
+    rig.settle();
+    let menu: gpui::ElementId = "jump-back-menu".into();
+    assert!(rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu, window, cx)));
+    rig.keys("escape");
+    assert!(native_tree_release_mounted(&mut rig));
+    assert!(!native_tree_return_focused(&mut rig), "closing the menu cannot revive the interrupted return");
+}
+
+#[gpui::test]
 fn mounted_tree_same_root_owner_replacement_cannot_revive_return_focus(cx: &mut TestAppContext) {
     let root = VersionedRoot::synthetic(
         backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
