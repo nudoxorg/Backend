@@ -1053,6 +1053,25 @@ impl Shell {
         }
     }
 
+    /// Find and Settings expose native field, row, and radio stops. Once a
+    /// native control owns focus, Tab follows that real control order.
+    fn folio_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.background_input_allowed() || self.ask_open { return; }
+        let snapshot = self.links.snapshot(cx);
+        let find = matches!(snapshot.route(), Route::Orbit(crate::navigation::OrbitRoute::Browse(
+            crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_)
+        )));
+        if find && snapshot.overlay().is_none()
+            || matches!(snapshot.overlay(), Some(Overlay::Settings(_))) {
+            if self.focus.is_focused(window) {
+                // The custom shell hand still uses Tab to reach its zones.
+                self.cycle_zone(!backwards, window, cx);
+            } else if backwards { window.focus_prev(cx); } else { window.focus_next(cx); }
+        } else {
+            cx.propagate();
+        }
+    }
+
     /// Esc: the topmost transient closes, one per press.
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.hints.take().is_some() {
@@ -1470,6 +1489,15 @@ impl Render for Shell {
         } else if self.ask_presentation.blocks_background_input(false) {
             context.add("AskLeaving");
         }
+        if self.background_input_allowed() && !self.ask_open
+            && (matches!(snapshot.overlay(), Some(Overlay::Settings(_)))
+                || snapshot.overlay().is_none() && matches!(snapshot.route(), Route::Orbit(
+                    crate::navigation::OrbitRoute::Browse(
+                        crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_)
+                    )
+                ))) {
+            context.add("NativeFolio");
+        }
         if self.hints.is_some() {
             context.add("hints");
         }
@@ -1547,6 +1575,8 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::FolioNext, window, cx| shell.with_background_input(|shell| shell.folio_tab(false, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::FolioPrev, window, cx| shell.with_background_input(|shell| shell.folio_tab(true, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.with_background_input(|shell| shell.escape(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Orbit, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Package, window, cx))))

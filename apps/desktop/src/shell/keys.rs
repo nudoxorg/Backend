@@ -46,6 +46,10 @@ actions!(
         AskNext,
         /// The previous mounted Ask stop.
         AskPrev,
+        /// The next native control in Find or Settings.
+        FolioNext,
+        /// The previous native control in Find or Settings.
+        FolioPrev,
         /// Close the topmost thing.
         Escape,
         /// Text one step larger.
@@ -262,6 +266,9 @@ fn binding_context(key: &Key) -> String {
     let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
     if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask"); }
+    if matches!(key.command, Command::NextZone | Command::PrevZone) {
+        context.push_str(" && !NativeFolio");
+    }
     if graph_owns { context.push_str(" && !Graph"); }
     if menu_owns { context.push_str(" && !Menu"); }
     if compare_owns { context.push_str(" && !BrowseCompare"); }
@@ -315,7 +322,7 @@ fn binding(key: &Key) -> KeyBinding {
     }
 }
 
-/// The public command table plus Ask's modal Tab ownership bindings.
+/// The public command table plus page-specific native Tab ownership bindings.
 #[must_use]
 pub fn bindings() -> Vec<KeyBinding> {
     let mut bindings: Vec<_> = TABLE.iter().map(binding).collect();
@@ -326,6 +333,8 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && Ask")),
         KeyBinding::new("tab", AskNext, Some("NudoxShell && AskLeaving")),
         KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && AskLeaving")),
+        KeyBinding::new("tab", FolioNext, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving")),
+        KeyBinding::new("shift-tab", FolioPrev, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving")),
     ]);
     bindings
 }
@@ -360,7 +369,7 @@ mod tests {
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].command, Command::ZoomReset);
         // Every binding parses.
-        assert_eq!(bindings().len(), TABLE.len() + 4);
+        assert_eq!(bindings().len(), TABLE.len() + 6);
     }
 
     #[test]
@@ -392,5 +401,27 @@ mod tests {
         }
         let reopen = Keystroke::parse("secondary-k").expect("Ask key stroke");
         assert_eq!(keymap.bindings_for_input(&[reopen], &[root, leaving]).0[0].action().name(), Ask.name());
+    }
+
+    #[test]
+    fn native_folio_tab_bindings_exclude_asks_painted_exit() {
+        use gpui::{Action as _, KeyContext, Keymap, Keystroke};
+
+        let mut bindings = vec![KeyBinding::new("tab", NextZone, Some("Root")),
+            KeyBinding::new("shift-tab", PrevZone, Some("Root"))];
+        bindings.extend(super::bindings());
+        let keymap = Keymap::new(bindings);
+        let root = KeyContext::parse("Root").expect("component root context");
+        let folio = KeyContext::parse("NudoxShell NativeFolio").expect("Find/Settings context");
+        let leaving = KeyContext::parse("NudoxShell NativeFolio AskLeaving").expect("painted Ask exit context");
+        let input = KeyContext::parse("Input").expect("Find editor context");
+        for (chord, expected) in [("tab", FolioNext.name()), ("shift-tab", FolioPrev.name())] {
+            let stroke = Keystroke::parse(chord).expect("Tab stroke");
+            for contexts in [&[root.clone(), folio.clone()][..], &[root.clone(), folio.clone(), input.clone()][..]] {
+                assert_eq!(keymap.bindings_for_input(&[stroke.clone()], contexts).0[0].action().name(), expected);
+            }
+            let expected_leaving = if chord == "tab" { AskNext.name() } else { AskPrev.name() };
+            assert_eq!(keymap.bindings_for_input(&[stroke], &[root.clone(), leaving.clone()]).0[0].action().name(), expected_leaving);
+        }
     }
 }
