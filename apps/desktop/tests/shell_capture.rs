@@ -384,6 +384,9 @@ fn capture(
             InputStep::Wait { milliseconds: 750 }, InputStep::key("up"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("enter"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-."),
+            // Keep the first Code frame as transition evidence, then let
+            // that Reader settle before the real Back event.
+            InputStep::Wait { milliseconds: 750 },
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-["),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("escape"),
@@ -734,7 +737,7 @@ fn capture(
     }
     if shot.script == Script::AskJourney {
         let observed = journey.borrow();
-        assert_eq!(observed.len(), 31, "record every real journey frame after writing paired evidence");
+        assert_eq!(observed.len(), 32, "record every real journey frame after writing paired evidence");
         let orbit = Route::Orbit(OrbitRoute::Home);
         for (index, expected) in [
             (&orbit, None),
@@ -798,40 +801,60 @@ fn capture(
         assert!(observed[10].preview.is_none() && observed[10].overlay.is_none());
         let code = target.with_view(View::Code).expect("indexed symbol has a code view");
         assert_eq!(observed[11].route, code, "keyboard code command opens the indexed source");
-        assert_eq!(observed[12].route, orbit, "Back returns to the actual Orbit departure");
-        assert_eq!(observed[13].overlay, Some(Overlay::CommandPalette), "Ask reopens after Back");
-        assert_eq!(observed[14].overlay, None, "Escape dismisses the live Ask");
-        assert_eq!(observed[15].overlay, Some(Overlay::CommandPalette), "keyboard shortcut reopens Ask");
-        assert!(observed[13..16].iter().all(|frame| frame.route == orbit));
-        for index in 16..=19 {
+        assert!(matches!(&code, Route::Symbol(symbol) if symbol.id.as_str().ends_with("::glyph.rs:138::RelationLabel")),
+            "the Code route retains the live owner's exact glyph.rs:138 declaration");
+        assert_eq!(observed[12].route, code, "the exact Code route remains active while its Reader settles");
+        assert!(observed[12].overlay.is_none() && observed[12].preview.is_none(),
+            "Code is a committed page, outside the Ask modal");
+        assert!(observed[12].owner_serving && observed[12].root.same_authority(observed[11].root),
+            "the settled Code Reader still belongs to the same serving live index");
+        assert_eq!(observed[12].reader_pages, 1, "the old variants Page has left the Code Reader");
+        assert!(observed[12].reader_hero.iter().any(|line| line.contains("RelationLabel")),
+            "the settled Code Reader names the exact symbol");
+        assert!(observed[12].reader_text.iter().any(|line| line.contains("glyph.rs") && line.contains("RelationLabel")),
+            "the rendered Code crumb names the live glyph source");
+        assert!(observed[12].reader_text.iter().any(|line| {
+            line.contains("pub enum RelationLabel {")
+                && line.contains("Typed(SemanticLinkKind, RelationDirection)")
+                && line.contains("Neighbourhood,")
+                && line.contains("Related,")
+        }), "the settled Reader draws the indexed enum body, not the old variants Page");
+        assert_eq!(focus_at(12)["aria"]["role"].as_str(), Some("Application"),
+            "native focus returns to the shell after committing Code");
+        assert_eq!(observed[13].route, orbit, "Back returns to the actual Orbit departure");
+        assert_eq!(observed[14].overlay, Some(Overlay::CommandPalette), "Ask reopens after Back");
+        assert_eq!(observed[15].overlay, None, "Escape dismisses the live Ask");
+        assert_eq!(observed[16].overlay, Some(Overlay::CommandPalette), "keyboard shortcut reopens Ask");
+        assert!(observed[14..17].iter().all(|frame| frame.route == orbit));
+        for index in 17..=20 {
             assert_eq!(observed[index].route, target, "live Ask preview survives the resize frame");
             assert_eq!(observed[index].overlay, Some(Overlay::CommandPalette));
         }
-        assert!(observed[20..=21].iter().all(|frame| frame.route == orbit && frame.overlay.is_none()),
+        assert!(observed[21..=22].iter().all(|frame| frame.route == orbit && frame.overlay.is_none()),
             "Escape returns the preview to its departure, including the settled frame");
-        for (index, width) in [(17, 800), (18, 360), (19, 1440)] {
+        for (index, width) in [(18, 800), (19, 360), (20, 1440)] {
             let frame = &set.frames[index];
             assert_eq!(frame.image.width(), width, "{} captures the resized real window", frame.label);
             assert!(frame.native_accessibility.as_ref().expect("paired native tree").has_label("Ask anything, or find a package"),
                 "{} keeps the modal keyboard owner", frame.label);
         }
-        assert_eq!(observed[22].overlay, Some(Overlay::CommandPalette), "the next opening has a live editor");
-        assert_eq!(observed[23].overlay, Some(Overlay::CommandPalette), "typed Ask is live before interruption");
-        assert_eq!(observed[24].overlay, None, "the exit has revoked Ask interaction");
-        assert_eq!(observed[25].overlay, Some(Overlay::CommandPalette), "the close was interrupted by a real reopen key");
-        assert!(observed[26..=28].iter().all(|frame| frame.overlay == Some(Overlay::CommandPalette)),
+        assert_eq!(observed[23].overlay, Some(Overlay::CommandPalette), "the next opening has a live editor");
+        assert_eq!(observed[24].overlay, Some(Overlay::CommandPalette), "typed Ask is live before interruption");
+        assert_eq!(observed[25].overlay, None, "the exit has revoked Ask interaction");
+        assert_eq!(observed[26].overlay, Some(Overlay::CommandPalette), "the close was interrupted by a real reopen key");
+        assert!(observed[27..=29].iter().all(|frame| frame.overlay == Some(Overlay::CommandPalette)),
             "the reopened Ask stays authoritative through its resize");
-        assert!(observed[29..].iter().all(|frame| frame.overlay.is_none()),
+        assert!(observed[30..].iter().all(|frame| frame.overlay.is_none()),
             "the final exit settles without restoring a modal");
         let native_has_results = |index: usize| {
             set.frames[index].native_accessibility.as_ref().expect("paired native tree")
                 .has_label("Search results")
         };
-        assert!(native_has_results(23), "the populated Ask has native results before closing");
-        assert!(!native_has_results(24), "the painted exit retained native Ask results");
-        assert!(native_has_results(28), "the reopened Ask restores native results after resize");
-        assert!(!native_has_results(29) && !native_has_results(30), "the final exit retained native Ask results");
-        for (index, width) in [(27, 800), (28, 1440)] {
+        assert!(native_has_results(24), "the populated Ask has native results before closing");
+        assert!(!native_has_results(25), "the painted exit retained native Ask results");
+        assert!(native_has_results(29), "the reopened Ask restores native results after resize");
+        assert!(!native_has_results(30) && !native_has_results(31), "the final exit retained native Ask results");
+        for (index, width) in [(28, 800), (29, 1440)] {
             assert_eq!(set.frames[index].image.width(), width,
                 "{} captures the interrupted modal at its real resized width", set.frames[index].label);
         }
@@ -913,8 +936,8 @@ fn capture_the_shell_over_a_real_index() {
             density: Comfortable,
             appearance: Abyss,
             route: Route::Orbit(OrbitRoute::Home),
-            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 2050, 2200, 2400, 2600, 2800, 3000, 3200,
-                3400, 4000, 4100, 4200, 4300, 4400, 4800, 4900, 5000, 5100, 5140, 5180, 5250, 5350, 5850, 6850],
+            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 2050, 2200, 2400, 2600, 3350, 3550, 3750,
+                3950, 4150, 4750, 4850, 4950, 5050, 5150, 5550, 5650, 5750, 5850, 5890, 5930, 6000, 6100, 6600, 7600],
             script: Script::AskJourney,
         },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
