@@ -581,7 +581,10 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 let started = Instant::now();
                 let ticket = self.next_ticket;
                 self.next_ticket = self.next_ticket.wrapping_add(1);
-                let result = match self.service.handle_payload_or_defer(&inbound.payload, ticket) {
+                let result = match self
+                    .service
+                    .handle_payload_or_defer(&inbound.payload, ticket)
+                {
                     Ok(crate::service::Handled::Deferred) => {
                         self.deferred.insert(ticket, inbound.reply);
                         return true;
@@ -891,8 +894,14 @@ mod tests {
             idle_timeout: None,
         };
         let long = Duration::from_millis(900);
-        let service = LocaldService::new(DeferringOwner { long, pending: None }, config.limits)
-            .unwrap_or_else(|error| panic!("service: {error}"));
+        let service = LocaldService::new(
+            DeferringOwner {
+                long,
+                pending: None,
+            },
+            config.limits,
+        )
+        .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let ask = |body: &'static [u8]| {
@@ -911,7 +920,8 @@ mod tests {
         };
         let started = Instant::now();
         let indexing = ask(b"index");
-        let drive = |listener: &mut UnixListenerService<DeferringOwner>, until: &dyn Fn() -> bool| {
+        let drive = |listener: &mut UnixListenerService<DeferringOwner>,
+                     until: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(10);
             while Instant::now() < deadline && !until() {
                 let _ = listener
@@ -921,12 +931,20 @@ mod tests {
             }
         };
         // The index command is with the owner before the read arrives.
-        drive(&mut listener, &|| started.elapsed() >= Duration::from_millis(100));
+        drive(&mut listener, &|| {
+            started.elapsed() >= Duration::from_millis(100)
+        });
         let reading = ask(b"read");
         drive(&mut listener, &|| reading.is_finished());
-        assert!(!indexing.is_finished(), "the index command is still running when the read is answered");
+        assert!(
+            !indexing.is_finished(),
+            "the index command is still running when the read is answered"
+        );
         let (read, read_at) = reading.join().unwrap_or_else(|_| panic!("read thread"));
-        assert_eq!(read.unwrap_or_else(|error| panic!("read: {error}")), b"read");
+        assert_eq!(
+            read.unwrap_or_else(|error| panic!("read: {error}")),
+            b"read"
+        );
         assert!(
             read_at.duration_since(started) < long,
             "the read waited for the deferred command: answered after {:?}",
@@ -934,8 +952,14 @@ mod tests {
         );
         drive(&mut listener, &|| indexing.is_finished());
         let (indexed, indexed_at) = indexing.join().unwrap_or_else(|_| panic!("index thread"));
-        assert_eq!(indexed.unwrap_or_else(|error| panic!("index: {error}")), b"indexed");
-        assert!(indexed_at.duration_since(started) >= long, "the deferred reply came when its work was done");
+        assert_eq!(
+            indexed.unwrap_or_else(|error| panic!("index: {error}")),
+            b"indexed"
+        );
+        assert!(
+            indexed_at.duration_since(started) >= long,
+            "the deferred reply came when its work was done"
+        );
         listener.shutdown();
         drop(listener);
     }
@@ -944,10 +968,7 @@ mod tests {
     struct RejectPeers;
 
     impl PeerPolicy for RejectPeers {
-        fn authorize(
-            &self,
-            _stream: &backend_engine::LocalStream,
-        ) -> Result<(), PeerPolicyError> {
+        fn authorize(&self, _stream: &backend_engine::LocalStream) -> Result<(), PeerPolicyError> {
             Err(PeerPolicyError::Rejected)
         }
     }
@@ -1041,8 +1062,8 @@ mod tests {
         assert_eq!(transport.completed, 1);
         assert_eq!(transport.failed, 0);
         assert_eq!(transport.units, 4);
-        let metadata = std::fs::metadata(&path)
-            .unwrap_or_else(|error| panic!("socket metadata: {error}"));
+        let metadata =
+            std::fs::metadata(&path).unwrap_or_else(|error| panic!("socket metadata: {error}"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -1051,7 +1072,9 @@ mod tests {
         // Windows keeps the endpoint private with a protected owner-only DACL
         // instead of a mode; the platform recognizes the file as that endpoint.
         #[cfg(windows)]
-        assert!(backend_platform::win32::security::is_endpoint_metadata(&metadata));
+        assert!(backend_platform::win32::security::is_endpoint_metadata(
+            &metadata
+        ));
         drop(listener);
         assert!(!path.exists());
     }
@@ -1260,24 +1283,35 @@ mod tests {
             .unwrap_or_else(|error| panic!("read timeout: {error}"));
         let shutdown = listener.shutdown_handle();
         let worker = thread::spawn(move || listener.run().map(|report| report.connections));
-        let mut runner = RunningListener { shutdown, worker: Some(worker), client: Some(held) };
+        let mut runner = RunningListener {
+            shutdown,
+            worker: Some(worker),
+            client: Some(held),
+        };
 
         // Six idle windows with the client connected. Nothing may retire.
         thread::sleep(Duration::from_millis(600));
         assert!(
-            !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
+            !runner
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished),
             "a listener retired while a client was connected"
         );
         assert!(path.exists());
         let poll_count = owner_polls.load(Ordering::Relaxed);
-        assert!(poll_count < 5_000, "idle connected client caused {poll_count} owner polls in 600ms");
+        assert!(
+            poll_count < 5_000,
+            "idle connected client caused {poll_count} owner polls in 600ms"
+        );
 
         // The no-work wait must not add a request-sized delay after a client
         // actually submits work on the connection it already holds.
         let request = crate::protocol::frame(b"ping", limits())
             .unwrap_or_else(|error| panic!("frame: {error}"));
         let held = runner.client.as_mut().expect("held client");
-        held.write_all(&request).unwrap_or_else(|error| panic!("write: {error}"));
+        held.write_all(&request)
+            .unwrap_or_else(|error| panic!("write: {error}"));
         assert_eq!(
             read_frame(held, limits()).unwrap_or_else(|error| panic!("read: {error}")),
             b"ping"
@@ -1285,15 +1319,26 @@ mod tests {
 
         runner.client.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished) {
+        while Instant::now() < deadline
+            && !runner
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished)
+        {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
+            runner
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished),
             "a listener stayed resident after its last client left"
         );
         assert_eq!(
-            runner.worker.take().expect("listener worker")
+            runner
+                .worker
+                .take()
+                .expect("listener worker")
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
                 .unwrap_or_else(|error| panic!("run: {error}")),

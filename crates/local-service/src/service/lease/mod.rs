@@ -16,6 +16,17 @@
 //!
 //! The numbers the holder relies on are not defined here; they come from
 //! `backend_client::lease_contract`, the one place both ends import them from.
+//!
+//! # When reclamation runs
+//!
+//! The owner's idle poll (`OwnerService::serve_one`, driven every poll interval
+//! by the listener with or without a client) and the start of every lease
+//! request both call [`LeaseTable::reclaim_due`], which is one comparison until
+//! something is due. Reclamation is therefore prompt while the owner loop is
+//! free, but it cannot run while the loop is inside a long command or a
+//! daemon round trip. Expiry never depends on it: every operation re-checks the
+//! lease it touches, once to decide and once to commit, so a lease that
+//! lapsed during blocking work is refused and released rather than served.
 
 mod host;
 mod identity;

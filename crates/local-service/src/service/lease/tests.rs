@@ -1721,3 +1721,53 @@ fn a_resume_whose_reset_needs_more_pages_than_the_budget_releases_the_lease() {
     assert!(harness.table.get(lease).is_none());
     assert_eq!(harness.released(ReleaseReason::ResetPagesExhausted), 1);
 }
+
+#[test]
+fn an_open_answered_with_events_holds_the_lease_at_the_batch_cursor_and_resume_advances_it() {
+    let mut harness = Harness::default();
+    let batch_cursor: Box<[u8]> = Box::from(b"after-the-batch".as_slice());
+    let response = harness
+        .open_with(
+            SubscriptionReply::Events {
+                credit: CREDIT,
+                cursor: batch_cursor.clone(),
+                events: Box::new([]),
+            },
+            CREDIT,
+            PUBLICATION_LEASE.get(),
+        )
+        .expect("open");
+    let LocalSubscriptionResponse::Batch {
+        lease,
+        cursor,
+        credit,
+        ..
+    } = response
+    else {
+        panic!("an open answered with events answers a batch: {response:?}");
+    };
+    assert_eq!(cursor, batch_cursor);
+    assert_eq!(credit, CREDIT);
+    assert!(
+        harness.ack(lease, &batch_cursor).is_ok(),
+        "the holder's cursor is the batch's"
+    );
+    // A resume from that cursor is answered by the next batch and moves the
+    // lease's cursor with it.
+    let next_cursor: Box<[u8]> = Box::from(b"after-the-next-batch".as_slice());
+    harness.script(SubscriptionReply::Events {
+        credit: CREDIT,
+        cursor: next_cursor.clone(),
+        events: Box::new([]),
+    });
+    assert!(matches!(
+        harness.resume(lease, &batch_cursor),
+        Ok(LocalSubscriptionResponse::Batch { cursor, .. }) if cursor == next_cursor
+    ));
+    assert_eq!(
+        harness.ack(lease, &batch_cursor),
+        Err(refused(LeaseRefusal::AckCursorMismatch)),
+        "the old cursor is no longer the lease's"
+    );
+    assert!(harness.ack(lease, &next_cursor).is_ok());
+}
