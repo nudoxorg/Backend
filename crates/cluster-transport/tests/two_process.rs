@@ -10,7 +10,7 @@ use backend_cluster_transport::{
     AcceptedClusterConnection, AdmissionPolicy, AssignmentScope, BlobHash, Capability,
     CapabilityClaims, CapabilityIssuer, ChunkRange, ClusterListener, ControlAdmissionPolicy,
     ControlChannel, ControlMessage, ControlResultReceipt, ControlRole, MAX_RANGE_CHUNKS,
-    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN,
+    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN, RemoteIndexCapability,
     RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
     RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
     RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog, StoreObjectMapping,

@@ -874,6 +874,10 @@ impl ClusterWorker {
             match event {
                 None => return Err(ClusterWorkerError::UnexpectedControl),
                 Some(Err(_rejected_connection)) => continue,
+                // A worker serves no remote-index queries. The endpoint advertises that ALPN
+                // for every cluster role, so a capability-bearing client may still dial it;
+                // dropping the connection refuses it without disturbing the assignment wait.
+                Some(Ok(AcceptedClusterConnection::RemoteIndex(_unserved))) => continue,
                 Some(Ok(AcceptedClusterConnection::Probe(connection))) => {
                     let channel = match tokio::time::timeout(
                         self.policy.io_timeout,
@@ -2430,6 +2434,9 @@ impl ClusterWorker {
                     match event {
                         None => break Err(ClusterWorkerError::UnexpectedControl),
                         Some(Err(_rejected_connection)) => continue,
+                        // Workers do not serve remote-index queries; dropping the connection
+                        // refuses it while the retained result stays available.
+                        Some(Ok(AcceptedClusterConnection::RemoteIndex(_unserved))) => continue,
                         Some(Ok(AcceptedClusterConnection::Artifact(connection))) => {
                             if connection.peer() != result.coordinator {
                                 break 'transfer Err(ClusterWorkerError::PeerNotAllowed);

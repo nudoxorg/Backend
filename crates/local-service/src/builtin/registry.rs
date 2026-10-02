@@ -2125,44 +2125,45 @@ fn read_rustsec_tree(
         #[cfg(unix)]
         mtime_nsec: i64,
         #[cfg(windows)]
-        volume: Option<u32>,
-        #[cfg(windows)]
-        index: Option<u64>,
+        identity: backend_platform::FileIdentity,
         #[cfg(windows)]
         last_write: u64,
     }
 
     impl FileStamp {
-        fn capture(metadata: &std::fs::Metadata) -> Self {
+        /// Captures the size, times, and object identity of the file `file`
+        /// holds open. The identity comes from the handle, never from a name.
+        fn capture(file: &std::fs::File) -> Result<Self, String> {
+            let metadata = file.metadata().map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
-                Self {
+                Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
                     device: metadata.dev(),
                     inode: metadata.ino(),
                     mtime: metadata.mtime(),
                     mtime_nsec: metadata.mtime_nsec(),
-                }
+                })
             }
             #[cfg(windows)]
             {
                 use std::os::windows::fs::MetadataExt;
-                Self {
+                Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
-                    volume: metadata.volume_serial_number(),
-                    index: metadata.file_index(),
+                    identity: backend_platform::FileIdentity::of_file(file)
+                        .map_err(|error| error.to_string())?,
                     last_write: metadata.last_write_time(),
-                }
+                })
             }
             #[cfg(not(any(unix, windows)))]
             {
-                Self {
+                Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
-                }
+                })
             }
         }
     }
@@ -2205,19 +2206,15 @@ fn read_rustsec_tree(
         if !before.is_file() || before.len() > u64::try_from(maximum).unwrap_or(u64::MAX) {
             return Err("RustSec authority tree exceeds bound".to_owned());
         }
-        let stamp = FileStamp::capture(&before);
+        let stamp = FileStamp::capture(&file)?;
         let mut reader = file.take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1));
         let mut bytes = Vec::with_capacity(usize::try_from(before.len()).unwrap_or(maximum));
         reader
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
-        let after = reader
-            .get_ref()
-            .metadata()
-            .map_err(|error| error.to_string())?;
         if bytes.len() > maximum
             || u64::try_from(bytes.len()).unwrap_or(u64::MAX) != before.len()
-            || FileStamp::capture(&after) != stamp
+            || FileStamp::capture(reader.get_ref())? != stamp
         {
             return Err("RustSec authority file changed during admission".to_owned());
         }
@@ -2351,9 +2348,7 @@ fn read_rustsec_tree(
             .directory
             .open_file_read(&snapshot.name)
             .map_err(|error| error.to_string())?;
-        if FileStamp::capture(&file.metadata().map_err(|error| error.to_string())?)
-            != snapshot.stamp
-        {
+        if FileStamp::capture(&file)? != snapshot.stamp {
             return Err("RustSec authority file changed during snapshot admission".to_owned());
         }
         let mut hasher = blake3::Hasher::new();
@@ -2376,12 +2371,8 @@ fn read_rustsec_tree(
                 .ok_or_else(|| "RustSec authority tree exceeds bound".to_owned())?;
             hasher.update(&buffer[..read]);
         }
-        let after = reader
-            .get_ref()
-            .metadata()
-            .map_err(|error| error.to_string())?;
         if total_bytes != snapshot.stamp.len
-            || FileStamp::capture(&after) != snapshot.stamp
+            || FileStamp::capture(reader.get_ref())? != snapshot.stamp
             || *hasher.finalize().as_bytes() != snapshot.digest
         {
             return Err("RustSec authority file changed during snapshot admission".to_owned());
