@@ -252,6 +252,11 @@ impl Shell {
     #[must_use]
     pub fn graph_ready(&self, cx: &App) -> bool { self.reader.read(cx).graph_ready(cx) }
 
+    #[cfg(test)]
+    pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<crate::shell::bodies::graph::Map>> {
+        self.reader.read(cx).graph_entity()
+    }
+
     pub(crate) fn graph_work_status(
         &self,
         cx: &App,
