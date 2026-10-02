@@ -22,15 +22,19 @@ use crate::child_output::{
     CaptureCommand, CaptureEnvironment, CaptureError, CaptureLimits, CapturedOutput, OutputStream,
 };
 use std::{
+    cell::UnsafeCell,
     cmp::Ordering as CmpOrdering,
     ffi::{OsStr, OsString},
-    io, mem,
+    io,
+    marker::PhantomPinned,
+    mem,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         io::{AsRawHandle, RawHandle},
         process::ExitStatusExt,
     },
     path::PathBuf,
+    pin::Pin,
     ptr,
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     thread,
@@ -163,12 +167,31 @@ impl Drop for Attributes {
 // At most one request is in flight per port. The IOCP packet, including
 // failed/cancelled packets, is the ownership proof for its stable allocation.
 struct Operation {
-    overlapped: OVERLAPPED,
-    bytes: [u8; CHUNK],
+    // Kernel writes continue after ReadFile returns. Interior mutability
+    // prevents creating Rust aliases that forbid those writes. The pinned
+    // allocation never moves until the actual IOCP ownership receipt arrives.
+    overlapped: UnsafeCell<OVERLAPPED>,
+    bytes: UnsafeCell<[u8; CHUNK]>,
+    _pin: PhantomPinned,
+}
+impl Operation {
+    fn new() -> Pin<Box<Self>> {
+        Box::pin(Self {
+            overlapped: UnsafeCell::new(OVERLAPPED::default()),
+            bytes: UnsafeCell::new([0; CHUNK]),
+            _pin: PhantomPinned,
+        })
+    }
+    fn request(&self) -> *mut OVERLAPPED {
+        self.overlapped.get()
+    }
+    fn buffer(&self) -> *mut u8 {
+        self.bytes.get().cast()
+    }
 }
 struct Retired {
     port: Handle,
-    operation: Box<Operation>,
+    operation: Pin<Box<Operation>>,
 }
 const MAX_OPERATIONS: usize = 32;
 const RESERVED: *mut Retired = ptr::without_provenance_mut(1);
@@ -222,7 +245,7 @@ fn sweep_retired() {
         // SAFETY: the successful CAS exclusively owns the initialized box that
         // retire published. Other callers cannot dereference or mutate it.
         let retired = unsafe { Box::from_raw(pointer) };
-        let completion = completion(retired.port.0, &retired.operation.overlapped);
+        let completion = completion(retired.port.0, retired.operation.request());
         if matches!(completion, Ok(Some(_))) || matches!(completion, Err((true, _))) {
             drop(retired); // IOCP certified the operation has actually completed.
             cell.store(ptr::null_mut(), Ordering::Release);
@@ -234,7 +257,7 @@ fn sweep_retired() {
 
 // Bool on errors says whether this operation's completion was dequeued. A
 // timeout has no packet and never authorizes freeing its storage.
-fn completion(port: HANDLE, expected: &OVERLAPPED) -> Result<Option<usize>, (bool, io::Error)> {
+fn completion(port: HANDLE, expected: *mut OVERLAPPED) -> Result<Option<usize>, (bool, io::Error)> {
     let mut bytes = 0;
     let mut key = 0;
     let mut request = ptr::null_mut();
@@ -249,7 +272,7 @@ fn completion(port: HANDLE, expected: &OVERLAPPED) -> Result<Option<usize>, (boo
         }
         return Err((false, io::Error::from_raw_os_error(error as i32)));
     }
-    if !ptr::eq(request.cast_const(), expected) {
+    if !ptr::eq(request, expected) {
         return Err((false, io::Error::other("unexpected IOCP operation pointer")));
     }
     if success != 0 {
@@ -262,7 +285,7 @@ fn completion(port: HANDLE, expected: &OVERLAPPED) -> Result<Option<usize>, (boo
 struct Pipe {
     handle: Option<Handle>,
     port: Option<Handle>,
-    operation: Option<Box<Operation>>,
+    operation: Option<Pin<Box<Operation>>>,
     slot: Option<Slot>,
     pending: bool,
     eof: bool,
@@ -312,14 +335,11 @@ impl Pipe {
                 ptr::null_mut(),
             )
         })?;
-        let mut operation = Box::new(Operation {
-            overlapped: OVERLAPPED::default(),
-            bytes: [0; CHUNK],
-        });
+        let operation = Operation::new();
         // The client is already connected, so ConnectNamedPipe has no pending
         // request on partial startup. Associate the port only AFTER connecting.
         // SAFETY: stable writable OVERLAPPED; the client was opened above.
-        if unsafe { ConnectNamedPipe(handle.0, &mut operation.overlapped) } == 0 {
+        if unsafe { ConnectNamedPipe(handle.0, operation.request()) } == 0 {
             // SAFETY: immediately read the preceding error.
             let error = unsafe { GetLastError() };
             if error != ERROR_PIPE_CONNECTED {
@@ -355,10 +375,15 @@ impl Pipe {
         }
         let op = self
             .operation
-            .as_mut()
+            .as_ref()
             .expect("operation present until cleanup");
         if !self.pending {
-            op.overlapped = OVERLAPPED::default();
+            // SAFETY: pending is false only before first submission or after
+            // an actual completion packet (including failed packets). There
+            // are no kernel or Rust accesses to this storage during reset.
+            unsafe {
+                op.request().write(OVERLAPPED::default());
+            }
             let read_size = maximum
                 .saturating_sub(output.len())
                 .saturating_add(1)
@@ -368,10 +393,10 @@ impl Pipe {
             let success = unsafe {
                 ReadFile(
                     self.handle.as_ref().expect("live pipe").0,
-                    op.bytes.as_mut_ptr(),
+                    op.buffer(),
                     read_size as u32,
                     ptr::null_mut(),
-                    &mut op.overlapped,
+                    op.request(),
                 )
             };
             if success == 0 {
@@ -392,7 +417,7 @@ impl Pipe {
             // reuse or buffer access is permitted until that packet is dequeued.
             self.pending = true;
         }
-        let count = match completion(self.port.as_ref().expect("live IOCP").0, &op.overlapped) {
+        let count = match completion(self.port.as_ref().expect("live IOCP").0, op.request()) {
             Ok(None) => return Ok(()),
             Ok(Some(count)) => {
                 self.pending = false;
@@ -425,7 +450,11 @@ impl Pipe {
                 maximum,
             });
         }
-        output.extend_from_slice(&op.bytes[..count]);
+        // SAFETY: the matching IOCP packet was dequeued above and pending
+        // cleared. The kernel can no longer access either field. count was
+        // checked against the allocation size before forming this shared slice.
+        let bytes = unsafe { std::slice::from_raw_parts(op.buffer().cast_const(), count) };
+        output.extend_from_slice(bytes);
         Ok(())
     }
     fn cancel(&mut self) -> io::Result<()> {
@@ -437,7 +466,7 @@ impl Pipe {
             .as_ref()
             .expect("pending operation has storage");
         // SAFETY: cancel the one owned pending request without waiting.
-        if unsafe { CancelIoEx(self.handle.as_ref().expect("live pipe").0, &op.overlapped) } == 0 {
+        if unsafe { CancelIoEx(self.handle.as_ref().expect("live pipe").0, op.request()) } == 0 {
             // SAFETY: immediately retrieve this CancelIoEx error.
             let error = unsafe { GetLastError() };
             if error != ERROR_NOT_FOUND {
@@ -454,7 +483,7 @@ impl Pipe {
             .operation
             .as_ref()
             .expect("pending operation has storage");
-        match completion(self.port.as_ref().expect("live IOCP").0, &op.overlapped) {
+        match completion(self.port.as_ref().expect("live IOCP").0, op.request()) {
             Ok(Some(_)) => {
                 self.pending = false;
                 Ok(())
