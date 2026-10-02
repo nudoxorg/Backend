@@ -13,14 +13,14 @@ use crate::core::LocalProjectId;
 use crate::model::{ProjectPhase, WorkspaceProject};
 use super::commands::{ProjectCommand, Weight};
 use crate::shell::bodies::{Ctx, Leaf};
-use crate::shell::focus::{Act, Target};
+use crate::shell::focus::{Act, Target, native_control};
 use crate::shell::kit::text;
 use crate::shell::reader::Reader;
 use facet::controls::button;
 use facet::icons::{Icon, IconSize, ui};
 use facet::tokens::ty;
 use facet::Space;
-use gpui::{BorrowAppContext as _, Context, Global, InteractiveElement as _, IntoElement as _, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
+use gpui::{BorrowAppContext as _, Context, Global, InteractiveElement as _, IntoElement as _, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -172,16 +172,10 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             });
             reader.update(cx, |_, cx| cx.notify());
         });
-        let act = ctx.native_action(act, cx);
+        let act = ctx.native_snapshot_action(act, cx);
         ctx.targets.push(Target { id: door.clone().into(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
         let focus = ctx.native_handle(&SharedString::from(door.clone()), cx);
-        let key_act = Rc::clone(&act);
-        let mut face = div()
-            .id(gpui::SharedString::from(door.clone()))
-            .role(gpui::Role::Button)
-            .aria_label(label.clone())
-            .key_context(crate::shell::keys::NATIVE_CONTROL)
-            .focusable()
+        let face = native_control(door.clone().into(), label.clone(), gpui::Role::Button, focus, Rc::clone(&act))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -189,16 +183,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             .min_h(px(24.0 * measure.scale()))
             .px(measure.space(Space::Roomy))
             .hover(|style| style.bg(palette.tint))
-            .child(text(ty::SMALL, &measure, palette.ink2).child(label))
-            .on_click(move |_, window, cx| act(window, cx))
-            .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                if !event.keystroke.modifiers.modified()
-                    && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    if !event.is_held { key_act(window, cx); }
-                    cx.stop_propagation();
-                }
-            });
-        if let Some(focus) = focus { face = face.track_focus(&focus).tab_index(0); }
+            .child(text(ty::SMALL, &measure, palette.ink2).child(label));
         stack = stack.child(ctx.targets.track(
             door.clone(),
             face,
@@ -223,7 +208,7 @@ fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalPr
     let links = ctx.links.clone();
     let intent = command.intent(project);
     let act: Act = Rc::new(move |_, cx| links.dispatch(intent.clone(), cx));
-    let act = ctx.native_action(act, cx);
+    let act = ctx.native_snapshot_action(act, cx);
     ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), act: Rc::clone(&act), peek: None, source: None });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
     let control = button(gpui::SharedString::from(id.clone()), command.label(), &ctx.measure).on_click(move |window, cx| act(window, cx));

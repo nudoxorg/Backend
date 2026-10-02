@@ -4,12 +4,12 @@
 use crate::model::browse::CargoSourceInventoryModel;
 use crate::navigation::{CargoSourceRoute, Intent, Route};
 use crate::shell::bodies::{Ctx, Leaf};
-use crate::shell::focus::Target;
+use crate::shell::focus::{Target, native_control};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
 use backend_library::{CargoPackageSourceInventoryCoverageV1 as Coverage, CargoPackageSourceInventoryGapV1 as Gap};
 use facet::{Control, Space, tokens::ty};
-use gpui::{App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div};
+use gpui::{App, AppContext as _, Context, ElementId, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -117,14 +117,7 @@ pub(super) fn leaf(
         for chunk in chunks(path.as_str()) {
             words = words.child(text(ty::MONO_ROW, &measure, palette.ink1).child(chunk));
         }
-        let click = act.clone();
-        let key_act = act.clone();
-        let mut row = div()
-            .id(id.clone())
-            .role(gpui::Role::Link)
-            .aria_label(format!("Open Cargo file {}", path.as_str()))
-            .key_context(crate::shell::keys::NATIVE_CONTROL)
-            .focusable()
+        let row = native_control(id.clone(), format!("Open Cargo file {}", path.as_str()), gpui::Role::Link, focus, act.clone())
             .flex()
             .min_w_0()
             .px(measure.space(Space::Tight))
@@ -132,16 +125,7 @@ pub(super) fn leaf(
             .border_l_2()
             .border_color(if path == &route.file { palette.peri.line.hsla() } else { palette.line1.hsla() })
             .cursor_pointer()
-            .on_click(move |_: &ClickEvent, window, app| click(window, app))
-            .on_key_down(move |event: &KeyDownEvent, window, app| {
-                if !event.keystroke.modifiers.modified()
-                    && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    if !event.is_held { key_act(window, app); }
-                    app.stop_propagation();
-                }
-            })
             .child(words);
-        if let Some(focus) = focus { row = row.track_focus(&focus).tab_index(0); }
         column = column.child(ctx.targets.track(id, row));
     }
     if end < model.paths.len() {

@@ -314,7 +314,14 @@ fn binding(key: &Key) -> KeyBinding {
 /// Every binding in the table.
 #[must_use]
 pub fn bindings() -> Vec<KeyBinding> {
-    TABLE.iter().map(binding).collect()
+    let mut bindings: Vec<_> = TABLE.iter().map(binding).collect();
+    // gpui-component's Root owns a generic Tab action. Bind the same Shell
+    // walk at the deeper native-control context so a mounted Library or
+    // Reader control keeps Tab/Shift-Tab in its actual surface first.
+    let native_context = format!("{CONTEXT} && {NATIVE_CONTROL} && !Input && !Menu");
+    bindings.push(KeyBinding::new("tab", NextZone, Some(&native_context)));
+    bindings.push(KeyBinding::new("shift-tab", PrevZone, Some(&native_context)));
+    bindings
 }
 
 #[cfg(test)]
@@ -347,6 +354,6 @@ mod tests {
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].command, Command::ZoomReset);
         // Every binding parses.
-        assert_eq!(bindings().len(), TABLE.len());
+        assert_eq!(bindings().len(), TABLE.len() + 2);
     }
 }

@@ -16,8 +16,8 @@ use facet::paint::{Bevel, CutPaint, Edge, paint_cut};
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
-    FocusHandle, InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style,
-    Window, point, px, size,
+    ClickEvent, FocusHandle, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId,
+    MouseExitEvent, MouseMoveEvent, Pixels, SharedString, StatefulInteractiveElement, Style, Window, div, point, px, size,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -44,6 +44,37 @@ impl Zone {
 
 /// What a target does when it is activated (Enter, a click, a hint).
 pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// A raw Reader target's native semantics and activation. The caller owns
+/// visual styling and the existing target list owns order and hints. Facet
+/// buttons keep their own native control implementation.
+pub(crate) fn native_control(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    role: gpui::Role,
+    handle: Option<FocusHandle>,
+    act: Act,
+) -> gpui::Stateful<gpui::Div> {
+    let key_act = Rc::clone(&act);
+    let mut control = div()
+        .id(id)
+        .role(role)
+        .aria_label(label.into())
+        .key_context(crate::shell::keys::NATIVE_CONTROL)
+        .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            {
+                if !event.is_held { key_act(window, cx); }
+                cx.stop_propagation();
+            }
+        });
+    if let Some(handle) = handle {
+        control = control.focusable().track_focus(&handle).tab_index(0);
+    }
+    control
+}
 
 /// One thing the keyboard can stand on.
 #[derive(Clone)]
@@ -354,8 +385,12 @@ impl Targets {
     /// walk order and actions; this only gives that target native focus.
     pub(crate) fn native_step(&self, forward: bool, window: &mut Window, cx: &mut App) -> bool {
         let order = self.native_order();
-        let current = self.focused();
-        let next = match current.as_ref().and_then(|id| order.iter().position(|(key, _)| key == id)) {
+        // AccessKit and input controls can change GPUI focus without walking
+        // our logical target list. The mounted handle is the input origin;
+        // Recall follows it, never the other way around.
+        let current = order.iter().position(|(_, handle)| handle.is_focused(window));
+        if let Some(at) = current { self.focus(order[at].0.clone()); }
+        let next = match current {
             Some(at) if forward => at.checked_add(1).filter(|at| *at < order.len()),
             Some(at) => at.checked_sub(1),
             None if forward => (!order.is_empty()).then_some(0),
@@ -371,6 +406,15 @@ impl Targets {
         let Some((_, handle)) = self.native_order().into_iter().find(|(key, _)| key == id) else { return false };
         handle.focus(window, cx);
         true
+    }
+
+    pub(crate) fn native_focused(&self, window: &Window) -> Option<SharedString> {
+        self.native_order().into_iter().find(|(_, handle)| handle.is_focused(window)).map(|(id, _)| id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_keys(&self) -> Vec<SharedString> {
+        self.native_order().into_iter().map(|(id, _)| id).collect()
     }
 
     #[cfg(test)]

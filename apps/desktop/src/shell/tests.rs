@@ -21,6 +21,7 @@ use crate::model::pages::{
 use crate::model::{AppSnapshot, DensityPreference, SessionState};
 use crate::navigation::{Coordinate, Intent, Route, SymbolRoute, View};
 use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
+use crate::runtime::owner::{OwnerGate, OwnerState};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::runtime::{DesktopRuntime, UiEntityGraph};
 use backend_library::DeclarationKind;
@@ -28,6 +29,7 @@ use gpui::{
     AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext, WindowHandle, point, px,
     size,
 };
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -346,6 +348,18 @@ pub(crate) fn rig_with_engine(
     pool: ReadPool,
     engine: impl EngineClient,
 ) -> Rig {
+    rig_with_engine_gate(cx, route, width, height, pool, engine, None)
+}
+
+fn rig_with_engine_gate(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+    gate: Option<OwnerGate>,
+) -> Rig {
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -364,7 +378,7 @@ pub(crate) fn rig_with_engine(
     snapshot = snapshot.with_session(SessionState::default());
     let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
-    let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
+    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, None, Some(pool), gate, None));
     let window_graph = UiEntityGraph {
         root: graph.root.clone(),
         store: graph.store.clone(),
@@ -619,6 +633,111 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
     assert_eq!(focused, Some(package_id), "Back returns to the exact chip that opened the package");
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)), "native focus returns only after that chip remounts");
+}
+
+#[gpui::test]
+fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.keys("tab");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let order = targets.native_keys();
+    assert!(order.len() >= 3, "Library mounts multiple native controls");
+    let recalled = targets.focused();
+    let mut actual = None;
+    for _ in 0..32 {
+        // GPUI's own traversal stands in for AccessKit or an input control;
+        // Shell's logical Recall intentionally receives no walk event.
+        rig.cx.update(|window, cx| window.focus_next(cx));
+        if let Some(id) = rig.cx.update(|window, _| targets.native_focused(window))
+            && let Some(at) = order.iter().position(|key| key == &id)
+            && at > 0 && at + 1 < order.len()
+        {
+            actual = Some(at);
+            break;
+        }
+    }
+    let at = actual.expect("GPUI traversed to a later mounted Reader control");
+    assert_ne!(targets.focused(), Some(order[at].clone()), "the native move was independent of Recall");
+    assert_eq!(targets.focused(), recalled);
+    rig.keys("tab");
+    assert_eq!(targets.focused(), Some(order[at + 1].clone()), "Shell Tab starts at the actually focused handle");
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(order[at + 1].clone()));
+}
+
+#[gpui::test]
+fn an_interrupted_back_does_not_transfer_native_focus_late(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let mut opened = None;
+    for _ in 0..16 {
+        rig.keys("tab");
+        let focused = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1;
+        if focused.as_deref().is_some_and(|id| id.starts_with("orbit-package-")) {
+            opened = focused;
+            break;
+        }
+    }
+    let opened = opened.expect("Tab reaches a mounted package target");
+    rig.keys("space");
+    assert!(matches!(rig.route(), Route::Package(_)));
+    // Let Back install its pending return and begin closing the plate, then
+    // dispatch a real Shell Tab before the transition settles.
+    rig.cx.simulate_keystrokes("cmd-[");
+    rig.draw();
+    assert!(matches!(rig.route(), Route::Orbit(_)));
+    rig.cx.simulate_keystrokes("tab");
+    rig.settle();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_ne!(targets.focused(), Some(opened), "the cancelled Back cannot steal focus after the Shell walk");
+}
+
+#[gpui::test]
+fn a_mounted_native_action_survives_only_an_observation_bump(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let action = (0..16).find_map(|_| {
+        rig.keys("tab");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
+    }).expect("Tab reaches an indexed package");
+    rig.graph.store.update(rig.cx, |store, cx| {
+        let snapshot = store.snapshot();
+        let old = snapshot.key();
+        store.admit_snapshot(Arc::new(snapshot.with_key(old.observed_at(old.observation() + 1), None)), cx);
+    });
+    rig.cx.update(|window, cx| action(window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Package(_)), "diagnostic observation does not revoke producer authority");
+}
+
+#[gpui::test]
+fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()),
+    );
+    let action = (0..16).find_map(|_| {
+        rig.keys("tab");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
+    }).expect("Tab reaches an indexed package");
+    gate.publish(OwnerState::Starting);
+    // Repaint retained Orbit bytes before the watcher processes Starting:
+    // a new callback can be built from visible old data, but cannot borrow
+    // the former owner's permission to navigate.
+    rig.repaint();
+    let retained = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        .current().expect("the retained package chip is still visible").act;
+    assert!(!Rc::ptr_eq(&action, &retained), "Starting repainted a new callback over retained bytes");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.orbit().loaded_value().is_some()));
+    rig.cx.update(|window, cx| retained(window, cx));
+    assert!(matches!(rig.route(), Route::Orbit(_)), "a newly painted retained value is nonactionable");
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // This action came from the former mounted visit. The gate's epoch has
+    // already moved even if its UI watcher has not run yet.
+    rig.cx.update(|window, cx| action(window, cx));
+    assert!(matches!(rig.route(), Route::Orbit(_)), "the retained callback did not navigate");
 }
 
 /// The lead's report: on a symbol page, Tab, J and Space each changed
