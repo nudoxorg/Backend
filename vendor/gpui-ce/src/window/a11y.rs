@@ -788,6 +788,8 @@ mod tests {
 
     fn new_a11y() -> A11y {
         let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false, false, None);
+        // Window::draw_roots snapshots activation before beginning the tree.
+        a11y.sync_active_flag();
         a11y.begin_frame();
         a11y
     }
