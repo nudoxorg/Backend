@@ -489,11 +489,26 @@ mod tests {
         window.update(|window, cx| window.draw(cx).clear(cx));
         let opening = window.debug_bounds("surface").unwrap().origin;
 
-        // The animation runs off the wall clock, so settling is waited out
-        // rather than stepped. Several times the duration leaves room for a
-        // loaded machine.
-        std::thread::sleep(DROPDOWN_ENTER_DURATION * 4);
-        window.update(|window, cx| window.draw(cx).clear(cx));
+        // AnimationElement shares the scheduler clock with the test executor.
+        // Drive a frame after each clock step, just as the native frame callback
+        // does; sleeping the host thread cannot advance this clock.
+        window
+            .background_executor
+            .advance_clock(DROPDOWN_ENTER_DURATION / 2);
+        window.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let midpoint = window.debug_bounds("surface").unwrap().origin;
+        window
+            .background_executor
+            .advance_clock(DROPDOWN_ENTER_DURATION / 2);
+        window.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
         let settled = window.debug_bounds("surface").unwrap().origin;
 
         assert!(
@@ -501,12 +516,16 @@ mod tests {
             "the surface should slide down into place, from {opening:?} to {settled:?}",
         );
 
+        assert!(opening.y < midpoint.y && midpoint.y < settled.y);
+        assert_eq!(settled.y - opening.y, -DROPDOWN_ENTER_OFFSET);
+
         for open in [false, true] {
             window.update(|window, cx| {
                 view.update(cx, |this, cx| {
                     this.open = open;
                     cx.notify();
                 });
+                window.refresh();
                 window.draw(cx).clear(cx);
             });
         }
@@ -517,5 +536,42 @@ mod tests {
             "reopening should start the motion over at {opening:?} rather than showing a \
              settled surface, but the first frame was already at {reopening:?}",
         );
+        assert_eq!(reopening, opening);
+
+        // Closing during entry must evict the animation state just as closing
+        // after settlement does. Reopening gets the complete travel again.
+        window
+            .background_executor
+            .advance_clock(DROPDOWN_ENTER_DURATION / 2);
+        window.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        for open in [false, true] {
+            window.update(|window, cx| {
+                view.update(cx, |this, cx| {
+                    this.open = open;
+                    cx.notify();
+                });
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        }
+        assert_eq!(window.debug_bounds("surface").unwrap().origin, opening);
+
+        // A reduced-motion open must adopt the same resting geometry without
+        // queuing animation work, including when toggled during entry.
+        window.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(window.debug_bounds("surface").unwrap().origin, settled);
+        window.update(|window, cx| {
+            // Drain the frame already requested before reduced motion changed.
+            window.simulate_next_frame(cx);
+            assert_eq!(window.simulate_next_frame(cx), 0);
+        });
     }
 }

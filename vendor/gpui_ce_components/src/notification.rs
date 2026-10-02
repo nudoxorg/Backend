@@ -1249,6 +1249,17 @@ mod tests {
             list: cx.new(|cx| NotificationList::new(window, cx)),
             other_focus: cx.focus_handle(),
         });
+        // A sole headless window is implicitly active. Establish a real
+        // foreground handoff so this checks inactivity rather than assuming it.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        let foreground = cx.open_window(gpui::size(px(100.), px(100.)), |_, _| gpui::EmptyView);
+        foreground
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|window, _| assert!(!window.is_window_active()));
+
         let list = root.read_with(cx, |root, _| root.list.clone());
         list.update_in(cx, |list, window, cx| {
             list.push(Notification::info("paused").id::<FooKind>(), window, cx);
@@ -1276,8 +1287,10 @@ mod tests {
         );
 
         let list_focus = list.read_with(cx, |list, _| list.focus_handle.clone());
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
         cx.update(|window, cx| {
-            window.activate_window();
+            assert!(window.is_window_active());
             list_focus.focus(window, cx);
             window.draw(cx).clear(cx);
         });
