@@ -68,6 +68,10 @@ pub enum OutputStream {
 #[derive(Debug)]
 pub enum CaptureError {
     Unsupported,
+    /// Process-wide capture ownership slots are all occupied. No child spawned.
+    Capacity {
+        maximum: usize,
+    },
     Spawn(io::Error),
     MissingPipe(OutputStream),
     Configure {
