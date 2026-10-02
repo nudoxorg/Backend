@@ -67,6 +67,11 @@ const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x1;
 /// `FILE_RENAME_INFORMATION_EX::Flags`: unlink the target name at once, like
 /// POSIX `rename`, even while another handle shares delete access to it.
 const FILE_RENAME_POSIX_SEMANTICS: u32 = 0x2;
+/// `FILE_RENAME_INFORMATION_EX::Flags`: replace a target that carries the
+/// read-only attribute (Windows 10 1809 and later). POSIX `rename` consults
+/// the directory's permissions and never the replaced file's own mode, and
+/// `remove_file_relative` already ignores the attribute the same way.
+const FILE_RENAME_IGNORE_READONLY_ATTRIBUTE: u32 = 0x40;
 
 /// How a handle constrains every other opener of the same object.
 ///
@@ -1424,7 +1429,9 @@ fn rename_into(
     pause: &mut dyn FnMut(Duration),
 ) -> io::Result<()> {
     let extended_flags = if replace {
-        FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+        FILE_RENAME_REPLACE_IF_EXISTS
+            | FILE_RENAME_POSIX_SEMANTICS
+            | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
     } else {
         0
     };

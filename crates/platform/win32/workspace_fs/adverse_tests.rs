@@ -1186,3 +1186,39 @@ fn a_one_character_destination_name_renames_files_and_directories() {
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }
+
+/// A destination carrying `FILE_ATTRIBUTE_READONLY` (set by a user or a backup tool) is replaced
+/// like any other: Unix `rename` consults the directory's permissions and never the replaced
+/// file's mode. Before the fix this was refused with `ACCESS_DENIED`, which the busy-file retry
+/// mistook for a scanner and waited out for its whole schedule.
+#[test]
+fn replacing_a_read_only_destination_behaves_like_unix_rename() {
+    let (root, path) = private_root("read-only-destination");
+    put(&root, &["state"], b"old");
+    let mut permissions = fs::metadata(path.join("state"))
+        .expect("stat")
+        .permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path.join("state"), permissions).expect("mark read-only");
+    put(&root, &["next"], b"new");
+
+    let mut pauses = Vec::new();
+    root.rename_checked_entry_pausing(
+        &["next"],
+        &["state"],
+        true,
+        false,
+        || {},
+        flush_handle,
+        &mut |delay| pauses.push(delay),
+    )
+    .expect("replace over a read-only destination");
+
+    assert!(
+        pauses.is_empty(),
+        "a permanent refusal was never retried: {pauses:?}"
+    );
+    assert_eq!(get(&root, &["state"]), b"new");
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
