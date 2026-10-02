@@ -147,6 +147,9 @@ unsafe extern "system" {
         file_information_class: i32,
     ) -> i32;
     fn RtlNtStatusToDosError(status: i32) -> u32;
+    /// Returns nonzero when Win32 path normalization on the running system
+    /// routes the single component to a DOS device.
+    fn RtlIsDosDeviceName_U(name: *const u16) -> u32;
 }
 
 /// The header common to `FILE_RENAME_INFORMATION` and its `Ex` form. The
@@ -233,7 +236,7 @@ impl WorkspaceRoot {
             ));
         }
         for part in &parts[..parts.len() - 1] {
-            current = open_directory_child_unchecked(&current, part)?;
+            current = open_directory_child_unchecked(&current, ExistingName::parse(part)?)?;
         }
         let final_part = parts.last().ok_or_else(|| {
             io::Error::new(
@@ -241,6 +244,7 @@ impl WorkspaceRoot {
                 "workspace root cannot be the drive root",
             )
         })?;
+        let final_part = ExistingName::parse(final_part)?;
         current = if purpose == WorkspacePurpose::ReadOnlySource {
             open_directory_child_unchecked(&current, final_part)?
         } else {
@@ -264,7 +268,7 @@ impl WorkspaceRoot {
                     "workspace directory name is not UTF-8",
                 )
             })?;
-        validate_component(name)?;
+        let name = NewName::parse(name)?;
         let parent = path.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -277,12 +281,13 @@ impl WorkspaceRoot {
         } else {
             let mut current = open_drive_root(&drive_root)?;
             for part in &parts[..parts.len() - 1] {
-                current = open_directory_child_unchecked(&current, part)?;
+                current = open_directory_child_unchecked(&current, ExistingName::parse(part)?)?;
             }
-            open_directory_child_writable(&current, parts.last().ok_or_else(invalid_name)?)?
+            let last = parts.last().ok_or_else(invalid_name)?;
+            open_directory_child_writable(&current, ExistingName::parse(last)?)?
         };
         let parent = Self(parent);
-        parent.create_child_dir_exclusive(name)
+        parent.create_child_dir_exclusive(name.as_str())
     }
 
     /// Creates or verifies one owner-only directory beneath an existing
@@ -300,7 +305,7 @@ impl WorkspaceRoot {
                     "application data directory name is not UTF-8",
                 )
             })?;
-        validate_component(name)?;
+        let name = NewName::parse(name)?;
         let parent_path = path.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -316,10 +321,10 @@ impl WorkspaceRoot {
         }
         let mut current = open_drive_root(&drive_root)?;
         for part in &parts[..parts.len() - 1] {
-            current = open_directory_child_unchecked(&current, part)?;
+            current = open_directory_child_unchecked(&current, ExistingName::parse(part)?)?;
         }
-        let parent =
-            open_directory_child_writable(&current, parts.last().ok_or_else(invalid_name)?)?;
+        let last = parts.last().ok_or_else(invalid_name)?;
+        let parent = open_directory_child_writable(&current, ExistingName::parse(last)?)?;
         if !is_owned_by_current_user(&owner_of(&HandleRef(parent.handle.as_raw_handle()))?)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -328,14 +333,14 @@ impl WorkspaceRoot {
         }
 
         let parent = Self(parent);
-        let open_existing = || open_directory_child(&parent.0, name).map(Self);
+        let open_existing = || open_directory_child(&parent.0, name.existing()).map(Self);
         match open_existing() {
             Ok(child) => {
                 child.flush_dir()?;
                 parent.flush_dir()
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match parent.create_child_dir_exclusive(name) {
+                match parent.create_child_dir_exclusive(name.as_str()) {
                     Ok(child) => {
                         child.flush_dir()?;
                         parent.flush_dir()
@@ -355,7 +360,7 @@ impl WorkspaceRoot {
     /// Creates one direct child directory exclusively and applies the current
     /// user's protected DACL through the created handle before returning it.
     pub fn create_child_dir_exclusive(&self, name: &str) -> io::Result<Self> {
-        validate_component(name)?;
+        let name = NewName::parse(name)?;
         let handle = create_relative(
             self.handle(),
             name,
@@ -377,7 +382,7 @@ impl WorkspaceRoot {
         Ok(Self(Arc::new(DirectoryNode {
             handle,
             _parent: Some(Arc::clone(&self.0)),
-            name: Some(name.to_owned()),
+            name: Some(name.as_str().to_owned()),
         })))
     }
 
@@ -386,8 +391,7 @@ impl WorkspaceRoot {
     pub fn open_dir_checked(&self, path: &[&str]) -> io::Result<Self> {
         let mut current = Arc::clone(&self.0);
         for component in path {
-            validate_component(component)?;
-            current = open_directory_child(&current, component)?;
+            current = open_directory_child(&current, ExistingName::parse(component)?)?;
         }
         ensure_private_handle(current.handle.as_raw_handle())?;
         Ok(Self(current))
@@ -397,8 +401,7 @@ impl WorkspaceRoot {
     pub fn open_dir_source_checked(&self, path: &[&str]) -> io::Result<Self> {
         let mut current = Arc::clone(&self.0);
         for component in path {
-            validate_component(component)?;
-            current = open_directory_child_unchecked(&current, component)?;
+            current = open_directory_child_unchecked(&current, ExistingName::parse(component)?)?;
         }
         Ok(Self(current))
     }
@@ -409,7 +412,7 @@ impl WorkspaceRoot {
         let (parent, leaf) = self.parent_and_leaf(path)?;
         let handle = create_relative(
             parent.handle.as_raw_handle().cast(),
-            leaf,
+            NewName::new(leaf)?,
             FILE_ADD_FILE
                 | FILE_READ_ATTRIBUTES
                 | FILE_READ_DATA
@@ -608,6 +611,8 @@ impl WorkspaceRoot {
         let (destination_parent, destination_leaf) = self
             .parent_and_leaf(destination)
             .map_err(DirectoryRenameError::NotCommitted)?;
+        let destination_name =
+            NewName::new(destination_leaf).map_err(DirectoryRenameError::NotCommitted)?;
         let source_handle = retry_while_busy_pausing(
             || {
                 open_relative(
@@ -634,9 +639,14 @@ impl WorkspaceRoot {
         }
         ensure_private_handle(source_handle.as_raw_handle())
             .map_err(DirectoryRenameError::NotCommitted)?;
-        check_replace_destination(&destination_parent, destination_leaf, replace, &mut *pause)
-            .map_err(DirectoryRenameError::NotCommitted)?;
-        let name = wide_component(destination_leaf).map_err(DirectoryRenameError::NotCommitted)?;
+        check_replace_destination(
+            &destination_parent,
+            destination_name.existing(),
+            replace,
+            &mut *pause,
+        )
+        .map_err(DirectoryRenameError::NotCommitted)?;
+        let name = destination_name.wide();
         before_commit();
         rename_into(
             source_handle.as_raw_handle().cast(),
@@ -722,10 +732,9 @@ impl WorkspaceRoot {
         let names = enumerate_names(directory.handle(), maximum)?;
         let mut entries = Vec::with_capacity(names.len());
         for (name, enumerated_file_id) in names {
-            validate_component(&name)?;
             let handle = open_relative(
                 directory.handle(),
-                &name,
+                ExistingName::parse(&name)?,
                 FILE_READ_ATTRIBUTES
                     | SYNCHRONIZE
                     | if purpose == WorkspacePurpose::PrivateState {
@@ -781,6 +790,7 @@ impl WorkspaceRoot {
                 "independent enumeration handle has no held child name",
             )
         })?;
+        let name = ExistingName::parse(name)?;
         let reopened = if purpose == WorkspacePurpose::PrivateState {
             open_directory_child(parent, name)?
         } else {
@@ -848,18 +858,17 @@ impl WorkspaceRoot {
     fn parent_and_leaf<'path>(
         &self,
         path: &[&'path str],
-    ) -> io::Result<(Arc<DirectoryNode>, &'path str)> {
+    ) -> io::Result<(Arc<DirectoryNode>, ExistingName<'path>)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "relative path must contain a file name",
             )
         })?;
-        validate_component(leaf)?;
+        let leaf = ExistingName::parse(leaf)?;
         let mut parent = Arc::clone(&self.0);
         for part in parent_path {
-            validate_component(part)?;
-            parent = open_directory_child(&parent, part)?;
+            parent = open_directory_child(&parent, ExistingName::parse(part)?)?;
         }
         Ok((parent, leaf))
     }
@@ -867,18 +876,17 @@ impl WorkspaceRoot {
     fn parent_and_leaf_source<'path>(
         &self,
         path: &[&'path str],
-    ) -> io::Result<(Arc<DirectoryNode>, &'path str)> {
+    ) -> io::Result<(Arc<DirectoryNode>, ExistingName<'path>)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "relative path must contain a file name",
             )
         })?;
-        validate_component(leaf)?;
+        let leaf = ExistingName::parse(leaf)?;
         let mut parent = Arc::clone(&self.0);
         for part in parent_path {
-            validate_component(part)?;
-            parent = open_directory_child_unchecked(&parent, part)?;
+            parent = open_directory_child_unchecked(&parent, ExistingName::parse(part)?)?;
         }
         Ok((parent, leaf))
     }
@@ -923,7 +931,7 @@ fn absolute_drive_components(path: &Path) -> io::Result<(Vec<u16>, Vec<String>)>
                         "workspace path component is not UTF-8",
                     )
                 })?;
-                validate_component(value)?;
+                ExistingName::parse(value)?;
                 parts.push(value.to_owned());
             }
             _ => {
@@ -983,7 +991,10 @@ fn open_drive_root_with_access(name: &[u16], access: u32) -> io::Result<Arc<Dire
     }))
 }
 
-fn open_directory_child(parent: &Arc<DirectoryNode>, name: &str) -> io::Result<Arc<DirectoryNode>> {
+fn open_directory_child(
+    parent: &Arc<DirectoryNode>,
+    name: ExistingName<'_>,
+) -> io::Result<Arc<DirectoryNode>> {
     let node = open_directory_child_writable(parent, name)?;
     ensure_private_handle(node.handle.as_raw_handle())?;
     Ok(node)
@@ -991,7 +1002,7 @@ fn open_directory_child(parent: &Arc<DirectoryNode>, name: &str) -> io::Result<A
 
 fn open_directory_child_unchecked(
     parent: &Arc<DirectoryNode>,
-    name: &str,
+    name: ExistingName<'_>,
 ) -> io::Result<Arc<DirectoryNode>> {
     let handle = open_relative(
         parent.handle.as_raw_handle().cast(),
@@ -1004,13 +1015,13 @@ fn open_directory_child_unchecked(
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: Some(Arc::clone(parent)),
-        name: Some(name.to_owned()),
+        name: Some(name.as_str().to_owned()),
     }))
 }
 
 fn open_directory_child_writable(
     parent: &Arc<DirectoryNode>,
-    name: &str,
+    name: ExistingName<'_>,
 ) -> io::Result<Arc<DirectoryNode>> {
     let handle = open_relative(
         parent.handle.as_raw_handle().cast(),
@@ -1031,13 +1042,13 @@ fn open_directory_child_writable(
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: Some(Arc::clone(parent)),
-        name: Some(name.to_owned()),
+        name: Some(name.as_str().to_owned()),
     }))
 }
 
 fn open_directory_child_with_delete(
     parent: &Arc<DirectoryNode>,
-    name: &str,
+    name: ExistingName<'_>,
 ) -> io::Result<Arc<DirectoryNode>> {
     let handle = retry_while_busy(|| {
         open_relative(
@@ -1061,7 +1072,7 @@ fn open_directory_child_with_delete(
     Ok(Arc::new(DirectoryNode {
         handle,
         _parent: Some(Arc::clone(parent)),
-        name: Some(name.to_owned()),
+        name: Some(name.as_str().to_owned()),
     }))
 }
 
@@ -1156,7 +1167,7 @@ fn reopen_while_replaced<T>(
 /// admission failure is returned unchanged.
 fn open_admitted_file(
     parent: HANDLE,
-    leaf: &str,
+    leaf: ExistingName<'_>,
     access: u32,
     if_unlinked: IfUnlinked,
     admit: impl Fn(*mut c_void, Linkage) -> io::Result<()>,
@@ -1188,7 +1199,7 @@ fn open_admitted_file(
 
 fn check_replace_destination(
     parent: &Arc<DirectoryNode>,
-    name: &str,
+    name: ExistingName<'_>,
     replace: bool,
     pause: &mut dyn FnMut(Duration),
 ) -> io::Result<()> {
@@ -1241,8 +1252,13 @@ fn admit_replaceable(existing: *mut c_void) -> io::Result<()> {
     ensure_private_handle(existing)
 }
 
-fn create_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Result<OwnedHandle> {
-    let name = wide_component(name)?;
+fn create_relative(
+    parent: HANDLE,
+    name: NewName<'_>,
+    access: u32,
+    kind: u32,
+) -> io::Result<OwnedHandle> {
+    let name = name.wide();
     let security = private_security_descriptor()?;
     nt_create_relative(
         parent,
@@ -1265,12 +1281,12 @@ fn create_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Re
 /// instead of being left to each caller to remember.
 fn open_relative(
     parent: HANDLE,
-    name: &str,
+    name: ExistingName<'_>,
     access: u32,
     kind: u32,
     sharing: Sharing,
 ) -> io::Result<OwnedHandle> {
-    let name = wide_component(name)?;
+    let name = name.wide();
     nt_create_relative(
         parent,
         &name,
@@ -1941,11 +1957,11 @@ fn remove_tree_contents(
                     "workspace directory tree entry limit exceeded",
                 )
             })?;
-        validate_component(&name)?;
+        let entry_name = ExistingName::parse(&name)?;
         let handle = retry_while_busy(|| {
             open_relative(
                 directory.handle.as_raw_handle().cast(),
-                &name,
+                entry_name,
                 FILE_GENERIC_WRITE
                     | FILE_READ_ATTRIBUTES
                     | READ_CONTROL
@@ -2055,69 +2071,101 @@ fn file_from_handle(handle: OwnedHandle) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(handle.into_raw_handle()) })
 }
 
-fn wide_component(component: &str) -> io::Result<Vec<u16>> {
-    validate_component(component)?;
-    let wide = component.encode_utf16().collect::<Vec<_>>();
-    if wide.len() > 255 {
-        return Err(invalid_name());
-    }
-    Ok(wide)
-}
-
-fn validate_component(component: &str) -> io::Result<()> {
-    if component.is_empty()
-        || component == "."
-        || component == ".."
-        || component.ends_with(' ')
-        || component.ends_with('.')
-        || component.chars().any(|ch| {
-            ch == '\0'
-                || ch < ' '
-                || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-        })
-        || component.encode_utf16().count() > 255
-        || is_reserved_device_name(component)
-    {
-        return Err(invalid_name());
-    }
-    Ok(())
-}
-
-/// Whether Win32 would treat `component` as a DOS device (`CON`, `NUL`,
-/// `COM1`, ...), which it does with any extension and in any letter case.
+/// A path component to look up in a directory that already holds it, or that
+/// may: the name satisfies the syntax every component must (no separators,
+/// reserved characters, trailing dot or space, or more than 255 UTF-16 units)
+/// and nothing more.
 ///
-/// The NT calls in this module do not map those names to devices, so a
-/// workspace could create such an entry that no Win32 tool could then open,
-/// list, or delete. Refusing the names keeps every entry reachable by
-/// ordinary tools.
-fn is_reserved_device_name(component: &str) -> bool {
-    let stem = component
-        .split('.')
-        .next()
-        .unwrap_or(component)
-        .trim_end_matches(' ');
-    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
-        .iter()
-        .any(|device| stem.eq_ignore_ascii_case(device))
-    {
-        return true;
+/// Whether the operating system would route a name to a DOS device matters
+/// only when a name is *created*; an entry that already exists, an ancestor of
+/// a root path, and every name an enumeration returns are looked up exactly as
+/// they are spelled. Source trees routinely hold `aux.c` and `con.rs`.
+#[derive(Clone, Copy, Debug)]
+struct ExistingName<'a>(&'a str);
+
+impl<'a> ExistingName<'a> {
+    fn parse(component: &'a str) -> io::Result<Self> {
+        if component.is_empty()
+            || component == "."
+            || component == ".."
+            || component.ends_with(' ')
+            || component.ends_with('.')
+            || component.chars().any(|ch| {
+                ch == '\0'
+                    || ch < ' '
+                    || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            })
+            || component.encode_utf16().count() > MAX_COMPONENT_UNITS
+        {
+            return Err(invalid_name());
+        }
+        Ok(Self(component))
     }
-    let mut characters = stem.chars();
-    let (Some(first), Some(second), Some(third), Some(number), None) = (
-        characters.next(),
-        characters.next(),
-        characters.next(),
-        characters.next(),
-        characters.next(),
-    ) else {
-        return false;
-    };
-    let prefix = [first, second, third]
-        .iter()
-        .collect::<String>()
-        .to_ascii_uppercase();
-    matches!(prefix.as_str(), "COM" | "LPT")
-        && matches!(number, '1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')
+
+    const fn as_str(self) -> &'a str {
+        self.0
+    }
+
+    fn wide(self) -> Vec<u16> {
+        self.0.encode_utf16().collect()
+    }
+}
+
+/// A path component about to be created, or renamed to.
+///
+/// On top of the syntax rules it must not be a name the running system routes
+/// to a DOS device. A device name would create an entry that Win32 paths cannot
+/// reach, so a tool that walks the workspace by path would list, open or
+/// delete the device instead of the file. Only a [`NewName`] can be passed to
+/// `create_relative`, so the check cannot be skipped where it matters and
+/// cannot be applied where it must not be.
+#[derive(Clone, Copy, Debug)]
+struct NewName<'a>(ExistingName<'a>);
+
+impl<'a> NewName<'a> {
+    fn new(name: ExistingName<'a>) -> io::Result<Self> {
+        if is_dos_device_name(name.as_str()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the name is a DOS device name on this system",
+            ));
+        }
+        Ok(Self(name))
+    }
+
+    fn parse(component: &'a str) -> io::Result<Self> {
+        Self::new(ExistingName::parse(component)?)
+    }
+
+    const fn existing(self) -> ExistingName<'a> {
+        self.0
+    }
+
+    const fn as_str(self) -> &'a str {
+        self.0.as_str()
+    }
+
+    fn wide(self) -> Vec<u16> {
+        self.0.wide()
+    }
+}
+
+/// The longest component, in UTF-16 units, that NTFS stores.
+const MAX_COMPONENT_UNITS: usize = 255;
+
+/// Whether the running system's own path normalization routes `component` to a
+/// DOS device (`NUL`, ...), judged by `RtlIsDosDeviceName_U`.
+///
+/// The answer depends on the Windows build: older systems treat `aux.c` and
+/// `CON.txt` as the `AUX` and `CON` devices, while Windows 11 builds such as
+/// 26200 create them as ordinary files and treat only bare device names
+/// specially. Asking the system, instead of a hard-coded list, refuses exactly
+/// what this system would misroute, and nothing it would accept.
+fn is_dos_device_name(component: &str) -> bool {
+    let wide: Vec<u16> = component.encode_utf16().chain([0]).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives the call,
+    // which only reads it up to the terminator and returns an integer.
+    unsafe { RtlIsDosDeviceName_U(wide.as_ptr()) != 0 }
 }
 
 fn invalid_name() -> io::Error {

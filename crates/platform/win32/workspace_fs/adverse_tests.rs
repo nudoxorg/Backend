@@ -8,9 +8,9 @@
 //! parent module's tests.
 
 use super::{
-    BACKOFF, EntryKind, IfUnlinked, RenameInformation, WorkspaceRoot, ensure_private_handle,
-    ensure_regular_file_handle_with, file_from_handle, flush_handle, is_full_control,
-    is_reserved_device_name, open_admitted_file, rename_information_length, validate_component,
+    BACKOFF, EntryKind, ExistingName, IfUnlinked, NewName, RenameInformation, WorkspaceRoot,
+    ensure_private_handle, ensure_regular_file_handle_with, file_from_handle, flush_handle,
+    is_full_control, open_admitted_file, rename_information_length,
 };
 use std::fs;
 use std::io::{self, Read as _, Write as _};
@@ -608,61 +608,186 @@ fn concurrent_replacing_renames_publish_one_complete_generation_to_readers() {
 }
 
 #[test]
-fn reserved_device_names_and_oversized_components_are_refused() {
-    for reserved in [
+fn existing_names_obey_only_the_syntax_rules() {
+    // Names that creation refuses are ordinary entries to look up: source trees hold `aux.c`.
+    for name in [
         "NUL",
-        "nul",
-        "Con",
-        "PRN",
         "aux",
-        "AUX.txt",
-        "com1",
-        "COM9.log",
-        "LPT1",
-        "lpt9.",
-        "CONIN$",
-        "conout$",
-        "NUL .txt",
+        "aux.c",
+        "CON.txt",
+        "NUL.tar.gz",
+        "COM1.x",
+        "prn.rs",
+        "com0",
         "COM\u{b9}",
-        "LPT\u{b2}.dat",
-    ] {
-        assert!(
-            validate_component(reserved).is_err(),
-            "{reserved:?} must be refused"
-        );
-    }
-    for allowed in [
+        "CONIN$",
         "console",
-        "com10",
-        "COM0",
-        "nullable",
-        "auxiliary",
-        "LPT",
-        "COM",
-        "conn",
         "a.nul",
     ] {
         assert!(
-            validate_component(allowed).is_ok(),
-            "{allowed:?} must be accepted"
+            ExistingName::parse(name).is_ok(),
+            "{name:?} is a valid existing name"
         );
-        assert!(!is_reserved_device_name(allowed));
+    }
+    for name in [
+        "",
+        ".",
+        "..",
+        "trailing.",
+        "trailing ",
+        "a/b",
+        "a\\b",
+        "a:b",
+        "a*b",
+        "a?b",
+        "a\"b",
+        "a<b",
+        "a>b",
+        "a|b",
+        "a\u{1}b",
+        "a\0b",
+    ] {
+        assert_eq!(
+            ExistingName::parse(name)
+                .expect_err("syntax violation")
+                .kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{name:?}"
+        );
     }
 
-    let widest = "w".repeat(255);
-    assert!(validate_component(&widest).is_ok());
-    assert!(validate_component(&"w".repeat(256)).is_err());
+    assert!(ExistingName::parse(&"w".repeat(255)).is_ok());
+    assert!(ExistingName::parse(&"w".repeat(256)).is_err());
     // Surrogate pairs count as two UTF-16 units each: 128 of them is 256.
-    assert!(validate_component(&"\u{1f980}".repeat(127)).is_ok());
-    assert!(validate_component(&"\u{1f980}".repeat(128)).is_err());
+    assert!(ExistingName::parse(&"\u{1f980}".repeat(127)).is_ok());
+    assert!(ExistingName::parse(&"\u{1f980}".repeat(128)).is_err());
+}
 
-    let (root, path) = private_root("reserved");
-    for reserved in ["NUL", "com1.txt"] {
-        let error = root
-            .create_file_exclusive(&[reserved])
-            .expect_err("reserved device names are never created");
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+#[test]
+fn a_new_name_is_refused_only_when_the_system_routes_it_to_a_device() {
+    // `NUL` is a device on every Windows release, and the standard library, which goes through
+    // Win32 path normalization, shows it: the bytes written to it do not come back.
+    let probe = fresh_path("nul-probe");
+    fs::create_dir(&probe).expect("create probe directory");
+    fs::write(probe.join("NUL"), b"x").expect("writing to the NUL device succeeds");
+    assert_ne!(
+        fs::read(probe.join("NUL")).expect("reading the NUL device succeeds"),
+        b"x",
+        "Win32 routes NUL to the device"
+    );
+    fs::remove_dir_all(&probe).expect("cleanup");
+    for device in ["NUL", "nul"] {
+        assert_eq!(
+            NewName::parse(device)
+                .expect_err("a device name is never created")
+                .kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{device:?}"
+        );
     }
+
+    // On Windows 11 only bare device names are special; these are ordinary files that Win32
+    // reaches, so a source tree or workspace may hold them.
+    let (root, path) = private_root("ordinary-device-like");
+    for name in [
+        "aux.c",
+        "CON.txt",
+        "NUL.tar.gz",
+        "COM1.x",
+        "prn.rs",
+        "nul.txt",
+        "com0",
+        "com10",
+        "console",
+        "a.nul",
+    ] {
+        assert!(NewName::parse(name).is_ok(), "{name:?} is an ordinary name");
+        put(&root, &[name], name.as_bytes());
+        assert_eq!(
+            fs::read(path.join(name)).expect("Win32 reaches the file that was created"),
+            name.as_bytes(),
+            "{name:?}"
+        );
+    }
+    assert_eq!(root.read_dir_checked(&[]).expect("list").len(), 10);
+
+    // Neither creation nor a rename destination may be a device name; the source stays put.
+    let error = root
+        .create_file_exclusive(&["NUL"])
+        .expect_err("a device name is never created");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    let error = root
+        .rename_relative(&["aux.c"], &["NUL"], false)
+        .expect_err("a device name is never a rename destination");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(get(&root, &["aux.c"]), b"aux.c");
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn entries_whose_names_creation_would_refuse_are_still_opened_renamed_and_removed() {
+    let (root, path) = private_root("existing-device-like");
+    // Bare `aux` and `con` are ordinary files to Win32 on this system. They exist already (made
+    // here with the standard library and then protected like any workspace entry), so the
+    // workspace must treat them like any other name.
+    for name in ["aux", "con"] {
+        fs::write(path.join(name), name.as_bytes()).expect("create an ordinary file");
+        crate::win32::security::restrict_to_current_user(&path.join(name))
+            .expect("protect the entry");
+    }
+    assert_eq!(get(&root, &["aux"]), b"aux");
+    assert_eq!(
+        root.read_dir_checked(&[])
+            .expect("list entries named like devices")
+            .len(),
+        2
+    );
+    root.rename_relative(&["con"], &["moved"], false)
+        .expect("an existing name is a valid rename source");
+    root.remove_file_relative(&["aux"])
+        .expect("an existing name is removable");
+    assert_eq!(get(&root, &["moved"]), b"con");
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn source_listing_accepts_ordinary_files_named_like_dos_devices() {
+    let dir = fresh_path("source-list");
+    fs::create_dir(&dir).expect("create dir");
+    for name in ["aux.c", "con.rs", "nul.txt", "com1.log", "ok.txt"] {
+        fs::write(dir.join(name), b"x").expect("std creates it as an ordinary file");
+    }
+    let root = WorkspaceRoot::open_read_only_source(&dir).expect("open source root");
+    let listing = root
+        .read_dir_source_checked_limited(&[], 100)
+        .expect("a source directory containing aux.c must still list");
+    assert_eq!(listing.len(), 5);
+    drop(root);
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn a_source_root_beneath_an_ancestor_named_like_a_device_opens() {
+    let dir = fresh_path("source-ancestor");
+    let project = dir.join("aux").join("proj");
+    fs::create_dir_all(&project).expect("std creates a directory named aux");
+    WorkspaceRoot::open_read_only_source(&project)
+        .expect("an ancestor directory named aux is an ordinary directory on this OS");
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn removing_a_tree_with_device_like_entries_does_not_stop_half_way() {
+    let (root, path) = private_root("tree-device-like");
+    root.create_child_dir_exclusive("tree")
+        .expect("create the tree");
+    for name in ["aux.c", "con.rs", "a", "z"] {
+        put(&root, &["tree", name], b"x");
+    }
+    root.remove_dir_tree(&["tree"])
+        .expect("every entry of the tree is removed");
     assert!(root.read_dir_checked(&[]).expect("list").is_empty());
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
@@ -904,7 +1029,7 @@ fn open_state_while_published(
     let admissions = Cell::new(0_usize);
     let opened = open_admitted_file(
         root.handle(),
-        "state",
+        ExistingName::parse("state").expect("a valid name"),
         FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
         if_unlinked,
         |handle, linkage| {
