@@ -131,12 +131,12 @@ pub(crate) fn bar_segments(snapshot: &AppSnapshot, store: &DataStore) -> Vec<Seg
             .map(|name| Segment { name: name.to_owned().into(), route: None, quiet: true })
             .collect();
     }
-    segments(&bar_route(snapshot, store), store)
+    segments(&bar_route(snapshot, store), snapshot, store)
 }
 
 /// The segments for a declaration route: its package, then each module and
 /// owner on the way down, then the declaration itself (the last).
-pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
+pub(crate) fn segments(route: &Route, snapshot: &AppSnapshot, store: &DataStore) -> Vec<Segment> {
     match route {
         Route::Symbol(symbol) => {
             let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Vec::new() };

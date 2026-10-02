@@ -316,7 +316,11 @@ fn back_menu(links: &Links, anchor: gpui::Bounds<gpui::Pixels>, window: &mut Win
     let items = places.iter().map(|route| MenuItem::new(place_words(route))).collect();
     let links = links.clone();
     let steps = places.len();
+    let expected = places;
     let menu = Menu::new(items, move |index, _, cx| {
+        if !links.snapshot(cx).session().back.iter().take(steps).eq(expected.iter()) {
+            return;
+        }
         for _ in 0..=index.min(steps - 1) {
             links.dispatch(Intent::Back, cx);
         }
@@ -691,10 +695,9 @@ impl Titlebar {
     }
 
     fn ask_field(&mut self, measure: &Measure, palette: &Palette, keys: bool, _cx: &mut Context<Self>) -> AnyElement {
-        let links = self.links.clone();
-        let act: super::focus::Act = Rc::new(move |_, cx| {
-            links.shell(cx, |shell, cx| shell.open_ask(cx));
-        });
+        let act = jump_act(JumpAction::Ask, &self.links, &self.targets);
+        let click_act = Rc::clone(&act);
+        let key_act = Rc::clone(&act);
         self.targets.push(Target {
             id: "ask".into(),
             label: "Ask anything, or find a package".into(),
@@ -736,7 +739,10 @@ impl Titlebar {
                                     .child("Ask anything, or find a package"),
                             ),
                     )
-                    .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        if !window.last_input_was_keyboard() { click_act(window, cx); }
+                    })
+                    .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
                     .children(keycap(keys, "⌘K", measure)),
             )
             .into_any_element()
