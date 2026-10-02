@@ -1093,6 +1093,55 @@ pub struct ConfiguredGoOracle {
     child_environment: Option<GoOracleChildEnvironment>,
 }
 
+/// The oracle's package loader refuses to run without an explicit workspace
+/// selection, and hands `go list` only an allowlisted environment (no `HOME`),
+/// so the caches must be named too. The unconfigured entry points have no
+/// [`GoWorkWitness`] or [`GoOracleChildEnvironment`]; they select what the
+/// caller's environment does: a workspace it already names, else its `GOWORK`,
+/// else none (`off`, as the witness spells it), and the caches its Go
+/// toolchain reports.
+fn select_ambient_workspace(command: &mut std::process::Command) {
+    if !std::env::var_os("NUDOX_GO_AUTHORITY_GOWORK").is_some_and(|value| !value.is_empty()) {
+        let selected = std::env::var_os("GOWORK")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "off".into());
+        command.env("NUDOX_GO_AUTHORITY_GOWORK", selected);
+    }
+    for (key, value) in ambient_go_caches() {
+        if std::env::var_os(key).is_none_or(|value| value.is_empty()) {
+            command.env(key, value);
+        }
+    }
+}
+
+/// `GOCACHE` and `GOMODCACHE` as the caller's Go toolchain resolves them,
+/// asked once per process. Empty when the toolchain cannot be asked; the
+/// oracle then reports the missing cache itself.
+fn ambient_go_caches() -> &'static [(&'static str, String)] {
+    static CACHES: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    CACHES.get_or_init(|| {
+        let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
+        let Ok(output) = std::process::Command::new(compiler)
+            .args(["env", "GOCACHE", "GOMODCACHE"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        ["GOCACHE", "GOMODCACHE"]
+            .into_iter()
+            .zip(text.lines())
+            .filter(|(_, value)| !value.trim().is_empty())
+            .map(|(key, value)| (key, value.trim().to_owned()))
+            .collect()
+    })
+}
+
 impl Default for GoOracle {
     fn default() -> Self {
         Self {
@@ -1151,6 +1200,7 @@ impl GoOracle {
                 .current_dir(oracle_dir);
             command
         };
+        select_ambient_workspace(&mut command);
         let stdout = self.execute(&mut command)?;
         self.decode(&stdout)
     }
@@ -1208,6 +1258,7 @@ impl GoOracle {
                 .current_dir(oracle_dir);
             command
         };
+        select_ambient_workspace(&mut command);
         self.execute(&mut command)
     }
 
