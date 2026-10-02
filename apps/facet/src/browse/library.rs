@@ -1443,6 +1443,10 @@ mod mounted_tests {
             host.width = px(320.0);
             cx.notify();
         });
+        // At 200% text the inventory sits below a 1080 px test window: give
+        // the window the height a reader would scroll the page to, so the
+        // rows the pointer clicks are on screen.
+        cx.simulate_resize(gpui::size(px(1920.0), px(1800.0)));
         let rewide = draw(cx);
 
         click(cx, &rewide, "last-packages");
@@ -1468,10 +1472,15 @@ mod mounted_tests {
             previous_focused,
             "inventory page controls belong to native focus order"
         );
+        // The tail's last row (its long origin wraps) can fill the viewport
+        // alone, so the tail may stand at 1236: PageUp moves exactly one page
+        // of eight rows back from wherever it stands.
+        let tail_top = list_state.logical_scroll_top().item_ix;
         cx.simulate_keystrokes("pageup");
         draw(cx);
-        assert!(
-            list_state.logical_scroll_top().item_ix < 1228,
+        assert_eq!(
+            list_state.logical_scroll_top().item_ix,
+            tail_top - 8,
             "focused PageUp reached prior rows"
         );
         let prior = draw(cx);
@@ -1503,16 +1512,23 @@ mod mounted_tests {
         for at in 1235..1237 {
             rows[at].target = Some(InventoryHandle::new(at, rows[at].key.clone()));
         }
+        // While the page is away its list returns to the top, so only the
+        // return intent can bring the reordered source back into view.
+        list_state.scroll_to(ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
         host.update(cx, |host, cx| {
             host.model = make_model(rows);
             host.place_key = 2;
             host.visible = true;
             cx.notify();
         });
-        list_state.scroll_to(ListOffset {
-            item_ix: 0,
-            offset_in_item: px(0.),
-        });
+        draw(cx);
+        // Back arrives from the keyboard, as in the release-source test: the
+        // restored focus is then keyboard focus (the source was opened with
+        // the pointer, which alone would leave no visible focus).
+        cx.simulate_keystrokes("left");
         let returned = draw(cx);
         assert!(
             returned
