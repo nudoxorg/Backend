@@ -672,13 +672,28 @@ struct FrameCallback {
     callback: FrameCallbackFn,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum FrameCallbackOwner {
     Element(ElementOwnerPath),
     View(EntityId),
     /// Structural ownership exceeded the tracking bound. Treat this as rejected work rather
     /// than silently promoting it to a view/window callback.
     Rejected,
+    /// An internal notification batch. Delivery checks each retained request
+    /// against the committed native ownership rather than one caller's owner.
+    AnimationGroup,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct AnimationFrameRequest {
+    owner: FrameCallbackOwner,
+    view: EntityId,
+}
+
+#[derive(Default)]
+struct GroupedAnimationFrameRequests {
+    claims: FxHashSet<AnimationFrameRequest>,
+    scheduled: bool,
 }
 
 /// One frame-local compact arena for structural element paths. Paths are handles into a single
@@ -1999,6 +2014,7 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    grouped_animation_frame_requests: GroupedAnimationFrameRequests,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
@@ -2798,6 +2814,7 @@ impl Window {
                 element_owner_path_operations.clone(),
             ),
             next_frame_callbacks,
+            grouped_animation_frame_requests: GroupedAnimationFrameRequests::default(),
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
@@ -2977,6 +2994,10 @@ impl Window {
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
+        self.grouped_animation_frame_requests = GroupedAnimationFrameRequests::default();
+        self.next_frame_callbacks
+            .borrow_mut()
+            .retain(|callback| !matches!(callback.owner, Some(FrameCallbackOwner::AnimationGroup)));
     }
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.
@@ -3319,6 +3340,67 @@ impl Window {
             owner,
             callback: Box::new(callback),
         });
+    }
+
+    /// Coalesce animation notifications into one pending wake for this window.
+    ///
+    /// Every request retains its native element/view owner. After ownership is
+    /// committed, delivery notifies only surviving interactive owners, once
+    /// per view. An inert first requester cannot cancel a live sibling's wake.
+    /// Claims are deduplicated, pruned at frame commit, and drained at delivery;
+    /// closing the window releases the batch. This is a notification primitive,
+    /// not a public window-scoped callback escape from inert ownership.
+    ///
+    /// Call only while rendering/drawing a view. Returns true when this call
+    /// queues the group's single wake, and false when coalesced or rejected.
+    pub fn request_grouped_animation_frame(&mut self) -> bool {
+        if self.removed || self.is_inert_subtree() {
+            return false;
+        }
+        let view = self.current_view();
+        let owner = self
+            .current_element_owner_tracking()
+            .map_or(FrameCallbackOwner::View(view), |tracking| {
+                frame_callback_owner_from_tracking(&tracking)
+            });
+        if matches!(owner, FrameCallbackOwner::Rejected) {
+            return false;
+        }
+        let pending = &mut self.grouped_animation_frame_requests;
+        pending.claims.insert(AnimationFrameRequest { owner, view });
+        if pending.scheduled {
+            return false;
+        }
+        pending.scheduled = true;
+        self.next_frame_callbacks.borrow_mut().push(FrameCallback {
+            // Mark this internal batch as scoped work so production commits a
+            // dirty frame before checking its individual request owners.
+            owner: Some(FrameCallbackOwner::AnimationGroup),
+            callback: Box::new(|window, cx| window.deliver_grouped_animation_frame(cx)),
+        });
+        true
+    }
+
+    fn deliver_grouped_animation_frame(&mut self, cx: &mut App) {
+        // Release the latch before notification; a reconciliation draw may
+        // immediately register the next bounded batch.
+        let pending = mem::take(&mut self.grouped_animation_frame_requests);
+        if self.removed {
+            return;
+        }
+        let mut notified = FxHashSet::default();
+        for claim in pending.claims {
+            if !self.callback_owner_is_inert(&claim.owner) && notified.insert(claim.view) {
+                cx.notify(claim.view);
+            }
+        }
+    }
+
+    fn prune_grouped_animation_frame_requests(&mut self) {
+        let frame = &self.rendered_frame;
+        self.grouped_animation_frame_requests
+            .claims
+            .retain(|claim| !Self::frame_callback_owner_is_inert(frame, &claim.owner));
     }
 
     /// Schedule a frame to be drawn on the next animation frame.
@@ -3912,6 +3994,7 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
+        self.prune_grouped_animation_frame_requests();
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
         let mut focus_before_listeners = self.focus;
@@ -4832,19 +4915,24 @@ impl Window {
     }
 
     fn callback_owner_is_inert(&self, owner: &FrameCallbackOwner) -> bool {
+        Self::frame_callback_owner_is_inert(&self.rendered_frame, owner)
+    }
+
+    fn frame_callback_owner_is_inert(frame: &Frame, owner: &FrameCallbackOwner) -> bool {
         match owner {
             FrameCallbackOwner::Element(owner) => {
-                self.rendered_frame
+                frame
                     .inert_owner_paths
                     .iter()
                     .any(|boundary| owner.is_within_inert_boundary(boundary))
-                    || !self.rendered_frame.live_element_owner_paths.contains(owner)
+                    || !frame.live_element_owner_paths.contains(owner)
             }
             FrameCallbackOwner::View(view_id) => {
-                self.rendered_frame.inert_view_ids.contains(view_id)
-                    || !self.rendered_frame.dispatch_tree.contains_view(*view_id)
+                frame.inert_view_ids.contains(view_id)
+                    || !frame.dispatch_tree.contains_view(*view_id)
             }
             FrameCallbackOwner::Rejected => true,
+            FrameCallbackOwner::AnimationGroup => false,
         }
     }
 
@@ -9449,4 +9537,130 @@ pub struct PaintedText {
     pub bounds: Bounds<Pixels>,
     /// The ink's effective alpha, 0..=1.
     pub alpha: f32,
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod grouped_animation_frame_tests {
+    use super::*;
+    use crate::{IntoElement, ParentElement as _, Styled as _, TestAppContext, div};
+
+    struct Requester;
+
+    impl Render for Requester {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // Multiple independent tracks in one view share one owner claim.
+            for _ in 0..8 {
+                window.request_grouped_animation_frame();
+            }
+            div().size_full()
+        }
+    }
+
+    struct Pair {
+        first: Entity<Requester>,
+        second: Entity<Requester>,
+        first_inert: Rc<Cell<bool>>,
+        first_present: Rc<Cell<bool>>,
+    }
+
+    impl Render for Pair {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let first = if self.first_inert.get() {
+                crate::inert("first-retained", "Previous view", self.first.clone())
+                    .into_any_element()
+            } else {
+                self.first.clone().into_any_element()
+            };
+            div()
+                .flex()
+                .size_full()
+                .children(self.first_present.get().then_some(first))
+                .child(self.second.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn grouped_wakes_keep_live_siblings_and_release_closed_window_claims(cx: &mut TestAppContext) {
+        let first_inert = Rc::new(Cell::new(false));
+        let first_present = Rc::new(Cell::new(true));
+        let (pair, cx) = cx.add_window_view({
+            let first_inert = first_inert.clone();
+            let first_present = first_present.clone();
+            move |_, cx| Pair {
+                first: cx.new(|_| Requester),
+                second: cx.new(|_| Requester),
+                first_inert,
+                first_present,
+            }
+        });
+        let (first, second) =
+            pair.read_with(cx, |pair, _| (pair.first.clone(), pair.second.clone()));
+        let first_notified = Rc::new(Cell::new(0));
+        let second_notified = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let notified = first_notified.clone();
+            cx.observe(&first, move |_, _| notified.set(notified.get() + 1))
+                .detach();
+            let notified = second_notified.clone();
+            cx.observe(&second, move |_, _| notified.set(notified.get() + 1))
+                .detach();
+        });
+
+        for round in 0..24 {
+            let inert = round % 3 == 0;
+            let present = round % 3 != 2;
+            let live = present && !inert;
+            first_inert.set(inert);
+            first_present.set(present);
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                let pending = &window.grouped_animation_frame_requests;
+                assert!(pending.scheduled);
+                assert_eq!(pending.claims.len(), if live { 2 } else { 1 });
+                assert!(
+                    pending
+                        .claims
+                        .iter()
+                        .any(|claim| claim.view == second.entity_id())
+                );
+                assert_eq!(
+                    window
+                        .next_frame_callbacks
+                        .borrow()
+                        .iter()
+                        .filter(|callback| {
+                            matches!(callback.owner, Some(FrameCallbackOwner::AnimationGroup))
+                        })
+                        .count(),
+                    1,
+                    "one window wake regardless of duplicate tracks"
+                );
+            });
+            first_notified.set(0);
+            second_notified.set(0);
+            cx.update(|window, cx| {
+                // Ownership has committed before the coalesced delivery.
+                assert_eq!(window.simulate_reconciled_next_frame(cx).0, 1);
+            });
+            assert_eq!(first_notified.get(), if live { 1 } else { 0 });
+            assert_eq!(
+                second_notified.get(),
+                1,
+                "a canceled first owner cannot consume a sibling's notification"
+            );
+        }
+
+        first_notified.set(0);
+        second_notified.set(0);
+        cx.update(|window, cx| {
+            window.remove_window();
+            assert!(window.grouped_animation_frame_requests.claims.is_empty());
+            assert!(!window.grouped_animation_frame_requests.scheduled);
+            assert!(!window.request_grouped_animation_frame());
+            assert_eq!(window.simulate_next_frame(cx), 0);
+        });
+        assert_eq!(first_notified.get(), 0);
+        assert_eq!(second_notified.get(), 0);
+    }
 }

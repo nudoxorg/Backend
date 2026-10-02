@@ -6,8 +6,7 @@ use super::spring::{Phase, Spring};
 use super::{epoch, now, reduced_in};
 use crate::probe::{self, TrackKind, TrackSample};
 use crate::tokens::motion::Bezier;
-use gpui::{App, ElementId, EntityId, Global, Window, WindowId};
-use smallvec::SmallVec;
+use gpui::{App, ElementId, Global, Window};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -654,19 +653,12 @@ fn keyframe_overshoot(frames: &[(f32, Pose)], read: fn(&Pose) -> f32, ease: Bezi
     }
 }
 
-/// The per-window OR-gate: however many tracks are live in however many
-/// views, a window schedules one next-frame callback, which notifies exactly
-/// the views that asked.
+/// Count the wakes scheduled by FACET. Native GPUI owns the coalesced batch
+/// and each request's eligibility; no window IDs or pending tickets live in
+/// application globals after a window closes.
 #[derive(Default)]
 struct Gate {
-    windows: HashMap<WindowId, Pending>,
     requested: u64,
-}
-
-#[derive(Default)]
-struct Pending {
-    views: SmallVec<[EntityId; 4]>,
-    scheduled: bool,
 }
 
 impl Global for Gate {}
@@ -677,32 +669,9 @@ pub fn request_frame(window: &mut Window, cx: &mut App) {
     if super::is_still(cx) || window.is_inert_subtree() {
         return;
     }
-    let view = window.current_view();
-    let id = window.window_handle().window_id();
-    let gate = cx.default_global::<Gate>();
-    let pending = gate.windows.entry(id).or_default();
-    if !pending.views.contains(&view) {
-        pending.views.push(view);
+    if window.request_grouped_animation_frame() {
+        cx.default_global::<Gate>().requested += 1;
     }
-    if pending.scheduled {
-        return;
-    }
-    pending.scheduled = true;
-    gate.requested += 1;
-    window.on_next_frame(move |_window, cx| {
-        let views = cx
-            .default_global::<Gate>()
-            .windows
-            .get_mut(&id)
-            .map(|pending| {
-                pending.scheduled = false;
-                std::mem::take(&mut pending.views)
-            })
-            .unwrap_or_default();
-        for view in views {
-            cx.notify(view);
-        }
-    });
 }
 
 /// How many frames the gate has scheduled since the app started.
@@ -1060,5 +1029,113 @@ mod mounted_policy_tests {
     #[gpui::test]
     fn explicit_snap_settles_a_running_scalar_without_changing_its_target(cx: &mut TestAppContext) {
         exercise(cx, Policy::ExplicitSnap);
+    }
+
+    struct PairHost {
+        first: Entity<Scalar>,
+        second: Entity<Scalar>,
+        first_inert: bool,
+    }
+
+    impl Render for PairHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let first = if self.first_inert {
+                gpui::inert("first-motion", "Previous motion", self.first.clone())
+                    .into_any_element()
+            } else {
+                self.first.clone().into_any_element()
+            };
+            div()
+                .flex()
+                .size_full()
+                .child(first)
+                .child(self.second.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn coalesced_motion_survives_first_owner_cancellation_and_reopening(cx: &mut TestAppContext) {
+        let seen_first = Rc::new(Cell::new(0.0));
+        let seen_second = Rc::new(Cell::new(0.0));
+        let spec = Spec::Spring(GENTLE);
+        let (host, cx) = cx.add_window_view({
+            let first = seen_first.clone();
+            let second = seen_second.clone();
+            move |_, cx| PairHost {
+                first: cx.new(|_| Scalar {
+                    motion: Motion::new(),
+                    target: 0.0,
+                    spec,
+                    still: false,
+                    seen: first,
+                }),
+                second: cx.new(|_| Scalar {
+                    motion: Motion::new(),
+                    target: 0.0,
+                    spec,
+                    still: false,
+                    seen: second,
+                }),
+                first_inert: false,
+            }
+        });
+        let (first, second) =
+            host.read_with(cx, |host, _| (host.first.clone(), host.second.clone()));
+        first.update(cx, |scalar, cx| {
+            scalar.target = 100.0;
+            cx.notify();
+        });
+        second.update(cx, |scalar, cx| {
+            scalar.target = 200.0;
+            cx.notify();
+        });
+        frame(cx);
+        for round in 0..12 {
+            let target = 300.0 + round as f32 * 100.0;
+            host.update(cx, |host, cx| {
+                host.first_inert = true;
+                cx.notify();
+            });
+            let before = seen_second.get();
+            second.update(cx, |scalar, cx| {
+                scalar.target = target;
+                cx.notify();
+            });
+            cx.executor().advance_clock(Duration::from_millis(16));
+            let requested = cx.update(|_, cx| frames_requested(cx));
+            assert_eq!(frame(cx), 1, "the surviving owner keeps one window wake");
+            assert!(
+                seen_second.get() > before,
+                "the live sibling continues moving"
+            );
+            assert!(!first.read_with(cx, |scalar, cx| scalar.motion.is_live(cx)));
+            assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested + 1);
+            host.update(cx, |host, cx| {
+                host.first_inert = false;
+                cx.notify();
+            });
+            first.update(cx, |scalar, cx| {
+                scalar.target = target + 100.0;
+                cx.notify();
+            });
+            let landed = seen_first.get();
+            cx.executor().advance_clock(Duration::from_millis(16));
+            assert_eq!(
+                frame(cx),
+                1,
+                "reopening coalesces with the sibling's pending wake"
+            );
+            assert!(
+                seen_first.get() > landed,
+                "the first owner can request new motion again"
+            );
+        }
+        cx.executor().advance_clock(Duration::from_millis(2_000));
+        frame(cx);
+        assert_eq!(
+            frame(cx),
+            0,
+            "both owners settle without a latch or idle wake"
+        );
     }
 }
