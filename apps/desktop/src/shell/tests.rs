@@ -815,6 +815,38 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     assert_eq!(zone, super::focus::Zone::Titlebar);
 }
 
+#[gpui::test]
+fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let mut package_id = None;
+    for _ in 0..8 {
+        rig.keys("tab");
+        let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(zone, super::focus::Zone::Reader, "Library controls precede the next Shell zone");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let native = rig.cx.update(|window, _| targets.focused_native_is_live(window));
+        assert!(native, "Tab moved actual GPUI focus to the mounted control");
+        if focused.as_deref().is_some_and(|id| id.starts_with("orbit-package-")) {
+            package_id = focused;
+            break;
+        }
+    }
+    let package_id = package_id.expect("Tab reaches the indexed package chip");
+    rig.keys("shift-tab");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("add-folder"));
+    rig.keys("tab");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1, Some(package_id.clone()));
+    rig.keys("space");
+    assert!(matches!(rig.route(), Route::Package(_)), "Space activates the focused native chip");
+    rig.keys("cmd-[");
+    assert!(matches!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home)));
+    let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone, super::focus::Zone::Reader);
+    assert_eq!(focused, Some(package_id), "Back returns to the exact chip that opened the package");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)), "native focus returns only after that chip remounts");
+}
+
 /// The lead's report: on a symbol page, Tab, J and Space each changed
 /// nothing. Confirms all three are wired end to end on a fresh page: Tab
 /// moves the keyboard zone, J walks the reader's focus, and Space peeks a

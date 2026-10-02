@@ -93,6 +93,7 @@ actions!(
 
 /// The key context of the shell root.
 pub(crate) const CONTEXT: &str = "NudoxShell";
+pub(crate) const NATIVE_CONTROL: &str = "NativeControl";
 
 /// A command the table binds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -276,6 +277,9 @@ fn binding_context(key: &Key) -> String {
     // gone. Only ⌘K may interrupt that exit; all background shell actions
     // wait until the sampled plate and veil have cleared.
     if key.command != Command::Ask { context.push_str(" && !AskLeaving"); }
+    if matches!(key.command, Command::Activate | Command::Peek) {
+        context.push_str(" && !NativeControl");
+    }
     context
 }
 

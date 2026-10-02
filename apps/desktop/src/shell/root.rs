@@ -394,6 +394,10 @@ impl Shell {
         (self.zone, focused)
     }
 
+    pub(crate) fn allows_reader_native_return(&self) -> bool {
+        self.zone == Zone::Reader && !self.ask_open
+    }
+
     /// How many descents the reader played and which way the last went.
     #[must_use]
     pub fn descent(&self, cx: &App) -> (u64, Option<Way>) {
@@ -539,7 +543,13 @@ impl Shell {
                 // raced against it.
                 let reader_targets = self.reader.read(cx).targets.clone();
                 if let Some(id) = reader_targets.left_by(&route) {
-                    cx.defer(move |_cx| reader_targets.focus(id));
+                    let reader = self.reader.clone();
+                    cx.defer(move |cx| {
+                        reader.update(cx, |reader, cx| {
+                            reader_targets.focus(id.clone());
+                            reader.request_native_return(route, id, cx);
+                        });
+                    });
                 }
                 // Navigation closes what floats (pins stay).
                 let mut closed = float::close_all(window, cx);
@@ -756,15 +766,18 @@ impl Shell {
     /// J/K: the focus walks inside the active zone (only that region
     /// re-renders; the glow springs to the next target).
     pub fn walk(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        self.reader.update(cx, |reader, _| reader.cancel_native_return());
         if let Some(key) = self.peeking.take() {
             // The keyboard's peek belongs to where the keyboard stood.
             float::close(&peeks::float_key(&key), window, cx);
             cx.notify();
         }
         if self.with_zone(cx, |targets| targets.walk(delta)) {
-            // J/K walks a custom region target. Keep the shell as GPUI's
-            // focus owner so the selected row can be its active descendant.
-            self.focus.focus(window, cx);
+            if self.zone != Zone::Reader
+                || !self.reader.read(cx).focus_native_current(window, cx)
+            {
+                self.focus.focus(window, cx);
+            }
             self.notify_zone(self.zone, cx);
         }
     }
@@ -788,6 +801,13 @@ impl Shell {
 
     /// Tab: the next zone takes the keyboard.
     pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        if self.zone == Zone::Reader
+            && self.reader.read(cx).step_native(forward, window, cx)
+        {
+            self.notify_zone(Zone::Reader, cx);
+            return;
+        }
         let zones = self.visible_zones();
         let at = zones.iter().position(|zone| *zone == self.zone).unwrap_or(0);
         let next = if forward {
@@ -795,7 +815,12 @@ impl Shell {
         } else {
             zones[(at + zones.len() - 1) % zones.len()]
         };
-        self.take_zone(next, window, cx);
+        self.set_zone(next, cx);
+        if next != Zone::Reader
+            || !self.reader.read(cx).focus_native_current(window, cx)
+        {
+            self.focus.focus(window, cx);
+        }
     }
 
     /// A custom navigation zone shares the shell's persistent native focus

@@ -575,6 +575,13 @@ pub(super) fn describe(route: &Route) -> String {
             at(symbol.at.as_ref()),
             symbol.line.map_or_else(String::new, |line| format!(" line={line}"))
         ),
+        Route::CargoSource(source) => format!(
+            "cargo-source {} file={} project={}{}",
+            source.package.as_str(),
+            source.file.as_str(),
+            source.project.display_lossy(),
+            source.line.map_or_else(String::new, |line| format!(" line={line}")),
+        ),
     }
 }
 

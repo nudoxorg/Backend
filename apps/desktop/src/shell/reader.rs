@@ -410,6 +410,9 @@ pub(crate) struct Reader {
     /// Initial source-line focus, latched once per exact place and resource
     /// revision so ordinary frames never steal focus back from the user.
     source_focus_applied: Rc<Cell<Option<(u64, u32, Option<SourceGeneration>)>>>,
+    /// A Back return belongs to one visit, and waits for its live control to
+    /// mount before transferring native focus from the Shell.
+    native_return: Option<(u64, Route, crate::core::VersionedRoot, SharedString)>,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -487,6 +490,7 @@ impl Reader {
             pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
+            native_return: None,
             laid_out: None,
             lens: Lens::Reference,
             route: snapshot.route().clone(),
@@ -718,6 +722,82 @@ impl Reader {
         self.reveal.set(true);
     }
 
+    /// Move through the mounted native controls in the Reader's existing
+    /// target order. A missing edge leaves Tab to the Shell zone walk.
+    pub(crate) fn step_native(&self, forward: bool, window: &mut Window, cx: &mut gpui::App) -> bool {
+        self.targets.native_step(forward, window, cx)
+    }
+
+    pub(crate) fn focus_native_current(&self, window: &mut Window, cx: &mut gpui::App) -> bool {
+        self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
+    }
+
+    pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, cx: &mut Context<Self>) {
+        if self.route == route && self.overlay.is_none() {
+            if let Some(place) = self.places.last() {
+                self.native_return = Some((place.key, route, self.links.snapshot(cx).key(), id));
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn cancel_native_return(&mut self) {
+        self.native_return = None;
+    }
+
+    pub(crate) fn admits_native_visit(
+        &self,
+        place: u64,
+        route: &Route,
+        root: crate::core::VersionedRoot,
+        source: Option<SourceGeneration>,
+        inventory_revision: Option<[u8; 32]>,
+        cx: &gpui::App,
+    ) -> bool {
+        if self.places.last().is_none_or(|current| current.key != place)
+            || self.route != *route
+            || self.overlay.is_some()
+            || self.links.snapshot(cx).key() != root
+        {
+            return false;
+        }
+        if let Route::CargoSource(file) = route {
+            let Ok(package) = crate::model::pages::PackageRef::parse(file.package.as_str()) else { return false };
+            let store = self.links.store.read(cx);
+            match source {
+                Some(SourceGeneration::Cargo(digest)) => {
+                    let key = crate::model::pages::CargoSourceKey {
+                        project: file.project.clone(), package, file: file.file.clone(),
+                    };
+                    let resource = store.cargo_source(&key);
+                    if store.is_loading(&PageKey::CargoSource(key))
+                        || resource.value_root() != Some(root)
+                        || resource.loaded_value().is_none_or(|page| page.content_digest != digest)
+                    {
+                        return false;
+                    }
+                }
+                None => {
+                    let Some(revision) = inventory_revision else { return false };
+                    let key = crate::model::browse::BrowseKey::CargoSourceInventory(
+                        crate::model::browse::CargoSourceInventoryKey {
+                            project: file.project.clone(), package,
+                        },
+                    );
+                    let resource = store.pages().browse(&key);
+                    if store.is_loading(&PageKey::Browse(key))
+                        || resource.value_root() != Some(root)
+                        || !matches!(resource.loaded_value(), Some(crate::model::browse::BrowseValue::CargoSourceInventory(model)) if model.source_revision == revision)
+                    {
+                        return false;
+                    }
+                }
+                Some(SourceGeneration::Indexed(_)) => return false,
+            }
+        }
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_offset(&self) -> Point<Pixels> {
         self.scroll.offset()
@@ -795,6 +875,7 @@ impl Reader {
         ));
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
+        self.native_return = None;
     }
 
     fn remember_scroll(&mut self, route: Route, overlay: Option<Overlay>, offset: Point<Pixels>) {
@@ -2244,6 +2325,21 @@ impl Render for Reader {
             self.targets.focus(target);
             if self.targets.current().is_none() { self.targets.clear_focus(); }
             else { self.reveal.set(true); cx.notify(); }
+        }
+        self.targets.finish_native();
+        if let Some((place, route, root, id)) = self.native_return.clone() {
+            if place != current.key || route != current.route || root != snapshot.key() || current.overlay.is_some() {
+                self.native_return = None;
+            } else if self.painted == Some(current.key)
+                && self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).allows_reader_native_return())
+                && !super::titlebar::menu_open(window, cx)
+                && self.targets.focus_native(&id, window, cx)
+            {
+                self.targets.focus(id);
+                self.native_return = None;
+                self.reveal.set(true);
+                cx.notify();
+            }
         }
         if let Some(mut pending) = self.pending_settings_focus.take()
             && pending.place == current.key

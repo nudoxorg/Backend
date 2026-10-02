@@ -359,6 +359,7 @@ fn cargo_manifest_offer(
         recall.remember_leave(leaving.clone(), id.clone());
         links.dispatch(Intent::Navigate(route.clone()), app);
     });
+    let act = ctx.native_action(act, cx);
     let id: SharedString = "cargo-source-open-manifest".into();
     ctx.targets.push(Target {
         id: id.clone(),
@@ -367,12 +368,15 @@ fn cargo_manifest_offer(
         peek: None,
         source: None,
     });
+    let focus = ctx.native_handle(&id, cx);
+    let mut control = facet::controls::button(id.clone(), "Open Cargo.toml", &ctx.measure)
+        .ghost()
+        .size(facet::Control::Small)
+        .on_click(move |window, app| act(window, app));
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
     Some(Leaf::new(ctx.targets.track(
         id.clone(),
-        facet::controls::button(id, "Open Cargo.toml", &ctx.measure)
-            .ghost()
-            .size(facet::Control::Small)
-            .on_click(move |window, app| act(window, app)),
+        div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control),
     )))
 }
 
