@@ -435,8 +435,9 @@ impl RenderOnce for Find {
                 cx.stop_propagation();
             });
         if let Some(note) = admission.note() {
-            page = page.child(words(child(&self.id, "admission"), note.clone(), ty::CAPTION, p.ink2, &m)
-                .role(gpui::Role::Status).aria_label(note));
+            page = page.child(div().id(child(&self.id, "admission-status"))
+                .role(gpui::Role::Status).aria_label(note.clone())
+                .child(words(child(&self.id, "admission"), note, ty::CAPTION, p.ink2, &m)));
         }
         if matches!(admission, Admission::Failed(_)) && let Some(retry) = &self.actions.retry {
             let retry = retry.clone();
@@ -684,8 +685,9 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, sta
         let route = (actions.symbol_routability)(&answer.key);
         let enabled = enabled && route.available();
         if let Some(reason) = route.reason() {
-            detail = detail.child(words(child(id, "unavailable"), reason.clone(), ty::CAPTION, p.ink2, m)
-                .role(gpui::Role::Status).aria_label(reason));
+            detail = detail.child(div().id(child(id, "unavailable-status"))
+                .role(gpui::Role::Status).aria_label(reason.clone())
+                .child(words(child(id, "unavailable"), reason, ty::CAPTION, p.ink2, m)));
         }
         if let Some(pipe) = &answer.pipe {
             detail = detail.child(facet_pipe(id, pipe.clone(), m));
