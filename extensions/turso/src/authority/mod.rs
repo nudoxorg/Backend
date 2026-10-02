@@ -40,7 +40,7 @@ pub use versioned::{
     VersionedPlaneSegmentSchema,
 };
 
-use crate::connection::BUSY_TIMEOUT;
+use crate::connection::{BUSY_TIMEOUT, shared_wal_builder};
 use backend_store::{ArtifactBudget, FileStore};
 use schema::{AUTHORITY_SCHEMA, AUTHORITY_SCHEMA_VERSION};
 use std::{fmt, path::Path};
@@ -75,8 +75,7 @@ impl TursoAuthority {
         let text = path
             .to_str()
             .ok_or_else(|| AuthorityError::NonUtf8Path(path.to_path_buf()))?;
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
+        let database = shared_wal_builder(text)
             .experimental_index_method(true)
             .build()
             .await?;

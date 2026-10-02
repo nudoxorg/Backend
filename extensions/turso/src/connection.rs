@@ -10,6 +10,21 @@ use std::time::Duration;
 /// still surfacing a wedged peer as an error instead of hanging local work.
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A local-database builder that shares one WAL between processes.
+///
+/// Every database this crate opens may be opened by several processes at once.
+/// Turso refuses that mode on an I/O backend that cannot coordinate a shared
+/// WAL, and the default Windows backend is one: every open fails with
+/// "multiprocess WAL is not supported by the active IO backend". Windows'
+/// completion-port backend implements the coordination, so it is selected
+/// there explicitly. Other platforms keep their default backend.
+pub(crate) fn shared_wal_builder(path: &str) -> turso::Builder {
+    let builder = turso::Builder::new_local(path).experimental_multiprocess_wal(true);
+    #[cfg(windows)]
+    let builder = builder.with_io(turso::IoBackend::IOCP);
+    builder
+}
+
 impl TursoProjection {
     /// Opens or creates a local projection database and validates its schema.
     ///
@@ -29,8 +44,7 @@ impl TursoProjection {
         // multiprocess WAL keeps immutable read snapshots independent from the
         // single serialized writer lane and persists the coordination state
         // next to the database.
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
+        let database = shared_wal_builder(text)
             .build()
             .await?;
         let connection = database.connect()?;
