@@ -5,8 +5,12 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+pub mod lease_contract;
+pub mod monotonic;
 #[cfg(any(unix, windows))]
 mod remote_command;
+#[cfg(any(unix, windows))]
+mod reset_budget;
 #[cfg(any(unix, windows))]
 mod semantic_range_local;
 mod subscription;
@@ -14,6 +18,8 @@ mod subscription;
 mod subscription_local;
 #[cfg(any(unix, windows))]
 mod subscription_observation;
+#[cfg(all(test, any(unix, windows)))]
+mod test_socket;
 
 #[cfg(any(unix, windows))]
 pub use remote_command::RemoteIndexCommandTransport;
@@ -69,21 +75,25 @@ struct InterruptState {
     interrupted: AtomicBool,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod transport_interrupt_tests {
     use super::TransportInterrupt;
+    use crate::test_socket::local_pair;
     use std::io::Read as _;
     use std::time::{Duration, Instant};
 
     #[test]
     fn interrupt_releases_a_blocked_local_read() {
-        let (mut reader, _owner) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let (mut reader, _owner) = local_pair();
         reader.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
         let interrupt = TransportInterrupt::new(&reader).expect("clone exact socket");
         let waiting = std::thread::spawn(move || {
             let mut byte = [0_u8; 1];
             reader.read(&mut byte)
         });
+        // Give the reader time to block, so the interrupt cannot pass by
+        // landing before the read starts.
+        std::thread::sleep(Duration::from_millis(100));
         let started = Instant::now();
         interrupt.interrupt();
         let result = waiting.join().expect("join released read");
@@ -93,8 +103,8 @@ mod transport_interrupt_tests {
 
     #[test]
     fn interrupted_handle_closes_a_replacement_socket_too() {
-        let (old, _old_owner) = std::os::unix::net::UnixStream::pair().expect("old socket pair");
-        let (mut replacement, _new_owner) = std::os::unix::net::UnixStream::pair().expect("new socket pair");
+        let (old, _old_owner) = local_pair();
+        let (mut replacement, _new_owner) = local_pair();
         replacement.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
         let interrupt = TransportInterrupt::new(&old).expect("clone old socket");
         interrupt.interrupt();

@@ -290,6 +290,12 @@ pub enum ProtocolError {
     LeaseEntropyUnavailable,
     /// The owner has used every monotonic lease ordinal in this process.
     LeaseIdsExhausted,
+    /// The monotonic clock cannot represent the bounded lease deadline.
+    LeaseDeadlineUnavailable,
+    /// An exact reset still needs pages after its finite producer page budget.
+    ResetPageBudgetExhausted,
+    /// A retained reset could not finish within its absolute hydration window.
+    ResetDeadlineExceeded,
     /// A stream read or write failed.
     Io(io::ErrorKind),
     /// The endpoint timed out while the peer was idle.
@@ -346,6 +352,15 @@ impl fmt::Display for ProtocolError {
             }
             Self::LeaseIdsExhausted => {
                 formatter.write_str("owner subscription lease identities are exhausted")
+            }
+            Self::LeaseDeadlineUnavailable => {
+                formatter.write_str("owner subscription lease deadline is unavailable")
+            }
+            Self::ResetPageBudgetExhausted => {
+                formatter.write_str("subscription reset page budget exhausted")
+            }
+            Self::ResetDeadlineExceeded => {
+                formatter.write_str("subscription reset hydration deadline exceeded")
             }
             Self::Io(kind) => write!(formatter, "local endpoint I/O failed: {kind:?}"),
             Self::Timeout => formatter.write_str("local endpoint timed out"),

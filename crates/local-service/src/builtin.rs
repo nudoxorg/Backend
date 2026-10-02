@@ -49,7 +49,7 @@ const AUTHORITY_VALUE: &[u8] = backend_engine::PRODUCT_AUTHORITY_BYTES;
 /// ones) must name itself anew: otherwise a reopened workspace serves the
 /// old projection until its sources change, and replays journal events
 /// written under an older wire version it can no longer decode.
-const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
+pub(crate) const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
 const MAX_REBUILD_PACKAGES: usize = 1_000_000;
 pub(super) const MAX_REBUILD_BYTES: usize = 64 * 1024 * 1024;
 // One compact event is fsynced before publication. Keep short edit suffixes
@@ -457,6 +457,42 @@ fn admit_manifest(
 
 pub(crate) fn genesis() -> Result<WorkspaceHead, BuiltinModelError> {
     head_for_intent(None)
+}
+
+/// The owner adapter [`open_empty_owner`] builds: a real product daemon whose
+/// command lane answers every command with an empty reply.
+#[cfg(test)]
+pub(crate) type EmptyOwner = crate::service::LocaldOwner<
+    BuiltinModel,
+    BuiltinValidator,
+    BuiltinAuthorityVerifier,
+    fn(
+        &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        &[u8],
+    ) -> Result<Vec<u8>, String>,
+>;
+
+/// Opens a real, empty product owner at `workspace`, for tests of the layers
+/// that front it (leases, listeners) which need a daemon but not a project.
+#[cfg(test)]
+pub(crate) fn open_empty_owner(workspace: &Path) -> Result<EmptyOwner, String> {
+    let profile = profile_descriptor(BuiltinProfile::Product)?;
+    let dispatcher = builtin_dispatcher(Some([0x3C; 32]), profile, 1)?;
+    let registry = RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| format!("register source relation: {error:?}"))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let daemon = crate::Locald::open_with_dispatcher_and_registry(
+        workspace,
+        BuiltinModel,
+        genesis().map_err(|error| error.to_string())?,
+        dispatcher,
+        DaemonConfig::default(),
+        registry,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(daemon.into_owner(|_, _| Ok(Vec::new())))
 }
 
 /// Builds the checked head a workspace holding exactly `intent` would have.

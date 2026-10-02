@@ -9,6 +9,10 @@ publish.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+# Deterministic clock for hosts' tests of lease expiry and reset budgets.
+test-support = []
+
 [dependencies]
 backend-engine = { path = "../engine" }
 backend-library = { path = "../library" }
