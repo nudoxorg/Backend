@@ -219,12 +219,44 @@ pub struct Impl {
     pub generic: bool,
 }
 
+/// Declaration meaning is independent from the glyph used for layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationRole {
+    /// A declaration represented by the ordinary kind glyph.
+    Definition,
+    /// A module declaration, not a source-file territory.
+    Module,
+    /// An import or re-export declaration, not its target definition.
+    Import,
+    /// The extractor did not classify this declaration.
+    Unknown,
+}
+
+/// Source capability for this declaration, never borrowed from a sibling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceStatus {
+    /// Exact captured location in `Node::file` and `Node::line`.
+    Captured,
+    /// No location was captured.
+    NotCaptured,
+    /// Source bytes are not resident locally.
+    NotHydrated,
+    /// No provider is configured for this origin.
+    Unconfigured,
+    /// The compiled location no longer matches the file.
+    Stale,
+}
+
 /// One symbol. Items have no parent; members (fields, variants, methods)
 /// have their type as parent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     /// What it is.
     pub kind: Kind,
+    /// Semantic meaning retained independently from the glyph.
+    pub declaration_role: DeclarationRole,
+    /// Exact per-declaration source capability.
+    pub source_status: SourceStatus,
     /// Its name.
     pub name: SharedString,
     /// Its package.
@@ -287,6 +319,8 @@ impl Node {
     pub fn new(kind: Kind, name: impl Into<SharedString>, pkg: u32, module: u32) -> Self {
         Self {
             kind,
+            declaration_role: DeclarationRole::Definition,
+            source_status: SourceStatus::NotCaptured,
             name: name.into(),
             pkg,
             module,
@@ -314,6 +348,31 @@ impl Node {
             non_exhaustive: false,
             deprecated: false,
             orphan: false,
+        }
+    }
+
+    /// Human declaration word; an import keeps its own identity.
+    #[must_use]
+    pub const fn declaration_word(&self) -> &'static str {
+        match self.declaration_role {
+            DeclarationRole::Definition => self.kind.text(),
+            DeclarationRole::Module => "module",
+            DeclarationRole::Import => "import / re-export",
+            DeclarationRole::Unknown => "unclassified declaration",
+        }
+    }
+
+    /// Source wording is evidence about this row, not its package.
+    #[must_use]
+    pub fn source_words(&self) -> String {
+        match self.source_status {
+            SourceStatus::Captured => self.file.as_ref().map_or_else(
+                || "Captured source location unavailable".into(),
+                |path| format!("{path}:{}", self.line)),
+            SourceStatus::NotCaptured => "No source location captured for this declaration".into(),
+            SourceStatus::NotHydrated => "Source bytes are not available locally".into(),
+            SourceStatus::Unconfigured => "No source provider for this declaration".into(),
+            SourceStatus::Stale => "Compiled source location is out of date".into(),
         }
     }
 
@@ -837,7 +896,7 @@ fn importance(n: usize, items: &[NodeId], top: &[NodeId], edges: &[Rollup]) -> (
 
 /// The prototype's fixture format.
 mod fixture {
-    use super::{Edge, Impl, Kind, ModelError, Module, Node, Package, Rel, World};
+    use super::{DeclarationRole, Edge, Impl, Kind, ModelError, Module, Node, Package, Rel, SourceStatus, World};
     use gpui::SharedString;
     use serde::Deserialize;
 
@@ -970,6 +1029,8 @@ mod fixture {
             .into_iter()
             .map(|r| Node {
                 kind: Kind::parse(&r.k),
+                declaration_role: DeclarationRole::Definition,
+                source_status: if r.f.is_some() { SourceStatus::Captured } else { SourceStatus::NotCaptured },
                 name: r.n.into(),
                 pkg: r.p,
                 module: r.m,

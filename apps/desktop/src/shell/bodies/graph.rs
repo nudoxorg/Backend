@@ -96,6 +96,14 @@ pub(crate) struct Map {
     _events: Subscription,
 }
 
+/// Graph display can be a painted scene or an exact declaration route whose
+/// optional world projection is not available. Neither grants a read lease.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MountedGraph {
+    Scene(gpui::EntityId),
+    Declaration,
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct TestCanvasLayer {
@@ -632,6 +640,20 @@ impl Map {
         canvas_bounds(graph.node_bounds(graph.focused()?), self.canvas_transform)
     }
 
+    /// A visible graph presentation of this exact destination. A new scene
+    /// cannot borrow its predecessor's painted-place witness; an exact symbol
+    /// route can still offer its own Page/Code while optional graph work waits.
+    pub(crate) fn mounted_presentation(&self, cx: &App) -> Option<MountedGraph> {
+        let snapshot = self.links.snapshot(cx);
+        if !self.visible || self.route.as_ref() != Some(snapshot.route()) { return None; }
+        if let Some(graph) = &self.graph {
+            if !self.world_key.as_ref().is_some_and(|key| key.at_authority(snapshot.key())) { return None; }
+            return graph.read(cx).scene_was_painted().then(|| MountedGraph::Scene(graph.entity_id()));
+        }
+        matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Graph)
+            .then_some(MountedGraph::Declaration)
+    }
+
     pub(crate) fn focused(&self, cx: &App) -> bool {
         self.graph
             .as_ref()
@@ -755,7 +777,11 @@ impl Map {
                 name: Arc::from(world.name_of(id).as_ref()),
                 package: Arc::from(world.packages[node.pkg as usize].name.as_ref()),
                 module: Arc::from(world.modules[node.module as usize].path.as_ref()),
-                kind: match node.kind {
+                kind: match node.declaration_role {
+                    facet::graph::model::DeclarationRole::Module => D::Module,
+                    facet::graph::model::DeclarationRole::Import => D::Import,
+                    facet::graph::model::DeclarationRole::Unknown => D::Unknown,
+                    facet::graph::model::DeclarationRole::Definition => match node.kind {
                     G::Struct => D::Struct,
                     G::Enum => D::Enum,
                     G::Union => D::Union,
@@ -768,6 +794,7 @@ impl Map {
                     G::Field => D::Field,
                     G::Variant => D::Variant,
                     G::Other => D::Unknown,
+                    },
                 },
                 indexed,
                 origin: self.projection_origin.clone()?,
@@ -802,7 +829,7 @@ impl Map {
             self.open_generation,
             snapshot.route(),
             snapshot.key().authority(),
-            snapshot.overlay().is_some(),
+            snapshot.overlay().is_some() || snapshot.page_overlay().is_some(),
         )
     }
 
@@ -1375,9 +1402,11 @@ impl Render for Map {
                         return;
                     };
                     let basis = map.read(cx).callback_basis(cx);
+                    let Some(attachment) = map.read(cx).links.store.read(cx).current_owner_attachment() else { return; };
                     window.defer(cx, move |window, cx| {
                         map.update(cx, |map, cx| {
-                            if map.callback_current(&basis, cx) {
+                            if map.visible && map.callback_current(&basis, cx)
+                                && map.links.store.read(cx).admits_owner_attachment(&attachment) {
                                 map.open(node, OpenView::Page, OpenOrigin::Graph, window, cx);
                             }
                         });
@@ -1388,9 +1417,11 @@ impl Render for Map {
                         return;
                     };
                     let basis = map.read(cx).callback_basis(cx);
+                    let Some(attachment) = map.read(cx).links.store.read(cx).current_owner_attachment() else { return; };
                     window.defer(cx, move |window, cx| {
                         map.update(cx, |map, cx| {
-                            if map.callback_current(&basis, cx) {
+                            if map.visible && map.callback_current(&basis, cx)
+                                && map.links.store.read(cx).admits_owner_attachment(&attachment) {
                                 map.peek_action(node, action, window, cx);
                             }
                         });
@@ -1423,6 +1454,26 @@ impl Render for Map {
             self.show(&route, None, window, cx);
         }
         self.request_world(cx);
+        // Rebind controls to this exact mounted visit. Previously captured
+        // callbacks retain their older predicate and cannot adopt a later visit.
+        if let Some(graph) = &self.graph {
+            let owner = cx.entity().downgrade();
+            let graph_id = graph.entity_id();
+            let basis = self.callback_basis(cx);
+            let key = self.world_key.clone();
+            let attachment = self.links.store.read(cx).current_owner_attachment();
+            graph.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |cx| {
+                owner.upgrade().is_some_and(|map| {
+                    let map = map.read(cx);
+                    let snapshot = map.links.snapshot(cx);
+                    map.visible && map.route.as_ref() == Some(snapshot.route())
+                        && is_graph(snapshot.route()) && snapshot.page_overlay().is_none()
+                        && map.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
+                        && map.world_key == key && map.callback_current(&basis, cx)
+                        && attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token))
+                })
+            })));
+        }
         let mut root = div().relative().size_full();
         if let Some(graph) = &self.graph {
             if self.focus_on_mount && self.visible {
@@ -1457,28 +1508,20 @@ impl Render for Map {
                 "Resolving this indexed symbol…".into()
             } else {
                 self.coverage.as_ref().map_or_else(|| "Indexed graph".into(), |coverage| {
-                    self.projection_origin.as_ref().map_or_else(|| "Indexed graph".into(), |origin| coverage.words(origin))
+                    self.projection_origin.as_ref().map_or_else(|| "Indexed graph".into(), |origin| coverage.summary(origin))
                 })
             }
         });
         let measure = facet::Measure::new(window.viewport_size().width, &cx.facet());
-        let root = root.child(
-            // Bottom right: the where-line owns the bottom left (W-Flip R-T2-1).
-            // It gives way to the where-line on a narrow window: it never takes
-            // more than 62 % of the map, and says so with an ellipsis.
-            div()
-                .absolute()
-                .bottom(px(8.0))
-                .right(px(16.0))
-                .max_w(gpui::relative(0.62))
-                .min_w_0()
-                .child(
-                    crate::shell::kit::text(facet::tokens::ty::MONO_SMALL, &measure, cx.facet().palette().ink3)
-                        .keyed("graph-projection-status")
-                        .role(gpui::Role::Status).aria_label(message.clone())
-                        .truncate().child(message),
-                ),
-        );
+        let root = if let Some(graph) = &self.graph {
+            let detail = self.coverage.as_ref().zip(self.projection_origin.as_ref()).map(|(coverage, origin)| coverage.words(origin));
+            graph.update(cx, |graph, cx| graph.set_status(message, detail, cx));
+            root
+        } else {
+            root.child(div().absolute().bottom(px(8.0)).right(px(16.0)).max_w(gpui::relative(0.62)).min_w_0()
+                .child(crate::shell::kit::text(facet::tokens::ty::MONO_SMALL, &measure, cx.facet().palette().ink2)
+                    .keyed("graph-projection-status").role(gpui::Role::Status).aria_label(message.clone()).child(message)))
+        };
         #[cfg(test)]
         {
             let layer = cx

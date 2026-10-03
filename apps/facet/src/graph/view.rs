@@ -225,6 +225,16 @@ pub struct GraphView {
     painted_labels: Option<(View, Camera, Vec<draw::TerritoryLabel>)>,
     strategy: Strategy,
     on_open: Option<OpenPage>,
+    interaction_admission: Option<Rc<dyn Fn(&App) -> bool>>,
+    declarations_open: bool,
+    declaration_page: usize,
+    declaration_epoch: u64,
+    declaration_focus: Vec<FocusHandle>,
+    declaration_scroll: ScrollHandle,
+    status: Option<(SharedString, Option<SharedString>)>,
+    status_open: bool,
+    status_scroll: ScrollHandle,
+    status_focus: FocusHandle,
     on_peek_action: Option<super::peek::ActionHandler>,
     _subscriptions: Vec<Subscription>,
 }
@@ -349,9 +359,41 @@ impl GraphView {
             painted_labels: None,
             strategy: Strategy::default(),
             on_open: None,
+            interaction_admission: None,
+            declarations_open: false,
+            declaration_page: 0,
+            declaration_epoch: 0,
+            declaration_focus: (0..35).map(|_| cx.focus_handle()).collect(),
+            declaration_scroll: ScrollHandle::new(),
+            status: None,
+            status_open: false,
+            status_scroll: ScrollHandle::new(),
+            status_focus: cx.focus_handle(),
             on_peek_action: None,
             _subscriptions: vec![subscription],
         }
+    }
+
+    /// Native provenance participates in the same measured graph chrome as
+    /// cards and Find. Detail is a bounded projection summary, never authority.
+    pub fn set_status(&mut self, summary: String, detail: Option<String>, cx: &mut Context<Self>) {
+        let next = (SharedString::from(summary), detail.map(SharedString::from));
+        if self.status.as_ref() != Some(&next) { self.status = Some(next); cx.notify(); }
+    }
+
+    /// Whether this immutable scene has actually reached a native paint.
+    /// This is display evidence only; the product still admits visit/owner.
+    #[must_use]
+    pub fn scene_was_painted(&self) -> bool { self.painted_labels.is_some() }
+
+    /// Product admission for native declaration controls. The host supplies
+    /// the exact mounted projection, visit and owner capability.
+    pub fn on_interaction_admission(&mut self, admission: Rc<dyn Fn(&App) -> bool>) {
+        self.interaction_admission = Some(admission);
+    }
+
+    fn admits_native_interaction(&self, cx: &App) -> bool {
+        self.interaction_admission.as_ref().is_none_or(|admit| admit(cx))
     }
 
     /// Where ↵ and double-click go.
@@ -867,7 +909,7 @@ impl GraphView {
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
-        if self.state.find_open {
+        if self.state.find_open || !self.focus_handle.is_focused(window) {
             return;
         }
         if (key == "/" && !mods.platform && !mods.control && !mods.alt) || (key == "k" && mods.platform && !mods.alt) {
@@ -1843,6 +1885,7 @@ impl Element for MeasuredChrome {
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> bool {
         if self.key == "graph-where-bounds" {
             let graph = self.view.read(cx);
+            if graph.chrome_bounds.get("graph-status-bounds").is_some_and(|status| status.intersects(&bounds)) { return false; }
             if let (Some(view), Some(primary)) = (graph.view, graph.primary_chrome()) {
                 let room = Scene::free_view(&view, Some(primary));
                 // Bottom reading chrome owns the footer context. Its exact
@@ -2075,7 +2118,7 @@ impl Render for GraphView {
         let palette = cx.palette();
         let draft = Rc::new(RefCell::new(None));
         let view = cx.entity();
-        let root = div().id("graph").key_context("Graph").track_focus(&self.focus_handle)
+        let root = div().id("graph").role(gpui::Role::Group).aria_label("Graph").key_context("Graph").track_focus(&self.focus_handle)
             .relative().size_full().overflow_hidden().bg(palette.g0.hsla())
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.find_key(event, window, cx)))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.key(event, window, cx)))
@@ -2113,6 +2156,10 @@ impl GraphView {
         if self.state.focus.is_none() {
             if let Some(status) = self.tour_status() { find_stack = find_stack.child(MeasuredChrome::new("graph-tour-status-bounds", div().w_full().child(graph_text("graph-tour-status", status, ty::SMALL, &find_measure, palette.ink2, crate::probe::TextOverflow::Wrap)), cx.entity())); }
         }
+        if !self.state.find_open {
+            find_stack = find_stack.child(MeasuredChrome::new("graph-declarations-bounds",
+                self.declarations(&find_measure, size.height, window, cx), cx.entity()));
+        }
         root = root.child(find_stack);
         if self.state.find_open {
             root = root.child(MeasuredChrome::new("graph-results-bounds", self.results_list(&measure, window, cx), cx.entity()));
@@ -2123,6 +2170,15 @@ impl GraphView {
             let card = self.focus_card(i, &measure, window.modifiers().platform, cx);
             root = root.child(MeasuredCard { child: card, view: cx.entity() });
         } else { self.card_bounds = None; }
+        // A focused card owns its provenance in its native scrolling body;
+        // a separate footer would cover the bottom sheet at narrow widths.
+        if self.state.focus.is_none() || self.state.find_open {
+            let status_w = (f32::from(width) * 0.52).max(1.0);
+            let status_measure = Measure::new(px(status_w), &facet);
+            if let Some(status) = self.provenance(&status_measure, size.height, cx) {
+                root = root.child(MeasuredChrome::new("graph-status-bounds", div().absolute().bottom(px(8.0)).right(px(16.0)).w(px(status_w)).child(status), cx.entity()));
+            }
+        }
         if let Some(WhereLine { package: pkg, module, altitude }) = self.where_line() {
             // Wraps between its parts (each stays on one line) and never runs past the window: at large text on
             // a phone the level word stood wholly outside it.
@@ -2163,6 +2219,107 @@ impl GraphView {
 }
 
 impl GraphView {
+    fn provenance(&self, measure: &Measure, height: Pixels, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (summary, detail) = self.status.as_ref()?;
+        let palette = cx.palette();
+        let mut status = div().id("graph-status").role(gpui::Role::Status).aria_label(summary.clone()).min_w_0()
+                .bg(palette.g0.hsla()).p(px(6.0)).flex().flex_col().gap(px(6.0))
+                .child(graph_text("graph-projection-status", summary.clone(), ty::MONO_SMALL, measure, palette.ink2, crate::probe::TextOverflow::Wrap));
+        if let Some(detail) = detail {
+            let owner = cx.entity().downgrade();
+            let admission = self.interaction_admission.clone();
+            let open = self.status_open;
+            status = status.child(crate::controls::button("graph-coverage-toggle", if open { "Hide coverage" } else { "Graph coverage" }, measure)
+                .focus_handle(self.status_focus.clone()).ghost().disabled(!self.admits_native_interaction(cx)).on_click(move |_, cx| {
+                    if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+                    let _ = owner.update(cx, |graph, cx| {
+                        if !graph.admits_native_interaction(cx) || graph.status_open != open { return; }
+                        graph.status_open = !open;
+                        cx.notify();
+                    });
+                }));
+            if open {
+                status = status.child(div().id("graph-coverage-scroll").max_h(height * 0.3).overflow_y_scroll().track_scroll(&self.status_scroll)
+                    .child(graph_text("graph-coverage-detail", detail.clone(), ty::SMALL, measure, palette.ink1, crate::probe::TextOverflow::Wrap)));
+            }
+        }
+        Some(status.into_any_element())
+    }
+
+    fn declarations(&self, measure: &Measure, height: Pixels, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        const PAGE: usize = 32;
+        let palette = cx.palette();
+        let active = self.admits_native_interaction(cx);
+        let open = self.declarations_open;
+        let page = self.declaration_page;
+        let epoch = self.declaration_epoch;
+        let admission = self.interaction_admission.clone();
+        let owner = cx.entity().downgrade();
+        let toggle = crate::controls::button("graph-declarations-toggle", if open { "Hide declarations" } else { "Declarations" }, measure)
+            .focus_handle(self.declaration_focus[32].clone()).disabled(!active).ghost().on_click(move |_, cx| {
+                if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+                let _ = owner.update(cx, |graph, cx| {
+                    if !graph.admits_native_interaction(cx) || graph.declarations_open != open || graph.declaration_page != page || graph.declaration_epoch != epoch { return; }
+                    graph.declarations_open = !open;
+                    graph.declaration_epoch = graph.declaration_epoch.checked_add(1).expect("native declaration visit space exhausted");
+                    cx.notify();
+                });
+            });
+        let mut body = div().flex().flex_col().gap(px(4.0)).child(toggle);
+        if !open { return body.into_any_element(); }
+        let start = page.saturating_mul(PAGE);
+        let end = (start + PAGE).min(self.world.len());
+        let mut rows = div().id("graph-declarations-scroll").flex().flex_col().gap(px(4.0))
+            .max_h(px((f32::from(height) * 0.45).max(36.0))).overflow_y_scroll().track_scroll(&self.declaration_scroll);
+        for index in start..end {
+            let node_id = u32::try_from(index).expect("world node ids");
+            let node = self.world.node(node_id);
+            let label = format!("{}::{} · {}", self.world.qual(node_id), node.name, node.declaration_word());
+            let name = format!("Select {label}. {}", node.source_words());
+            let focus = &self.declaration_focus[index - start];
+            let selected = self.state.focus == Some(node_id);
+            let mut row = div().id(("graph-declaration", index)).w_full().min_w_0().overflow_hidden().p(px(6.0))
+                .role(gpui::Role::Button).aria_label(name).border_1()
+                .border_color(if focus.is_focused(window) { palette.peri.base } else if selected { palette.mint.base } else { palette.line2 }.hsla())
+                .bg(palette.g1.hsla()).child(graph_text(format!("graph-declaration-label-{index}"), label, ty::MONO_SMALL, measure, palette.ink1, crate::probe::TextOverflow::Wrap));
+            if active {
+                let owner = cx.entity().downgrade();
+                let admission = self.interaction_admission.clone();
+                row = crate::controls::button::native_button(row, focus, move |window, cx| {
+                    if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+                    let _ = owner.update(cx, |graph, cx| {
+                        if !graph.admits_native_interaction(cx) || !graph.declarations_open || graph.declaration_page != page || graph.declaration_epoch != epoch { return; }
+                        // Same immutable world and exact page; no label-based identity lookup.
+                        graph.declarations_open = false;
+                        graph.declaration_epoch = graph.declaration_epoch.checked_add(1).expect("native declaration visit space exhausted");
+                        window.focus(&graph.focus_handle, cx);
+                        graph.set_focus(Some(node_id), true, cx);
+                    });
+                });
+            } else { row = row.aria_disabled(true); }
+            rows = rows.child(row);
+        }
+        body = body.child(rows).child(graph_text("graph-declaration-page", format!("Declarations {}–{} of {}", start + 1, end, self.world.len()), ty::SMALL, measure, palette.ink2, crate::probe::TextOverflow::Wrap));
+        let mut paging = div().flex().flex_wrap().gap(px(6.0));
+        for (slot, step, label, allowed) in [(33, -1_isize, "Previous", page > 0), (34, 1, "Next", end < self.world.len())] {
+            let owner = cx.entity().downgrade();
+            let focus = self.declaration_focus[slot].clone();
+            let admission = self.interaction_admission.clone();
+            paging = paging.child(crate::controls::button(("graph-declaration-page", slot), label, measure).aria_label(format!("{label} declarations")).focus_handle(focus.clone()).disabled(!active || !allowed).on_click(move |window, cx| {
+                if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+                let _ = owner.update(cx, |graph, cx| {
+                    if !graph.admits_native_interaction(cx) || !graph.declarations_open || graph.declaration_page != page || graph.declaration_epoch != epoch || !allowed { return; }
+                    graph.declaration_page = page.saturating_add_signed(step);
+                    graph.declaration_epoch = graph.declaration_epoch.checked_add(1).expect("native declaration visit space exhausted");
+                    graph.declaration_scroll = ScrollHandle::new();
+                    window.focus(&focus, cx);
+                    cx.notify();
+                });
+            }));
+        }
+        body.child(paging).into_any_element()
+    }
+
     fn find_hints(&self, measure: &Measure, cx: &mut Context<Self>) -> AnyElement {
         let palette = cx.palette();
         let hints = [
@@ -2352,7 +2509,7 @@ impl GraphView {
             for (n, word) in prepared.counts.into_iter().zip(["variant", "field", "method"]) {
                 if n > 0 { facts.push(format!("{n} {word}{}", if n == 1 { "" } else { "s" })); }
             }
-            facts.push(format!("used in {} place{}", prepared.used, if prepared.used == 1 { "" } else { "s" }));
+            facts.push(format!("{} referring declaration{} observed", prepared.used, if prepared.used == 1 { "" } else { "s" }));
         } else { facts.push("Preparing symbol details…".into()); }
         let yours = prepared.map_or(0, |facts| facts.yours);
         let caps = prepared.map_or_else(Vec::new, |facts| facts.caps.clone());
@@ -2379,6 +2536,8 @@ impl GraphView {
                             .child(graph_text("graph-focus-qual", world.qual(i), ty::MONO_SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)),
                     ),
             );
+        body = body.child(graph_text("graph-focus-declaration-kind", node.declaration_word(), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap))
+            .child(graph_text("graph-focus-source-capability", node.source_words(), ty::MONO_SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap));
         if let Some(status) = self.tour_status() { body = body.child(graph_text("graph-tour-status", status, ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)); }
         if let Some(doc) = &node.doc {
             body = body.child(graph_text("graph-focus-doc", doc.clone(), ty::MARGIN, &card, palette.ink1, crate::probe::TextOverflow::Wrap));
@@ -2391,14 +2550,14 @@ impl GraphView {
             if n > 0 {
                 fx = fx.child(div().text_color(palette.ink4.hsla()).child("·"));
             }
-            fx = fx.child(div().whitespace_nowrap().child(graph_text(format!("graph-focus-count-{n}"), f, ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
+            fx = fx.child(div().min_w_0().max_w(gpui::relative(1.0)).child(graph_text(format!("graph-focus-count-{n}"), f, ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
         }
         if yours > 0 {
             fx = fx
                 .child(div().text_color(palette.ink4.hsla()).child("·"))
-                .child(div().whitespace_nowrap().child(graph_text("graph-focus-yours", format!("{yours} in your code"), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
+                .child(div().min_w_0().max_w(gpui::relative(1.0)).child(graph_text("graph-focus-yours", format!("{yours} in your code"), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
         }
-        body = body.child(fx);
+        body = body.child(fx).children(self.provenance(&card, px(self.view.map_or(360.0, |view| view.h)), cx));
         if let Some(reach) = self.state.exploration.reach() {
             body = body.child(graph_text("graph-reach-summary", reach.summary(), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap));
             if reach.packages.len() > 1 {
@@ -2460,7 +2619,8 @@ fn empty_search() -> Rc<Search> { Rc::new(Search { shaped: false, issue: None, r
 
 fn graph_text(key: impl Into<ElementId>, content: impl Into<SharedString>, role: crate::tokens::TypeRole, measure: &Measure, tone: crate::tokens::Tone, overflow: crate::probe::TextOverflow) -> AnyElement {
     let content = content.into();
-    let child = div().set(role, measure).text_color(tone.hsla()).map(|div| {
+    let key = key.into();
+    let child = div().id(key.clone()).role(gpui::Role::Label).aria_label(content.clone()).set(role, measure).text_color(tone.hsla()).map(|div| {
         if overflow == crate::probe::TextOverflow::Ellipsis { div.overflow_hidden().text_ellipsis().whitespace_nowrap() } else { div }
     }).child(content.clone());
     crate::probe::text(key, content, measure.role(role), 1.0, overflow, child).into_any_element()
@@ -2518,6 +2678,47 @@ mod tests {
         for _ in 0..n {
             frame(cx);
         }
+    }
+
+    #[gpui::test]
+    fn native_declaration_pages_cover_the_world_in_bounded_rows(cx: &mut TestAppContext) {
+        use crate::graph::model::{Kind, Node, World};
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        let base = crate::graph::model::tests::tiny();
+        let mut nodes = base.nodes.clone();
+        for index in 0..64 { nodes.push(Node::new(Kind::Function, format!("bounded_{index}"), 0, 0)); }
+        let world = Arc::new(World::new(base.packages.clone(), base.modules.clone(), nodes, base.edges.clone()).expect("bounded native world"));
+        let count = world.len();
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        cx.update(|window, _| window.set_a11y_forced(true));
+        frames(cx, 30);
+        let tree = |cx: &mut VisualTestContext| -> serde_json::Value {
+            cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+            serde_json::from_str(&cx.update(|window, _| window.debug_a11y_tree_json()).expect("tree")).expect("native JSON")
+        };
+        let click = |label: &str, cx: &mut VisualTestContext| {
+            let snapshot = tree(cx);
+            let node = snapshot["nodes"].as_object().expect("nodes").values().find(|node|
+                node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some(label)).expect("native action");
+            assert!(node["aria"]["on_action"].as_array().expect("actions").iter().any(|action| action.as_str() == Some("Click")));
+            let bounds = &node["bounds"];
+            cx.simulate_click(point(px((bounds["x"].as_f64().expect("x") + bounds["width"].as_f64().expect("width") * 0.5) as f32), px((bounds["y"].as_f64().expect("y") + bounds["height"].as_f64().expect("height") * 0.5) as f32)), Modifiers::none());
+            frames(cx, 2);
+        };
+        click("Declarations", cx);
+        let mut represented = std::collections::BTreeSet::new();
+        for page in 0..count.div_ceil(32) {
+            let snapshot = tree(cx);
+            let rows: Vec<_> = snapshot["nodes"].as_object().expect("nodes").values().filter(|node|
+                node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str().is_some_and(|label| label.starts_with("Select "))).collect();
+            assert!(rows.len() <= 32, "native rendering never builds all world nodes");
+            assert_eq!(rows.len(), (count - page * 32).min(32));
+            for row in rows { represented.insert(row["aria"]["label"].as_str().expect("label").to_owned()); }
+            if page + 1 < count.div_ceil(32) { click("Next declarations", cx); }
+        }
+        assert_eq!(represented.len(), count, "every exact node has a native selection path");
+        assert_eq!(view.read_with(cx, |graph, _| graph.declaration_focus.len()), 35, "fixed focus memory independent from world size");
     }
 
     #[cfg(feature = "gallery")] // uses the gallery aligner and gui-harness types

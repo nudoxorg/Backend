@@ -481,6 +481,8 @@ pub(crate) struct Reader {
     painted: Option<u64>,
     /// The owner revision of the last painted place, for exact overlay returns.
     painted_root: Option<crate::core::VersionedRoot>,
+    /// Graph paint belongs to one mounted scene and serving attachment.
+    painted_graph: Option<(gpui::EntityId, bodies::graph::MountedGraph, OwnerAttachment)>,
     /// Deferred Back focus belongs to the requested place, never its predecessor.
     pending_page_focus: Option<SettingsReturn>,
     /// Reader focus when Settings covered a painted place.
@@ -543,6 +545,7 @@ impl Reader {
             last_way: None,
             painted: None,
             painted_root: None,
+            painted_graph: None,
             pending_page_focus: None,
             settings_departure: None,
             pending_settings_focus: None,
@@ -2208,8 +2211,17 @@ impl Reader {
     }
 
     pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
+        let store = self.links.store.read(cx);
+        let snapshot = store.snapshot();
         self.local_navigation_allowed(cx)
-            && self.links.store.read(cx).current_owner_attachment().is_some()
+            && store.current_owner_attachment().is_some()
+            && (!bodies::graph::is_graph(snapshot.route())
+                || (self.painted_root.is_some_and(|root| root.same_authority(snapshot.key()))
+                    && self.painted_graph.as_ref().is_some_and(|(map_id, presentation, owner)| {
+                        store.admits_owner_attachment(owner)
+                            && self.map.as_ref().is_some_and(|map| map.entity_id() == *map_id
+                                && map.read(cx).mounted_presentation(cx) == Some(*presentation))
+                    })))
     }
 
     pub(crate) fn current_place_key(&self) -> Option<u64> {
@@ -2514,11 +2526,24 @@ impl Render for Reader {
             // current, but do not mount descendants under a zero-opacity
             // wrapper: they still enter the painted-text probe.
             return if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
+                self.painted = None;
+                self.painted_root = None;
+                self.painted_graph = None;
                 div().size_full()
             } else {
+                // The graph branch does not run the ordinary page body below.
+                // Record the visible exact Map presentation for this place.
+                // A first immutable scene mount qualifies next frame; an exact
+                // declaration terminal preserves its separate Page/Code lease.
+                self.painted_graph = map.read(cx).mounted_presentation(cx)
+                    .zip(self.links.store.read(cx).current_owner_attachment())
+                    .map(|(presentation, owner)| (map.entity_id(), presentation, owner));
+                self.painted = self.painted_graph.as_ref().map(|_| current.key);
+                self.painted_root = self.painted_graph.as_ref().map(|_| snapshot.key());
                 root
             };
         }
+        self.painted_graph = None;
         if let Some(map) = &self.map { map.update(cx, |map, cx| map.suspend(window, cx)); }
 
         // The current page, in the scroller: inside the plate when it opens

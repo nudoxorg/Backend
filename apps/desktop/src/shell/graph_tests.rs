@@ -295,3 +295,182 @@ fn t_on_world_over_a_package_starts_its_tour_with_nothing_focused(cx: &mut TestA
     assert_eq!(rig.route(), Route::World, "T in the graph never navigates");
     assert!(tour_stop(&mut rig).is_some(), "T over a package starts its tour from the camera's own territory");
 }
+
+
+/// Source-fixture rows reconstructed from Run19's two physical files. These
+/// are not claimed to be a decoded owner response. They exercise the exact
+/// production row mapper and identity adapter, then real native activation.
+fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance: facet::tokens::Appearance) -> (Rig, crate::runtime::owner::OwnerGate) {
+    use backend_library::{Basis, DeclarationKind, Row, RowId, SourceAvailability, SourceLocation, object_version, symbol_key, view_state_root};
+    use facet::graph::{Module, Package, World};
+    use crate::core::VersionedRoot;
+    use crate::runtime::reads::ReadPool;
+    use super::bodies::graph::identity::ResolvedSymbol;
+    use std::collections::BTreeMap;
+    use facet::theme::ActiveFacet;
+    let root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate(cx, None, width, 900.0,
+        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(gate.clone()));
+    let preference = match appearance {
+        facet::tokens::Appearance::Abyss => crate::model::AppearancePreference::Abyss,
+        facet::tokens::Appearance::Glacier => crate::model::AppearancePreference::Glacier,
+    };
+    rig.go(Intent::SetAppearance(preference));
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
+    let package = PackageRef::parse("/fixture/real-rust-canary").expect("package");
+    let basis = Basis::new(view_state_root(&[]), object_version(b"Run19 source fixture"));
+    let mut exact = BTreeMap::new();
+    let mut nodes = Vec::new();
+    for (index, (kind, path, line, module)) in [
+        (DeclarationKind::Import, "src/lib.rs", 17, 0),
+        (DeclarationKind::Function, "src/cadence.rs", 8, 1),
+    ].into_iter().enumerate() {
+        let label = format!("{}::semantic::{}::advance_signal", package.as_str(), if index == 0 { "1".repeat(64) } else { "2".repeat(64) });
+        let symbol = crate::model::pages::SymbolRef::new(&label).expect("symbol");
+        let mut row = Row::new(RowId::Symbol(symbol_key(&label)), basis, label);
+        row.kind = Some(kind);
+        row.source = SourceAvailability::Captured(SourceLocation::new(path, line).expect("source"));
+        row.document = vec![backend_library::Fragment::Text("Advance a signal by one tick using saturating arithmetic.".into())].into_boxed_slice();
+        nodes.push(crate::runtime::indexed_world::project_declaration(&row, &symbol, 0, module));
+        exact.insert(index as u32, ResolvedSymbol { symbol, package: package.clone(), line: Some(line) });
+    }
+    let world = Arc::new(World::new(vec![Package { name: "real-rust-canary".into(), version: "0.0.1".into(), yours: true, external: false, deps: vec![] }],
+        vec![Module { pkg: 0, path: "".into(), file: "src/lib.rs".into() }, Module { pkg: 0, path: "cadence".into(), file: "src/cadence.rs".into() }], nodes, vec![]).expect("canary graph"));
+    let identities = Arc::new(IdentityAdapter::indexed(&world, &BTreeMap::from([(package, 0)]), exact));
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
+    rig.go(Intent::Navigate(Route::World));
+    rig.cx.update(|_, cx| {
+        assert_eq!(cx.facet().appearance, appearance);
+        assert_eq!(cx.facet().text_scale, scale);
+    });
+    (rig, gate)
+}
+
+#[gpui::test]
+fn real_canary_shape_has_native_exact_selection_at_each_text_scale(cx: &mut TestAppContext) {
+    for appearance in [facet::tokens::Appearance::Abyss, facet::tokens::Appearance::Glacier] {
+        for width in [360.0, 480.0, 663.0, 1440.0] {
+            for scale in [1.0, 1.5, 2.0] {
+                let (mut rig, _) = canary_native_rig(cx, width, scale, appearance);
+                let toggle = super::tests::native_bounds(&mut rig, "Button", "Declarations", true).expect("native declaration chooser");
+                rig.cx.simulate_click(toggle.center(), gpui::Modifiers::none());
+                rig.settle();
+                let name = "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
+                let definition = super::tests::native_bounds(&mut rig, "Button", name, true).expect("exact definition action");
+                assert!(definition.left() >= gpui::px(0.0) && definition.right() <= gpui::px(width), "{width}px/text{scale}: native row is contained");
+                let _ = super::tests::native_bounds(&mut rig, "Button", "Select real-rust-canary::advance_signal · import / re-export. src/lib.rs:17", true).expect("separate re-export action");
+                rig.cx.update(|_, cx| facet::probe::enable(cx));
+                rig.cx.simulate_click(definition.center(), gpui::Modifiers::none());
+                rig.settle();
+                if width == 1440.0 && scale == 1.0 {
+                    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+                    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.stats().selected_labels), 1, "the actual painter admitted a selected caption");
+                }
+                let focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()).expect("selected declaration");
+                assert_eq!(focus.node, 1);
+                assert_eq!(focus.kind, backend_library::DeclarationKind::Function);
+                assert_eq!(focus.module.as_ref(), "cadence");
+                assert!(focus.indexed.expect("exact join").1.as_str().contains(&"2".repeat(64)));
+                assert!(super::tests::native_bounds(&mut rig, "Label", "src/cadence.rs:8", false).is_some(), "source capability is accessible");
+                assert!(super::tests::native_bounds(&mut rig, "Label", "0 referring declarations observed", false).is_some(), "zero observed is not an absence claim");
+            }
+        }
+    }
+}
+
+fn tab_to_graph_control(rig: &mut Rig, label: &str) {
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    for _ in 0..64 {
+        rig.keys("tab");
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("tree");
+        if tree["gpui_focus"].as_str().is_some_and(|id| tree["nodes"][id]["aria"]["label"].as_str() == Some(label)) { return; }
+    }
+    panic!("native Tab never reached {label}");
+}
+
+#[gpui::test]
+fn native_tab_and_enter_select_the_exact_definition(cx: &mut TestAppContext) {
+    let (mut rig, _) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter");
+    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+    rig.native_press("enter");
+    let focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()).expect("native selected definition");
+    assert_eq!(focus.node, 1);
+    assert_eq!(focus.kind, backend_library::DeclarationKind::Function);
+}
+
+#[gpui::test]
+fn graph_native_release_cannot_adopt_a_replacement_owner(cx: &mut TestAppContext) {
+    use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+    let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
+    let toggle = super::tests::native_bounds(&mut rig, "Button", "Declarations", true).expect("chooser");
+    rig.cx.simulate_click(toggle.center(), gpui::Modifiers::none());
+    rig.settle();
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+    rig.cx.simulate_event(KeyDownEvent { keystroke: Keystroke::parse("enter").expect("key"), is_held: false, prefer_character_input: false });
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // No repaint or UI watcher between owner renewal and the old native up.
+    rig.cx.simulate_event(KeyUpEvent { keystroke: Keystroke::parse("enter").expect("key") });
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none(), "the old native callback cannot adopt a new exact-root owner attachment");
+}
+
+
+#[gpui::test]
+fn newly_entered_world_native_page_and_code_open_exact_semantic_selection(cx: &mut TestAppContext) {
+    for (view, label) in [(View::Page, "Show Page view"), (View::Code, "Show Code view")] {
+        let (mut rig, _) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+        tab_to_graph_control(&mut rig, "Declarations");
+        rig.native_press("enter");
+        tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+        rig.native_press("enter");
+        let action = super::tests::native_bounds(&mut rig, "Button", label, true).expect("native view control");
+        rig.cx.simulate_click(action.center(), gpui::Modifiers::none());
+        rig.settle();
+        let Route::Symbol(route) = rig.route() else { panic!("native {label} did not leave newly entered World"); };
+        assert_eq!(route.view, view);
+        assert!(route.id.as_str().contains(&"2".repeat(64)), "the opaque semantic coordinate is retained exactly");
+        assert_eq!(route.package.as_str(), "/fixture/real-rust-canary");
+    }
+}
+
+#[gpui::test]
+fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter");
+    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+    rig.native_press("enter");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)), "the actual mounted graph owns a live painted receipt");
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // Same content root and scene, different owner attachment. Before any
+    // new frame, keyboard input cannot reuse the older graph receipt.
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    rig.cx.simulate_keystrokes("ctrl-3");
+    assert_eq!(rig.route(), Route::World, "old painted input cannot open Page");
+    rig.repaint();
+    rig.settle();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)), "a real repaint restores eligibility");
+    rig.go(Intent::OpenSettings(SettingsPage::Index));
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    assert!(super::tests::native_bounds(&mut rig, "Button", "Show Page view", true).is_none(), "covered graph has no native mode action");
+    rig.keys("ctrl-3");
+    rig.keys("cmd-.");
+    assert_eq!(rig.route(), Route::World);
+    rig.go(Intent::DismissOverlay);
+    rig.settle();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    let action = super::tests::native_bounds(&mut rig, "Button", "Show Code view", true).expect("restored native action");
+    rig.cx.simulate_click(action.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(route) if route.view == View::Code));
+}

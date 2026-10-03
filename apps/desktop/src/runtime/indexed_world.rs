@@ -149,6 +149,10 @@ pub(crate) struct Key {
     synthetic: Option<Arc<TestProjection>>,
 }
 
+impl Key {
+    pub(crate) fn at_authority(&self, root: VersionedRoot) -> bool { self.authority == root.authority() }
+}
+
 impl std::fmt::Debug for Key {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -255,6 +259,12 @@ pub(crate) struct RelationKindCoverage {
 }
 
 impl Coverage {
+    /// Bounded visible provenance. Detail is available in the coverage disclosure.
+    pub(crate) fn summary(&self, origin: &Origin) -> String {
+        format!("{} · {} packages · {} declarations · {} observed relations · coverage incomplete",
+            origin.label(), self.packages, self.declarations, self.relations)
+    }
+
     pub(crate) fn words(&self, origin: &Origin) -> String {
         let mut words = format!(
             "{} · {} packages · {} declarations · {} relations",
@@ -724,24 +734,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
                 }
                 let id = u32::try_from(nodes.len())
                     .map_err(|_| Arc::<str>::from("the declaration graph is too large"))?;
-                let kind = graph_kind(row.kind.expect("checked"));
-                let identity = symbol.identity();
-                let mut node = Node::new(kind, identity.name(), package_id, module);
-                node.line = line.unwrap_or(0);
-                node.file = file.map(Into::into);
-                node.vis = None;
-                node.sig = row.signature.as_deref().map(Into::into);
-                node.doc = row
-                    .document
-                    .iter()
-                    .filter_map(|fragment| match fragment {
-                        backend_library::Fragment::Text(text) => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .next()
-                    .map(Into::into);
-                node.deprecated =
-                    matches!(row.facts.deprecation, backend_library::Fact::Present(_));
+                let node = project_declaration(row, &symbol, package_id, module);
                 nodes.push(node);
                 parents.push((id, row.parent));
                 node_for_symbol.insert(symbol.clone(), id);
@@ -949,6 +942,52 @@ fn relation_gap(coverage: &mut Coverage, kind: SemanticLinkKind) {
     }
 }
 
+/// One projection seam shared by owner reads and presentation regressions.
+/// The semantic identity stays in the adapter; display facts come only from
+/// this declaration row, never from a same-name definition or package file.
+pub(crate) fn project_declaration(row: &backend_library::Row, symbol: &SymbolRef, package_id: u32, module: u32) -> Node {
+    let kind = graph_kind(row.kind.unwrap_or(DeclarationKind::Unknown));
+    let identity = symbol.identity();
+    let mut node = Node::new(kind, identity.name(), package_id, module);
+    node.declaration_role = match row.kind.unwrap_or(DeclarationKind::Unknown) {
+        DeclarationKind::Module => facet::graph::model::DeclarationRole::Module,
+        DeclarationKind::Import => facet::graph::model::DeclarationRole::Import,
+        DeclarationKind::Unknown => facet::graph::model::DeclarationRole::Unknown,
+        _ => facet::graph::model::DeclarationRole::Definition,
+    };
+    node.source_status = graph_source_status(&row.source);
+    if let backend_library::SourceAvailability::Captured(location) = &row.source {
+        node.line = location.start_line();
+        node.file = Some(location.path().to_owned().into());
+    }
+    node.vis = None;
+    node.sig = row.signature.as_deref().map(Into::into);
+    node.doc = row
+        .document
+        .iter()
+        .filter_map(|fragment| match fragment {
+            backend_library::Fragment::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .next()
+        .map(Into::into);
+    node.deprecated =
+        matches!(row.facts.deprecation, backend_library::Fact::Present(_));
+    node
+}
+
+fn graph_source_status(source: &backend_library::SourceAvailability) -> facet::graph::model::SourceStatus {
+    use backend_library::SourceAvailability as S;
+    use facet::graph::model::SourceStatus as G;
+    match source {
+        S::Captured(_) => G::Captured,
+        S::NotCaptured => G::NotCaptured,
+        S::NotHydrated => G::NotHydrated,
+        S::Unconfigured => G::Unconfigured,
+        S::StaleFile { .. } => G::Stale,
+    }
+}
+
 fn graph_kind(kind: DeclarationKind) -> Kind {
     match kind {
         DeclarationKind::Class | DeclarationKind::Struct => Kind::Struct,
@@ -981,7 +1020,7 @@ fn graph_relation(relation: SemanticLinkKind) -> Option<Rel> {
 
 fn module_path(file: Option<&str>) -> String {
     let Some(file) = file else {
-        return "source unavailable".to_owned();
+        return "source location unavailable in this graph".to_owned();
     };
     let path = Path::new(file);
     let relative = path.strip_prefix("src").unwrap_or(path);
@@ -1156,6 +1195,42 @@ mod tests {
                 .windows(2)
                 .all(|pair| { super::package_order(&pair[0], &pair[1], Some(&preferred)).is_lt() })
         );
+    }
+
+    #[test]
+    fn canary_definition_reexport_and_missing_source_keep_their_own_facts() {
+        use backend_library::{Basis, DeclarationKind, Row, RowId, SourceAvailability, SourceLocation, object_version, symbol_key, view_state_root};
+        use facet::graph::model::{DeclarationRole, SourceStatus};
+        let basis = Basis::new(view_state_root(&[]), object_version(b"two-file canary"));
+        let definition = "/fixture/real-rust-canary::semantic::cadence-definition::advance_signal";
+        let import = "/fixture/real-rust-canary::semantic::root-reexport::advance_signal";
+        let row = |label: &str, kind, source| {
+            let mut row = Row::new(RowId::Symbol(symbol_key(label)), basis, label);
+            row.kind = Some(kind);
+            row.source = source;
+            row
+        };
+        let definition = row(definition, DeclarationKind::Function,
+            SourceAvailability::Captured(SourceLocation::new("src/cadence.rs", 8).expect("source")));
+        let import = row(import, DeclarationKind::Import,
+            SourceAvailability::Captured(SourceLocation::new("src/lib.rs", 17).expect("source")));
+        let project = |row: &Row, module| super::project_declaration(row,
+            &crate::model::pages::SymbolRef::new(&row.label).expect("exact coordinate"), 0, module);
+        let def = project(&definition, 1);
+        let imp = project(&import, 0);
+        assert_eq!(def.name, imp.name, "same spelling does not merge declarations");
+        assert_eq!(def.declaration_role, DeclarationRole::Definition);
+        assert_eq!(imp.declaration_role, DeclarationRole::Import);
+        assert_eq!(def.source_words(), "src/cadence.rs:8");
+        assert_eq!(imp.source_words(), "src/lib.rs:17");
+        for source in [SourceAvailability::NotCaptured, SourceAvailability::NotHydrated,
+            SourceAvailability::Unconfigured, SourceAvailability::stale_file("src/cadence.rs").expect("stale")] {
+            let missing = project(&row("/fixture/real-rust-canary::semantic::missing::cadence", DeclarationKind::Module, source), 2);
+            assert_ne!(missing.source_status, SourceStatus::Captured);
+            assert_eq!(missing.declaration_role, DeclarationRole::Module);
+            assert!(missing.file.is_none(), "another row's captured file cannot grant source capability");
+            assert_eq!(missing.line, 0);
+        }
     }
 
     #[test]

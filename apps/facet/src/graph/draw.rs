@@ -69,6 +69,8 @@ pub struct Stats {
     pub edges: u32,
     /// Labels painted.
     pub labels: u32,
+    /// Selected declaration captions that survived measured occupancy.
+    pub selected_labels: u32,
     /// Paths handed to the scene.
     pub paths: u32,
     /// Quads handed to the scene.
@@ -212,9 +214,9 @@ pub fn tone(t: Tone, alpha: f32) -> Hsla {
 /// A resting label is drawn only from this level of detail up (below it,
 /// it is absent, never faint).
 const LABEL_DETAIL: f32 = 0.5;
-/// The faintest a drawn label's ink may stand from the ground (about 3:1 on
-/// the abyss ground): dimming stops here.
-const LABEL_FLOOR: f32 = 0.4;
+/// The faintest a drawn label's ink may stand from the ground. Resting
+/// labels keep this floor while the surrounding graph dims.
+const LABEL_FLOOR: f32 = 0.58;
 
 /// Count doubling adds a visible, compressed step without adding geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1260,6 +1262,9 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             std::array::from_fn(|_| std::array::from_fn(|_| Fill::new()));
         let mut stars: Vec<Star> = Vec::new();
         let mut labels: Vec<(f32, NodeId, f32, f32, f32)> = Vec::new();
+        // Reuse the existing visible-item traversal: captions must also avoid
+        // quiet glyphs which do not qualify for a resting text label.
+        let mut glyph_bounds: Vec<(NodeId, f32, f32, f32)> = Vec::new();
         let naive = look.strategy == Strategy::Naive;
         let mut naive_shapes: Vec<(Fill, Hsla)> = Vec::new();
         st.item_candidates = scene.visit_items(&projected, 40.0, |i| {
@@ -1276,6 +1281,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let node = &world.nodes[i as usize];
             let glyph = Scene::glyph(node.kind, k);
             let core = glyph.core;
+            glyph_bounds.push((i, x, y, glyph.radius));
             let imp = world.importance[i as usize];
             if let Some(reach) = look.exploration.reach()
                 && let Some(d @ 1..=8) = reach.depth[i as usize]
@@ -1356,6 +1362,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                         continue;
                     }
                     st.members += 1;
+                    glyph_bounds.push((j, mx, my, s / 2.0));
                     let bank = if world.nodes[j as usize].kind == Kind::Method {
                         &mut msq
                     } else {
@@ -1390,25 +1397,25 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 if paint_star_bank(
                     window,
                     std::mem::take(&mut dots[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
+                    tone(c, ((0.3 + 0.2 * b as f32) * dim_all * 0.9).max(0.42)),
                 ) {
                     st.paths += 1;
                 }
                 paint_fill(
                     std::mem::take(&mut dia[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
+                    tone(c, ((0.3 + 0.2 * b as f32) * dim_all * 0.9).max(0.42)),
                     window,
                     &mut st,
                 );
                 paint_fill(
                     std::mem::take(&mut sq[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
+                    tone(c, ((0.3 + 0.2 * b as f32) * dim_all * 0.9).max(0.42)),
                     window,
                     &mut st,
                 );
                 paint_fill(
                     std::mem::take(&mut hollow[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
+                    tone(c, ((0.3 + 0.2 * b as f32) * dim_all * 0.9).max(0.42)),
                     window,
                     &mut st,
                 );
@@ -1848,6 +1855,31 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 st.labels += 1;
             }
         }
+        // The selected declaration is a semantic landmark, independent from
+        // zoom detail and the prism's reserved centre. Fit it to the actual
+        // viewport, try four measured placements, and reserve its accepted
+        // bounds before territories and resting labels compete for space.
+        if let Some(i) = look.focus {
+            let node = world.node(i);
+            let x = sx(layout.x[i as usize]);
+            let y = sy(layout.y[i as usize]);
+            let radius = Scene::glyph(node.kind, k).radius.max(9.0);
+            let caption: SharedString = format!("{}::{} · {}", world.qual(i), node.name, node.declaration_word()).into();
+            let label = crate::data::text::shape_fit(&caption, scaled(roles::MODULE, ts), tone(palette.ink0, 1.0), (view.w - 32.0).max(1.0), window);
+            let w = label.width();
+            let half = (label.ascent() + label.descent()) * 0.5 + 3.0;
+            for (lx, ly) in [(x - w * 0.5, y - radius - half - 9.0), (x - w * 0.5, y + radius + half + 9.0), (x + radius + 9.0, y), (x - radius - 9.0 - w, y)] {
+                if lx < view.x + 8.0 || lx + w > view.x + view.w - 8.0 || ly - half < view.y + 8.0 || ly + half > view.y + view.h - 8.0 { continue; }
+                if glyph_bounds.iter().any(|&(other, nx, ny, nr)| other != i && nx + nr > lx - 3.0 && nx - nr < lx + w + 3.0 && ny + nr > ly - half && ny - nr < ly + half) { continue; }
+                if !occ.take(lx - 3.0, ly - half, lx + w + 3.0, ly + half) { continue; }
+                let base = baseline(&label, ly);
+                crate::probe::record_bounds(cx, &"graph-selected-caption".into(), Bounds::new(point(px(lx - 3.0), px(ly - half)), size(px(w + 6.0), px(half * 2.0))));
+                texts.push((label, lx, base));
+                st.labels += 1;
+                st.selected_labels += 1;
+                break;
+            }
+        }
         for &p in &vis_p {
             let t = &layout.packages[p as usize];
             let pxs = f64::from(t.r) * k;
@@ -1878,7 +1910,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                         group(scene.pkg_size[p as usize])
                     )
                 } else {
-                    format!("{} symbols", group(scene.pkg_size[p as usize]))
+                    format!("{} top-level declarations", group(scene.pkg_size[p as usize]))
                 };
                 let sub = shape(
                     SharedString::from(text),
@@ -1953,11 +1985,11 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             if a < LABEL_DETAIL {
                 continue;
             }
-            let path = &world.modules[m as usize].path;
-            let name: SharedString = if path.is_empty() {
-                "(root)".into()
+            let module = &world.modules[m as usize];
+            let name: SharedString = if module.file.starts_with("<source unavailable:") {
+                "Source location unavailable in this graph".into()
             } else {
-                path.clone()
+                module.file.clone()
             };
             let label = shape(
                 name,
@@ -2012,6 +2044,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 continue;
             }
             tried += 1;
+            if Some(i) == look.focus { continue; }
             let node = &world.nodes[i as usize];
             let member = node.parent.is_some();
             let sought = look
@@ -2080,7 +2113,12 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                     tone(peri, 1.0),
                 )
             };
-            let label = shape(node.name.clone(), scaled(r, ts), c, window);
+            let name = match node.declaration_role {
+                super::model::DeclarationRole::Import => format!("{} (import / re-export)", node.name).into(),
+                super::model::DeclarationRole::Module => format!("{} (module)", node.name).into(),
+                _ => node.name.clone(),
+            };
+            let label = shape(name, scaled(r, ts), c, window);
             let w = label.width();
             let lx = x + s + 5.0;
             if !occ.take(lx - 2.0, y - 7.0 * ts, lx + w + 2.0, y + 7.0 * ts) {
