@@ -164,7 +164,10 @@ let
       # zig reads the host's Nix compiler variables to find system headers;
       # every target here is foreign, so none of the host's may leak in.
       unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS SDKROOT
-      exec ${pkgs.zig}/bin/zig cc -target ${target} "''${arguments[@]}"
+      # zig turns on UBSan for unoptimised C (Cargo's dev profile). Its own
+      # linker supplies the runtime; the emulated lanes link with the
+      # target's GCC, which does not (`__ubsan_handle_*` undefined in ring).
+      exec ${pkgs.zig}/bin/zig cc -target ${target} -fno-sanitize=undefined "''${arguments[@]}"
     '';
   zigAr = pkgs.writeShellScriptBin "ar-zig" ''
     exec ${pkgs.zig}/bin/zig ar "$@"
@@ -203,7 +206,7 @@ let
   # closure, and importing them would drag `tools.complete` (Qdrant included)
   # into every cross run. `nushell` runs the standalone lane runner at
   # `.config/ci/cross-check.nu`; nothing here closes over the `backend` command.
-  cross = pkgs.mkShell {
+  crossAttrs = {
     packages = [
       toolchains.cross
       pkgs.nushell
@@ -241,6 +244,69 @@ let
       export ZIG_LOCAL_CACHE_DIR="$PWD/.local/zig-cache"
     '';
   };
+  cross = pkgs.mkShell crossAttrs;
+  # Emulated test lanes: the `cross` shell plus what running a test needs that
+  # a compile check does not. Each target gets a real linker and C library
+  # (zig compiles the C sources; the target's GCC links), and a runner Cargo
+  # and nextest put in front of every test binary, so tests do not know they
+  # are emulated. Linux hosts only: neither runner builds on Darwin.
+  mingw = pkgs.pkgsCross.mingwW64;
+  arm64 = pkgs.pkgsCross.aarch64-multiplatform;
+  emulatedLanes = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    # Windows (x86_64-pc-windows-gnu) test binaries under Wine (WoW64).
+    windows-wine = pkgs.mkShell (
+      crossAttrs
+      // {
+        packages = crossAttrs.packages ++ [
+          pkgs.cargo-nextest
+          pkgs.wineWow64Packages.stable
+        ];
+        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "${mingw.stdenv.cc}/bin/x86_64-w64-mingw32-gcc";
+        # std's windows-gnu runtime links winpthread. iroh declares a cdylib,
+        # and GNU ld auto-exports every symbol of a DLL with no explicit
+        # exports, past PE's 65535-ordinal limit ("export ordinal too large").
+        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L native=${mingw.windows.pthreads}/lib -C link-arg=-Wl,--exclude-all-symbols";
+        # See arm64-emu: lean debug info for throwaway emulated test trees.
+        CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER = "${pkgs.wineWow64Packages.stable}/bin/wine";
+        WINEDEBUG = "-all";
+        # A new prefix would offer to install Wine Mono and Gecko and wait
+        # for an answer no one is there to give; tests need neither.
+        WINEDLLOVERRIDES = "mscoree=;mshtml=";
+        # raw-dylib imports (windows-sys) need MinGW's dlltool. It goes after
+        # the shell's own tools so the llvm windres wrapper above still wins.
+        shellHook = crossAttrs.shellHook + ''
+          export PATH="$PATH:${mingw.stdenv.cc.bintools}/bin"
+          export WINEPREFIX="$PWD/.local/wine-prefix"
+        '';
+      }
+    );
+    # aarch64 Linux test binaries under QEMU user-mode emulation. The Nix
+    # cross GCC links against an absolute store glibc, so qemu-aarch64 needs
+    # no sysroot and the host needs no binfmt registration.
+    arm64-emu = pkgs.mkShell (
+      crossAttrs
+      // {
+        packages = crossAttrs.packages ++ [
+          pkgs.cargo-nextest
+          pkgs.qemu-user
+          # Process tests run host tools as children (the embedding fixtures
+          # are Python scripts); an emulated test execs them natively.
+          pkgs.python3
+          pkgs.coreutils
+        ];
+        # The pinned process tools the Linux lane's shell exports (corpus-env):
+        # without them, tests that clear their environment exit 127.
+        NUDOX_TEST_COREUTILS_BIN = corpusEnv.NUDOX_TEST_COREUTILS_BIN;
+        NUDOX_PROCESS_SHELL = "${pkgs.bash}/bin/sh";
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "${arm64.stdenv.cc}/bin/aarch64-unknown-linux-gnu-gcc";
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER = "${pkgs.qemu-user}/bin/qemu-aarch64";
+        # Emulated test trees are built once per run and thrown away; full
+        # DWARF only costs disk and link time. Backtraces keep line numbers.
+        CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+      }
+    );
+  };
 in
 {
   default = development;
@@ -254,3 +320,4 @@ in
     verification
     ;
 }
+// emulatedLanes
