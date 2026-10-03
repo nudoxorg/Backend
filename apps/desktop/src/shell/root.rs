@@ -881,20 +881,23 @@ impl Shell {
             if fresh_ask {
                 self.ask.update(cx, |ask, cx| ask.opened(window, cx));
             }
-            if opening {
-                let input = self.ask.read(cx).input().clone();
-                let target = input.read(cx).focus_handle(cx);
-                self.request_keyboard_claim(Overlay::CommandPalette, target, origin, window, cx);
-            }
         } else if !snapshot.session().overlay_is_covered(Overlay::CommandPalette) {
             if let Some(saved) = self.ask_return.take() {
                 if saved.overlay == snapshot.overlay() { self.queue_transient_return(saved, window, cx); }
             }
         }
-        if entering_settings {
-            if let Some(overlay @ Overlay::Settings(_)) = snapshot.overlay() {
-                self.request_keyboard_claim(overlay, self.focus.clone(), origin, window, cx);
+        let keyboard_request = match (snapshot.overlay(), opening, entering_settings) {
+            (Some(Overlay::CommandPalette), true, _) => {
+                let input = self.ask.read(cx).input().clone();
+                Some((Overlay::CommandPalette, input.read(cx).focus_handle(cx)))
             }
+            (Some(overlay @ Overlay::Settings(_)), _, true) => {
+                Some((overlay, self.focus.clone()))
+            }
+            _ => None,
+        };
+        if let Some((overlay, target)) = keyboard_request {
+            self.request_keyboard_claim(overlay, target, origin, window, cx);
         }
         match dialog_return {
             super::onboard::FocusHandoff::None => {}
