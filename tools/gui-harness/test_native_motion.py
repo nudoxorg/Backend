@@ -136,6 +136,92 @@ class NativeMotionTests(unittest.TestCase):
             probe_only["actions"] = [{"at_ms": 100, "kind": "probe", "label": "read native AX"}]
             self.assertFalse(motion.require_plan(self.plan(directory, **probe_only))["foreground_required"])
 
+    def test_launch_services_binds_exact_recorder_and_zero_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            app = Path(root) / "NudoxMotionRecorder-" / "NudoxMotionRecorder.app"
+            recorder = app / "Contents/MacOS/NudoxMotionRecorder"
+            recorder.parent.mkdir(parents=True)
+            recorder.write_bytes(b"frozen fixture")
+            identity = {"path": str(app.resolve()), "identifier": "dev.nudox.audit.motion-recorder"}
+            plan = {"actions": [], "foreground_required": False}
+            self.assertEqual(motion.require_launch_bundle(app, recorder.resolve(), identity, plan), app.resolve())
+            with self.assertRaisesRegex(ValueError, "zero-input"):
+                motion.require_launch_bundle(app, recorder.resolve(), identity,
+                                             {"actions": [{"kind": "key"}]})
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                motion.require_launch_bundle(app, recorder.resolve(), dict(identity, path="/wrong.app"), plan)
+
+    def test_launch_services_wait_does_not_promote_launcher_exit_to_recorder_exit(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            app = out / "NudoxMotionRecorder.app"
+            plan_path = out / "resolved-plan.json"
+            plan_path.write_text("{}")
+            class Finished:
+                pid = 1234
+                returncode = 0
+                def communicate(self, timeout):
+                    return ("open waited for app close\n", None)
+            with patch.object(motion.subprocess, "Popen", return_value=Finished()) as popen:
+                launch = motion.launch_services_wait(app, 43542, plan_path, out, 30)
+            argv = popen.call_args.args[0]
+            self.assertEqual(argv[:6], ["/usr/bin/open", "-n", "-g", "-W", "-a", str(app)])
+            self.assertEqual(argv[-4:], ["--args", "43542", str(plan_path), str(out)])
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
+            self.assertIsNone(launch["recorder_exit"])
+            self.assertEqual(launch["launcher_exit_code"], 0)
+            self.assertIn("Unverified", launch["tcc_responsibility"])
+            self.assertEqual(launch["logs"]["recorder.stderr"]["size"], 0)
+            with self.assertRaises(FileExistsError):
+                motion.launch_services_wait(app, 43542, plan_path, out, 30)
+            identity = {"identifier": "dev.nudox.audit.motion-recorder"}
+            recorder = app / "Contents/MacOS/NudoxMotionRecorder"
+            plan = {"foreground_required": False}
+            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+                                                                        identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertIn("result sidecar absent", "; ".join(failures))
+            (out / "result.jsonl").write_text('{"captured_frames":1,"dropped_frames":0}\n')
+            preflight = {"state": "Admitted", "recorder_executable": str(recorder),
+                         "recorder_bundle_identifier": identity["identifier"],
+                         "pid": 43542, "foreground_required": False}
+            (out / "preflight.jsonl").write_text(json.dumps(preflight) + "\n")
+            admitted, row, failures = motion.launch_services_completion(out, launch, recorder,
+                                                                          identity, 43542, plan)
+            self.assertTrue(admitted)
+            self.assertEqual(row, preflight)
+            self.assertEqual(failures, [])
+            admitted, _, failures = motion.launch_services_completion(out,
+                dict(launch, launcher_exit_code=1), recorder, identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertIn("launcher exited nonzero", "; ".join(failures))
+            (out / "preflight.jsonl").write_text(json.dumps(dict(preflight,
+                recorder_executable="/different/recorder")) + "\n")
+            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+                                                                        identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertIn("identity/admission mismatch", "; ".join(failures))
+
+    def test_launch_services_timeout_marks_recorder_may_continue(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            class TimedOut:
+                pid = 5678
+                returncode = -15
+                calls = 0
+                def communicate(self, timeout):
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise subprocess.TimeoutExpired("open", timeout)
+                    return ("", None)
+            with patch.object(motion.subprocess, "Popen", return_value=TimedOut()), \
+                 patch.object(motion.os, "killpg") as killpg:
+                launch = motion.launch_services_wait(out / "app.app", 43542,
+                    out / "resolved-plan.json", out, 1)
+            killpg.assert_called_once_with(5678, motion.signal.SIGTERM)
+            self.assertTrue(launch["timed_out"])
+            self.assertTrue(launch["recorder_may_continue"])
+
     def test_run19_plans_keep_find_drawer_settle_and_retarget_distinct(self):
         names = ["settings-fast-open-close", "ask-interrupted-reopen", "find-fast-open-close",
                  "settings-15s-settle", "settings-resize-retarget", "shelf-hide-reveal"]

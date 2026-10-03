@@ -44,6 +44,7 @@ import math
 import os
 import plistlib
 import re
+import signal
 import shlex
 from pathlib import Path
 import shutil
@@ -635,6 +636,91 @@ def failed_recorder_evidence(out: Path) -> dict[str, Any]:
     return evidence
 
 
+def launch_services_command(bundle: Path, pid: int, plan_path: Path, out: Path) -> list[str]:
+    """Launch the recorder as its own app, with separate native output files."""
+    return ["/usr/bin/open", "-n", "-g", "-W", "-a", str(bundle),
+            "--stdout", str(out / "recorder.stdout"),
+            "--stderr", str(out / "recorder.stderr"),
+            "--args", str(pid), str(plan_path), str(out)]
+
+
+def require_launch_bundle(bundle_arg: Path, recorder: Path, identity: dict[str, str],
+                          plan: dict[str, Any]) -> Path:
+    # A timed-out `open -W` can leave its LaunchServices app alive. Admit only
+    # zero-input capture until the launcher has an exact process-stop protocol.
+    if plan["actions"]:
+        raise ValueError("LaunchServices mode currently admits zero-input captures only")
+    if symlink_in_artifact_path(bundle_arg):
+        raise ValueError("LaunchServices recorder bundle must not be a symlink")
+    bundle = bundle_arg.resolve(strict=True)
+    if bundle != Path(identity["path"]) or recorder != bundle / "Contents/MacOS" / recorder.name:
+        raise ValueError("LaunchServices bundle does not match the verified recorder executable")
+    return bundle
+
+
+def launch_services_wait(bundle: Path, pid: int, plan_path: Path, out: Path,
+                         timeout_seconds: float) -> dict[str, Any]:
+    """Wait on the launcher only; app completion requires native sidecars."""
+    for name in ["recorder.stdout", "recorder.stderr"]:
+        path = out / name
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    argv = launch_services_command(bundle, pid, plan_path, out)
+    then = time.monotonic()
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, start_new_session=True)
+    timed_out = False
+    try:
+        launcher_output, _ = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            launcher_output, _ = process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            launcher_output, _ = process.communicate(timeout=2)
+    logs = {}
+    for name in ["recorder.stdout", "recorder.stderr"]:
+        path = out / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+            raise RuntimeError(f"LaunchServices output is not a fresh regular file: {path}")
+        logs[name] = {"path": str(path), "size": path.stat().st_size, "sha256": sha256(path)}
+    (out / "launcher.log").write_text(launcher_output or "")
+    return {"mode": "LaunchServicesApp", "argv": argv, "launcher_exit_code": process.returncode,
+            "timed_out": timed_out, "elapsed_seconds": round(time.monotonic() - then, 3),
+            "logs": logs, "launcher_log_sha256": sha256(out / "launcher.log"),
+            "recorder_exit": None, "recorder_may_continue": timed_out,
+            "tcc_responsibility": "Unverified; inspect OS TCC attribution for launched PID"}
+
+
+def launch_services_completion(out: Path, launch: dict[str, Any], recorder: Path,
+                               identity: dict[str, str], pid: int,
+                               plan: dict[str, Any]) -> tuple[bool, dict[str, Any] | None, list[str]]:
+    failures = []
+    if launch["timed_out"]:
+        failures.append("LaunchServices wait timed out; recorder may still be running")
+    if launch["launcher_exit_code"] != 0:
+        failures.append("LaunchServices launcher exited nonzero; recorder exit is unknown")
+    if not (out / "result.jsonl").is_file():
+        failures.append("native result sidecar absent; recorder completion unproven")
+    rows = read_jsonl(out / "preflight.jsonl") if (out / "preflight.jsonl").is_file() else []
+    preflight = rows[0] if len(rows) == 1 else None
+    if preflight is None or preflight.get("state") != "Admitted" or \
+            preflight.get("recorder_executable") != str(recorder) or \
+            preflight.get("recorder_bundle_identifier") != identity["identifier"] or \
+            preflight.get("pid") != pid or \
+            preflight.get("foreground_required") != plan["foreground_required"]:
+        failures.append("native preflight identity/admission mismatch")
+    return not failures, preflight, failures
+
+
 def crop_frames(out: Path, plan: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not plan.get("crops"):
         return []
@@ -952,22 +1038,37 @@ def run(args: argparse.Namespace) -> Path:
     recorder = args.recorder.resolve(strict=True)
     manifest["recorder_identity"] = recorder_identity(recorder)
     manifest["recorder_sha256"] = sha256(recorder)
+    launch_bundle = (require_launch_bundle(args.launch_bundle, recorder, manifest["recorder_identity"], plan)
+                     if args.launch_bundle else None)
     plan_path = out / "resolved-plan.json"
     plan_path.write_text(json.dumps(plan, indent=2) + "\n")
-    result = subprocess.run([str(recorder), str(args.pid), str(plan_path), str(out)],
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            timeout=plan["duration_ms"] / 1000 + 15)
-    (out / "recorder.log").write_text(result.stdout)
-    manifest["recorder_exit"] = result.returncode
+    if launch_bundle:
+        launch = launch_services_wait(launch_bundle, args.pid, plan_path, out,
+                                      timeout_seconds=plan["duration_ms"] / 1000 + 15)
+        manifest["launcher"] = launch
+        manifest["recorder_exit"] = None  # `open -W` never reports the app's exit status.
+        (out / "recorder.log").write_bytes((out / "recorder.stderr").read_bytes())
+        recorder_finished, preflight, launch_failures = launch_services_completion(
+            out, launch, recorder, manifest["recorder_identity"], args.pid, plan)
+        manifest["launcher"]["completion_failures"] = launch_failures
+        if preflight is not None:
+            manifest["preflight"] = preflight
+    else:
+        result = subprocess.run([str(recorder), str(args.pid), str(plan_path), str(out)],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=plan["duration_ms"] / 1000 + 15)
+        (out / "recorder.log").write_text(result.stdout)
+        manifest["recorder_exit"] = result.returncode
+        recorder_finished = result.returncode == 0
     try:
         manifest["recorder_identity_stable"] = recorder_identity(recorder) == manifest["recorder_identity"]
     except (ValueError, OSError) as exc:
         manifest["recorder_identity_stable"] = False
         manifest["recorder_identity_change"] = str(exc)
-    if result.returncode:
+    if not recorder_finished or not manifest["recorder_identity_stable"]:
         manifest["failed_recorder_evidence"] = failed_recorder_evidence(out)
         (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        raise RuntimeError(f"native recorder exit {result.returncode}; see {out / 'recorder.log'}")
+        raise RuntimeError(f"native recorder did not prove completion; see {out / 'CAPTURE.json'}")
     frames = read_jsonl(out / "frames.jsonl")
     if not frames or any(f["index"] != i for i, f in enumerate(frames)):
         raise ValueError("native frames missing or out of order")
@@ -1044,6 +1145,8 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--recorder", type=Path, required=True,
                         help="dedicated team-signed or frozen CDHash-addressed ad-hoc recorder .app executable")
+    parser.add_argument("--launch-bundle", type=Path,
+                        help="opt-in LaunchServices launch of this exact recorder .app; zero-input plans only")
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
     args = parser.parse_args()
     try:
