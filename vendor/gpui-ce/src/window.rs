@@ -2523,6 +2523,7 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             let mut deferred_force_render = false;
+            let mut deferred_require_presentation = false;
             move |request_frame_options| {
                 // This must be checked before anything else: if this request
                 // arrived re-entrantly while a draw is on this thread's stack
@@ -2542,6 +2543,7 @@ impl Window {
                 if draw_in_progress() {
                     log::debug!("deferring re-entrant window draw request");
                     deferred_force_render |= request_frame_options.force_render;
+                    deferred_require_presentation |= request_frame_options.require_presentation;
                     return;
                 }
                 // Take the deferred flag first: `||` short-circuits, and leaving
@@ -2549,6 +2551,8 @@ impl Window {
                 // force a second, redundant render on the next frame.
                 let force_render =
                     mem::take(&mut deferred_force_render) || request_frame_options.force_render;
+                let require_presentation = mem::take(&mut deferred_require_presentation)
+                    || request_frame_options.require_presentation;
 
                 let thermal_state = handle
                     .update(&mut cx, |_, _, cx| cx.thermal_state())
@@ -2557,7 +2561,7 @@ impl Window {
                 // Throttle frame rate based on conditions:
                 // - Thermal pressure (Serious/Critical): cap to ~60fps
                 // - Inactive window (not focused): cap to ~30fps to save energy
-                let min_frame_interval = if request_frame_options.require_presentation
+                let min_frame_interval = if require_presentation
                     || (!request_frame_options.force_render
                         && next_frame_callbacks.borrow().is_empty())
                 {
@@ -2636,7 +2640,7 @@ impl Window {
                 // Once high-rate input is detected, we sustain presentation for 1 second
                 // to prevent display underclocking during active input.
                 let pending_presentation = needs_present.get();
-                let needs_present = request_frame_options.require_presentation
+                let needs_present = require_presentation
                     || (pending_presentation && presentation_retry.get().due(Instant::now()))
                     || (!pending_presentation && input_rate_tracker.borrow_mut().is_high_rate());
 
