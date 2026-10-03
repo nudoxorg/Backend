@@ -410,6 +410,8 @@ struct FindFocusReturn {
     interruption: u64,
     attachment: Option<OwnerAttachment>,
     retry: Option<crate::runtime::store::OwnerRetryAttachment>,
+    /// Armed only after the cover retires; later native input revokes it.
+    after_cover_input: Option<u64>,
 }
 
 /// The actual mounted Find input, reported by its component after paint.
@@ -837,7 +839,17 @@ impl Reader {
             interruption: self.native_return_interruption,
             attachment,
             retry,
+            after_cover_input: None,
         });
+    }
+
+    /// Bind the return to the input generation after Add's dismissing key.
+    /// A later key or pointer must never lose a race to the deferred callback.
+    pub(crate) fn arm_find_focus_return_after_add(&mut self, focused: Option<&FocusHandle>, input: Option<u64>) -> bool {
+        let (Some(focused), Some(input), Some(pending)) = (focused, input, self.find_focus_return.as_mut()) else { return false; };
+        if pending.focused != *focused { return false; }
+        pending.after_cover_input = Some(input);
+        true
     }
 
     /// An Add cover may return focus only if its captured handle was the
@@ -883,6 +895,11 @@ impl Reader {
             return ReturnDisposition::Invalid;
         }
         if pending.interruption != self.native_return_interruption {
+            self.find_focus_return = None;
+            return ReturnDisposition::Invalid;
+        }
+        if let Some(expected) = pending.after_cover_input
+            && self.links.shell.upgrade().and_then(|shell| shell.read(cx).focus_return_generation()) != Some(expected) {
             self.find_focus_return = None;
             return ReturnDisposition::Invalid;
         }

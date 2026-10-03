@@ -964,9 +964,23 @@ fn native_find_query_return_from_add_is_canceled_by_a_new_tab(cx: &mut TestAppCo
     rig.keys("cmd-o");
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     rig.cx.simulate_keystrokes("escape");
-    rig.frame(0);
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
     rig.cx.simulate_keystrokes("tab");
     rig.settle();
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
         "intervening native Tab retires the Add return instead of stealing focus later");
+}
+
+#[gpui::test]
+fn native_find_query_return_from_add_is_canceled_by_another_key(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.keys("cmd-o");
+    rig.cx.simulate_keystrokes("escape");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
+    rig.cx.simulate_keystrokes("left");
+    rig.settle();
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "a key after Add's dismissal invalidates the deferred query return");
 }

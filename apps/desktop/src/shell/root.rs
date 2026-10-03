@@ -723,11 +723,18 @@ impl Shell {
             // The exact native query reports its own mounted handle after the
             // uncovered frame. A generic target-list return would select a
             // Shelf row while that child field is still mounting.
-            if self.return_identity_current(&saved, cx) {
-                self.pending_transient_return = None;
-                self.set_zone(Zone::Reader, cx);
+            if self.links.snapshot(cx).overlay().is_none() && self.background_input_allowed() {
                 self.focus.focus(window, cx);
-                cx.notify();
+            }
+            if self.return_identity_current(&saved, cx) {
+                let input_generation = self.transient_generation;
+                if self.reader.update(cx, |reader, _| reader.arm_find_focus_return_after_add(
+                    saved.focus.as_ref(), input_generation,
+                )) {
+                    self.pending_transient_return = None;
+                    self.set_zone(Zone::Reader, cx);
+                    cx.notify();
+                }
             }
             return;
         }
@@ -1330,6 +1337,10 @@ impl Shell {
 
     fn background_input_allowed(&self) -> bool {
         !self.drawer_departing && !self.ask_presentation.blocks_background_input(self.ask_open)
+    }
+
+    pub(crate) const fn focus_return_generation(&self) -> Option<u64> {
+        self.transient_generation
     }
 
     pub(crate) fn page_input_scope(&self, cx: &App) -> Option<PageInputScope> {
