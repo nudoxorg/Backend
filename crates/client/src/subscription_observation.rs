@@ -1122,12 +1122,13 @@ mod tests {
             panic!("complete reset must finish with one Ack");
         };
         assert_eq!(ack_lease, lease);
-        let expected = if reject_ack_cursor {
+        let requested_cursor = target_cursor.encode_control();
+        assert_eq!(ack_cursor.as_ref(), requested_cursor.as_ref());
+        let acknowledged_cursor = if reject_ack_cursor {
             previous.encode_control()
         } else {
-            target_cursor.encode_control()
+            requested_cursor
         };
-        assert_eq!(ack_cursor.as_ref(), expected.as_ref());
         if let Some(acknowledged) = acknowledged {
             acknowledged.send(ack_id).expect("report Ack correlation");
         }
@@ -1136,7 +1137,7 @@ mod tests {
             LocalControlResponse::Subscription(LocalSubscriptionResponse::Acked {
                 request_id: ack_id,
                 lease,
-                cursor: expected,
+                cursor: acknowledged_cursor,
             }),
         );
     }
@@ -1521,6 +1522,16 @@ mod tests {
         drop(control);
         owner.join().expect("owner");
 
+        let page = root
+            .page(ViewPageCursor::first(&root), CREDIT)
+            .expect("invalid-proof fixture page");
+        let page_payload =
+            SnapshotPageDto::from_owner(cursor, root.descriptor(), page, CursorResetReason::Pruned)
+                .expect("valid page without producer certificate");
+        let next = page_payload.next_token().expect("continuation");
+        let payload = serde_json::to_vec(&page_payload)
+            .expect("encode valid page without producer certificate")
+            .into_boxed_slice();
         let (mut transport, owner) = pair(move |stream| {
             let (request_id, operation) = request(stream);
             assert!(matches!(
@@ -1533,9 +1544,9 @@ mod tests {
                     request_id,
                     lease,
                     page: Box::new([]),
-                    next: Some(Box::new([1])),
+                    next,
                     credit: CREDIT,
-                    payload: Box::new([]),
+                    payload,
                 }),
             );
         });
