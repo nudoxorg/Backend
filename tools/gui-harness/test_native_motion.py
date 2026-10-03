@@ -339,7 +339,7 @@ class NativeMotionTests(unittest.TestCase):
         actions = [{"kind": "mouse_down"}, {"kind": "key"}, {"kind": "mouse_up"}]
         policy = motion.supervision.ControlPolicy(actions)
         driver, recorder = socket.socketpair()
-        reached_down = threading.Event()
+        checked_held = threading.Event()
         resume = threading.Event()
         outcome = {}
 
@@ -351,10 +351,11 @@ class NativeMotionTests(unittest.TestCase):
             self.assertEqual(channel.receive(2)["kind"], "Permit")
             channel.send(kind="done", index=0, action_kind="mouse_down", posted=True, held=True)
             self.assertEqual(channel.receive(2)["kind"], "Continue")
-            reached_down.set()
-            self.assertTrue(resume.wait(2))
             channel.send(kind="check", held=True)
-            self.assertEqual(channel.receive(2)["kind"], "HeldAwaitRelease")
+            self.assertEqual(channel.receive(2)["kind"], "Continue")
+            checked_held.set()
+            self.assertTrue(resume.wait(2))
+            # Cancel lands after the recorder's checkpoint, before Permit.
             channel.send(kind="permit", index=1, action_kind="key", held=True)
             self.assertEqual(channel.receive(2)["kind"], "HeldAwaitRelease")
             channel.send(kind="permit", index=2, action_kind="mouse_up", held=True)
@@ -372,7 +373,7 @@ class NativeMotionTests(unittest.TestCase):
         producer = threading.Thread(target=fake_recorder)
         controller = threading.Thread(target=serve)
         producer.start(); controller.start()
-        self.assertTrue(reached_down.wait(2))
+        self.assertTrue(checked_held.wait(2))
         policy.cancel()
         resume.set()
         producer.join(3); controller.join(3)

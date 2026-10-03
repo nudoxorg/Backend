@@ -204,15 +204,20 @@ final class NativeControl {
         }
     }
 
-    func permit(index: Int, action: Action, held: Bool) throws -> Bool {
+    func permit(index: Int, action: Action, held: Bool) throws -> ControlDirective {
         guard DispatchTime.now().uptimeNanoseconds < deadlineHostNS else {
             throw NSError(domain: "native-motion", code: 26)
         }
         switch try exchange(["kind": "permit", "index": index,
                              "action_kind": action.kind, "held": held]) {
-        case "Permit": return true
-        case "PermitRelease": return action.kind == "mouse_up" && held
-        case "Cancel", "HeldAwaitRelease": return false
+        case "Permit": return .proceed
+        case "PermitRelease":
+            guard action.kind == "mouse_up" && held else {
+                throw NSError(domain: "native-motion", code: 25)
+            }
+            return .proceed
+        case "HeldAwaitRelease": return .heldAwaitRelease
+        case "Cancel": return .cancel
         default: throw NSError(domain: "native-motion", code: 25)
         }
     }
@@ -918,12 +923,20 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             var permitted = false
             var completedPermit = false
             do {
-                if let control, !((try control.permit(index: index, action: action,
-                                                     held: heldPoint != nil))) {
-                    throw NSError(domain: "native-motion", code: 27,
-                        userInfo: [NSLocalizedDescriptionKey: "driver denied native posting permit"])
+                if let control {
+                    let permit = try control.permit(index: index, action: action,
+                                                     held: heldPoint != nil)
+                    switch permit {
+                    case .proceed: permitted = true
+                    case .heldAwaitRelease where heldPoint != nil && action.kind != "mouse_up":
+                        actions.write(jsonLine(["phase": "cancelled_skipped", "label": action.label,
+                            "kind": action.kind, "index": index, "held_input_unreleased": true]))
+                        continue
+                    case .heldAwaitRelease, .cancel:
+                        throw NSError(domain: "native-motion", code: 27,
+                            userInfo: [NSLocalizedDescriptionKey: "driver denied native posting permit"])
+                    }
                 }
-                permitted = control != nil
                 let delivered = try send(action, pid: pid, windowID: window.windowID,
                                          heldPoint: &heldPoint)
                 completedPermit = true
