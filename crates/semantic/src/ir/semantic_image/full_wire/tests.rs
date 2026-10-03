@@ -14,8 +14,10 @@ use crate::ir::{
     DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
     FreePredicate, Ir, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
     ParentageAuthority, RustEdition, RustFacts, RustOwnership, SemanticCoreReader,
-    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, SignatureCarrierRole,
-    SignatureCarrierRoleObservation, TreeItemInput, TypeExpr, TypeParameterBound, TypeScriptSource,
+    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, SignatureCarrierBinding,
+    SignatureCarrierBindingRole, SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput,
+    SignatureCarrierRole, SignatureCarrierRoleObservation, TreeItemInput, TupleElement,
+    TupleElementKind, TypeExpr, TypeParameterBound, TypeScriptSource, VariadicForm,
     VariantFingerprint, Visibility,
 };
 
@@ -142,11 +144,159 @@ fn carrier_image(
     builder.finish()
 }
 
+fn signature_binding_image(reversed: bool) -> Result<Ir, crate::ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let scalar =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::U32)))?;
+    let different_scalar =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::F64)))?;
+    let parameter_cells = [
+        TupleElement {
+            label: None,
+            ty: scalar,
+            kind: TupleElementKind::Required,
+        },
+        TupleElement {
+            label: None,
+            ty: scalar,
+            kind: TupleElementKind::Required,
+        },
+    ];
+    let result_cells = [TupleElement {
+        label: None,
+        ty: scalar,
+        kind: TupleElementKind::Required,
+    }];
+    let parameters = builder.intern_tuple_elements(&parameter_cells)?;
+    let one_parameter = builder.intern_tuple_elements(&parameter_cells[..1])?;
+    let results = builder.intern_tuple_elements(&result_cells)?;
+    let empty = builder.intern_tuple_elements(&[])?;
+    let callable = builder.intern_type(TypeExpr::Concrete(ConcreteType::Function {
+        parameters,
+        results,
+        abi: None,
+        variadic: VariadicForm::None,
+        unsafe_: false,
+    }))?;
+    let empty_callable = builder.intern_type(TypeExpr::Concrete(ConcreteType::Function {
+        parameters: empty,
+        results: empty,
+        abi: None,
+        variadic: VariadicForm::None,
+        unsafe_: false,
+    }))?;
+    let shared_carrier_callable =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Function {
+            parameters: one_parameter,
+            results: empty,
+            abi: None,
+            variadic: VariadicForm::None,
+            unsafe_: false,
+        }))?;
+    let item = |name, kind, semantic_type| TreeItemInput {
+        name,
+        kind,
+        visibility: Visibility::Private,
+        authority: authority(),
+        parent: None,
+        semantic_type,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: None,
+    };
+    let original_items = [
+        item(b"bind", ItemKind::Function, Some(callable)),
+        item(b"unknown", ItemKind::Function, None),
+        item(b"empty", ItemKind::Function, Some(empty_callable)),
+        item(b"again", ItemKind::Function, Some(shared_carrier_callable)),
+        item(b"carrier", ItemKind::Parameter, Some(scalar)),
+        item(b"different", ItemKind::Parameter, Some(different_scalar)),
+    ];
+    let original_versions = [
+        version(10),
+        version(11),
+        version(12),
+        version(13),
+        version(14),
+        version(15),
+    ];
+    let mut ordered_items = Vec::with_capacity(original_items.len());
+    let mut ordered_versions = Vec::with_capacity(original_versions.len());
+    let mut old_to_new = [0_u32; 6];
+    for new_index in 0..original_items.len() {
+        let old_index = if reversed {
+            original_items.len() - new_index - 1
+        } else {
+            new_index
+        };
+        old_to_new[old_index] = u32::try_from(new_index).map_err(|_| {
+            crate::ir::BuildError::Capacity(crate::ir::CapacityError {
+                space: crate::ir::CapacitySpace::Value,
+                actual: new_index,
+            })
+        })?;
+        ordered_items.push(original_items[old_index]);
+        ordered_versions.push(original_versions[old_index]);
+    }
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &ordered_versions,
+        items: &ordered_items,
+        links: &[],
+    })?;
+
+    let mut owners = Vec::new();
+    let mut targets = Vec::new();
+    for new_index in 0..ordered_items.len() {
+        let old_index = if reversed {
+            ordered_items.len() - new_index - 1
+        } else {
+            new_index
+        };
+        let owner = EntityId::new(u32::try_from(new_index).map_err(|_| {
+            crate::ir::BuildError::Capacity(crate::ir::CapacityError {
+                space: crate::ir::CapacitySpace::Value,
+                actual: new_index,
+            })
+        })?);
+        match old_index {
+            0 => {
+                owners.push(SignatureCarrierOwnerInput::captured(owner, 2, 1));
+                let carrier = EntityId::new(old_to_new[3]);
+                targets.extend_from_slice(&[carrier, carrier, carrier]);
+            }
+            1 => owners.push(SignatureCarrierOwnerInput::unavailable(owner)),
+            2 => owners.push(SignatureCarrierOwnerInput::captured(owner, 0, 0)),
+            3 => {
+                owners.push(SignatureCarrierOwnerInput::captured(owner, 1, 0));
+                targets.push(EntityId::new(old_to_new[4]));
+            }
+            _ => {}
+        }
+    }
+    builder.capture_signature_carrier_bindings(&owners, &targets)?;
+    builder.finish()
+}
+
 fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     let length = full_semantic_image_len(ir).expect("full image plan is admitted");
     let mut bytes = vec![0; length];
     encode_full_semantic_image(ir, &mut bytes).expect("full image writes");
     Ok(bytes)
+}
+
+fn lane_payload_offset(bytes: &[u8], kind: FullDirectoryKind) -> usize {
+    let entry = HEADER_BYTES + kind.index() * DIRECTORY_BYTES;
+    u32::from_le_bytes(
+        bytes[entry + 4..entry + 8]
+            .try_into()
+            .expect("directory offset cell"),
+    ) as usize
+}
+
+fn set_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
 #[cfg(feature = "mmap")]
@@ -261,10 +411,7 @@ fn complete_carrier_roles_round_trip_in_canonical_entity_order() -> Result<(), c
                 raw: item.id().raw,
             });
         };
-        assert_eq!(
-            observed,
-            SignatureCarrierRoleObservation::Captured(role)
-        );
+        assert_eq!(observed, SignatureCarrierRoleObservation::Captured(role));
     }
 
     let bytes = encoded(&ir)?;
@@ -300,6 +447,305 @@ fn complete_carrier_roles_round_trip_in_canonical_entity_order() -> Result<(), c
             Some(SignatureCarrierRoleObservation::Captured(expected_role))
         );
     }
+    Ok(())
+}
+
+#[test]
+fn exact_signature_bindings_preserve_owner_slots_empty_and_unavailable_states()
+-> Result<(), crate::ir::BuildError> {
+    let ir = signature_binding_image(false)?;
+    let find_owned = |name: &[u8]| {
+        ir.items()
+            .find(|item| item.name() == name)
+            .map(|item| item.id())
+    };
+    let bind = find_owned(b"bind").expect("known callable owner");
+    let unknown = find_owned(b"unknown").expect("unknown callable owner");
+    let empty = find_owned(b"empty").expect("known empty callable owner");
+    let again = find_owned(b"again").expect("second owner of the shared carrier");
+    let carrier = find_owned(b"carrier").expect("shared carrier row");
+    assert!(matches!(
+        SemanticReader::signature_carrier_bindings(&ir, carrier),
+        None
+    ));
+
+    let Some(SignatureCarrierBindingsObservation::Captured(bindings)) =
+        SemanticReader::signature_carrier_bindings(&ir, bind)
+    else {
+        panic!("known function type must expose captured bindings");
+    };
+    let observed: Vec<_> = bindings.collect();
+    assert_eq!(
+        observed,
+        vec![
+            SignatureCarrierBinding {
+                owner: bind,
+                role: SignatureCarrierBindingRole::Parameter,
+                position: 0,
+                carrier,
+            },
+            SignatureCarrierBinding {
+                owner: bind,
+                role: SignatureCarrierBindingRole::Parameter,
+                position: 1,
+                carrier,
+            },
+            SignatureCarrierBinding {
+                owner: bind,
+                role: SignatureCarrierBindingRole::Result,
+                position: 0,
+                carrier,
+            },
+        ]
+    );
+    assert!(matches!(
+        SemanticReader::signature_carrier_bindings(&ir, unknown),
+        Some(SignatureCarrierBindingsObservation::Unavailable)
+    ));
+    let Some(SignatureCarrierBindingsObservation::Captured(empty_bindings)) =
+        SemanticReader::signature_carrier_bindings(&ir, empty)
+    else {
+        panic!("known empty function type must remain captured");
+    };
+    assert_eq!(empty_bindings.len(), 0);
+    let Some(SignatureCarrierBindingsObservation::Captured(again_bindings)) =
+        SemanticReader::signature_carrier_bindings(&ir, again)
+    else {
+        panic!("second owner bindings must be captured");
+    };
+    assert_eq!(
+        again_bindings.collect::<Vec<_>>(),
+        vec![SignatureCarrierBinding {
+            owner: again,
+            role: SignatureCarrierBindingRole::Parameter,
+            position: 0,
+            carrier,
+        }]
+    );
+    assert_eq!(
+        SemanticReader::signature_carrier_role(&ir, carrier),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Both
+        ))
+    );
+
+    let bytes = encoded(&ir)?;
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 3);
+    assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), 29);
+    assert_eq!(bytes, encoded(&signature_binding_image(true)?)?);
+    let view = SemanticImageView::reopen(&bytes).expect("schema-3 image reopens");
+    let find_borrowed = |name: &[u8]| {
+        view.canonical_entities()
+            .find_map(|entity| (view.atom(entity.name) == Some(name)).then_some(entity.id))
+    };
+    let bind = find_borrowed(b"bind").expect("canonical bind owner");
+    let unknown = find_borrowed(b"unknown").expect("canonical unknown owner");
+    let empty = find_borrowed(b"empty").expect("canonical empty owner");
+    let again = find_borrowed(b"again").expect("canonical second owner");
+    let carrier = find_borrowed(b"carrier").expect("canonical carrier row");
+    let Some(SignatureCarrierBindingsObservation::Captured(bindings)) =
+        SemanticReader::signature_carrier_bindings(&view, bind)
+    else {
+        panic!("reopened function bindings must be captured");
+    };
+    assert_eq!(
+        bindings.collect::<Vec<_>>(),
+        vec![
+            SignatureCarrierBinding {
+                owner: bind,
+                role: SignatureCarrierBindingRole::Parameter,
+                position: 0,
+                carrier,
+            },
+            SignatureCarrierBinding {
+                owner: bind,
+                role: SignatureCarrierBindingRole::Parameter,
+                position: 1,
+                carrier,
+            },
+            SignatureCarrierBinding {
+                owner: bind,
+                role: SignatureCarrierBindingRole::Result,
+                position: 0,
+                carrier,
+            },
+        ]
+    );
+    assert!(matches!(
+        SemanticReader::signature_carrier_bindings(&view, unknown),
+        Some(SignatureCarrierBindingsObservation::Unavailable)
+    ));
+    let Some(SignatureCarrierBindingsObservation::Captured(empty_bindings)) =
+        SemanticReader::signature_carrier_bindings(&view, empty)
+    else {
+        panic!("reopened empty signature must stay captured");
+    };
+    assert_eq!(empty_bindings.len(), 0);
+    let Some(SignatureCarrierBindingsObservation::Captured(again_bindings)) =
+        SemanticReader::signature_carrier_bindings(&view, again)
+    else {
+        panic!("reopened second-owner bindings must be captured");
+    };
+    assert_eq!(
+        again_bindings.collect::<Vec<_>>(),
+        vec![SignatureCarrierBinding {
+            owner: again,
+            role: SignatureCarrierBindingRole::Parameter,
+            position: 0,
+            carrier,
+        }]
+    );
+    assert_eq!(
+        SemanticReader::signature_carrier_role(&view, carrier),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Both
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn schema_two_function_has_role_but_no_binding_claim() -> Result<(), crate::ir::BuildError> {
+    let function = TreeItemInput {
+        name: b"historical",
+        kind: ItemKind::Function,
+        visibility: Visibility::Private,
+        authority: authority(),
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: None,
+    };
+    let versions = [version(42)];
+    let items = [function];
+    let mut builder = IrBuilder::new();
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    builder.capture_signature_carrier_roles(&[SignatureCarrierRole::NotCarrier])?;
+    let bytes = encoded(&builder.finish()?)?;
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2);
+    let view = SemanticImageView::reopen(&bytes).expect("schema-2 function reopens");
+    let owner = view.canonical_entities().next().expect("function row").id;
+    assert_eq!(
+        SemanticReader::signature_carrier_role(&view, owner),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::NotCarrier
+        ))
+    );
+    assert!(matches!(
+        SemanticReader::signature_carrier_bindings(&view, owner),
+        Some(SignatureCarrierBindingsObservation::Unavailable)
+    ));
+    Ok(())
+}
+
+#[test]
+fn signature_binding_image_rejects_bad_owner_ranges_targets_and_role_union()
+-> Result<(), crate::ir::BuildError> {
+    let bytes = encoded(&signature_binding_image(false)?)?;
+    let view = SemanticImageView::reopen(&bytes).expect("valid binding image");
+    let id_by_name = |name: &[u8]| {
+        view.canonical_entities()
+            .find_map(|entity| (view.atom(entity.name) == Some(name)).then_some(entity.id))
+    };
+    let bind = id_by_name(b"bind").expect("bind owner");
+    let unknown = id_by_name(b"unknown").expect("unknown owner");
+    let function_target = bind;
+    let carrier = id_by_name(b"carrier").expect("carrier");
+    let different = id_by_name(b"different").expect("different carrier");
+    let ranges = lane_payload_offset(&bytes, FullDirectoryKind::SignatureCarrierBindingRanges);
+    let range_count_entry =
+        HEADER_BYTES + FullDirectoryKind::SignatureCarrierBindingRanges.index() * DIRECTORY_BYTES;
+    let range_count = u32::from_le_bytes(
+        bytes[range_count_entry + 12..range_count_entry + 16]
+            .try_into()
+            .expect("range count cell"),
+    );
+    let mut bind_range = None;
+    for row in 0..range_count {
+        let offset = ranges + usize::try_from(row).unwrap_or(0) * 16;
+        let owner = u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("owner cell"));
+        if owner == bind.raw {
+            bind_range = Some(offset);
+            break;
+        }
+    }
+    let bind_range = bind_range.expect("captured bind range");
+    let target_start = u32::from_le_bytes(
+        bytes[bind_range + 4..bind_range + 8]
+            .try_into()
+            .expect("target start cell"),
+    );
+    let targets = lane_payload_offset(&bytes, FullDirectoryKind::SignatureCarrierBindingTargets);
+
+    let mut bad_owner = bytes.clone();
+    set_u32(&mut bad_owner, bind_range, unknown.raw);
+    assert!(matches!(
+        SemanticImageView::reopen(&bad_owner),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingOwnerSet { .. }
+        ))
+    ));
+
+    let mut broken_partition = bytes.clone();
+    set_u32(&mut broken_partition, bind_range + 4, target_start + 1);
+    assert!(matches!(
+        SemanticImageView::reopen(&broken_partition),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingRange { .. }
+        ))
+    ));
+
+    let mut wrong_type = bytes.clone();
+    let target_offset = targets + usize::try_from(target_start).unwrap_or(0) * 4;
+    set_u32(&mut wrong_type, target_offset, different.raw);
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_type),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingType { .. }
+        ))
+    ));
+
+    let mut wrong_kind = bytes.clone();
+    set_u32(&mut wrong_kind, target_offset, function_target.raw);
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_kind),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingTargetKind { .. }
+        ))
+    ));
+
+    let mut wrong_count = bytes.clone();
+    set_u32(&mut wrong_count, bind_range + 8, 1);
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_count),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingRange { .. }
+        ))
+    ));
+
+    let mut wrong_union = bytes.clone();
+    let role_offset = lane_payload_offset(&bytes, FullDirectoryKind::SignatureCarrierRoles)
+        + usize::try_from(carrier.raw / 4).unwrap_or(0);
+    let shift = (carrier.raw % 4) * 2;
+    wrong_union[role_offset] &= !(0b11 << shift);
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_union),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingRoleUnion {
+                entity,
+                expected: 3,
+                observed: 0,
+            }
+        )) if entity == carrier.raw
+    ));
+
     Ok(())
 }
 

@@ -154,14 +154,16 @@ pub use reader::{
     CoreSemanticEntity, ExternalTargetIdentity, ExternalTargetIdentityFault,
     IrCanonicalCoreEntities, IrCanonicalEntities, IrExtensionRows, ScopedExternalTargetIdentity,
     SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
-    SignatureCarrierRole, SignatureCarrierRoleObservation,
+    SignatureCarrierBinding, SignatureCarrierBindingRole, SignatureCarrierBindings,
+    SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput, SignatureCarrierRole,
+    SignatureCarrierRoleObservation,
 };
 
 /// Semantic-image projection epoch bound into compiler execution identities.
 ///
 /// Increment this when the compiler's complete semantic output projection
 /// changes without changing the source-language compiler or its toolchain.
-pub const SEMANTIC_IR_PROJECTION_VERSION: u16 = 2;
+pub const SEMANTIC_IR_PROJECTION_VERSION: u16 = 3;
 pub use segment_boundary_policy::{
     CanonicalSemanticPlaneBoundaryFamilyVerifier, SemanticPlaneSegmentBoundaryAlgorithm,
     SemanticPlaneSegmentBoundaryPolicy,

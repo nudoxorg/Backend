@@ -899,19 +899,26 @@ fn constructor_role_and_name_mutations_change_committed_fragment_bytes() -> Resu
 }
 
 #[test]
-fn result_roles_reject_constant_targets_instead_of_relabeling_them() -> Result<(), TestError> {
+fn result_bindings_reject_constant_targets_instead_of_relabeling_them() -> Result<(), TestError> {
     let facts = admit_facts([
         SemanticFact::new(
             EntityKind::Constant,
             b"not_a_carrier",
             SemanticProductConstructor::PRODUCT,
-        ),
-        SemanticFact::new(
-            EntityKind::Function,
-            b"returns_constant",
-            SemanticProductConstructor::function(0, 1),
         )
-        .child(ProductChildRole::FunctionResult, 0),
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Any)),
+        {
+            let mut function = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+            function.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
+            SemanticFact::new(
+                EntityKind::Function,
+                b"returns_constant",
+                SemanticProductConstructor::function(0, 1),
+            )
+            .child(ProductChildRole::FunctionResult, 0)
+            .typed(function)
+            .type_child(0, None, 0)
+        },
     ])?;
     match facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
@@ -919,10 +926,11 @@ fn result_roles_reject_constant_targets_instead_of_relabeling_them() -> Result<(
         recipe(),
         crate::driver::types::DeclarationScope::fixture(),
     ) {
-        Err(BuildError::SignatureCarrierRoleKind {
-            entity,
+        Err(BuildError::SignatureCarrierBindingTargetKind {
+            owner,
+            carrier,
             kind: backend_semantic::ir::ItemKind::Constant,
-        }) if entity == EntityId::new(0) => Ok(()),
+        }) if owner == EntityId::new(1) && carrier == EntityId::new(0) => Ok(()),
         _ => Err(TestError::Tail),
     }
 }

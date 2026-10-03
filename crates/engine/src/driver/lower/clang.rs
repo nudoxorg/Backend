@@ -3946,6 +3946,47 @@ mod tests {
                 item.name() == b"add" && item.kind() == backend_semantic::ir::ItemKind::Function
             })
             .ok_or(TestError::Missing("owned Clang function"))?;
+        let carrier = |name: &[u8]| {
+            owned
+                .items()
+                .find(|item| {
+                    item.name() == name && item.kind() == backend_semantic::ir::ItemKind::Parameter
+                })
+                .map(|item| item.id())
+        };
+        let a = carrier(b"a").ok_or(TestError::Missing("owned Clang parameter a"))?;
+        let b = carrier(b"b").ok_or(TestError::Missing("owned Clang parameter b"))?;
+        let result = carrier(b"add").ok_or(TestError::Missing("owned Clang result carrier"))?;
+        let bindings = match owned.signature_carrier_bindings(add.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("owned Clang signature bindings")),
+        };
+        if bindings
+            != vec![
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: add.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: a,
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: add.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 1,
+                    carrier: b,
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: add.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: result,
+                },
+            ]
+        {
+            return Err(TestError::Missing("Clang owner/slot carrier alignment"));
+        }
         let mut saw_input = false;
         let mut saw_result = false;
         for item in owned.items() {
@@ -3978,6 +4019,44 @@ mod tests {
             || !saw_result
         {
             return Err(TestError::Missing("owned Clang signature carrier roles"));
+        }
+        Ok(())
+    }
+
+    /// Clang does not invent a declaration entity for an unnamed source
+    /// parameter. The admitted signature and binding slots therefore retain
+    /// only the one named carrier, at position zero in the lowered tuple.
+    #[test]
+    fn unnamed_parameter_is_not_fabricated_as_a_carrier_binding() -> Result<(), TestError> {
+        let source = b"int hidden(int, int kept);\n";
+        let owned = owned_ir(source)?;
+        let owner = owned
+            .items()
+            .find(|item| {
+                item.name() == b"hidden" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned hidden function"))?;
+        let kept = owned
+            .items()
+            .find(|item| {
+                item.name() == b"kept" && item.kind() == backend_semantic::ir::ItemKind::Parameter
+            })
+            .ok_or(TestError::Missing("owned named parameter"))?;
+        let bindings = match owned.signature_carrier_bindings(owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("owned Clang unnamed-slot bindings")),
+        };
+        if bindings
+            != vec![backend_semantic::ir::SignatureCarrierBinding {
+                owner: owner.id(),
+                role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                position: 0,
+                carrier: kept.id(),
+            }]
+        {
+            return Err(TestError::Missing("Clang unnamed parameter omission"));
         }
         Ok(())
     }

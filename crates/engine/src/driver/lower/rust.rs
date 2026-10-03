@@ -5059,6 +5059,53 @@ mod tests {
             return Err(TestError::Missing("moved by-value ownership"));
         }
         let owned = owned_ir(source)?;
+        let owned_brew = owned
+            .items()
+            .find(|item| {
+                item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned Rust brew function"))?;
+        let carrier_id = |name: &[u8]| {
+            owned
+                .items()
+                .find(|item| {
+                    item.name() == name && item.kind() == backend_semantic::ir::ItemKind::Parameter
+                })
+                .map(|item| item.id())
+        };
+        let receiver = carrier_id(b"self").ok_or(TestError::Missing("Rust self carrier"))?;
+        let shots = carrier_id(b"shots").ok_or(TestError::Missing("Rust shots carrier"))?;
+        let result = carrier_id(b"brew").ok_or(TestError::Missing("Rust result carrier"))?;
+        let bindings = match owned.signature_carrier_bindings(owned_brew.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("owned Rust signature bindings")),
+        };
+        if bindings
+            != vec![
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: owned_brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: receiver,
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: owned_brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 1,
+                    carrier: shots,
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: owned_brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: result,
+                },
+            ]
+        {
+            return Err(TestError::Missing("Rust receiver/parameter/result slots"));
+        }
         let role_of = |name: &[u8], kind: backend_semantic::ir::ItemKind| {
             owned
                 .items()

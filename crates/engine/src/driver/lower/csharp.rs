@@ -4107,6 +4107,31 @@ mod tests {
                 item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
             })
             .ok_or(TestError::Missing("owned C# method"))?;
+        let bindings = match owned.signature_carrier_bindings(brew.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("owned C# signature bindings")),
+        };
+        if bindings
+            .iter()
+            .map(|binding| (binding.owner, binding.role, binding.position))
+            .collect::<Vec<_>>()
+            != vec![
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    0,
+                ),
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    0,
+                ),
+            ]
+        {
+            return Err(TestError::Missing("C# executable binding slots"));
+        }
         if owned.signature_carrier_role(count.id())
             != Some(
                 backend_semantic::ir::SignatureCarrierRoleObservation::Captured(

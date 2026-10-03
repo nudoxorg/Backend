@@ -6,7 +6,8 @@ use super::packed_types::{
 use super::relations::{ExternalTarget, LinkTarget, SourceSpan};
 use crate::ir::{
     AtomId, AuthorityFactFault, CapacityError, DeclarationIdentity, DenseId, EntityId,
-    ImageProvenanceClaim, PreimageOverflow, SourceIdentity, TextId, TypeId, VariantFingerprint,
+    ImageProvenanceClaim, PreimageOverflow, ProductChildRole, SignatureCarrierBindingRole,
+    SourceIdentity, TextId, TypeId, VariantFingerprint,
 };
 use crate::vocabulary::{CompileRecipeFact, Language, LanguageProfile};
 use core::fmt;
@@ -161,6 +162,60 @@ pub enum BuildError {
     },
     /// A complete signature-carrier role plane was already captured.
     SignatureCarrierRoleAlreadyCaptured,
+    /// One signature-binding capture attempted to replace an existing role or
+    /// binding capture.
+    SignatureCarrierBindingsAlreadyCaptured,
+    /// The binding owner inputs did not name every Function row exactly once
+    /// in entity order.
+    SignatureCarrierBindingOwnerSet {
+        row: usize,
+        expected: Option<EntityId>,
+        observed: Option<EntityId>,
+    },
+    /// A captured function owner lacks a concrete ordered function tuple.
+    SignatureCarrierBindingSignature {
+        owner: EntityId,
+    },
+    /// Captured role-local counts do not match the owner's concrete tuple.
+    SignatureCarrierBindingCounts {
+        owner: EntityId,
+        parameters: u32,
+        results: u32,
+    },
+    /// One function product edge disagrees with its ordered tuple-cell role.
+    SignatureCarrierBindingEdgeRole {
+        owner: EntityId,
+        position: u32,
+        expected: ProductChildRole,
+        observed: ProductChildRole,
+    },
+    /// The flattened target pool has trailing or missing rows after all
+    /// captured owner ranges were consumed.
+    SignatureCarrierBindingTargetCount {
+        expected: usize,
+        observed: usize,
+    },
+    /// A signature carrier target is not a parameter declaration.
+    SignatureCarrierBindingTargetKind {
+        owner: EntityId,
+        carrier: EntityId,
+        kind: crate::ir::ItemKind,
+    },
+    /// The carrier's semantic type does not match its exact tuple cell.
+    SignatureCarrierBindingType {
+        owner: EntityId,
+        carrier: EntityId,
+        role: SignatureCarrierBindingRole,
+        position: u32,
+    },
+    /// The product edge and function type child at this slot name different
+    /// fact rows.
+    SignatureCarrierBindingEdgeMismatch {
+        owner: EntityId,
+        position: u32,
+        product_target: u32,
+        type_target: u32,
+    },
     /// Parentage formed a cycle, so no stable qualified ownership key exists.
     ParentCycle {
         entity: EntityId,
@@ -461,6 +516,74 @@ impl fmt::Display for BuildError {
             Self::SignatureCarrierRoleAlreadyCaptured => {
                 formatter.write_str("signature-carrier role plane was already captured")
             }
+            Self::SignatureCarrierBindingsAlreadyCaptured => {
+                formatter.write_str("signature-carrier bindings were already captured")
+            }
+            Self::SignatureCarrierBindingOwnerSet {
+                row,
+                expected,
+                observed,
+            } => write!(
+                formatter,
+                "signature-carrier owner row {row} is {observed:?}, expected {expected:?}"
+            ),
+            Self::SignatureCarrierBindingSignature { owner } => write!(
+                formatter,
+                "function {} has no concrete function tuple for captured bindings",
+                owner.raw
+            ),
+            Self::SignatureCarrierBindingCounts {
+                owner,
+                parameters,
+                results,
+            } => write!(
+                formatter,
+                "function {} binding counts ({parameters} parameters, {results} results) do not match its tuple",
+                owner.raw
+            ),
+            Self::SignatureCarrierBindingEdgeRole {
+                owner,
+                position,
+                expected,
+                observed,
+            } => write!(
+                formatter,
+                "function {} signature edge {position} is {observed:?}, expected {expected:?}",
+                owner.raw
+            ),
+            Self::SignatureCarrierBindingTargetCount { expected, observed } => write!(
+                formatter,
+                "signature-carrier target pool has {observed} rows, expected {expected}"
+            ),
+            Self::SignatureCarrierBindingTargetKind {
+                owner,
+                carrier,
+                kind,
+            } => write!(
+                formatter,
+                "function {} signature carrier {} has non-parameter kind {kind:?}",
+                owner.raw, carrier.raw
+            ),
+            Self::SignatureCarrierBindingType {
+                owner,
+                carrier,
+                role,
+                position,
+            } => write!(
+                formatter,
+                "function {} {role:?} slot {position} carrier {} has a different semantic type from its tuple cell",
+                owner.raw, carrier.raw
+            ),
+            Self::SignatureCarrierBindingEdgeMismatch {
+                owner,
+                position,
+                product_target,
+                type_target,
+            } => write!(
+                formatter,
+                "function {} signature slot {position} product target {product_target} differs from type child {type_target}",
+                owner.raw
+            ),
         }
     }
 }

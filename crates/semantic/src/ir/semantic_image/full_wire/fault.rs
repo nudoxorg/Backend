@@ -23,6 +23,8 @@ pub enum FullSemanticImageField {
     ExtensionFacts,
     ExtensionBindings,
     SignatureCarrierRoles,
+    SignatureCarrierBindingRanges,
+    SignatureCarrierBindingTargets,
 }
 
 /// Exact content-identity cell whose domain tag failed to reopen.
@@ -117,6 +119,53 @@ pub enum FullSemanticImageFault {
         "full semantic image signature-role byte {byte} has nonzero padding bits {observed:#04x}"
     )]
     SignatureCarrierRolePadding { byte: usize, observed: u8 },
+    #[error("signature-carrier binding owner row {row} is {observed:?}, expected {expected:?}")]
+    SignatureCarrierBindingOwnerSet {
+        row: u32,
+        expected: Option<u32>,
+        observed: Option<u32>,
+    },
+    #[error(
+        "signature-carrier binding range row {row} for owner {owner} has start {start}, counts {parameters}+{results}"
+    )]
+    SignatureCarrierBindingRange {
+        row: u32,
+        owner: u32,
+        start: u32,
+        parameters: u32,
+        results: u32,
+    },
+    #[error("signature-carrier binding target pool has {observed} rows, expected {expected}")]
+    SignatureCarrierBindingTargetCount { expected: u32, observed: u32 },
+    #[error(
+        "signature-carrier target {target} at owner {owner} {role:?} slot {position} has kind {kind:?}"
+    )]
+    SignatureCarrierBindingTargetKind {
+        owner: u32,
+        role: crate::ir::SignatureCarrierBindingRole,
+        position: u32,
+        target: u32,
+        kind: crate::ir::ItemKind,
+    },
+    #[error(
+        "signature-carrier owner {owner} {role:?} slot {position} target {target} type {observed:?} differs from tuple type {expected:?}"
+    )]
+    SignatureCarrierBindingType {
+        owner: u32,
+        role: crate::ir::SignatureCarrierBindingRole,
+        position: u32,
+        target: u32,
+        expected: Option<crate::ir::TypeId>,
+        observed: Option<crate::ir::TypeId>,
+    },
+    #[error("signature-carrier role union for entity {entity} is {observed}, expected {expected}")]
+    SignatureCarrierBindingRoleUnion {
+        entity: u32,
+        expected: u8,
+        observed: u8,
+    },
+    #[error("cannot allocate {bytes} bytes to validate signature-carrier role union")]
+    SignatureCarrierBindingScratch { bytes: usize },
     #[error("full semantic image entity {row} has invalid source span {start}..{end}")]
     SourceSpan { row: u32, start: u32, end: u32 },
     #[error(

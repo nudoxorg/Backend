@@ -7,8 +7,8 @@ use super::{
     plan::{CanonicalVariablePool, FullExtensionPayloads, FullSemanticImagePlan},
     wire::{
         ATOM_ROW_BYTES, DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, HEADER_BYTES_U32, MAGIC,
-        RANGE_ROW_BYTES, SCHEMA_CARRIER_ROLES, SCHEMA_LEGACY, SPARSE_BINDING_ROW_BYTES,
-        TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, put_u16, put_u32,
+        RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_LEGACY,
+        SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, put_u16, put_u32,
     },
 };
 
@@ -79,7 +79,9 @@ pub fn encode_full_semantic_image(
 fn write_plan(output: &mut [u8], plan: &FullSemanticImagePlan<'_>) {
     output[..plan.required].fill(0);
     output[..4].copy_from_slice(&MAGIC);
-    let (directory_kinds, directory_count) = if plan.layout.schema == SCHEMA_CARRIER_ROLES {
+    let (directory_kinds, directory_count) = if plan.layout.schema == SCHEMA_CARRIER_BINDINGS {
+        (&FullDirectoryKind::ALL_WITH_CARRIER_BINDINGS[..], 29)
+    } else if plan.layout.schema == SCHEMA_CARRIER_ROLES {
         (&FullDirectoryKind::ALL_WITH_CARRIER_ROLES[..], 27)
     } else {
         debug_assert_eq!(plan.layout.schema, SCHEMA_LEGACY);
@@ -119,6 +121,21 @@ fn write_plan(output: &mut [u8], plan: &FullSemanticImagePlan<'_>) {
     if let Some(roles) = plan.signature_carrier_roles.as_deref() {
         let entry = plan.layout.entry(FullDirectoryKind::SignatureCarrierRoles);
         output[entry.offset..entry.offset + entry.length].copy_from_slice(roles);
+    }
+    if let Some(ranges) = plan.signature_carrier_binding_ranges.as_deref() {
+        let entry = plan
+            .layout
+            .entry(FullDirectoryKind::SignatureCarrierBindingRanges);
+        for (row, bytes) in ranges.iter().enumerate() {
+            let start = entry.offset + row * bytes.len();
+            output[start..start + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+    if let Some(targets) = plan.signature_carrier_binding_targets.as_deref() {
+        let entry = plan
+            .layout
+            .entry(FullDirectoryKind::SignatureCarrierBindingTargets);
+        output[entry.offset..entry.offset + entry.length].copy_from_slice(targets);
     }
 }
 

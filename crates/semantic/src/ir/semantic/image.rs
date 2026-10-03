@@ -1,5 +1,9 @@
 use super::super::SignatureCarrierRoleObservation;
-use super::super::signature_carrier::PackedSignatureCarrierRoles;
+use super::super::reader::SignatureCarrierBindings;
+use super::super::reader::SignatureCarrierBindingsObservation;
+use super::super::signature_carrier::{
+    PackedSignatureCarrierBindings, PackedSignatureCarrierRoles,
+};
 use super::columns::{
     EntityColumns, GraphColumns, IrIndices, ItemColumns, LanguageExtensionColumnView,
     LanguageExtensions, LanguageExtensionsView, LinkOccurrenceColumns, PackedLinkOccurrences,
@@ -63,6 +67,7 @@ pub struct Ir {
     pub(in crate::ir::semantic) link_occurrences: PackedLinkOccurrences,
     pub(in crate::ir::semantic) occurrence_authority: OccurrenceAuthorityColumn,
     pub(in crate::ir) signature_carrier_roles: Option<PackedSignatureCarrierRoles>,
+    pub(in crate::ir) signature_carrier_bindings: Option<PackedSignatureCarrierBindings>,
 }
 
 impl Ir {
@@ -95,6 +100,35 @@ impl Ir {
         &self,
     ) -> Option<&PackedSignatureCarrierRoles> {
         self.signature_carrier_roles.as_ref()
+    }
+
+    pub(in crate::ir) fn signature_carrier_binding_plane(
+        &self,
+    ) -> Option<&PackedSignatureCarrierBindings> {
+        self.signature_carrier_bindings.as_ref()
+    }
+
+    /// Borrows exact owner-specific signature edges from the compiler
+    /// product/type join captured for this image.
+    #[must_use]
+    pub fn signature_carrier_bindings(
+        &self,
+        owner: crate::ir::EntityId,
+    ) -> Option<SignatureCarrierBindingsObservation<SignatureCarrierBindings<'_>>> {
+        let kind = self.items.kinds.get(owner.index())?;
+        if *kind != super::ids::ItemKind::Function {
+            return None;
+        }
+        let Some(bindings) = self.signature_carrier_bindings.as_ref() else {
+            return Some(SignatureCarrierBindingsObservation::Unavailable);
+        };
+        let Some(capture) = bindings.iter(owner) else {
+            return Some(SignatureCarrierBindingsObservation::Unavailable);
+        };
+        match capture {
+            None => Some(SignatureCarrierBindingsObservation::Unavailable),
+            Some(iter) => Some(SignatureCarrierBindingsObservation::Captured(iter)),
+        }
     }
 
     /// Returns the image-level source, recipe, and scope authority when this

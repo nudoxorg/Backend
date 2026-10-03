@@ -3491,6 +3491,31 @@ mod tests {
                 item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
             })
             .ok_or(TestError::Missing("owned Java method"))?;
+        let bindings = match owned.signature_carrier_bindings(brew.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("owned Java signature bindings")),
+        };
+        if bindings
+            .iter()
+            .map(|binding| (binding.owner, binding.role, binding.position))
+            .collect::<Vec<_>>()
+            != vec![
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    0,
+                ),
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    0,
+                ),
+            ]
+        {
+            return Err(TestError::Missing("Java executable binding slots"));
+        }
         if owned.signature_carrier_role(brew.id())
             != Some(
                 backend_semantic::ir::SignatureCarrierRoleObservation::Captured(

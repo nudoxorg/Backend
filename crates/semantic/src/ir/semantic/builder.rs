@@ -1,4 +1,6 @@
-use super::super::signature_carrier::PackedSignatureCarrierRoles;
+use super::super::signature_carrier::{
+    PackedSignatureCarrierBindings, PackedSignatureCarrierRoles, SignatureCarrierBindingRange,
+};
 use super::columns::{
     IrIndices, ItemColumns, LanguageExtensionCounts, LanguageExtensions, PackedLinkOccurrences,
     PackedLinks, SourceColumns,
@@ -34,8 +36,9 @@ use crate::ir::{
     ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
     ImageProvenanceClaim, Interner, ListId, ListInterner, ListTable, ListTableView,
     OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
-    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SignatureCarrierRole, SourceIdentity,
-    StableRef, TextId, Type, TypeId, VariantFingerprint,
+    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SignatureCarrierBindingRole,
+    SignatureCarrierOwnerInput, SignatureCarrierRole, SourceIdentity, StableRef, TextId, Type,
+    TypeId, VariantFingerprint,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
     columnar::{RawColumn, Slab, SlabPlan},
     interner::{HashIndex, hash},
@@ -157,6 +160,7 @@ pub struct IrBuilder {
     link_occurrences: PackedLinkOccurrences,
     occurrence_authority: OccurrenceAuthorityColumn,
     signature_carrier_roles: Option<PackedSignatureCarrierRoles>,
+    signature_carrier_bindings: Option<PackedSignatureCarrierBindings>,
     entity_scratch: Vec<EntityId>,
     atom_scratch: Vec<AtomId>,
     doc_scratch: Vec<DocFragment>,
@@ -217,6 +221,286 @@ impl IrBuilder {
         }
         self.signature_carrier_roles = Some(PackedSignatureCarrierRoles::from_roles(roles)?);
         Ok(())
+    }
+
+    /// Captures exact, owner-sorted function signature bindings after the
+    /// frontend has joined product edges to function tuple children.
+    ///
+    /// `owners` must contain every Function entity exactly once in entity-row
+    /// order. `targets` stores the captured owners' parameter carriers then
+    /// result carriers, in the same order; unavailable owners consume no
+    /// targets. Captured empty signatures remain explicit owner records.
+    #[doc(hidden)]
+    pub fn capture_signature_carrier_bindings(
+        &mut self,
+        owners: &[SignatureCarrierOwnerInput],
+        targets: &[EntityId],
+    ) -> Result<(), BuildError> {
+        if self.signature_carrier_bindings.is_some() || self.signature_carrier_roles.is_some() {
+            return Err(BuildError::SignatureCarrierBindingsAlreadyCaptured);
+        }
+
+        let mut expected_owner_count = 0_usize;
+        for kind in self.items.kinds.iter() {
+            if *kind == ItemKind::Function {
+                expected_owner_count =
+                    expected_owner_count
+                        .checked_add(1)
+                        .ok_or(BuildError::Capacity(CapacityError {
+                            space: CapacitySpace::Value,
+                            actual: usize::MAX,
+                        }))?;
+            }
+        }
+        if owners.len() != expected_owner_count {
+            let expected = self
+                .items
+                .kinds
+                .iter()
+                .enumerate()
+                .filter(|(_, kind)| **kind == ItemKind::Function)
+                .nth(owners.len().min(expected_owner_count))
+                .and_then(|(index, _)| u32::try_from(index).ok())
+                .map(EntityId::new);
+            let observed = owners.get(expected_owner_count).map(|input| input.owner());
+            return Err(BuildError::SignatureCarrierBindingOwnerSet {
+                row: owners.len().min(expected_owner_count),
+                expected,
+                observed,
+            });
+        }
+
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(owners.len()).map_err(|_| {
+            BuildError::Capacity(CapacityError {
+                space: CapacitySpace::Value,
+                actual: owners.len(),
+            })
+        })?;
+        let mut roles = Vec::new();
+        roles.try_reserve_exact(self.items.len()).map_err(|_| {
+            BuildError::Capacity(CapacityError {
+                space: CapacitySpace::Value,
+                actual: self.items.len(),
+            })
+        })?;
+        roles.resize(self.items.len(), SignatureCarrierRole::NotCarrier);
+        let mut target_cursor = 0_usize;
+        let mut owner_cursor = 0_usize;
+        for (entity_index, kind) in self.items.kinds.iter().copied().enumerate() {
+            if kind != ItemKind::Function {
+                continue;
+            }
+            let owner = EntityId::new(u32::try_from(entity_index).map_err(|_| {
+                BuildError::Capacity(CapacityError {
+                    space: CapacitySpace::Value,
+                    actual: entity_index,
+                })
+            })?);
+            let input = owners.get(owner_cursor).copied().ok_or(
+                BuildError::SignatureCarrierBindingOwnerSet {
+                    row: owner_cursor,
+                    expected: Some(owner),
+                    observed: None,
+                },
+            )?;
+            if input.owner() != owner {
+                return Err(BuildError::SignatureCarrierBindingOwnerSet {
+                    row: owner_cursor,
+                    expected: Some(owner),
+                    observed: Some(input.owner()),
+                });
+            }
+            owner_cursor += 1;
+
+            let (target_start, parameter_count, result_count) = match input {
+                SignatureCarrierOwnerInput::Unavailable { .. } => (None, 0, 0),
+                SignatureCarrierOwnerInput::Captured {
+                    parameters: parameter_count,
+                    results: result_count,
+                    ..
+                } => {
+                    let binding_total = parameter_count.checked_add(result_count).ok_or(
+                        BuildError::SignatureCarrierBindingCounts {
+                            owner,
+                            parameters: parameter_count,
+                            results: result_count,
+                        },
+                    )?;
+                    let total = usize::try_from(binding_total).map_err(|_| {
+                        BuildError::SignatureCarrierBindingCounts {
+                            owner,
+                            parameters: parameter_count,
+                            results: result_count,
+                        }
+                    })?;
+                    let end = target_cursor.checked_add(total).ok_or(
+                        BuildError::SignatureCarrierBindingCounts {
+                            owner,
+                            parameters: parameter_count,
+                            results: result_count,
+                        },
+                    )?;
+                    if u32::try_from(end).is_err() {
+                        return Err(BuildError::Capacity(CapacityError {
+                            space: CapacitySpace::Value,
+                            actual: end,
+                        }));
+                    }
+                    let captured_targets = targets.get(target_cursor..end).ok_or(
+                        BuildError::SignatureCarrierBindingCounts {
+                            owner,
+                            parameters: parameter_count,
+                            results: result_count,
+                        },
+                    )?;
+                    let (parameter_cells, result_cells) = self
+                        .function_signature_tuple(owner)
+                        .ok_or(BuildError::SignatureCarrierBindingSignature { owner })?;
+                    if u32::try_from(parameter_cells.len()).ok() != Some(parameter_count)
+                        || u32::try_from(result_cells.len()).ok() != Some(result_count)
+                    {
+                        return Err(BuildError::SignatureCarrierBindingCounts {
+                            owner,
+                            parameters: parameter_count,
+                            results: result_count,
+                        });
+                    }
+                    let target_start = u32::try_from(target_cursor).map_err(|_| {
+                        BuildError::Capacity(CapacityError {
+                            space: CapacitySpace::Value,
+                            actual: target_cursor,
+                        })
+                    })?;
+                    if target_start == u32::MAX {
+                        return Err(BuildError::Capacity(CapacityError {
+                            space: CapacitySpace::Value,
+                            actual: target_cursor,
+                        }));
+                    }
+                    for (relative, carrier) in captured_targets.iter().copied().enumerate() {
+                        let carrier_kind = self.items.kinds.get(carrier.index()).copied().ok_or(
+                            BuildError::Dangling {
+                                space: SemanticSpace::Entity,
+                                raw: carrier.raw,
+                            },
+                        )?;
+                        if carrier_kind != ItemKind::Parameter {
+                            return Err(BuildError::SignatureCarrierBindingTargetKind {
+                                owner,
+                                carrier,
+                                kind: carrier_kind,
+                            });
+                        }
+                        let (role, position, tuple_type) = if relative < parameter_cells.len() {
+                            let position = u32::try_from(relative).map_err(|_| {
+                                BuildError::Capacity(CapacityError {
+                                    space: CapacitySpace::Value,
+                                    actual: relative,
+                                })
+                            })?;
+                            (
+                                SignatureCarrierBindingRole::Parameter,
+                                position,
+                                parameter_cells.get(relative).map(|cell| cell.ty),
+                            )
+                        } else {
+                            let result_position = relative - parameter_cells.len();
+                            let position = u32::try_from(result_position).map_err(|_| {
+                                BuildError::Capacity(CapacityError {
+                                    space: CapacitySpace::Value,
+                                    actual: result_position,
+                                })
+                            })?;
+                            (
+                                SignatureCarrierBindingRole::Result,
+                                position,
+                                result_cells.get(result_position).map(|cell| cell.ty),
+                            )
+                        };
+                        let carrier_type = self
+                            .items
+                            .semantic_types
+                            .get(carrier.index())
+                            .copied()
+                            .and_then(|value| value.get());
+                        if tuple_type.is_none() || carrier_type != tuple_type {
+                            return Err(BuildError::SignatureCarrierBindingType {
+                                owner,
+                                carrier,
+                                role,
+                                position,
+                            });
+                        }
+                        let role = match role {
+                            SignatureCarrierBindingRole::Parameter => SignatureCarrierRole::Input,
+                            SignatureCarrierBindingRole::Result => SignatureCarrierRole::Result,
+                        };
+                        let observed =
+                            roles.get_mut(carrier.index()).ok_or(BuildError::Dangling {
+                                space: SemanticSpace::Entity,
+                                raw: carrier.raw,
+                            })?;
+                        *observed = observed.union(role);
+                    }
+                    target_cursor = end;
+                    (Some(target_start), parameter_count, result_count)
+                }
+            };
+            ranges.push(SignatureCarrierBindingRange {
+                owner,
+                target_start,
+                parameter_count,
+                result_count,
+            });
+        }
+        if target_cursor != targets.len() {
+            return Err(BuildError::SignatureCarrierBindingTargetCount {
+                expected: target_cursor,
+                observed: targets.len(),
+            });
+        }
+
+        let mut owned_targets = Vec::new();
+        owned_targets
+            .try_reserve_exact(targets.len())
+            .map_err(|_| {
+                BuildError::Capacity(CapacityError {
+                    space: CapacitySpace::Value,
+                    actual: targets.len(),
+                })
+            })?;
+        owned_targets.extend_from_slice(targets);
+        self.signature_carrier_roles = Some(PackedSignatureCarrierRoles::from_roles(&roles)?);
+        self.signature_carrier_bindings = Some(PackedSignatureCarrierBindings::from_parts(
+            ranges,
+            owned_targets,
+        ));
+        Ok(())
+    }
+
+    fn function_signature_tuple(
+        &self,
+        owner: EntityId,
+    ) -> Option<(&[TupleElement], &[TupleElement])> {
+        let type_id = self
+            .items
+            .semantic_types
+            .get(owner.index())
+            .copied()?
+            .get()?;
+        let TypeExpr::Concrete(ConcreteType::Function {
+            parameters,
+            results,
+            ..
+        }) = self.types.get(type_id)?
+        else {
+            return None;
+        };
+        Some((
+            self.tuple_elements.get(parameters)?,
+            self.tuple_elements.get(results)?,
+        ))
     }
     /// Binds one owned compile provenance header before entity materialization.
     ///
@@ -709,6 +993,7 @@ impl IrBuilder {
             link_occurrences,
             occurrence_authority: self.occurrence_authority,
             signature_carrier_roles: self.signature_carrier_roles,
+            signature_carrier_bindings: self.signature_carrier_bindings,
         })
     }
 

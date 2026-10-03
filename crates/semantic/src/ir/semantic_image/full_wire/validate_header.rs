@@ -6,7 +6,8 @@ use super::super::{
     wire::{
         ATOM_ROW_BYTES, DIRECTORY_BYTES, ENTITY_ROW_BYTES, EXTERNAL_ROW_BYTES, FullDirectoryEntry,
         FullDirectoryKind, FullImageLayout, HEADER_BYTES, LINK_ROW_BYTES, MAGIC,
-        OCCURRENCE_ROW_BYTES, RANGE_ROW_BYTES, SCHEMA_CARRIER_ROLES, SCHEMA_LEGACY,
+        OCCURRENCE_ROW_BYTES, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES,
+        SCHEMA_LEGACY, SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
         SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, get_u16, get_u32,
         read_array,
     },
@@ -25,13 +26,13 @@ pub(super) fn directory(bytes: &[u8]) -> Result<FullImageLayout, FullSemanticIma
     let schema = get_u16(bytes, 4, FullSemanticImageField::Header)?;
     let Some(kinds) = FullDirectoryKind::kinds_for_schema(schema) else {
         return Err(FullSemanticImageFault::Schema {
-            expected: SCHEMA_CARRIER_ROLES,
+            expected: SCHEMA_CARRIER_BINDINGS,
             observed: schema,
         });
     };
     let expected_count =
         FullDirectoryKind::count_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: SCHEMA_CARRIER_ROLES,
+            expected: SCHEMA_CARRIER_BINDINGS,
             observed: schema,
         })?;
     let directory_count = get_u16(bytes, 6, FullSemanticImageField::Directory)?;
@@ -68,7 +69,7 @@ pub(super) fn directory(bytes: &[u8]) -> Result<FullImageLayout, FullSemanticIma
             .ok_or(FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::Directory,
             })?;
-    let mut entries = [FullDirectoryEntry::EMPTY; 27];
+    let mut entries = [FullDirectoryEntry::EMPTY; 29];
     for (index, kind) in kinds.iter().copied().enumerate() {
         let offset = HEADER_BYTES + index * DIRECTORY_BYTES;
         let observed_kind = get_u16(bytes, offset, FullSemanticImageField::Directory)?;
@@ -143,7 +144,7 @@ pub(super) fn directory(bytes: &[u8]) -> Result<FullImageLayout, FullSemanticIma
         let last_kind = kinds
             .last()
             .copied()
-            .unwrap_or(FullDirectoryKind::ClangBindings);
+            .unwrap_or(FullDirectoryKind::SignatureCarrierBindingTargets);
         return Err(FullSemanticImageFault::DirectoryRange {
             kind: last_kind,
             offset: wire(expected_offset, FullSemanticImageField::Directory)?,
@@ -164,7 +165,10 @@ pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSe
     fixed(layout, FullDirectoryKind::Externals, EXTERNAL_ROW_BYTES)?;
     fixed(layout, FullDirectoryKind::Links, LINK_ROW_BYTES)?;
     fixed(layout, FullDirectoryKind::Occurrences, OCCURRENCE_ROW_BYTES)?;
-    if layout.schema == SCHEMA_CARRIER_ROLES {
+    if matches!(
+        layout.schema,
+        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS
+    ) {
         let entity_count = layout.entry(FullDirectoryKind::Entities).count;
         let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
         if roles.count != entity_count {
@@ -189,9 +193,21 @@ pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSe
         }
     } else if layout.schema != SCHEMA_LEGACY {
         return Err(FullSemanticImageFault::Schema {
-            expected: SCHEMA_CARRIER_ROLES,
+            expected: SCHEMA_CARRIER_BINDINGS,
             observed: layout.schema,
         });
+    }
+    if layout.schema == SCHEMA_CARRIER_BINDINGS {
+        fixed(
+            layout,
+            FullDirectoryKind::SignatureCarrierBindingRanges,
+            SIGNATURE_CARRIER_RANGE_ROW_BYTES,
+        )?;
+        fixed(
+            layout,
+            FullDirectoryKind::SignatureCarrierBindingTargets,
+            SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+        )?;
     }
     for (facts, bindings) in extension_pairs() {
         let entry = layout.entry(facts);

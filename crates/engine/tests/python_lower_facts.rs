@@ -902,6 +902,40 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
                 "the identical parameter and slot did not collapse to one row",
             ));
         }
+        let function = ir
+            .items()
+            .find(|item| item.name() == b"value" && item.kind() == ItemKind::Function)
+            .ok_or(TestError::Falsified("function owner absent"))?;
+        let parameter = ir
+            .items()
+            .find(|item| item.name() == b"value" && item.kind() == ItemKind::Parameter)
+            .ok_or(TestError::Falsified("shared parameter/result carrier absent"))?;
+        let bindings = match ir.signature_carrier_bindings(function.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Falsified("function bindings unavailable")),
+        };
+        if bindings
+            != vec![
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: function.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: parameter.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: function.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: parameter.id(),
+                },
+            ]
+        {
+            return Err(TestError::Falsified(
+                "same Python carrier lost its owner-specific parameter/result slots",
+            ));
+        }
         Ok(())
     })
 }

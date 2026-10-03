@@ -13,19 +13,24 @@ use crate::ir::{
     DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget, FreePredicate,
     FreePredicateListId, GoFacts, JavaFacts, Link, LinkId, LinkOccurrence, LinkOccurrenceId,
     ObjectMember, ObjectMemberListId, OccurrenceAuthorityFacts, PythonFacts, RustFacts,
-    SemanticCoreReader, SemanticEntity, SemanticImageFacts, SemanticReader, SignatureCarrierRole,
-    SignatureCarrierRoleObservation, TemplatePart, TemplatePartListId, TupleElement,
-    TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
-    TypeParameterBoundListId, TypeParameterListId, TypeScriptFacts,
+    SemanticCoreReader, SemanticEntity, SemanticImageFacts, SemanticReader,
+    SignatureCarrierBindings as SignatureCarrierBindingsIter, SignatureCarrierBindingsObservation,
+    SignatureCarrierRole, SignatureCarrierRoleObservation, TemplatePart, TemplatePartListId,
+    TupleElement, TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter,
+    TypeParameterBound, TypeParameterBoundListId, TypeParameterListId, TypeScriptFacts,
 };
 
 use super::{
     decode,
     extensions_decode::{self, ExtensionCounts},
-    fault::FullSemanticImageError,
+    fault::{FullSemanticImageError, FullSemanticImageField},
     typed_decode,
     validate::{self, TypedLayout, ValidatedFullImage},
-    wire::{FullDirectoryKind, FullImageLayout, SPARSE_BINDING_ROW_BYTES, get_u32},
+    wire::{
+        FullDirectoryKind, FullImageLayout, NONE, SCHEMA_CARRIER_BINDINGS,
+        SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+        SPARSE_BINDING_ROW_BYTES, get_u32,
+    },
 };
 
 std::thread_local! {
@@ -578,6 +583,10 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         = FullCanonicalExternals<'image, 'bytes>
     where
         Self: 'image;
+    type SignatureCarrierBindings<'image>
+        = SignatureCarrierBindingsIter<'image>
+    where
+        Self: 'image;
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity> {
         decode::entity(self.bytes, self.layout(), id.raw).ok()
@@ -593,6 +602,84 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         let packed = *self.bytes.get(offset)?;
         let bits = (packed >> ((entity.index() % 4) * 2)) & 0b11;
         SignatureCarrierRole::from_bits(bits).map(SignatureCarrierRoleObservation::Captured)
+    }
+    fn signature_carrier_bindings(
+        &self,
+        owner: EntityId,
+    ) -> Option<SignatureCarrierBindingsObservation<Self::SignatureCarrierBindings<'_>>> {
+        let entity = self.entity(owner)?;
+        if entity.kind != crate::ir::ItemKind::Function {
+            return None;
+        }
+        let layout = self.layout();
+        if layout.schema != SCHEMA_CARRIER_BINDINGS {
+            return Some(SignatureCarrierBindingsObservation::Unavailable);
+        }
+        let ranges = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
+        let mut low = 0_u32;
+        let mut high = ranges.count;
+        let mut found = None;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let offset = ranges.offset.checked_add(
+                usize::try_from(middle)
+                    .ok()?
+                    .checked_mul(SIGNATURE_CARRIER_RANGE_ROW_BYTES)?,
+            )?;
+            let observed = get_u32(
+                self.bytes,
+                offset,
+                FullSemanticImageField::SignatureCarrierBindingRanges,
+            )
+            .ok()?;
+            match observed.cmp(&owner.raw) {
+                core::cmp::Ordering::Less => low = middle.checked_add(1)?,
+                core::cmp::Ordering::Greater => high = middle,
+                core::cmp::Ordering::Equal => {
+                    found = Some(offset);
+                    break;
+                }
+            }
+        }
+        let offset = found?;
+        let target_start = get_u32(
+            self.bytes,
+            offset.checked_add(4)?,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )
+        .ok()?;
+        if target_start == NONE {
+            return Some(SignatureCarrierBindingsObservation::Unavailable);
+        }
+        let parameter_count = get_u32(
+            self.bytes,
+            offset.checked_add(8)?,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )
+        .ok()?;
+        let result_count = get_u32(
+            self.bytes,
+            offset.checked_add(12)?,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )
+        .ok()?;
+        let target_offset = layout
+            .entry(FullDirectoryKind::SignatureCarrierBindingTargets)
+            .offset
+            .checked_add(
+                usize::try_from(target_start)
+                    .ok()?
+                    .checked_mul(SIGNATURE_CARRIER_TARGET_ROW_BYTES)?,
+            )?;
+        Some(SignatureCarrierBindingsObservation::Captured(
+            SignatureCarrierBindingsIter::wire(
+                owner,
+                self.bytes,
+                target_offset,
+                parameter_count,
+                result_count,
+            ),
+        ))
     }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity> {
         binary_entity(self, identity).and_then(|id| self.entity(id))

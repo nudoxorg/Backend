@@ -5321,6 +5321,42 @@ mod tests {
         {
             return Err(TestError::Missing("owned Go function role"));
         }
+        let bindings = match owned.signature_carrier_bindings(brew.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("owned Go signature bindings")),
+        };
+        let slots: Vec<_> = bindings
+            .iter()
+            .map(|binding| (binding.owner, binding.role, binding.position))
+            .collect();
+        if slots
+            != vec![
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    0,
+                ),
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    1,
+                ),
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    0,
+                ),
+                (
+                    brew.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    1,
+                ),
+            ]
+        {
+            return Err(TestError::Missing("Go ordered multi-result bindings"));
+        }
         let mut saw_input = false;
         let mut saw_result = false;
         for item in owned.items() {

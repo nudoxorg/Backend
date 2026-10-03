@@ -18,7 +18,8 @@ use super::{
     wire::{
         ATOM_ROW_BYTES, DIRECTORY_BYTES, ENTITY_ROW_BYTES, EXTERNAL_ROW_BYTES, FullDirectoryEntry,
         FullDirectoryKind, FullImageLayout, HEADER_BYTES, LINK_ROW_BYTES, NONE,
-        OCCURRENCE_ROW_BYTES, RANGE_ROW_BYTES, SPARSE_BINDING_ROW_BYTES,
+        OCCURRENCE_ROW_BYTES, RANGE_ROW_BYTES, SIGNATURE_CARRIER_RANGE_ROW_BYTES,
+        SIGNATURE_CARRIER_TARGET_ROW_BYTES, SPARSE_BINDING_ROW_BYTES,
     },
 };
 use crate::ir::semantic_image::full::{FullPlanError, FullSemanticPlan};
@@ -35,6 +36,9 @@ pub(super) struct FullSemanticImagePlan<'image> {
     pub(super) links: Vec<[u8; LINK_ROW_BYTES]>,
     pub(super) occurrences: Vec<[u8; OCCURRENCE_ROW_BYTES]>,
     pub(super) signature_carrier_roles: Option<Vec<u8>>,
+    pub(super) signature_carrier_binding_ranges:
+        Option<Vec<[u8; SIGNATURE_CARRIER_RANGE_ROW_BYTES]>>,
+    pub(super) signature_carrier_binding_targets: Option<Vec<u8>>,
     pub(super) members: CanonicalVariablePool,
     pub(super) documentation: CanonicalVariablePool,
     pub(super) extensions: FullExtensionPayloads,
@@ -104,6 +108,8 @@ impl<'image> FullSemanticImagePlan<'image> {
         let links = plan_links(ir, &semantic)?;
         let occurrences = plan_occurrences(ir, &semantic)?;
         let signature_carrier_roles = plan_signature_carrier_roles(ir, &semantic)?;
+        let (signature_carrier_binding_ranges, signature_carrier_binding_targets) =
+            plan_signature_carrier_bindings(ir, &semantic)?;
         let members = canonical_variable_pool(
             &semantic.terminal.members.order,
             &semantic.terminal.members.key_ranges,
@@ -125,7 +131,9 @@ impl<'image> FullSemanticImagePlan<'image> {
             java: extension_payload(&semantic.extensions.java)?,
             clang: extension_payload(&semantic.extensions.clang)?,
         };
-        let schema = if signature_carrier_roles.is_some() {
+        let schema = if signature_carrier_binding_ranges.is_some() {
+            super::wire::SCHEMA_CARRIER_BINDINGS
+        } else if signature_carrier_roles.is_some() {
             super::wire::SCHEMA_CARRIER_ROLES
         } else {
             super::wire::SCHEMA_LEGACY
@@ -140,6 +148,8 @@ impl<'image> FullSemanticImagePlan<'image> {
             &documentation,
             &extensions,
             signature_carrier_roles.as_deref(),
+            signature_carrier_binding_ranges.as_deref(),
+            signature_carrier_binding_targets.as_deref(),
         )?;
         let (layout, required, required_wire) = layout(lanes, schema)?;
         Ok(Self {
@@ -151,6 +161,8 @@ impl<'image> FullSemanticImagePlan<'image> {
             links,
             occurrences,
             signature_carrier_roles,
+            signature_carrier_binding_ranges,
+            signature_carrier_binding_targets,
             members,
             documentation,
             extensions,
@@ -159,6 +171,215 @@ impl<'image> FullSemanticImagePlan<'image> {
             required_wire,
         })
     }
+}
+
+fn plan_signature_carrier_bindings(
+    ir: &Ir,
+    semantic: &FullSemanticPlan<'_>,
+) -> Result<
+    (
+        Option<Vec<[u8; SIGNATURE_CARRIER_RANGE_ROW_BYTES]>>,
+        Option<Vec<u8>>,
+    ),
+    FullPlanError,
+> {
+    let Some(source) = ir.signature_carrier_binding_plane() else {
+        return Ok((None, None));
+    };
+    let canonical = semantic.typed.canonical();
+    let function_count = semantic
+        .entities
+        .rows
+        .iter()
+        .filter(|row| {
+            ir.semantic_entity(row.entity)
+                .is_some_and(|entity| entity.kind == crate::ir::ItemKind::Function)
+        })
+        .count();
+    if source.ranges().len() != function_count {
+        return Err(FullSemanticImageFault::DirectoryCountLane {
+            kind: FullDirectoryKind::SignatureCarrierBindingRanges,
+            expected: count(
+                function_count,
+                FullSemanticImageField::SignatureCarrierBindingRanges,
+            )?,
+            observed: count(
+                source.ranges().len(),
+                FullSemanticImageField::SignatureCarrierBindingRanges,
+            )?,
+        }
+        .into());
+    }
+    let mut source_cursor = 0_usize;
+    for range in source.ranges().iter().copied() {
+        let Some(start) = range.target_start else {
+            if range.parameter_count != 0 || range.result_count != 0 {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: count(
+                        source_cursor,
+                        FullSemanticImageField::SignatureCarrierBindingRanges,
+                    )?,
+                    owner: range.owner.raw,
+                    start: NONE,
+                    parameters: range.parameter_count,
+                    results: range.result_count,
+                }
+                .into());
+            }
+            continue;
+        };
+        if usize::try_from(start).ok() != Some(source_cursor) {
+            return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                row: count(
+                    source_cursor,
+                    FullSemanticImageField::SignatureCarrierBindingRanges,
+                )?,
+                owner: range.owner.raw,
+                start,
+                parameters: range.parameter_count,
+                results: range.result_count,
+            }
+            .into());
+        }
+        let total = usize::try_from(range.parameter_count)
+            .ok()
+            .and_then(|parameters| {
+                usize::try_from(range.result_count)
+                    .ok()
+                    .and_then(|results| parameters.checked_add(results))
+            })
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierBindingRanges,
+            })?;
+        source_cursor =
+            source_cursor
+                .checked_add(total)
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                })?;
+        if source_cursor > source.targets().len() {
+            return Err(FullSemanticImageFault::SignatureCarrierBindingTargetCount {
+                expected: count(
+                    source_cursor,
+                    FullSemanticImageField::SignatureCarrierBindingTargets,
+                )?,
+                observed: count(
+                    source.targets().len(),
+                    FullSemanticImageField::SignatureCarrierBindingTargets,
+                )?,
+            }
+            .into());
+        }
+    }
+    if source_cursor != source.targets().len() {
+        return Err(FullSemanticImageFault::SignatureCarrierBindingTargetCount {
+            expected: count(
+                source_cursor,
+                FullSemanticImageField::SignatureCarrierBindingTargets,
+            )?,
+            observed: count(
+                source.targets().len(),
+                FullSemanticImageField::SignatureCarrierBindingTargets,
+            )?,
+        }
+        .into());
+    }
+    let mut ranges = Vec::with_capacity(function_count);
+    let mut target_bytes = Vec::new();
+    for row in semantic.entities.rows.iter().copied() {
+        let entity = ir
+            .semantic_entity(row.entity)
+            .ok_or(FullSemanticImageFault::Reference {
+                field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                row: row.entity.raw,
+                expected: count(
+                    semantic.entities.rows.len(),
+                    FullSemanticImageField::Entities,
+                )?,
+                observed: row.entity.raw,
+            })?;
+        if entity.kind != crate::ir::ItemKind::Function {
+            continue;
+        }
+        let range = source.range(row.entity).ok_or(
+            FullSemanticImageFault::SignatureCarrierBindingOwnerSet {
+                row: count(
+                    ranges.len(),
+                    FullSemanticImageField::SignatureCarrierBindingRanges,
+                )?,
+                expected: Some(canonical.entity(row.entity)?),
+                observed: None,
+            },
+        )?;
+        let canonical_owner = canonical.entity(row.entity)?;
+        let target_start = match range.target_start {
+            None => {
+                if range.parameter_count != 0 || range.result_count != 0 {
+                    return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                        row: count(
+                            ranges.len(),
+                            FullSemanticImageField::SignatureCarrierBindingRanges,
+                        )?,
+                        owner: canonical_owner,
+                        start: NONE,
+                        parameters: range.parameter_count,
+                        results: range.result_count,
+                    }
+                    .into());
+                }
+                NONE
+            }
+            Some(start) => {
+                let source_count = usize::try_from(range.parameter_count)
+                    .ok()
+                    .and_then(|parameters| {
+                        usize::try_from(range.result_count)
+                            .ok()
+                            .and_then(|results| parameters.checked_add(results))
+                    })
+                    .ok_or(FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                    })?;
+                let source_start =
+                    usize::try_from(start).map_err(|_| FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                    })?;
+                let end = source_start.checked_add(source_count).ok_or(
+                    FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                    },
+                )?;
+                let source_targets = source.targets().get(source_start..end).ok_or(
+                    FullSemanticImageFault::SignatureCarrierBindingRange {
+                        row: count(
+                            ranges.len(),
+                            FullSemanticImageField::SignatureCarrierBindingRanges,
+                        )?,
+                        owner: canonical_owner,
+                        start,
+                        parameters: range.parameter_count,
+                        results: range.result_count,
+                    },
+                )?;
+                let wire_start = count(
+                    target_bytes.len() / SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+                    FullSemanticImageField::SignatureCarrierBindingTargets,
+                )?;
+                for target in source_targets.iter().copied() {
+                    let canonical_target = canonical.entity(target)?;
+                    target_bytes.extend_from_slice(&canonical_target.to_le_bytes());
+                }
+                wire_start
+            }
+        };
+        let mut bytes = [0_u8; SIGNATURE_CARRIER_RANGE_ROW_BYTES];
+        put_u32_array(&mut bytes, 0, canonical_owner);
+        put_u32_array(&mut bytes, 4, target_start);
+        put_u32_array(&mut bytes, 8, range.parameter_count);
+        put_u32_array(&mut bytes, 12, range.result_count);
+        ranges.push(bytes);
+    }
+    Ok((Some(ranges), Some(target_bytes)))
 }
 
 fn plan_signature_carrier_roles(
@@ -431,9 +652,11 @@ fn lanes(
     documentation: &CanonicalVariablePool,
     extensions: &FullExtensionPayloads,
     signature_carrier_roles: Option<&[u8]>,
-) -> Result<[Lane; 27], FullPlanError> {
+    signature_carrier_binding_ranges: Option<&[[u8; SIGNATURE_CARRIER_RANGE_ROW_BYTES]]>,
+    signature_carrier_binding_targets: Option<&[u8]>,
+) -> Result<[Lane; 29], FullPlanError> {
     let canonical = semantic.typed.canonical();
-    let mut lanes = [Lane::ZERO; 27];
+    let mut lanes = [Lane::ZERO; 29];
     set_lane(
         &mut lanes,
         FullDirectoryKind::Atoms,
@@ -471,6 +694,39 @@ fn lanes(
             count(
                 entities.len(),
                 FullSemanticImageField::SignatureCarrierRoles,
+            )?,
+        );
+    }
+    if let (Some(ranges), Some(targets)) = (
+        signature_carrier_binding_ranges,
+        signature_carrier_binding_targets,
+    ) {
+        set_lane(
+            &mut lanes,
+            FullDirectoryKind::SignatureCarrierBindingRanges,
+            checked_bytes(
+                ranges.len(),
+                SIGNATURE_CARRIER_RANGE_ROW_BYTES,
+                FullSemanticImageField::SignatureCarrierBindingRanges,
+            )?,
+            count(
+                ranges.len(),
+                FullSemanticImageField::SignatureCarrierBindingRanges,
+            )?,
+        );
+        if targets.len() % SIGNATURE_CARRIER_TARGET_ROW_BYTES != 0 {
+            return Err(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierBindingTargets,
+            }
+            .into());
+        }
+        set_lane(
+            &mut lanes,
+            FullDirectoryKind::SignatureCarrierBindingTargets,
+            targets.len(),
+            count(
+                targets.len() / SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+                FullSemanticImageField::SignatureCarrierBindingTargets,
             )?,
         );
     }
@@ -587,7 +843,7 @@ fn lanes(
 }
 
 fn set_terminal_lanes(
-    lanes: &mut [Lane; 27],
+    lanes: &mut [Lane; 29],
     range_kind: FullDirectoryKind,
     bytes_kind: FullDirectoryKind,
     rows: &[crate::ir::ArenaRange],
@@ -605,7 +861,7 @@ fn set_terminal_lanes(
 }
 
 fn set_extension_lanes(
-    lanes: &mut [Lane; 27],
+    lanes: &mut [Lane; 29],
     facts: FullDirectoryKind,
     bindings: FullDirectoryKind,
     plan: &crate::ir::semantic_image::full::ExtensionPlanePlan,
@@ -645,17 +901,17 @@ fn set_extension_lanes(
 }
 
 fn layout(
-    lanes: [Lane; 27],
+    lanes: [Lane; 29],
     schema: u16,
 ) -> Result<(FullImageLayout, usize, u32), FullSemanticImageFault> {
     let kinds =
         FullDirectoryKind::kinds_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_CARRIER_ROLES,
+            expected: super::wire::SCHEMA_CARRIER_BINDINGS,
             observed: schema,
         })?;
     let directory_count =
         FullDirectoryKind::count_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_CARRIER_ROLES,
+            expected: super::wire::SCHEMA_CARRIER_BINDINGS,
             observed: schema,
         })?;
     let directory_bytes = DIRECTORY_BYTES
@@ -668,7 +924,7 @@ fn layout(
             field: FullSemanticImageField::Directory,
         },
     )?;
-    let mut entries = [FullDirectoryEntry::EMPTY; 27];
+    let mut entries = [FullDirectoryEntry::EMPTY; 29];
     for kind in kinds.iter().copied() {
         let lane = lanes[kind.index()];
         entries[kind.index()] = FullDirectoryEntry {
@@ -691,7 +947,7 @@ fn layout(
     ))
 }
 
-fn set_lane(lanes: &mut [Lane; 27], kind: FullDirectoryKind, length: usize, count: u32) {
+fn set_lane(lanes: &mut [Lane; 29], kind: FullDirectoryKind, length: usize, count: u32) {
     lanes[kind.index()] = Lane { length, count };
 }
 

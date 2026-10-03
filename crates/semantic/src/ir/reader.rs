@@ -99,6 +99,197 @@ pub enum SignatureCarrierRoleObservation {
     Captured(SignatureCarrierRole),
 }
 
+/// Role of one exact carrier edge in a function signature.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SignatureCarrierBindingRole {
+    /// One ordered parameter slot, including receivers and variadic tails.
+    Parameter,
+    /// One ordered result slot, including languages with multiple results.
+    Result,
+}
+
+/// Exact owner, role-local slot, and carrier endpoint from a function
+/// product edge joined to the matching function type tuple cell.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SignatureCarrierBinding {
+    /// Function declaration that owns this slot.
+    pub owner: EntityId,
+    /// Parameter or result section containing this slot.
+    pub role: SignatureCarrierBindingRole,
+    /// Zero-based position within `role` for `owner`.
+    pub position: u32,
+    /// Exact declaration row carried by this slot.
+    pub carrier: EntityId,
+}
+
+/// Per-function signature binding capture supplied by the compiler lowering
+/// transaction. Captured zero-count rows prove a known empty signature;
+/// unavailable rows preserve functions whose signature type was not known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignatureCarrierOwnerInput {
+    /// The frontend could not prove the complete tuple-cell/product-edge
+    /// join for this Function row.
+    Unavailable { owner: EntityId },
+    /// A proven function type and product edge sequence, possibly empty.
+    Captured {
+        owner: EntityId,
+        parameters: u32,
+        results: u32,
+    },
+}
+
+impl SignatureCarrierOwnerInput {
+    /// Marks a Function owner with no exact signature/type-child join.
+    #[must_use]
+    pub const fn unavailable(owner: EntityId) -> Self {
+        Self::Unavailable { owner }
+    }
+
+    /// Marks a Function owner whose exact role-local tuple counts were joined.
+    #[must_use]
+    pub const fn captured(owner: EntityId, parameters: u32, results: u32) -> Self {
+        Self::Captured {
+            owner,
+            parameters,
+            results,
+        }
+    }
+
+    /// Function declaration row named by this input.
+    #[must_use]
+    pub const fn owner(self) -> EntityId {
+        match self {
+            Self::Unavailable { owner } | Self::Captured { owner, .. } => owner,
+        }
+    }
+}
+
+/// Availability of one function's exact signature-carrier bindings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignatureCarrierBindingsObservation<Bindings> {
+    /// This function's exact slot-to-carrier join was unavailable, or the
+    /// image predates the binding lane.
+    Unavailable,
+    /// The exact ordered edge set was captured. The iterator may be empty.
+    Captured(Bindings),
+}
+
+enum SignatureCarrierBindingTargets<'image> {
+    Owned(&'image [EntityId]),
+    Wire { bytes: &'image [u8], offset: usize },
+}
+
+/// Allocation-free cursor over a captured function's ordered parameter and
+/// result carrier bindings. Constructed only after the owned or portable
+/// image has validated the complete range.
+pub struct SignatureCarrierBindings<'image> {
+    owner: EntityId,
+    targets: SignatureCarrierBindingTargets<'image>,
+    parameter_count: u32,
+    result_count: u32,
+    next: u32,
+}
+
+impl<'image> SignatureCarrierBindings<'image> {
+    pub(crate) fn owned(
+        owner: EntityId,
+        targets: &'image [EntityId],
+        parameter_count: u32,
+        result_count: u32,
+    ) -> Self {
+        Self {
+            owner,
+            targets: SignatureCarrierBindingTargets::Owned(targets),
+            parameter_count,
+            result_count,
+            next: 0,
+        }
+    }
+
+    pub(crate) fn wire(
+        owner: EntityId,
+        bytes: &'image [u8],
+        target_offset: usize,
+        parameter_count: u32,
+        result_count: u32,
+    ) -> Self {
+        Self {
+            owner,
+            targets: SignatureCarrierBindingTargets::Wire {
+                bytes,
+                offset: target_offset,
+            },
+            parameter_count,
+            result_count,
+            next: 0,
+        }
+    }
+
+    fn target(&self, index: u32) -> Option<EntityId> {
+        match &self.targets {
+            SignatureCarrierBindingTargets::Owned(targets) => {
+                targets.get(usize::try_from(index).ok()?).copied()
+            }
+            SignatureCarrierBindingTargets::Wire { bytes, offset } => {
+                let byte_index = usize::try_from(index)
+                    .ok()?
+                    .checked_mul(4)?
+                    .checked_add(*offset)?;
+                let end = byte_index.checked_add(4)?;
+                let row: [u8; 4] = bytes.get(byte_index..end)?.try_into().ok()?;
+                Some(EntityId::new(u32::from_le_bytes(row)))
+            }
+        }
+    }
+}
+
+impl Iterator for SignatureCarrierBindings<'_> {
+    type Item = SignatureCarrierBinding;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total = self.parameter_count.checked_add(self.result_count)?;
+        if self.next >= total {
+            return None;
+        }
+        let index = self.next;
+        self.next = self.next.checked_add(1)?;
+        let carrier = self.target(index)?;
+        if index < self.parameter_count {
+            Some(SignatureCarrierBinding {
+                owner: self.owner,
+                role: SignatureCarrierBindingRole::Parameter,
+                position: index,
+                carrier,
+            })
+        } else {
+            Some(SignatureCarrierBinding {
+                owner: self.owner,
+                role: SignatureCarrierBindingRole::Result,
+                position: index.checked_sub(self.parameter_count)?,
+                carrier,
+            })
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .parameter_count
+            .checked_add(self.result_count)
+            .and_then(|total| total.checked_sub(self.next))
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for SignatureCarrierBindings<'_> {
+    fn len(&self) -> usize {
+        self.size_hint().0
+    }
+}
+
+impl FusedIterator for SignatureCarrierBindings<'_> {}
+
 impl ExternalTargetIdentity {
     /// Captures one endpoint only after resolving its typed coordinate against
     /// the supplied complete image.
@@ -384,6 +575,10 @@ pub trait SemanticReader: SemanticCoreReader {
         + FusedIterator
     where
         Self: 'image;
+    type SignatureCarrierBindings<'image>: ExactSizeIterator<Item = SignatureCarrierBinding>
+        + FusedIterator
+    where
+        Self: 'image;
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity>;
     /// Returns one entity's structural function-signature carrier role.
@@ -395,6 +590,19 @@ pub trait SemanticReader: SemanticCoreReader {
     fn signature_carrier_role(&self, entity: EntityId) -> Option<SignatureCarrierRoleObservation> {
         self.entity(entity)
             .map(|_| SignatureCarrierRoleObservation::Unavailable)
+    }
+    /// Borrows one Function owner's exact ordered input/result carrier edges.
+    ///
+    /// `None` means the owner is invalid or is not a Function. A valid
+    /// Function with no proven signature returns `Some(Unavailable)`; a
+    /// captured no-argument/no-result function returns `Captured(empty)`.
+    fn signature_carrier_bindings(
+        &self,
+        owner: EntityId,
+    ) -> Option<SignatureCarrierBindingsObservation<Self::SignatureCarrierBindings<'_>>> {
+        self.entity(owner)
+            .filter(|entity| entity.kind == crate::ir::ItemKind::Function)
+            .map(|_| SignatureCarrierBindingsObservation::Unavailable)
     }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity>;
     fn external(&self, id: ExternalId) -> Option<ExternalTarget>;
@@ -678,12 +886,22 @@ impl SemanticReader for Ir {
     type FreePredicates<'image> = SemanticCursor<'image, FreePredicate>;
     type CanonicalTypes<'image> = IrCanonicalTypes<'image>;
     type CanonicalExternals<'image> = IrCanonicalExternals<'image>;
+    type SignatureCarrierBindings<'image>
+        = crate::ir::SignatureCarrierBindings<'image>
+    where
+        Self: 'image;
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity> {
         Ir::semantic_entity(self, id)
     }
     fn signature_carrier_role(&self, entity: EntityId) -> Option<SignatureCarrierRoleObservation> {
         Ir::signature_carrier_role(self, entity)
+    }
+    fn signature_carrier_bindings(
+        &self,
+        owner: EntityId,
+    ) -> Option<SignatureCarrierBindingsObservation<Self::SignatureCarrierBindings<'_>>> {
+        Ir::signature_carrier_bindings(self, owner)
     }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity> {
         Ir::find_declaration(self, identity).and_then(|item| Ir::semantic_entity(self, item.id()))

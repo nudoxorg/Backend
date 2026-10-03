@@ -412,6 +412,12 @@ pub(crate) const fn field_for(kind: FullDirectoryKind) -> FullSemanticImageField
         FullDirectoryKind::Links => FullSemanticImageField::Links,
         FullDirectoryKind::Occurrences => FullSemanticImageField::Occurrences,
         FullDirectoryKind::SignatureCarrierRoles => FullSemanticImageField::SignatureCarrierRoles,
+        FullDirectoryKind::SignatureCarrierBindingRanges => {
+            FullSemanticImageField::SignatureCarrierBindingRanges
+        }
+        FullDirectoryKind::SignatureCarrierBindingTargets => {
+            FullSemanticImageField::SignatureCarrierBindingTargets
+        }
         FullDirectoryKind::TypeScriptFacts
         | FullDirectoryKind::CSharpFacts
         | FullDirectoryKind::GoFacts

@@ -8648,6 +8648,78 @@ mod lane_tests {
         }
         Ok(())
     }
+
+    /// Optional and rest modifiers do not renumber exact signature slots:
+    /// the rest carrier remains the final parameter and the return carrier
+    /// occupies the separate result role.
+    #[test]
+    fn optional_and_rest_parameters_keep_owner_local_binding_positions() -> Result<(), LaneError> {
+        let source = "export function gather(head: string, suffix?: number, ...items: boolean[]): string { return head; }\n";
+        let ir = owned_ir(source, None)?;
+        let owner = ir
+            .items()
+            .find(|item| item.name() == b"gather" && item.kind() == EntityKind::Function)
+            .ok_or(LaneError::Missing("gather function"))?;
+        let carrier = |name: &[u8]| {
+            ir.items()
+                .find(|item| item.name() == name && item.kind() == EntityKind::Parameter)
+                .map(|item| item.id())
+        };
+        let head = carrier(b"head").ok_or(LaneError::Missing("head parameter"))?;
+        let suffix = carrier(b"suffix").ok_or(LaneError::Missing("optional parameter"))?;
+        let items = carrier(b"items").ok_or(LaneError::Missing("rest parameter"))?;
+        let bindings = match ir.signature_carrier_bindings(owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(LaneError::Missing("gather signature bindings")),
+        };
+        let slots: Vec<_> = bindings
+            .iter()
+            .map(|binding| {
+                (
+                    binding.owner,
+                    binding.role,
+                    binding.position,
+                    binding.carrier,
+                )
+            })
+            .collect();
+        let Some(result) = slots.get(3).copied() else {
+            return Err(LaneError::Missing("gather result slot"));
+        };
+        if slots
+            != vec![
+                (
+                    owner.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    0,
+                    head,
+                ),
+                (
+                    owner.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    1,
+                    suffix,
+                ),
+                (
+                    owner.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    2,
+                    items,
+                ),
+                (
+                    owner.id(),
+                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    0,
+                    result.3,
+                ),
+            ]
+        {
+            return Err(LaneError::Missing("TypeScript optional/rest slot order"));
+        }
+        Ok(())
+    }
 }
 
 /// The closed primitive record of one checker literal base.

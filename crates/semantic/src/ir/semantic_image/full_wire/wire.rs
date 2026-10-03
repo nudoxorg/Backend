@@ -13,6 +13,8 @@ pub(crate) const SCHEMA_LEGACY: u16 = 1;
 /// deliberately independent from the semantic projection epoch used in build
 /// identities: future projection changes must not reinterpret this grammar.
 pub(crate) const SCHEMA_CARRIER_ROLES: u16 = 2;
+/// Schema 3 adds exact owner/role/slot carrier bindings beside the role union.
+pub(crate) const SCHEMA_CARRIER_BINDINGS: u16 = 3;
 /// The first 176 bytes are the same explicitly documented image
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
@@ -29,6 +31,8 @@ pub(crate) const EXTERNAL_ROW_BYTES: usize = 96;
 pub(crate) const LINK_ROW_BYTES: usize = 28;
 pub(crate) const OCCURRENCE_ROW_BYTES: usize = 24;
 pub(crate) const SPARSE_BINDING_ROW_BYTES: usize = 8;
+pub(crate) const SIGNATURE_CARRIER_RANGE_ROW_BYTES: usize = 16;
+pub(crate) const SIGNATURE_CARRIER_TARGET_ROW_BYTES: usize = 4;
 
 /// One fixed-order full-image directory.  The order is part of the grammar:
 /// no directory lookup or producer-specific ordering can alter canonical
@@ -64,6 +68,8 @@ pub enum FullDirectoryKind {
     ClangFacts = 25,
     ClangBindings = 26,
     SignatureCarrierRoles = 27,
+    SignatureCarrierBindingRanges = 28,
+    SignatureCarrierBindingTargets = 29,
 }
 
 impl FullDirectoryKind {
@@ -127,10 +133,45 @@ impl FullDirectoryKind {
         Self::SignatureCarrierRoles,
     ];
 
+    /// Schema-3 directory order, extending schema 2 with the owner-range and
+    /// typed-target lanes.
+    pub const ALL_WITH_CARRIER_BINDINGS: [Self; 29] = [
+        Self::Atoms,
+        Self::AtomBytes,
+        Self::Entities,
+        Self::TypedNodes,
+        Self::TypedEdges,
+        Self::EntityLists,
+        Self::EntityListBytes,
+        Self::Documentation,
+        Self::DocumentationBytes,
+        Self::Externals,
+        Self::Links,
+        Self::Occurrences,
+        Self::TypeScriptFacts,
+        Self::TypeScriptBindings,
+        Self::CSharpFacts,
+        Self::CSharpBindings,
+        Self::GoFacts,
+        Self::GoBindings,
+        Self::RustFacts,
+        Self::RustBindings,
+        Self::PythonFacts,
+        Self::PythonBindings,
+        Self::JavaFacts,
+        Self::JavaBindings,
+        Self::ClangFacts,
+        Self::ClangBindings,
+        Self::SignatureCarrierRoles,
+        Self::SignatureCarrierBindingRanges,
+        Self::SignatureCarrierBindingTargets,
+    ];
+
     pub(crate) const fn kinds_for_schema(schema: u16) -> Option<&'static [Self]> {
         match schema {
             SCHEMA_LEGACY => Some(&Self::ALL),
             SCHEMA_CARRIER_ROLES => Some(&Self::ALL_WITH_CARRIER_ROLES),
+            SCHEMA_CARRIER_BINDINGS => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             _ => None,
         }
     }
@@ -139,6 +180,7 @@ impl FullDirectoryKind {
         match schema {
             SCHEMA_LEGACY => Some(26),
             SCHEMA_CARRIER_ROLES => Some(27),
+            SCHEMA_CARRIER_BINDINGS => Some(29),
             _ => None,
         }
     }
@@ -172,6 +214,8 @@ impl FullDirectoryKind {
             Self::ClangFacts => 25,
             Self::ClangBindings => 26,
             Self::SignatureCarrierRoles => 27,
+            Self::SignatureCarrierBindingRanges => 28,
+            Self::SignatureCarrierBindingTargets => 29,
         }
     }
 
@@ -204,6 +248,8 @@ impl FullDirectoryKind {
             Self::ClangFacts => 24,
             Self::ClangBindings => 25,
             Self::SignatureCarrierRoles => 26,
+            Self::SignatureCarrierBindingRanges => 27,
+            Self::SignatureCarrierBindingTargets => 28,
         }
     }
 }
@@ -240,13 +286,19 @@ impl FullDirectoryEntry {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FullImageLayout {
     pub(crate) schema: u16,
-    pub(crate) entries: [FullDirectoryEntry; 27],
+    pub(crate) entries: [FullDirectoryEntry; 29],
 }
 
 impl FullImageLayout {
     pub(crate) const fn entry(self, kind: FullDirectoryKind) -> FullDirectoryEntry {
         match (self.schema, kind) {
-            (SCHEMA_LEGACY, FullDirectoryKind::SignatureCarrierRoles) => FullDirectoryEntry::EMPTY,
+            (SCHEMA_LEGACY, FullDirectoryKind::SignatureCarrierRoles)
+            | (SCHEMA_LEGACY, FullDirectoryKind::SignatureCarrierBindingRanges)
+            | (SCHEMA_LEGACY, FullDirectoryKind::SignatureCarrierBindingTargets)
+            | (SCHEMA_CARRIER_ROLES, FullDirectoryKind::SignatureCarrierBindingRanges)
+            | (SCHEMA_CARRIER_ROLES, FullDirectoryKind::SignatureCarrierBindingTargets) => {
+                FullDirectoryEntry::EMPTY
+            }
             _ => self.entries[kind.index()],
         }
     }

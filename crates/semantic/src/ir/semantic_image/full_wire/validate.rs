@@ -1,9 +1,10 @@
 //! Structural full-image admission.
 //!
-//! Validation has no allocation and no fallback interpretation.  It proves
-//! the directory, canonical remaps, row alignments, generic typed endpoint
-//! graph, terminal pools, graph evidence, and sparse extension bindings before
-//! a future borrowed `SemanticReader` may hold the source bytes.
+//! Validation uses only checked scratch allocation for cross-plane role
+//! consistency and has no fallback interpretation. It proves the directory,
+//! canonical remaps, row alignments, generic typed endpoint graph, terminal
+//! pools, graph evidence, and sparse extension bindings before a borrowed
+//! `SemanticReader` may hold the source bytes.
 
 #[path = "validate_extensions.rs"]
 mod extensions;
@@ -14,16 +15,21 @@ mod header;
 #[path = "validate_typed.rs"]
 mod typed;
 
+use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::ir::{FactAvailability, ParentageAuthority};
+use crate::ir::{
+    ConcreteType, FactAvailability, ParentageAuthority, SignatureCarrierBindingRole, TypeExpr,
+};
 
 use super::{
     decode,
     fault::{FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField},
+    typed_decode,
     wire::{
         ATOM_ROW_BYTES, ENTITY_ROW_BYTES, FullDirectoryEntry, FullDirectoryKind, FullImageLayout,
-        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_ROLES, get_u32,
+        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES,
+        SIGNATURE_CARRIER_RANGE_ROW_BYTES, get_u32,
     },
 };
 
@@ -88,6 +94,9 @@ pub(crate) fn reopen_full_semantic_image(
     super::typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
     validate_entities(bytes, layout, typed)?;
     validate_signature_carrier_roles(bytes, layout)?;
+    if layout.schema == SCHEMA_CARRIER_BINDINGS {
+        validate_signature_carrier_bindings(bytes, layout, typed)?;
+    }
     validate_terminal_lists(bytes, layout, typed)?;
     graph::validate_externals(bytes, layout)?;
     graph::validate_graph(bytes, layout)?;
@@ -103,7 +112,10 @@ fn validate_signature_carrier_roles(
     bytes: &[u8],
     layout: FullImageLayout,
 ) -> Result<(), FullSemanticImageFault> {
-    if layout.schema != SCHEMA_CARRIER_ROLES {
+    if !matches!(
+        layout.schema,
+        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS
+    ) {
         return Ok(());
     }
     let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
@@ -163,6 +175,322 @@ fn validate_signature_carrier_roles(
             return Err(FullSemanticImageFault::SignatureCarrierRolePadding {
                 byte: roles.length.saturating_sub(1),
                 observed: padding,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_signature_carrier_bindings(
+    bytes: &[u8],
+    layout: FullImageLayout,
+    typed: TypedLayout,
+) -> Result<(), FullSemanticImageFault> {
+    let owners = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
+    let targets = layout.entry(FullDirectoryKind::SignatureCarrierBindingTargets);
+    let entities = layout.entry(FullDirectoryKind::Entities);
+    let role_plane = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
+    let role_bytes = usize::try_from(entities.count)
+        .map_err(|_| FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::SignatureCarrierRoles,
+        })?
+        .div_ceil(4);
+    let mut derived_roles = Vec::new();
+    derived_roles.try_reserve_exact(role_bytes).map_err(|_| {
+        FullSemanticImageFault::SignatureCarrierBindingScratch { bytes: role_bytes }
+    })?;
+    derived_roles.resize(role_bytes, 0_u8);
+
+    let mut range_row = 0_u32;
+    let mut target_cursor = 0_u32;
+    for entity_row in 0..entities.count {
+        let entity = decode::entity(bytes, layout, entity_row)?;
+        if entity.kind != crate::ir::ItemKind::Function {
+            continue;
+        }
+        if range_row >= owners.count {
+            return Err(FullSemanticImageFault::SignatureCarrierBindingOwnerSet {
+                row: range_row,
+                expected: Some(entity_row),
+                observed: None,
+            });
+        }
+        let row_offset = owners
+            .offset
+            .checked_add(
+                usize::try_from(range_row)
+                    .map_err(|_| FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                    })?
+                    .checked_mul(SIGNATURE_CARRIER_RANGE_ROW_BYTES)
+                    .ok_or(FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                    })?,
+            )
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierBindingRanges,
+            })?;
+        let owner = get_u32(
+            bytes,
+            row_offset,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )?;
+        if owner != entity_row {
+            return Err(FullSemanticImageFault::SignatureCarrierBindingOwnerSet {
+                row: range_row,
+                expected: Some(entity_row),
+                observed: Some(owner),
+            });
+        }
+        let start = get_u32(
+            bytes,
+            row_offset + 4,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )?;
+        let parameter_count = get_u32(
+            bytes,
+            row_offset + 8,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )?;
+        let result_count = get_u32(
+            bytes,
+            row_offset + 12,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )?;
+        if start == NONE {
+            if parameter_count != 0 || result_count != 0 {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            }
+        } else {
+            if start != target_cursor {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            }
+            let total = parameter_count.checked_add(result_count).ok_or(
+                FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                },
+            )?;
+            let end = target_cursor.checked_add(total).ok_or(
+                FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                },
+            )?;
+            if end > targets.count {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            }
+            let Some(function_type) = entity.semantic_type else {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            };
+            let TypeExpr::Concrete(ConcreteType::Function {
+                parameters,
+                results,
+                ..
+            }) = typed_decode::ty(bytes, layout, typed, function_type)?
+            else {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            };
+            if typed_decode::tuple_elements_len(bytes, layout, typed, parameters)?
+                != parameter_count
+                || typed_decode::tuple_elements_len(bytes, layout, typed, results)? != result_count
+            {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            }
+            for relative in 0..total {
+                let target_row = start.checked_add(relative).ok_or(
+                    FullSemanticImageFault::SignatureCarrierBindingRange {
+                        row: range_row,
+                        owner,
+                        start,
+                        parameters: parameter_count,
+                        results: result_count,
+                    },
+                )?;
+                let target_offset = targets
+                    .offset
+                    .checked_add(
+                        usize::try_from(target_row)
+                            .map_err(|_| FullSemanticImageFault::LengthOverflow {
+                                field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                            })?
+                            .checked_mul(4)
+                            .ok_or(FullSemanticImageFault::LengthOverflow {
+                                field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                            })?,
+                    )
+                    .ok_or(FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                    })?;
+                let target = get_u32(
+                    bytes,
+                    target_offset,
+                    FullSemanticImageField::SignatureCarrierBindingTargets,
+                )?;
+                let carrier = decode::entity(bytes, layout, target)?;
+                let (role, position, tuple_list) = if relative < parameter_count {
+                    (SignatureCarrierBindingRole::Parameter, relative, parameters)
+                } else {
+                    (
+                        SignatureCarrierBindingRole::Result,
+                        relative - parameter_count,
+                        results,
+                    )
+                };
+                if carrier.kind != crate::ir::ItemKind::Parameter {
+                    return Err(FullSemanticImageFault::SignatureCarrierBindingTargetKind {
+                        owner,
+                        role,
+                        position,
+                        target,
+                        kind: carrier.kind,
+                    });
+                }
+                let expected_type =
+                    typed_decode::tuple_element_type(bytes, layout, typed, tuple_list, position)?;
+                if carrier.semantic_type != expected_type {
+                    return Err(FullSemanticImageFault::SignatureCarrierBindingType {
+                        owner,
+                        role,
+                        position,
+                        target,
+                        expected: expected_type,
+                        observed: carrier.semantic_type,
+                    });
+                }
+                let code = match role {
+                    SignatureCarrierBindingRole::Parameter => 1_u8,
+                    SignatureCarrierBindingRole::Result => 2_u8,
+                };
+                let slot = usize::try_from(target / 4).map_err(|_| {
+                    FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierRoles,
+                    }
+                })?;
+                let shift = (target % 4) * 2;
+                let byte =
+                    derived_roles
+                        .get_mut(slot)
+                        .ok_or(FullSemanticImageFault::LengthOverflow {
+                            field: FullSemanticImageField::SignatureCarrierRoles,
+                        })?;
+                *byte |= code << shift;
+            }
+            target_cursor = end;
+        }
+        range_row = range_row
+            .checked_add(1)
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierBindingRanges,
+            })?;
+    }
+
+    if range_row != owners.count {
+        let offset = owners
+            .offset
+            .checked_add(
+                usize::try_from(range_row)
+                    .map_err(|_| FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                    })?
+                    .checked_mul(SIGNATURE_CARRIER_RANGE_ROW_BYTES)
+                    .ok_or(FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::SignatureCarrierBindingRanges,
+                    })?,
+            )
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierBindingRanges,
+            })?;
+        let observed = get_u32(
+            bytes,
+            offset,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        )?;
+        return Err(FullSemanticImageFault::SignatureCarrierBindingOwnerSet {
+            row: range_row,
+            expected: None,
+            observed: Some(observed),
+        });
+    }
+    if target_cursor != targets.count {
+        return Err(FullSemanticImageFault::SignatureCarrierBindingTargetCount {
+            expected: target_cursor,
+            observed: targets.count,
+        });
+    }
+
+    for entity in 0..entities.count {
+        let byte_index =
+            usize::try_from(entity / 4).map_err(|_| FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+            })?;
+        let expected_byte =
+            *derived_roles
+                .get(byte_index)
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierRoles,
+                })?;
+        let actual_offset = role_plane.offset.checked_add(byte_index).ok_or(
+            FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+            },
+        )?;
+        let actual_byte = *bytes
+            .get(actual_offset)
+            .ok_or(FullSemanticImageFault::Truncated {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+                offset: actual_offset,
+            })?;
+        let shift = (entity % 4) * 2;
+        let expected = (expected_byte >> shift) & 0b11;
+        let observed = (actual_byte >> shift) & 0b11;
+        if expected != observed {
+            return Err(FullSemanticImageFault::SignatureCarrierBindingRoleUnion {
+                entity,
+                expected,
+                observed,
             });
         }
     }

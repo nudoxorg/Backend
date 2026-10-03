@@ -3026,8 +3026,10 @@ impl<'source> FactSet<'source> {
                 source,
             });
         }
-        let mut carrier_roles =
-            vec![backend_semantic::ir::SignatureCarrierRole::NotCarrier; fact_count];
+        let mut binding_owners = Vec::new();
+        let mut binding_targets = Vec::new();
+        let mut function_count = 0_usize;
+        let mut binding_target_count = 0_usize;
         for owner in 0..fact_count {
             let owner_raw = u32::try_from(owner).map_err(|_| {
                 backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
@@ -3035,7 +3037,61 @@ impl<'source> FactSet<'source> {
                     actual: owner,
                 })
             })?;
-            let start = usize::try_from(*self.child_starts.get(owner).ok_or(
+            let item = items
+                .get(owner)
+                .ok_or(backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                })?;
+            if item.kind != backend_semantic::ir::ItemKind::Function {
+                continue;
+            }
+            function_count =
+                function_count
+                    .checked_add(1)
+                    .ok_or(backend_semantic::ir::BuildError::Capacity(
+                        backend_semantic::ir::CapacityError {
+                            space: backend_semantic::ir::CapacitySpace::Value,
+                            actual: usize::MAX,
+                        },
+                    ))?;
+            let count = usize::from(*self.child_counts.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                },
+            )?);
+            binding_target_count = binding_target_count.checked_add(count).ok_or(
+                backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
+                    space: backend_semantic::ir::CapacitySpace::Value,
+                    actual: usize::MAX,
+                }),
+            )?;
+        }
+        binding_owners
+            .try_reserve_exact(function_count)
+            .map_err(|_| {
+                backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
+                    space: backend_semantic::ir::CapacitySpace::Value,
+                    actual: function_count,
+                })
+            })?;
+        binding_targets
+            .try_reserve_exact(binding_target_count)
+            .map_err(|_| {
+                backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
+                    space: backend_semantic::ir::CapacitySpace::Value,
+                    actual: binding_target_count,
+                })
+            })?;
+        for owner in 0..fact_count {
+            let owner_raw = u32::try_from(owner).map_err(|_| {
+                backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
+                    space: backend_semantic::ir::CapacitySpace::Value,
+                    actual: owner,
+                })
+            })?;
+            let product_start = usize::try_from(*self.child_starts.get(owner).ok_or(
                 backend_semantic::ir::BuildError::Dangling {
                     space: backend_semantic::ir::SemanticSpace::Entity,
                     raw: owner_raw,
@@ -3045,72 +3101,196 @@ impl<'source> FactSet<'source> {
                 space: backend_semantic::ir::SemanticSpace::Entity,
                 raw: owner_raw,
             })?;
-            let count = usize::from(*self.child_counts.get(owner).ok_or(
+            let product_count = usize::from(*self.child_counts.get(owner).ok_or(
                 backend_semantic::ir::BuildError::Dangling {
                     space: backend_semantic::ir::SemanticSpace::Entity,
                     raw: owner_raw,
                 },
             )?);
-            let end =
-                start
-                    .checked_add(count)
-                    .ok_or(backend_semantic::ir::BuildError::Dangling {
-                        space: backend_semantic::ir::SemanticSpace::Entity,
-                        raw: owner_raw,
-                    })?;
-            for child in start..end {
-                let product_role = *self.child_roles.get(child).ok_or(
-                    backend_semantic::ir::BuildError::Dangling {
-                        space: backend_semantic::ir::SemanticSpace::Entity,
-                        raw: owner_raw,
-                    },
-                )?;
-                let role = match product_role {
-                    ProductChildRole::FunctionParameter => {
-                        backend_semantic::ir::SignatureCarrierRole::Input
+            let product_end = product_start.checked_add(product_count).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                },
+            )?;
+            let owner_kind = items.get(owner).map(|item| item.kind).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                },
+            )?;
+            let owner_id = backend_semantic::ir::EntityId::new(owner_raw);
+            if owner_kind != backend_semantic::ir::ItemKind::Function {
+                for child in product_start..product_end {
+                    let product_role = *self.child_roles.get(child).ok_or(
+                        backend_semantic::ir::BuildError::Dangling {
+                            space: backend_semantic::ir::SemanticSpace::Entity,
+                            raw: owner_raw,
+                        },
+                    )?;
+                    if matches!(
+                        product_role,
+                        ProductChildRole::FunctionParameter | ProductChildRole::FunctionResult
+                    ) {
+                        return Err(
+                            backend_semantic::ir::BuildError::SignatureCarrierRoleOwnerKind {
+                                owner: owner_id,
+                                kind: owner_kind,
+                            },
+                        );
                     }
-                    ProductChildRole::FunctionResult => {
-                        backend_semantic::ir::SignatureCarrierRole::Result
-                    }
-                    _ => continue,
-                };
-                let owner_kind = items.get(owner).map(|item| item.kind).ok_or(
-                    backend_semantic::ir::BuildError::Dangling {
-                        space: backend_semantic::ir::SemanticSpace::Entity,
-                        raw: owner_raw,
-                    },
-                )?;
-                if owner_kind != backend_semantic::ir::ItemKind::Function {
+                }
+                continue;
+            }
+
+            let constructor = *self.constructors.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                },
+            )?;
+            let record = *self.type_records.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: owner_raw,
+                },
+            )?;
+            if record.tag != backend_semantic::ir::SemanticTypeTag::FunctionPointer {
+                if product_count != 0 {
                     return Err(
-                        backend_semantic::ir::BuildError::SignatureCarrierRoleOwnerKind {
-                            owner: backend_semantic::ir::EntityId::new(owner_raw),
-                            kind: owner_kind,
+                        backend_semantic::ir::BuildError::SignatureCarrierBindingSignature {
+                            owner: owner_id,
                         },
                     );
                 }
-                let target = *self.child_targets.get(child).ok_or(
+                binding_owners
+                    .push(backend_semantic::ir::SignatureCarrierOwnerInput::unavailable(owner_id));
+                continue;
+            }
+
+            let result_count = record.function_result_count().ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: owner_raw,
+                },
+            )?;
+            let type_count = usize::from(*self.type_child_counts.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: owner_raw,
+                },
+            )?);
+            let result_count_usize = usize::try_from(result_count).map_err(|_| {
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: owner_raw,
+                }
+            })?;
+            let parameter_count = type_count.checked_sub(result_count_usize).ok_or(
+                backend_semantic::ir::BuildError::SignatureCarrierBindingCounts {
+                    owner: owner_id,
+                    parameters: constructor.payload0,
+                    results: constructor.payload1,
+                },
+            )?;
+            let parameter_count_u32 = u32::try_from(parameter_count).map_err(|_| {
+                backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
+                    space: backend_semantic::ir::CapacitySpace::Value,
+                    actual: parameter_count,
+                })
+            })?;
+            let product_parameter_count = constructor.payload0;
+            if constructor.tag != backend_semantic::ir::ProductConstructorTag::Function
+                || product_parameter_count != parameter_count_u32
+                || constructor.payload1 != result_count
+                || product_count != type_count
+            {
+                return Err(
+                    backend_semantic::ir::BuildError::SignatureCarrierBindingCounts {
+                        owner: owner_id,
+                        parameters: parameter_count_u32,
+                        results: result_count,
+                    },
+                );
+            }
+            let type_start = usize::try_from(*self.type_child_starts.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: owner_raw,
+                },
+            )?)
+            .map_err(|_| backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::Type,
+                raw: owner_raw,
+            })?;
+            for position in 0..type_count {
+                let product_row = product_start.checked_add(position).ok_or(
                     backend_semantic::ir::BuildError::Dangling {
                         space: backend_semantic::ir::SemanticSpace::Entity,
                         raw: owner_raw,
                     },
                 )?;
-                let target_index = usize::try_from(target).map_err(|_| {
+                let type_row = type_start.checked_add(position).ok_or(
                     backend_semantic::ir::BuildError::Dangling {
-                        space: backend_semantic::ir::SemanticSpace::Entity,
-                        raw: target,
-                    }
-                })?;
-                let carrier = carrier_roles.get_mut(target_index).ok_or(
-                    backend_semantic::ir::BuildError::Dangling {
-                        space: backend_semantic::ir::SemanticSpace::Entity,
-                        raw: target,
+                        space: backend_semantic::ir::SemanticSpace::Type,
+                        raw: owner_raw,
                     },
                 )?;
-                *carrier = carrier.union(role);
+                let product_target = *self.child_targets.get(product_row).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    },
+                )?;
+                let type_target = *self.type_child_targets.get(type_row).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Type,
+                        raw: owner_raw,
+                    },
+                )?;
+                let position_u32 = u32::try_from(position).map_err(|_| {
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    }
+                })?;
+                let expected_role = constructor.expected_role(position_u32);
+                let observed_role = *self.child_roles.get(product_row).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    },
+                )?;
+                if product_target != type_target {
+                    return Err(
+                        backend_semantic::ir::BuildError::SignatureCarrierBindingEdgeMismatch {
+                            owner: owner_id,
+                            position: position_u32,
+                            product_target,
+                            type_target,
+                        },
+                    );
+                }
+                if observed_role != expected_role {
+                    return Err(
+                        backend_semantic::ir::BuildError::SignatureCarrierBindingEdgeRole {
+                            owner: owner_id,
+                            position: position_u32,
+                            expected: expected_role,
+                            observed: observed_role,
+                        },
+                    );
+                }
+                binding_targets.push(backend_semantic::ir::EntityId::new(product_target));
             }
+            binding_owners.push(backend_semantic::ir::SignatureCarrierOwnerInput::captured(
+                owner_id,
+                parameter_count_u32,
+                result_count,
+            ));
         }
         tree.commit(&items[..fact_count], &links)?;
-        builder.capture_signature_carrier_roles(&carrier_roles)?;
+        builder.capture_signature_carrier_bindings(&binding_owners, &binding_targets)?;
         builder.finish()
     }
 

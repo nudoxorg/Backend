@@ -299,6 +299,32 @@ pub(crate) fn tuple_element(
     Ok(TupleElement { label, ty, kind })
 }
 
+/// Returns the validated tuple-list row count without materializing cells.
+pub(crate) fn tuple_elements_len(
+    bytes: &[u8],
+    layout: FullImageLayout,
+    typed: TypedLayout,
+    id: TupleElementListId,
+) -> Result<u32, FullSemanticImageFault> {
+    Ok(Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?.count)
+}
+
+/// Reads one tuple cell's exact type coordinate without allocating a decoded
+/// list. The containing typed graph validator proves all adjacent fields.
+pub(crate) fn tuple_element_type(
+    bytes: &[u8],
+    layout: FullImageLayout,
+    typed: TypedLayout,
+    id: TupleElementListId,
+    index: u32,
+) -> Result<Option<TypeId>, FullSemanticImageFault> {
+    let mut edges = Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?;
+    if index >= edges.count {
+        return Ok(None);
+    }
+    edges.type_node(4, index).map(Some)
+}
+
 pub(crate) fn object_member(
     edges: &mut Edges<'_>,
     index: u32,
