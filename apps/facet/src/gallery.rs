@@ -573,7 +573,11 @@ fn run_with_timing_history(
                         last_accessibility_frame = evidence.frame_number;
                         Ok(evidence)
                     })
-                    .transpose()?
+                    .transpose().map_err(|error: GalleryError| {
+                        let message = error.0.clone();
+                        *observer_error.borrow_mut() = Some(error);
+                        backend_gui_harness::CaptureError::InvalidConfig(message)
+                    })?
             } else {
                 None
             };
