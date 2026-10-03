@@ -812,8 +812,8 @@ pub struct FrameTimingCollector {
 /// the compositor displayed it.
 #[derive(Debug, Copy, Clone)]
 pub enum FrameLifecycleKind {
-    /// GPUI completed drawing and published this accessibility frame.
-    Drawn { a11y_frame: u64 },
+    /// GPUI completed drawing; the accessibility frame is present when active.
+    Drawn { a11y_frame: Option<u64> },
     /// The platform answered an attempt to submit the retained scene.
     Presentation { result: crate::DrawResult },
     /// A visible window registered its display-link subscriber.

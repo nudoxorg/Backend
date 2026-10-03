@@ -142,9 +142,13 @@ fn frame_line(sink: &Sink, frame: &gpui::profiler::FrameTiming) -> String {
 fn lifecycle_line(sink: &Sink, event: &gpui::profiler::FrameLifecycleEvent) -> String {
     use gpui::profiler::FrameLifecycleKind;
     let (name, detail) = match event.kind {
-        FrameLifecycleKind::Drawn { a11y_frame } => {
-            ("drawn", format!("\"a11y_frame\":{a11y_frame}"))
-        }
+        FrameLifecycleKind::Drawn { a11y_frame } => (
+            "drawn",
+            format!(
+                "\"a11y_frame\":{}",
+                a11y_frame.map_or_else(|| "null".to_owned(), |frame| frame.to_string())
+            ),
+        ),
         FrameLifecycleKind::Presentation { result } => {
             ("submission", format!("\"result\":\"{result:?}\""))
         }

@@ -4117,15 +4117,17 @@ impl Window {
                 draw_start,
                 draw_end: Instant::now(),
             });
-            profiler::record_frame_lifecycle(profiler::FrameLifecycleEvent {
-                window_id: self.handle.window_id(),
-                native_window_number: None,
-                frame_id: self.frame_sequence,
-                at: Instant::now(),
-                kind: profiler::FrameLifecycleKind::Drawn {
-                    a11y_frame: self.a11y.frame_number(),
-                },
-            });
+            if !cx.mode.skip_drawing() {
+                profiler::record_frame_lifecycle(profiler::FrameLifecycleEvent {
+                    window_id: self.handle.window_id(),
+                    native_window_number: None,
+                    frame_id: self.frame_sequence,
+                    at: Instant::now(),
+                    kind: profiler::FrameLifecycleKind::Drawn {
+                        a11y_frame: self.a11y.is_active().then(|| self.a11y.frame_number()),
+                    },
+                });
+            }
         }
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
