@@ -7,9 +7,9 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, FilterBoundary,
-    MonochromeSprite, PaintSurface, Path, Point, PolychromeSprite, PrimitiveBatch, Quad,
-    ScaledFilter, ScaledPixels, Scene, Shadow, Size, Surface, Underline, point, size,
+    AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, DrawResult,
+    FilterBoundary, MonochromeSprite, PaintSurface, Path, Point, PolychromeSprite, PrimitiveBatch,
+    Quad, ScaledFilter, ScaledPixels, Scene, Shadow, Size, Surface, Underline, point, size,
 };
 
 /// The largest blur radius in a scene-space filter chain, in device pixels — used to size the
@@ -594,14 +594,14 @@ impl MetalRenderer {
         // nothing to do
     }
 
-    pub fn draw(&mut self, scene: &Scene) {
+    pub fn draw(&mut self, scene: &Scene) -> DrawResult {
         let layer = match &self.layer {
             Some(l) => l.clone(),
             None => {
                 log::error!(
                     "draw() called on headless renderer - use render_scene_to_image() instead"
                 );
-                return;
+                return DrawResult::Failed;
             }
         };
         let viewport_size = layer.drawable_size();
@@ -612,11 +612,8 @@ impl MetalRenderer {
         let drawable = if let Some(drawable) = layer.next_drawable() {
             drawable
         } else {
-            log::error!(
-                "failed to retrieve next drawable, drawable size: {:?}",
-                viewport_size
-            );
-            return;
+            log::debug!("no Metal drawable yet, drawable size: {:?}", viewport_size);
+            return DrawResult::Deferred;
         };
 
         loop {
@@ -648,7 +645,7 @@ impl MetalRenderer {
                         command_buffer.present_drawable(drawable);
                         command_buffer.commit();
                     }
-                    return;
+                    return DrawResult::Presented;
                 }
                 Err(err) => {
                     log::error!(
@@ -669,6 +666,7 @@ impl MetalRenderer {
                 }
             }
         }
+        DrawResult::Failed
     }
 
     /// Renders the scene to a texture and returns the pixel data as an RGBA image.

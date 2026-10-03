@@ -24,11 +24,11 @@ use cocoa::{
 };
 use dispatch2::DispatchQueue;
 use gpui::{
-    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload,
-    ExternalPaths, FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab,
+    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, DrawResult,
+    ExternalDragPayload, ExternalPaths, FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PromptButton, PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind,
     WindowParams, point, px, size,
 };
@@ -514,6 +514,7 @@ struct MacWindowState {
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     renderer: renderer::Renderer,
+    request_presentation_on_next_frame: bool,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
@@ -919,6 +920,7 @@ impl MacWindow {
                     bounds.size.map(|pixels| pixels.as_f32()),
                     false,
                 ),
+                request_presentation_on_next_frame: false,
                 request_frame_callback: None,
                 event_callback: None,
                 activate_callback: None,
@@ -1678,6 +1680,7 @@ impl PlatformWindow for MacWindow {
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         let mut state = self.0.as_ref().lock();
         state.request_frame_callback = Some(callback);
+        state.request_presentation_on_next_frame = true;
         // The NSWindow is ordered before GPUI installs this callback. Its
         // first visibility/screen notification may already have tried to
         // start the link while AppKit still reported it occluded or without
@@ -1776,8 +1779,12 @@ impl PlatformWindow for MacWindow {
     }
 
     fn draw(&self, scene: &gpui::Scene) {
+        let _ = self.draw_result(scene);
+    }
+
+    fn draw_result(&self, scene: &gpui::Scene) -> DrawResult {
         let mut this = self.0.lock();
-        this.renderer.draw(scene);
+        this.renderer.draw(scene)
     }
 
     // NUDOX: the Metal renderer composites group opacity and chamfered shadows.
@@ -2579,6 +2586,7 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
             .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
         {
             lock.move_traffic_light();
+            lock.request_presentation_on_next_frame = true;
             lock.start_display_link();
         } else {
             lock.stop_display_link();
@@ -2669,6 +2677,7 @@ fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
 extern "C" fn window_did_change_screen(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
+    lock.request_presentation_on_next_frame = true;
     lock.start_display_link();
     drop(lock);
     update_window_scale_factor(&window_state);
@@ -2728,7 +2737,10 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 lock.renderer.set_presents_with_transaction(true);
                 lock.stop_display_link();
                 drop(lock);
-                callback(Default::default());
+                callback(RequestFrameOptions {
+                    require_presentation: true,
+                    ..Default::default()
+                });
 
                 let mut lock = window_state.lock();
                 lock.request_frame_callback = Some(callback);
@@ -2737,6 +2749,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
             }
         } else {
             lock.activated_least_once = true;
+            lock.request_presentation_on_next_frame = true;
             // The first key activation must not draw synchronously: GPUI may
             // still be establishing its focus path. It can, however, arm the
             // asynchronous frame source. A window opened behind another app
@@ -2848,7 +2861,10 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         lock.renderer.set_presents_with_transaction(true);
         lock.stop_display_link();
         drop(lock);
-        callback(Default::default());
+        callback(RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        });
 
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
@@ -2863,8 +2879,12 @@ extern "C" fn step(view: *mut c_void) {
     let mut lock = window_state.lock();
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
+        let options = RequestFrameOptions {
+            require_presentation: mem::take(&mut lock.request_presentation_on_next_frame),
+            ..Default::default()
+        };
         drop(lock);
-        callback(Default::default());
+        callback(options);
         window_state.lock().request_frame_callback = Some(callback);
     }
 }

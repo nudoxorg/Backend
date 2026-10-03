@@ -4,22 +4,22 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
     BoxShadow, Capslock, ColorExt, Context, Corners, CursorHideMode, CursorStyle, Decorations,
-    DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
-    Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global,
-    GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent,
-    KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp, LineLayoutIndex,
-    Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
-    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
-    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
-    ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style,
-    SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController,
-    TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle, TextStyleRefinement,
-    ThermalState, TransformationMatrix, Transition, TransitionState, Underline, UnderlineStyle,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
-    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, profiler, px, rems, size,
-    transparent_black,
+    DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, DrawResult,
+    Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId,
+    Global, GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext,
+    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp,
+    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton,
+    MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority,
+    PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
+    RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X,
+    SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size,
+    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
+    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Transition, TransitionState,
+    Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem, point,
+    prelude::*, profiler, px, rems, size, transparent_black,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -77,6 +77,45 @@ pub use prompts::*;
 
 /// Default window size used when no explicit size is provided.
 pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
+
+/// A retained scene needs another presentation only when its platform can
+/// accept one. Drawable starvation is retried with bounded attempts while a
+/// visible window receives frame ticks; a hard failure waits for a new scene
+/// or an explicit platform presentation request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PresentationRetry {
+    Ready,
+    Later { at: Instant, interval: Duration },
+    Blocked,
+}
+
+impl PresentationRetry {
+    fn due(self, now: Instant) -> bool {
+        match self {
+            Self::Ready => true,
+            Self::Later { at, .. } => now >= at,
+            Self::Blocked => false,
+        }
+    }
+
+    fn after(self, result: DrawResult, now: Instant) -> Self {
+        match result {
+            DrawResult::Presented => Self::Ready,
+            DrawResult::Deferred => {
+                let interval = match self {
+                    Self::Later { interval, .. } => interval.saturating_mul(2),
+                    Self::Ready | Self::Blocked => Duration::from_millis(50),
+                }
+                .min(Duration::from_secs(1));
+                Self::Later {
+                    at: now + interval,
+                    interval,
+                }
+            }
+            DrawResult::Failed => Self::Blocked,
+        }
+    }
+}
 
 /// A 6:5 aspect ratio minimum window size to be used for functional,
 /// additional-to-main-Zed windows, like the settings and rules library windows.
@@ -2032,6 +2071,7 @@ pub struct Window {
     active: Rc<Cell<bool>>,
     hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
+    presentation_retry: Rc<Cell<PresentationRetry>>,
     /// Tracks recent input event timestamps to determine if input is arriving at a high rate.
     /// Used to selectively enable VRR optimization only when input rate exceeds 60fps.
     pub(crate) input_rate_tracker: Rc<RefCell<InputRateTracker>>,
@@ -2364,6 +2404,7 @@ impl Window {
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
+        let presentation_retry = Rc::new(Cell::new(PresentationRetry::Ready));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
         let input_rate_tracker = Rc::new(RefCell::new(InputRateTracker::default()));
         let last_frame_time = Rc::new(Cell::new(None));
@@ -2478,6 +2519,7 @@ impl Window {
             let invalidator = invalidator.clone();
             let active = active.clone();
             let needs_present = needs_present.clone();
+            let presentation_retry = presentation_retry.clone();
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             let mut deferred_force_render = false;
@@ -2593,9 +2635,10 @@ impl Window {
                 // Keep presenting if input was recently arriving at a high rate (>= 60fps).
                 // Once high-rate input is detected, we sustain presentation for 1 second
                 // to prevent display underclocking during active input.
+                let pending_presentation = needs_present.get();
                 let needs_present = request_frame_options.require_presentation
-                    || needs_present.get()
-                    || input_rate_tracker.borrow_mut().is_high_rate();
+                    || (pending_presentation && presentation_retry.get().due(Instant::now()))
+                    || (!pending_presentation && input_rate_tracker.borrow_mut().is_high_rate());
 
                 if invalidator.is_dirty() || (force_render && !frame_reconciled_before_callbacks) {
                     measure("frame duration", || {
@@ -2835,6 +2878,7 @@ impl Window {
             active,
             hovered,
             needs_present,
+            presentation_retry,
             input_rate_tracker,
             #[cfg(feature = "input-latency-histogram")]
             input_latency_tracker: InputLatencyTracker::new()?,
@@ -4055,6 +4099,7 @@ impl Window {
             self.refresh();
         }
         self.needs_present.set(true);
+        self.presentation_retry.set(PresentationRetry::Ready);
 
         if let Some(draw_start) = draw_started_at {
             profiler::record_frame_timing(profiler::FrameTiming {
@@ -4149,10 +4194,14 @@ impl Window {
 
     #[profiling::function]
     fn present(&mut self) {
-        self.platform_window.draw(&self.rendered_frame.scene);
+        let result = self.platform_window.draw_result(&self.rendered_frame.scene);
+        self.presentation_retry
+            .set(self.presentation_retry.get().after(result, Instant::now()));
+        self.needs_present.set(result != DrawResult::Presented);
         #[cfg(feature = "input-latency-histogram")]
-        self.input_latency_tracker.record_frame_presented();
-        self.needs_present.set(false);
+        if result == DrawResult::Presented {
+            self.input_latency_tracker.record_frame_presented();
+        }
         profiling::finish_frame!();
     }
 
@@ -8977,19 +9026,21 @@ pub fn outline(
 
 #[cfg(test)]
 mod tests {
+    use super::{Instant, PresentationRetry};
     use std::{
         cell::{Cell, RefCell},
         path::PathBuf,
         rc::Rc,
+        time::Duration,
     };
 
     use crate::{
-        AnyWindowHandle, AppContext as _, Bounds, Context, DragMoveEvent, Empty,
+        AnyWindowHandle, AppContext as _, Bounds, Context, DragMoveEvent, DrawResult, Empty,
         ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
         InputEvent as _, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-        MouseMoveEvent, ParentElement, Pixels, Point, Render, StatefulInteractiveElement as _,
-        Styled, TestAppContext, Window, WindowAppearance, WindowOptions, canvas, div, point, px,
-        size,
+        MouseMoveEvent, ParentElement, Pixels, Point, Render, RequestFrameOptions,
+        StatefulInteractiveElement as _, Styled, TestAppContext, Window, WindowAppearance,
+        WindowOptions, canvas, div, point, px, size,
     };
 
     struct EmptyView;
@@ -8998,6 +9049,107 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    struct CountedView(Rc<Cell<usize>>);
+
+    impl Render for CountedView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            self.0.set(self.0.get() + 1);
+            div().child("retained scene")
+        }
+    }
+
+    #[gpui::test]
+    fn deferred_platform_presentation_reuses_the_rendered_scene(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let renders = renders.clone();
+            move |_, _| CountedView(renders)
+        });
+        let platform = cx.test_window(window.into());
+        platform.queue_presentation_result(DrawResult::Deferred);
+        let rendered = renders.get();
+        cx.update_window(window.into(), |_, window, _| {
+            window.present();
+            assert!(window.needs_present.get());
+            assert!(matches!(
+                window.presentation_retry.get(),
+                PresentationRetry::Later { .. }
+            ));
+        })
+        .unwrap();
+        let attempts = platform.presentation_attempts();
+
+        // An immediate vsync cannot busy-loop on a missing drawable.
+        platform.simulate_frame(RequestFrameOptions::default());
+        assert_eq!(platform.presentation_attempts(), attempts);
+
+        // Activation can explicitly request presentation of the same scene.
+        platform.queue_presentation_result(DrawResult::Presented);
+        platform.simulate_frame(RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        });
+        assert_eq!(platform.presentation_attempts(), attempts + 1);
+        assert_eq!(renders.get(), rendered);
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(!window.needs_present.get());
+            assert_eq!(window.presentation_retry.get(), PresentationRetry::Ready);
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn hard_presentation_failure_waits_for_a_new_scene(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let renders = renders.clone();
+            move |_, _| CountedView(renders)
+        });
+        let platform = cx.test_window(window.into());
+        platform.queue_presentation_result(DrawResult::Failed);
+        cx.update_window(window.into(), |_, window, _| {
+            window.present();
+            assert!(window.needs_present.get());
+            assert_eq!(window.presentation_retry.get(), PresentationRetry::Blocked);
+        })
+        .unwrap();
+        let attempts = platform.presentation_attempts();
+        platform.simulate_frame(RequestFrameOptions::default());
+        assert_eq!(platform.presentation_attempts(), attempts);
+
+        // An explicit invalidation builds a fresh scene and may try again.
+        let rendered = renders.get();
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        platform.queue_presentation_result(DrawResult::Presented);
+        platform.simulate_frame(RequestFrameOptions::default());
+        assert_eq!(platform.presentation_attempts(), attempts + 1);
+        assert!(renders.get() > rendered);
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(!window.needs_present.get())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn unavailable_drawable_backoff_is_bounded_and_hard_failure_waits() {
+        let now = Instant::now();
+        let mut retry = PresentationRetry::Ready;
+        for _ in 0..10 {
+            retry = retry.after(DrawResult::Deferred, now);
+        }
+        assert!(
+            matches!(retry, PresentationRetry::Later { interval, .. } if interval == Duration::from_secs(1))
+        );
+        assert!(!retry.due(now));
+        assert!(retry.due(now + Duration::from_secs(1)));
+        assert_eq!(
+            retry.after(DrawResult::Failed, now),
+            PresentationRetry::Blocked
+        );
+        assert!(!PresentationRetry::Blocked.due(now + Duration::from_secs(10)));
     }
 
     struct OpensWindowOnPaint {

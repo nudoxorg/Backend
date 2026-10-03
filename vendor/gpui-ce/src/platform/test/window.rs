@@ -1,16 +1,16 @@
 use crate::{
     AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels,
-    DispatchEventResult, GpuSpecs, Pixels, PlatformAtlas, PlatformDisplay,
+    DispatchEventResult, DrawResult, GpuSpecs, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, RequestFrameOptions, Scene, Size, TestPlatform, TileId, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
 };
 use collections::HashMap;
-use gpui_util::ResultExt as _;
 use image::RgbaImage;
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     rc::{Rc, Weak},
     sync::{self, Arc},
@@ -30,6 +30,7 @@ pub(crate) struct TestWindowState {
     pub(crate) should_close_handler: Option<Box<dyn FnMut() -> bool>>,
     hit_test_window_control_callback: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
     input_callback: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
+    request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     active_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     hover_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
@@ -40,6 +41,8 @@ pub(crate) struct TestWindowState {
     appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
+    presentation_results: VecDeque<DrawResult>,
+    presentation_attempts: usize,
 }
 
 #[derive(Clone)]
@@ -90,6 +93,7 @@ impl TestWindow {
             should_close_handler: None,
             hit_test_window_control_callback: None,
             input_callback: None,
+            request_frame_callback: None,
             active_status_change_callback: None,
             hover_status_change_callback: None,
             resize_callback: None,
@@ -100,6 +104,8 @@ impl TestWindow {
             appearance: WindowAppearance::Light,
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
+            presentation_results: VecDeque::new(),
+            presentation_attempts: 0,
         })))
     }
 
@@ -154,6 +160,24 @@ impl TestWindow {
 
     pub fn set_start_external_drag_result(&self, result: bool) {
         self.0.lock().start_external_drag_result = result;
+    }
+
+    /// Supplies a synthetic presentation outcome for a window test.
+    pub(crate) fn queue_presentation_result(&self, result: DrawResult) {
+        self.0.lock().presentation_results.push_back(result);
+    }
+
+    pub(crate) fn presentation_attempts(&self) -> usize {
+        self.0.lock().presentation_attempts
+    }
+
+    /// Drives the same frame callback the native platform owns.
+    pub(crate) fn simulate_frame(&self, options: RequestFrameOptions) {
+        let Some(mut callback) = self.0.lock().request_frame_callback.take() else {
+            return;
+        };
+        callback(options);
+        self.0.lock().request_frame_callback = Some(callback);
     }
 }
 
@@ -311,7 +335,9 @@ impl PlatformWindow for TestWindow {
         self.0.lock().is_fullscreen
     }
 
-    fn on_request_frame(&self, _callback: Box<dyn FnMut(RequestFrameOptions)>) {}
+    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+        self.0.lock().request_frame_callback = Some(callback);
+    }
 
     fn on_input(&self, callback: Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>) {
         self.0.lock().input_callback = Some(callback)
@@ -348,11 +374,28 @@ impl PlatformWindow for TestWindow {
     }
 
     fn draw(&self, scene: &Scene) {
+        let _ = self.draw_result(scene);
+    }
+
+    fn draw_result(&self, scene: &Scene) -> DrawResult {
         let scale_factor = self.scale_factor();
         let mut state = self.0.lock();
+        state.presentation_attempts += 1;
+        if let Some(result) = state.presentation_results.pop_front() {
+            return result;
+        }
         let device_size: Size<DevicePixels> = state.bounds.size.to_device_pixels(scale_factor);
         if let Some(renderer) = &mut state.renderer {
-            renderer.render_scene(scene, device_size).warn_on_err();
+            match renderer.render_scene(scene, device_size) {
+                Ok(()) => DrawResult::Presented,
+                Err(error) => {
+                    log::warn!("headless scene presentation failed: {error:#}");
+                    DrawResult::Failed
+                }
+            }
+        } else {
+            // The renderer-less test window itself is the presentation sink.
+            DrawResult::Presented
         }
     }
 

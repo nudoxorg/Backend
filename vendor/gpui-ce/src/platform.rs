@@ -779,6 +779,19 @@ pub struct RequestFrameOptions {
     pub force_render: bool,
 }
 
+/// Whether a platform submitted the most recently rendered scene for display.
+/// A deferred scene stays owned by GPUI and can be submitted again without
+/// rebuilding its view tree.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum DrawResult {
+    /// The scene was submitted for presentation.
+    Presented,
+    /// No drawable was available yet; retry after the window can present.
+    Deferred,
+    /// Rendering failed for a reason that should wait for an explicit update.
+    Failed,
+}
+
 /// The application's lifecycle phase, as owned and reported by a mobile OS.
 ///
 /// `Inactive` means visible but not receiving input (a system dialog on
@@ -894,6 +907,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
     fn draw(&self, scene: &Scene);
+    /// Submits a scene and reports whether the platform can present it now.
+    /// Older external backends implement only `draw` and retain its original
+    /// success contract. Backends that can lose a drawable override this.
+    fn draw_result(&self, scene: &Scene) -> DrawResult {
+        self.draw(scene);
+        DrawResult::Presented
+    }
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
