@@ -266,7 +266,7 @@ fn binding_context(key: &Key) -> String {
     let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
     let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
-    if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask"); }
+    if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask && !hints"); }
     if matches!(key.command, Command::NextZone | Command::PrevZone) {
         context.push_str(" && !NativeFolio");
     }
@@ -434,4 +434,17 @@ mod tests {
             assert_eq!(keymap.bindings_for_input(&[stroke], &[root.clone(), leaving.clone()]).0[0].action().name(), expected_leaving);
         }
     }
+
+    #[test]
+    fn hint_letters_have_no_competing_plain_actions() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let keymap = Keymap::new(super::bindings());
+        let hints = KeyContext::parse("NudoxShell hints").expect("hint context");
+        for letter in ["f", "g", "h", "s"] {
+            let stroke = Keystroke::parse(letter).expect("real hint letter");
+            assert!(keymap.bindings_for_input(&[stroke], &[hints.clone()]).0.is_empty(),
+                "{letter} must reach the raw hint owner rather than a shell action");
+        }
+    }
+
 }
