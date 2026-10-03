@@ -22,7 +22,12 @@ struct Feedback {
     lines: Vec<String>,
     role: TypeRole,
     clipped: bool,
+    controls: Controls,
+    extra_height: Pixels,
 }
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Controls { Inline, Below, Stacked }
 
 /// The address for a status bar `width` wide, in the lines it is set in and
 /// the role it is set in. Whole when it fits; otherwise its path gives way
@@ -58,20 +63,40 @@ fn feedback(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::
     let role = measure.role(ty::MONO_SMALL);
     let gap = measure.space(Space::Roomy);
     let retry = notice.is_some_and(|notice| notice.retry.is_some());
-    let retry_room = if retry { button_room("Try again", &measure, window) + gap } else { px(0.0) };
-    let room = (width - gap * 2.0 - retry_room).max(px(1.0));
+    let full_room = (width - gap * 2.0).max(px(1.0));
+    let full_lines = wrap_identifier(&message, &role, full_room, cx);
+    let clipped = full_lines.len() > NOTICE_LINES;
+    let retry_width = if retry { button_room("Try again", &measure, window) } else { px(0.0) };
+    let details_width = if clipped { button_room("Details", &measure, window) } else { px(0.0) };
+    let control_gap = if retry && clipped { gap } else { px(0.0) };
+    let controls_width = retry_width + details_width + control_gap;
+    let inline_room = (full_room - controls_width - if controls_width > px(0.0) { gap } else { px(0.0) }).max(px(1.0));
+    // One meaningful short phrase must fit beside the controls. If the full
+    // width needs only three lines but an inline retry would force a fourth,
+    // put the controls below instead of manufacturing a Details button.
+    let readable_room = text_width("Index status", &role, cx).min(full_room / 2.0);
+    let inline_fits = inline_room >= readable_room
+        && (clipped || wrap_identifier(&message, &role, inline_room, cx).len() <= NOTICE_LINES);
+    let controls = if inline_fits { Controls::Inline }
+        else if controls_width <= full_room { Controls::Below }
+        else { Controls::Stacked };
+    let room = if controls == Controls::Inline { inline_room } else { full_room };
     let mut lines = wrap_identifier(&message, &role, room, cx);
-    let clipped = lines.len() > NOTICE_LINES;
     if clipped {
-        let room = (room - button_room("Details", &measure, window) - gap).max(px(1.0));
-        lines = wrap_identifier(&message, &role, room, cx);
         lines.truncate(NOTICE_LINES);
         if let Some(last) = lines.last_mut() {
             while !last.is_empty() && text_width(&format!("{last}…"), &role, cx) > room * 0.98 { last.pop(); }
             last.push('…');
         }
     }
-    Feedback { message, lines, role, clipped }
+    let control_rows = match controls {
+        Controls::Inline => 0,
+        Controls::Below => 1,
+        Controls::Stacked => usize::from(retry) + usize::from(clipped),
+    };
+    let extra_height = if control_rows == 0 { px(0.0) }
+        else { measure.control(facet::Control::Small) * control_rows as f32 + gap * control_rows as f32 };
+    Feedback { message, lines, role, clipped, controls, extra_height }
 }
 
 fn feedback_message(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>) -> String {
@@ -88,8 +113,9 @@ fn button_room(label: &str, measure: &Measure, window: &Window) -> Pixels {
 /// The shell and rendered foot consume this same bounded presentation. Held
 /// marks get a separate line, preserving recovery controls at narrow widths.
 pub(crate) fn feedback_height(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cards: usize, one_line: f32, window: &Window, cx: &App) -> f32 {
-    let (lines, role) = feedback_lines(snapshot, focus, notice, width, window, cx);
-    height(lines.len(), &role, one_line) + if cards == 0 { 0.0 } else { one_line }
+    let feedback = feedback(snapshot, focus, notice, width, window, cx);
+    height(feedback.lines.len(), &feedback.role, one_line) + f32::from(feedback.extra_height)
+        + if cards == 0 { 0.0 } else { one_line }
 }
 
 fn fit(address: &Address, role: &TypeRole, room: Pixels, cx: &App) -> Vec<String> {
@@ -322,18 +348,17 @@ impl Status {
         let details_focus = window.use_keyed_state("status-details-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let close_focus = window.use_keyed_state("status-details-close-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let retry = retry_button(notice, snapshot, &self.links, measure, cx);
-        let mut row = div().flex().items_center().gap(measure.space(Space::Roomy)).px(measure.space(Space::Roomy))
-            .child(div().id("status-message").role(gpui::Role::Status).aria_label(feedback.message.clone())
-                .min_w_0().flex_1().flex().flex_col().overflow_hidden()
-                .children(said_lines(feedback.lines, feedback.role, palette.ink3.hsla())))
-            .children(retry);
-        if feedback.clipped {
+        let mut message = div().id("status-message").role(gpui::Role::Status).aria_label(feedback.message.clone())
+            .min_w_0().flex().flex_col().overflow_hidden()
+            .children(said_lines(feedback.lines, feedback.role, palette.ink3.hsla()));
+        message = if feedback.controls == Controls::Inline { message.flex_1() } else { message.w_full() };
+        let details = if feedback.clipped {
             let message = feedback.message.clone();
             let route = snapshot.route().clone();
             let authority = snapshot.key().authority();
             let owner = cx.entity().downgrade();
             let open_focus = close_focus.clone();
-            row = row.child(facet::controls::button("status-details", "Details", measure)
+            Some(facet::controls::button("status-details", "Details", measure)
                 .aria_label("Show status details").focus_handle(details_focus.clone())
                 .size(facet::Control::Small).ghost().on_click(move |window, cx| {
                     if let Some(status) = owner.upgrade() {
@@ -349,8 +374,20 @@ impl Status {
                             }
                         });
                     }
-                }));
-        }
+                }).into_any_element())
+        } else { None };
+        let gap = measure.space(Space::Roomy);
+        let mut row = match feedback.controls {
+            Controls::Inline => div().flex().items_center().gap(gap).px(gap)
+                .child(message).children(retry).children(details),
+            Controls::Below => div().flex().flex_col().gap(gap).px(gap)
+                .child(message)
+                .child(div().flex().items_center().gap(gap).children(retry).children(details)),
+            Controls::Stacked => div().flex().flex_col().gap(gap).px(gap)
+                .child(message)
+                .children(retry.map(|button| div().flex().child(button)))
+                .children(details.map(|button| div().flex().child(button))),
+        };
         if self.details.is_some() {
             let owner = cx.entity().downgrade();
             let return_focus = details_focus.clone();
@@ -489,15 +526,19 @@ mod tests {
                     }
                     let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", true).expect("painted retry");
                     let details = crate::shell::tests::native_bounds(&mut rig, "Button", "Show status details", true).expect("painted disclosure");
-                    assert!(retry.right() <= details.left() + px(0.5), "recovery controls overlap at {width}px/{percent}%");
-                    assert!(details.right() <= px(width) && retry.left() >= px(0.0));
+                    assert!(retry.right() <= details.left() + px(0.5) || retry.bottom() <= details.top() + px(0.5),
+                        "recovery controls overlap at {width}px/{percent}%");
+                    assert!(details.right() <= px(width) && retry.left() >= px(0.0)
+                        && details.bottom() <= px(900.0) && retry.bottom() <= px(900.0));
                     rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
                     let ledger = crate::shell::anatomy_tests::painted(&mut rig);
                     let lines: Vec<_> = ledger.texts.iter().filter(|text| text.key.starts_with("address:")).collect();
                     assert_eq!(lines.len(), NOTICE_LINES);
                     for line in lines {
                         assert!(!line.clipped_without_ellipsis() && !line.clipped_vertically(), "{width}px/{percent}%: {line:?}");
-                        assert!(line.bounds.x + line.bounds.width <= f32::from(retry.left()) + 0.5, "message overlaps retry at {width}px/{percent}%");
+                        assert!(line.bounds.x + line.bounds.width <= f32::from(retry.left()) + 0.5
+                            || line.bounds.y + line.bounds.height <= f32::from(retry.top()) + 0.5,
+                            "message overlaps retry at {width}px/{percent}%");
                         assert!(line.bounds.y + line.bounds.height <= 900.5, "message leaves the native window");
                     }
                 }
