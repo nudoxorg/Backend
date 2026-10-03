@@ -163,30 +163,10 @@ impl AcquisitionReceiptStore {
         // below remains relative to these held handles, so an ancestor rename
         // or replacement cannot redirect a later path-based operation.
         let parent = DirectoryCapability::open(parent_path)?;
-        let (root_directory, created_root) = match parent.open_dir(root_name) {
-            Ok(directory) => {
-                directory.restrict_private()?;
-                directory.validate_private()?;
-                (directory, false)
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                (parent.create_private_dir(root_name)?, true)
-            }
-            Err(error) => return Err(error),
-        };
+        let (root_directory, created_root) = open_or_create_private_child(&parent, root_name)?;
         let mut children = Vec::with_capacity(5);
         for name in ["snapshots", "deltas", "records", "heads", "temps"] {
-            let child = match root_directory.open_dir(name) {
-                Ok(directory) => {
-                    directory.restrict_private()?;
-                    directory.validate_private()?;
-                    directory
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    root_directory.create_private_dir(name)?
-                }
-                Err(error) => return Err(error),
-            };
+            let (child, _) = open_or_create_private_child(&root_directory, name)?;
             child.sync_all()?;
             children.push(child);
         }
@@ -860,6 +840,31 @@ fn json_error(error: serde_json::Error) -> io::Error {
     io::Error::new(kind, error.to_string())
 }
 
+/// Opens one private directory relative to a pinned parent, creating it only
+/// when absent. Another process may win the mkdir race; in that case reopen
+/// through the same no-follow/private checks before accepting the winner.
+fn open_or_create_private_child(
+    parent: &DirectoryCapability,
+    name: &str,
+) -> io::Result<(DirectoryCapability, bool)> {
+    match parent.open_private_dir(name) {
+        Ok(directory) => Ok((directory, false)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match parent.create_private_dir(name) {
+                Ok(directory) => {
+                    directory.validate_private()?;
+                    Ok((directory, true))
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    Ok((parent.open_private_dir(name)?, false))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 fn validate_store_directory(root: &Path, directory: &Path) -> io::Result<()> {
     let relative = directory.strip_prefix(root).map_err(|_| {
@@ -1038,6 +1043,7 @@ mod tests {
         AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, LeaseStore,
         ManifestEntry, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
     };
+    use std::process::{Command, Stdio};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary(label: &str) -> PathBuf {
@@ -1051,6 +1057,116 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("create fixture");
         fs::canonicalize(path).expect("canonicalize fixture")
+    }
+
+    #[test]
+    fn receipt_store_initialization_process_worker() {
+        let Ok(root) = std::env::var("BACKEND_RECEIPT_STORE_INIT_WORKER_ROOT") else {
+            return;
+        };
+        let mut start = [0_u8; 1];
+        std::io::stdin()
+            .read_exact(&mut start)
+            .expect("parent releases store initializer");
+        assert_eq!(start, [b'!']);
+        AcquisitionReceiptStore::open(root).expect("concurrent receipt-store initialization");
+    }
+
+    #[test]
+    fn simultaneous_processes_initialize_the_same_receipt_store() {
+        let root = temporary("concurrent-open");
+        let receipts = root.join("receipts");
+        let executable = std::env::current_exe().expect("test executable");
+        let worker_name = concat!(
+            "acquisition::receipt_store::tests::",
+            "receipt_store_initialization_process_worker"
+        );
+        let mut workers = (0..8)
+            .map(|_| {
+                Command::new(&executable)
+                    .arg("--exact")
+                    .arg(worker_name)
+                    .arg("--nocapture")
+                    .env("BACKEND_RECEIPT_STORE_INIT_WORKER_ROOT", &receipts)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("spawn receipt-store initializer")
+            })
+            .collect::<Vec<_>>();
+
+        // Each child blocks in the test body on its private stdin pipe, so no
+        // filesystem readiness marker can be observed while it is being
+        // written. Releasing all children after spawn makes their first open
+        // and mkdir attempts overlap on the same root and child directories.
+        for worker in &mut workers {
+            worker
+                .stdin
+                .take()
+                .expect("worker start pipe")
+                .write_all(b"!")
+                .expect("release worker");
+        }
+        let mut failures = Vec::new();
+        for worker in workers {
+            let output = worker.wait_with_output().expect("wait for initializer");
+            if !output.status.success() {
+                failures.push(format!(
+                    "{}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+
+        if failures.is_empty() {
+            let store = AcquisitionReceiptStore::open(&receipts).expect("reopen initialized store");
+            drop(store);
+        }
+        fs::remove_dir_all(root).expect("cleanup");
+        assert!(
+            failures.is_empty(),
+            "concurrent receipt-store initializers failed: {}",
+            failures.join("\n")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn receipt_store_initialization_rejects_replaced_or_nonprivate_children() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = temporary("unsafe-child");
+        let receipts = root.join("receipts");
+        drop(AcquisitionReceiptStore::open(&receipts).expect("initialize store"));
+
+        let outside = root.join("outside");
+        fs::create_dir(&outside).expect("outside directory");
+        let snapshots = receipts.join("snapshots");
+        fs::remove_dir(&snapshots).expect("remove snapshots child");
+        symlink(&outside, &snapshots).expect("replace child with symlink");
+        assert!(
+            AcquisitionReceiptStore::open(&receipts).is_err(),
+            "a replaced symlink child must not be followed"
+        );
+        assert!(
+            fs::read_dir(&outside)
+                .expect("inspect outside directory")
+                .next()
+                .is_none(),
+            "opening a replaced child must not mutate its target"
+        );
+
+        fs::remove_file(&snapshots).expect("remove symlink child");
+        fs::create_dir(&snapshots).expect("replace with ordinary directory");
+        fs::set_permissions(&snapshots, fs::Permissions::from_mode(0o755))
+            .expect("make child nonprivate");
+        assert!(
+            AcquisitionReceiptStore::open(&receipts).is_err(),
+            "a nonprivate replacement child must be rejected"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
