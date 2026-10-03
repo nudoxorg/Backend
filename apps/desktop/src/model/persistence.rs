@@ -1888,6 +1888,71 @@ mod tests {
         assert!(matches!(PersistentState::at("unused").cold_reload(&forged).route, Route::Orbit(_)));
     }
 
+    #[test]
+    fn readme_link_cold_restore_keeps_full_scope_binding_href_and_fragment_as_addresses() {
+        use backend_library::{CargoPackageReadmeRootScopeV1 as Scope, CargoPackageReadmeSelectionV1 as Selection};
+        let (_, key, result) = crate::runtime::cargo_readme_reads::tests::fixture();
+        let origin = backend_library::CargoPackageReadmeOriginV1::from_result(&result).expect("exact README origin");
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::unserved());
+        let mut targets = Vec::new();
+        for (scope, selection) in [(Scope::EffectiveWorkspace, Selection::WorkspaceInherited), (Scope::Package, Selection::ManifestPath)] {
+            let mut origin = origin.clone(); origin.root_scope = scope; origin.selection = selection;
+            let href = "../src/lib.rs#L7-L11";
+            let link = CargoReadmeLinkAddress::new(origin.clone(), href).expect("scoped file address");
+            assert_eq!(link.fragment(), Some("L7-L11"));
+            let route = Route::CargoSource(CargoSourceRoute::readme_link(key.context.clone(), crate::core::PackageId::new(key.package.as_str()).expect("package"), link, Some(7)).expect("source address"));
+            let wire = PersistentState::project(&snapshot.with_session(SessionState { route: route.clone(), ..SessionState::default() }));
+            let decoded: PersistedDesktopState = serde_json::from_slice(&serde_json::to_vec(&wire).expect("serialize scoped address")).expect("decode scoped address");
+            let restored = PersistentState::at("unused").cold_reload(&decoded);
+            assert_eq!(restored.route, route);
+            assert!(restored.back.is_empty(), "the binding is carried by the address, never reconstructed from navigation history");
+            let PersistedRoute::CargoReadmeLink { browse, origin: saved, href: saved_href, line, .. } = &decoded.route else { panic!("scope-preserving wire route"); };
+            assert_eq!(browse.project, key.context.requested_project().service_coordinate().expect("requested member"));
+            assert_eq!(browse.request_binding, key.context.request_binding());
+            assert_eq!(saved, &origin); assert_eq!(saved_href, href); assert_eq!(*line, Some(7));
+            let plan = crate::runtime::store::RouteDependencies::new(&restored.route, None);
+            let store = crate::runtime::store::DataStore::new(Arc::new(snapshot.with_session(restored)), None);
+            let pair = plan.cargo().expect("exact file and independent package inventory");
+            assert!(store.cargo_source(&pair.file).loaded_value().is_none());
+            assert!(!plan.content_loaded(&store), "a restored source-qualified address creates no served bytes");
+            assert!(plan.current_cargo_package(&store, &key.package).is_none());
+            targets.push(pair.file.target.clone());
+        }
+        assert_ne!(targets[0], targets[1], "equal relative spelling never collapses workspace inheritance into package-file scope");
+    }
+
+    #[test]
+    fn edited_readme_link_context_or_origin_cannot_restore_a_different_owner_receipt() {
+        let (_, key, result) = crate::runtime::cargo_readme_reads::tests::fixture();
+        let origin = backend_library::CargoPackageReadmeOriginV1::from_result(&result).expect("origin");
+        let route = CargoSourceRoute::readme_link(key.context.clone(), crate::core::PackageId::new(key.package.as_str()).expect("package"), CargoReadmeLinkAddress::new(origin, "../src/lib.rs#L7").expect("file address"), Some(7)).expect("bound address");
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::unserved());
+        let wire = PersistentState::project(&snapshot.with_session(SessionState { route: Route::CargoSource(route), ..SessionState::default() }));
+        for change in 0..7 {
+            let mut edited = wire.clone();
+            let PersistedRoute::CargoReadmeLink { browse, package, origin, href, line } = &mut edited.route else { panic!("wire link"); };
+            match change {
+                0 => browse.project = "/fixture/workspace/another-member".into(),
+                1 => browse.request_binding.effective_workspace_root_digest = [3; 32],
+                2 => origin.request_binding.requested_root_digest = [4; 32],
+                3 => *package = "pkg:cargo/serde@1.0.219".into(),
+                4 => origin.root_scope = backend_library::CargoPackageReadmeRootScopeV1::Package,
+                5 => *href = "../../outside.rs#L7".into(),
+                _ => *line = Some(0),
+            }
+            assert!(matches!(PersistentState::at("unused").cold_reload(&edited).route, Route::Orbit(_)), "edited context/origin case {change} has no scoped route");
+            assert_eq!(edited.cargo_source_recovery_note(), Some(crate::model::workspace::Note::CargoSourceAddressUnread));
+        }
+        let mut untrusted_digest = wire;
+        if let PersistedRoute::CargoReadmeLink { origin, .. } = &mut untrusted_digest.route { origin.content_digest = [5; 32]; }
+        let restored = PersistentState::at("unused").cold_reload(&untrusted_digest);
+        assert!(matches!(restored.route, Route::CargoSource(_)), "a structurally valid edited digest remains an untrusted address for owner revalidation");
+        let plan = crate::runtime::store::RouteDependencies::new(&restored.route, None);
+        let store = crate::runtime::store::DataStore::new(Arc::new(snapshot.with_session(restored)), None);
+        assert!(!plan.content_loaded(&store));
+        assert!(plan.current_cargo_package(&store, &key.package).is_none(), "saved origin bytes cannot admit current file authority");
+    }
+
     /// Quitting while the query previews a result reopens where you were,
     /// never on the provisional page.
     #[test]
