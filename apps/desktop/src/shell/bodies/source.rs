@@ -18,7 +18,7 @@ use crate::model::pages::{
     DocFragment, PageKey, RelationKind, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
 };
 use crate::navigation::{Intent, Route, SymbolRoute};
-use crate::shell::focus::{Recall, Target};
+use crate::shell::focus::{Recall, Target, TargetAction};
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
 use facet::tokens::ty;
@@ -50,6 +50,25 @@ fn paired_admission(
     semantic: Rc<dyn Fn(&mut App) -> bool>,
 ) -> Rc<dyn Fn(&mut App) -> bool> {
     Rc::new(move |app| source(app) && semantic(app))
+}
+
+fn retained_page_admission(
+    ctx: &Ctx<'_>,
+    display: &Arc<crate::runtime::snapshot::RetainedDisplay>,
+    route: &Route,
+    cx: &mut Context<Reader>,
+) -> Rc<dyn Fn(&mut App) -> bool> {
+    let local = ctx.native_local_guard(cx);
+    let expected = Arc::clone(display);
+    let route = route.clone();
+    let links = ctx.links.clone();
+    Rc::new(move |app| {
+        local(app) && {
+            let store = links.store.read(app);
+            super::retained::select(store, &route, store.snapshot().overlay())
+                .is_some_and(|now| Arc::ptr_eq(&now, &expected))
+        }
+    })
 }
 
 struct Pager {
@@ -350,6 +369,7 @@ pub(super) fn retained_page(
     for (target, label, forward) in [(previous, "Previous saved text", false), (next, "Next saved text", true)] {
         let Some(target) = target else { continue; };
         let state = Rc::clone(&memory);
+        let admission = retained_page_admission(ctx, &display, route, cx);
         let expected = Arc::clone(&display);
         let route = route.clone();
         let links = ctx.links.clone();
@@ -367,9 +387,10 @@ pub(super) fn retained_page(
                 });
             }
         });
-        let act = ctx.native_local_action(act, cx);
+        let target_action = TargetAction::new(admission, act);
+        let act = target_action.callback();
         let id: SharedString = if forward { "saved-display-next" } else { "saved-display-previous" }.into();
-        ctx.targets.push(Target { id: id.clone(), label: label.into(), act: act.clone(), peek: None, source: None });
+        ctx.targets.push(Target { id: id.clone(), label: label.into(), action: target_action.clone(), peek: None, source: None });
         let mut control = facet::controls::button(id.clone(), label, &measure)
             .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
         if let Some(focus) = ctx.native_handle(&id, cx) { control = control.focus_handle(focus); }
@@ -409,6 +430,7 @@ pub(super) fn retained_row_page(
     ] {
         let Some(target) = target else { continue; };
         let state = Rc::clone(&memory);
+        let admission = retained_page_admission(ctx, &display, route, cx);
         let expected = Arc::clone(&display);
         let route = route.clone();
         let links = ctx.links.clone();
@@ -426,9 +448,10 @@ pub(super) fn retained_row_page(
                 });
             }
         });
-        let act = ctx.native_local_action(act, cx);
+        let target_action = TargetAction::new(admission, act);
+        let act = target_action.callback();
         let id: SharedString = if forward { "saved-rows-next" } else { "saved-rows-previous" }.into();
-        ctx.targets.push(Target { id: id.clone(), label: label.into(), act: act.clone(), peek: None, source: None });
+        ctx.targets.push(Target { id: id.clone(), label: label.into(), action: target_action.clone(), peek: None, source: None });
         let mut button = facet::controls::button(id.clone(), label, &ctx.measure).ghost().size(Control::Small)
             .on_click(move |window, app| act(window, app));
         if let Some(focus) = ctx.native_handle(&id, cx) { button = button.focus_handle(focus); }
@@ -660,10 +683,12 @@ fn code(
         } else {
             format!("Copy source line {number}")
         }.into();
+        let target_action = TargetAction::new(Rc::clone(&source_guard), copy_line);
+        let copy_line = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: copy_label.clone(),
-            act: copy_line.clone(),
+            action: target_action,
             peek: None,
             source: None,
         });
@@ -879,10 +904,12 @@ fn code(
             );
         });
         let id: SharedString = "source-open-editor".into();
+        let target_action = TargetAction::new(Rc::clone(&source_guard), act);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Open source file in editor".into(),
-            act: act.clone(),
+            action: target_action,
             peek: None,
             source: None,
         });
@@ -929,11 +956,12 @@ fn code(
                 let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
                     state.update(app, |pager, cx| pager.show_references(destination, cx));
                 });
-                let act = ctx.native_action(act, cx);
+                let target_action = TargetAction::new(Rc::clone(&source_guard), act);
+                let act = target_action.callback();
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: label.into(),
-                    act: act.clone(),
+                    action: target_action.clone(),
                     peek: None,
                     source: None,
                 });
@@ -972,12 +1000,12 @@ fn code(
             let target = Target {
                 id: id.clone(),
                 label: label.clone(),
-                act: Rc::new(move |_, app| {
+                action: TargetAction::new(Rc::clone(&admission), Rc::new(move |_, app| {
                     if !source_guard(app) || !semantic_guard.as_ref().is_some_and(|guard| guard(app)) { return; }
                     recall.focus(target_id.clone());
                     recall.remember_leave(leaving.clone(), target_id.clone());
                     links.dispatch_read(Intent::Navigate(destination.clone()), dependency.clone(), app);
-                }),
+                })),
                 peek: Some(PageKey::Symbol(symbol.clone())),
                 source: Some(symbol),
             };
@@ -993,7 +1021,7 @@ fn code(
                     ctx.targets.focus(id.clone());
                 }
             }
-            let act = target.act.clone();
+            let act = target.action.callback();
             ctx.targets.push(target);
             let focus = ctx.native_handle(&id, cx);
             let mut button = facet::controls::button(id.clone(), label, &measure)
@@ -1010,10 +1038,12 @@ fn code(
         if !copy_guard(app) { return; }
         app.write_to_clipboard(gpui::ClipboardItem::new_string(snippet.to_string()));
     });
+    let target_action = TargetAction::new(Rc::clone(&source_guard), copy);
+    let copy = target_action.callback();
     ctx.targets.push(Target {
         id: copy_id.clone(),
         label: "Copy visible source page".into(),
-        act: copy.clone(),
+        action: target_action,
         peek: None,
         source: None,
     });
@@ -1072,11 +1102,12 @@ fn pager_controls(
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
             state.update(app, |pager, cx| pager.previous(cursor, previous, cx));
         });
-        let act = ctx.native_action(act, cx);
+        let target_action = TargetAction::new(Rc::clone(source_guard), act);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Previous source lines".into(),
-            act: act.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -1102,11 +1133,12 @@ fn pager_controls(
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
             state.update(app, |pager, cx| pager.next(cursor, next, cx));
         });
-        let act = ctx.native_action(act, cx);
+        let target_action = TargetAction::new(Rc::clone(source_guard), act);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Next source lines".into(),
-            act: act.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -1130,11 +1162,12 @@ fn pager_controls(
         let focus: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, app| {
             focus_input.update(app, |input, cx| input.focus(window, cx));
         });
-        let focus = ctx.native_action(focus, cx);
+        let target_action = TargetAction::new(Rc::clone(source_guard), focus);
+        let focus = target_action.callback();
         ctx.targets.push(Target {
             id: field_id.clone(),
             label: "Enter a source line number".into(),
-            act: focus.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -1161,11 +1194,12 @@ fn pager_controls(
             let typed = input.read(app).value().to_string();
             state.update(app, |pager, cx| pager.jump(&typed, cx));
         });
-        let act = ctx.native_action(act, cx);
+        let target_action = TargetAction::new(Rc::clone(source_guard), act);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Go to source line".into(),
-            act: act.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -1287,7 +1321,9 @@ fn margin(
                 if !source_guard(app) || !semantic_guard(app) { return; }
                 if let Some(route) = target.clone() { links.dispatch_read(Intent::Navigate(route), dependency.clone(), app); }
             });
-            ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: act.clone(), peek: None, source: None });
+            let target_action = TargetAction::new(Rc::clone(&admission), act);
+            let act = target_action.callback();
+            ctx.targets.push(Target { id: id.clone(), label: name.clone(), action: target_action, peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
             let mut button = facet::controls::button(id.clone(), name, &measure)
                 .when_current(admission)
@@ -1428,7 +1464,7 @@ mod tests {
             .bounds_of("source-open-editor").expect("mounted editor control");
         let old_editor = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
             .placed().into_iter().find(|(target, _)| target.id == "source-open-editor")
-            .expect("current editor action").0.act;
+            .expect("current editor action").0.action.callback();
         rig.cx.simulate_click(editor.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(attempts.borrow().len(), 3, "each failed launcher is tried once");
@@ -1812,7 +1848,7 @@ mod tests {
             targets.focus(id);
             targets.current().expect("visible source target")
         });
-        rig.cx.update(|window, cx| (target.act)(window, cx));
+        rig.cx.update(|window, cx| (target.action.callback())(window, cx));
         rig.settle();
     }
 
@@ -1900,6 +1936,58 @@ mod tests {
             .shell
             .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(walked.as_deref(), Some("source-line-501"));
+    }
+
+    #[gpui::test]
+    fn source_row_focus_geometry_and_native_owner_follow_the_reader_across_shelf_changes(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::shell::focus::Zone;
+
+        let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code)
+        else {
+            unreachable!()
+        };
+        route.line = Some(500);
+        let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(
+            cx, Some(Route::Symbol(route.clone())), 1440.0, 900.0, pool,
+        );
+        rig.settle();
+
+        let mut before_frame = None;
+        for sample in 0..3 {
+            if sample > 0 {
+                // The middle sample closes the shelf; the last opens it.
+                rig.go(Intent::ToggleShelf);
+            }
+            rig.repaint();
+            let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+            let frame = targets.hint_frame();
+            if let Some(previous) = before_frame {
+                assert_ne!(frame, previous, "a structural shelf change builds a new Reader target frame");
+            }
+            before_frame = Some(frame);
+            assert!(rig.cx.update(|window, cx| targets.focus_native("source-line-500", window, cx)),
+                "the current row has a native owner");
+            let row = targets.bounds_of("source-line-500").expect("current painted source row");
+            let button = crate::shell::tests::native_bounds_id(
+                &mut rig,
+                "source-copy-line-500-0",
+                "Button",
+                "Copy source line 500",
+                true,
+            )
+            .expect("current native source line button");
+            assert!(row.left() <= button.left() && button.left() - row.left() <= px(16.0),
+                "the Reader bevel starts alongside its own native line, not in a prior shelf/layout: {row:?} vs {button:?}");
+            assert!(row.right() >= button.right() && row.top() <= button.top() && row.bottom() >= button.bottom(),
+                "the Reader target encloses its own native line: {row:?} vs {button:?}");
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)),
+                (Zone::Reader, Some("source-line-500".into())));
+            assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("source-line-500"));
+            assert_eq!(rig.route(), Route::Symbol(route.clone()));
+        }
     }
 
     #[gpui::test]

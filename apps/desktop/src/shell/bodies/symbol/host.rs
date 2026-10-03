@@ -8,7 +8,7 @@ use crate::model::pages::{
     DocFragment, DocSections, PageKey, SearchQuery, Stamp, SymbolPage, SymbolRef,
 };
 use crate::navigation::Intent;
-use crate::shell::focus::{Act as Action, Target, Targets};
+use crate::shell::focus::{Act as Action, Target, TargetAction, Targets};
 use crate::shell::kit::symbol_route;
 use crate::shell::reader::{Reader, SymbolDisclosure};
 use crate::shell::region::Links;
@@ -99,20 +99,21 @@ impl Doors for ShellHost<'_> {
         door: Option<&Door>,
         element: AnyElement,
     ) -> AnyElement {
-        if self.active {
-            let act: Action = door
-                .and_then(|door| door.open.clone())
-                .unwrap_or_else(|| Rc::new(|_, _| {}));
+        if self.active && let Some(act) = door.and_then(|door| door.open.clone()) {
             let target = door.and_then(|door| SymbolRef::new(door.subject.0.as_ref()).ok());
             self.targets.push(Target {
                 id: key.clone(),
                 label,
-                act,
+                action: TargetAction::new(self.admit.clone(), act),
                 peek: target.clone().map(PageKey::Symbol),
                 source: target,
             });
         }
-        gpui::IntoElement::into_any_element(self.targets.track(key, element))
+        if self.active && door.is_some_and(|door| door.open.is_some()) {
+            self.targets.track(key, element).into_any_element()
+        } else {
+            self.targets.measure(key, element).into_any_element()
+        }
     }
 
     fn track_hoverable(
@@ -123,18 +124,21 @@ impl Doors for ShellHost<'_> {
         focus: facet::hover::FocusTarget,
         element: AnyElement,
     ) -> AnyElement {
-        if self.active {
-            let act: Action = door.open.clone().unwrap_or_else(|| Rc::new(|_, _| {}));
+        if self.active && let Some(act) = door.open.clone() {
             let target = SymbolRef::new(focus.subject().0.as_ref()).ok();
             self.targets.push(Target {
                 id: key.clone(),
                 label,
-                act,
+                action: TargetAction::new(self.admit.clone(), act),
                 peek: target.clone().map(PageKey::Symbol),
                 source: target,
             });
         }
-        gpui::IntoElement::into_any_element(self.targets.track(key, element))
+        if self.active && door.open.is_some() {
+            self.targets.track(key, element).into_any_element()
+        } else {
+            self.targets.measure(key, element).into_any_element()
+        }
     }
 
     fn up(&self) -> Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>> {
@@ -216,7 +220,7 @@ impl Host for ShellHost<'_> {
             self.targets.push(Target {
                 id: id.clone(),
                 label,
-                act,
+                action: TargetAction::new(self.admit.clone(), act),
                 peek: None,
                 source: None,
             });
@@ -233,7 +237,8 @@ impl Host for ShellHost<'_> {
         control: gpui::Stateful<gpui::Div>,
     ) -> AnyElement {
         let id = key.text();
-        let act = self.action(act);
+        let action = TargetAction::new(self.admit.clone(), act);
+        let act = action.callback();
         let handle = self
             .active
             .then(|| self.targets.reuse_native_handle(&id))
@@ -242,7 +247,7 @@ impl Host for ShellHost<'_> {
             self.targets.push(Target {
                 id: id.clone(),
                 label,
-                act: act.clone(),
+                action,
                 peek: None,
                 source: None,
             });
@@ -576,7 +581,7 @@ mod doc_link_tests {
                     .source
                     .as_ref()
                     .filter(|symbol| symbol.identity().name() == "from_slice")
-                    .map(|_| target.act.clone())
+                    .map(|_| target.action.callback())
             })
             .expect("the mounted producer sibling has a real ShellHost door");
         rig.cx.update(|window, cx| action(window, cx));

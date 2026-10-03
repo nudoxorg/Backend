@@ -173,8 +173,9 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             });
             reader.update(cx, |_, cx| cx.notify());
         });
-        let act = ctx.native_local_action(act, cx);
-        ctx.targets.push(Target { id: door.clone().into(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
+        let target_action = ctx.target_local_action(act, cx);
+        let act = target_action.callback();
+        ctx.targets.push(Target { id: door.clone().into(), label: label.clone(), action: target_action.clone(), peek: None, source: None });
         let focus = ctx.native_handle(&SharedString::from(door.clone()), cx);
         let face = native_control(door.clone().into(), label.clone(), gpui::Role::Button, focus, Rc::clone(&act))
             .cursor_pointer()
@@ -218,9 +219,10 @@ fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalPr
                     && (command != ProjectCommand::StartNewIndex || (saved.permits_new_attempt() && expected.permits_new_attempt())))) { return; }
         links.dispatch(intent.clone(), cx);
     });
-    let act = if matches!(command, ProjectCommand::CheckOutcome | ProjectCommand::StartNewIndex) { ctx.native_snapshot_action(act, cx) }
-        else { ctx.native_local_action(act, cx) };
-    ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), act: Rc::clone(&act), peek: None, source: None });
+    let target_action = if matches!(command, ProjectCommand::CheckOutcome | ProjectCommand::StartNewIndex) { ctx.target_snapshot_action(act, cx) }
+        else { ctx.target_local_action(act, cx) };
+    let act = target_action.callback();
+    ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), action: target_action, peek: None, source: None });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
     let control = button(gpui::SharedString::from(id.clone()), command.label(), &ctx.measure).on_click(move |window, cx| act(window, cx));
     let mut control = match command.weight() {

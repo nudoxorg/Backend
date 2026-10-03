@@ -496,6 +496,50 @@ fn clicking_a_chip_filters_to_that_verb_and_a_test_place_shows_when_tests_are_in
     assert_eq!(all(&ledger, "s6-pkg-", "-count"), ["2", "2"], "gui-harness now counts its test place too");
 }
 
+fn choose_hint(rig: &mut Rig, id: &str) {
+    rig.keys("f");
+    let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for(id))
+        .unwrap_or_else(|| panic!("mounted target {id} has a hint"));
+    rig.keys(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
+}
+
+#[gpui::test]
+fn a_reader_hint_transfers_native_keyboard_ownership_before_the_next_return(cx: &mut TestAppContext) {
+    let (mut rig, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    // Reproduce a titlebar-origin keyboard session, then choose a Reader
+    // filter without a pointer click or a fresh Tab into the page.
+    let toggle = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("tb-shelf", cx))
+        .expect("mounted titlebar toggle");
+    rig.cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+    rig.settle();
+    let shelf_before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open);
+    choose_hint(&mut rig, "s6-chip-0");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("s6-chip-0"));
+    let selected = |rig: &mut Rig| {
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("AccessKit JSON");
+        tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "calls" && node["aria"]["selected"] == true)
+    };
+    assert!(selected(&mut rig), "hint activated the calls filter once");
+    rig.native_press("enter");
+    rig.settle();
+    assert!(!selected(&mut rig), "the next native Return belongs to the filter");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open), shelf_before,
+        "Return did not go back to the old titlebar toggle");
+}
+
+#[gpui::test]
+fn a_picker_hint_yields_native_focus_to_its_popup(cx: &mut TestAppContext) {
+    let (mut rig, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
+    choose_hint(&mut rig, "s6-picker");
+    let menu_key: gpui::ElementId = "s6-menu".to_owned().into();
+    assert!(rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)));
+    rig.keys("down down enter");
+    assert!(!rig.cx.update(|window, cx| facet::overlay::float::is_open(&menu_key, window, cx)));
+    assert_eq!(says(&now(&mut rig), "s6-picker-name").as_deref(), Some("gui-harness"));
+}
+
 // ------------------------------------------------------------------ fit
 
 use crate::shell::fit_tests::{findings, resize};

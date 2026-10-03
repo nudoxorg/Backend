@@ -76,11 +76,12 @@ pub(super) fn leaf(
                 cx.notify();
             });
         });
-        let act = ctx.native_inventory_action(act, model.source_revision, cx);
+        let target_action = ctx.target_inventory_action(act, model.source_revision, cx);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Previous Cargo files".into(),
-            act: act.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -112,11 +113,12 @@ pub(super) fn leaf(
             recall.remember_leave(leaving.clone(), action_id.clone());
             links.dispatch(Intent::Navigate(Route::CargoSource(destination.clone())), app);
         });
-        let act = ctx.native_inventory_action(act, model.source_revision, cx);
+        let target_action = ctx.target_inventory_action(act, model.source_revision, cx);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: format!("Open Cargo file {}", path.as_str()).into(),
-            act: act.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -146,11 +148,12 @@ pub(super) fn leaf(
                 cx.notify();
             });
         });
-        let act = ctx.native_inventory_action(act, model.source_revision, cx);
+        let target_action = ctx.target_inventory_action(act, model.source_revision, cx);
+        let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Next Cargo files".into(),
-            act: act.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });

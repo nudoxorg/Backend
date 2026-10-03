@@ -266,11 +266,12 @@ fn document_leaf(
             ctx,
             cx,
         );
-        let action = ctx.native_dependency_action(action, dependency.clone(), cx);
+        let target_action = ctx.target_dependency_action(action, dependency.clone(), cx);
+        let action = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: format!("Go to {heading_title}").into(),
-            act: action.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -342,11 +343,12 @@ fn document_leaf(
             ctx,
             cx,
         );
-        let action = ctx.native_dependency_action(action, dependency.clone(), cx);
+        let target_action = ctx.target_dependency_action(action, dependency.clone(), cx);
+        let action = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: label.to_string().into(),
-            act: action.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -517,11 +519,12 @@ fn page_controls(
             page.set(target);
             window.refresh();
         });
-        let action = ctx.native_dependency_action(action, dependency.clone(), cx);
+        let target_action = ctx.target_dependency_action(action, dependency.clone(), cx);
+        let action = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: label.clone(),
-            act: action.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });

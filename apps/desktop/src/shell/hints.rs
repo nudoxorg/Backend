@@ -4,7 +4,7 @@
 //! Generating codes and placing them over the targets' recorded bounds is
 //! the shell's job; drawing one label is the key cap's (hint voice).
 
-use super::focus::Target;
+use super::focus::{Target, Zone};
 use gpui::{Bounds, Pixels};
 
 /// Home row first, then the rest of the easy reach.
@@ -17,6 +17,9 @@ pub(crate) struct Hinted {
     pub code: String,
     /// The target.
     pub target: Target,
+    /// The target list that supplied this exact mounted action.
+    pub zone: Zone,
+    pub frame: u64,
     /// Where it is, window coordinates.
     pub bounds: Bounds<Pixels>,
 }
@@ -33,7 +36,7 @@ pub(crate) enum Step {
     /// Still narrowing.
     Narrowed,
     /// One target matched: activate it (the mode ends).
-    Chosen(Target),
+    Chosen(Hinted),
     /// Nothing matches that key: the mode ends.
     Missed,
 }
@@ -59,12 +62,12 @@ pub(crate) fn codes(count: usize) -> Vec<String> {
 
 impl HintMode {
     /// Labels `targets` (already filtered to the visible ones).
-    pub(crate) fn new(targets: Vec<(Target, Bounds<Pixels>)>) -> Self {
+    pub(crate) fn new(targets: Vec<(Zone, u64, Target, Bounds<Pixels>)>) -> Self {
         let codes = codes(targets.len().min(ALPHABET.len() * ALPHABET.len()));
         let hinted = targets
             .into_iter()
             .zip(codes)
-            .map(|((target, bounds), code)| Hinted { code, target, bounds })
+            .map(|((zone, frame, target, bounds), code)| Hinted { code, zone, frame, target, bounds })
             .collect();
         Self {
             hinted,
@@ -96,7 +99,7 @@ impl HintMode {
             .collect::<Vec<_>>();
         match matching.as_slice() {
             [] => Step::Missed,
-            [only] if only.code == typed => Step::Chosen(only.target.clone()),
+            [only] if only.code == typed => Step::Chosen((*only).clone()),
             _ => {
                 self.typed = typed;
                 Step::Narrowed
@@ -116,12 +119,14 @@ mod tests {
     use gpui::{point, px, size};
     use std::rc::Rc;
 
-    fn target(id: &str) -> (Target, Bounds<Pixels>) {
+    fn target(id: &str) -> (Zone, u64, Target, Bounds<Pixels>) {
         (
+            Zone::Reader,
+            1,
             Target {
                 id: id.to_owned().into(),
                 label: id.to_owned().into(),
-                act: Rc::new(|_, _| {}),
+                action: super::super::focus::TargetAction::new(Rc::new(|_| true), Rc::new(|_, _| {})),
                 peek: None,
                 source: None,
             },
@@ -151,7 +156,7 @@ mod tests {
         assert!(matches!(mode.key('a'), Step::Narrowed));
         assert_eq!(mode.remaining(), 16, "every code starting with a");
         match mode.key('s') {
-            Step::Chosen(target) => assert_eq!(target.id.as_ref(), "t1"),
+            Step::Chosen(choice) => assert_eq!(choice.target.id.as_ref(), "t1"),
             _ => panic!("as names exactly one target"),
         }
         let mut mode = HintMode::new((0..3).map(|index| target(&format!("t{index}"))).collect());

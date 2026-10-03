@@ -26,7 +26,7 @@ use gpui::Window;
 /// waits for none before a capture).
 
 
-use super::focus::{Act, Targets};
+use super::focus::{Act, TargetAction, Targets};
 use super::kit::HoverIntent;
 use super::reader::Reader;
 use super::region::Links;
@@ -148,6 +148,28 @@ pub(crate) struct Ctx<'a> {
 enum NativeActionKind { LocalUi, OwnerSnapshot, Resource }
 
 impl Ctx<'_> {
+    /// Bind a mounted keyboard target to the same producer receipt as its
+    /// native control. The binding checks before hint focus and before act.
+    pub(crate) fn target_action(&self, action: Act, cx: &mut Context<Reader>) -> TargetAction {
+        TargetAction::new(self.native_guard_with_inventory(None, None, NativeActionKind::Resource, cx), action)
+    }
+
+    pub(crate) fn target_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> TargetAction {
+        TargetAction::new(self.native_dependency_guard(dependency, cx), action)
+    }
+
+    pub(crate) fn target_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> TargetAction {
+        TargetAction::new(self.native_guard_with_inventory(None, None, NativeActionKind::OwnerSnapshot, cx), action)
+    }
+
+    pub(crate) fn target_local_action(&self, action: Act, cx: &mut Context<Reader>) -> TargetAction {
+        TargetAction::new(self.native_local_guard(cx), action)
+    }
+
+    pub(crate) fn target_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> TargetAction {
+        TargetAction::new(self.native_guard_with_inventory(Some(revision), None, NativeActionKind::Resource, cx), action)
+    }
+
     /// An action from a drawn control belongs to one Reader visit and one
     /// owner revision. Retained transition bodies and stale pointer events
     /// cannot navigate after that visit has been replaced.

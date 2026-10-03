@@ -17,7 +17,7 @@
 //! the shelf is not inline, and this button is the pointer's only way to open
 //! it over the reader.
 
-use super::focus::{Target, Targets};
+use super::focus::{Target, TargetAction, Targets};
 use super::jump::{self, Here, Mark, Segment};
 use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
@@ -152,6 +152,34 @@ fn jump_act(action: JumpAction, links: &Links, targets: &Targets) -> super::focu
     Rc::new(move |window, cx| action.run(&links, &targets, window, cx))
 }
 
+fn local_target_admission(links: &Links, cx: &Context<Titlebar>) -> Rc<dyn Fn(&mut App) -> bool> {
+    let shell = links.shell.clone();
+    let scope = shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
+    Rc::new(move |app| {
+        scope.is_some_and(|scope| shell.upgrade().is_some_and(|shell| shell.read(app).admits_local_activation_scope(scope, app)))
+    })
+}
+
+fn local_target_action(links: &Links, act: super::focus::Act, cx: &Context<Titlebar>) -> TargetAction {
+    TargetAction::new(local_target_admission(links, cx), act)
+}
+
+fn jump_target_action(action: JumpAction, links: &Links, targets: &Targets, cx: &Context<Titlebar>) -> TargetAction {
+    let admit: Rc<dyn Fn(&mut App) -> bool> = match &action {
+        JumpAction::Ask => local_target_admission(links, cx),
+        JumpAction::Back { visit }
+        | JumpAction::Forward { visit }
+        | JumpAction::Navigate { visit, .. }
+        | JumpAction::Siblings { visit, .. }
+        | JumpAction::View { visit, .. } => {
+            let visit = visit.clone();
+            let links = links.clone();
+            Rc::new(move |app| visit.current(&links, app))
+        }
+    };
+    TargetAction::new(admit, jump_act(action, links, targets))
+}
+
 fn segment_action(visit: &JumpVisit, index: usize, segment: &Segment, store: &DataStore, current: bool) -> Option<JumpAction> {
     if segment.quiet { return None; }
     let route = visit.subject.page_route()?;
@@ -249,7 +277,9 @@ impl Render for Titlebar {
         let act: super::focus::Act = Rc::new(move |_, cx| {
             toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
         });
-        self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), act: Rc::clone(&act), peek: None, source: None });
+        let target_action = local_target_action(&self.links, act, cx);
+        let act = target_action.callback();
+        self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), action: target_action, peek: None, source: None });
         left = left.child(
             self.targets.track(
                 id.clone(),
@@ -284,7 +314,9 @@ impl Render for Titlebar {
             let id = "tb-inbox";
             let target_links = links.clone();
             let act: super::focus::Act = Rc::new(move |_, cx| target_links.dispatch(Intent::OpenInbox, cx));
-            self.targets.push(Target { id: id.into(), label: "Inbox".into(), act: Rc::clone(&act), peek: None, source: None });
+            let target_action = local_target_action(&self.links, act, cx);
+            let act = target_action.callback();
+            self.targets.push(Target { id: id.into(), label: "Inbox".into(), action: target_action, peek: None, source: None });
             let fade = if bar.from.is_some_and(|from| from < Bar::Snug) { arriving } else { 1.0 };
             right = right.child(div().opacity(fade).child(self.targets.track(
                 id,
@@ -393,7 +425,8 @@ impl Titlebar {
         let can_back = snapshot.overlay().is_some() || !session.back.is_empty()
             || self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).shelf_input_owner(true));
         if can_back {
-            let act = jump_act(JumpAction::Back { visit: visit.clone() }, &self.links, &self.targets);
+            let target_action = jump_target_action(JumpAction::Back { visit: visit.clone() }, &self.links, &self.targets, cx);
+            let act = target_action.callback();
             let key_act = Rc::clone(&act);
             let click_act = Rc::clone(&act);
             let menu_links = self.links.clone();
@@ -403,7 +436,7 @@ impl Titlebar {
             let press_targets = self.targets.clone();
             let weak = cx.weak_entity();
             let release = cx.weak_entity();
-            self.targets.push(Target { id: "jump-back".into(), label: "Back".into(), act, peek: None, source: None });
+            self.targets.push(Target { id: "jump-back".into(), label: "Back".into(), action: target_action.clone(), peek: None, source: None });
             let right_links = menu_links.clone();
             let right_targets = targets.clone();
             bar = bar.child(self.targets.track("jump-back",
@@ -462,10 +495,11 @@ impl Titlebar {
                 .child(text(ty::ROW, measure, palette.ink3).child("‹")));
         }
         if snapshot.overlay().is_none() && !session.forward.is_empty() {
-            let act = jump_act(JumpAction::Forward { visit: visit.clone() }, &self.links, &self.targets);
+            let target_action = jump_target_action(JumpAction::Forward { visit: visit.clone() }, &self.links, &self.targets, cx);
+            let act = target_action.callback();
             let key_act = Rc::clone(&act);
             let click_act = Rc::clone(&act);
-            self.targets.push(Target { id: "jump-forward".into(), label: "Forward".into(), act: Rc::clone(&act), peek: None, source: None });
+            self.targets.push(Target { id: "jump-forward".into(), label: "Forward".into(), action: target_action.clone(), peek: None, source: None });
             bar = bar.child(
                 self.targets.track(
                     "jump-forward",
@@ -555,10 +589,11 @@ impl Titlebar {
             .gap(measure.space(Space::Snug)).min_w(px(0.0))
             .child(mark).child(name);
         if let Some(action) = action {
-            let act = jump_act(action, &self.links, &self.targets);
+            let target_action = jump_target_action(action, &self.links, &self.targets, cx);
+            let act = target_action.callback();
             let click_act = Rc::clone(&act);
             let key_act = Rc::clone(&act);
-            self.targets.push(Target { id: last_id.clone(), label: format!("Show {} siblings", here.name).into(), act, peek: None, source: None });
+            self.targets.push(Target { id: last_id.clone(), label: format!("Show {} siblings", here.name).into(), action: target_action.clone(), peek: None, source: None });
             here_name = here_name
                 .role(gpui::Role::Button)
                 .aria_label(format!("Show {} siblings", here.name))
@@ -593,10 +628,11 @@ impl Titlebar {
         } else {
             plate = plate.child(div().flex_1());
         }
-        let ask = jump_act(JumpAction::Ask, &self.links, &self.targets);
+        let target_action = jump_target_action(JumpAction::Ask, &self.links, &self.targets, cx);
+        let ask = target_action.callback();
         let click_ask = Rc::clone(&ask);
         let key_ask = Rc::clone(&ask);
-        self.targets.push(Target { id: "here".into(), label: "Ask anything, or find a package".into(), act: ask, peek: None, source: None });
+        self.targets.push(Target { id: "here".into(), label: "Ask anything, or find a package".into(), action: target_action.clone(), peek: None, source: None });
         plate = plate.child(
             self.targets.track("here", div()
                 .id("here")
@@ -659,10 +695,11 @@ impl Titlebar {
         let navigates = matches!(&action, JumpAction::Navigate { .. });
         let role = if navigates { gpui::Role::Link } else { gpui::Role::Button };
         let label = if navigates { format!("Open {}", segment.name) } else { format!("Show {} siblings", segment.name) };
-        let act = jump_act(action, &self.links, &self.targets);
+        let target_action = jump_target_action(action, &self.links, &self.targets, cx);
+        let act = target_action.callback();
         let click_act = Rc::clone(&act);
         let key_act = Rc::clone(&act);
-        self.targets.push(Target { id: id.clone(), label: label.clone().into(), act, peek: None, source: None });
+        self.targets.push(Target { id: id.clone(), label: label.clone().into(), action: target_action.clone(), peek: None, source: None });
         // At least 24 × 24 to hit (gui-plan.md:213), grown by padding that
         // a matching negative margin takes back: the plate looks the same.
         let side = hit_side(measure);
@@ -727,14 +764,15 @@ impl Titlebar {
             .into_any_element()
     }
 
-    fn ask_field(&mut self, measure: &Measure, palette: &Palette, keys: bool, _cx: &mut Context<Self>) -> AnyElement {
-        let act = jump_act(JumpAction::Ask, &self.links, &self.targets);
+    fn ask_field(&mut self, measure: &Measure, palette: &Palette, keys: bool, cx: &mut Context<Self>) -> AnyElement {
+        let target_action = jump_target_action(JumpAction::Ask, &self.links, &self.targets, cx);
+        let act = target_action.callback();
         let click_act = Rc::clone(&act);
         let key_act = Rc::clone(&act);
         self.targets.push(Target {
             id: "ask".into(),
             label: "Ask anything, or find a package".into(),
-            act: Rc::clone(&act),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
@@ -827,10 +865,11 @@ impl Titlebar {
                 row = row.child(face.role(gpui::Role::Label).aria_label(format!("{name} unavailable: {}", eligibility.guidance().unwrap_or_default())));
                 continue;
             }
-            let act = jump_act(JumpAction::View { visit: visit.clone(), view }, &self.links, &self.targets);
+            let target_action = jump_target_action(JumpAction::View { visit: visit.clone(), view }, &self.links, &self.targets, cx);
+            let act = target_action.callback();
             let click_act = Rc::clone(&act);
             let key_act = Rc::clone(&act);
-            self.targets.push(Target { id: id.clone(), label: format!("Show {name} view").into(), act, peek: None, source: None });
+            self.targets.push(Target { id: id.clone(), label: format!("Show {name} view").into(), action: target_action.clone(), peek: None, source: None });
             face = face
                 .role(gpui::Role::Button)
                 .aria_label(format!("Show {name} view"))

@@ -46,6 +46,34 @@ impl Zone {
 /// What a target does when it is activated (Enter, a click, a hint).
 pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// One target's activation and the admission that owns both native focus and
+/// the action. A hint checks the same receipt before moving focus and again
+/// when it invokes the callback; producers supply their existing guard.
+#[derive(Clone)]
+pub(crate) struct TargetAction {
+    admit: Rc<dyn Fn(&mut App) -> bool>,
+    act: Act,
+}
+
+impl TargetAction {
+    pub(crate) fn new(admit: Rc<dyn Fn(&mut App) -> bool>, act: Act) -> Self {
+        Self { admit, act }
+    }
+
+    pub(crate) fn admits(&self, cx: &mut App) -> bool {
+        (self.admit)(cx)
+    }
+
+    pub(crate) fn run(&self, window: &mut Window, cx: &mut App) {
+        if self.admits(cx) { (self.act)(window, cx); }
+    }
+
+    pub(crate) fn callback(&self) -> Act {
+        let binding = self.clone();
+        Rc::new(move |window, cx| binding.run(window, cx))
+    }
+}
+
 /// A native leaf reports itself. Only a logical selection represented by
 /// its focused ancestor may advertise an active descendant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,7 +125,7 @@ pub(crate) struct Target {
     /// What it reads as (hint mode's announcement, the peek's title).
     pub label: SharedString,
     /// Enter / click / hint.
-    pub act: Act,
+    pub action: TargetAction,
     /// The page Space peeks, when the target is a link.
     pub peek: Option<PageKey>,
     /// The declaration S peels to source, when the target is one.
@@ -412,6 +440,17 @@ impl Targets {
         handle.clone()
     }
 
+    /// A hint can focus only the exact target list frame that supplied it.
+    /// Reader redraws may reuse ids while replacing actions and evidence.
+    pub(crate) fn hint_frame(&self) -> u64 {
+        self.native.borrow().frame
+    }
+
+    pub(crate) fn admits_hint(&self, id: &str, frame: u64) -> bool {
+        self.hint_frame() == frame
+            && self.list.with(|list| list.iter().any(|target| target.id == id)).unwrap_or(false)
+    }
+
     /// Virtualized regions retire offscreen native owners before constructing
     /// the next visible range. Handles remain alive in GPUI for that paint,
     /// but cannot become a later return/input claim through this registry.
@@ -671,7 +710,12 @@ impl Element for Tracked {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Hitbox> {
-        self.bounds.borrow_mut().insert(self.id.clone(), bounds);
+        // `bounds` is the child's layout-space rectangle. Reader transitions
+        // and shared rows may paint under a layer transform; the glow, hint
+        // labels, and peek anchors live in window space alongside hitboxes.
+        // GPUI applies this same transform inside `insert_hitbox` below.
+        let painted = window.layer_transform().apply_bounds(bounds);
+        self.bounds.borrow_mut().insert(self.id.clone(), painted);
         if !self.target {
             self.child.prepaint(window, cx);
             return None;
@@ -679,7 +723,7 @@ impl Element for Tracked {
         facet::probe::record_target_in(
             cx,
             &ElementId::Name(self.id.clone()),
-            bounds,
+            painted,
             facet::probe::Target {
                 hovered: false,
                 pressed: false,
@@ -907,7 +951,7 @@ mod tests {
         Target {
             id: id.into(),
             label: id.into(),
-            act,
+            action: TargetAction::new(Rc::new(|_| true), act),
             peek: None,
             source: None,
         }

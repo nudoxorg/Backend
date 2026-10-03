@@ -15,7 +15,7 @@ use facet::overlay::float;
 use gpui_component::FocusTrapElement as _;
 use super::focus::{Target, Zone};
 use super::frame::{Frame, FrameInput, ShelfMode};
-use super::hints::{HintMode, Step};
+use super::hints::{HintMode, Hinted, Step};
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
 use super::reader::{Reader, Way};
@@ -113,6 +113,19 @@ pub(crate) struct TransientFocusReturn {
     find_query: bool,
 }
 
+#[derive(Clone)]
+struct HintScope {
+    route: Route,
+    overlay: Option<Overlay>,
+    visit: crate::navigation::presentation::VisitId,
+    local_input: gpui::NativeActivationScope,
+}
+
+struct HintSession {
+    mode: HintMode,
+    scope: HintScope,
+}
+
 /// How many times each region rendered (isolation tests, the harness).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RenderCounts {
@@ -178,7 +191,7 @@ pub struct Shell {
     zone: Zone,
     hold: RevealHold,
     hold_timer: Option<Task<()>>,
-    hints: Option<HintMode>,
+    hints: Option<HintSession>,
     /// The page the keyboard peek shows (Space), while its card is open.
     peeking: Option<PageKey>,
     /// How many peeks are pinned (the pins column exists only for pins).
@@ -406,7 +419,7 @@ impl Shell {
 
     #[cfg(test)]
     pub(crate) fn titlebar_target_action(&self, id: &str, cx: &App) -> Option<super::focus::Act> {
-        self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(target, _)| target.act)
+        self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(target, _)| target.action.callback())
     }
 
     /// The reader's own targets: a clone still shares its focus and
@@ -518,7 +531,14 @@ impl Shell {
 
     #[cfg(test)]
     pub(crate) fn hint_codes(&self) -> Vec<String> {
-        self.hints.as_ref().map_or_else(Vec::new, |hints| hints.visible().map(|(hint, _)| hint.code.clone()).collect())
+        self.hints.as_ref().map_or_else(Vec::new, |session| session.mode.visible().map(|(hint, _)| hint.code.clone()).collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hint_code_for(&self, id: &str) -> Option<String> {
+        self.hints.as_ref()?.mode.visible()
+            .find(|(hint, _)| hint.target.id == id)
+            .map(|(hint, _)| hint.code.clone())
     }
 
     /// What the shell's own chrome is doing, in words: the keyboard's zone
@@ -1201,7 +1221,7 @@ impl Shell {
             return;
         }
         if let Some(target) = self.current(cx) {
-            run(target.act, window, cx);
+            run(target.action.callback(), window, cx);
         }
     }
 
@@ -1221,6 +1241,7 @@ impl Shell {
         let Some(target) = self.current(cx) else {
             return;
         };
+        if !target.action.admits(cx) { return; }
         let Some(key) = target.peek.clone() else {
             return;
         };
@@ -1254,7 +1275,9 @@ impl Shell {
         if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let own = route_symbol(snapshot.route());
-        let symbol = self.current(cx).and_then(|target| target.source).or_else(|| own.clone());
+        let symbol = self.current(cx)
+            .and_then(|target| target.action.admits(cx).then_some(target.source).flatten())
+            .or_else(|| own.clone());
         let Some(symbol) = symbol else {
             return;
         };
@@ -1354,20 +1377,66 @@ impl Shell {
             cx.notify();
             return;
         }
+        if !self.page_input_allowed(cx) { return; }
+        let snapshot = self.links.snapshot(cx);
+        let scope = HintScope {
+            route: snapshot.route().clone(),
+            overlay: snapshot.overlay(),
+            visit: snapshot.session().reading.current.id,
+            local_input: self.local_activation_scope(),
+        };
         let mut placed = Vec::new();
-        placed.extend(self.titlebar.read(cx).targets.placed());
+        let mut add = |zone: Zone, targets: &super::focus::Targets| {
+            let frame = targets.hint_frame();
+            placed.extend(targets.placed().into_iter().map(|(target, bounds)| (zone, frame, target, bounds)));
+        };
+        add(Zone::Titlebar, &self.titlebar.read(cx).targets);
         if self.frame.is_some_and(|frame| frame.shelf == ShelfMode::Shelf) {
-            placed.extend(self.shelf.read(cx).targets.placed());
+            add(Zone::Shelf, &self.shelf.read(cx).targets);
         }
-        placed.extend(self.reader.read(cx).targets.placed());
+        add(Zone::Reader, &self.reader.read(cx).targets);
         if self.frame.is_some_and(|frame| frame.pins) {
-            placed.extend(self.pins.read(cx).targets.placed());
+            add(Zone::Pins, &self.pins.read(cx).targets);
         }
         if placed.is_empty() {
             return;
         }
-        self.hints = Some(HintMode::new(placed));
+        self.hints = Some(HintSession { mode: HintMode::new(placed), scope });
         cx.notify();
+    }
+
+    fn hint_scope_current(&self, scope: &HintScope, cx: &App) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        self.page_input_allowed(cx)
+            && self.local_activation_scope() == scope.local_input
+            && snapshot.route() == &scope.route
+            && snapshot.overlay() == scope.overlay
+            && snapshot.session().reading.current.id == scope.visit
+    }
+
+    fn hinted_targets(&self, zone: Zone, cx: &App) -> super::focus::Targets {
+        match zone {
+            Zone::Titlebar => self.titlebar.read(cx).targets.clone(),
+            Zone::Shelf if self.shelf_over_open => self.shelf_over.read(cx).targets.clone(),
+            Zone::Shelf => self.shelf.read(cx).targets.clone(),
+            Zone::Reader => self.reader.read(cx).targets.clone(),
+            Zone::Pins => self.pins.read(cx).targets.clone(),
+        }
+    }
+
+    fn activate_hint(&mut self, choice: Hinted, scope: &HintScope, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.hint_scope_current(scope, cx) { return; }
+        let targets = self.hinted_targets(choice.zone, cx);
+        if !targets.admits_hint(&choice.target.id, choice.frame)
+            || !choice.target.action.admits(cx) { return; }
+        self.set_zone(choice.zone, cx);
+        targets.focus(choice.target.id.clone());
+        if !targets.focus_native(&choice.target.id, window, cx) {
+            // Raw targets use the Shell's real keyboard owner; native controls
+            // use their own mounted handle. A popup may replace either below.
+            self.focus.focus(window, cx);
+        }
+        run(choice.target.action.callback(), window, cx);
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1410,13 +1479,13 @@ impl Shell {
             cx.stop_propagation();
             return;
         }
-        let Some(hints) = self.hints.as_mut() else {
+        let Some(session) = self.hints.as_mut() else {
             return;
         };
         let key = event.keystroke.key.as_str();
         cx.stop_propagation();
         if key == "backspace" {
-            if !hints.backspace() {
+            if !session.mode.backspace() {
                 self.hints = None;
             }
             cx.notify();
@@ -1426,11 +1495,12 @@ impl Shell {
         let (Some(character), None) = (chars.next(), chars.next()) else {
             return;
         };
-        match hints.key(character) {
+        let scope = session.scope.clone();
+        match session.mode.key(character) {
             Step::Narrowed => {}
-            Step::Chosen(target) => {
+            Step::Chosen(choice) => {
                 self.hints = None;
-                run(target.act, window, cx);
+                self.activate_hint(choice, &scope, window, cx);
             }
             Step::Missed => self.hints = None,
         }
@@ -1776,7 +1846,7 @@ impl Shell {
     // ── layers ─────────────────────────────────────────────────────────
 
     fn hint_layer(&self, cx: &App) -> Option<AnyElement> {
-        let hints = self.hints.as_ref()?;
+        let hints = &self.hints.as_ref()?.mode;
         let facet = cx.facet();
         let measure = Measure::new(px(240.0), &facet);
         let mut layer = div().absolute().inset_0();
@@ -1870,7 +1940,7 @@ impl Shell {
     /// Publishes the transient layers as the float stack the harness checks
     /// (unique keys, at most one of each, nothing left once settled).
     fn publish_stack(&self, ask: Option<(facet::probe::StackPhase, Vec<facet::probe::BoundsSample>)>, cx: &mut App) {
-        let hints = self.hints.as_ref().map(HintMode::remaining);
+        let hints = self.hints.as_ref().map(|session| session.mode.remaining());
         facet::probe::record_stack(cx, move || {
             let entry = |key: String, kind: &str, pinned: bool| facet::probe::StackEntry {
                 key,
@@ -2389,7 +2459,7 @@ mod shelf_scene_admission_tests {
         let retired = shell.read_with(rig.cx, |shell, cx| {
             let list = shell.shelf.read(cx).targets.list_probe().upgrade().expect("mounted shelf targets");
             let target = list.borrow().first().cloned().expect("mounted actionable target");
-            target.act
+            target.action.callback()
         });
         let tab = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("mounted native tab");
         rig.cx.simulate_click(tab.center(), gpui::Modifiers::none());
@@ -2520,7 +2590,7 @@ mod responsive_shelf_scene_tests {
             let retired = rig.shell.read_with(rig.cx, |shell, cx| {
                 let list = shell.shelf.read(cx).targets.list_probe().upgrade().expect("native shelf targets");
                 let target = list.borrow().first().cloned().expect("actionable native target");
-                target.act
+                target.action.callback()
             });
             resize(&mut rig, 1480.0 * scale);
             assert!(admitted(&mut rig, &dock), "pixel-only resize preserves native owner at {percent}%");

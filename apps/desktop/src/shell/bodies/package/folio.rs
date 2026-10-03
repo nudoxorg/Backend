@@ -286,6 +286,8 @@ pub(super) struct Folio {
     pub licence_focus: Option<FocusHandle>,
     /// Exact mounted Reader visit/input scope for local disclosure actions.
     pub admit_input: Rc<dyn Fn(&mut App) -> bool>,
+    /// Exact current package read for routes leaving this folio.
+    pub admit_read: Rc<dyn Fn(&mut App) -> bool>,
     pub package: PackageRef,
 }
 
@@ -492,6 +494,7 @@ impl Folio {
                 door(
                     &self.targets,
                     self.active,
+                    Rc::clone(&self.admit_input),
                     &PageTarget::Licence,
                     "Licence",
                     licence_act,
@@ -504,6 +507,7 @@ impl Folio {
                     Some(act) => door(
                         &self.targets,
                         self.active,
+                        Rc::clone(&self.admit_input),
                         &PageTarget::Heads,
                         "Heads-up",
                         act,
@@ -518,6 +522,7 @@ impl Folio {
                     Some(act) => door(
                         &self.targets,
                         self.active,
+                        Rc::clone(&self.admit_input),
                         &PageTarget::Weight,
                         "Weight",
                         act,
@@ -827,6 +832,7 @@ mod tests {
 pub(super) fn door(
     targets: &Targets,
     active: bool,
+    admit: Rc<dyn Fn(&mut App) -> bool>,
     target: &PageTarget,
     label: impl Into<SharedString>,
     act: Act,
@@ -837,7 +843,7 @@ pub(super) fn door(
         targets.push(Target {
             id: id.clone(),
             label: label.into(),
-            act,
+            action: super::super::super::focus::TargetAction::new(admit, act),
             peek: None,
             source: None,
         });
@@ -859,6 +865,7 @@ struct Door {
 fn doors(
     targets: &Targets,
     active: bool,
+    admit: Rc<dyn Fn(&mut App) -> bool>,
     element: impl IntoElement,
     over: Vec<Door>,
 ) -> AnyElement {
@@ -875,7 +882,7 @@ fn doors(
             targets.push(Target {
                 id: id.clone(),
                 label,
-                act,
+                action: super::super::super::focus::TargetAction::new(admit.clone(), act),
                 peek: None,
                 source: None,
             });
@@ -1268,7 +1275,7 @@ impl Folio {
                 }
             })
             .collect();
-        doors(&self.targets, self.active, map, over)
+        doors(&self.targets, self.active, Rc::clone(&self.admit_input), map, over)
     }
 
     /// The weight berg opened: a block is a door to the package it stands for.
@@ -1305,7 +1312,7 @@ impl Folio {
                 }
             })
             .collect();
-        doors(&self.targets, self.active && live, element, over)
+        doors(&self.targets, self.active && live, Rc::clone(&self.admit_read), element, over)
     }
 
     /// A read-only view of the manifest's default feature profile.
@@ -1392,7 +1399,7 @@ impl Folio {
                 })
             })
             .collect();
-        doors(&self.targets, self.active, element, over)
+        doors(&self.targets, self.active, Rc::clone(&self.admit_read), element, over)
     }
 
     /// The module at `open`: a rail to the others, then its cards (a page
@@ -1506,7 +1513,7 @@ impl Folio {
                 targets.push(Target {
                     id: leave_id,
                     label: name_words.get(index).cloned().unwrap_or_default(),
-                    act,
+                    action: super::super::super::focus::TargetAction::new(Rc::clone(&self.admit_read), act),
                     peek: Some(PageKey::Symbol(symbol.clone())),
                     source: Some(symbol.clone()),
                 });

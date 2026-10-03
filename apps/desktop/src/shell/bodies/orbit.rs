@@ -94,7 +94,8 @@ pub(super) fn body(
             tree_links.dispatch(Intent::ActivateProject(tree_project.clone()), cx);
             tree_links.dispatch(Intent::Navigate(tree_route.clone()), cx);
         });
-        let tree_act = ctx.native_local_action(tree_act, cx);
+        let tree_action = ctx.target_local_action(tree_act, cx);
+        let tree_act = tree_action.callback();
         // A click focuses the tile it lands on (so Back, returning here,
         // restores it) and remembers this route was left by it, since
         // `Reader::arrive` unfocuses every new page it draws.
@@ -113,11 +114,12 @@ pub(super) fn body(
                 links.dispatch(Intent::Navigate(route), cx);
             }
         });
-        let act = if owner_serving { ctx.native_snapshot_action(act, cx) } else { ctx.native_local_action(act, cx) };
+        let tile_action = if owner_serving { ctx.target_snapshot_action(act, cx) } else { ctx.target_local_action(act, cx) };
+        let act = tile_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: name.clone(),
-            act: Rc::clone(&act),
+            action: tile_action.clone(),
             peek: None,
             source: None,
         });
@@ -126,7 +128,7 @@ pub(super) fn body(
             ctx.targets.push(Target {
                 id: tree_id.clone(),
                 label: format!("{} dependency tree", project.label).into(),
-                act: Rc::clone(&tree_act),
+                action: tree_action.clone(),
                 peek: None,
                 source: None,
             });
@@ -213,8 +215,9 @@ pub(super) fn body(
                         recall.remember_leave(leaving, return_id.clone());
                         links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))), cx);
                     });
-                    let act = ctx.native_action(act, cx);
-                    ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
+                    let target_action = ctx.target_action(act, cx);
+                    let act = target_action.callback();
+                    ctx.targets.push(Target { id: id.clone(), label: label.clone(), action: target_action.clone(), peek: None, source: None });
                     let focus = ctx.native_handle(&id, cx);
                     let face = native_control(id.clone(), label.clone(), gpui::Role::Link, focus, Rc::clone(&act))
                         .cursor_pointer().min_h(measure.row()).flex().items_center()
@@ -347,9 +350,10 @@ fn resume(snapshot: &AppSnapshot, owner_serving: bool, ctx: &mut Ctx<'_>, cx: &m
         recall.remember_leave(leaving, "resume");
         links.dispatch(Intent::Navigate(route.clone()), cx);
     });
-    let act = ctx.native_snapshot_action(act, cx);
+    let target_action = ctx.target_snapshot_action(act, cx);
+    let act = target_action.callback();
     let id: SharedString = "resume".into();
-    if owner_serving { ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None }); }
+    if owner_serving { ctx.targets.push(Target { id: id.clone(), label: label.clone(), action: target_action.clone(), peek: None, source: None }); }
     let focus = owner_serving.then(|| ctx.native_handle(&id, cx)).flatten();
     let mut line = if owner_serving {
         native_control(id.clone(), label, gpui::Role::Link, focus, Rc::clone(&act)).cursor_pointer()
@@ -398,12 +402,13 @@ fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut
             links.dispatch(Intent::Navigate(route), cx);
         }
     });
-    let act = ctx.native_action(act, cx);
+    let target_action = ctx.target_action(act, cx);
+    let act = target_action.callback();
     if available {
         ctx.targets.push(Target {
             id: id.clone(),
             label: name.clone(),
-            act: Rc::clone(&act),
+            action: target_action.clone(),
             peek: Some(PageKey::Package(package.package.clone())),
             source: None,
         });

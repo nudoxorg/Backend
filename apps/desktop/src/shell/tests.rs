@@ -1346,7 +1346,7 @@ fn a_mounted_native_action_survives_only_an_observation_bump(cx: &mut TestAppCon
     let action = (0..16).find_map(|_| {
         rig.keys("tab");
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
+        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.action.callback())
     }).expect("Tab reaches an indexed package");
     rig.graph.store.update(rig.cx, |store, cx| {
         let snapshot = store.snapshot();
@@ -1370,7 +1370,7 @@ fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut 
     let action = (0..16).find_map(|_| {
         rig.keys("tab");
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
+        targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.action.callback())
     }).expect("Tab reaches an indexed package");
     gate.publish(OwnerState::Starting);
     // Repaint retained Orbit bytes before the watcher processes Starting.
@@ -1406,7 +1406,7 @@ fn mounted_code_copy_from_an_old_visit_cannot_cross_same_root_owner_replacement(
     let old_copy = rig.shell.read_with(rig.cx, |shell, cx| {
         shell.reader_targets(cx).placed().into_iter()
             .find(|(target, _)| target.id == "source-copy-excerpt")
-            .map(|(target, _)| target.act)
+            .map(|(target, _)| target.action.callback())
     }).expect("mounted code has a copy action");
     rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("source-lease-sentinel".into()));
     gate.publish(OwnerState::Starting);
@@ -1442,7 +1442,7 @@ fn local_library_control_cannot_act_after_its_visit_is_replaced(cx: &mut TestApp
     let mut rig = rig(cx, None, 1440.0, 900.0);
     let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
         .placed().into_iter().find(|(target, _)| target.id == "add-folder")
-        .expect("Library Add is mounted").0.act;
+        .expect("Library Add is mounted").0.action.callback();
     rig.go(Intent::Navigate(Route::World));
     rig.cx.update(|window, cx| add(window, cx));
     assert!(!rig.cx.did_prompt_for_paths(), "an old local UI callback cannot open a picker on another visit");
@@ -1456,7 +1456,7 @@ fn unserved_library_control_cannot_act_after_an_overlay_takes_input(cx: &mut Tes
     );
     let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
         .placed().into_iter().find(|(target, _)| target.id == "add-folder")
-        .expect("Library Add is mounted on first launch").0.act;
+        .expect("Library Add is mounted on first launch").0.action.callback();
     rig.graph.root.update(rig.cx, |root, cx| root.queue(
         Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx,
     ));
@@ -2103,6 +2103,63 @@ fn hint_mode_labels_every_visible_target_and_a_code_activates_one(cx: &mut TestA
     }
     let (_, _, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
     assert!(!hints, "a full code ended hint mode");
+}
+
+#[gpui::test]
+fn an_indexed_hint_revoked_by_same_root_owner_replacement_cannot_take_native_focus(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(
+        cx,
+        Some(view_route("RelationLabel", View::Code)),
+        1440.0,
+        900.0,
+        ReadPool::start(2, |_| Fixture).expect("source pool"),
+        RootOnly,
+        Some(gate.clone()),
+    );
+    rig.settle();
+    rig.keys("f");
+    let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for("source-copy-excerpt"))
+        .expect("painted source copy has a hint");
+    let target_frame = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame());
+    let focused = rig.cx.update(|window, cx| window.focused(cx));
+    rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("hint-lease-sentinel".into()));
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame()), target_frame,
+        "the stale painted target is still mounted before its watcher rerenders");
+    rig.cx.simulate_keystrokes(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused,
+        "a revoked producer cannot take focus before its action is denied");
+    rig.settle();
+    assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("hint-lease-sentinel"));
+}
+
+#[gpui::test]
+fn a_local_settings_hint_remains_live_after_an_unrelated_producer_replacement(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(
+        cx, None, 1440.0, 900.0,
+        ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()),
+    );
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance));
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    rig.settle();
+    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(Overlay::Settings(_))));
+    rig.keys("f");
+    let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for("tb-inbox"))
+        .expect("local Inbox target is mounted on Settings");
+    rig.keys(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(Overlay::Inbox),
+        "local UI hint remains actionable with a replaced index producer");
 }
 
 #[gpui::test]
@@ -3221,7 +3278,7 @@ fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &
     assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "local Tree address stays reachable");
     assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained semantic packages remain inert");
     let action = targets.placed().into_iter().find(|(target, _)| target.id.starts_with("orbit-project-"))
-        .expect("local project tile").0.act;
+        .expect("local project tile").0.action.callback();
     rig.cx.update(|window, cx| action(window, cx));
     rig.draw();
     let snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());

@@ -309,6 +309,8 @@ pub(super) fn body(
             .find(|m| m.items.iter().any(|i| i.symbol == symbol))
             .map(|m| m.name.clone())
     });
+    let package_key = PageKey::Package(dossier.package.clone());
+    let package_stamp = ctx.links.store.read(cx).stamp(&package_key);
     let folio = folio::Folio {
         id: id.into(),
         facts,
@@ -321,6 +323,7 @@ pub(super) fn body(
         active: ctx.active,
         licence_focus: ctx.native_handle(&PageTarget::Licence.id(), cx),
         admit_input: ctx.native_local_guard(cx),
+        admit_read: ctx.native_dependency_guard((package_key, package_stamp), cx),
         package: dossier.package.clone(),
     };
     // Centred on the reading column it overflows.
@@ -508,9 +511,10 @@ fn cargo_manifest_offer(
         recall.remember_leave(leaving.clone(), id.clone());
         links.dispatch(Intent::Navigate(destination.clone()), app);
     });
-    let act = ctx.native_dependency_action(act, dependency, cx);
+    let target_action = ctx.target_dependency_action(act, dependency, cx);
+    let act = target_action.callback();
     let id: SharedString = "cargo-source-open-manifest".into();
-    ctx.targets.push(Target { id: id.clone(), label: "Open current Cargo.toml source file".into(), act: act.clone(), peek: None, source: None });
+    ctx.targets.push(Target { id: id.clone(), label: "Open current Cargo.toml source file".into(), action: target_action, peek: None, source: None });
     let focus = ctx.native_handle(&id, cx);
     let mut control = facet::controls::button(id.clone(), "Open Cargo.toml", &ctx.measure)
         .ghost().size(facet::Control::Small).on_click(move |window, app| act(window, app));
@@ -721,12 +725,14 @@ fn hero(
                 let url = url.clone();
                 let act: super::super::focus::Act =
                     Rc::new(move |_, cx| ticket.open(kind, &url, &links, cx));
+                let target_action = ctx.target_action(act, cx);
+                let act = target_action.callback();
                 let click_act = Rc::clone(&act);
                 let key_act = Rc::clone(&act);
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: label.clone(),
-                    act,
+                    action: target_action,
                     peek: None,
                     source: None,
                 });
@@ -785,6 +791,9 @@ fn hero(
     if let Some(list) = dossier.dependencies.known()
         && !list.is_empty()
     {
+        let package_key = PageKey::Package(dossier.package.clone());
+        let package_stamp = ctx.links.store.read(cx).stamp(&package_key);
+        let dep_admit = ctx.native_dependency_guard((package_key, package_stamp), cx);
         let parent = dossier.package.display_name().to_owned();
         // The library, to link a dependency to the release of it that is
         // indexed here (a project's own dependencies are indexed as the
@@ -830,7 +839,7 @@ fn hero(
                     let act: crate::shell::focus::Act = Rc::new(move |_window, cx| {
                         open_dependency(&place, Some(id.clone()), &recall, &links, cx)
                     });
-                    folio::door(&targets, on_page, &door, dep.name.clone(), act, link)
+                    folio::door(&targets, on_page, dep_admit.clone(), &door, dep.name.clone(), act, link)
                 }),
         );
     }
@@ -1130,10 +1139,12 @@ fn readme(
                         app,
                     );
                 });
+                let target_action = ctx.target_action(act, cx);
+                let act = target_action.callback();
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: format!("Go to {}", target.title).into(),
-                    act: act.clone(),
+                    action: target_action,
                     peek: None,
                     source: None,
                 });
@@ -1158,10 +1169,12 @@ fn readme(
                     show_plan.show_more_headings();
                     window.refresh();
                 });
+                let target_action = ctx.target_action(act, cx);
+                let act = target_action.callback();
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: format!("Show more README headings ({remaining} remaining)").into(),
-                    act: act.clone(),
+                    action: target_action,
                     peek: None,
                     source: None,
                 });
@@ -1228,10 +1241,12 @@ fn readme(
                     }
                     _ => None,
                 };
+                let target_action = ctx.target_action(act, cx);
+                let act = target_action.callback();
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: label.clone().into(),
-                    act: act.clone(),
+                    action: target_action,
                     peek,
                     source,
                 });
@@ -1265,10 +1280,12 @@ fn readme(
                     show_plan.show_more_links();
                     window.refresh();
                 });
+                let target_action = ctx.target_action(act, cx);
+                let act = target_action.callback();
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: format!("Show more README links ({remaining} remaining)").into(),
-                    act: act.clone(),
+                    action: target_action,
                     peek: None,
                     source: None,
                 });

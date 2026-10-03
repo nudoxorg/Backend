@@ -944,7 +944,10 @@ impl Render for Shelf {
                 self.targets.push(Target {
                     id: item.key.clone(),
                     label: item.name.clone(),
-                    act: act(&weak, item.does.clone(), snapshot.session().reading.current.id, guard.clone()),
+                    action: super::focus::TargetAction::new(
+                        guard.clone(),
+                        act(&weak, item.does.clone(), snapshot.session().reading.current.id, guard.clone()),
+                    ),
                     peek: item.warm.clone(),
                     source: item.source.clone(),
                 });

@@ -585,7 +585,7 @@ fn retained_check_outcome_callback_cannot_cross_a_same_root_owner_replacement(cx
         Reconciles { starts: starts.clone(), checks: checks.clone() }, Some(gate.clone()));
     rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
-    let action = targets.iter().find(|(target, _)| target.label == "Check outcome").expect("live recovery").0.act.clone();
+    let action = targets.iter().find(|(target, _)| target.label == "Check outcome").expect("live recovery").0.action.callback();
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: authority, mode: crate::model::ServiceMode::Attached });
     rig.cx.update(|window, cx| action(window, cx));
@@ -637,7 +637,7 @@ fn native_new_index_after_archival_uses_a_distinct_key_only_on_user_activation(c
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("native new attempt");
     assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
-    let stale = target.act.clone();
+    let stale = target.action.callback();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.settle();
     assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
@@ -662,7 +662,7 @@ fn captured_new_index_control_cannot_cross_same_root_owner_replacement(cx: &mut 
         ReadPool::start(2, |_| NothingYet).expect("pool"), ArchivedOperations { starts: starts.clone() }, Some(gate.clone()));
     rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
-    let action = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("live action").0.act.clone();
+    let action = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("live action").0.action.callback();
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: authority, mode: crate::model::ServiceMode::Attached });
     rig.cx.update(|window, cx| action(window, cx));

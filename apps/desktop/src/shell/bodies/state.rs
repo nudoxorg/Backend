@@ -171,8 +171,9 @@ pub(crate) fn not_ready<T>(
             let retry_key = key.clone();
             let id: SharedString = format!("retry-{key:?}").into();
             let act: Act = Rc::new(move |_, cx| links.retry(retry_key.clone(), cx));
-            let act = ctx.native_local_action(act, cx);
-            ctx.targets.push(Target { id: id.clone(), label: "Try again".into(), act: Rc::clone(&act), peek: None, source: None });
+            let target_action = ctx.target_local_action(act, cx);
+            let act = target_action.callback();
+            ctx.targets.push(Target { id: id.clone(), label: "Try again".into(), action: target_action.clone(), peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
             let mut control = facet::controls::button(id.clone(), "Try again", &measure)
                 .primary().on_click(move |window, cx| act(window, cx));

@@ -237,12 +237,13 @@ fn awaiting_tree(
             );
         }
     });
-    let action = ctx.native_dependency_action(action, dependency, cx);
+    let target_action = ctx.target_dependency_action(action, dependency, cx);
+    let action = target_action.callback();
     let id: SharedString = "cargo-source-resolve-tree".into();
     ctx.targets.push(Target {
         id: id.clone(),
         label: "Open saved file with current Cargo browse binding".into(),
-        act: action.clone(),
+        action: target_action.clone(),
         peek: None,
         source: None,
     });
@@ -378,11 +379,12 @@ fn code(
             let words = copy_source.text().get(span.range()).unwrap_or_default();
             app.write_to_clipboard(gpui::ClipboardItem::new_string(words.to_owned()));
         });
-        let copy = ctx.native_action(copy, cx);
+        let target_action = ctx.target_action(copy, cx);
+        let copy = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
             label: format!("Copy visible part of source line {number}").into(),
-            act: copy.clone(),
+            action: target_action.clone(),
             peek: None,
             source: None,
         });
