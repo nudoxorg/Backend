@@ -5,13 +5,86 @@ use crate::anatomy::symbol::view::{Block, Kind, Lang, Uses};
 use crate::anatomy::symbol::{self, Chrome, Facts, Fixed, Ui, View};
 use crate::{ActiveFacet as _, Facet, Measure, set_facet};
 use gpui::{
-    AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, TestAppContext,
+    AppContext as _, Context, Element as _, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, TestAppContext,
     VisualTestContext, Window, div, px,
 };
+
+/// A retained painted copy uses the desktop host's actual semantic boundary:
+/// accessibility suppression in every phase, with inert native registration.
+/// This fixture tests that projection, not physical occlusion by a real modal.
+struct PaintedCopy {
+    child: gpui::AnyElement,
+}
+
+impl IntoElement for PaintedCopy {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for PaintedCopy {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (
+            window.with_a11y_suppressed(|window| self.child.request_layout(window, cx)),
+            (),
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        window.with_a11y_suppressed(|window| self.child.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        window.with_a11y_suppressed(|window| self.child.paint(window, cx));
+    }
+}
+
+fn painted_copy(id: &'static str, child: impl IntoElement) -> gpui::AnyElement {
+    PaintedCopy {
+        child: gpui::inert(id, "The live surface owns interaction", child).into_any_element(),
+    }
+    .into_any_element()
+}
 
 struct Document {
     view: View,
     uses: Uses,
+    ui: Ui,
     covered: bool,
     width: f32,
 }
@@ -35,16 +108,20 @@ impl Render for Document {
             },
             &measure,
             facet.palette(),
-            &Fixed::new(Ui::default()).with_open([symbol::key::FoldKey::Example(0)]),
+            &Fixed::new(self.ui.clone()).with_open([symbol::key::FoldKey::Example(0)]),
             &crate::fluid::Modes::new(),
         );
         let page = if self.covered {
-            gpui::inert("covered-document", "The current modal owns input", page).into_any_element()
+            painted_copy("covered-document", page)
         } else {
             page
         };
         let _ = window;
-        div().id("document-scroll").size_full().overflow_y_scroll().child(page)
+        div()
+            .id("document-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(page)
     }
 }
 
@@ -121,6 +198,7 @@ fn compiled_symbol_kinds_and_languages_expose_the_painted_words_at_large_text(
         Document {
             view: symbol::compile(&facts),
             uses: Uses::default(),
+            ui: Ui::default(),
             covered: false,
             width: 1440.,
         }
@@ -230,6 +308,58 @@ fn compiled_symbol_kinds_and_languages_expose_the_painted_words_at_large_text(
     }
 }
 
+/// Projection test: pixels may remain during a transition without supplying
+/// a second accessible document. Real desktop modal coverage is a later gate.
+#[gpui::test]
+fn retained_document_keeps_its_painted_words_without_a_semantic_copy(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        let _ = crate::fonts::install(cx);
+        cx.set_global(gpui::TextTrace);
+        set_facet(
+            Facet {
+                reduced_motion: true,
+                ..Facet::default()
+            },
+            cx,
+        );
+    });
+    let prose = "A retained document still paints these owned words.";
+    let mut facts = Facts::new("retained_tick", Kind::Constant, Lang::Rust, "signal");
+    facts.docs = vec![Block::Para(prose.into())];
+    let (document, cx) = cx.add_window_view(|window, _| {
+        window.set_a11y_forced(true);
+        Document {
+            view: symbol::compile(&facts),
+            uses: Uses::default(),
+            ui: Ui::default(),
+            covered: true,
+            width: 900.,
+        }
+    });
+    cx.simulate_resize(gpui::size(px(900.), px(1200.)));
+    let native = tree(cx);
+    assert!(!has(&native, "Heading", "retained_tick"));
+    assert!(!has(&native, "Label", prose));
+    assert!(
+        cx.update(|window, _| window
+            .text_trace()
+            .iter()
+            .any(|run| run.text == prose && run.alpha > 0.)),
+        "suppressed semantics do not remove the retained pixels"
+    );
+    document.update(cx, |document, cx| {
+        document.covered = false;
+        cx.notify();
+    });
+    let native = tree(cx);
+    assert!(has(&native, "Heading", "retained_tick"));
+    assert!(
+        has(&native, "Label", prose),
+        "the live projection restores the owned document"
+    );
+}
+
 #[test]
 fn popup_openers_admit_touch_and_keyboard_but_never_repeat_mouse_release() {
     use super::Activation;
@@ -273,7 +403,7 @@ impl Render for NativeControl {
             },
         );
         if self.covered {
-            gpui::inert("covered-control", "A modal owns input", leaf).into_any_element()
+            painted_copy("covered-control", leaf)
         } else {
             leaf.into_any_element()
         }
@@ -312,7 +442,7 @@ fn native_opener_counts_one_press_and_clean_keyboard_release(cx: &mut TestAppCon
     });
     tree(cx);
     for (stroke, expected) in [("enter", 2), ("space", 3)] {
-        cx.simulate_keystrokes(stroke);
+        crate::test_input::native_press(cx, stroke);
         assert_eq!(calls.get(), expected, "native {stroke} releases once");
     }
     let node = native_node(cx, gpui::Role::Button, "all 2 packages");
@@ -328,7 +458,9 @@ fn native_opener_counts_one_press_and_clean_keyboard_release(cx: &mut TestAppCon
     });
     assert!(!has(&tree(cx), "Button", "all 2 packages"));
     cx.simulate_click(at, gpui::Modifiers::none());
-    cx.simulate_keystrokes("enter space");
+    for key in ["enter", "space"] {
+        crate::test_input::native_press(cx, key);
+    }
     accessible_click(cx, node);
     assert_eq!(
         calls.get(),
@@ -359,7 +491,7 @@ impl Render for Paragraph {
         );
         let body = div().w(px(260.)).text_size(px(24.)).child(body);
         if self.covered {
-            gpui::inert("covered-prose", "A modal owns input", body).into_any_element()
+            painted_copy("covered-prose", body)
         } else {
             body.into_any_element()
         }
@@ -405,7 +537,9 @@ fn wrapped_unicode_link_uses_painted_body_native_focus_and_new_destination_ident
         .as_str()
         .expect("mounted link is a native tab stop");
     assert_eq!(native["nodes"][focus]["aria"]["role"], "Link");
-    cx.simulate_keystrokes("enter space");
+    for key in ["enter", "space"] {
+        crate::test_input::native_press(cx, key);
+    }
     assert_eq!(
         calls.get(),
         3,
@@ -423,7 +557,7 @@ fn wrapped_unicode_link_uses_painted_body_native_focus_and_new_destination_ident
         cx.notify();
     });
     tree(cx);
-    cx.simulate_keystrokes("enter");
+    crate::test_input::native_press(cx, "enter");
     accessible_click(cx, old_node);
     assert_eq!(
         calls.get(),
@@ -437,7 +571,7 @@ fn wrapped_unicode_link_uses_painted_body_native_focus_and_new_destination_ident
     });
     assert!(!has(&tree(cx), "Link", &words));
     cx.simulate_click(gpui::point(px(8.), px(12.)), gpui::Modifiers::none());
-    cx.simulate_keystrokes("space");
+    crate::test_input::native_press(cx, "space");
     accessible_click(cx, current_node);
     assert_eq!(
         calls.get(),
@@ -462,7 +596,7 @@ fn actual_usage_locations_code_and_package_filters_are_native_named_controls(
         );
     });
     let facts = Facts::new("tick", Kind::Constant, Lang::Rust, "signal");
-    let uses = Uses {
+    let mut uses = Uses {
         all: ["alpha", "café_🧭"]
             .into_iter()
             .map(|package| symbol::view::Use {
@@ -481,11 +615,25 @@ fn actual_usage_locations_code_and_package_filters_are_native_named_controls(
             .collect(),
         elsewhere: None,
     };
-    let (_, cx) = cx.add_window_view(|window, _| {
+    uses.all.push(symbol::view::Use {
+        package: "alpha".into(),
+        file: "src/alpha_tests.rs".into(),
+        path: "/current/alpha/src/alpha_tests.rs".into(),
+        line: 12,
+        text: "assert!(signal.tick > 0);".into(),
+        mark: None,
+        verb: symbol::view::Verb::Reads,
+        member: None,
+        ctx: symbol::view::Ctx::Test,
+        fill: None,
+        approx: false,
+    });
+    let (document, cx) = cx.add_window_view(|window, _| {
         window.set_a11y_forced(true);
         Document {
             view: symbol::compile(&facts),
             uses,
+            ui: Ui::default(),
             covered: false,
             width: 1440.,
         }
@@ -505,4 +653,29 @@ fn actual_usage_locations_code_and_package_filters_are_native_named_controls(
         "actual typed Reads relation, not an inferred call"
     );
     assert!(has(&native, "Button", "include tests"));
+    assert!(
+        !has(&native, "Link", "src/alpha_tests.rs:12"),
+        "test-context rows start excluded"
+    );
+    document.update(cx, |document, cx| {
+        document.ui = document.ui.clone().apply(&symbol::Change::Tests);
+        cx.notify();
+    });
+    let native = tree(cx);
+    assert!(has(&native, "Button", "include tests"));
+    assert!(
+        has(&native, "Link", "src/alpha_tests.rs:12"),
+        "including tests projects the actual test destination"
+    );
+    document.update(cx, |document, cx| {
+        document
+            .uses
+            .all
+            .retain(|place| place.ctx != symbol::view::Ctx::Test);
+        cx.notify();
+    });
+    assert!(
+        !has(&tree(cx), "Button", "include tests"),
+        "no test-use evidence means no include-tests control"
+    );
 }

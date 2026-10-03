@@ -160,11 +160,15 @@ fn retained_link_rechecks_owner_before_focus_glyph_and_native_activation(cx: &mu
     );
     click_ax(cx, node);
     assert_eq!(calls.get(), 3);
-    cx.simulate_keystrokes("enter space");
+    for key in ["enter", "space"] {
+        crate::test_input::native_press(cx, key);
+    }
     assert_eq!(calls.get(), 5);
     current.set(false);
     click_ax(cx, node);
-    cx.simulate_keystrokes("enter space");
+    for key in ["enter", "space"] {
+        crate::test_input::native_press(cx, key);
+    }
     assert_eq!(
         calls.get(),
         5,
