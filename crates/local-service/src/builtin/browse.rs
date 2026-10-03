@@ -4572,6 +4572,7 @@ mod tests {
             requested: &RequestedCargoManifest,
             registry_manifest: &Path,
             git_manifest: &Path,
+            patch_manifest: &Path,
             registry_version: &str,
             git_revision: &str,
             patch_version: Option<&str>,
@@ -4692,6 +4693,7 @@ mod tests {
                     requested,
                     &registry_manifest,
                     &git_manifest,
+                    &patch_manifest,
                     "1.0.0",
                     "aaaaaaaa",
                     None,
@@ -4705,6 +4707,7 @@ mod tests {
                     requested,
                     &registry_manifest,
                     &git_manifest,
+                    &patch_manifest,
                     "1.0.0",
                     "aaaaaaaa",
                     None,
@@ -4719,6 +4722,7 @@ mod tests {
                     requested,
                     &registry_manifest,
                     &git_manifest,
+                    &patch_manifest,
                     "1.1.0",
                     "bbbbbbbb",
                     None,
@@ -4734,6 +4738,7 @@ mod tests {
                     requested,
                     &registry_manifest,
                     &git_manifest,
+                    &patch_manifest,
                     "1.1.0",
                     "bbbbbbbb",
                     Some("1.2.0"),
@@ -5702,12 +5707,12 @@ mod tests {
             .expect("external target directory");
         std::fs::write(
             workspace.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n",
+            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n[patch.crates-io]\npatchy = { path = \"../patches/patchy\" }\n",
         )
         .expect("workspace manifest");
         std::fs::write(
             app.join("Cargo.toml"),
-            "[package]\nname = \"cache-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npatchy = \"1\"\n\n[patch.crates-io]\npatchy = { path = \"../../../patches/patchy\" }\n",
+            "[package]\nname = \"cache-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npatchy = \"1\"\n",
         )
         .expect("app manifest");
         std::fs::write(app.join("src/lib.rs"), "pub fn app() {}\n").expect("app source file");
@@ -5792,7 +5797,7 @@ mod tests {
         // directory. The source path is admitted from target.src_path itself.
         std::fs::write(
             app.join("Cargo.toml"),
-            "[package]\nname = \"cache-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npatchy = \"1\"\n\n[patch.crates-io]\npatchy = { path = \"../../../patches/patchy\" }\n\n[[bin]]\nname = \"outside-target\"\npath = \"../../../targets/outside-main.rs\"\n",
+            "[package]\nname = \"cache-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npatchy = \"1\"\n\n[[bin]]\nname = \"outside-target\"\npath = \"../../../targets/outside-main.rs\"\n",
         )
         .expect("custom target manifest");
         std::fs::write(&external_target, "fn main() {}\n").expect("external target source");
