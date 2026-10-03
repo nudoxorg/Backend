@@ -18,6 +18,7 @@
 use super::float::{self, FloatRequest};
 use crate::fonts;
 use crate::measure::{Measure, Set};
+use crate::reading::{self, Intent, ReadingRole};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
@@ -71,6 +72,7 @@ pub struct Words {
     links: Vec<(Range<usize>, Link)>,
     decor: Vec<(Range<usize>, Decor)>,
     hairline: Hsla,
+    reading: Intent,
 }
 
 /// Wraps `text` so each `(range, link)` rests into the float layer.
@@ -87,10 +89,18 @@ pub fn words(
         links,
         decor: Vec::new(),
         hairline: palette.line3.into(),
+        reading: Intent::Reading(ReadingRole::Paragraph),
     }
 }
 
 impl Words {
+    /// The native meaning of the same prepared, unsplit styled run.
+    #[must_use]
+    pub fn reading_intent(mut self, intent: Intent) -> Self {
+        self.reading = intent;
+        self
+    }
+
     /// Adds a decoration under `range`.
     #[must_use]
     pub fn decor(mut self, range: Range<usize>, decor: Decor) -> Self {
@@ -174,6 +184,14 @@ impl Element for Words {
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
         None
+    }
+
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        self.reading.native_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        reading::write_layout(self.text.layout(), node);
     }
 
     fn request_layout(
@@ -771,7 +789,8 @@ impl Sig {
         palette: &Palette,
     ) -> AnyElement {
         let (text, links, decor) = self.build(role, palette);
-        let mut element = words(id, text, links, palette);
+        let mut element = words(id, text, links, palette)
+            .reading_intent(Intent::Reading(ReadingRole::Code));
         for (range, kind) in decor {
             element = element.decor(range, kind);
         }

@@ -176,3 +176,5 @@ pub fn control(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod adoption_tests;

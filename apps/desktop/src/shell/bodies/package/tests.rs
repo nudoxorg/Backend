@@ -1305,6 +1305,66 @@ fn escape_folds_the_open_module_first(cx: &mut TestAppContext) {
     assert_eq!(rig.route(), package_route(), "Esc folded; it did not leave");
 }
 
+/// The real shell/store/OwnerGate seam, over explicitly synthetic fixture
+/// reads. This is native TestSupport delivery, not a live producer/platform gate.
+#[gpui::test]
+fn package_card_reading_names_and_native_actions_follow_the_current_owner_attachment(
+    cx: &mut TestAppContext,
+) {
+    use crate::core::VersionedRoot;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    use crate::runtime::reads::ReadPool;
+    use crate::shell::tests::{Fixture, RootOnly, rig_with_engine_gate};
+
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(
+        cx, Some(package_route()), 1440., 900.,
+        ReadPool::start(2, |_| Fixture).expect("fixture pool"), RootOnly, Some(gate.clone()),
+    );
+    install(&mut rig);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    walk_to(&mut rig, "pkg-module-glyph", 64);
+    rig.keys("enter");
+    rig.settle();
+    let dossier = dossier();
+    let symbol = dossier.outline.known().expect("fixture outline").roots[1].children[0].decl.coordinate.clone();
+    let card_id = PageTarget::Card(symbol).id();
+    let debug_id = format!("{:?}", gpui::ElementId::Name(card_id.clone()));
+    let tree: serde_json::Value = serde_json::from_str(&rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native tree")).expect("native JSON");
+    let (node_id, node) = tree["nodes"].as_object().expect("native nodes").iter().find(|(_, node)| {
+        node["element_id"].as_str() == Some(debug_id.as_str())
+            && node["aria"]["role"].as_str() == Some("Button")
+            && node["aria"]["label"].as_str() == Some("RelationLabel")
+    }).expect("the actual existing card control owns the name");
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
+    assert!(!tree["nodes"].as_object().unwrap().values().any(|node| {
+        matches!(node["aria"]["role"].as_str(), Some("Label" | "Heading"))
+            && node["aria"]["label"].as_str() == Some("RelationLabel")
+    }), "the painted card name must not become a duplicate reading label");
+    assert!(rig.cx.update(|window, _| window.a11y_tree().unwrap().nodes.iter().any(|(_, node)| {
+        node.role() == gpui::Role::Label && node.label() == Some("enum")
+            && !node.supports_action(gpui::AccessibleAction::SetValue)
+    })), "the actual card kind word is noneditable native reading");
+    let old = gpui::accesskit::NodeId(node_id.parse().expect("native node id"));
+    // No UI watcher, repaint or new typed read may run between publication
+    // of the new real attachment and delivery to the old mounted handler.
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+        action: gpui::AccessibleAction::Click,
+        target_tree: gpui::accesskit::TreeId::ROOT,
+        target_node: old,
+        data: None,
+    }, cx));
+    assert_eq!(rig.route(), package_route(), "the old card cannot cross an attachment replacement");
+    rig.repaint();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.package(&dossier.package).loaded_value().is_some()), "retained producer bytes remain available for disclosure");
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).native_keys().iter().any(|id| id.starts_with("pkg-card-")), "retained bytes do not mount current card controls");
+}
+
 /// The release history's pin and newest entry are doors: Enter travels to the
 /// selected exact release, and the page says which one it is reading.
 #[gpui::test]

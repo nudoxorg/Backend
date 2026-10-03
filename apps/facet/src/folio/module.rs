@@ -6,10 +6,11 @@
 use super::cards::{CardFacts, symbol_card};
 use super::flight::Marks;
 use super::state::{Extent, Pick};
-use super::text::{key, one, wrap};
+use super::text::{key, one, one_as, wrap, wrap_as};
 use crate::fluid::Modes;
 use crate::measure::{Measure, Space};
 use crate::motion::Flow;
+use crate::reading::{Intent, ReadingRole};
 use crate::tokens::fluid::FOLIO_CARDS;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Family, TypeRole, ty};
@@ -41,6 +42,7 @@ pub struct ModuleView {
     measure: Measure,
     on_open: Option<Open>,
     wrap: Option<Wrap>,
+    card_name_intent: Intent,
     marks: Option<Marks>,
     carried: f32,
 }
@@ -60,12 +62,20 @@ pub fn module(id: impl Into<ElementId>, package: impl Into<SharedString>, name: 
         measure: *measure,
         on_open: None,
         wrap: None,
+        card_name_intent: Intent::Reading(ReadingRole::Heading),
         marks: None,
         carried: 1.0,
     }
 }
 
 impl ModuleView {
+    /// Who names each card: its reading leaf or an existing host control.
+    #[must_use]
+    pub const fn card_name_intent(mut self, intent: Intent) -> Self {
+        self.card_name_intent = intent;
+        self
+    }
+
     /// The module's own first sentence.
     #[must_use]
     pub fn doc(mut self, doc: Option<SharedString>) -> Self {
@@ -148,7 +158,7 @@ impl RenderOnce for ModuleView {
         flow.epoch((columns.epoch, columns.count));
         let card = |index: usize| {
             let facts = self.cards[index].clone();
-            let mut card = symbol_card(key(&self.id, format!("card-{index}")), facts, &measure).width(width).at(self.at.clone()).lit(if self.lit == Some(index) { Pick::Lit } else { Pick::Rest }).carried(self.carried);
+            let mut card = symbol_card(key(&self.id, format!("card-{index}")), facts, &measure).name_intent(self.card_name_intent).width(width).at(self.at.clone()).lit(if self.lit == Some(index) { Pick::Lit } else { Pick::Rest }).carried(self.carried);
             if let Some(marks) = &self.marks {
                 card = card.mark(marks, index);
             }
@@ -199,8 +209,8 @@ impl RenderOnce for ModuleView {
                     .flex_wrap()
                     .items_baseline()
                     .child(wrap(key(&self.id, "package"), self.package.clone(), PATH, palette.ink3, &measure, None))
-                    .child(one(key(&self.id, "sep"), "::", PATH, palette.ink4, &measure))
-                    .child(wrap(key(&self.id, "title"), self.name.clone(), PATH, palette.ink0, &measure, None)),
+                    .child(one_as(key(&self.id, "sep"), "::", Intent::Decoration, PATH, palette.ink4, &measure))
+                    .child(wrap_as(key(&self.id, "title"), self.name.clone(), Intent::Reading(ReadingRole::Heading), PATH, palette.ink0, &measure, None)),
             )
             .child(match &self.doc {
                 Some(doc) => wrap(key(&self.id, "doc"), doc.clone(), DOC, palette.ink2, &measure, None).into_any_element(),

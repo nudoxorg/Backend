@@ -10,7 +10,7 @@
 
 use super::flight::{Marks, arrival, mark as flight_mark};
 use super::state::{Pick, Use};
-use super::text::{key, one, wrap};
+use super::text::{key, one, wrap, wrap_as};
 use crate::controls::button::{Handler, wire};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::icons::{Kind, KindSize, kind_mark};
@@ -18,6 +18,7 @@ use crate::marks::badges::{Badge as BadgeFacts, Glyph, Ink, Item, Lang as BadgeL
 use crate::measure::{Measure, Space};
 use crate::motion::spec;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
+use crate::reading::{Intent, ReadingRole};
 use crate::theme::ActiveFacet;
 use crate::tokens::{TypeRole, ty};
 use gpui::prelude::FluentBuilder as _;
@@ -128,6 +129,7 @@ pub struct SymbolCard {
     width: Option<Pixels>,
     lit: Pick,
     on_open: Option<Handler>,
+    name_intent: Intent,
     mark: Option<(Marks, usize)>,
     carried: f32,
 }
@@ -143,12 +145,21 @@ pub fn symbol_card(id: impl Into<ElementId>, facts: Rc<CardFacts>, measure: &Mea
         width: None,
         lit: Pick::Rest,
         on_open: None,
+        name_intent: Intent::Reading(ReadingRole::Heading),
         mark: None,
         carried: 1.0,
     }
 }
 
 impl SymbolCard {
+    /// Explicit ownership when a host's existing native control names this
+    /// card. A layout wrapper alone does not imply a named control.
+    #[must_use]
+    pub const fn name_intent(mut self, intent: Intent) -> Self {
+        self.name_intent = intent;
+        self
+    }
+
     /// The release being read, for the change badge.
     #[must_use]
     pub fn at(mut self, at: impl Into<SharedString>) -> Self {
@@ -225,7 +236,7 @@ impl RenderOnce for SymbolCard {
             _ => palette.ink0.into(),
         };
 
-        let name = wrap(key(&self.id, "name"), facts.name.clone(), NAME, name_ink, &measure, None);
+        let name = wrap_as(key(&self.id, "name"), facts.name.clone(), self.name_intent, NAME, name_ink, &measure, None);
         let mut head = div()
             .flex()
             .items_center()

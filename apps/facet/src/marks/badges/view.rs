@@ -11,6 +11,7 @@ use crate::motion::spec;
 use crate::overlay::tooltip::Tipped;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::probe::{self, TextOverflow};
+use crate::reading::{self, Intent, ReadingRole};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
@@ -99,13 +100,14 @@ impl RenderOnce for Badge {
         let scale = measure.scale();
         let word_role = measure.role(WORD);
 
+        let word_id = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "word".into());
         let word = probe::text(
-            ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "word".into()),
+            word_id.clone(),
             self.facts.word.clone(),
             word_role,
             1.0,
             TextOverflow::Clip,
-            div().set(WORD, &measure).text_color(ink).whitespace_nowrap().child(self.facts.word.clone()),
+            div().set(WORD, &measure).text_color(ink).whitespace_nowrap().child(reading::text(word_id, self.facts.word.clone(), Intent::Reading(ReadingRole::Fact))),
         );
         let fill = mix(palette.plate.into(), palette.plate2.into(), open);
         let body = cut()

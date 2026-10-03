@@ -5,6 +5,7 @@ use super::{k, roles};
 use super::text::{Line, Links};
 use crate::graph::World;
 use crate::measure::{Measure, Set};
+use crate::reading::{self, Intent, ReadingRole};
 use crate::semantics::fails::Section;
 use crate::semantics::types::Target;
 use crate::theme::ActiveFacet;
@@ -39,6 +40,7 @@ impl RenderOnce for Failures {
                 .child(kind.element(key("kind"), roles::ROW, &measure, &self.links, palette))
                 .child(makers.element(key("makers"), roles::ROW, &measure, &self.links, palette)));
         }
-        root.child(div().set(roles::QUIET, &measure).text_color(palette.ink3.hsla()).child(self.section.foot()))
+        let foot_id = ElementId::NamedChild(Arc::new(self.id.clone()), "foot".into());
+        root.child(div().set(roles::QUIET, &measure).text_color(palette.ink3.hsla()).child(reading::text(foot_id, self.section.foot(), Intent::Reading(ReadingRole::Status))))
     }
 }

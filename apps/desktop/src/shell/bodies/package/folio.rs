@@ -1527,6 +1527,11 @@ impl Folio {
             measure,
         )
         .doc(module.doc.clone())
+        .card_name_intent(if active {
+            facet::reading::Intent::NameOfExistingControl
+        } else {
+            facet::reading::Intent::Reading(facet::reading::ReadingRole::Heading)
+        })
         .extent(module.extent())
         .marks(&current.marks)
         .carried(carried)

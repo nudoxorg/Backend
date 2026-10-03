@@ -5,6 +5,7 @@
 use crate::Set;
 use crate::measure::Measure;
 use crate::probe::{self, Text, TextOverflow};
+use crate::reading::{self, Intent, ReadingRole};
 use crate::tokens::TypeRole;
 use gpui::{ElementId, Hsla, ParentElement, Pixels, SharedString, Styled, Window, div};
 use std::sync::Arc;
@@ -30,14 +31,40 @@ pub fn one(
     ink: impl Into<Hsla>,
     measure: &Measure,
 ) -> Text {
+    one_as(
+        id,
+        content,
+        Intent::Reading(ReadingRole::Fact),
+        role,
+        ink,
+        measure,
+    )
+}
+
+/// A natural-width line with an explicit reading or parent-name intent.
+#[must_use]
+pub fn one_as(
+    id: impl Into<ElementId>,
+    content: impl Into<SharedString>,
+    intent: Intent,
+    role: TypeRole,
+    ink: impl Into<Hsla>,
+    measure: &Measure,
+) -> Text {
+    let id = id.into();
     let content: SharedString = content.into();
     probe::text(
-        id,
+        id.clone(),
         content.clone(),
         measure.role(role),
         1.0,
         TextOverflow::Clip,
-        div().flex_none().set(role, measure).text_color(ink.into()).whitespace_nowrap().child(content),
+        div()
+            .flex_none()
+            .set(role, measure)
+            .text_color(ink.into())
+            .whitespace_nowrap()
+            .child(reading::text(id, content, intent)),
     )
 }
 
@@ -50,9 +77,30 @@ pub fn ellipsis(
     ink: impl Into<Hsla>,
     measure: &Measure,
 ) -> Text {
+    ellipsis_as(
+        id,
+        content,
+        Intent::Reading(ReadingRole::Fact),
+        role,
+        ink,
+        measure,
+    )
+}
+
+/// An ellipsised line whose native words follow the same measured cut.
+#[must_use]
+pub fn ellipsis_as(
+    id: impl Into<ElementId>,
+    content: impl Into<SharedString>,
+    intent: Intent,
+    role: TypeRole,
+    ink: impl Into<Hsla>,
+    measure: &Measure,
+) -> Text {
+    let id = id.into();
     let content: SharedString = content.into();
     probe::text(
-        id,
+        id.clone(),
         content.clone(),
         measure.role(role),
         1.0,
@@ -64,7 +112,7 @@ pub fn ellipsis(
             .whitespace_nowrap()
             .set(role, measure)
             .text_color(ink.into())
-            .child(content),
+            .child(reading::text(id, content, intent)),
     )
 }
 
@@ -78,6 +126,31 @@ pub fn wrap(
     measure: &Measure,
     lines: Option<usize>,
 ) -> Text {
+    wrap_as(
+        id,
+        content,
+        Intent::Reading(ReadingRole::Paragraph),
+        role,
+        ink,
+        measure,
+        lines,
+    )
+}
+
+/// Wrapping words with an explicit semantic intent. The actual GPUI clamp
+/// limits both the painted text and the native reading node.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn wrap_as(
+    id: impl Into<ElementId>,
+    content: impl Into<SharedString>,
+    intent: Intent,
+    role: TypeRole,
+    ink: impl Into<Hsla>,
+    measure: &Measure,
+    lines: Option<usize>,
+) -> Text {
+    let id = id.into();
     let content: SharedString = content.into();
     let mut body = div().min_w_0().set(role, measure).text_color(ink.into());
     let overflow = if let Some(lines) = lines {
@@ -86,5 +159,12 @@ pub fn wrap(
     } else {
         TextOverflow::Wrap
     };
-    probe::text(id, content.clone(), measure.role(role), 1.0, overflow, body.child(content))
+    probe::text(
+        id.clone(),
+        content.clone(),
+        measure.role(role),
+        1.0,
+        overflow,
+        body.child(reading::text(id, content, intent)),
+    )
 }
