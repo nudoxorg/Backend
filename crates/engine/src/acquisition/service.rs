@@ -505,59 +505,94 @@ impl AcquisitionService {
         if request.source != owner_source || request.schema != CanonicalFeedV1::VERSION {
             return AcquisitionOutcome::Rejected(RejectReason::Protocol);
         }
-        match with_registry_journal_fence(&self.leases, &self.owner, request.source, |_, _cap| {
-            Ok(())
-        }) {
-            Ok(Some(Ok(()))) => {}
-            Ok(Some(Err(_))) => return AcquisitionOutcome::Corrupt(CorruptReason::Journal),
-            Ok(None) => {
-                return AcquisitionOutcome::Unavailable(Unavailable {
-                    source: request.source,
-                });
-            }
-            Err(error) => return journal_fence_outcome(request.source, error),
-        }
+        // Policy configuration is process-local and immutable after the owner
+        // is attached, so it can safely select the exact singleflight key
+        // before any caller contends for the shared durable journal fence.
         let policy_epoch = self.policy_epoch();
         let request = request.clone().with_policy_epoch(policy_epoch);
         let product_key = request.receipt_work_key();
-        let now = now_millis();
-        let (owner_cursor, facts_frontier) = {
-            let owner = self
-                .owner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (owner.cursor().token(), owner.facts_frontier())
-        };
-        match self.product_receipts.recover_negative(
-            &request,
-            owner_cursor,
-            facts_frontier,
-            policy_epoch,
-        ) {
-            Ok(Some(record)) => {
-                let AcquisitionProductTerminal::NegativeFact(fact) = record.terminal else {
-                    return AcquisitionOutcome::Corrupt(CorruptReason::Journal);
-                };
-                if fact.valid_at(now, policy_epoch) {
-                    let owner = self
-                        .owner
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if !negative_record_matches_owner(&record, &fact, &owner, &request) {
-                        return AcquisitionOutcome::Corrupt(CorruptReason::Journal);
-                    }
-                    return AcquisitionOutcome::NegativeFact(fact);
-                }
-            }
-            Ok(_) => {}
-            Err(_) => return AcquisitionOutcome::Corrupt(CorruptReason::Journal),
-        }
         let owner = Arc::clone(&self.owner);
         let leases = self.leases.clone();
         let breaker = self.breaker.clone();
         let snapshot_cache = Arc::clone(&self.catalog_snapshots);
         let fact_observations = Arc::clone(&self.fact_observations);
         self.coordinator.coordinate_registry(&request, || {
+            // Only the exact process-local leader refreshes shared durable
+            // state and checks its selected negative receipt. Same-key
+            // followers wait on the immutable result slot and cannot observe
+            // a policy/cursor view assembled by a different request.
+            let (current_epoch, owner_cursor, facts_frontier) = match with_registry_journal_fence(
+                &leases,
+                &owner,
+                request.source,
+                |owner, _capability| {
+                    Ok((
+                        owner.policy_epoch(),
+                        owner.cursor().token(),
+                        owner.facts_frontier(),
+                    ))
+                },
+            ) {
+                Ok(Some(Ok(state))) => state,
+                Ok(Some(Err(_))) => {
+                    return AcquisitionOutcome::Corrupt(CorruptReason::Journal);
+                }
+                Ok(None) => {
+                    return AcquisitionOutcome::Unavailable(Unavailable {
+                        source: request.source,
+                    });
+                }
+                Err(error) => return journal_fence_outcome(request.source, error),
+            };
+            if current_epoch != policy_epoch {
+                return AcquisitionOutcome::Unavailable(Unavailable {
+                    source: request.source,
+                });
+            }
+            let now = now_millis();
+            match self.product_receipts.recover_negative(
+                &request,
+                owner_cursor,
+                facts_frontier,
+                policy_epoch,
+            ) {
+                Ok(Some(record)) => {
+                    let AcquisitionProductTerminal::NegativeFact(fact) = record.terminal else {
+                        return AcquisitionOutcome::Corrupt(CorruptReason::Journal);
+                    };
+                    if fact.valid_at(now, policy_epoch) {
+                        let still_current = match with_registry_journal_fence(
+                            &leases,
+                            &owner,
+                            request.source,
+                            |owner, _capability| {
+                                Ok(owner.policy_epoch() == policy_epoch
+                                    && owner.cursor().token() == owner_cursor
+                                    && owner.facts_frontier() == facts_frontier
+                                    && negative_record_matches_owner(
+                                        &record, &fact, owner, &request,
+                                    ))
+                            },
+                        ) {
+                            Ok(Some(Ok(still_current))) => still_current,
+                            Ok(Some(Err(_))) => {
+                                return AcquisitionOutcome::Corrupt(CorruptReason::Journal);
+                            }
+                            Ok(None) => {
+                                return AcquisitionOutcome::Unavailable(Unavailable {
+                                    source: request.source,
+                                });
+                            }
+                            Err(error) => return journal_fence_outcome(request.source, error),
+                        };
+                        if still_current {
+                            return AcquisitionOutcome::NegativeFact(fact);
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => return AcquisitionOutcome::Corrupt(CorruptReason::Journal),
+            }
             let _circuit = match breaker.allow(now_millis()) {
                 Ok(permit) => permit,
                 Err(open) => return AcquisitionOutcome::CircuitOpen(open),
@@ -608,6 +643,11 @@ impl AcquisitionService {
                         return AcquisitionOutcome::Corrupt(CorruptReason::Integrity);
                     }
                     let current_epoch = owner_guard.policy_epoch();
+                    if current_epoch != policy_epoch {
+                        return AcquisitionOutcome::Unavailable(Unavailable {
+                            source: request.source,
+                        });
+                    }
                     let recovered_record = if present.is_some() {
                         match self.product_receipts.recover(
                             &request,

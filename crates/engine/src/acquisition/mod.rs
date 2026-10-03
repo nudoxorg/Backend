@@ -101,10 +101,20 @@ mod tests {
             .clone()
             .with_fact_freshness(FactFreshness::max_age_millis(60_000));
         let next_epoch = request.clone().with_policy_epoch(8);
+        let next_coordinate = AcquisitionRequest::for_coordinate(
+            request.source,
+            "pkg:cargo/other-key@1.0.0",
+            request.schema,
+            request.policy_epoch,
+        )
+        .expect("different coordinate");
 
         assert_eq!(request.receipt_work_key(), bounded.receipt_work_key());
         assert_ne!(request.receipt_work_key(), next_epoch.receipt_work_key());
         assert_ne!(request.source_intent(), next_epoch.source_intent());
+        assert_ne!(request.work_key(), bounded.work_key());
+        assert_ne!(request.work_key(), next_epoch.work_key());
+        assert_ne!(request.work_key(), next_coordinate.work_key());
     }
 
     #[test]
@@ -264,6 +274,48 @@ mod tests {
         assert_eq!(effects.load(Ordering::Acquire), 1);
         assert!(outcomes.iter().all(|outcome| {
             matches!(outcome, AcquisitionOutcome::Hit(bytes) if bytes.as_ref() == b"receipt")
+        }));
+        assert_eq!(coordinator.telemetry().snapshot().leaders, 1);
+        assert_eq!(coordinator.telemetry().snapshot().followers, 31);
+    }
+
+    #[test]
+    fn registry_leader_failure_is_shared_without_replaying_the_effect() {
+        let request = Arc::new(
+            AcquisitionRequest::for_coordinate([0x31; 32], "pkg:cargo/fenced-leader@1.0.0", 1, 4)
+                .expect("request"),
+        );
+        let coordinator = Arc::new(AcquisitionCoordinator::new(4, 64));
+        let barrier = Arc::new(Barrier::new(32));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..32 {
+            let coordinator = Arc::clone(&coordinator);
+            let request = Arc::clone(&request);
+            let barrier = Arc::clone(&barrier);
+            let effects = Arc::clone(&effects);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                coordinator.coordinate_registry(&request, || {
+                    effects.fetch_add(1, Ordering::AcqRel);
+                    std::thread::sleep(Duration::from_millis(40));
+                    AcquisitionOutcome::Unavailable(Unavailable {
+                        source: request.source,
+                    })
+                })
+            }));
+        }
+        let outcomes: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("join"))
+            .collect();
+        assert_eq!(effects.load(Ordering::Acquire), 1);
+        assert!(outcomes.iter().all(|outcome| {
+            matches!(
+                outcome,
+                AcquisitionOutcome::Unavailable(unavailable)
+                    if unavailable.source == request.source
+            )
         }));
         assert_eq!(coordinator.telemetry().snapshot().leaders, 1);
         assert_eq!(coordinator.telemetry().snapshot().followers, 31);
