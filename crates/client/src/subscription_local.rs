@@ -41,7 +41,12 @@ pub enum LocalSubscriptionExchangeError {
     /// Connection setup or request admission failed before the exchange began.
     Setup(ClientError),
     /// A complete, correlated response rejected the requested operation.
-    Rejected { request_id: u64, message: String },
+    Rejected {
+        /// Correlation identity of the refused operation.
+        request_id: u64,
+        /// Producer-provided refusal detail.
+        message: String,
+    },
     /// The frame was complete but was not a valid response for this operation.
     Invalid(ClientError),
     /// One in-flight request reached a typed terminal condition.

@@ -29,7 +29,11 @@ pub use subscription::{
 #[cfg(any(unix, windows))]
 pub use subscription_local::{LocalSubscriptionExchangeError, LocalSubscriptionTransport};
 #[cfg(any(unix, windows))]
-pub use subscription_observation::PublicationLease;
+pub use subscription_observation::{
+    ObservedPublicationControl, PublicationBudgetKind, PublicationExchangeBudget,
+    PublicationExchangeError, PublicationLease, PublicationObservationDecision,
+    PublicationObservationProgress, PublicationOperation,
+};
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
