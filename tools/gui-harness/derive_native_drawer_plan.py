@@ -57,6 +57,8 @@ def derive(survey_path: Path, width: int, percent: int) -> tuple[dict, dict]:
     if not isinstance(initial, dict) or not isinstance(probe, dict) or \
             initial.get("tree_truncated") or probe.get("tree_truncated"):
         raise ValueError("complete initial and open-drawer native AX trees required")
+    if unique(initial.get("tree"), f"{percent}%").get("selected") is not True:
+        raise ValueError(f"native {percent}% text choice was not selected before drawer capture")
     full = rect(unique(initial.get("tree"), "Full").get("bounds_pt"), "Motion Full radio")
     drawer = rect(unique(probe.get("tree"), "Library shelf").get("bounds_pt"), "Library shelf dialog")
     probe_window = rect(probe.get("window", {}).get("bounds_pt"), "probed AX window")

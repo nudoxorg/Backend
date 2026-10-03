@@ -18,6 +18,12 @@
   "expected_reduce_motion": false,
   "actions": [
     {
+      "at_ms": 20,
+      "kind": "probe",
+      "label": "verify native 100% text choice",
+      "expect_ax_selected_title": "100%"
+    },
+    {
       "at_ms": 80,
       "kind": "key",
       "keycode": 42,

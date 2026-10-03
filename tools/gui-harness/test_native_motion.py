@@ -91,7 +91,8 @@ class NativeMotionTests(unittest.TestCase):
                            "requested_width_px": 2880, "requested_height_px": 2400},
                 "actions": [
                     {"phase": "initial", "ax": {"tree": [
-                        {"title": "Full", "bounds_pt": {"x": 510, "y": 500, "width": 40, "height": 24}}]}},
+                        {"title": "Full", "bounds_pt": {"x": 510, "y": 500, "width": 40, "height": 24}},
+                        {"title": "100%", "selected": True}]}},
                     {"phase": "action", "label": "measure native Library shelf", "posted": {"ax": {
                         "window": {"bounds_pt": window}, "tree": [
                             {"title": "Library shelf", "bounds_pt": {"x": 100, "y": 140, "width": 400, "height": 800}}]}}}]}
