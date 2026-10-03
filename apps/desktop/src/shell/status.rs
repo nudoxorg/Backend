@@ -487,8 +487,8 @@ mod tests {
                         assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
                         assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
                     }
-                    let retry = rig.cx.debug_bounds("status-retry").expect("painted retry");
-                    let details = rig.cx.debug_bounds("status-details").expect("painted disclosure");
+                    let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", true).expect("painted retry");
+                    let details = crate::shell::tests::native_bounds(&mut rig, "Button", "Show status details", true).expect("painted disclosure");
                     assert!(retry.right() <= details.left() + px(0.5), "recovery controls overlap at {width}px/{percent}%");
                     assert!(details.right() <= px(width) && retry.left() >= px(0.0));
                     rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
@@ -510,20 +510,20 @@ mod tests {
         let (mut rig, _gate) = gated_rig(cx, 663.0);
         let message = long_notice(&mut rig);
         native_tree(&mut rig);
-        let details = rig.cx.debug_bounds("status-details").expect("native details button");
+        let details = crate::shell::tests::native_bounds(&mut rig, "Button", "Show status details", true).expect("native details button");
         rig.cx.simulate_click(details.center(), gpui::Modifiers::default());
         rig.settle();
         let tree = native_tree(&mut rig);
         let focus = tree["accesskit_focus"].as_str().expect("focus id");
         assert_eq!(tree["nodes"][focus]["aria"]["label"].as_str(), Some("Close details"));
         assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["role"].as_str() == Some("Label") && node["aria"]["label"].as_str() == Some(message.as_str())));
-        let panel = rig.cx.debug_bounds("status-details-panel").expect("painted expansion");
+        let panel = crate::shell::tests::native_bounds(&mut rig, "Dialog", "Status details", false).expect("painted expansion");
         assert!(panel.left() >= px(0.0) && panel.right() <= px(663.0) && panel.top() >= px(0.0));
         rig.keys("escape");
         let tree = native_tree(&mut rig);
         let focus = tree["accesskit_focus"].as_str().expect("return focus id");
         assert_eq!(tree["nodes"][focus]["aria"]["label"].as_str(), Some("Show status details"));
-        assert!(rig.cx.debug_bounds("status-details-panel").is_none());
+        assert!(crate::shell::tests::native_bounds(&mut rig, "Dialog", "Status details", false).is_none());
     }
 
     #[gpui::test]
@@ -534,7 +534,7 @@ mod tests {
         gate.publish(OwnerState::Failed("The fixture owner could not answer this read.".into()));
         rig.settle();
         native_tree(&mut rig);
-        let retry = rig.cx.debug_bounds("status-retry").expect("native failed-owner retry");
+        let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", true).expect("native failed-owner retry");
         rig.cx.simulate_event(gpui::MouseDownEvent { position: retry.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
         // Same words and same producer root are not the same retry capability.
         // Let the native pointer-up use its previously mounted listener.
@@ -544,7 +544,7 @@ mod tests {
         assert!(matches!(gate.state(), OwnerState::Failed(_)), "an old native listener cannot restart a later failure");
         rig.settle();
         native_tree(&mut rig);
-        let retry = rig.cx.debug_bounds("status-retry").expect("fresh native retry");
+        let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", true).expect("fresh native retry");
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
         rig.draw();
         assert!(matches!(gate.state(), OwnerState::Starting), "a fresh native click consumes the current retry capability");
@@ -555,7 +555,7 @@ mod tests {
         let node = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"].as_str() == Some("Try again")).expect("disabled native retry");
         assert_eq!(node["aria"]["disabled"].as_bool(), Some(true));
         assert!(!node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
-        let retry = rig.cx.debug_bounds("status-retry").expect("visible disabled retry");
+        let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", false).expect("visible disabled retry");
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
         assert!(matches!(gate.state(), OwnerState::Failed(_)), "disabled native retry cannot invent a start");
     }

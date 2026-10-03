@@ -132,7 +132,7 @@ fn native_hand_card_focus_cannot_activate_its_replacement_after_release(cx: &mut
     let mut rig = two_held(cx);
     rig.keys("h");
     native_tree(&mut rig);
-    let card = rig.cx.debug_bounds("hand-card-0").expect("first native card");
+    let card = super::tests::native_bounds(&mut rig, "Button", "Open relation_label from hand", true).expect("first native card");
     rig.cx.simulate_event(gpui::MouseDownEvent { position: card.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
     let coordinate = super::tests::coordinate("relation_label");
     let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().iter()
@@ -141,7 +141,7 @@ fn native_hand_card_focus_cannot_activate_its_replacement_after_release(cx: &mut
     rig.cx.simulate_event(gpui::MouseUpEvent { position: card.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1 });
     rig.settle();
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home), "a press on a released card cannot open the replacement");
-    let replacement = rig.cx.debug_bounds("hand-card-0").expect("replacement card");
+    let replacement = super::tests::native_bounds(&mut rig, "Button", "Open RelationLabel from hand", true).expect("replacement card");
     rig.cx.simulate_click(replacement.center(), gpui::Modifiers::default());
     rig.settle();
     assert_eq!(rig.route(), page_route("RelationLabel"), "the fresh native click selects the saved address");

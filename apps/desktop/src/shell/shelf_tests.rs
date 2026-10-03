@@ -734,11 +734,10 @@ fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut 
                 ));
                 if overlays && !drawer_open { rig.keys("cmd-\\"); }
                 for (lens, expected) in [
-                    ("shelf-lens-rests-on", "Library dependency relationships are not indexed. Choose a package to read its dependencies."),
-                    ("shelf-lens-used-by", "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages."),
+                    ("Rests on", "Library dependency relationships are not indexed. Choose a package to read its dependencies."),
+                    ("Used by", "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages."),
                 ] {
-                    rig.repaint();
-                    let lens = rig.cx.debug_bounds(lens).expect("visible native lens control");
+                    let lens = super::tests::native_bounds(&mut rig, "Tab", lens, true).expect("visible native lens control");
                     rig.cx.simulate_click(lens.center(), Modifiers::default());
                     rig.settle();
                     let labels = shelf_native_labels(&mut rig);

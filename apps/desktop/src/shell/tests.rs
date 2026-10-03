@@ -678,6 +678,49 @@ impl Rig {
         self.cx.simulate_keystrokes(keys);
         self.settle();
     }
+
+    /// Sends the platform's complete native activation gesture. GPUI's
+    /// `simulate_keystrokes` helper sends KeyDown only; native controls emit
+    /// their Click on a matching KeyUp with the same focus generation.
+    pub(crate) fn native_press(&mut self, key: &str) {
+        let keystroke = gpui::Keystroke::parse(key).expect("native test key");
+        self.cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        self.cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    }
+}
+
+/// Bounds from the mounted native accessibility node, rather than a GPUI
+/// debug selector (which an element ID does not create). A requested Click
+/// must be exposed by that same node before a test uses its pointer bounds.
+pub(crate) fn native_bounds(
+    rig: &mut Rig,
+    role: &str,
+    label: &str,
+    click: bool,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    let mut matching = tree["nodes"].as_object().expect("native nodes").values().filter(|node| {
+        node["aria"]["role"].as_str() == Some(role)
+            && node["aria"]["label"].as_str() == Some(label)
+    });
+    let node = matching.next()?;
+    assert!(matching.next().is_none(), "more than one native {role} named {label}");
+    if click {
+        assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))),
+            "native {role} named {label} has no Click action: {node}");
+    }
+    let bounds = &node["bounds"];
+    let component = |name: &str| bounds[name].as_f64().unwrap_or_else(|| panic!("native {role} named {label} has no {name} bound")) as f32;
+    let rect = gpui::Bounds::new(point(px(component("x")), px(component("y"))), size(px(component("width")), px(component("height"))));
+    assert!(rect.size.width > px(0.0) && rect.size.height > px(0.0), "native {role} named {label} has empty bounds: {rect:?}");
+    Some(rect)
 }
 
 fn settle_counts_as_asking(
@@ -1154,7 +1197,8 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("add-folder"));
     rig.keys("tab");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1, Some(package_id.clone()));
-    rig.keys("space");
+    rig.native_press("space");
+    rig.settle();
     assert!(matches!(rig.route(), Route::Package(_)), "Space activates the focused native chip");
     rig.keys("cmd-[");
     assert!(matches!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home)));
@@ -1171,7 +1215,7 @@ fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx:
     rig.keys("tab");
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     let order = targets.native_keys();
-    assert!(order.len() >= 3, "Library mounts multiple native controls");
+    assert!(order.len() >= 2, "Library mounts Add folder and its indexed package chip");
     let recalled = targets.focused();
     let mut actual = None;
     for _ in 0..32 {
@@ -1180,7 +1224,7 @@ fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx:
         rig.cx.update(|window, cx| window.focus_next(cx));
         if let Some(id) = rig.cx.update(|window, _| targets.native_focused(window))
             && let Some(at) = order.iter().position(|key| key == &id)
-            && at > 0 && at + 1 < order.len()
+            && at > 0
         {
             actual = Some(at);
             break;
@@ -1190,8 +1234,15 @@ fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx:
     assert_ne!(targets.focused(), Some(order[at].clone()), "the native move was independent of Recall");
     assert_eq!(targets.focused(), recalled);
     rig.keys("tab");
-    assert_eq!(targets.focused(), Some(order[at + 1].clone()), "Shell Tab starts at the actually focused handle");
-    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(order[at + 1].clone()));
+    if let Some(next) = order.get(at + 1) {
+        assert_eq!(targets.focused(), Some(next.clone()), "Shell Tab starts at the actually focused handle");
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(next.clone()));
+    } else {
+        let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(zone, super::focus::Zone::Titlebar, "Tab leaves Reader after the actual last native handle");
+        assert_eq!(targets.focused(), Some(order[at].clone()), "Recall adopts the native focus before leaving Reader");
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), None);
+    }
 }
 
 #[gpui::test]
@@ -1207,7 +1258,8 @@ fn an_interrupted_back_does_not_transfer_native_focus_late(cx: &mut TestAppConte
         }
     }
     let opened = opened.expect("Tab reaches a mounted package target");
-    rig.keys("space");
+    rig.native_press("space");
+    rig.settle();
     assert!(matches!(rig.route(), Route::Package(_)));
     // Let Back install its pending return and begin closing the plate, then
     // dispatch a real Shell Tab before the transition settles.
@@ -1364,7 +1416,7 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     rig.draw();
     assert_eq!(targets.focused().as_deref(), Some("add-folder"));
     assert!(!rig.cx.did_prompt_for_paths());
-    rig.cx.simulate_keystrokes("enter");
+    rig.native_press("enter");
     rig.draw();
     assert!(rig.cx.did_prompt_for_paths(), "Add folder also works from the failed Library");
     rig.cx.simulate_path_prompt_response(|_| None);
@@ -1380,7 +1432,7 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     }
     assert!(reached_retry, "Shell Tab reaches Retry through the failed Library");
     assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
-    rig.cx.simulate_keystrokes("enter");
+    rig.native_press("enter");
     rig.draw();
     assert!(matches!(gate.state(), OwnerState::Starting), "native Retry asks the failed owner to restart");
 }
