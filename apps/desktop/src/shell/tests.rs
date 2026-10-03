@@ -2361,11 +2361,10 @@ fn pending_find_read_keeps_query_focus_across_ask_and_late_landing(cx: &mut Test
     let key = crate::model::browse::BrowseKey::Find(query.clone());
     let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query)));
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx));
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !gate.entered() {
+    crate::runtime::wait::until("the Find request enters its real read worker", || {
         rig.frame(16);
-        assert!(Instant::now() < deadline, "Find request did not enter its real read worker");
-    }
+        gate.entered()
+    });
     for _ in 0..3 { rig.frame(700); }
     let native_focus = |rig: &mut Rig| {
         rig.cx.update(|window, _| window.set_a11y_forced(true));
