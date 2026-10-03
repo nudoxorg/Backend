@@ -331,6 +331,14 @@ where
 {
     element.track_focus(focus).tab_index(0).key_context(NATIVE_CONTROL)
         .on_click(move |_, window, cx| activate(window, cx))
+        .on_key_down(|event: &KeyDownEvent, _, cx| {
+            // GPUI registers native down/up before these application key
+            // listeners. Keep parent modal Enter handlers from also firing.
+            if !event.keystroke.modifiers.modified()
+                && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+            }
+        })
 }
 
 /// Pointer and keyboard press presentation over GPUI's native activation.

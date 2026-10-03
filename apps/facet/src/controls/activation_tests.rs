@@ -61,11 +61,17 @@ impl Render for Fixture {
                 .into_any_element()
             }
         };
+        let raw_parent = Rc::clone(&self.background);
         let background = Rc::clone(&self.background);
         div()
             .size_full()
             .key_context("ActivationHost")
             .on_action(move |_: &BackgroundActivate, _, _| background.set(background.get() + 1))
+            .on_key_down(move |event: &KeyDownEvent, _, _| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    raw_parent.set(raw_parent.get() + 1);
+                }
+            })
             .child(div().absolute().left(px(40.0)).top(px(40.0)).child(control))
     }
 }
