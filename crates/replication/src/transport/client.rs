@@ -165,7 +165,8 @@ impl<S: Read + Write> LocalControlClient<S> {
     /// # Errors
     ///
     /// Returns a framing, request encoding, or correlation error before any
-    /// bytes are written.
+    /// bytes are written. An already elapsed deadline is reported by the
+    /// returned driver's typed stall with zero write offset.
     pub fn begin_exchange<'a>(
         &'a mut self,
         request: &LocalControlRequest,
@@ -173,9 +174,6 @@ impl<S: Read + Write> LocalControlClient<S> {
     ) -> Result<PendingLocalControlExchange<'a, S>, LocalControlError> {
         let started_at = Instant::now();
         self.ensure_usable()?;
-        if deadline <= Instant::now() {
-            return Err(LocalControlError::Invalid("exchange deadline"));
-        }
         let request_id = request.request_id();
         if self.pending.contains_key(&request_id) {
             return Err(LocalControlError::Invalid("duplicate pending request id"));

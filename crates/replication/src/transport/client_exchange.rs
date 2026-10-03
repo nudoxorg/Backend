@@ -554,6 +554,24 @@ mod exchange_tests {
     }
 
     #[test]
+    fn elapsed_deadline_is_a_typed_zero_offset_stall() {
+        let stream = PausingStream::new(Vec::new());
+        let mut client = LocalControlClient::new(stream, limits());
+        let request = make_request(19);
+        let mut exchange = client
+            .begin_exchange(&request, Instant::now() - Duration::from_millis(1))
+            .expect("begin expired exchange without sending");
+        let error = exchange
+            .wait_with(|_| panic!("expired exchange does not tick or write"))
+            .expect_err("expired fixed deadline");
+        assert_eq!(error.failure, LocalControlExchangeFailure::Stalled);
+        assert_eq!(error.progress.write_offset, 0);
+        drop(exchange);
+        assert!(client.stream().writes.is_empty());
+        assert!(client.requires_reconnect());
+    }
+
+    #[test]
     fn body_deadline_reports_exact_partial_body_and_cancellation_sends_nothing() {
         let mut stream = PausingStream::new(wire_response(4));
         stream.read_stall_after = Some(6);
