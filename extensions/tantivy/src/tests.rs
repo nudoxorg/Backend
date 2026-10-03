@@ -650,6 +650,45 @@ fn prefix_rank_is_lossless_at_production_field_weight() {
 }
 
 #[test]
+fn text_query_normalization_reuses_punctuation_identifier_and_unicode_rules() {
+    assert_eq!(
+        normalize_query_terms(
+            "/cache/real-rust_canary MorningSignalSymbol pkg2 東京",
+            Limits::default()
+        )
+        .expect("bounded query terms"),
+        [
+            "2",
+            "cache",
+            "canary",
+            "morning",
+            "morningsignalsymbol",
+            "pkg",
+            "pkg2",
+            "real",
+            "rust",
+            "signal",
+            "symbol",
+            "東京",
+        ]
+    );
+    assert_eq!(
+        normalize_query_terms(" ", Limits::default()).expect("blank token set"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        normalize_query_terms(
+            "alpha beta gamma",
+            Limits {
+                max_terms: 2,
+                ..Limits::default()
+            }
+        ),
+        Err(Error::SizeLimit)
+    );
+}
+
+#[test]
 fn three_clause_ranking_uses_weakest_quality_sum_weight_and_multivalue_maxima() {
     // Put the exact-last-clause document at the larger identity so the old
     // clause-count comparison would incorrectly promote it. Both first rows

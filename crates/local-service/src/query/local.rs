@@ -30,8 +30,9 @@ pub struct LocalQuery {
 }
 
 impl LocalQuery {
-    /// Creates a folded prefix query. Every whitespace-delimited clause must
-    /// match, while exact tokens and canonical fields retain stronger rank.
+    /// Creates a folded prefix query. Clauses use the same punctuation and
+    /// identifier boundaries as indexed text, and every resulting term must
+    /// match; valid dotted and `::` clauses keep their owner constraint.
     ///
     /// # Errors
     ///
@@ -48,16 +49,22 @@ impl LocalQuery {
         if limit == 0 || limit > limits.max_page {
             return Err(QueryError::InvalidLimit);
         }
-        let mut terms = Vec::new();
         let mut qualified = Vec::new();
         let words = text.split_whitespace().map(str::to_owned).collect();
+        let mut searchable = String::with_capacity(text.len());
         for clause in text.split_whitespace() {
             if let Some(parsed) = parse_qualified_clause(clause) {
-                terms.push(parsed.leaf.clone());
+                searchable.push_str(&parsed.leaf);
                 qualified.push(parsed);
             } else {
-                terms.push(clause.to_owned());
+                searchable.push_str(clause);
             }
+            searchable.push(' ');
+        }
+        let terms = lexical::normalize_query_terms(&searchable, limits)
+            .map_err(QueryError::Lexical)?;
+        if terms.is_empty() {
+            return Err(QueryError::EmptyQuery);
         }
         let lexical = lexical::Query::prefix(terms, limits).map_err(QueryError::Lexical)?;
         Ok(Self {

@@ -227,6 +227,50 @@ fn query_tokenization_matches_document_unicode_whitespace() {
 }
 
 #[test]
+fn punctuation_query_matches_components_from_an_indexed_source_path() {
+    let path = "/Users/example/projects/real-rust-canary";
+    let (workspace, view) = selected_view_with_first_label(path);
+    let evidence = semantic_evidence(workspace, &view);
+    let capability = view.capability().expect("view capability");
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view,
+        capability,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("coordinator");
+    for (text, terms) in [
+        ("real-rust-canary", vec!["canary", "real", "rust"]),
+        ("rea-rus-can", vec!["can", "rea", "rus"]),
+        ("can", vec!["can"]),
+    ] {
+        let query = LocalQuery::prefix(text, 4).expect("query");
+        assert_eq!(
+            query
+                .lexical()
+                .terms
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            terms,
+            "normalized query {text:?}"
+        );
+        let answer = coordinator.search_local(query).expect("local search");
+        assert_eq!(answer.total_matches, 1, "query {text:?}");
+        assert_eq!(answer.rows[0].row.label, path, "query {text:?}");
+    }
+}
+
+#[test]
+fn punctuation_only_query_does_not_degrade_to_match_all() {
+    assert!(matches!(
+        LocalQuery::prefix("...", 4),
+        Err(QueryError::EmptyQuery)
+    ));
+}
+
+#[test]
 fn search_snapshot_owner_reuses_the_exact_published_selection() {
     let (workspace, view) = selected_view();
     let coverage = crate::builtin::admitted_coverage().expect("coverage");
@@ -740,6 +784,15 @@ fn qualified_owner_search_finds_the_named_method() {
 
     let (ids, total) = search("Service.WorkoutService.update");
     assert_eq!(ids, vec![workout_update]);
+    assert_eq!(total, 1);
+
+    let workout_type = RowId::Symbol(workout_service_id);
+    let (ids, total) = search("Service.WorkoutService");
+    assert_eq!(ids, vec![workout_type]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("Service::WorkoutService");
+    assert_eq!(ids, vec![workout_type]);
     assert_eq!(total, 1);
 
     let (ids, total) = search("Other.WorkoutService.update");

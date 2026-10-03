@@ -2002,19 +2002,10 @@ fn searchable_tokens(text: &str) -> Vec<SearchableToken<'_>> {
             searchable: raw,
             ranking_bytes: raw.len(),
         });
-        for identifier in raw.split(|character: char| !character.is_alphanumeric()) {
-            if identifier.is_empty() {
-                continue;
-            }
-            tokens.push(SearchableToken {
-                searchable: identifier,
-                ranking_bytes: raw.len(),
-            });
-            tokens.extend(identifier_words(identifier).map(|word| SearchableToken {
-                searchable: word,
-                ranking_bytes: raw.len(),
-            }));
-        }
+        tokens.extend(component_tokens(raw).map(|searchable| SearchableToken {
+            searchable,
+            ranking_bytes: raw.len(),
+        }));
         // Most plain identifiers yield the same term through all three
         // paths. Deduplicate each whitespace token before retaining the
         // field-wide canonical set, limiting transient duplicate entries.
@@ -2034,33 +2025,271 @@ fn searchable_tokens(text: &str) -> Vec<SearchableToken<'_>> {
     tokens
 }
 
-fn identifier_words(identifier: &str) -> impl Iterator<Item = &str> {
-    let mut words = Vec::new();
-    let mut characters = identifier.char_indices().peekable();
-    let Some((_, mut previous)) = characters.next() else {
-        return words.into_iter();
-    };
-    let mut start = 0;
-    while let Some((index, current)) = characters.next() {
-        let next = characters.peek().map(|(_, character)| *character);
-        let case_boundary = (previous.is_lowercase() && current.is_uppercase())
-            || (previous.is_uppercase()
-                && current.is_uppercase()
-                && next.is_some_and(char::is_lowercase));
-        let class_boundary = previous.is_numeric() != current.is_numeric();
-        if case_boundary || class_boundary {
-            let end = index;
-            if start < end {
-                words.push(&identifier[start..end]);
+/// Splits user text with the same punctuation and identifier boundaries used
+/// to admit searchable document tokens. A complete punctuation-bearing query
+/// token is not required because document text may include a path or other
+/// surrounding text; its searchable components remain stable across fields.
+/// The result is ASCII-folded, sorted, and deduplicated for the folded-prefix
+/// query used by the local service.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidLimits`] for invalid limits and
+/// [`Error::SizeLimit`] when the text or canonical term set exceeds its bound.
+pub fn normalize_query_terms(text: &str, limits: Limits) -> Result<Vec<String>, Error> {
+    let limits = limits.validate()?;
+    if text.len() > limits.max_field_bytes {
+        return Err(Error::SizeLimit);
+    }
+    let mut terms = Vec::new();
+    for raw in text.split_whitespace() {
+        for component in component_tokens(raw) {
+            let position = match terms
+                .binary_search_by(|existing| compare_ascii_folded_terms(existing, component))
+            {
+                Ok(_) => continue,
+                Err(position) => position,
+            };
+            if terms.len() == limits.max_terms {
+                return Err(Error::SizeLimit);
             }
-            start = end;
+            terms.try_reserve(1).map_err(|_| Error::SizeLimit)?;
+            terms.insert(position, component.to_ascii_lowercase());
         }
-        previous = current;
     }
-    if start < identifier.len() {
-        words.push(&identifier[start..]);
+    Ok(terms)
+}
+
+fn component_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|identifier| !identifier.is_empty())
+        .flat_map(|identifier| std::iter::once(identifier).chain(identifier_words(identifier)))
+}
+
+fn identifier_words(identifier: &str) -> IdentifierWords<'_> {
+    IdentifierWords::new(identifier)
+}
+
+/// Lazily yields the exact identifier pieces used by the original document
+/// tokenizer. Keeping only the character cursor avoids allocating every
+/// subword when a bounded query stops after its term budget is reached.
+struct IdentifierWords<'a> {
+    identifier: &'a str,
+    characters: std::iter::Peekable<std::str::CharIndices<'a>>,
+    previous: Option<char>,
+    start: usize,
+    finished: bool,
+}
+
+impl<'a> IdentifierWords<'a> {
+    fn new(identifier: &'a str) -> Self {
+        let mut characters = identifier.char_indices().peekable();
+        let previous = characters.next().map(|(_, character)| character);
+        Self {
+            identifier,
+            characters,
+            previous,
+            start: 0,
+            finished: previous.is_none(),
+        }
     }
-    words.into_iter()
+}
+
+impl<'a> Iterator for IdentifierWords<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        while let Some((index, current)) = self.characters.next() {
+            let Some(previous) = self.previous else {
+                self.finished = true;
+                return None;
+            };
+            let next = self.characters.peek().map(|(_, character)| *character);
+            let case_boundary = (previous.is_lowercase() && current.is_uppercase())
+                || (previous.is_uppercase()
+                    && current.is_uppercase()
+                    && next.is_some_and(char::is_lowercase));
+            let class_boundary = previous.is_numeric() != current.is_numeric();
+            self.previous = Some(current);
+            if case_boundary || class_boundary {
+                let word = &self.identifier[self.start..index];
+                self.start = index;
+                return Some(word);
+            }
+        }
+        self.finished = true;
+        (self.start < self.identifier.len()).then(|| &self.identifier[self.start..])
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test fixture constants are bounded")]
+mod lexical_token_contract_tests {
+    use super::{IdentifierWords, SearchableToken, normalize_query_terms, searchable_tokens};
+    use crate::{Error, Limits};
+
+    fn legacy_identifier_words(identifier: &str) -> Vec<&str> {
+        let mut words = Vec::new();
+        let mut characters = identifier.char_indices().peekable();
+        let Some((_, mut previous)) = characters.next() else {
+            return words;
+        };
+        let mut start = 0;
+        while let Some((index, current)) = characters.next() {
+            let next = characters.peek().map(|(_, character)| *character);
+            let case_boundary = (previous.is_lowercase() && current.is_uppercase())
+                || (previous.is_uppercase()
+                    && current.is_uppercase()
+                    && next.is_some_and(char::is_lowercase));
+            let class_boundary = previous.is_numeric() != current.is_numeric();
+            if case_boundary || class_boundary {
+                if start < index {
+                    words.push(&identifier[start..index]);
+                }
+                start = index;
+            }
+            previous = current;
+        }
+        if start < identifier.len() {
+            words.push(&identifier[start..]);
+        }
+        words
+    }
+
+    fn legacy_searchable_tokens(text: &str) -> Vec<SearchableToken<'_>> {
+        let mut tokens = Vec::new();
+        for raw in text.split_whitespace().filter(|token| !token.is_empty()) {
+            let first = tokens.len();
+            tokens.push(SearchableToken {
+                searchable: raw,
+                ranking_bytes: raw.len(),
+            });
+            for identifier in raw.split(|character: char| !character.is_alphanumeric()) {
+                if identifier.is_empty() {
+                    continue;
+                }
+                tokens.push(SearchableToken {
+                    searchable: identifier,
+                    ranking_bytes: raw.len(),
+                });
+                tokens.extend(legacy_identifier_words(identifier).into_iter().map(|word| {
+                    SearchableToken {
+                        searchable: word,
+                        ranking_bytes: raw.len(),
+                    }
+                }));
+            }
+            tokens[first..].sort_unstable();
+            let mut unique_end = first;
+            for index in first..tokens.len() {
+                let token = tokens[index];
+                if unique_end == first || token != tokens[unique_end - 1] {
+                    tokens[unique_end] = token;
+                    unique_end += 1;
+                }
+            }
+            tokens.truncate(unique_end);
+        }
+        tokens.sort_unstable();
+        tokens.dedup();
+        tokens
+    }
+
+    fn token_projection<'a>(tokens: Vec<SearchableToken<'a>>) -> Vec<(&'a [u8], usize)> {
+        tokens
+            .into_iter()
+            .map(|token| (token.searchable.as_bytes(), token.ranking_bytes))
+            .collect()
+    }
+
+    fn generated_index(state: u64, length: usize) -> usize {
+        let length = u64::try_from(length).expect("small test table length fits u64");
+        usize::try_from(state % length).expect("bounded index fits usize")
+    }
+
+    #[test]
+    fn document_token_projection_is_byte_equivalent_to_the_legacy_loop() {
+        let examples = [
+            "",
+            "HTTPServer42Thing",
+            "foo_bar::Baz.qux-99",
+            "/tmp/real-rust-canary",
+            "MorningSignalSymbol",
+            "éclairÜber東京",
+            "İstanbul Straße ßeta",
+            "a\u{301}b x٢y 𝟜Cats",
+            "ASCII\u{00a0}Nonbreaking\u{2003}Emspace",
+            "___ ... ::: -- 42abc",
+        ];
+        for input in examples {
+            assert_eq!(
+                token_projection(searchable_tokens(input)),
+                token_projection(legacy_searchable_tokens(input)),
+                "token projection changed for {input:?}"
+            );
+        }
+
+        // Deterministic generated inputs exercise combinations that are easy
+        // to miss in a hand-written camel, numeric, punctuation, or UTF-8 list.
+        const ATOMS: &[&str] = &[
+            "a", "A", "x", "HTTP", "Http", "2", "42", "٣", "ß", "É", "e\u{301}", "界", "東京", "İ",
+            "\u{301}",
+        ];
+        const SEPARATORS: &[&str] = &["", "_", "::", "-", ".", "/", " ", "\u{00a0}"];
+        let mut state = 0x8b5a_2f1d_79c3_6401_u64;
+        for case in 0..4096 {
+            let pieces = (case % 8) + 1;
+            let mut input = String::new();
+            for piece in 0..pieces {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                if piece != 0 {
+                    input.push_str(SEPARATORS[generated_index(state, SEPARATORS.len())]);
+                }
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                input.push_str(ATOMS[generated_index(state, ATOMS.len())]);
+            }
+            assert_eq!(
+                token_projection(searchable_tokens(&input)),
+                token_projection(legacy_searchable_tokens(&input)),
+                "token projection changed for generated input {case}: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn identifier_and_query_term_iteration_stops_at_the_bound() {
+        assert_eq!(
+            IdentifierWords::new("HTTPServer42Thing").collect::<Vec<_>>(),
+            ["HTTP", "Server", "42", "Thing"]
+        );
+        assert_eq!(
+            normalize_query_terms("HTTPServer2 httpserver2", Limits::default())
+                .expect("folded query terms"),
+            ["2", "http", "httpserver2", "server"]
+        );
+
+        let mut long_camel = String::from("aAbB");
+        for _ in 0..2048 {
+            long_camel.push_str("cC");
+        }
+        let limits = Limits {
+            max_terms: 2,
+            ..Limits::default()
+        };
+        assert!(long_camel.len() <= limits.max_field_bytes);
+        assert_eq!(
+            normalize_query_terms(&long_camel, limits),
+            Err(Error::SizeLimit),
+            "the bounded query must stop after the first novel subwords overflow its term cap"
+        );
+    }
 }
 
 struct ProjectedSchema {

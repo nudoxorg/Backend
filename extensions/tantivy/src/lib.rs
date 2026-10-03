@@ -32,6 +32,7 @@ pub use delta::{DocumentChange, DocumentDelta, DocumentState};
 pub use engine::{
     DurableCacheBudget, DurableProjectionAction, MaintainOutcome, ProjectionKind,
     ProjectionRevision, RankSnapshotBudget, TantivyAdapter, TantivySource, TantivySourceError,
+    normalize_query_terms,
 };
 pub use identity::{
     Authority, AuthoritySchema, Binding, Frontier, FrontierSchema, IndexRelation, Limits,

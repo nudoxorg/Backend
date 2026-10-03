@@ -38,7 +38,10 @@ pub struct RecipeSchema;
 
 impl Schema for RecipeSchema {
     const DOMAIN: u8 = 0x74;
+    // Bump when document token admission changes so resident/cold lexical
+    // materializations cannot reuse postings produced by an older analyzer.
     const TYPE: u16 = 2;
+    const VERSION: u8 = 1;
     type Value = [u8; 32];
 
     fn encode(value: &Self::Value, out: &mut Vec<u8>) {
@@ -80,7 +83,10 @@ pub struct QuerySchema;
 
 impl Schema for QuerySchema {
     const DOMAIN: u8 = 0x74;
+    // Query terms now use the same punctuation and identifier boundaries as
+    // document token admission; this schema version invalidates old cursors.
     const TYPE: u16 = 5;
+    const VERSION: u8 = 2;
     type Value = [u8];
 
     fn encode(value: &Self::Value, out: &mut Vec<u8>) {
