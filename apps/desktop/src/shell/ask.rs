@@ -1380,7 +1380,7 @@ mod tests {
             let tree: serde_json::Value = rig.cx.update(|window, _| serde_json::from_str(
                 &window.debug_a11y_tree_json().expect("forced Ask native tree"))
                 .expect("native tree JSON"));
-            let focused = tree["gpui_focus"].as_str().expect("focused native Ask node");
+            let focused = tree["accesskit_focus"].as_str().expect("focused native Ask node");
             assert_eq!(tree["nodes"][focused]["aria"]["role"].as_str(), Some("TextInput"));
             assert_eq!(tree["nodes"][focused]["aria"]["label"].as_str(),
                 Some("Ask anything, or find a package"));
