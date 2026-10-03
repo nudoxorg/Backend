@@ -3984,6 +3984,19 @@ pub struct Stateful<E> {
     pub(crate) element: E,
 }
 
+impl Stateful<Div> {
+    /// Observe child bounds after this identified Div's children prepaint.
+    /// Keeping the listener on the Div preserves the after-children timing
+    /// even when `.id()` wrapped it in `Stateful` first.
+    pub fn on_children_prepainted(
+        mut self,
+        listener: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.element = self.element.on_children_prepainted(listener);
+        self
+    }
+}
+
 impl<E> Styled for Stateful<E>
 where
     E: Styled,
@@ -4363,6 +4376,35 @@ mod tests {
         TestAppContext, canvas, util::FluentBuilder as _,
     };
     use std::{cell::Cell, rc::Weak};
+
+    struct StatefulChildrenPrepaintView(Rc<RefCell<Vec<&'static str>>>);
+
+    impl Render for StatefulChildrenPrepaintView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let child = self.0.clone();
+            let parent = self.0.clone();
+            div()
+                .id("stateful-after-children")
+                .size_full()
+                .on_children_prepainted(move |bounds, _, _| {
+                    assert_eq!(bounds.len(), 1);
+                    parent.borrow_mut().push("parent after child");
+                })
+                .child(canvas(
+                    move |_, _, _| child.borrow_mut().push("child prepaint"),
+                    |_, _, _, _| {},
+                ).size(px(24.0)))
+        }
+    }
+
+    #[gpui::test]
+    fn stateful_div_forwards_after_children_prepaint_without_changing_order(cx: &mut TestAppContext) {
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let observed = order.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| StatefulChildrenPrepaintView(observed));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(&*order.borrow(), &["child prepaint", "parent after child"]);
+    }
 
     struct GroupHoverTestView {
         render_count: Rc<Cell<usize>>,
