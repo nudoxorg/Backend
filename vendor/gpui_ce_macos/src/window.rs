@@ -2737,6 +2737,12 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
             }
         } else {
             lock.activated_least_once = true;
+            // The first key activation must not draw synchronously: GPUI may
+            // still be establishing its focus path. It can, however, arm the
+            // asynchronous frame source. A window opened behind another app
+            // may have been occluded when its frame callback was installed,
+            // with no later screen or occlusion notification to retry it.
+            lock.start_display_link();
         }
     }
 
