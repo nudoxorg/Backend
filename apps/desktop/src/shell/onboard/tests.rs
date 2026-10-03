@@ -430,7 +430,10 @@ fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(c
     rig.settle();
     // This is the same action object and App dispatcher used by the native
     // menu callback, not an injected reducer OpenSettings intent.
-    rig.cx.update(|_, cx| cx.dispatch_action(&crate::shell::OpenSettingsAction));
+    // App menu callbacks run without an already-borrowed Window. Dispatching
+    // from VisualTestContext::update holds that Window mutably while App's
+    // dispatcher tries to update it again, so the action never reaches Shell.
+    rig.cx.cx.update(|cx| cx.dispatch_action(&crate::shell::OpenSettingsAction));
     rig.settle();
     assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))));
     let tree = |rig: &mut Rig| -> serde_json::Value {
