@@ -2362,10 +2362,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
                     drop(lock);
                 }
 
-                let handled: BOOL = unsafe {
-                    let input_context: id = msg_send![this, inputContext];
-                    msg_send![input_context, handleEvent: native_event]
-                };
+                let handled = unsafe { handle_input_context_event(this, native_event) };
                 window_state.as_ref().lock().keystroke_for_do_command.take();
                 if let Some(handled) = window_state.as_ref().lock().do_command_handled.take() {
                     return handled as BOOL;
@@ -2403,10 +2400,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
                 return NO;
             }
 
-            unsafe {
-                let input_context: id = msg_send![this, inputContext];
-                msg_send![input_context, handleEvent: native_event]
-            }
+            unsafe { handle_input_context_event(this, native_event) }
         }
 
         PlatformInput::KeyUp(_) => {
@@ -2514,10 +2508,7 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
         match &event {
             PlatformInput::MouseDown(_) => {
                 drop(lock);
-                unsafe {
-                    let input_context: id = msg_send![this, inputContext];
-                    msg_send![input_context, handleEvent: native_event]
-                }
+                let _ = unsafe { handle_input_context_event(this, native_event) };
                 lock = window_state.as_ref().lock();
             }
             PlatformInput::MouseMove(
@@ -3289,9 +3280,9 @@ fn drag_event_position(window_state: &Mutex<MacWindowState>, dragging_info: id) 
 // paid it at launch whether or not it had a text field. A window whose
 // last frame registered no input handler (nothing is focused that takes
 // text) has no context to activate; one is returned the moment a text input
-// is focused. Key events keep working: with no context, `handle_key_event`'s
-// `handleEvent:` sends to nil, returns NO, and the key goes to GPUI's own
-// dispatch. A contended lock falls back to AppKit's default.
+// is focused. Native events without a context bypass its `handleEvent:` and
+// continue through GPUI's own dispatch. A contended lock falls back to
+// AppKit's default.
 extern "C" fn input_context(this: &Object, _: Sel) -> id {
     let window_state = unsafe { get_window_state(this) };
     let focused = window_state
@@ -3301,6 +3292,19 @@ extern "C" fn input_context(this: &Object, _: Sel) -> id {
         return nil;
     }
     unsafe { msg_send![super(this, class!(NSView)), inputContext] }
+}
+
+/// Forward to AppKit only when this view actually has a text input context.
+/// `input_context` intentionally returns nil for non-text focus. The objc
+/// `msg_send!` macro dereferences its receiver before calling Objective-C, so
+/// sending `handleEvent:` to nil here aborts instead of acting like a nil
+/// Objective-C message.
+unsafe fn handle_input_context_event(this: &Object, native_event: id) -> BOOL {
+    let input_context: id = unsafe { msg_send![this, inputContext] };
+    let Some(input_context) = NonNull::new(input_context) else {
+        return NO;
+    };
+    unsafe { msg_send![input_context.as_ptr(), handleEvent: native_event] }
 }
 
 fn with_input_handler<F, R>(window: &Object, f: F) -> Option<R>
@@ -3485,6 +3489,54 @@ extern "C" fn toggle_tab_bar(this: &Object, _sel: Sel, _id: id) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the same Objective-C lookup used by both key and pointer events.
+    // A GPUIView without focused text intentionally returns nil here.
+    #[test]
+    fn native_event_skips_absent_input_context() {
+        extern "C" fn no_input_context(_: &Object, _: Sel) -> id {
+            nil
+        }
+
+        unsafe {
+            let mut decl = ClassDecl::new("GPUINoInputContextEventTest", class!(NSObject)).unwrap();
+            decl.add_method(
+                sel!(inputContext),
+                no_input_context as extern "C" fn(&Object, Sel) -> id,
+            );
+            let class = decl.register();
+            let view: id = msg_send![class, new];
+            assert_eq!(handle_input_context_event(&*view, nil), NO);
+            let _: () = msg_send![view, release];
+        }
+    }
+
+    #[test]
+    fn native_event_reaches_available_input_context() {
+        extern "C" fn self_input_context(this: &Object, _: Sel) -> id {
+            this as *const Object as id
+        }
+        extern "C" fn handle_event(_: &Object, _: Sel, _: id) -> BOOL {
+            YES
+        }
+
+        unsafe {
+            let mut decl =
+                ClassDecl::new("GPUIAvailableInputContextEventTest", class!(NSObject)).unwrap();
+            decl.add_method(
+                sel!(inputContext),
+                self_input_context as extern "C" fn(&Object, Sel) -> id,
+            );
+            decl.add_method(
+                sel!(handleEvent:),
+                handle_event as extern "C" fn(&Object, Sel, id) -> BOOL,
+            );
+            let class = decl.register();
+            let view: id = msg_send![class, new];
+            assert_eq!(handle_input_context_event(&*view, nil), YES);
+            let _: () = msg_send![view, release];
+        }
+    }
 
     #[test]
     fn display_id_for_screen_returns_none_for_null_screen() {
