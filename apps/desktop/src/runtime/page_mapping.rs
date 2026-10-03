@@ -2519,15 +2519,11 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
     let mut ready = Vec::new();
     let mut missing = Vec::new();
     for status in report.capabilities().as_slice() {
-        let family: Arc<str> = Arc::from(format!("{:?}", status.family()));
         match status.lifecycle() {
-            backend_library::CapabilityLifecycle::Ready
-            | backend_library::CapabilityLifecycle::Active
-            | backend_library::CapabilityLifecycle::Resident
-            | backend_library::CapabilityLifecycle::Installed => ready.push(family),
-            other => missing.push(crate::model::pages::MissingCapability {
-                family,
-                state: Arc::from(format!("{other:?}")),
+            backend_library::CapabilityLifecycle::Ready => ready.push(status.family()),
+            other => missing.push(crate::model::pages::NotReadyCapability {
+                family: status.family(),
+                state: other,
             }),
         }
     }
@@ -2560,7 +2556,7 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
                 .into(),
         },
         ready_capabilities: ready.into(),
-        missing_capabilities: missing.into(),
+        not_ready_capabilities: missing.into(),
     }
 }
 
@@ -4466,7 +4462,7 @@ mod tests {
             }
         ));
         assert!(health.ready_capabilities.is_empty());
-        assert!(!health.missing_capabilities.is_empty());
+        assert!(!health.not_ready_capabilities.is_empty());
     }
 
     #[test]

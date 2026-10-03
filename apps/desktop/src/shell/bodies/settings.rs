@@ -13,10 +13,14 @@ use crate::navigation::{Intent, SettingsPage};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
 use facet::controls::Swatch;
+use facet::folio;
 use facet::icons::{Kind, KindSize, kind_mark};
-use facet::tokens::ty;
+use facet::tokens::{TypeRole, ty};
 use facet::{Measure, Palette, Space};
-use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window, div, px};
+use gpui::{
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, Window, div,
+};
 use std::path::{Path, PathBuf};
 
 pub(super) fn body(
@@ -30,7 +34,9 @@ pub(super) fn body(
     // Departing Settings does not own a second native control/fact tree.
     // Reader supplies its transition chrome; the settled destination mounts
     // these controls once it owns the route.
-    if !ctx.active { return Vec::new(); }
+    if !ctx.active {
+        return Vec::new();
+    }
     match page {
         SettingsPage::About => about(ctx),
         SettingsPage::Index => index(store, ctx),
@@ -49,8 +55,11 @@ pub(super) fn body(
 fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
     let said = ctx.say(words.to_owned());
     Leaf::new(
-        div().id(format!("settings-heading-{words}"))
-            .role(gpui::Role::Heading).aria_label(words.to_owned()).aria_level(1)
+        div()
+            .id(format!("settings-heading-{words}"))
+            .role(gpui::Role::Heading)
+            .aria_label(words.to_owned())
+            .aria_level(1)
             .pb(ctx.measure.space(Space::Base))
             .child(text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0).child(said)),
     )
@@ -151,21 +160,24 @@ fn appearance(
     for percent in ZoomPreference::LADDER {
         text_size = text_size.label(format!("{percent}%"));
     }
-    let text_size = text_size.selected(selected).on_select(move |index, window, cx| {
-        let Some(percent) = ZoomPreference::LADDER.get(index).copied() else {
-            return;
-        };
-        links.dispatch(
-            Intent::ZoomTo {
-                display: crate::shell::system::display_key(window, cx),
-                percent,
-            },
-            cx,
-        );
-    });
+    let text_size = text_size
+        .selected(selected)
+        .on_select(move |index, window, cx| {
+            let Some(percent) = ZoomPreference::LADDER.get(index).copied() else {
+                return;
+            };
+            links.dispatch(
+                Intent::ZoomTo {
+                    display: crate::shell::system::display_key(window, cx),
+                    percent,
+                },
+                cx,
+            );
+        });
     leaves.push(setting("Text size", text_size.into_any_element(), ctx));
     let palette = ctx.palette;
-    let text_note = ctx.say("Relative to the operating system’s text scale; remembered per display.");
+    let text_note =
+        ctx.say("Relative to the operating system’s text scale; remembered per display.");
     leaves.push(Leaf::new(quiet(text_note, &measure, palette)));
     let links = ctx.links.clone();
     let motion = facet::controls::seg("set-motion", &measure).aria_label("Motion").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
@@ -198,7 +210,8 @@ fn setting(name: &str, control: AnyElement, ctx: &mut Ctx<'_>) -> Leaf {
     Leaf::new(
         div()
             .id(format!("settings-row-{label}"))
-            .role(gpui::Role::Group).aria_label(label)
+            .role(gpui::Role::Group)
+            .aria_label(label)
             .flex()
             .flex_wrap()
             .items_center()
@@ -212,6 +225,68 @@ fn setting(name: &str, control: AnyElement, ctx: &mut Ctx<'_>) -> Leaf {
     )
 }
 
+/// A read-only fact is one complete native reading unit. Stacking the value
+/// below its name gives the whole folio width to long paths and status text,
+/// including at double text size; unlike a control row it never claims focus.
+fn value_row(
+    name: &str,
+    value: impl Into<String>,
+    role: TypeRole,
+    ink: impl Into<Hsla>,
+    ctx: &mut Ctx<'_>,
+) -> Leaf {
+    let value = value.into();
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let name_text = ctx.say(name.to_owned());
+    let value_text = ctx.say(value.clone());
+    let id = format!("settings-value-{name}-{value}");
+    Leaf::new(
+        div()
+            .id(id.clone())
+            .role(gpui::Role::Group)
+            .aria_label(format!("{name}: {value}"))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(measure.space(Space::Base))
+            .py(measure.space(Space::Roomy))
+            .border_b_1()
+            .border_color(palette.line1.hsla())
+            .child(folio::text::wrap(
+                format!("{id}-name"),
+                name_text,
+                ty::ROW,
+                palette.ink1,
+                &measure,
+                None,
+            ))
+            .child(folio::text::wrap(
+                format!("{id}-value"),
+                value_text,
+                role,
+                ink,
+                &measure,
+                None,
+            )),
+    )
+}
+
+fn section(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
+    let said = ctx.say(words.to_owned());
+    Leaf::new(
+        div()
+            .id(format!("settings-section-{words}"))
+            .role(gpui::Role::Heading)
+            .aria_label(words.to_owned())
+            .aria_level(2)
+            .pt(ctx.measure.space(Space::Roomy))
+            .pb(ctx.measure.space(Space::Base))
+            .child(text(ty::HEAD, &ctx.measure, ctx.palette.ink0).child(said)),
+    )
+}
+
 fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Index & registries", ctx)];
     let measure = ctx.measure;
@@ -220,71 +295,191 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     // in the words the first run says it in.
     if let Some(rust) = crate::host::toolchain::report() {
         let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
-        let words = ctx.say(rust.words());
         let ink = if missing {
             palette.coral.base
         } else {
             palette.ink1
         };
-        leaves.push(setting(
-            "Compiler",
-            text(ty::SMALL, &measure, ink)
-                .min_w(px(0.0))
-                .child(words)
-                .into_any_element(),
-            ctx,
-        ));
+        leaves.push(value_row("Compiler", rust.words(), ty::SMALL, ink, ctx));
     }
     let health = store.health();
     match health.loaded_value() {
         Some(health) => {
-            let facts = [
-                ("Declarations", health.rows.to_string()),
-                (
+            leaves.push(value_row(
+                "Declarations",
+                health.rows.to_string(),
+                ty::MONO_ROW,
+                palette.ink1,
+                ctx,
+            ));
+            if health.ingest.files_discovered == 0 {
+                leaves.push(value_row(
+                    "File progress",
+                    "No indexed files reported for this revision",
+                    ty::ROW,
+                    palette.ink2,
+                    ctx,
+                ));
+            } else {
+                leaves.push(value_row(
                     "Files indexed",
                     format!(
                         "{} of {}",
                         health.ingest.files_indexed, health.ingest.files_discovered
                     ),
-                ),
-                (
+                    ty::MONO_ROW,
+                    palette.ink1,
+                    ctx,
+                ));
+                leaves.push(value_row(
                     "Files without declarations",
                     health.ingest.files_unavailable.to_string(),
-                ),
-                ("Capabilities ready", health.ready_capabilities.join(", ")),
-            ];
-            for (name, value) in facts {
-                let value = ctx.say(value);
-                leaves.push(setting(
-                    name,
-                    text(ty::MONO_ROW, &measure, palette.ink1)
-                        .child(value)
-                        .into_any_element(),
+                    ty::MONO_ROW,
+                    palette.ink1,
                     ctx,
                 ));
             }
             for language in health.ingest.languages.iter() {
-                let value = ctx.say(format!(
-                    "{} declarations in {} files",
-                    language.declarations, language.files
-                ));
-                leaves.push(setting(
+                leaves.push(value_row(
                     &language.language,
-                    text(ty::MONO_SMALL, &measure, palette.ink2)
-                        .child(value)
-                        .into_any_element(),
+                    format!(
+                        "{} declarations in {} files",
+                        language.declarations, language.files
+                    ),
+                    ty::MONO_SMALL,
+                    palette.ink2,
                     ctx,
                 ));
+            }
+            leaves.push(section("Ready capabilities", ctx));
+            if health.ready_capabilities.is_empty() {
+                leaves.push(value_row(
+                    "Ready capabilities",
+                    "No fresh readiness proof reported",
+                    ty::ROW,
+                    palette.ink2,
+                    ctx,
+                ));
+            }
+            for family in health.ready_capabilities.iter() {
+                let (name, profile) = capability_words(*family);
+                leaves.push(value_row(
+                    name,
+                    format!("{profile} · Ready"),
+                    ty::ROW,
+                    palette.ink1,
+                    ctx,
+                ));
+            }
+            if !health.not_ready_capabilities.is_empty() {
+                leaves.push(section("Other declared capabilities", ctx));
+                for missing in health.not_ready_capabilities.iter() {
+                    let (name, profile) = capability_words(missing.family);
+                    let state = capability_state_words(missing.state);
+                    leaves.push(value_row(
+                        name,
+                        format!("{profile} · {state}"),
+                        ty::ROW,
+                        palette.ink2,
+                        ctx,
+                    ));
+                }
             }
         }
         None => {}
     }
     if let Some((message, problem)) = health_notice(&health) {
         let words = ctx.say(message);
-        let ink = if problem { palette.coral.base } else { palette.ink3 };
+        let ink = if problem {
+            palette.coral.base
+        } else {
+            palette.ink3
+        };
         leaves.push(Leaf::new(text(ty::SMALL, &measure, ink).child(words)));
     }
     leaves
+}
+
+/// Names only facts carried by the admitted closed capability family.
+fn capability_words(family: backend_library::CapabilityFamily) -> (&'static str, String) {
+    match family {
+        backend_library::CapabilityFamily::StructuralFrontend { profile } => {
+            ("Structural parser", profile_words(profile).to_owned())
+        }
+        backend_library::CapabilityFamily::LanguageOracle { profile, task } => {
+            let task = match task {
+                backend_library::LanguageOracleTask::Parse => "parse",
+                backend_library::LanguageOracleTask::TypeCheck => "type check",
+                backend_library::LanguageOracleTask::SemanticIndex => "semantic index",
+            };
+            (
+                "Compiler semantics",
+                format!("{} · {task}", profile_words(profile)),
+            )
+        }
+        backend_library::CapabilityFamily::Embedding { recipe: None } => {
+            ("Embedding", "No model recipe configured".to_owned())
+        }
+        backend_library::CapabilityFamily::Embedding { recipe: Some(_) } => {
+            ("Embedding", "Model recipe declared".to_owned())
+        }
+    }
+}
+
+fn profile_words(profile: impl Into<[u8; 2]>) -> &'static str {
+    match profile.into() {
+        [0, 0] => "Rust 2015",
+        [0, 1] => "Rust 2018",
+        [0, 2] => "Rust 2021",
+        [0, 3] => "Rust 2024",
+        [1, 0] => "TypeScript",
+        [1, 1] => "TypeScript with JSX",
+        [2, 0] => "Python 3.10",
+        [2, 1] => "Python 3.11",
+        [2, 2] => "Python 3.12",
+        [2, 3] => "Python 3.13",
+        [2, 4] => "Python 3.14",
+        [3, 0] => "Go 1.22",
+        [3, 1] => "Go 1.23",
+        [3, 2] => "Go 1.24",
+        [3, 3] => "Go 1.25",
+        [4, 0] => "Java 8",
+        [4, 1] => "Java 11",
+        [4, 2] => "Java 17",
+        [4, 3] => "Java 21",
+        [4, 4] => "Java 25",
+        [5, 0] => "C# 10",
+        [5, 1] => "C# 11",
+        [5, 2] => "C# 12",
+        [5, 3] => "C# 13",
+        [5, 4] => "C# 14",
+        [6, 0] => "C11",
+        [6, 1] => "C17",
+        [6, 2] => "C23",
+        [6, 128] => "C++17",
+        [6, 129] => "C++20",
+        [6, 130] => "C++23",
+        [6, 131] => "C++26",
+        _ => "Unrecognized language profile",
+    }
+}
+
+fn capability_state_words(state: backend_library::CapabilityLifecycle) -> &'static str {
+    use backend_library::{CapabilityLifecycle as State, CapabilityUnavailable as Why};
+    match state {
+        State::Unavailable(Why::NoManifest) => "Not configured",
+        State::Unavailable(Why::NotInstalled) => "Not installed",
+        State::Unavailable(Why::UnsupportedTarget) => "Unsupported on this device",
+        State::Unavailable(Why::UnsupportedAbi) => "Unsupported protocol",
+        State::Unavailable(Why::MissingDependency) => "Required dependency missing",
+        State::Unavailable(Why::ProbeFailed) => "Readiness check failed",
+        State::Probing => "Checking readiness",
+        State::Installed => "Installed; readiness not checked",
+        State::Resident => "Resident; readiness not checked",
+        State::Active => "Active; readiness not checked",
+        State::Ready => "Ready",
+        State::Revoked => "Access revoked",
+    }
 }
 
 /// What the health resource actually says when there is no complete current
@@ -309,7 +504,10 @@ fn health_notice(resource: &Resource<crate::model::pages::HealthModel>) -> Optio
             Some((unavailable_health_words(reason).to_owned(), true))
         }
         (true, ResourceTerminal::Fault(error), _) => Some((
-            format!("The index refresh failed; the last report is shown: {}", error.message()),
+            format!(
+                "The index refresh failed; the last report is shown: {}",
+                error.message()
+            ),
             true,
         )),
         (false, ResourceTerminal::Complete, Activity::NotYet) => Some((
@@ -320,10 +518,9 @@ fn health_notice(resource: &Resource<crate::model::pages::HealthModel>) -> Optio
             "Waiting for the local index health report.".to_owned(),
             false,
         )),
-        (false, ResourceTerminal::Complete, Activity::Working) => Some((
-            "Loading the local index health report.".to_owned(),
-            false,
-        )),
+        (false, ResourceTerminal::Complete, Activity::Working) => {
+            Some(("Loading the local index health report.".to_owned(), false))
+        }
         (false, ResourceTerminal::Complete, Activity::Rest | Activity::Stopped) => {
             Some(("No index health report is available.".to_owned(), false))
         }
@@ -344,7 +541,9 @@ fn health_notice(resource: &Resource<crate::model::pages::HealthModel>) -> Optio
 fn unavailable_health_words(reason: &UnavailableReason) -> &'static str {
     match reason {
         UnavailableReason::Unsupported => "The connected service does not provide index health.",
-        UnavailableReason::OutOfScope => "Index health is unavailable outside the selected project scope.",
+        UnavailableReason::OutOfScope => {
+            "Index health is unavailable outside the selected project scope."
+        }
     }
 }
 
@@ -357,31 +556,29 @@ fn registry(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
     let source_root = std::env::var_os("NUDOX_CARGO_ROOT").map(PathBuf::from);
-    let home_words = ctx.say(home.as_ref().map_or_else(
+    let home_words = home.as_ref().map_or_else(
         || "No Cargo home could be resolved from NUDOX_CARGO_HOME, CARGO_HOME, or HOME.".to_owned(),
         |path| path.display().to_string(),
-    ));
-    leaves.push(setting(
+    );
+    leaves.push(value_row(
         "Cargo home",
-        text(ty::MONO_SMALL, &measure, palette.ink1)
-            .min_w(px(0.0))
-            .child(home_words)
-            .into_any_element(),
+        home_words,
+        ty::MONO_SMALL,
+        palette.ink1,
         ctx,
     ));
-    let root_words = ctx.say(source_root.as_ref().map_or_else(
+    let root_words = source_root.as_ref().map_or_else(
         || {
             "Not set; the local reader uses the effective crates.io source under Cargo home."
                 .to_owned()
         },
         |path| path.display().to_string(),
-    ));
-    leaves.push(setting(
+    );
+    leaves.push(value_row(
         "Selected source root",
-        text(ty::MONO_SMALL, &measure, palette.ink1)
-            .min_w(px(0.0))
-            .child(root_words)
-            .into_any_element(),
+        root_words,
+        ty::MONO_SMALL,
+        palette.ink1,
         ctx,
     ));
     let detail = ctx.say("If the same release appears under conflicting cached indexes, set NUDOX_CARGO_ROOT to the intended registry source root and restart the desktop. The exact index path is shown in the release notice. Local archives are unpacked only when their checksum is known for the selected source.");
@@ -409,7 +606,8 @@ fn registry(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             "settings-copy-registry-root",
             "Copy setup template",
             &measure,
-        ).disabled(!ctx.active)
+        )
+        .disabled(!ctx.active)
         .ghost()
         .on_click(move |_, cx| {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(example.clone()))
@@ -437,16 +635,8 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             .map(|other| other.cap)
             .collect::<Vec<_>>()
             .join("  ");
-        let measure = ctx.measure;
         let palette = ctx.palette;
-        let caps = ctx.say(caps);
-        leaves.push(setting(
-            key.says,
-            text(ty::MONO_ROW, &measure, palette.ink1)
-                .child(caps)
-                .into_any_element(),
-            ctx,
-        ));
+        leaves.push(value_row(key.says, caps, ty::MONO_ROW, palette.ink1, ctx));
     }
     // The sidebar's and the graph's own keys, while each has the keyboard.
     let groups: [(&str, Vec<(&str, &str)>); 2] = [
@@ -476,14 +666,7 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
                 .child(heading),
         ));
         for (cap, says) in keys {
-            let caps = ctx.say(cap);
-            leaves.push(setting(
-                says,
-                text(ty::MONO_ROW, &measure, palette.ink1)
-                    .child(caps)
-                    .into_any_element(),
-                ctx,
-            ));
+            leaves.push(value_row(says, cap, ty::MONO_ROW, palette.ink1, ctx));
         }
     }
     leaves
@@ -493,7 +676,8 @@ fn legend(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Legend", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let intro = ctx.say("Declaration mark shape names its kind; its hue groups the kind by family.");
+    let intro =
+        ctx.say("Declaration mark shape names its kind; its hue groups the kind by family.");
     leaves.push(Leaf::new(quiet(intro, &measure, palette)));
     let heading = ctx.say("Declaration kinds");
     leaves.push(Leaf::new(
@@ -504,10 +688,18 @@ fn legend(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     ));
     for kind in Kind::ALL {
         let mark = kind_mark(kind, KindSize::Sm, palette);
-        let name = ctx.say(kind.name());
-        let family = ctx.say(family_name(kind.family()));
+        let name = kind.name();
+        let family = family_name(kind.family());
+        let name_text = ctx.say(name);
+        let family_text = ctx.say(family);
         let row = div()
+            .id(format!("settings-kind-{name}"))
+            .role(gpui::Role::Group)
+            .aria_label(format!("{name}: {family} family"))
+            .w_full()
+            .min_w_0()
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap(measure.space(Space::Roomy))
@@ -520,9 +712,16 @@ fn legend(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
                     .items_center()
                     .gap(measure.space(Space::Base))
                     .child(mark)
-                    .child(text(ty::ROW, &measure, palette.ink1).child(name)),
+                    .child(text(ty::ROW, &measure, palette.ink1).child(name_text)),
             )
-            .child(text(ty::MONO_SMALL, &measure, palette.ink2).child(family));
+            .child(folio::text::wrap(
+                format!("settings-kind-{name}-family"),
+                family_text,
+                ty::MONO_SMALL,
+                palette.ink2,
+                &measure,
+                None,
+            ));
         leaves.push(Leaf::new(row));
     }
 
@@ -535,18 +734,19 @@ fn legend(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     ));
     for (label, meaning, color) in [
         ("Your uses", "Mint notch and use count", palette.mint.base),
-        ("Changed", "Amber diamond and change count", palette.amber.base),
+        (
+            "Changed",
+            "Amber diamond and change count",
+            palette.amber.base,
+        ),
         ("Gone", "Coral status words", palette.coral.base),
-        ("Members", "Quiet count when no other state mark is shown", palette.ink3),
+        (
+            "Members",
+            "Quiet count when no other state mark is shown",
+            palette.ink3,
+        ),
     ] {
-        let meaning = ctx.say(meaning);
-        leaves.push(setting(
-            label,
-            text(ty::ROW, &measure, color)
-                .child(meaning)
-                .into_any_element(),
-            ctx,
-        ));
+        leaves.push(value_row(label, meaning, ty::ROW, color, ctx));
     }
 
     let heading = ctx.say("Focus and motion colors");
@@ -562,14 +762,7 @@ fn legend(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         ("Amber", "Waiting", palette.amber.base),
         ("Coral", "Stopped or unavailable", palette.coral.base),
     ] {
-        let meaning = ctx.say(meaning);
-        leaves.push(setting(
-            label,
-            text(ty::ROW, &measure, color)
-                .child(meaning)
-                .into_any_element(),
-            ctx,
-        ));
+        leaves.push(value_row(label, meaning, ty::ROW, color, ctx));
     }
     leaves
 }
@@ -586,36 +779,25 @@ const fn family_name(family: facet::tokens::Family) -> &'static str {
 
 fn diagnostics(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Diagnostics", ctx)];
-    let measure = ctx.measure;
     let palette = ctx.palette;
-    let version = ctx.say(env!("CARGO_PKG_VERSION"));
-    leaves.push(setting(
+    leaves.push(value_row(
         "Version",
-        text(ty::MONO_ROW, &measure, palette.ink1)
-            .child(version)
-            .into_any_element(),
+        env!("CARGO_PKG_VERSION"),
+        ty::MONO_ROW,
+        palette.ink1,
         ctx,
     ));
-    let mode = ctx.say(confirmed_host_mode(snapshot).map_or(
-        "service mode not confirmed yet",
-        |mode| match mode {
+    let mode =
+        confirmed_host_mode(snapshot).map_or("service mode not confirmed yet", |mode| match mode {
             crate::host::lease::HostMode::Embedded => "embedded local service",
             crate::host::lease::HostMode::Attached => "attached to a running local service",
-        },
-    ));
-    leaves.push(setting(
-        "Service",
-        text(ty::ROW, &measure, palette.ink1)
-            .child(mode)
-            .into_any_element(),
-        ctx,
-    ));
-    let connection = ctx.say(connection_words(snapshot.settings().connection));
-    leaves.push(setting(
+        });
+    leaves.push(value_row("Service", mode, ty::ROW, palette.ink1, ctx));
+    leaves.push(value_row(
         "Connection check",
-        text(ty::ROW, &measure, palette.ink1)
-            .child(connection)
-            .into_any_element(),
+        connection_words(snapshot.settings().connection),
+        ty::ROW,
+        palette.ink1,
         ctx,
     ));
     let (project, data, endpoint) = owner_paths(snapshot);
@@ -625,12 +807,11 @@ fn diagnostics(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         ("Local endpoint", endpoint),
     ] {
         if let Some(path) = path {
-            let words = ctx.say(path.to_string_lossy().into_owned());
-            leaves.push(setting(
+            leaves.push(value_row(
                 label,
-                text(ty::MONO_SMALL, &measure, palette.ink1)
-                    .child(words)
-                    .into_any_element(),
+                path.to_string_lossy().into_owned(),
+                ty::MONO_SMALL,
+                palette.ink1,
                 ctx,
             ));
         }
@@ -642,12 +823,11 @@ fn connections(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Connections", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let words = ctx.say(connection_words(snapshot.settings().connection));
-    leaves.push(setting(
+    leaves.push(value_row(
         "Desktop to local index",
-        text(ty::ROW, &measure, palette.ink1)
-            .child(words)
-            .into_any_element(),
+        connection_words(snapshot.settings().connection),
+        ty::ROW,
+        palette.ink1,
         ctx,
     ));
     let mode = ctx.say(match confirmed_host_mode(snapshot) {
@@ -662,7 +842,8 @@ fn connections(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(Leaf::new(quiet(mode, &measure, palette)));
     let links = ctx.links.clone();
     let testing = snapshot.settings().connection == ConnectionStatus::Testing;
-    let probe = facet::controls::button("settings-test-connection", "Test connection", &measure).disabled(!ctx.active)
+    let probe = facet::controls::button("settings-test-connection", "Test connection", &measure)
+        .disabled(!ctx.active)
         .primary()
         .busy(testing)
         .on_click(move |_, cx| links.dispatch(Intent::TestConnection, cx));
@@ -676,57 +857,52 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Agents & MCP", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let connection = ctx.say(format!(
+    let connection = format!(
         "Desktop local index: {}",
         connection_words(snapshot.settings().connection)
-    ));
-    leaves.push(setting(
+    );
+    leaves.push(value_row(
         "Local service",
-        text(ty::ROW, &measure, palette.ink1)
-            .child(connection)
-            .into_any_element(),
+        connection,
+        ty::ROW,
+        palette.ink1,
         ctx,
     ));
     let installed = mcp_binary();
-    let binary_status = ctx.say(installed.as_ref().map_or_else(
+    let binary_status = installed.as_ref().map_or_else(
         || "backend-mcp is not on PATH or beside this app. Build or install the backend-mcp executable, then use the configuration below.".to_owned(),
         |path| format!("MCP server found at {}", path.display()),
-    ));
+    );
     let status_color = if installed.is_some() {
         palette.ink1
     } else {
         palette.coral.base
     };
-    leaves.push(setting(
+    leaves.push(value_row(
         "Server executable",
-        text(ty::SMALL, &measure, status_color)
-            .min_w(px(0.0))
-            .child(binary_status)
-            .into_any_element(),
+        binary_status,
+        ty::SMALL,
+        status_color,
         ctx,
     ));
     let locald = installed.as_deref().and_then(locald_companion);
-    let locald_status = ctx.say(locald.as_ref().map_or_else(
+    let locald_status = locald.as_ref().map_or_else(
         || "backend-locald must be installed beside backend-mcp so this setup can start the local service when Nudox is closed.".to_owned(),
         |path| format!("Local service executable found at {}", path.display()),
-    ));
-    leaves.push(setting(
+    );
+    leaves.push(value_row(
         "Service executable",
-        text(
-            ty::SMALL,
-            &measure,
-            if locald.is_some() {
-                palette.ink1
-            } else {
-                palette.coral.base
-            },
-        )
-        .min_w(px(0.0))
-        .child(locald_status)
-        .into_any_element(),
+        locald_status,
+        ty::SMALL,
+        if locald.is_some() {
+            palette.ink1
+        } else {
+            palette.coral.base
+        },
         ctx,
     ));
-    let recheck = facet::controls::button("settings-recheck-mcp", "Check again", &measure).disabled(!ctx.active)
+    let recheck = facet::controls::button("settings-recheck-mcp", "Check again", &measure)
+        .disabled(!ctx.active)
         .ghost()
         .on_click(|_, cx| cx.refresh_windows());
     leaves.push(setting("Discovery", recheck.into_any_element(), ctx));
@@ -757,7 +933,8 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(Leaf::new(
         text(ty::MONO_SMALL, &measure, palette.ink1).child(shown),
     ));
-    let copy = facet::controls::button("settings-copy-mcp-config", "Copy MCP setup", &measure).disabled(!ctx.active)
+    let copy = facet::controls::button("settings-copy-mcp-config", "Copy MCP setup", &measure)
+        .disabled(!ctx.active)
         .ghost()
         .on_click(move |_, cx| {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(config.clone()))
@@ -770,13 +947,11 @@ fn editor(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Editor", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let command = ctx.say("code -g path:line → zed path:line → the operating system’s registered file opener");
-    leaves.push(setting(
+    leaves.push(value_row(
         "Open in editor",
-        text(ty::MONO_SMALL, &measure, palette.ink1)
-            .min_w(px(0.0))
-            .child(command)
-            .into_any_element(),
+        "code -g path:line → zed path:line → the operating system’s registered file opener",
+        ty::MONO_SMALL,
+        palette.ink1,
         ctx,
     ));
     let words = ctx.say("This desktop build has no editor preference field. The first available command wins; the operating-system fallback opens the file without a line target.");
@@ -797,7 +972,9 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) 
     let network = facet::controls::seg("set-privacy", &measure).aria_label("Network policy").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
         .label("Local only")
         .label("Registry metadata")
-        .selected(usize::from(settings.privacy == PrivacyPreference::RegistryMetadata))
+        .selected(usize::from(
+            settings.privacy == PrivacyPreference::RegistryMetadata,
+        ))
         .on_select(move |index, _, cx| {
             links.dispatch(
                 Intent::SetPrivacy(if index == 1 {
@@ -840,12 +1017,14 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) 
 
     let links = ctx.links.clone();
     let decrement = facet::controls::button("cache-age-down", "−", &measure)
-        .aria_label("Decrease maximum reusable age").disabled(!ctx.active || settings.cache_days <= 1)
+        .aria_label("Decrease maximum reusable age")
+        .disabled(!ctx.active || settings.cache_days <= 1)
         .ghost()
         .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: false }, cx));
     let links = ctx.links.clone();
     let increment = facet::controls::button("cache-age-up", "+", &measure)
-        .aria_label("Increase maximum reusable age").disabled(!ctx.active || settings.cache_days >= 90)
+        .aria_label("Increase maximum reusable age")
+        .disabled(!ctx.active || settings.cache_days >= 90)
         .ghost()
         .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: true }, cx));
     let age = ctx.say(format!("{} days", settings.cache_days));
@@ -855,23 +1034,41 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) 
     let active = ctx.active;
     let days = settings.cache_days;
     let mut age_control = div()
-        .id("cache-age").role(gpui::Role::SpinButton).aria_label("Maximum reusable age")
+        .id("cache-age")
+        .role(gpui::Role::SpinButton)
+        .aria_label("Maximum reusable age")
         .aria_value(format!("{days} days"))
-        .aria_numeric_value(f64::from(days)).aria_min_numeric_value(1.0).aria_max_numeric_value(90.0)
+        .aria_numeric_value(f64::from(days))
+        .aria_min_numeric_value(1.0)
+        .aria_max_numeric_value(90.0)
         .aria_description("Available ages: 1, 7, 14, 30, 90 days. Use Up and Down to change.")
         .aria_disabled(!active);
     if active {
-        age_control = age_control.focusable().tab_index(0)
+        age_control = age_control
+            .focusable()
+            .tab_index(0)
             .on_key_down(move |event, _, cx| {
-                let up = match event.keystroke.key.as_str() { "up" => true, "down" => false, _ => return };
-                if (up && days < 90) || (!up && days > 1) { age_keys.dispatch(Intent::SetCacheDays { up }, cx); }
+                let up = match event.keystroke.key.as_str() {
+                    "up" => true,
+                    "down" => false,
+                    _ => return,
+                };
+                if (up && days < 90) || (!up && days > 1) {
+                    age_keys.dispatch(Intent::SetCacheDays { up }, cx);
+                }
                 cx.stop_propagation();
             });
         if days > 1 {
-            age_control = age_control.on_a11y_action(gpui::AccessibleAction::Decrement, move |_, _, cx| age_down.dispatch(Intent::SetCacheDays { up: false }, cx));
+            age_control = age_control
+                .on_a11y_action(gpui::AccessibleAction::Decrement, move |_, _, cx| {
+                    age_down.dispatch(Intent::SetCacheDays { up: false }, cx)
+                });
         }
         if days < 90 {
-            age_control = age_control.on_a11y_action(gpui::AccessibleAction::Increment, move |_, _, cx| age_up.dispatch(Intent::SetCacheDays { up: true }, cx));
+            age_control = age_control
+                .on_a11y_action(gpui::AccessibleAction::Increment, move |_, _, cx| {
+                    age_up.dispatch(Intent::SetCacheDays { up: true }, cx)
+                });
         }
     }
     let age_control = age_control
@@ -1098,38 +1295,309 @@ fn _palette(_: &Palette, _: &Measure) {}
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{find_mcp_binary, health_notice, locald_companion, mcp_config};
+    use super::{
+        capability_state_words, capability_words, connection_words, find_mcp_binary, health_notice,
+        locald_companion, mcp_config,
+    };
     use crate::core::{FaultCode, Resource, ResourceTerminal, UnavailableReason};
-    use crate::model::pages::HealthModel;
+    use crate::model::pages::{HealthModel, PageValue, ReadFailure};
+    use crate::navigation::{Intent, SettingsPage};
+    use crate::runtime::page_mapping::health_model;
+    use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
+    use crate::shell::fit_tests::{painted, resize};
+    use crate::shell::tests::{Fixture, rig_with_reads};
+    use backend_library::{
+        Basis, CapabilityAuthority, CapabilityFamily, CapabilityId, CapabilityInventory,
+        CapabilityLifecycle, CapabilityStatus, CapabilityTarget, CapabilityUnavailable, Cursor,
+        HealthReport, IngestProgress, LanguageRows, RevisionReceipt, SemanticLanguageProfile,
+        SourceLanguage, object_version, view_state_root,
+    };
+    use facet::probe::TextOverflow;
+    use gpui::TestAppContext;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn product_health() -> HealthModel {
+        let rust = SemanticLanguageProfile::from_name("rust")
+            .expect("closed Rust profile")
+            .profile()
+            .expect("admitted profile");
+        let csharp = SemanticLanguageProfile::from_name("csharp")
+            .expect("closed C# profile")
+            .profile()
+            .expect("admitted profile");
+        let python = SemanticLanguageProfile::from_name("python")
+            .expect("closed Python profile")
+            .profile()
+            .expect("admitted profile");
+        let inventory = CapabilityInventory::try_new(vec![
+            CapabilityStatus::observed(
+                CapabilityId::new([1; 32]),
+                CapabilityFamily::StructuralFrontend { profile: rust },
+                [7; 32],
+                CapabilityTarget::Native {
+                    os: 1,
+                    architecture: 1,
+                },
+                1,
+                CapabilityAuthority::Structural { producer: [7; 32] },
+                CapabilityLifecycle::Ready,
+            ),
+            CapabilityStatus::unavailable(
+                CapabilityId::new([2; 32]),
+                CapabilityFamily::StructuralFrontend { profile: csharp },
+                CapabilityUnavailable::UnsupportedTarget,
+            ),
+            CapabilityStatus::observed(
+                CapabilityId::new([3; 32]),
+                CapabilityFamily::StructuralFrontend { profile: python },
+                [8; 32],
+                CapabilityTarget::Native {
+                    os: 1,
+                    architecture: 1,
+                },
+                1,
+                CapabilityAuthority::Structural { producer: [8; 32] },
+                CapabilityLifecycle::Installed,
+            ),
+        ])
+        .expect("admitted owner inventory");
+        let root = view_state_root(&[]);
+        let object = object_version(b"settings-health-fixture");
+        let report = HealthReport::from_admitted_parts(
+            RevisionReceipt::new(root, Cursor::at(root, 1), object),
+            Basis::new(root, object),
+            Box::new([]),
+            42,
+            inventory,
+        )
+        .with_progress(
+            IngestProgress::new(
+                2,
+                1,
+                1,
+                42,
+                vec![LanguageRows::new(SourceLanguage::Rust, 1, 42)],
+                Vec::new(),
+            )
+            .expect("admitted ingest progress"),
+        );
+        health_model(&report)
+    }
+
+    struct ProductHealthReader(HealthModel);
+
+    impl PageReader for ProductHealthReader {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
+            if matches!(request, ReadRequest::Health) {
+                Ok(PageValue::Health(self.0.clone()))
+            } else {
+                Fixture.read(request, context)
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn admitted_capability_values_and_settings_facts_are_native_reading_units_at_double_text_size(
+        cx: &mut TestAppContext,
+    ) {
+        let health = product_health();
+        assert_eq!(health.ready_capabilities.len(), 1);
+        assert_eq!(health.not_ready_capabilities.len(), 2);
+        assert_eq!(
+            capability_words(health.ready_capabilities[0]),
+            ("Structural parser", "Rust 2024".to_owned())
+        );
+        assert_eq!(
+            capability_words(health.not_ready_capabilities[0].family),
+            ("Structural parser", "C# 14".to_owned())
+        );
+        assert_eq!(
+            capability_state_words(health.not_ready_capabilities[0].state),
+            "Unsupported on this device"
+        );
+        assert_eq!(
+            capability_state_words(health.not_ready_capabilities[1].state),
+            "Installed; readiness not checked"
+        );
+
+        let pool = ReadPool::start(2, move |_| ProductHealthReader(health.clone()))
+            .expect("fixture read pool");
+        let mut rig = rig_with_reads(cx, None, 360.0, 900.0, pool);
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        for percent in [100_u16, 150, 200] {
+            rig.go(Intent::ZoomTo {
+                display: display.clone(),
+                percent,
+            });
+            resize(&mut rig, 360.0, 900.0);
+            rig.go(Intent::OpenSettings(SettingsPage::Index));
+            rig.settle();
+            let ledger = painted(&mut rig);
+            for value in [
+                "Rust 2024 · Ready",
+                "C# 14 · Unsupported on this device",
+                "Python 3.14 · Installed; readiness not checked",
+            ] {
+                let row = ledger
+                    .texts
+                    .iter()
+                    .find(|text| text.content == value)
+                    .expect("actual product DTO value painted");
+                assert_eq!(row.overflow, TextOverflow::Wrap, "{percent}%: {row:?}");
+                assert!(!row.clipped_without_ellipsis(), "{percent}%: {row:?}");
+                assert!(
+                    row.bounds.x >= 0.0 && row.bounds.x + row.bounds.width <= 360.5,
+                    "{percent}%: {row:?}"
+                );
+            }
+            let native: serde_json::Value = serde_json::from_str(
+                &rig.cx
+                    .update(|window, _| window.debug_a11y_tree_json())
+                    .expect("native AccessKit tree"),
+            )
+            .expect("native tree JSON");
+            let labels = native["nodes"]
+                .as_object()
+                .expect("native nodes")
+                .values()
+                .filter_map(|node| node["aria"]["label"].as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                labels.contains(&"Structural parser: Rust 2024 · Ready"),
+                "{percent}% native AX: {labels:?}"
+            );
+            assert!(
+                labels.contains(&"Structural parser: C# 14 · Unsupported on this device"),
+                "{percent}% native AX: {labels:?}"
+            );
+            assert!(
+                labels
+                    .contains(&"Structural parser: Python 3.14 · Installed; readiness not checked"),
+                "{percent}% native AX: {labels:?}"
+            );
+
+            for (page, label) in [
+                (
+                    SettingsPage::Connections,
+                    format!(
+                        "Desktop to local index: {}",
+                        connection_words(rig.graph.store.read_with(rig.cx, |store, _| {
+                            store.snapshot().settings().connection
+                        }))
+                    ),
+                ),
+                (
+                    SettingsPage::Diagnostics,
+                    format!(
+                        "Connection check: {}",
+                        connection_words(rig.graph.store.read_with(rig.cx, |store, _| {
+                            store.snapshot().settings().connection
+                        }))
+                    ),
+                ),
+                (
+                    SettingsPage::Legend,
+                    "Your uses: Mint notch and use count".to_owned(),
+                ),
+            ] {
+                rig.go(Intent::OpenSettings(page));
+                rig.settle();
+                rig.repaint();
+                let native: serde_json::Value = serde_json::from_str(
+                    &rig.cx
+                        .update(|window, _| window.debug_a11y_tree_json())
+                        .expect("native AccessKit tree"),
+                )
+                .expect("native tree JSON");
+                let labels = native["nodes"]
+                    .as_object()
+                    .expect("native nodes")
+                    .values()
+                    .filter_map(|node| node["aria"]["label"].as_str())
+                    .collect::<Vec<_>>();
+                assert!(
+                    labels.iter().any(|actual| *actual == label.as_str()),
+                    "{percent}% {page:?} native AX lacks {label}: {labels:?}"
+                );
+            }
+        }
+        for (connected, value) in [(false, "Unavailable"), (true, "Connected")] {
+            rig.go(Intent::ConnectionResult { connected });
+            for (page, label) in [
+                (
+                    SettingsPage::Connections,
+                    format!("Desktop to local index: {value}"),
+                ),
+                (
+                    SettingsPage::Diagnostics,
+                    format!("Connection check: {value}"),
+                ),
+            ] {
+                rig.go(Intent::OpenSettings(page));
+                rig.settle();
+                rig.repaint();
+                let native: serde_json::Value = serde_json::from_str(
+                    &rig.cx
+                        .update(|window, _| window.debug_a11y_tree_json())
+                        .expect("native AccessKit tree"),
+                )
+                .expect("native tree JSON");
+                let labels = native["nodes"]
+                    .as_object()
+                    .expect("native nodes")
+                    .values()
+                    .filter_map(|node| node["aria"]["label"].as_str())
+                    .collect::<Vec<_>>();
+                assert!(
+                    labels.contains(&label.as_str()),
+                    "{page:?} native AX lacks {label}: {labels:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn index_health_notice_reflects_waiting_and_terminal_failures() {
         let not_requested: Resource<HealthModel> = Resource::not_yet();
         assert_eq!(
-            health_notice(&not_requested).as_ref().map(|(message, _)| message.as_str()),
+            health_notice(&not_requested)
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
             Some("The index health report has not been requested yet.")
         );
 
         let waiting = not_requested.clone().waiting();
         assert_eq!(
-            health_notice(&waiting).as_ref().map(|(message, _)| message.as_str()),
+            health_notice(&waiting)
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
             Some("Waiting for the local index health report.")
         );
 
         let unsupported = Resource::unavailable(UnavailableReason::Unsupported);
         assert_eq!(
             health_notice(&unsupported),
-            Some(("The connected service does not provide index health.".to_owned(), true))
+            Some((
+                "The connected service does not provide index health.".to_owned(),
+                true
+            ))
         );
 
         let failed = Resource::error(FaultCode::Transport, "service offline");
         assert!(matches!(failed.terminal(), ResourceTerminal::Fault(_)));
         assert_eq!(
             health_notice(&failed),
-            Some(("The index health check failed: service offline".to_owned(), true))
+            Some((
+                "The index health check failed: service offline".to_owned(),
+                true
+            ))
         );
     }
 

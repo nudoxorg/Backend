@@ -272,7 +272,7 @@ impl PageReader for Fixtures {
                 rows: 1,
                 ingest: IngestModel { files_discovered: 1, files_indexed: 1, files_unavailable: 0, declarations: 1, languages: Arc::from([]), faults: Arc::from([]) },
                 ready_capabilities: Arc::from([]),
-                missing_capabilities: Arc::from([]),
+                not_ready_capabilities: Arc::from([]),
             })),
             _ => Err(fault("the folio fixture serves package pages")),
         }

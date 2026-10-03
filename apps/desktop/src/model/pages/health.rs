@@ -1,5 +1,6 @@
 //! Health read model: per-lane coverage and ingest progress (gems and seams).
 
+use backend_library::{CapabilityFamily, CapabilityLifecycle};
 use std::sync::Arc;
 
 /// One language row of the ingest report.
@@ -62,17 +63,17 @@ pub struct HealthModel {
     pub rows: u64,
     /// Ingest counts.
     pub ingest: IngestModel,
-    /// Capabilities the owner reports as ready, by family spelling.
-    pub ready_capabilities: Arc<[Arc<str>]>,
-    /// Capabilities the owner reports as not ready, with their state.
-    pub missing_capabilities: Arc<[MissingCapability]>,
+    /// Capabilities with a fresh, owner-reported readiness proof.
+    pub ready_capabilities: Arc<[CapabilityFamily]>,
+    /// Other declared capabilities with their exact owner lifecycle.
+    pub not_ready_capabilities: Arc<[NotReadyCapability]>,
 }
 
-/// One capability the owner declared but cannot run yet.
+/// One capability the owner declared without a fresh readiness proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MissingCapability {
-    /// Capability family, as the owner spells it.
-    pub family: Arc<str>,
-    /// Lifecycle state (for example `Unavailable(NoManifest)`).
-    pub state: Arc<str>,
+pub struct NotReadyCapability {
+    /// Closed family and exact profile or recipe.
+    pub family: CapabilityFamily,
+    /// Owner lifecycle, including installed, active, and unavailable reasons.
+    pub state: CapabilityLifecycle,
 }

@@ -435,7 +435,7 @@ pub fn health_text(model: &HealthModel) -> String {
         out,
         "  capabilities: {} ready, {} not ready",
         model.ready_capabilities.len(),
-        model.missing_capabilities.len()
+        model.not_ready_capabilities.len()
     );
     out
 }

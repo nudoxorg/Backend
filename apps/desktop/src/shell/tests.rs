@@ -239,7 +239,7 @@ fn health() -> HealthModel {
             faults: Arc::from([]),
         },
         ready_capabilities: Arc::from([]),
-        missing_capabilities: Arc::from([]),
+        not_ready_capabilities: Arc::from([]),
     }
 }
 

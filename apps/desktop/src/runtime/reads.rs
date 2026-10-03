@@ -2958,7 +2958,7 @@ mod tests {
                 faults: Arc::from([]),
             },
             ready_capabilities: Arc::from([]),
-            missing_capabilities: Arc::from([]),
+            not_ready_capabilities: Arc::from([]),
         }
     }
 

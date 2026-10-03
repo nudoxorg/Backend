@@ -26,7 +26,7 @@ pub use common::{
     Known, LineSpan, PackageRef, Provenance, RowKey, SymbolRef, confidence_name, link_name,
 };
 pub use cargo_source::CargoSourcePage;
-pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
+pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, NotReadyCapability};
 pub use key::{CargoSourceKey, PageKey, SearchQuery};
 pub use lines::{Resolution, UseLine};
 pub(crate) use orbit::VerifiedRegistryRelease;
