@@ -389,6 +389,33 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             throw NSError(domain: "native-motion", code: 11, userInfo: [NSLocalizedDescriptionKey: "invalid plan bounds"])
         }
         let out = URL(fileURLWithPath: args[3], isDirectory: true)
+        // These are independent, read-only OS admissions. A discovered
+        // SCWindow does not prove Screen Recording permission, and an absent
+        // first frame is not evidence about the product's visual motion.
+        let axTrusted = AXIsProcessTrusted()
+        let screenCaptureGranted = CGPreflightScreenCaptureAccess()
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+        let recorderBundleID = Bundle.main.bundleIdentifier ?? ""
+        var preflightFailures: [String] = []
+        if recorderBundleID != "dev.nudox.audit.motion-recorder" &&
+           !recorderBundleID.hasPrefix("dev.nudox.audit.motion-recorder.") {
+            preflightFailures.append("RecorderBundleIdentityUnavailable")
+        }
+        if !screenCaptureGranted { preflightFailures.append("ScreenRecordingPreflightDenied") }
+        if !axTrusted { preflightFailures.append("AccessibilityTrustDenied") }
+        if frontmostPID != pid { preflightFailures.append("TargetNotFrontmost") }
+        let preflight: [String: Any] = [
+            "schema": 1, "state": preflightFailures.isEmpty ? "Admitted" : "Rejected",
+            "failures": preflightFailures, "pid": pid, "frontmost_pid": frontmostPID,
+            "screen_recording_preflight_granted": screenCaptureGranted,
+            "ax_trusted": axTrusted,
+            "recorder_bundle_identifier": recorderBundleID,
+            "recorder_executable": Bundle.main.executableURL?.path ?? ""]
+        try jsonLine(preflight).write(to: out.appendingPathComponent("preflight.jsonl"))
+        guard preflightFailures.isEmpty else {
+            throw NSError(domain: "native-motion", code: 20,
+                userInfo: [NSLocalizedDescriptionKey: "native capture preflight rejected: \(preflightFailures.joined(separator: ", "))"])
+        }
         let frameDir = out.appendingPathComponent("frames", isDirectory: true)
         try FileManager.default.createDirectory(at: frameDir, withIntermediateDirectories: true)
         let framesURL = out.appendingPathComponent("frames.jsonl")
@@ -466,20 +493,36 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             "capture_scope": scope, "display_id": display.map { $0.displayID as Any } ?? NSNull(),
             "display_frame_pt": display.map { ["x": $0.frame.origin.x, "y": $0.frame.origin.y,
                 "width": $0.frame.width, "height": $0.frame.height] as Any } ?? NSNull(),
-            "capture_fps_requested": fps, "frontmost_pid": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1,
+            "capture_fps_requested": fps, "frontmost_pid": frontmostPID,
             "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-            "ax_trusted": AXIsProcessTrusted(), "capture_kind": "native_ScreenCaptureKit_window"]
+            "ax_trusted": axTrusted, "capture_kind": "native_ScreenCaptureKit_window"]
         try jsonLine(metadata).write(to: out.appendingPathComponent("window.jsonl"))
-        try await stream.startCapture()
+        do {
+            try await stream.startCapture()
+        } catch {
+            let streamState: [String: Any] = ["schema": 1, "state": "StartCaptureFailed",
+                "error": String(describing: error), "captured_frames": 0]
+            try jsonLine(streamState).write(to: out.appendingPathComponent("stream-state.jsonl"))
+            throw error
+        }
+        let streamStartedHostNS = DispatchTime.now().uptimeNanoseconds
         var first: UInt64?
         for _ in 0..<100 {
-            first = recorder.status().3
-            if first != nil { break }
+            let status = recorder.status()
+            first = status.3
+            if first != nil || status.2 != nil { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         guard let started = first else {
+            let status = recorder.status()
+            let streamState: [String: Any] = ["schema": 1, "state": "NoFirstFrameAfterStartCapture",
+                "waited_ms": Int((DispatchTime.now().uptimeNanoseconds - streamStartedHostNS) / 1_000_000),
+                "captured_frames": status.0,
+                "stream_delegate_failure": status.2 ?? ""]
+            try jsonLine(streamState).write(to: out.appendingPathComponent("stream-state.jsonl"))
             try await stream.stopCapture()
-            throw NSError(domain: "native-motion", code: 14, userInfo: [NSLocalizedDescriptionKey: "no native window frame arrived"])
+            throw NSError(domain: "native-motion", code: 14,
+                userInfo: [NSLocalizedDescriptionKey: "ScreenCaptureKit started but no first native frame arrived; inspect stream-state.jsonl"])
         }
         let axSampler = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "native-motion.ax"))
         axSampler.schedule(deadline: .now(), repeating: .milliseconds(50))

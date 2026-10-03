@@ -32,6 +32,30 @@ The root must verify and write this as a separate immutable file; it must never 
 
 Only the sole GUI explorer may establish the live window, initial route, app foreground, requested viewport/text size, macOS Full/Reduced state, Screen Recording/Accessibility/Input Monitoring permissions, and input handoff. The native motion runner must remain idle until the explorer explicitly cedes input ownership and the root confirms the producing/preservation receipts and exact PID/executable. The runner uses `libproc` to reject a PID whose executable differs from the copied QA artifact. Every action is scoped to the selected visible PID/SCWindow. Paired Down/Up points are preflighted before the first press and checked again at dispatch; a failed scope check aborts without a synthetic Up/click in another window and records an unreleased-held-input finding.
 
+### Recorder identity and permission preflight
+
+The first Run19 Settings attempt did not capture a frame or post an action. Its verified build receipt admitted the QA executable, but `window.jsonl` recorded `ax_trusted:false` and frontmost PID 10250 instead of the target 14636. `SCStream.startCapture()` returned without delivering a first frame; that fact alone does not prove why. The revised recorder writes `preflight.jsonl` *before* ScreenCaptureKit selection, recording independent `CGPreflightScreenCaptureAccess()`, `AXIsProcessTrusted()`, and target-frontmost results. It rejects any missing admission with typed reasons and no input. If all three pass but ScreenCaptureKit still delivers no frame, `stream-state.jsonl` records a separate `NoFirstFrameAfterStartCapture` outcome and any stream-delegate error. The Python manifest preserves these sidecars and zero frame/action counts on failure; none becomes a motion pass.
+
+Use one dedicated, stable, team-signed recorder app, separate from the product QA app. `security find-identity -v -p codesigning` currently reports **zero valid identities** on the capture host, so the following build/sign steps are preparation only until the owner provisions an Apple Development or Developer ID signing identity for this recorder. Do not reuse another app's identity, use ad-hoc signing, edit TCC databases, or grant privacy permissions programmatically. With a valid identity available, the owner can run:
+
+```sh
+QA_RECORDER_APP=/Applications/NudoxMotionRecorder.app
+QA_SIGN_ID='Apple Development: YOUR NAME (YOURTEAMID)'
+mkdir -p "$QA_RECORDER_APP/Contents/MacOS"
+plutil -create xml1 "$QA_RECORDER_APP/Contents/Info.plist"
+plutil -insert CFBundleIdentifier -string dev.nudox.audit.motion-recorder "$QA_RECORDER_APP/Contents/Info.plist"
+plutil -insert CFBundleExecutable -string NudoxMotionRecorder "$QA_RECORDER_APP/Contents/Info.plist"
+plutil -insert CFBundlePackageType -string APPL "$QA_RECORDER_APP/Contents/Info.plist"
+plutil -insert NSScreenCaptureUsageDescription -string 'Capture the explicitly selected QA window for native motion testing.' "$QA_RECORDER_APP/Contents/Info.plist"
+xcrun swiftc -parse-as-library -O tools/gui-harness/native_motion.swift -o "$QA_RECORDER_APP/Contents/MacOS/NudoxMotionRecorder"
+codesign --force --options runtime --sign "$QA_SIGN_ID" "$QA_RECORDER_APP"
+codesign --verify --strict --verbose=2 "$QA_RECORDER_APP"
+codesign --display --verbose=4 "$QA_RECORDER_APP"
+codesign --display --requirements - "$QA_RECORDER_APP"
+```
+
+The recorder's `CFBundleIdentifier` and signing team must stay the same across rebuilds, and its designated requirement must remain compatible. The Python runner now requires `--recorder "$QA_RECORDER_APP/Contents/MacOS/NudoxMotionRecorder"` and verifies the app seal, team, and designated requirement before runtime. Grant **NudoxMotionRecorder** in macOS **System Settings → Privacy & Security → Screen & System Audio Recording** (called **Screen Recording** on some versions) and **Accessibility** using the OS UI. Restart the recorder after the Screen Recording grant. If macOS requests **Input Monitoring** for this signed recorder, grant that through the same Privacy & Security UI. Then the sole GUI explorer brings the exact QA product PID/window to the front and explicitly cedes input ownership before the recorder runs. A previous failed artifact remains untouched; the retry needs a new empty output directory and the root's current exact build/preservation receipt.
+
 ## Planned captures and semantic oracle
 
 - `settings-fast-open-close.json`: from a Reader or Orbit page without an overlay, ⌘, at 80 ms, native `Appearance` by 245 ms, Escape at 350 ms. Inspect actual early frames from 0–400 ms and post-exit AX/pixels. `Appearance` is a positive native oracle; there is no inferred animation pass from whole-window changed pixels.

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,65 @@ class NativeMotionTests(unittest.TestCase):
                 motion.require_plan(self.plan(directory, **bad))
             with self.assertRaisesRegex(ValueError, "unknown plan fields"):
                 motion.require_plan(self.plan(directory, accidental_route_seed=True))
+
+    def test_failed_recorder_preserves_preflight_without_claiming_frames(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            preflight = {"schema": 1, "state": "Rejected", "pid": 14636,
+                         "frontmost_pid": 10250, "ax_trusted": False,
+                         "screen_recording_preflight_granted": False,
+                         "failures": ["ScreenRecordingPreflightDenied", "AccessibilityTrustDenied",
+                                      "TargetNotFrontmost"]}
+            (out / "preflight.jsonl").write_text(json.dumps(preflight) + "\n")
+            (out / "actions.jsonl").write_text("")
+            (out / "frames.jsonl").write_text("")
+            evidence = motion.failed_recorder_evidence(out)
+            self.assertEqual(evidence["state"], "RecorderFailedBeforeAnalysis")
+            self.assertEqual(evidence["preflight"], preflight)
+            self.assertEqual((evidence["frame_rows"], evidence["action_rows"]), (0, 0))
+            self.assertNotIn("window", evidence)
+
+            (out / "preflight.jsonl").write_text(json.dumps(dict(preflight, state="Admitted",
+                failures=[], ax_trusted=True, screen_recording_preflight_granted=True,
+                frontmost_pid=14636)) + "\n")
+            (out / "window.jsonl").write_text('{"window_id":29995}\n')
+            (out / "stream-state.jsonl").write_text('{"state":"NoFirstFrameAfterStartCapture",'
+                '"captured_frames":0,"stream_delegate_failure":""}\n')
+            evidence = motion.failed_recorder_evidence(out)
+            self.assertEqual(evidence["stream_state"]["state"], "NoFirstFrameAfterStartCapture")
+            self.assertEqual(evidence["window"]["window_id"], 29995)
+            self.assertEqual((evidence["frame_rows"], evidence["action_rows"]), (0, 0))
+
+    def test_recorder_requires_dedicated_stable_signed_app_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            app = Path(root) / "NudoxMotionRecorder.app"
+            executable = app / "Contents/MacOS/NudoxMotionRecorder"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"recorder fixture")
+            info = app / "Contents/Info.plist"
+            info.write_bytes(plistlib.dumps({"CFBundleIdentifier": "dev.nudox.audit.motion-recorder.run19",
+                "CFBundleExecutable": executable.name, "NSScreenCaptureUsageDescription": "QA capture"}))
+            def codesign(command, **_kwargs):
+                if "--verify" in command:
+                    return subprocess.CompletedProcess(command, 0, "valid")
+                if "--requirements" in command:
+                    return subprocess.CompletedProcess(command, 0,
+                        'designated => identifier "dev.nudox.audit.motion-recorder.run19" and anchor apple generic')
+                return subprocess.CompletedProcess(command, 0,
+                    "Identifier=dev.nudox.audit.motion-recorder.run19\nTeamIdentifier=TESTTEAM\n"
+                    "Authority=Apple Development: QA Tester (TESTTEAM)\n")
+            with patch.object(motion.subprocess, "run", side_effect=codesign):
+                identity = motion.recorder_identity(executable)
+                self.assertEqual(identity["team_identifier"], "TESTTEAM")
+                self.assertEqual(identity["identifier"], "dev.nudox.audit.motion-recorder.run19")
+            def adhoc(command, **_kwargs):
+                result = codesign(command)
+                if "--verbose=4" in command:
+                    return subprocess.CompletedProcess(command, 0, "Signature=adhoc\nTeamIdentifier=not set\n")
+                return result
+            with patch.object(motion.subprocess, "run", side_effect=adhoc):
+                with self.assertRaisesRegex(ValueError, "non-ad-hoc"):
+                    motion.recorder_identity(executable)
 
     def test_run19_plans_keep_find_drawer_settle_and_retarget_distinct(self):
         names = ["settings-fast-open-close", "ask-interrupted-reopen", "find-fast-open-close",

@@ -7,20 +7,21 @@ pixels, window geometry and OS accessibility. A paired owner/read receipt is
 still required before claiming that those pixels show a particular live index.
 
 Example (after launching the exact built desktop binary and granting Screen
-Recording, Accessibility and Input Monitoring to the recorder's terminal):
+Recording and Accessibility to a dedicated signed recorder app):
   python3 tools/gui-harness/native_motion.py \
     --pid "$PID" --binary /path/to/backend-desktop \
     --source /path/to/frozen/candidate-checkout \
     --compiler-receipt /path/to/completed-build/receipt.json \
     --plan tools/gui-harness/plans/first-add.json \
     --input /path/to/project/Cargo.toml --input /path/to/project/Cargo.lock \
+    --recorder /path/to/NudoxMotionRecorder.app/Contents/MacOS/NudoxMotionRecorder \
     --out /private/tmp/sol-native-first-add
   python3 tools/gui-harness/native_motion_matrix.py /private/tmp/sol-native-runs \
     --out /private/tmp/sol-native-runs/MATRIX.json
 
-Compile the recorder separately with `swiftc -parse-as-library -O
- tools/gui-harness/native_motion.swift -o native-motion-recorder`, then use
-`native-motion-recorder list PID` if more than one window needs an exact ID.
+Build and team-sign the dedicated app once before OS privacy setup; see
+RUN19-NATIVE-MOTION.md. Its executable supports `list PID` when more than one
+window needs an exact ID. Per-output unsigned compilation is not admitted.
 The plan's action times are relative to the first captured native frame. Native
 keycodes are macOS virtual keycodes; click coordinates are global screen points.
 No route, index, owner gate, or component state is injected by this tool.
@@ -120,6 +121,37 @@ def bundle_identity(binary: Path) -> dict[str, str] | None:
         raise ValueError(f"app bundle identity or executable name is invalid: {bundle}")
     return {"path": str(bundle), "info_path": str(info), "info_sha256": sha256(info),
             "identifier": identifier}
+
+
+def recorder_identity(recorder: Path) -> dict[str, str]:
+    """Require a dedicated signed .app so OS privacy grants have a stable DR."""
+    if symlink_in_artifact_path(recorder):
+        raise ValueError("recorder app executable must not be a symlink")
+    bundle = bundle_identity(recorder)
+    if bundle is None or not (bundle["identifier"] == "dev.nudox.audit.motion-recorder" or
+                              bundle["identifier"].startswith("dev.nudox.audit.motion-recorder.")):
+        raise ValueError("recorder must be a dedicated dev.nudox.audit.motion-recorder .app")
+    info = plistlib.loads(Path(bundle["info_path"]).read_bytes())
+    if not isinstance(info.get("NSScreenCaptureUsageDescription"), str) or not info["NSScreenCaptureUsageDescription"].strip():
+        raise ValueError("recorder app needs NSScreenCaptureUsageDescription")
+    verified = subprocess.run(["codesign", "--verify", "--strict", "--verbose=2", bundle["path"]],
+                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if verified.returncode:
+        raise ValueError("recorder app code signature verification failed: " + verified.stdout.strip())
+    signing = subprocess.run(["codesign", "--display", "--verbose=4", bundle["path"]],
+                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    fields = dict(line.split("=", 1) for line in signing.stdout.splitlines() if "=" in line)
+    team = fields.get("TeamIdentifier", "")
+    authority = [line for line in signing.stdout.splitlines()
+                 if line.startswith(("Authority=Apple Development:", "Authority=Developer ID Application:"))]
+    if signing.returncode or not team or team == "not set" or fields.get("Signature") == "adhoc" or not authority:
+        raise ValueError("recorder needs a stable non-ad-hoc signing team identity")
+    requirement = subprocess.run(["codesign", "--display", "--requirements", "-", bundle["path"]],
+                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if requirement.returncode or "designated =>" not in requirement.stdout or "anchor apple" not in requirement.stdout:
+        raise ValueError("recorder has no verifiable designated requirement")
+    return {**bundle, "team_identifier": team,
+            "designated_requirement": requirement.stdout.strip(), "executable_sha256": sha256(recorder)}
 
 
 def process_executable(pid: int) -> Path:
@@ -559,6 +591,22 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def failed_recorder_evidence(out: Path) -> dict[str, Any]:
+    """Preserve typed pre-input evidence without promoting it to a capture."""
+    evidence: dict[str, Any] = {"state": "RecorderFailedBeforeAnalysis"}
+    for name, key in [("preflight.jsonl", "preflight"), ("window.jsonl", "window"),
+                      ("stream-state.jsonl", "stream_state")]:
+        path = out / name
+        if path.is_file():
+            rows = read_jsonl(path)
+            if rows:
+                evidence[key] = rows[0]
+    for name, key in [("frames.jsonl", "frame_rows"), ("actions.jsonl", "action_rows")]:
+        path = out / name
+        evidence[key] = len(read_jsonl(path)) if path.is_file() else 0
+    return evidence
+
+
 def crop_frames(out: Path, plan: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not plan.get("crops"):
         return []
@@ -869,16 +917,12 @@ def run(args: argparse.Namespace) -> Path:
         receipt = args.owner_receipt.resolve(strict=True)
         manifest["owner_receipt"] = {"path": str(receipt), "sha256": sha256(receipt)}
     (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    recorder = args.recorder.resolve() if args.recorder else out / "native-motion-recorder"
     if not args.recorder:
-        compiler = shutil.which("swiftc")
-        if not compiler:
-            raise ValueError("swiftc unavailable; pass --recorder")
-        result = subprocess.run([compiler, "-parse-as-library", "-O", str(SWIFT), "-o", str(recorder)],
-                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        (out / "swiftc.log").write_text(result.stdout)
-        if result.returncode:
-            raise RuntimeError(f"Swift recorder compile failed; see {out / 'swiftc.log'}")
+        raise ValueError("pass --recorder with a stable signed native QA recorder .app executable")
+    if symlink_in_artifact_path(args.recorder):
+        raise ValueError("recorder app executable must not be a symlink")
+    recorder = args.recorder.resolve(strict=True)
+    manifest["recorder_identity"] = recorder_identity(recorder)
     manifest["recorder_sha256"] = sha256(recorder)
     plan_path = out / "resolved-plan.json"
     plan_path.write_text(json.dumps(plan, indent=2) + "\n")
@@ -888,6 +932,7 @@ def run(args: argparse.Namespace) -> Path:
     (out / "recorder.log").write_text(result.stdout)
     manifest["recorder_exit"] = result.returncode
     if result.returncode:
+        manifest["failed_recorder_evidence"] = failed_recorder_evidence(out)
         (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
         raise RuntimeError(f"native recorder exit {result.returncode}; see {out / 'recorder.log'}")
     frames = read_jsonl(out / "frames.jsonl")
@@ -963,7 +1008,8 @@ def main() -> int:
     parser.add_argument("--compiler-receipt", type=Path, help="completed frozen-source build receipt; absent/mismatch is UnprovenBinarySource")
     parser.add_argument("--preservation-receipt", type=Path, help="hash-bound copy/source receipt required when candidate checkout or executable path differs from the original build")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--recorder", type=Path, help="precompiled Swift recorder; otherwise swiftc compiles into --out")
+    parser.add_argument("--recorder", type=Path, required=True,
+                        help="dedicated, stable team-signed native QA recorder .app executable")
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
     args = parser.parse_args()
     try:
