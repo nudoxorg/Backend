@@ -59,7 +59,7 @@ const OUTLINE_BYTES: usize = 12 * 1024 * 1024;
 /// Explore page size for the Orbit catalog.
 const EXPLORE_LIMIT: u16 = 64;
 /// Count bound covering queued, running, published and drained reads. This
-/// bounds pending models, not their heap bytes or already landed page values.
+/// bounds admitted read lifecycles, not payload copies, heap bytes or landed values.
 const MAX_ADMITTED_READS: usize = 64;
 /// Leave half the admission slots available to visible/normal requests.
 const MAX_PREFETCH_ADMISSION: usize = MAX_ADMITTED_READS / 2;
@@ -511,7 +511,9 @@ impl ReadPool {
     }
 
     /// Takes one bounded batch without waiting. Remaining results rearm the
-    /// same coalesced wake; the UI consumer yields between batches.
+    /// same coalesced wake; the UI consumer yields between batches. Normal
+    /// results lead, with one slot in a full batch reserved for pending
+    /// prefetch results so continuous normal work cannot starve them.
     pub fn drain(&self) -> Vec<ReadOutcome> {
         let mut results = self
             .shared
@@ -519,7 +521,16 @@ impl ReadPool {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let count = results.len().min(LANDING_BUDGET);
-        let batch = results.drain(..count).collect();
+        let mut batch = Vec::with_capacity(count);
+        for slot in 0..count {
+            let preferred = if slot + 1 == LANDING_BUDGET {
+                Priority::Prefetch
+            } else {
+                Priority::Normal
+            };
+            let at = results.iter().position(|outcome| outcome.priority == preferred).unwrap_or(0);
+            if let Some(outcome) = results.remove(at) { batch.push(outcome); }
+        }
         let remaining = !results.is_empty();
         drop(results);
         if remaining { self.shared.wake.wake(); }
@@ -3077,6 +3088,32 @@ mod tests {
         harness.started();
         crate::runtime::wait::until("post-drain publication wakes again", || wake.try_take());
         assert_eq!(harness.pool.drain().len(), 1);
+    }
+
+    #[test]
+    fn bounded_read_visible_delivery_precedes_prefetch_without_starving_it() {
+        let harness = harness(1);
+        // Publish prefetches first: completion order cannot bury the visible
+        // route. A full normal burst must still make prefetch progress.
+        for priority in [Priority::Prefetch, Priority::Normal] {
+            for round in 0..14 {
+                let permit = ReadPermit::acquire(&harness.pool.shared.admitted, priority).expect("admission");
+                harness.pool.shared.publish(ReadOutcome {
+                    key: key(&format!("{priority:?}-{round}")), generation: Generation::new(round),
+                    worker: 0, priority, complete: true, result: Ok(PageValue::Health(health())),
+                    _residency: permit,
+                });
+            }
+        }
+        for batch_index in 0..2 {
+            let batch = harness.pool.drain();
+            assert_eq!(batch.len(), LANDING_BUDGET);
+            assert!(batch[..7].iter().all(|outcome| outcome.priority == Priority::Normal));
+            assert_eq!(batch[7].priority, Priority::Prefetch, "one prefetch progresses in each full mixed batch");
+            assert_eq!(batch[0].key, key(&format!("Normal-{}", batch_index * 7)), "FIFO within normal priority");
+            assert_eq!(batch[7].key, key(&format!("Prefetch-{batch_index}")), "FIFO within prefetch priority");
+        }
+        assert!(harness.pool.drain().iter().all(|outcome| outcome.priority == Priority::Prefetch));
     }
 
     #[test]
