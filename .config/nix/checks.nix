@@ -70,8 +70,14 @@ in
         ];
       }
       ''
-        NUDOX_CARGO_CACHE_SCRIPT=${../scripts/cargo-shared-cache.sh} \
-          ${pkgs.bash}/bin/bash ${../../tests/cargo-shared-cache.sh}
+        # The test finds its sibling scripts (cargo-in.sh, the rustc cache
+        # wrapper, the provenance helper) from its own location, so run it
+        # from a tree with the repository's layout rather than the store.
+        mkdir -p repo/.config repo/tests
+        cp -r ${../scripts} repo/.config/scripts
+        cp ${../../tests/cargo-shared-cache.sh} repo/tests/cargo-shared-cache.sh
+        NUDOX_CARGO_CACHE_SCRIPT="$PWD/repo/.config/scripts/cargo-shared-cache.sh" \
+          ${pkgs.bash}/bin/bash repo/tests/cargo-shared-cache.sh
         mkdir -p $out/share
         echo validated > $out/share/cargo-cache-protocol
       '';
