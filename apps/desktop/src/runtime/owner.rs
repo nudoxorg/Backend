@@ -15,9 +15,12 @@
 
 use crate::core::VersionedRoot;
 use crate::model::ServiceMode;
+use backend_client::{ClientError, PublicationBudgetKind, PublicationOperation};
+use backend_replication::{LocalControlError, LocalControlExchangePhase};
 use gpui::{App, Entity};
 use std::fmt;
 use std::future::Future;
+use std::io::ErrorKind;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
@@ -26,6 +29,89 @@ use std::time::{Duration, Instant};
 /// An embedded start takes seconds; this bounds a host that hangs, so a page
 /// never waits on it for ever and "Try again" has something to retry.
 pub const PATIENCE: Duration = Duration::from_mins(1);
+
+/// Terminal reason the publication observer withdrew a serving attachment.
+/// A delayed reply or closed socket does not, by itself, prove owner death.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObservationFailure {
+    /// The actor did not install its first complete root before the limit.
+    InitialRoot(Duration),
+    /// Dial or authentication failed before a publication frame began.
+    Setup(ClientError),
+    /// The exact socket could not be interrupted on shutdown.
+    MissingInterrupt,
+    /// One request reached its fixed deadline; it may have been admitted.
+    ResponseStalled {
+        /// Last frame phase before the deadline.
+        phase: LocalControlExchangePhase,
+        /// Time spent in that exact exchange.
+        elapsed: Duration,
+    },
+    /// The peer closed or reset the in-flight stream.
+    PeerClosed {
+        /// Last in-flight frame phase.
+        phase: LocalControlExchangePhase,
+    },
+    /// Other socket I/O failed in the named exchange phase.
+    TransportIo {
+        /// Last in-flight frame phase.
+        phase: LocalControlExchangePhase,
+        /// Native I/O failure category.
+        kind: ErrorKind,
+    },
+    /// The complete frame failed bounded grammar or correlation.
+    InvalidFrame {
+        /// Last in-flight frame phase.
+        phase: LocalControlExchangePhase,
+        /// Bounded shared frame/control grammar failure.
+        error: LocalControlError,
+    },
+    /// A complete reply failed local producer/root/cursor admission.
+    InvalidAuthority(ClientError),
+    /// The producer explicitly refused an operation other than recoverable Resume.
+    ProducerRejected {
+        /// Operation the producer refused.
+        operation: PublicationOperation,
+        /// Bounded producer diagnostic.
+        detail: Arc<str>,
+    },
+    /// Ordinary freshness recovery consumed its one absolute window.
+    RecoveryExpired(Duration),
+    /// The one fresh Open after a rejected Resume did not certify a root.
+    ReacquisitionFailed(Box<ObservationFailure>),
+    /// A finite number of reconnects ended without a certified reply.
+    ReconnectsExhausted(Box<ObservationFailure>),
+    /// The fixed ordinary or authenticated reset budget expired.
+    BudgetExpired {
+        /// Budget class, including authenticated reset size when present.
+        kind: PublicationBudgetKind,
+        /// Fixed budget duration.
+        allowance: Duration,
+    },
+    /// A callback withdrew a frame although its owner scope was still live.
+    UnexpectedCancellation,
+}
+
+impl fmt::Display for ObservationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InitialRoot(waited) => write!(formatter, "the initial complete root was not admitted within {} s", waited.as_secs()),
+            Self::Setup(detail) => write!(formatter, "could not establish a publication connection: {detail}"),
+            Self::MissingInterrupt => formatter.write_str("publication transport has no cancellation handle"),
+            Self::ResponseStalled { phase, elapsed } => write!(formatter, "publication response stalled in {phase:?} for {} s", elapsed.as_secs()),
+            Self::PeerClosed { phase } => write!(formatter, "publication peer closed during {phase:?}"),
+            Self::TransportIo { phase, kind } => write!(formatter, "publication I/O failed during {phase:?}: {kind:?}"),
+            Self::InvalidFrame { phase, error } => write!(formatter, "publication frame failed validation during {phase:?}: {error}"),
+            Self::InvalidAuthority(detail) => write!(formatter, "publication proof failed: {detail}"),
+            Self::ProducerRejected { operation, detail } => write!(formatter, "publication {operation:?} was rejected: {detail}"),
+            Self::RecoveryExpired(waited) => write!(formatter, "publication recovery exceeded {} s", waited.as_secs()),
+            Self::ReacquisitionFailed(cause) => write!(formatter, "fresh publication acquisition failed: {cause}"),
+            Self::ReconnectsExhausted(cause) => write!(formatter, "publication reconnects were exhausted: {cause}"),
+            Self::BudgetExpired { kind, allowance } => write!(formatter, "publication {kind:?} budget expired after {} s", allowance.as_secs()),
+            Self::UnexpectedCancellation => formatter.write_str("publication exchange cancelled without owner withdrawal"),
+        }
+    }
+}
 
 /// Why the owner is not answering.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,8 +122,8 @@ pub enum OwnerFault {
     Panicked(Arc<str>),
     /// An attached owner that had answered stopped answering a fresh probe.
     Lost(Arc<str>),
-    /// The publication observer could not renew its producer lease.
-    Observation(Arc<str>),
+    /// The publication observer could not maintain certified producer freshness.
+    Observation(ObservationFailure),
     /// Nothing answered within the patience.
     Silent(Duration),
     /// The window closed before the owner answered.
@@ -492,7 +578,7 @@ impl OwnerGate {
         !inner.closed && inner.attachment == expected && !inner.observation_cancel.is_cancelled()
     }
 
-    pub(crate) fn observation_failed(&self, expected: Epoch, reason: Arc<str>) -> bool {
+    pub(crate) fn observation_failed(&self, expected: Epoch, reason: ObservationFailure) -> bool {
         // The publication worker is the only writer until this attachment is
         // withdrawn. Use one lock rather than a check followed by `publish`.
         let (waker, cancel) = {
@@ -1080,7 +1166,7 @@ mod publication_tests {
         let root = view();
         let (gate, old, cursor) = attached(&root);
         let pending = gate.observation_scope(old).expect("old scope");
-        assert!(gate.observation_failed(old, "expired publication lease after reconnect".into()));
+        assert!(gate.observation_failed(old, ObservationFailure::InvalidAuthority(ClientError::Protocol("expired publication lease after reconnect".into()))));
         assert!(pending.is_cancelled());
         assert!(gate.restart());
         gate.publish(OwnerState::Ready {
@@ -1093,7 +1179,7 @@ mod publication_tests {
             gate.publish_view(old, Arc::clone(&root), cursor),
             PublicationAdmission::Withdrawn
         );
-        assert!(!gate.observation_failed(old, "late failure".into()));
+        assert!(!gate.observation_failed(old, ObservationFailure::InvalidAuthority(ClientError::Protocol("late failure".into()))));
         assert!(matches!(gate.state(), OwnerState::Ready { .. }));
         assert_eq!(
             gate.publish_view(new, root, cursor),
@@ -1135,7 +1221,10 @@ mod publication_tests {
         let io = gate.observation_scope(old).expect("active observation socket");
         assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
         let suspended = gate.suspend_observation(old).expect("current attachment");
-        assert!(gate.observation_failed(suspended, "response stalled".into()));
+        assert!(gate.observation_failed(suspended, ObservationFailure::ResponseStalled {
+            phase: LocalControlExchangePhase::ReadingHeader,
+            elapsed: Duration::from_secs(1),
+        }));
         assert!(io.is_cancelled(), "terminal failure must interrupt the socket");
         assert_eq!(gate.attached_ready_epoch(), None);
         assert!(gate.publication(suspended).is_none());
@@ -1210,7 +1299,7 @@ mod publication_tests {
                 0 => gate.close(),
                 1 => gate.publish(OwnerState::Starting),
                 2 => { let _ = gate.replace_observation(attachment); }
-                3 => { let _ = gate.observation_failed(attachment, "fixture".into()); }
+                3 => { let _ = gate.observation_failed(attachment, ObservationFailure::InvalidAuthority(ClientError::Protocol("fixture".into()))); }
                 _ => { let _ = gate.attached_lost_at(attachment, "fixture".into()); }
             }
             assert!(called.load(std::sync::atomic::Ordering::Acquire));
