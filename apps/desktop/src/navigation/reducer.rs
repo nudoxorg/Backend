@@ -45,6 +45,10 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             }
         }
         Intent::Preview(route) => {
+            if next.overlay() != Some(Overlay::CommandPalette)
+                && !next.session().overlay_is_covered(Overlay::CommandPalette) {
+                return Reduction { snapshot: next, effects };
+            }
             let mut session = next.session().clone();
             if !session.reading.preview(&route) { return Reduction { snapshot: next, effects }; }
             if session.preview.is_none() {
@@ -550,7 +554,8 @@ mod tests {
     #[test]
     fn committing_a_preview_makes_where_you_were_the_way_back() {
         let at = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
-        let first = reduce(&at, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let querying = reduce(&at, Intent::OpenCommandPalette).snapshot;
+        let first = reduce(&querying, Intent::Preview(symbol_route("A", View::Page))).snapshot;
         let second = reduce(&first, Intent::Preview(symbol_route("B", View::Page))).snapshot;
         let kept = reduce(&second, Intent::CommitPreview);
         assert!(kept.effects.contains(&Effect::Persist));
@@ -565,7 +570,8 @@ mod tests {
     #[test]
     fn a_link_followed_from_a_preview_keeps_the_preview_and_its_origin() {
         let at = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
-        let previewing = reduce(&at, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let querying = reduce(&at, Intent::OpenCommandPalette).snapshot;
+        let previewing = reduce(&querying, Intent::Preview(symbol_route("A", View::Page))).snapshot;
         let followed = reduce(&previewing, Intent::Navigate(symbol_route("C", View::Page))).snapshot;
         assert_eq!(followed.session().preview, None);
         let back_one = reduce(&followed, Intent::Back).snapshot;
@@ -722,6 +728,47 @@ mod tests {
         let returned = reduce(&preview, Intent::DismissOverlay).snapshot;
         assert_eq!(returned.route(), origin.route());
         assert_eq!(returned.session().reading.current, origin.session().reading.current);
+    }
+
+    #[test]
+    fn orphan_preview_is_denied_and_back_still_admits_current_reading() {
+        use crate::navigation::presentation::{ReadingChange, ShelfLens};
+        let home = snapshot();
+        let package = reduce(&home, Intent::Navigate(package_route(None))).snapshot;
+        let orphan = reduce(&package, Intent::Preview(Route::World));
+        assert_eq!(orphan.snapshot, package);
+        assert!(orphan.effects.is_empty());
+        let back = reduce(&orphan.snapshot, Intent::Back).snapshot;
+        assert_eq!(back.route(), home.route());
+        assert!(back.session().preview.is_none());
+        let visit = back.session().reading.current.id;
+        let changed = reduce(&back, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) }).snapshot;
+        assert_eq!(changed.session().reading.current.presentation.controls().shelf.lens, ShelfLens::UsedBy);
+        let next = reduce(&changed, Intent::Navigate(package_route(None))).snapshot;
+        assert_eq!(next.session().back.last(), Some(home.route()), "no orphan origin is inserted into history");
+    }
+
+    #[test]
+    fn covered_ask_preserves_paired_preview_until_its_own_back() {
+        let origin = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let ask = reduce(&origin, Intent::OpenCommandPalette).snapshot;
+        let preview = reduce(&ask, Intent::Preview(Route::World)).snapshot;
+        let add = reduce(&preview, Intent::OpenAddProject).snapshot;
+        assert_eq!(add.session().preview, preview.session().preview);
+        assert_eq!(add.session().reading, preview.session().reading);
+        let covered = reduce(&add, Intent::Preview(symbol_route("B", View::Page))).snapshot;
+        assert_eq!(covered.overlay(), Some(Overlay::AddProject));
+        assert_eq!(covered.session().preview, preview.session().preview);
+        let uncovered = reduce(&covered, Intent::Back).snapshot;
+        assert_eq!(uncovered.overlay(), Some(Overlay::CommandPalette));
+        assert_eq!(uncovered.session().reading, covered.session().reading);
+        let refined = reduce(&uncovered, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let returned = reduce(&refined, Intent::Back).snapshot;
+        assert_eq!(returned.route(), origin.route());
+        assert_eq!(returned.session().reading.current, origin.session().reading.current);
+        assert!(returned.session().preview.is_none());
+        let navigated = reduce(&returned, Intent::Navigate(Route::World)).snapshot;
+        assert_eq!(navigated.session().back.last(), Some(origin.route()));
     }
 
 }

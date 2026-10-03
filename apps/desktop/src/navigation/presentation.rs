@@ -223,6 +223,11 @@ impl ReadingSession {
         true
     }
     pub fn restore(&mut self, visit: ReadingVisit, route: &Route) -> bool {
+        // History restores only this allocator's already issued identities.
+        // Imported future IDs cannot move current ahead of the watermark.
+        if visit.id.0 > self.last.0 || !visit.presentation.compatible(route) || !visit.presentation.valid() {
+            return false;
+        }
         if visit.id == VisitId::default() {
             self.fresh(route)
         } else {
@@ -313,6 +318,34 @@ impl ReadingPresentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restoring_future_incompatible_or_invalid_visits_refuses_without_mutation() {
+        let home = Route::Orbit(OrbitRoute::Home);
+        let mut session = ReadingSession::new(&home);
+        let original = session.clone();
+        let future = ReadingVisit { id: VisitId::initial().next().expect("next"), presentation: ReadingPresentation::for_route(&home) };
+        assert!(!session.restore(future, &home));
+        assert_eq!(session, original);
+        let incompatible = ReadingVisit { id: VisitId::initial(), presentation: ReadingPresentation::for_route(&Route::World) };
+        assert!(!session.restore(incompatible, &home));
+        assert_eq!(session, original);
+        let comparison_route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(crate::navigation::CompareSet::new([
+            crate::model::pages::PackageRef::parse("/fixture/one").expect("first"),
+            crate::model::pages::PackageRef::parse("/fixture/two").expect("second"),
+        ]).expect("comparison"))));
+        let mut invalid = ReadingPresentation::for_route(&comparison_route);
+        let ReadingPresentation::Compare { comparison, .. } = &mut invalid else { unreachable!() };
+        comparison.page = 4097;
+        assert!(!session.restore(ReadingVisit { id: VisitId::initial(), presentation: invalid }, &comparison_route));
+        assert_eq!(session, original);
+        assert!(session.fresh(&home));
+        assert_eq!(session.current.id, VisitId::initial().next().expect("allocator never skipped or reused"));
+        assert!(session.restore(original.current.clone(), &home), "an issued past visit remains restorable");
+        assert_eq!(session.current, original.current);
+        assert!(session.restore(ReadingVisit::cold(&home), &home), "cold route-only entries receive fresh IDs");
+        assert_ne!(session.current.id, original.current.id);
+    }
+
     #[test]
     fn allocation_exhaustion_never_reuses_a_live_visit() {
         let route = Route::Orbit(OrbitRoute::Home);
