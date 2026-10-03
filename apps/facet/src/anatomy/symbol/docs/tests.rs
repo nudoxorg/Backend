@@ -217,6 +217,7 @@ fn compiled_symbol_kinds_and_languages_expose_the_painted_words_at_large_text(
         Kind::Constant,
         Kind::Module,
         Kind::Other,
+        Kind::Variable,
     ];
     let languages = [
         Lang::Rust,

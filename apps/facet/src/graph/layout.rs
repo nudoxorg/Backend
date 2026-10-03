@@ -37,7 +37,7 @@ pub const fn core(kind: Kind) -> f32 {
     match kind {
         Kind::Struct | Kind::Enum | Kind::Trait | Kind::Union => 1.25,
         Kind::Macro => 0.7,
-        Kind::Constant => 0.6,
+        Kind::Constant | Kind::Variable => 0.6,
         _ => 0.8,
     }
 }

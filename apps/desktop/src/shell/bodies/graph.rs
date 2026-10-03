@@ -744,7 +744,6 @@ impl Map {
     /// part of this model; the data plane additionally equality-gates events.
     fn publish_focus(&self, cx: &mut Context<Self>) {
         use backend_library::DeclarationKind as D;
-        use facet::graph::Kind as G;
         let snapshot = self.links.snapshot(cx);
         let focus = self.graph.as_ref().and_then(|graph| {
             if !self.visible || !is_graph(snapshot.route()) {
@@ -792,20 +791,9 @@ impl Map {
                     facet::graph::model::DeclarationRole::Module => D::Module,
                     facet::graph::model::DeclarationRole::Import => D::Import,
                     facet::graph::model::DeclarationRole::Unknown => D::Unknown,
-                    facet::graph::model::DeclarationRole::Definition => match node.kind {
-                    G::Struct => D::Struct,
-                    G::Enum => D::Enum,
-                    G::Union => D::Union,
-                    G::Trait => D::Trait,
-                    G::Type => D::Type,
-                    G::Function => D::Function,
-                    G::Method => D::Method,
-                    G::Macro => D::Macro,
-                    G::Constant => D::Constant,
-                    G::Field => D::Field,
-                    G::Variant => D::Variant,
-                    G::Other => D::Unknown,
-                    },
+                    facet::graph::model::DeclarationRole::Definition => {
+                        crate::model::declaration_presentation::DeclarationPresentation::graph_definition(node.kind)
+                    }
                 },
                 indexed,
                 origin: self.projection_origin.clone()?,
@@ -1315,14 +1303,7 @@ impl gpui::Element for FocusMark {
             owner.update(cx, |map, _| map.painted_focus = None);
             return None;
         }
-        let kind = match graph.world().node(node).kind {
-            facet::graph::Kind::Trait => facet::icons::Kind::Trait,
-            facet::graph::Kind::Function | facet::graph::Kind::Method => {
-                facet::icons::Kind::Function
-            }
-            facet::graph::Kind::Enum => facet::icons::Kind::Enum,
-            _ => facet::icons::Kind::Struct,
-        };
+        let kind = crate::model::declaration_presentation::DeclarationPresentation::graph_icon(graph.world().node(node).kind);
         let Some((symbol, origin, previous_node)) = owner.update(cx, |map, _| {
             let resolved = map.resolved.get(&node).cloned().or_else(|| {
                 map.identities

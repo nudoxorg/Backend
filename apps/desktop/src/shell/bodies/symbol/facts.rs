@@ -16,19 +16,7 @@ use facet::anatomy::symbol::view::{Block, Kind, Lang};
 
 /// The page's kind for an index kind.
 pub(super) const fn kind_of(kind: Option<DeclarationKind>) -> Kind {
-    match kind {
-        Some(DeclarationKind::Function) => Kind::Function,
-        Some(DeclarationKind::Method | DeclarationKind::Constructor) => Kind::Method,
-        Some(DeclarationKind::Enum) => Kind::Enum,
-        Some(DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Union) => {
-            Kind::Struct
-        }
-        Some(DeclarationKind::Trait | DeclarationKind::Interface) => Kind::Trait,
-        Some(DeclarationKind::Type) => Kind::Alias,
-        Some(DeclarationKind::Constant | DeclarationKind::Variable) => Kind::Constant,
-        Some(DeclarationKind::Module) => Kind::Module,
-        _ => Kind::Other,
-    }
+    crate::model::declaration_presentation::DeclarationPresentation::of(kind).page()
 }
 
 const fn receives(receiver: Receiver) -> Receives {

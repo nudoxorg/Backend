@@ -921,7 +921,7 @@ pub fn paint(
         let bank = if on { 2 } else { usize::from(mine) };
         let s = 4.2;
         match sl.kind {
-            Some(Kind::Function | Kind::Method | Kind::Constant | Kind::Macro) => {
+            Some(Kind::Function | Kind::Method | Kind::Constant | Kind::Variable | Kind::Macro) => {
                 shapes[bank].rect(sl.px - s * 0.7, sl.py - s * 0.7, s * 1.4, s * 1.4);
             }
             Some(Kind::Trait) | None => shapes[bank].diamond_ring(sl.px, sl.py, s, 1.2),

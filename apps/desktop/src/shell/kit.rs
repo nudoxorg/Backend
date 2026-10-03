@@ -157,27 +157,7 @@ impl IntoElement for Said {
 
 /// The facet kind mark for an engine declaration kind.
 pub(crate) const fn kind_of(kind: Option<DeclarationKind>) -> Kind {
-    match kind {
-        Some(DeclarationKind::Module) => Kind::Module,
-        Some(DeclarationKind::Import) => Kind::Import,
-        Some(DeclarationKind::Struct) => Kind::Struct,
-        Some(DeclarationKind::Class) => Kind::Class,
-        Some(DeclarationKind::Enum) => Kind::Enum,
-        Some(DeclarationKind::Union) => Kind::Union,
-        Some(DeclarationKind::Type) => Kind::Type,
-        Some(DeclarationKind::Trait) => Kind::Trait,
-        Some(DeclarationKind::Interface) => Kind::Interface,
-        Some(DeclarationKind::Function) => Kind::Function,
-        Some(DeclarationKind::Method) => Kind::Method,
-        Some(DeclarationKind::Constructor) => Kind::Constructor,
-        Some(DeclarationKind::Macro) => Kind::Macro,
-        Some(DeclarationKind::Constant) => Kind::Constant,
-        Some(DeclarationKind::Field) => Kind::Field,
-        Some(DeclarationKind::Property) => Kind::Property,
-        Some(DeclarationKind::Variable) => Kind::Variable,
-        Some(DeclarationKind::Variant) => Kind::Variant,
-        Some(DeclarationKind::Unknown) | None => Kind::Unknown,
-    }
+    crate::model::declaration_presentation::DeclarationPresentation::of(kind).icon()
 }
 
 /// Plain words for why a field is unknown: said once, in place.

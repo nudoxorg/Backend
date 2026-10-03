@@ -14,7 +14,7 @@ use backend_library::{
     CommandReply, DeclarationKind, DependencyFacts, PageContinuation, PageTerminal, RowId,
     SemanticLinkKind, SurfaceCommand, SurfaceReply,
 };
-use facet::graph::{Edge, Kind, Module, Node, Package, Rel, World};
+use facet::graph::{Edge, Module, Node, Package, Rel, World};
 use gpui::{App, Context, Global};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
@@ -951,7 +951,7 @@ fn relation_gap(coverage: &mut Coverage, kind: SemanticLinkKind) {
 /// The semantic identity stays in the adapter; display facts come only from
 /// this declaration row, never from a same-name definition or package file.
 pub(crate) fn project_declaration(row: &backend_library::Row, symbol: &SymbolRef, package_id: u32, module: u32) -> Node {
-    let kind = graph_kind(row.kind.unwrap_or(DeclarationKind::Unknown));
+    let kind = crate::model::declaration_presentation::DeclarationPresentation::of(row.kind).graph();
     let identity = symbol.identity();
     let mut node = Node::new(kind, identity.name(), package_id, module);
     node.declaration_role = match row.kind.unwrap_or(DeclarationKind::Unknown) {
@@ -990,23 +990,6 @@ fn graph_source_status(source: &backend_library::SourceAvailability) -> facet::g
         S::NotHydrated => G::NotHydrated,
         S::Unconfigured => G::Unconfigured,
         S::StaleFile { .. } => G::Stale,
-    }
-}
-
-fn graph_kind(kind: DeclarationKind) -> Kind {
-    match kind {
-        DeclarationKind::Class | DeclarationKind::Struct => Kind::Struct,
-        DeclarationKind::Enum => Kind::Enum,
-        DeclarationKind::Union => Kind::Union,
-        DeclarationKind::Trait | DeclarationKind::Interface => Kind::Trait,
-        DeclarationKind::Type => Kind::Type,
-        DeclarationKind::Function | DeclarationKind::Constructor => Kind::Function,
-        DeclarationKind::Method | DeclarationKind::Property => Kind::Method,
-        DeclarationKind::Macro => Kind::Macro,
-        DeclarationKind::Constant | DeclarationKind::Variable => Kind::Constant,
-        DeclarationKind::Field => Kind::Field,
-        DeclarationKind::Variant => Kind::Variant,
-        DeclarationKind::Module | DeclarationKind::Import | DeclarationKind::Unknown => Kind::Other,
     }
 }
 
@@ -1236,6 +1219,35 @@ mod tests {
             assert!(missing.file.is_none(), "another row's captured file cannot grant source capability");
             assert_eq!(missing.line, 0);
         }
+    }
+
+    #[test]
+    fn same_named_variable_and_constant_keep_kind_identity_and_source_independent() {
+        use backend_library::{Basis, DeclarationKind, Row, RowId, SourceLocation, object_version, symbol_key, view_state_root};
+        use facet::graph::model::SourceStatus;
+        let basis = Basis::new(view_state_root(&[]), object_version(b"distinct value kinds"));
+        let variable = Row::new(RowId::Symbol(symbol_key("fixture::input::signal")), basis,
+            "/fixture/value-kinds::semantic::input::signal").with_kind(DeclarationKind::Variable);
+        let constant = Row::new(RowId::Symbol(symbol_key("fixture::constant::signal")), basis,
+            "/fixture/value-kinds::semantic::constant::signal").with_kind(DeclarationKind::Constant)
+            .with_source(SourceLocation::new("src/constant.rs", 7).expect("source"));
+        let project = |row: &Row| super::project_declaration(row,
+            &crate::model::pages::SymbolRef::new(&row.label).expect("exact coordinate"), 0, 0);
+        let var = project(&variable);
+        let con = project(&constant);
+        assert_eq!(var.name, con.name);
+        assert_eq!(var.kind.text(), "variable");
+        assert_eq!(con.kind.text(), "constant");
+        assert_eq!(var.source_status, SourceStatus::NotCaptured);
+        assert!(var.file.is_none());
+        assert_eq!(var.line, 0);
+        assert_eq!(con.source_words(), "src/constant.rs:7");
+        let variable_ref = crate::model::pages::DeclRef::from_row(&variable).expect("variable declaration");
+        let constant_ref = crate::model::pages::DeclRef::from_row(&constant).expect("constant declaration");
+        assert_ne!(variable_ref.coordinate, constant_ref.coordinate);
+        assert_eq!(crate::shell::kit::kind_of(variable_ref.kind).name(), "variable");
+        assert!(variable_ref.path.is_none());
+        assert!(variable_ref.line.is_none());
     }
 
     #[test]

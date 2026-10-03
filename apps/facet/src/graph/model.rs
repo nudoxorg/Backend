@@ -45,6 +45,8 @@ pub enum Kind {
     Variant,
     /// Anything else the extractor named.
     Other,
+    /// A variable whose producer kind is distinct from a constant.
+    Variable,
 }
 
 impl Kind {
@@ -63,6 +65,7 @@ impl Kind {
             "constant" => Self::Constant,
             "field" => Self::Field,
             "variant" => Self::Variant,
+            "variable" => Self::Variable,
             _ => Self::Other,
         }
     }
@@ -83,6 +86,7 @@ impl Kind {
             Self::Field => "field",
             Self::Variant => "variant",
             Self::Other => "other",
+            Self::Variable => "variable",
         }
     }
 

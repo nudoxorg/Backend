@@ -23,6 +23,7 @@ const fn icon_kind(kind: Kind) -> icons::Kind {
         Kind::Constant => icons::Kind::Constant,
         Kind::Module => icons::Kind::Module,
         Kind::Other => icons::Kind::Unknown,
+        Kind::Variable => icons::Kind::Variable,
     }
 }
 

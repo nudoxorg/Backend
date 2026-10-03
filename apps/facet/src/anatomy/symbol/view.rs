@@ -103,6 +103,8 @@ pub enum Kind {
     Module,
     /// Anything else.
     Other,
+    /// A variable declaration.
+    Variable,
 }
 
 impl Kind {
@@ -119,6 +121,7 @@ impl Kind {
             Self::Constant => "constant",
             Self::Module => "module",
             Self::Other => "item",
+            Self::Variable => "variable",
         }
     }
 

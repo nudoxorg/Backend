@@ -214,6 +214,26 @@ fn zod_parse() -> SymbolPage {
     )
 }
 
+/// The current product kind of a semantic input carrier, with no captured
+/// declaration site. The GUI must not invent a constant or source excerpt.
+fn signal_variable() -> SymbolPage {
+    let mut page = page(
+        decl("signal.rs", 1, "signal", DeclarationKind::Variable),
+        "signal: &str",
+        None,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    page.identity.path = None;
+    page.identity.line = None;
+    page.site = SourceSite {
+        location: Known::Unknown(Gap::new(GapReason::NotCaptured, "")),
+        excerpt: Known::Unknown(Gap::new(GapReason::NotCaptured, "")),
+    };
+    page
+}
+
 /// Serves the pinned pages; everything else from the shell's fixture.
 pub(super) struct Pinned;
 
@@ -228,6 +248,7 @@ impl PageReader for Pinned {
                 "Serialize" => Some(serialize()),
                 "match" => Some(py_match()),
                 "parse" => Some(zod_parse()),
+                "signal" => Some(signal_variable()),
                 _ => None,
             };
             if let Some(page) = pinned {
@@ -275,6 +296,26 @@ fn says(ledger: &Ledger, key: &str) -> Option<String> {
 
 fn all(ledger: &Ledger, prefix: &str, suffix: &str) -> Vec<String> {
     ledger.texts.iter().filter(|text| text.key.starts_with(prefix) && text.key.ends_with(suffix)).map(|text| text.content.clone()).collect()
+}
+
+#[test]
+fn a_variable_page_keeps_its_identity_and_missing_source_facts() {
+    let page = signal_variable();
+    let coordinate = page.identity.coordinate.clone();
+    let facts = super::facts::facts(&page, PACKAGE, &[], &facet::anatomy::history::History::default());
+    let view = facet::anatomy::symbol::compile(&facts);
+    assert_eq!(view.head.kind.word(), "variable");
+    assert!(view.call.is_none());
+    assert!(facts.site.is_none());
+    assert_eq!(page.identity.coordinate, coordinate);
+    assert!(page.site.excerpt.known().is_none());
+}
+
+#[gpui::test]
+fn semantic_input_carrier_page_says_variable_not_constant(cx: &mut TestAppContext) {
+    let (_rig, ledger) = open(cx, "signal.rs", 1, "signal", 1440.0);
+    assert_eq!(says(&ledger, "s6-kind").as_deref(), Some("VARIABLE"));
+    assert!(!ledger.texts.iter().any(|text| text.key.starts_with("s6-block-source")));
 }
 
 #[gpui::test]
