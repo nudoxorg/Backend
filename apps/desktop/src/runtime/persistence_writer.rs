@@ -86,7 +86,15 @@ impl PersistenceWriter {
     ) -> Result<Self, WriteFailure> {
         let (wake, receiver) = wake_channel();
         let shared = Arc::new(Shared {
-            id: NEXT_WRITER.fetch_add(1, Ordering::Relaxed),
+            id: NEXT_WRITER
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                    next.checked_add(1)
+                })
+                .map_err(|_| {
+                    WriteFailure::new(
+                        "The local state writer identity is exhausted. Nothing was sent.",
+                    )
+                })?,
             inner: Mutex::new(Inner {
                 next: 1,
                 jobs: VecDeque::new(),
@@ -162,7 +170,9 @@ impl PersistenceWriter {
             writer: self.shared.id,
             sequence: inner.next,
         };
-        inner.next = inner.next.saturating_add(1);
+        inner.next = inner.next.checked_add(1).ok_or_else(|| {
+            WriteFailure::new("The local state write revision is exhausted. Nothing was sent.")
+        })?;
         let state = Arc::new(state);
         inner.desired = Some((revision, state.clone()));
         let job = Job {
@@ -202,7 +212,9 @@ impl PersistenceWriter {
             writer: self.shared.id,
             sequence: inner.next,
         };
-        inner.next = inner.next.saturating_add(1);
+        inner.next = inner.next.checked_add(1).ok_or_else(|| {
+            WriteFailure::new("The local state write revision is exhausted. Nothing was sent.")
+        })?;
         let state = Arc::new(state());
         let (sent, received) = async_channel::bounded(1);
         inner.desired = Some((revision, state.clone()));
@@ -493,6 +505,17 @@ mod tests {
         }
         assert!(receive(&writer.finish()).is_err());
         assert_eq!(saves.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn exhausted_write_revisions_fail_closed_without_reusing_an_acknowledgment() {
+        let writer =
+            PersistenceWriter::testing("/unused-test-state".into(), |_| Ok(())).expect("writer");
+        writer.shared.inner.lock().expect("revision").next = u64::MAX;
+        assert!(writer.barrier(|| state(1)).is_err());
+        assert!(writer.ordinary(state(2)).is_err());
+        assert!(writer.shared.inner.lock().expect("queue").jobs.is_empty());
+        receive(&writer.finish()).expect("empty lane closes cleanly");
     }
 
     #[test]
