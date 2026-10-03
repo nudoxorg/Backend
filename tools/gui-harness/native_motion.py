@@ -10,6 +10,7 @@ Example (after launching the exact built desktop binary and granting Screen
 Recording, Accessibility and Input Monitoring to the recorder's terminal):
   python3 tools/gui-harness/native_motion.py \
     --pid "$PID" --binary /path/to/backend-desktop \
+    --source /path/to/frozen/candidate-checkout \
     --compiler-receipt /path/to/completed-build/receipt.json \
     --plan tools/gui-harness/plans/first-add.json \
     --input /path/to/project/Cargo.toml --input /path/to/project/Cargo.lock \
@@ -56,8 +57,28 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+def git(root: Path, *args: str) -> str:
+    return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+
+def source_identity(root: Path) -> dict[str, str]:
+    root = root.resolve(strict=True)
+    if not root.is_dir() or Path(git(root, "rev-parse", "--show-toplevel")).resolve() != root:
+        raise ValueError(f"source must be an exact Git checkout root: {root}")
+    lock = root / "Cargo.lock"
+    if not lock.is_file():
+        raise ValueError(f"candidate source lacks Cargo.lock: {root}")
+    return {"path": str(root), "head": git(root, "rev-parse", "HEAD"),
+            "tree": git(root, "rev-parse", "HEAD^{tree}"),
+            "status_porcelain": git(root, "status", "--porcelain"),
+            "cargo_lock_sha256": sha256(lock)}
+
+
+def tool_identity() -> dict[str, str]:
+    return {"path": str(ROOT), "head": git(ROOT, "rev-parse", "HEAD"),
+            "tree": git(ROOT, "rev-parse", "HEAD^{tree}"),
+            "status_porcelain": git(ROOT, "status", "--porcelain"),
+            "python_sha256": sha256(Path(__file__)), "swift_sha256": sha256(SWIFT)}
 
 
 def process_executable(pid: int) -> Path:
@@ -408,6 +429,7 @@ def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str
     """Admit only the root build's completed, source-bound compiler receipt."""
     if receipt_path is None:
         return {"state": "UnprovenBinarySource", "reasons": ["no compiler receipt supplied"]}
+    binary = binary.resolve(strict=True)
     path = receipt_path.resolve(strict=True)
     receipt = json.loads(path.read_text())
     reasons = []
@@ -423,7 +445,7 @@ def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str
         reasons.append("compiler process census/cap is invalid")
     if not isinstance(receipt.get("rustc_version"), str) or "rustc " not in receipt["rustc_version"]:
         reasons.append("rustc toolchain identity missing")
-    if receipt.get("build_cwd") != str(ROOT.resolve()):
+    if receipt.get("build_cwd") != source["path"]:
         reasons.append("actual compiler working directory differs")
     command_path = path.with_name("command.sh")
     command = command_path.read_text() if command_path.is_file() else ""
@@ -457,8 +479,9 @@ def run(args: argparse.Namespace) -> Path:
     if sys.platform != "darwin":
         raise ValueError("native capture requires macOS")
     out = args.out.resolve()
-    if out == ROOT or ROOT in out.parents:
-        raise ValueError("native artifact output must be outside the source checkout")
+    source_root = args.source.resolve(strict=True)
+    if out in {ROOT, source_root} or ROOT in out.parents or source_root in out.parents:
+        raise ValueError("native artifact output must be outside the tool and candidate source checkouts")
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"output directory must be empty to prevent stale frame evidence: {out}")
     out.mkdir(parents=True, exist_ok=True)
@@ -473,14 +496,16 @@ def run(args: argparse.Namespace) -> Path:
         if not resolved.is_file() or resolved.stat().st_size > MAX_INPUT_BYTES:
             raise ValueError(f"input must be a regular file <= {MAX_INPUT_BYTES} bytes: {resolved}")
         inputs.append({"path": str(resolved), "bytes": resolved.stat().st_size, "sha256": sha256(resolved)})
-    source = {"head": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
-              "status_porcelain": git("status", "--porcelain"), "cargo_lock_sha256": sha256(ROOT / "Cargo.lock")}
+    source = source_identity(source_root)
+    tool = tool_identity()
+    if tool["status_porcelain"]:
+        raise ValueError("native recorder tool checkout is not frozen clean")
     admission = compiler_admission(args.compiler_receipt, expected, source)
     manifest: dict[str, Any] = {"schema": 1, "class": "native_window_compositor_and_ax",
         "live_owner_index_admission": "unverified; pair with a production owner/read receipt",
         "name": plan["name"], "case": plan["case"], "pid": args.pid, "binary": {"path": str(expected), "sha256": sha256(expected)},
         "plan": {"path": str(args.plan.resolve()), "sha256": sha256(args.plan.resolve())},
-        "tool": {"python_sha256": sha256(Path(__file__)), "swift_sha256": sha256(SWIFT)},
+        "tool": tool,
         "source": source, "inputs": inputs, "binary_source_admission": admission,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "assertions": ["native SCWindow PID/window identity", "native PTS strictly increasing", "AX and action sidecars", "full PNG dimensions and crop bounds"]}
@@ -546,11 +571,8 @@ def run(args: argparse.Namespace) -> Path:
         manifest["analysis"]["failures"].append("UnprovenBinarySource: " + "; ".join(admission["reasons"]))
     manifest["passed_native_checks"] = not manifest["analysis"]["failures"]
     stable = process_executable(args.pid) == expected and sha256(expected) == manifest["binary"]["sha256"]
-    stable = stable and git("rev-parse", "HEAD") == source["head"] and git("rev-parse", "HEAD^{tree}") == source["tree"]
-    stable = stable and git("status", "--porcelain") == source["status_porcelain"]
-    stable = stable and sha256(ROOT / "Cargo.lock") == source["cargo_lock_sha256"]
+    stable = stable and source_identity(source_root) == source and tool_identity() == tool
     stable = stable and sha256(args.plan.resolve()) == manifest["plan"]["sha256"]
-    stable = stable and sha256(Path(__file__)) == manifest["tool"]["python_sha256"] and sha256(SWIFT) == manifest["tool"]["swift_sha256"]
     if args.compiler_receipt:
         stable = stable and sha256(args.compiler_receipt.resolve()) == admission["receipt_sha256"]
         stable = stable and compiler_admission(args.compiler_receipt, expected, source)["state"] == admission["state"]
@@ -559,7 +581,7 @@ def run(args: argparse.Namespace) -> Path:
         stable = stable and sha256(args.owner_receipt.resolve()) == manifest["owner_receipt"]["sha256"]
     manifest["capture_inputs_stable"] = stable
     if not stable:
-        manifest["analysis"]["failures"].append("binary/source/lock/selected input or owner receipt changed during capture")
+        manifest["analysis"]["failures"].append("binary/candidate source/tool/selected input or owner receipt changed during capture")
         manifest["passed_native_checks"] = False
     manifest["completed_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -572,6 +594,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", type=int, required=True, help="PID of the visible native desktop process")
     parser.add_argument("--binary", type=Path, required=True, help="exact executable that PID must be running")
+    parser.add_argument("--source", type=Path, required=True, help="frozen candidate checkout named by the compiler receipt; independent of this recorder checkout")
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--input", type=Path, action="append", default=[], help="immutable live input file to hash; repeat")
     parser.add_argument("--owner-receipt", type=Path, help="independent production owner/read evidence to hash, not inferred from pixels")

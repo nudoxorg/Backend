@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import shutil
+import subprocess
+from copy import deepcopy
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
@@ -106,12 +108,73 @@ class NativeMotionTests(unittest.TestCase):
             binary.write_bytes(b"historical binary")
             receipt = directory / "receipt.json"
             receipt.write_text(json.dumps({"head": "some-old-head", "binaries": {str(binary): motion.sha256(binary)}}))
-            source = {"head": "current-head", "tree": "current-tree", "status_porcelain": "",
+            source = {"path": str(directory), "head": "current-head", "tree": "current-tree", "status_porcelain": "",
                       "cargo_lock_sha256": "current-lock"}
             result = motion.compiler_admission(receipt, binary, source)
             self.assertEqual(result["state"], "UnprovenBinarySource")
             self.assertIn("receipt HEAD/tree differs", "; ".join(result["reasons"]))
             self.assertIn("compiler run did not finish", "; ".join(result["reasons"]))
+
+    def test_candidate_source_identity_is_separate_from_the_recorder_checkout(self):
+        with tempfile.TemporaryDirectory() as root:
+            candidate = Path(root) / "candidate"
+            candidate.mkdir()
+            subprocess.run(["git", "init", "-q", str(candidate)], check=True)
+            (candidate / "Cargo.lock").write_text("frozen lock\n")
+            subprocess.run(["git", "-C", str(candidate), "add", "Cargo.lock"], check=True)
+            subprocess.run(["git", "-C", str(candidate), "-c", "user.name=Native test",
+                            "-c", "user.email=native@example.invalid", "commit", "-qm", "freeze"], check=True)
+            source = motion.source_identity(candidate)
+            self.assertEqual(source["path"], str(candidate.resolve()))
+            self.assertEqual(source["status_porcelain"], "")
+            self.assertNotEqual(source["path"], str(motion.ROOT))
+            (candidate / "subdirectory").mkdir()
+            with self.assertRaisesRegex(ValueError, "exact Git checkout root"):
+                motion.source_identity(candidate / "subdirectory")
+
+    def test_completed_receipt_admits_only_its_distinct_candidate_binary(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            candidate = directory / "candidate"
+            candidate.mkdir()
+            binary = directory / "backend-desktop"
+            binary.write_bytes(b"one exact compiler output")
+            environment = directory / "development.sh"
+            environment.write_text("export TEST_BUILD_ENV=1\n")
+            command = f"source {environment}\nexec cargo build --locked\n"
+            (directory / "command.sh").write_text(command)
+            (directory / "raw.log").write_text("build finished\n")
+            source = {"path": str(candidate), "head": "candidate-head", "tree": "candidate-tree",
+                      "status_porcelain": "", "cargo_lock_sha256": "candidate-lock"}
+            receipt = {
+                "head": source["head"], "tree": source["tree"],
+                "lock_sha256": source["cargo_lock_sha256"], "exit_status": 0,
+                "frozen_preserved": True, "capacity_abort": False,
+                "census_valid": True, "maximum_local_cargo": 1, "local_cargo_cap": 3,
+                "rustc_version": "rustc 1.97.1 (test)",
+                "build_cwd": str(candidate),
+                "build_argv": ["/bin/bash", "-c", command],
+                "command_sha256": motion.hashlib.sha256(command.encode()).hexdigest(),
+                "raw_log_sha256": motion.sha256(directory / "raw.log"),
+                "development_environment_sha256": motion.sha256(environment),
+                "binaries": {str(binary): motion.sha256(binary)},
+            }
+            path = directory / "receipt.json"
+            path.write_text(json.dumps(receipt))
+            admitted = motion.compiler_admission(path, binary, source)
+            self.assertEqual(admitted["state"], "VerifiedBuildReceipt", admitted["reasons"])
+            wrong_source = dict(source, head="tool-head")
+            result = motion.compiler_admission(path, binary, wrong_source)
+            self.assertEqual(result["state"], "UnprovenBinarySource")
+            self.assertIn("HEAD/tree differs", "; ".join(result["reasons"]))
+            wrong_checkout = dict(source, path=str(motion.ROOT))
+            self.assertIn("working directory differs",
+                          "; ".join(motion.compiler_admission(path, binary, wrong_checkout)["reasons"]))
+            altered = deepcopy(receipt)
+            altered["binaries"] = {str(binary): "0" * 64}
+            path.write_text(json.dumps(altered))
+            self.assertIn("binary SHA is not",
+                          "; ".join(motion.compiler_admission(path, binary, source)["reasons"]))
 
     def test_matrix_never_promotes_native_source_pixels_to_live_owner_proof(self):
         catalog = json.loads((HERE / "native_motion_matrix.json").read_text())
