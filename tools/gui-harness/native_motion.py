@@ -30,7 +30,9 @@ No route, index, owner gate, or component state is injected by this tool.
 Active plans require --attest-plan-v1 with a newly signed recorder that hashes
 the exact Data it decodes and writes a matching native receipt before capture.
 The existing signed recorder remains usable for passive, explicitly unverified
-transport captures. The LaunchServices path separately remains zero-input only.
+transport captures. Active LaunchServices capture also requires --supervise-v1
+with a recorder implementing the private control protocol; legacy mode stays
+zero-input.
 
 For a copied executable or relocated frozen checkout, also pass
 `--preservation-receipt copy.json`. Schema 1 binds the original compiler
@@ -49,8 +51,10 @@ import math
 import os
 import plistlib
 import re
+import secrets
 import signal
 import shlex
+import socket
 import stat
 from pathlib import Path
 import shutil
@@ -59,6 +63,7 @@ import subprocess
 import sys
 import time
 from typing import Any
+import native_motion_supervision as supervision
 
 ROOT = Path(__file__).resolve().parents[2]
 SWIFT = Path(__file__).with_name("native_motion.swift")
@@ -214,7 +219,8 @@ def tool_identity() -> dict[str, str]:
     return {"path": str(ROOT), "head": git(ROOT, "rev-parse", "HEAD"),
             "tree": git(ROOT, "rev-parse", "HEAD^{tree}"),
             "status_porcelain": git(ROOT, "status", "--porcelain"),
-            "python_sha256": sha256(Path(__file__)), "swift_sha256": sha256(SWIFT)}
+            "python_sha256": sha256(Path(__file__)), "swift_sha256": sha256(SWIFT),
+            "supervision_sha256": sha256(Path(supervision.__file__))}
 
 
 def symlink_in_artifact_path(path: Path) -> bool:
@@ -764,19 +770,25 @@ def failed_recorder_evidence(out: Path) -> dict[str, Any]:
 
 
 def launch_services_command(bundle: Path, pid: int, plan_path: Path, out: Path,
-                            expected_sha256: str | None = None) -> list[str]:
+                            expected_sha256: str | None = None,
+                            control: tuple[Path, Path] | None = None) -> list[str]:
     """Launch the recorder as its own app, with separate native output files."""
+    recorder_args = recorder_arguments(pid, plan_path, out, expected_sha256)
+    if control is not None:
+        if expected_sha256 is None:
+            raise ValueError("supervised launch requires an expected digest")
+        recorder_args.extend(["--control-v1", str(control[0]), str(control[1])])
     return ["/usr/bin/open", "-n", "-g", "-W", "-a", str(bundle),
             "--stdout", str(out / "recorder.stdout"),
             "--stderr", str(out / "recorder.stderr"),
-            "--args", *recorder_arguments(pid, plan_path, out, expected_sha256)]
+            "--args", *recorder_args]
 
 
 def require_launch_bundle(bundle_arg: Path, recorder: Path, identity: dict[str, str],
-                          plan: dict[str, Any]) -> Path:
+                          plan: dict[str, Any], supervised: bool = False) -> Path:
     # A timed-out `open -W` can leave its LaunchServices app alive. Admit only
     # zero-input capture until the launcher has an exact process-stop protocol.
-    if plan["actions"]:
+    if plan["actions"] and not supervised:
         raise ValueError("LaunchServices mode currently admits zero-input captures only")
     if symlink_in_artifact_path(bundle_arg):
         raise ValueError("LaunchServices recorder bundle must not be a symlink")
@@ -784,6 +796,180 @@ def require_launch_bundle(bundle_arg: Path, recorder: Path, identity: dict[str, 
     if bundle != Path(identity["path"]) or recorder != bundle / "Contents/MacOS" / recorder.name:
         raise ValueError("LaunchServices bundle does not match the verified recorder executable")
     return bundle
+
+
+def launch_services_supervised(bundle: Path, pid: int, plan_path: Path, out: Path,
+                               plan: dict[str, Any], recorder: Path,
+                               identity: dict[str, str], expected: dict[str, Any]) -> dict[str, Any]:
+    """An exact native peer must stop before input ownership can be released."""
+    nonce = secrets.token_hex(32)
+    socket_path = None
+    nonce_path = None
+    listener = None
+    argv: list[str] = []
+    deadline = time.monotonic() + plan["duration_ms"] / 1000 + 15
+    process = None
+    connection = None
+    watcher = None
+    recorder_pid = None
+    native = None
+    failures: list[str] = []
+    exact_exit = False
+    launcher_output = ""
+    launcher_exit = None
+    try:
+        socket_path, listener = supervision.private_socket()
+        nonce_path = socket_path.parent / "nonce"
+        nonce_fd = os.open(nonce_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            raw_nonce = nonce.encode()
+            offset = 0
+            while offset < len(raw_nonce):
+                written = os.write(nonce_fd, raw_nonce[offset:])
+                if written <= 0:
+                    raise OSError("private control nonce write failed")
+                offset += written
+            os.fsync(nonce_fd)
+        finally:
+            os.close(nonce_fd)
+        argv = launch_services_command(bundle, pid, plan_path, out, expected["sha256"],
+                                       (socket_path, nonce_path))
+        for name in ("recorder.stdout", "recorder.stderr"):
+            fd = os.open(out / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, start_new_session=True)
+        listener.settimeout(min(10.0, max(0.1, deadline - time.monotonic())))
+        connection, _ = listener.accept()
+        recorder_pid = supervision.peer_pid(connection)
+        if recorder_pid <= 0 or process_executable(recorder_pid) != recorder:
+            raise supervision.ProtocolError("control peer is not the exact running recorder")
+        watcher = supervision.ExactProcessExit(recorder_pid)
+        if process_executable(recorder_pid) != recorder:
+            raise supervision.ProtocolError("control peer changed before arm")
+        policy = supervision.ControlPolicy(plan["actions"])
+
+        def accept_hello(row: dict[str, Any]) -> None:
+            required = {"kind": "Hello", "nonce": nonce, "recorder_pid": recorder_pid,
+                        "target_pid": pid, "recorder_executable": str(recorder),
+                        "recorder_executable_sha256": identity["executable_sha256"],
+                        "recorder_bundle_identifier": identity["identifier"],
+                        "consumed_sha256": expected["sha256"]}
+            if any(type(row.get(key)) is not type(value) or row.get(key) != value
+                   for key, value in required.items()):
+                raise supervision.ProtocolError("native Hello identity, target or consumed digest mismatch")
+            consumed = consumed_plan_receipt(out, expected, recorder, identity, pid)
+            if not consumed["verified"] or recorder_identity(recorder) != identity:
+                raise supervision.ProtocolError("native plan receipt or recorder signature changed before arm")
+
+        native = supervision.serve(connection, policy, deadline, accept_hello)
+        if native["held_unreleased"]:
+            failures.append("native held input was not released")
+        exact_exit = watcher.wait(3.0)
+        if not exact_exit:
+            failures.append("kernel NOTE_EXIT absent for exact armed recorder")
+        if process is not None:
+            try:
+                launcher_output, _ = process.communicate(timeout=2.0)
+                launcher_exit = process.returncode
+            except subprocess.TimeoutExpired:
+                failures.append("open -W did not return after native stop")
+    except (OSError, ValueError, supervision.ProtocolError, TimeoutError, EOFError,
+            socket.timeout) as error:
+        failures.append(str(error))
+        if watcher is not None:
+            try:
+                exact_exit = watcher.wait(2.0)
+            except OSError as watch_error:
+                failures.append(f"kernel exit watch failed: {watch_error}")
+        if process is not None and process.poll() is not None:
+            launcher_output, _ = process.communicate(timeout=1.0)
+            launcher_exit = process.returncode
+    finally:
+        if connection is not None:
+            connection.close()  # EOF revokes any future native permit.
+        if listener is not None:
+            listener.close()
+        if watcher is not None:
+            try:
+                watcher.close()
+            except OSError as watch_error:
+                failures.append(f"kernel exit watch close failed: {watch_error}")
+        if socket_path is not None:
+            try:
+                socket_path.unlink(missing_ok=True)
+                if nonce_path is not None:
+                    nonce_path.unlink(missing_ok=True)
+                socket_path.parent.rmdir()
+            except OSError:
+                pass
+        if process is not None and process.poll() is None:
+            # Only the launcher is our child. Do not signal the target GUI or
+            # an unverified recorder PID; this does not prove recorder exit.
+            try:
+                process.terminate()
+            except OSError as error:
+                failures.append(f"launcher termination failed: {error}")
+            try:
+                launcher_output, _ = process.communicate(timeout=2.0)
+                launcher_exit = process.returncode
+            except subprocess.TimeoutExpired:
+                failures.append("launcher did not terminate; recorder stop remains unproven")
+        (out / "launcher.log").write_text(launcher_output or "")
+    native_stopped = native is not None and native["state"] == "Stopped"
+    stop_path = out / "native-control-stop.jsonl"
+    stop_receipt = None
+    if stop_path.is_file():
+        try:
+            if stop_path.is_symlink() or stop_path.stat().st_nlink != 1 or stop_path.stat().st_mode & 0o222:
+                raise ValueError("native stop receipt is linked or writable")
+            stop_file, raw = plan_file_observation(stop_path)
+            rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+            if len(rows) != 1 or not isinstance(rows[0], dict):
+                raise ValueError("native stop receipt requires one typed row")
+            stop_receipt = {"file": stop_file, "row": rows[0]}
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            failures.append(f"native stop receipt invalid: {error}")
+    else:
+        failures.append("native stop receipt absent")
+    stop_row = stop_receipt["row"] if stop_receipt is not None else {}
+    if (stop_row.get("schema") != 1 or stop_row.get("kind") != "native-motion-control-stop-v1"
+            or stop_row.get("recorder_pid") != recorder_pid or stop_row.get("held_unreleased") is not False
+            or stop_row.get("controller_reply") != "StopAck"):
+        failures.append("native stop acknowledgment does not bind released exact recorder")
+    if native is not None and native["cancel_requested"] and not native["cancel_ack"]:
+        failures.append("native cancellation was not acknowledged")
+    ownership_release = native_stopped and exact_exit and not failures
+    if not ownership_release:
+        failures.append("exclusive input ownership unresolved until native stop and exact kernel exit")
+    logs = {name: ({"path": str(out / name), "size": (out / name).stat().st_size,
+                    "sha256": sha256(out / name)} if (out / name).is_file() else {"state": "Missing"})
+            for name in ("recorder.stdout", "recorder.stderr")}
+    receipt = {"schema": 1, "kind": "native-motion-supervision-v1",
+               "state": "StoppedVerified" if ownership_release else "Unresolved",
+               "recorder_pid": recorder_pid, "peer_pid_verified": recorder_pid is not None,
+               "exact_process_exit": exact_exit, "native_stop_ack": native_stopped,
+               "held_unreleased": bool(native and native["held_unreleased"]),
+               "input_ownership_release_admitted": ownership_release,
+               "native": native, "native_stop_receipt": stop_receipt, "failures": failures,
+               "nonce_sha256": hashlib.sha256(nonce.encode()).hexdigest(),
+               "socket_path": str(socket_path) if socket_path is not None else None,
+               "launcher_exit_code": launcher_exit, "launcher_log_sha256": sha256(out / "launcher.log"),
+               "recorder_exit": "KernelNOTE_EXIT" if exact_exit else None}
+    receipt_file = write_once_readonly(out / "SUPERVISION.json",
+                                       (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode())
+    if not ownership_release:
+        write_once_readonly(out / "INPUT-OWNERSHIP-UNRESOLVED.json",
+            (json.dumps({"schema": 1, "state": "Unresolved",
+                "supervision_receipt_sha256": receipt_file["sha256"],
+                "exact_recorder_pid": recorder_pid,
+                "reason": "native stop/ack or kernel NOTE_EXIT was not proven; retain exclusive input handoff"},
+                sort_keys=True) + "\n").encode())
+    return {"mode": "SupervisedLaunchServicesApp", "argv": argv,
+            "timed_out": not ownership_release, "recorder_exit": receipt["recorder_exit"],
+            "recorder_may_continue": not exact_exit, "launcher_exit_code": launcher_exit,
+            "logs": logs, "launcher_log_sha256": receipt["launcher_log_sha256"],
+            "supervision": receipt, "supervision_file": receipt_file}
 
 
 def launch_services_wait(bundle: Path, pid: int, plan_path: Path, out: Path,
@@ -1131,6 +1317,9 @@ def run(args: argparse.Namespace) -> Path:
     source_plan, source_plan_bytes = plan_file_observation(args.plan)
     plan = require_plan(args.plan, source_plan_bytes)
     attest_plan_v1 = getattr(args, "attest_plan_v1", False)
+    supervise_v1 = getattr(args, "supervise_v1", False)
+    if supervise_v1 and (not args.launch_bundle or not attest_plan_v1):
+        raise ValueError("--supervise-v1 requires --launch-bundle and --attest-plan-v1")
     if symlink_in_artifact_path(args.binary):
         raise ValueError("capture executable must be an owned regular file, not a symlink")
     expected = args.binary.resolve(strict=True)
@@ -1170,7 +1359,8 @@ def run(args: argparse.Namespace) -> Path:
     recorder = args.recorder.resolve(strict=True)
     manifest["recorder_identity"] = recorder_identity(recorder)
     manifest["recorder_sha256"] = sha256(recorder)
-    launch_bundle = (require_launch_bundle(args.launch_bundle, recorder, manifest["recorder_identity"], plan)
+    launch_bundle = (require_launch_bundle(args.launch_bundle, recorder, manifest["recorder_identity"], plan,
+                                           supervised=supervise_v1)
                      if args.launch_bundle else None)
     source_plan_copy = write_once_readonly(out / "source-plan.snapshot.json", source_plan_bytes)
     if source_plan_copy["sha256"] != source_plan["sha256"]:
@@ -1205,14 +1395,23 @@ def run(args: argparse.Namespace) -> Path:
     expected_consumed_sha256 = resolved_plan["sha256"] if attest_plan_v1 else None
     try:
         if launch_bundle:
-            launch = launch_services_wait(launch_bundle, args.pid, plan_path, out,
-                                          timeout_seconds=plan["duration_ms"] / 1000 + 15,
-                                          expected_sha256=expected_consumed_sha256)
+            if supervise_v1:
+                launch = launch_services_supervised(launch_bundle, args.pid, plan_path, out,
+                    plan, recorder, manifest["recorder_identity"], resolved_plan)
+                manifest["supervision"] = launch["supervision"]
+                manifest["supervision_file"] = launch["supervision_file"]
+            else:
+                launch = launch_services_wait(launch_bundle, args.pid, plan_path, out,
+                    timeout_seconds=plan["duration_ms"] / 1000 + 15,
+                    expected_sha256=expected_consumed_sha256)
             manifest["launcher"] = launch
-            manifest["recorder_exit"] = None  # `open -W` never reports the app's exit status.
+            manifest["recorder_exit"] = launch["recorder_exit"]
             (out / "recorder.log").write_bytes((out / "recorder.stderr").read_bytes())
             recorder_finished, preflight, launch_failures = launch_services_completion(
                 out, launch, recorder, manifest["recorder_identity"], args.pid, plan)
+            if supervise_v1 and not launch["supervision"]["input_ownership_release_admitted"]:
+                launch_failures.append("supervised recorder input ownership remains unresolved")
+                recorder_finished = False
             manifest["launcher"]["completion_failures"] = launch_failures
             if preflight is not None:
                 manifest["preflight"] = preflight
@@ -1305,6 +1504,11 @@ def run(args: argparse.Namespace) -> Path:
                          "snapshot_receipt": plan_snapshot_check(manifest["plan"]["snapshot_receipt"]),
                          "prelaunch_receipt": plan_snapshot_check(before_receipt),
                          "postlaunch_receipt": plan_snapshot_check(after_receipt)}
+    if supervise_v1:
+        final_plan_checks["supervision_receipt"] = plan_snapshot_check(manifest["supervision_file"])
+        native_stop = manifest["supervision"].get("native_stop_receipt")
+        if native_stop is not None:
+            final_plan_checks["native_stop_receipt"] = plan_snapshot_check(native_stop["file"])
     if attest_plan_v1 and manifest["plan"]["recorder_consumption"]["verified"]:
         final_plan_checks["consumption_receipt"] = plan_snapshot_check(
             manifest["plan"]["recorder_consumption"]["file"])
@@ -1341,9 +1545,11 @@ def main() -> int:
     parser.add_argument("--recorder", type=Path, required=True,
                         help="dedicated team-signed or frozen CDHash-addressed ad-hoc recorder .app executable")
     parser.add_argument("--launch-bundle", type=Path,
-                        help="opt-in LaunchServices launch of this exact recorder .app; zero-input plans only")
+                        help="opt-in LaunchServices launch of this exact recorder .app; active plans also require --supervise-v1")
     parser.add_argument("--attest-plan-v1", action="store_true",
                         help="opt in to a new recorder's exact decoded-plan SHA-256 handshake; legacy signed recorders fail closed")
+    parser.add_argument("--supervise-v1", action="store_true",
+                        help="new recorder protocol: exact peer, live permits, cancellation ack and kernel NOTE_EXIT before input ownership release")
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
     args = parser.parse_args()
     try:

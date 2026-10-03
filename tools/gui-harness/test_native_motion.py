@@ -9,6 +9,9 @@ from unittest.mock import patch
 import shutil
 import subprocess
 import sys
+import socket
+import threading
+import time
 from copy import deepcopy
 import plistlib
 from PIL import Image
@@ -329,6 +332,203 @@ class NativeMotionTests(unittest.TestCase):
                                              {"actions": [{"kind": "key"}]})
             with self.assertRaisesRegex(ValueError, "does not match"):
                 motion.require_launch_bundle(app, recorder.resolve(), dict(identity, path="/wrong.app"), plan)
+            self.assertEqual(motion.require_launch_bundle(app, recorder.resolve(), identity,
+                {"actions": [{"kind": "key"}]}, supervised=True), app.resolve())
+
+    def test_supervised_held_cancel_only_permits_planned_up(self):
+        actions = [{"kind": "mouse_down"}, {"kind": "key"}, {"kind": "mouse_up"}]
+        policy = motion.supervision.ControlPolicy(actions)
+        driver, recorder = socket.socketpair()
+        reached_down = threading.Event()
+        resume = threading.Event()
+        outcome = {}
+
+        def fake_recorder():
+            channel = motion.supervision.LineChannel(recorder)
+            channel.send(kind="Hello", nonce="one-run")
+            self.assertEqual(channel.receive(2)["kind"], "Arm")
+            channel.send(kind="permit", index=0, action_kind="mouse_down", held=False)
+            self.assertEqual(channel.receive(2)["kind"], "Permit")
+            channel.send(kind="done", index=0, action_kind="mouse_down", posted=True, held=True)
+            self.assertEqual(channel.receive(2)["kind"], "Continue")
+            reached_down.set()
+            self.assertTrue(resume.wait(2))
+            channel.send(kind="check", held=True)
+            self.assertEqual(channel.receive(2)["kind"], "HeldAwaitRelease")
+            channel.send(kind="permit", index=1, action_kind="key", held=True)
+            self.assertEqual(channel.receive(2)["kind"], "HeldAwaitRelease")
+            channel.send(kind="permit", index=2, action_kind="mouse_up", held=True)
+            self.assertEqual(channel.receive(2)["kind"], "PermitRelease")
+            channel.send(kind="done", index=2, action_kind="mouse_up", posted=True, held=False)
+            self.assertEqual(channel.receive(2)["kind"], "Cancel")
+            channel.send(kind="stopped", held=False)
+            self.assertEqual(channel.receive(2)["kind"], "StopAck")
+            recorder.close()
+
+        def serve():
+            outcome.update(motion.supervision.serve(driver, policy, time.monotonic() + 2,
+                                                    lambda row: self.assertEqual(row["nonce"], "one-run")))
+
+        producer = threading.Thread(target=fake_recorder)
+        controller = threading.Thread(target=serve)
+        producer.start(); controller.start()
+        self.assertTrue(reached_down.wait(2))
+        policy.cancel()
+        resume.set()
+        producer.join(3); controller.join(3)
+        driver.close()
+        self.assertFalse(producer.is_alive() or controller.is_alive())
+        self.assertEqual(outcome["state"], "Stopped")
+        self.assertTrue(outcome["cancel_ack"])
+        self.assertFalse(outcome["held_unreleased"])
+        self.assertNotIn("Permit", [row["reply"] for row in outcome["transcript"]
+                                    if row["request"].get("index") == 1])
+
+    def test_supervised_wrong_release_and_held_stop_do_not_release(self):
+        policy = motion.supervision.ControlPolicy([
+            {"kind": "mouse_down"}, {"kind": "mouse_up"}, {"kind": "key"}])
+        self.assertEqual(policy.handle({"kind": "permit", "index": 0,
+            "action_kind": "mouse_down", "held": False}), "Permit")
+        self.assertEqual(policy.handle({"kind": "done", "index": 0,
+            "action_kind": "mouse_down", "posted": True, "held": True}), "Continue")
+        policy.cancel()
+        self.assertEqual(policy.handle({"kind": "permit", "index": 2,
+            "action_kind": "key", "held": True}), "HeldAwaitRelease")
+        self.assertEqual(policy.handle({"kind": "stopped", "held": True}), "HeldUnreleased")
+        self.assertFalse(policy.cancel_ack)
+        self.assertEqual(policy.state, "StoppedHeldUnreleased")
+
+    def test_supervised_cancel_racing_inflight_post_waits_for_done(self):
+        policy = motion.supervision.ControlPolicy([{"kind": "key"}, {"kind": "click"}])
+        self.assertEqual(policy.handle({"kind": "permit", "index": 0,
+            "action_kind": "key", "held": False}), "Permit")
+        policy.cancel()
+        self.assertFalse(policy.cancel_ack)
+        self.assertEqual(policy.handle({"kind": "done", "index": 0,
+            "action_kind": "key", "posted": True, "held": False}), "Cancel")
+        self.assertEqual(policy.handle({"kind": "permit", "index": 1,
+            "action_kind": "click", "held": False}), "Cancel")
+        self.assertEqual(policy.handle({"kind": "stopped", "held": False}), "StopAck")
+        self.assertTrue(policy.cancel_ack)
+
+    def test_supervised_hello_mismatch_never_arms(self):
+        driver, recorder = socket.socketpair()
+        recorder.settimeout(1)
+        policy = motion.supervision.ControlPolicy([{"kind": "key"}])
+        channel = motion.supervision.LineChannel(recorder)
+        channel.send(kind="Hello", nonce="wrong")
+        def reject(row):
+            if row["nonce"] != "expected":
+                raise motion.supervision.ProtocolError("wrong nonce")
+        with self.assertRaisesRegex(motion.supervision.ProtocolError, "wrong nonce"):
+            motion.supervision.serve(driver, policy, time.monotonic() + 1,
+                                     reject)
+        driver.close()
+        self.assertEqual(recorder.recv(1), b"")
+        recorder.close()
+
+    def test_supervised_launch_requires_native_stop_and_kernel_exit(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            recorder_path = out / "NudoxMotionRecorder"
+            recorder_path.write_bytes(b"fixture")
+            identity = {"identifier": "dev.nudox.audit.motion-recorder",
+                        "executable_sha256": "a" * 64}
+            expected = {"path": str(out / "resolved-plan.json"), "bytes": 10,
+                        "sha256": "b" * 64}
+            plan = {"duration_ms": 500, "actions": [{"kind": "key"}]}
+
+            class Launcher:
+                returncode = 0
+                def __init__(self, argv):
+                    self.argv = argv
+                    self.worker = threading.Thread(target=self.recorder)
+                    self.worker.start()
+                def recorder(self):
+                    path, nonce_path = self.argv[-2:]
+                    nonce = Path(nonce_path).read_text()
+                    with socket.socket(socket.AF_UNIX) as sock:
+                        sock.connect(path)
+                        channel = motion.supervision.LineChannel(sock)
+                        channel.send(kind="Hello", nonce=nonce, recorder_pid=2222,
+                            target_pid=43542, recorder_executable=str(recorder_path),
+                            recorder_executable_sha256=identity["executable_sha256"],
+                            recorder_bundle_identifier=identity["identifier"],
+                            consumed_sha256=expected["sha256"])
+                        assert channel.receive(3)["kind"] == "Arm"
+                        channel.send(kind="permit", index=0, action_kind="key", held=False)
+                        assert channel.receive(3)["kind"] == "Permit"
+                        channel.send(kind="done", index=0, action_kind="key", posted=True, held=False)
+                        assert channel.receive(3)["kind"] == "Continue"
+                        channel.send(kind="stopped", held=False)
+                        assert channel.receive(3)["kind"] == "StopAck"
+                    if self.write_receipt:
+                        motion.write_once_readonly(out / "native-control-stop.jsonl",
+                            (json.dumps({"schema": 1, "kind": "native-motion-control-stop-v1",
+                                "recorder_pid": 2222, "held_unreleased": False,
+                                "controller_reply": "StopAck"}) + "\n").encode())
+                def communicate(self, timeout):
+                    self.worker.join(timeout)
+                    if self.worker.is_alive():
+                        raise subprocess.TimeoutExpired("open", timeout)
+                    return ("launcher waited for recorder\n", None)
+                def poll(self):
+                    return None if self.worker.is_alive() else 0
+                def terminate(self):
+                    raise AssertionError("verified completion must not signal launcher")
+
+            class Watcher:
+                def __init__(self, pid):
+                    self.pid = pid
+                def wait(self, seconds):
+                    return self.exit_seen
+                def close(self):
+                    pass
+
+            for exit_seen, stop_present in ((True, True), (False, True), (True, False)):
+                (out / "native-control-stop.jsonl").unlink(missing_ok=True)
+                (out / "SUPERVISION.json").unlink(missing_ok=True)
+                (out / "INPUT-OWNERSHIP-UNRESOLVED.json").unlink(missing_ok=True)
+                (out / "recorder.stdout").unlink(missing_ok=True)
+                (out / "recorder.stderr").unlink(missing_ok=True)
+                (out / "launcher.log").unlink(missing_ok=True)
+                Watcher.exit_seen = exit_seen
+                Launcher.write_receipt = stop_present
+                with patch.object(motion.subprocess, "Popen", side_effect=lambda argv, **kw: Launcher(argv)), \
+                     patch.object(motion, "process_executable", return_value=recorder_path), \
+                     patch.object(motion, "recorder_identity", return_value=identity), \
+                     patch.object(motion, "consumed_plan_receipt", return_value={"verified": True}), \
+                     patch.object(motion.supervision, "peer_pid", return_value=2222), \
+                     patch.object(motion.supervision, "ExactProcessExit", Watcher):
+                    result = motion.launch_services_supervised(out / "bundle.app", 43542,
+                        out / "resolved-plan.json", out, plan, recorder_path, identity, expected)
+                self.assertEqual(result["supervision"]["exact_process_exit"], exit_seen)
+                self.assertEqual(result["supervision"]["input_ownership_release_admitted"],
+                                 exit_seen and stop_present)
+                if stop_present:
+                    self.assertEqual(result["supervision"]["native_stop_receipt"]["row"]["controller_reply"], "StopAck")
+                else:
+                    self.assertIsNone(result["supervision"]["native_stop_receipt"])
+                self.assertEqual((out / "INPUT-OWNERSHIP-UNRESOLVED.json").exists(),
+                                 not (exit_seen and stop_present))
+                self.assertTrue(result["argv"][-1].endswith("/nonce"))
+                self.assertFalse(Path(result["argv"][-1]).exists())
+                self.assertNotIn(result["supervision"]["nonce_sha256"], (out / "launcher.log").read_text())
+
+    def test_supervised_setup_error_preserves_unresolved_receipt_without_launch(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            with patch.object(motion.supervision, "private_socket", side_effect=OSError("bind rejected")), \
+                 patch.object(motion.subprocess, "Popen") as popen:
+                result = motion.launch_services_supervised(out / "bundle.app", 43542,
+                    out / "resolved-plan.json", out, {"duration_ms": 500, "actions": []},
+                    out / "recorder", {"identifier": "dev.nudox.audit.motion-recorder",
+                        "executable_sha256": "a" * 64}, {"sha256": "b" * 64})
+            popen.assert_not_called()
+            self.assertFalse(result["supervision"]["input_ownership_release_admitted"])
+            self.assertIn("bind rejected", "; ".join(result["supervision"]["failures"]))
+            self.assertEqual(json.loads((out / "INPUT-OWNERSHIP-UNRESOLVED.json").read_text())["state"],
+                             "Unresolved")
 
     def test_launch_services_wait_does_not_promote_launcher_exit_to_recorder_exit(self):
         with tempfile.TemporaryDirectory() as root:

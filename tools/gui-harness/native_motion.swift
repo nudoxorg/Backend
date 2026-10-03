@@ -93,6 +93,165 @@ func readBoundedPlan(_ url: URL) throws -> Data {
     }
     return data
 }
+enum ControlDirective {
+    case proceed, heldAwaitRelease, cancel
+}
+final class NativeControl {
+    private let fd: Int32
+    private let deadlineHostNS: UInt64
+    private let receipt: URL
+    private var finished = false
+
+    init(path: String, nonce: String, targetPID: pid_t, consumedSHA256: String,
+         executable: URL, executableSHA256: String, durationMS: Int, receipt: URL) throws {
+        let pathBytes = Array(path.utf8) + [0]
+        var address = sockaddr_un()
+        guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+            throw NSError(domain: "native-motion", code: 25,
+                userInfo: [NSLocalizedDescriptionKey: "control socket path exceeds Darwin bound"])
+        }
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.copyBytes(from: pathBytes)
+        }
+        let socketFD = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard socketFD >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        fd = socketFD
+        self.receipt = receipt
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        var noSignal: Int32 = 1
+        let configured = withUnsafePointer(to: &timeout) { value in
+            Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, value,
+                socklen_t(MemoryLayout<timeval>.size))
+        }
+        guard configured == 0,
+              Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                  socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            let code = errno
+            Darwin.close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else {
+            let code = errno
+            Darwin.close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        let reply: String
+        do {
+            reply = try exchange(["kind": "Hello", "nonce": nonce,
+                "recorder_pid": getpid(), "target_pid": targetPID,
+                "recorder_executable": executable.path,
+                "recorder_executable_sha256": executableSHA256,
+                "recorder_bundle_identifier": Bundle.main.bundleIdentifier ?? "",
+                "consumed_sha256": consumedSHA256])
+        } catch {
+            Darwin.close(fd)
+            throw error
+        }
+        guard reply == "Arm" else {
+            Darwin.close(fd)
+            throw NSError(domain: "native-motion", code: 25,
+                userInfo: [NSLocalizedDescriptionKey: "native controller did not arm exact recorder"])
+        }
+        deadlineHostNS = DispatchTime.now().uptimeNanoseconds + UInt64(durationMS + 5_000) * 1_000_000
+    }
+
+    private func exchange(_ fields: [String: Any]) throws -> String {
+        let raw = jsonLine(["schema": 1].merging(fields) { _, new in new })
+        guard raw.count <= 4096 else { throw NSError(domain: "native-motion", code: 25) }
+        try raw.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let sent = Darwin.send(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, 0)
+                guard sent > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                offset += sent
+            }
+        }
+        var line = Data()
+        while line.count < 4096 {
+            var byte: UInt8 = 0
+            let count = Darwin.recv(fd, &byte, 1, 0)
+            guard count == 1 else { throw NSError(domain: "native-motion", code: 25,
+                userInfo: [NSLocalizedDescriptionKey: "controller channel closed or timed out"] ) }
+            if byte == 10 { break }
+            line.append(byte)
+        }
+        guard line.count < 4096,
+              let row = try JSONSerialization.jsonObject(with: line) as? [String: Any],
+              row["schema"] as? Int == 1, let kind = row["kind"] as? String else {
+            throw NSError(domain: "native-motion", code: 25,
+                userInfo: [NSLocalizedDescriptionKey: "invalid controller reply"])
+        }
+        return kind
+    }
+
+    func checkpoint(held: Bool) throws -> ControlDirective {
+        guard DispatchTime.now().uptimeNanoseconds < deadlineHostNS else {
+            throw NSError(domain: "native-motion", code: 26,
+                userInfo: [NSLocalizedDescriptionKey: "recorder monotonic posting deadline elapsed"])
+        }
+        switch try exchange(["kind": "check", "held": held]) {
+        case "Continue": return .proceed
+        case "HeldAwaitRelease": return .heldAwaitRelease
+        case "Cancel": return .cancel
+        default: throw NSError(domain: "native-motion", code: 25)
+        }
+    }
+
+    func permit(index: Int, action: Action, held: Bool) throws -> Bool {
+        guard DispatchTime.now().uptimeNanoseconds < deadlineHostNS else {
+            throw NSError(domain: "native-motion", code: 26)
+        }
+        switch try exchange(["kind": "permit", "index": index,
+                             "action_kind": action.kind, "held": held]) {
+        case "Permit": return true
+        case "PermitRelease": return action.kind == "mouse_up" && held
+        case "Cancel", "HeldAwaitRelease": return false
+        default: throw NSError(domain: "native-motion", code: 25)
+        }
+    }
+
+    func done(index: Int, action: Action, held: Bool, posted: Bool) throws {
+        let reply = try exchange(["kind": "done", "index": index,
+            "action_kind": action.kind, "held": held, "posted": posted])
+        guard ["Continue", "Cancel", "HeldAwaitRelease"].contains(reply) else {
+            throw NSError(domain: "native-motion", code: 25)
+        }
+    }
+
+    func stop(held: Bool) {
+        if finished { return }
+        finished = true
+        var reply = "NoControllerAcknowledgement"
+        do { reply = try exchange(["kind": "stopped", "held": held]) }
+        catch { reply = "ControllerUnavailable" }
+        try? writeOnceReadOnly(jsonLine(["schema": 1, "kind": "native-motion-control-stop-v1",
+            "recorder_pid": getpid(), "held_unreleased": held,
+            "controller_reply": reply]), to: receipt)
+        Darwin.close(fd)
+    }
+}
+func waitUntilNative(_ target: UInt64, control: NativeControl?, held: Bool) async throws -> ControlDirective {
+    var directive = ControlDirective.proceed
+    while true {
+        if let control {
+            directive = try control.checkpoint(held: held)
+            if case .cancel = directive {
+                throw NSError(domain: "native-motion", code: 27,
+                    userInfo: [NSLocalizedDescriptionKey: "driver cancelled native capture before another post"])
+            }
+        }
+        let now = DispatchTime.now().uptimeNanoseconds
+        if now >= target { return directive }
+        try await Task.sleep(nanoseconds: min(50_000_000, target - now))
+    }
+}
 func writeOnceReadOnly(_ data: Data, to url: URL) throws {
     let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
     guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
@@ -481,11 +640,11 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
     }
     static func run() async throws {
         let args = CommandLine.arguments
-        guard (args.count == 4 || args.count == 6), let pid = Int32(args[1]) else {
+        guard (args.count == 4 || args.count == 6 || args.count == 9), let pid = Int32(args[1]) else {
             throw NSError(domain: "native-motion", code: 10, userInfo: [NSLocalizedDescriptionKey: "usage: native-motion-recorder PID PLAN.json OUT [--expected-plan-sha256-v1 LOWERCASE_SHA256]"])
         }
         let expectedPlanSHA256: String?
-        if args.count == 6 {
+        if args.count >= 6 {
             let value = args[5]
             guard args[4] == "--expected-plan-sha256-v1", value.utf8.count == 64,
                   value.utf8.allSatisfy({ (UInt8(48)...UInt8(57)).contains($0) ||
@@ -496,6 +655,24 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             expectedPlanSHA256 = value
         } else {
             expectedPlanSHA256 = nil
+        }
+        let controlSpec: (String, String)?
+        if args.count == 9 {
+            guard args[6] == "--control-v1", args[7].utf8.count < 104 else {
+                throw NSError(domain: "native-motion", code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "invalid versioned native control arguments"])
+            }
+            let nonceData = try readBoundedPlan(URL(fileURLWithPath: args[8]))
+            guard nonceData.count == 64,
+                  nonceData.allSatisfy({ (UInt8(48)...UInt8(57)).contains($0) ||
+                                         (UInt8(97)...UInt8(102)).contains($0) }),
+                  let nonce = String(data: nonceData, encoding: .utf8) else {
+                throw NSError(domain: "native-motion", code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "invalid private native control nonce"])
+            }
+            controlSpec = (args[7], nonce)
+        } else {
+            controlSpec = nil
         }
         let planData = try readBoundedPlan(URL(fileURLWithPath: args[2]))
         let consumedPlanSHA256 = sha256Hex(planData)
@@ -558,6 +735,21 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             throw NSError(domain: "native-motion", code: 22,
                 userInfo: [NSLocalizedDescriptionKey: "recorder rejected active plan without expected digest before capture or input"])
         }
+        var heldPoint: CGPoint?
+        let control: NativeControl?
+        if let controlSpec {
+            guard let expectedPlanSHA256, expectedPlanSHA256 == consumedPlanSHA256 else {
+                throw NSError(domain: "native-motion", code: 25)
+            }
+            control = try NativeControl(path: controlSpec.0, nonce: controlSpec.1,
+                targetPID: pid, consumedSHA256: consumedPlanSHA256,
+                executable: recorderExecutable, executableSHA256: executableSHA256,
+                durationMS: plan.duration_ms,
+                receipt: out.appendingPathComponent("native-control-stop.jsonl"))
+        } else {
+            control = nil
+        }
+        defer { control?.stop(held: heldPoint != nil) }
         // These are independent, read-only OS admissions. A discovered
         // SCWindow does not prove Screen Recording permission, and an absent
         // first frame is not evidence about the product's visual motion.
@@ -671,6 +863,9 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         let streamStartedHostNS = DispatchTime.now().uptimeNanoseconds
         var first: UInt64?
         for _ in 0..<100 {
+            if let control, case .cancel = try control.checkpoint(held: false) {
+                throw NSError(domain: "native-motion", code: 27)
+            }
             let status = recorder.status()
             first = status.firstFrameTime
             if first != nil || status.failure != nil { break }
@@ -708,17 +903,32 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
                     userInfo: [NSLocalizedDescriptionKey: "gesture preflight left selected PID/SCWindow"])
             }
         }
-        var heldPoint: CGPoint?
-        for action in plan.actions.sorted(by: { $0.at_ms < $1.at_ms }) {
+        for (index, action) in plan.actions.enumerated() {
             let target = started + UInt64(action.at_ms) * 1_000_000
-            let now = DispatchTime.now().uptimeNanoseconds
-            if target > now { try await Task.sleep(nanoseconds: target - now) }
+            let directive = try await waitUntilNative(target, control: control,
+                                                      held: heldPoint != nil)
+            if case .heldAwaitRelease = directive, action.kind != "mouse_up" {
+                actions.write(jsonLine(["phase": "cancelled_skipped", "label": action.label,
+                    "kind": action.kind, "index": index, "held_input_unreleased": true]))
+                continue
+            }
             let before = timedAXSnapshot(pid: pid, full: false)
             let dispatchHostNS = DispatchTime.now().uptimeNanoseconds
             let actualMs = Double(dispatchHostNS - started) / 1_000_000
+            var permitted = false
+            var completedPermit = false
             do {
+                if let control, !((try control.permit(index: index, action: action,
+                                                     held: heldPoint != nil))) {
+                    throw NSError(domain: "native-motion", code: 27,
+                        userInfo: [NSLocalizedDescriptionKey: "driver denied native posting permit"])
+                }
+                permitted = control != nil
                 let delivered = try send(action, pid: pid, windowID: window.windowID,
                                          heldPoint: &heldPoint)
+                completedPermit = true
+                try control?.done(index: index, action: action, held: heldPoint != nil,
+                                  posted: delivered["disposition"] as? String == "Posted")
                 let postedHostNS = DispatchTime.now().uptimeNanoseconds
                 actions.write(jsonLine(["phase": "action", "label": action.label, "kind": action.kind,
                     "requested_ms": action.at_ms, "actual_ms": actualMs,
@@ -730,6 +940,10 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
                         userInfo: [NSLocalizedDescriptionKey: "gesture left selected PID/SCWindow; no substitute input posted"])
                 }
             } catch {
+                if permitted && !completedPermit {
+                    try? control?.done(index: index, action: action,
+                                       held: heldPoint != nil, posted: false)
+                }
                 actions.write(jsonLine(["phase": "action_failed", "label": action.label, "actual_ms": actualMs,
                     "dispatch_host_ns": dispatchHostNS, "held_input_unreleased": heldPoint != nil,
                     "error": String(describing: error)]))
@@ -741,8 +955,7 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
                 userInfo: [NSLocalizedDescriptionKey: "native gesture lost ownership; held input unreleased"])
         }
         let end = started + UInt64(plan.duration_ms) * 1_000_000
-        let now = DispatchTime.now().uptimeNanoseconds
-        if end > now { try await Task.sleep(nanoseconds: end - now) }
+        _ = try await waitUntilNative(end, control: control, held: false)
         try await stream.stopCapture()
         actions.write(jsonLine(["phase": "final", "at_ms": plan.duration_ms, "ax": timedAXSnapshot(pid: pid, full: true),
             "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion]))
