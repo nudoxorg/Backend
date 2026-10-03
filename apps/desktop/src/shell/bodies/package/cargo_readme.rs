@@ -1,7 +1,7 @@
 //! Current owner README paint and native actions, independent of a dossier.
 
 use super::{Ctx, Leaf, activate_readme_link, readme_links};
-use crate::model::browse::{BrowseKey, BrowseValue, CargoReadmeDestination, CargoReadmeDocument, CargoReadmeState};
+use crate::model::browse::{BrowseKey, BrowseValue, CargoReadmeDestination, CargoReadmeDocument, CargoReadmeFocus, CargoReadmeState};
 use crate::model::pages::PageKey;
 use crate::navigation::{CargoSourceRoute, Intent, Route};
 use crate::runtime::store::{CargoReadAdmission, RouteDependencies};
@@ -53,7 +53,7 @@ pub(super) fn body(place: &Route, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
             CargoReadAdmission::Checking => leaves.push(Leaf::new(quiet("Reading Cargo's selected README…", &ctx.measure, ctx.palette))),
             CargoReadAdmission::Fault(error) => leaves.extend(not_ready::<BrowseValue>(&Shown::Fault(&error), &key, "The Cargo README", ctx, cx)),
             CargoReadAdmission::Unavailable(reason) => leaves.extend(not_ready::<BrowseValue>(&Shown::Unavailable(&reason, None), &key, "The Cargo README", ctx, cx)),
-            CargoReadAdmission::Current => leaves.push(Leaf::new(quiet("This README reply belongs to a different browse observation.", &ctx.measure, ctx.palette))),
+            CargoReadAdmission::Current => leaves.push(Leaf::new(quiet("This README needs its exact current Cargo Tree receipt before its links can open.", &ctx.measure, ctx.palette))),
         }
         return leaves;
     };
@@ -92,22 +92,29 @@ fn document_leaf(document: Arc<CargoReadmeDocument>, dependencies: RouteDependen
     let links = ctx.links.clone();
     let recall = ctx.targets.recall();
     let scroll = ctx.reader_scroll.clone();
-    let rich = crate::shell::markdown::view(ElementId::Name("cargo-owner-readme-markdown".into()), SharedString::from(Arc::clone(&document.source))).w_full();
+    let document_id: SharedString = document.identity().to_owned().into();
+    let rich_id = document_id.clone();
+    let rich = crate::shell::markdown::view(ElementId::Name(document_id), SharedString::from(Arc::clone(&document.source))).w_full();
     column = column.child(div().set(ty::PROSE, &measure).w_full()
         .on_action::<FollowMarkdownLink>(move |action, window, app| {
             if rich_guard(app) && current_origin(&rich_dependencies, &rich_document, &links, app) {
                 let outcome = rich_document.destination(&action.destination);
-                activate(outcome, "cargo-owner-readme-markdown".into(), &rich_document, &rich_dependencies, &links, &recall, &scroll, window, app);
+                let id = rich_document.inline_focus_id(&action.destination).map_or_else(|| rich_id.clone(), |id| id.to_owned().into());
+                activate(outcome, id, &rich_document, &rich_dependencies, &links, &recall, &scroll, window, app);
             }
         }).child(rich));
     let restore = ctx.targets.left_by(place);
-    if let Some(id) = restore.as_deref() {
-        if let Some(at) = id.strip_prefix("cargo-readme-link-").and_then(|at| at.parse::<usize>().ok()) { rows.links.set(rows.links.get().max(at.saturating_add(1).min(512))); }
-        if let Some(at) = id.strip_prefix("cargo-readme-heading-").and_then(|at| at.parse::<usize>().ok()) { rows.headings.set(rows.headings.get().max(at.saturating_add(1).min(512))); }
+    if let Some(endpoint) = restore.as_deref().and_then(|id| document.restore_focus(id)) {
+        let (count, at) = match endpoint {
+            CargoReadmeFocus::Link(at) => (&rows.links, at),
+            CargoReadmeFocus::Heading(at) => (&rows.headings, at),
+        };
+        count.set(count.get().max(at.saturating_add(1).min(512)));
     }
     if !document.headings.is_empty() { column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child("On this page")); }
     for (index, heading) in document.headings.iter().take(rows.headings.get()).enumerate() {
-        let id: SharedString = format!("cargo-readme-heading-{index}").into();
+        let Some(id) = document.heading_id(index) else { continue; };
+        let id: SharedString = id.to_owned().into();
         let action = destination_action(CargoReadmeDestination::Anchor(heading.clone()), id.clone(), Arc::clone(&document), dependencies.clone(), ctx, cx);
         let action = ctx.native_dependency_action(action, dependency.clone(), cx);
         ctx.targets.push(Target { id: id.clone(), label: format!("Go to {}", heading.title).into(), act: action.clone(), peek: None, source: None });
@@ -118,11 +125,11 @@ fn document_leaf(document: Arc<CargoReadmeDocument>, dependencies: RouteDependen
         column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
     }
     if document.headings.len() > rows.headings.get() {
-        column = column.child(more_control("cargo-readme-headings-more", "Show more README headings", Rc::clone(&rows), true, dependency.clone(), ctx, cx));
+        column = column.child(more_control(format!("{}-headings-more", document.identity()).into(), "Show more README headings", Rc::clone(&rows), true, dependency.clone(), ctx, cx));
     }
     if !document.links.is_empty() { column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child("Links")); }
-    for (index, link) in document.links.iter().take(rows.links.get()).enumerate() {
-        let id: SharedString = format!("cargo-readme-link-{index}").into();
+    for link in document.links.iter().take(rows.links.get()) {
+        let id: SharedString = SharedString::from(Arc::clone(&link.id));
         let label = if link.label.is_empty() { Arc::clone(&link.href) } else { Arc::clone(&link.label) };
         if let CargoReadmeDestination::Unavailable(reason) = &link.destination {
             column = column.child(div().role(gpui::Role::Label).aria_label(label.to_string())
@@ -139,7 +146,7 @@ fn document_leaf(document: Arc<CargoReadmeDocument>, dependencies: RouteDependen
         column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
     }
     if document.links.len() > rows.links.get() {
-        column = column.child(more_control("cargo-readme-links-more", "Show more README links", rows, false, dependency, ctx, cx));
+        column = column.child(more_control(format!("{}-links-more", document.identity()).into(), "Show more README links", rows, false, dependency, ctx, cx));
     }
     column = column.child(quiet("The navigation index retains at most 512 headings and 512 links. Each file target is checked by the owner when opened.", &measure, palette));
     Leaf::new(column)
@@ -176,13 +183,12 @@ fn activate(destination: CargoReadmeDestination, id: SharedString, document: &Ca
     }
 }
 
-fn more_control(id: &'static str, label: &'static str, rows: Rc<ShownRows>, headings: bool, dependency: (PageKey, crate::model::pages::Stamp), ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> gpui::AnyElement {
+fn more_control(id: SharedString, label: &'static str, rows: Rc<ShownRows>, headings: bool, dependency: (PageKey, crate::model::pages::Stamp), ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> gpui::AnyElement {
     let action: super::super::Act = Rc::new(move |window, _| {
         let count = if headings { &rows.headings } else { &rows.links };
         count.set(count.get().saturating_add(32).min(512)); window.refresh();
     });
     let action = ctx.native_dependency_action(action, dependency, cx);
-    let id: SharedString = id.into();
     ctx.targets.push(Target { id: id.clone(), label: label.into(), act: action.clone(), peek: None, source: None });
     let mut button = facet::controls::button(id.clone(), label, &ctx.measure).ghost().size(facet::Control::Small)
         .on_click(move |window, app| action(window, app));
