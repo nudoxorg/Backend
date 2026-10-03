@@ -98,6 +98,79 @@ class NativeMotionTests(unittest.TestCase):
             self.assertFalse(motion.plan_consumption_qualification(plan)["launch_admissible"])
             self.assertFalse(motion.plan_consumption_qualification(plan)["exact_bytes_attested"])
             self.assertTrue(motion.plan_consumption_qualification(dict(plan, actions=[]))["launch_admissible"])
+            self.assertEqual(motion.plan_consumption_qualification(plan, attest_v1=True)["state"], "PendingV1")
+            self.assertTrue(motion.plan_consumption_qualification(plan, attest_v1=True)["launch_admissible"])
+
+    def test_versioned_recorder_argv_is_explicit_and_legacy_is_unchanged(self):
+        plan = Path("/private/tmp/capture/resolved-plan.json")
+        out = Path("/private/tmp/capture")
+        digest = "a" * 64
+        self.assertEqual(motion.recorder_arguments(43542, plan, out),
+                         ["43542", str(plan), str(out)])
+        self.assertEqual(motion.recorder_arguments(43542, plan, out, digest),
+                         ["43542", str(plan), str(out), "--expected-plan-sha256-v1", digest])
+        with self.assertRaisesRegex(ValueError, "lowercase SHA-256"):
+            motion.recorder_arguments(43542, plan, out, digest.upper())
+        self.assertEqual(motion.launch_services_command(Path("/tmp/recorder.app"),
+            43542, plan, out, digest)[-5:],
+            ["43542", str(plan), str(out), "--expected-plan-sha256-v1", digest])
+
+    def test_consumed_receipt_requires_exact_bytes_identity_and_callback(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            expected = {"path": str(out / "resolved-plan.json"), "bytes": 57, "sha256": "b" * 64}
+            recorder = out / "NudoxMotionRecorder"
+            identity = {"identifier": "dev.nudox.audit.motion-recorder", "executable_sha256": "a" * 64}
+            self.assertEqual(motion.consumed_plan_receipt(out, expected, recorder, identity, 43542)["state"], "Missing")
+            row = {"schema": 1, "kind": "native-motion-plan-consumption-v1", "state": "MatchedV1",
+                   "pid": 43542, "plan_path": expected["path"], "consumed_bytes": expected["bytes"],
+                   "consumed_sha256": expected["sha256"], "expected_sha256": expected["sha256"],
+                   "recorder_bundle_identifier": identity["identifier"],
+                   "recorder_executable": str(recorder),
+                   "recorder_executable_sha256": identity["executable_sha256"],
+                   "stream_output_callback_ready": True}
+            receipt = out / "plan-consumption.jsonl"
+            motion.write_once_readonly(receipt, (json.dumps(row) + "\n").encode())
+            verified = motion.consumed_plan_receipt(out, expected, recorder, identity, 43542)
+            self.assertEqual(verified["state"], "VerifiedV1")
+            self.assertTrue(verified["exact_bytes_attested"])
+            receipt.chmod(0o644)
+            receipt.write_text(json.dumps(dict(row, consumed_sha256="c" * 64)) + "\n")
+            rejected = motion.consumed_plan_receipt(out, expected, recorder, identity, 43542)
+            self.assertEqual(rejected["state"], "InvalidV1")  # Writable receipt is never admitted.
+            receipt.chmod(0o444)
+            rejected = motion.consumed_plan_receipt(out, expected, recorder, identity, 43542)
+            self.assertEqual(rejected["state"], "RejectedV1")
+            self.assertIn("consumed_sha256", rejected["mismatched_fields"])
+            self.assertFalse(rejected["exact_bytes_attested"])
+            receipt.chmod(0o644)
+            receipt.write_text(json.dumps(dict(row, stream_output_callback_ready=False)) + "\n")
+            receipt.chmod(0o444)
+            rejected = motion.consumed_plan_receipt(out, expected, recorder, identity, 43542)
+            self.assertIn("stream_output_callback_ready", rejected["mismatched_fields"])
+            receipt.chmod(0o644)
+            receipt.write_text(json.dumps(dict(row, state="MismatchV1", consumed_sha256="c" * 64)) + "\n")
+            receipt.chmod(0o444)
+            (out / "actions.jsonl").write_text("")
+            (out / "frames.jsonl").write_text("")
+            mismatch = motion.consumed_plan_receipt(out, expected, recorder, identity, 43542)
+            self.assertFalse(mismatch["verified"])
+            self.assertEqual(motion.failed_recorder_evidence(out)["action_rows"], 0)
+            self.assertEqual(motion.failed_recorder_evidence(out)["plan_consumption"]["state"], "MismatchV1")
+
+    def test_swift_hashes_the_same_data_it_decodes_before_capture(self):
+        source = (HERE / "native_motion.swift").read_text()
+        read = source.index("let planData = try Data(contentsOf:")
+        digest = source.index("let consumedPlanSHA256 = sha256Hex(planData)", read)
+        decode = source.index("JSONDecoder().decode(Plan.self, from: planData)", digest)
+        receipt = source.index('"plan-consumption.jsonl"', decode)
+        gate = source.index('guard consumptionState == "MatchedV1"', receipt)
+        capture = source.index("SCShareableContent.current", gate)
+        self.assertLess(read, digest)
+        self.assertLess(digest, decode)
+        self.assertLess(decode, receipt)
+        self.assertLess(receipt, gate)
+        self.assertLess(gate, capture)
 
     def test_swift_source_binds_optional_screen_output_selector(self):
         # SCStreamOutput's frame callback is optional. A wrong Swift external
