@@ -182,9 +182,6 @@ pub(super) struct IndexOperationJournal {
     _database_directory: backend_platform::DirectoryCapability,
     _database_file: File,
     connection: turso::Connection,
-    pending_count: i64,
-    prepared_count: i64,
-    hints_valid: bool,
 }
 
 impl IndexOperationJournal {
@@ -206,55 +203,44 @@ impl IndexOperationJournal {
             .map_err(|error| JournalError::Database(error.to_string()))?
             .join(database_name);
         let database_path = database_path.to_str().ok_or(JournalError::NonUtf8Path)?;
-        let (database, connection, pending_count, prepared_count) =
-            futures_executor::block_on(async {
-                let database = turso::Builder::new_local(database_path)
-                    .experimental_multiprocess_wal(true)
-                    .build()
-                    .await
-                    .map_err(database_error)?;
-                let connection = database.connect().map_err(database_error)?;
-                connection
-                    .busy_timeout(BUSY_TIMEOUT)
-                    .map_err(database_error)?;
-                connection
-                    .execute_batch(SCHEMA)
-                    .await
-                    .map_err(database_error)?;
-                connection
-                    .execute_batch(&format!(
-                        "PRAGMA synchronous=FULL; PRAGMA cache_size=256; \
+        let (database, connection) = futures_executor::block_on(async {
+            let database = turso::Builder::new_local(database_path)
+                .experimental_multiprocess_wal(true)
+                .build()
+                .await
+                .map_err(database_error)?;
+            let connection = database.connect().map_err(database_error)?;
+            connection
+                .busy_timeout(BUSY_TIMEOUT)
+                .map_err(database_error)?;
+            connection
+                .execute_batch(SCHEMA)
+                .await
+                .map_err(database_error)?;
+            connection
+                .execute_batch(&format!(
+                    "PRAGMA synchronous=FULL; PRAGMA cache_size=256; \
                      PRAGMA wal_autocheckpoint=64; PRAGMA max_page_count={MAX_DATABASE_PAGES};"
-                    ))
-                    .await
-                    .map_err(database_error)?;
-                validate_page_count(&connection).await?;
-                database_directory
-                    .open_private_file_read_write(database_name, false)
-                    .map_err(|error| {
-                        JournalError::Database(format!(
-                            "database path changed during open: {error}"
-                        ))
-                    })?;
-                verify_sqlite_sidecars(&database_directory, database_name)?;
-                let meta = read_meta(&connection).await?;
-                validate_meta(&meta)?;
-                validate_cold_aggregates(&connection, &meta).await?;
-                Ok::<_, JournalError>((
-                    database,
-                    connection,
-                    meta.pending_count,
-                    meta.prepared_count,
                 ))
-            })?;
+                .await
+                .map_err(database_error)?;
+            validate_page_count(&connection).await?;
+            database_directory
+                .open_private_file_read_write(database_name, false)
+                .map_err(|error| {
+                    JournalError::Database(format!("database path changed during open: {error}"))
+                })?;
+            verify_sqlite_sidecars(&database_directory, database_name)?;
+            let meta = read_meta(&connection).await?;
+            validate_meta(&meta)?;
+            validate_cold_aggregates(&connection, &meta).await?;
+            Ok::<_, JournalError>((database, connection))
+        })?;
         Ok(Self {
             _database: database,
             _database_directory: database_directory,
             _database_file: database_file,
             connection,
-            pending_count,
-            prepared_count,
-            hints_valid: true,
         })
     }
 
@@ -343,24 +329,7 @@ impl IndexOperationJournal {
                 }
             }
         });
-        let acceptance = match result {
-            Ok(acceptance) => acceptance,
-            Err(error) => {
-                // A storage error may arrive after the database committed.
-                // Force a small metadata refresh before trusting the cached
-                // pending counters again.
-                self.hints_valid = false;
-                return Err(error);
-            }
-        };
-        if acceptance == Acceptance::New {
-            if self.hints_valid {
-                self.pending_count += 1;
-            } else {
-                self.refresh_hints()?;
-            }
-        }
-        Ok(acceptance)
+        result
     }
 
     pub(super) fn prepare(
@@ -450,38 +419,12 @@ impl IndexOperationJournal {
         })
     }
 
-    pub(super) fn first_pending_key(&mut self) -> Result<Option<IndexOperationKey>, JournalError> {
-        let key = match self.first_key("state IN (1, 2)") {
-            Ok(key) => key,
-            Err(error) => {
-                self.hints_valid = false;
-                return Err(error);
-            }
-        };
-        self.refresh_hints()?;
-        Ok(key)
+    pub(super) fn first_pending_key(&self) -> Result<Option<IndexOperationKey>, JournalError> {
+        self.first_key("state IN (1, 2)")
     }
 
-    fn refresh_hints(&mut self) -> Result<(), JournalError> {
-        let meta = match futures_executor::block_on(read_meta(&self.connection)) {
-            Ok(meta) => meta,
-            Err(error) => {
-                self.hints_valid = false;
-                return Err(error);
-            }
-        };
-        if let Err(error) = validate_meta(&meta) {
-            self.hints_valid = false;
-            return Err(error);
-        }
-        self.pending_count = meta.pending_count;
-        self.prepared_count = meta.prepared_count;
-        self.hints_valid = true;
-        Ok(())
-    }
-
-    pub(super) const fn has_pending(&self) -> bool {
-        !self.hints_valid || self.pending_count > 0
+    pub(super) fn has_pending(&self) -> Result<bool, JournalError> {
+        self.has_state("state IN (1, 2)")
     }
 
     fn first_key(&self, predicate: &str) -> Result<Option<IndexOperationKey>, JournalError> {
@@ -507,8 +450,20 @@ impl IndexOperationJournal {
         })
     }
 
-    pub(super) const fn has_prepared(&self) -> bool {
-        !self.hints_valid || self.prepared_count > 0
+    pub(super) fn has_prepared(&self) -> Result<bool, JournalError> {
+        self.has_state("state = 2")
+    }
+
+    fn has_state(&self, predicate: &str) -> Result<bool, JournalError> {
+        futures_executor::block_on(async {
+            let sql = format!("SELECT 1 FROM backend_index_operations WHERE {predicate} LIMIT 1");
+            let mut rows = self
+                .connection
+                .query(sql, ())
+                .await
+                .map_err(database_error)?;
+            Ok(rows.next().await.map_err(database_error)?.is_some())
+        })
     }
 
     pub(super) fn observation(
@@ -641,13 +596,13 @@ impl IndexOperationJournal {
                 if is_terminal {
                     prune_terminal_receipts(&transaction).await?;
                 }
-                Ok((pending_delta, prepared_delta))
+                Ok(())
             }
             .await;
             match result {
-                Ok(deltas) => {
+                Ok(()) => {
                     transaction.commit().await.map_err(database_error)?;
-                    Ok(deltas)
+                    Ok(())
                 }
                 Err(error) => {
                     let _ = transaction.rollback().await;
@@ -655,20 +610,7 @@ impl IndexOperationJournal {
                 }
             }
         });
-        let deltas = match result {
-            Ok(deltas) => deltas,
-            Err(error) => {
-                self.hints_valid = false;
-                return Err(error);
-            }
-        };
-        if self.hints_valid {
-            self.pending_count += deltas.0;
-            self.prepared_count += deltas.1;
-        } else {
-            self.refresh_hints()?;
-        }
-        Ok(())
+        result
     }
 }
 
@@ -676,8 +618,9 @@ impl IndexOperationJournal {
 /// directory capability before Turso opens the pathname. The database itself
 /// is owner-only; SQLite sidecars are opened without following links and stay
 /// inside the owner-only directory. Turso's current Builder accepts a path,
-/// not an already-open file handle, so keeping the directory and database
-/// handles alive also pins the checked namespace for this journal's lifetime.
+/// not an already-open file handle, so these checks reject existing link or
+/// reparse-point entries but cannot make Turso's pathname open atomic against
+/// another actor with authority to mutate this private directory.
 fn preflight_sqlite_files(
     directory: &backend_platform::DirectoryCapability,
     database_name: &str,
@@ -1179,7 +1122,10 @@ mod tests {
     use super::*;
     use backend_library::{Cursor, ViewRoot};
     use std::fs;
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    const MULTIPROCESS_WRITER_PATH: &str = "BACKEND_INDEX_OPERATION_WRITER_PATH";
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -1316,7 +1262,7 @@ mod tests {
                 base_workspace_sequence: 9
             }
         ));
-        assert!(journal.has_prepared());
+        assert!(journal.has_prepared().expect("prepared state probe"));
         drop(journal);
         cleanup(&path);
     }
@@ -1583,8 +1529,85 @@ mod tests {
                 ..
             }))
         ));
-        assert!(journal.has_prepared());
+        assert!(journal.has_prepared().expect("prepared state probe"));
         drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn state_probes_observe_commits_from_another_open_journal() {
+        let path = path();
+        let mut writer = open(&path);
+        let observer = open(&path);
+        assert!(!observer.has_pending().expect("empty pending probe"));
+        assert!(!observer.has_prepared().expect("empty prepared probe"));
+
+        let operation = key(70);
+        writer
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("accept operation through writer");
+        assert!(observer.has_pending().expect("observe accepted row"));
+        assert!(!observer.has_prepared().expect("accepted is not prepared"));
+
+        writer
+            .prepare(operation, Some([4; 32]), [5; 32], 9)
+            .expect("prepare through writer");
+        assert!(observer.has_prepared().expect("observe prepared row"));
+
+        writer
+            .failed(
+                operation,
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("failed before publication"),
+            )
+            .expect("finish through writer");
+        assert!(!observer.has_pending().expect("observe terminal row"));
+        assert!(!observer.has_prepared().expect("terminal is not prepared"));
+        drop(observer);
+        drop(writer);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn state_probe_multiprocess_writer_child() {
+        let Some(path) = std::env::var_os(MULTIPROCESS_WRITER_PATH) else {
+            return;
+        };
+        let mut journal = open(std::path::Path::new(&path));
+        journal
+            .accept(key(71), package(), CompileExecutionIntent::Interactive)
+            .expect("accept from independent process");
+    }
+
+    #[test]
+    fn state_probes_observe_commits_from_an_independent_process() {
+        let path = path();
+        let observer = open(&path);
+        assert!(!observer.has_pending().expect("empty pending probe"));
+
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("state_probe_multiprocess_writer_child")
+            .arg("--nocapture")
+            .env(MULTIPROCESS_WRITER_PATH, &path)
+            .output()
+            .expect("spawn independent journal writer");
+        assert!(
+            output.status.success(),
+            "independent journal writer failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            observer
+                .has_pending()
+                .expect("observe other process commit")
+        );
+        assert_eq!(
+            observer
+                .first_pending_key()
+                .expect("select cross-process pending row"),
+            Some(key(71))
+        );
+        drop(observer);
         cleanup(&path);
     }
 

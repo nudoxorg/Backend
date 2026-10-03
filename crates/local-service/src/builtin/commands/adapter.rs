@@ -1406,8 +1406,12 @@ impl CommandAdapter {
         // index publication; selected-marker reconciliation retries it later.
         let _ = self.semantic_authority.drain_native_history_completions();
         let mut ready = Vec::new();
+        // These indexed probes intentionally hit the journal on every owner
+        // poll: multiprocess WAL lets another process admit or prepare work,
+        // so a process-local hint could otherwise hide committed rows. An
+        // unavailable probe is treated as pending/prepared, never as empty.
         if self.indexing.is_none()
-            && self.index_operations.has_pending()
+            && self.index_operations.has_pending().unwrap_or(true)
             && let Ok(Some(operation_key)) = self.index_operations.first_pending_key()
         {
             let _ = self.resolve_index_operation(daemon, operation_key, None);
@@ -1695,7 +1699,7 @@ impl CommandAdapter {
             }
         }
         while self.indexing.is_none()
-            && !self.index_operations.has_prepared()
+            && !self.index_operations.has_prepared().unwrap_or(true)
             && let Some((ticket, body)) = self.waiting.pop_front()
         {
             match self.execute_or_defer(daemon, &body, ticket) {
