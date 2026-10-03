@@ -12,7 +12,7 @@ use super::state::{DisclosureFlow, Fit, Nominal, Pose};
 use super::text::{key, natural_width, one, wrap};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::marks::badges::{Glyph, glyph};
-use crate::marks::license::LicenseFacts;
+use crate::marks::license::{LicenseFacts, LicenseKnowledge};
 use crate::marks::spdx::{self, Expr, Family};
 use crate::measure::{Measure, Space};
 use crate::motion::spec;
@@ -368,6 +368,18 @@ pub fn stamp(id: impl Into<ElementId>, facts: Rc<LicenseFacts>, width: Pixels, m
     Stamp { id: id.into(), facts, measure: *measure, width, mode: StampMode::Owned }
 }
 
+/// The empty expression is not itself evidence that a manifest declared no
+/// licence. It also occurs when the record was unread or a declared SPDX
+/// expression could not be interpreted.
+fn expression_fallback(facts: &LicenseFacts) -> &'static str {
+    match (&facts.knowledge, facts.spdx.as_ref(), facts.file.as_ref()) {
+        (LicenseKnowledge::Unknown(_), _, _) => "licence not read",
+        (LicenseKnowledge::Observed, Some(_), _) => "declared expression not recognised",
+        (LicenseKnowledge::Observed, None, Some(_)) => "licence file declared",
+        (LicenseKnowledge::Observed, None, None) => "no licence declared",
+    }
+}
+
 impl Stamp {
     /// The pose the stamp is held in (`Held`: unfolded whatever the pointer does).
     #[must_use]
@@ -463,12 +475,12 @@ impl RenderOnce for Stamp {
         // The expression: the judged option in full ink, the rest quiet.
         let mut expression = div().min_w_0().w_full().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
         if verdict.expression.is_empty() {
-            let no_licence = "no licence declared";
-            let width = f32::from(natural_width(&SharedString::from(no_licence), measure.role(EXPR), window));
+            let fallback = expression_fallback(&self.facts);
+            let width = f32::from(natural_width(&SharedString::from(fallback), measure.role(EXPR), window));
             expression = expression.child(if width <= text_width {
-                one(key(&self.id, "expr"), no_licence, EXPR, palette.ink3, &measure).into_any_element()
+                one(key(&self.id, "expr"), fallback, EXPR, palette.ink3, &measure).into_any_element()
             } else {
-                wrap(key(&self.id, "expr"), no_licence, EXPR, palette.ink3, &measure, None).into_any_element()
+                wrap(key(&self.id, "expr"), fallback, EXPR, palette.ink3, &measure, None).into_any_element()
             });
         }
         for (i, part) in verdict.expression.iter().enumerate() {
@@ -757,7 +769,7 @@ impl RenderOnce for Unread {
 
 #[cfg(test)]
 mod tests {
-    use super::{Part, verdict};
+    use super::{Part, expression_fallback, verdict};
     use crate::folio::state::Fit;
     use crate::marks::license::LicenseFacts;
     use crate::tokens::Voice;
@@ -805,6 +817,19 @@ mod tests {
         let unknown_yours = verdict(&LicenseFacts::new(Some("MIT"), None, "backend"));
         assert!(!unknown_yours.line.contains("backend"), "without your licence, the stamp does not compare: {}", unknown_yours.line);
         assert_eq!(unknown_yours.tone, Voice::Mint);
+    }
+
+    #[test]
+    fn empty_expression_words_distinguish_unread_unrecognised_and_observed_absence() {
+        let unread = LicenseFacts::unknown("the record was not read", None, "backend");
+        assert_eq!(expression_fallback(&unread), "licence not read");
+        let absent = LicenseFacts::new(None, None, "backend");
+        assert_eq!(expression_fallback(&absent), "no licence declared");
+        let unrecognised = LicenseFacts::new(Some("LicenseRef-Custom"), None, "backend");
+        assert_eq!(expression_fallback(&unrecognised), "declared expression not recognised");
+        let mut file = LicenseFacts::new(None, None, "backend");
+        file.file = Some("COPYING".into());
+        assert_eq!(expression_fallback(&file), "licence file declared");
     }
 
     #[test]
