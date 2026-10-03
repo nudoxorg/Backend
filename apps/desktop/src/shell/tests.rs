@@ -1478,12 +1478,16 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     rig.cx.simulate_keystrokes("tab");
     rig.draw();
     assert_eq!(targets.focused().as_deref(), Some("add-folder"));
-    assert!(!rig.cx.did_prompt_for_paths());
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
     rig.native_press("enter");
     rig.draw();
-    assert!(rig.cx.did_prompt_for_paths(), "Add folder also works from the failed Library");
-    rig.cx.simulate_path_prompt_response(|_| None);
-    rig.draw();
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(crate::navigation::Overlay::AddProject), "native Add opens the local folder dialog from the failed Library");
+    let field = rig.cx.update(|window, cx| super::onboard::field(window, cx)).expect("mounted local folder field");
+    assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
+        "the local folder dialog owns native input despite owner failure");
+    rig.keys("escape");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
     let mut reached_retry = false;
     for _ in 0..8 {
         rig.cx.simulate_keystrokes("tab");
