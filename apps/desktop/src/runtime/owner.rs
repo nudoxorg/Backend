@@ -144,6 +144,8 @@ struct Inner {
     waker: Option<Waker>,
     /// A restart was asked for (the page's "Try again" after a failure).
     restart: bool,
+    /// A live host producer exists to consume Retry.
+    retry_enabled: bool,
     /// When the state last changed: how long a start has been waited for.
     since: Instant,
     /// The app is quitting: the owner thread lets its host go.
@@ -176,6 +178,7 @@ impl OwnerGate {
                 fresh_publication: None,
                 waker: None,
                 restart: false,
+                retry_enabled: true,
                 since: Instant::now(),
                 closed: false,
             }),
@@ -541,18 +544,39 @@ impl OwnerGate {
         }
     }
 
+    /// Withdraw retry capability when no producer can consume it. All cloned
+    /// handles observe this under the same lock as the owner state/epoch.
+    pub(crate) fn disable_restart(&self) {
+        let mut inner = self.lock();
+        inner.retry_enabled = false;
+        inner.restart = false;
+    }
+
     /// Asks a failed owner to try again. Returns whether it was asked: a
     /// starting or answering owner is left alone.
     #[must_use]
     pub fn restart(&self) -> bool {
-        {
+        let waker = {
             let mut inner = self.lock();
-            if !matches!(inner.state, OwnerState::Failed(_)) {
+            if !inner.retry_enabled || inner.closed || !matches!(inner.state, OwnerState::Failed(_)) {
                 return false;
             }
+            // Capability, request, and Starting are one admission. A cloned
+            // handle cannot disable the producer between checking and publish.
             inner.restart = true;
-        }
-        self.publish(OwnerState::Starting);
+            inner.observation_cancel.cancel();
+            inner.observation_cancel = super::actor::CancellationToken::new();
+            inner.publication = None;
+            inner.observation_suspended = false;
+            inner.state = OwnerState::Starting;
+            inner.since = Instant::now();
+            inner.epoch = inner.epoch.next();
+            inner.attachment = inner.epoch;
+            inner.waker.take()
+        };
+        crate::runtime::trace::mark("owner.starting", "retry");
+        self.0.changed.notify_all();
+        if let Some(waker) = waker { waker.wake(); }
         true
     }
 

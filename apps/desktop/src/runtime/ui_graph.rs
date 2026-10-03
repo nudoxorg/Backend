@@ -102,6 +102,7 @@ pub struct UiRootEntity {
     runtime: DesktopRuntime,
     pending: Vec<QueuedIntent>,
     persistence: Option<PersistentState>,
+    bootstrap: Option<(crate::host::bootstrap::Binding, Arc<AppSnapshot>)>,
     folder_picker_task: Option<Task<()>>,
     connection_probe: ConnectionProbeLatch,
     /// The data plane: snapshot mirror, keyed page resources, read pool.
@@ -133,6 +134,7 @@ impl UiRootEntity {
             // catalog or a second, view-owned bootstrap path.
             pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
             persistence,
+            bootstrap: None,
             folder_picker_task: None,
             connection_probe: ConnectionProbeLatch::default(),
             store: None,
@@ -256,10 +258,14 @@ impl UiRootEntity {
         if let Some(persistence) = &self.persistence {
             let submitted = crate::navigation::reduce(&self.snapshot(), intent.clone()).snapshot;
             if let Err(error) = persistence.save(&PersistentState::project(&submitted)) {
-                if let Intent::IndexProject { project, .. } = intent {
+                if let Intent::IndexProject { project, basis, .. } = intent {
                     let message: Arc<str> = format!("The folder is still on your shelf, but its index request could not be saved: {error}")
                         .chars().filter(|character| !character.is_control()).take(240).collect::<String>().into();
-                    self.dispatch_runtime(Intent::IndexAdmissionFailed { project, message }, cx);
+                    // The exact attachment still owns this synchronous preflight.
+                    if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) {
+                        let events = self.runtime.reject_unsent_index(&project, basis, message);
+                        self.apply_events(events, cx);
+                    }
                 }
                 return;
             }
@@ -430,6 +436,19 @@ impl UiRootEntity {
         mode: crate::model::ServiceMode,
         cx: &mut Context<Self>,
     ) {
+        if let Some((binding, origin)) = self.bootstrap.take() {
+            if let Some(bound) = binding.get() {
+                self.runtime.admit_bootstrap(bound, &origin);
+                self.persistence = bound.persistence.clone();
+                // Save local actions that occurred while paths were unavailable
+                // before deferred admissions can cross the actor boundary.
+                if let Some(persistence) = &self.persistence {
+                    if let Err(error) = persistence.save(&PersistentState::project(&self.snapshot())) {
+                        eprintln!("backend-desktop: save recovered local session: {error}");
+                    }
+                }
+            } else { self.bootstrap = Some((binding, origin)); }
+        }
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         let request = self.runtime.allocate_request();
         self.dispatch_runtime(Intent::RefreshRoot { basis: key, request }, cx);
@@ -702,10 +721,26 @@ impl UiEntityGraph {
         gate: Option<super::owner::OwnerGate>,
         keep: Option<super::snapshot::Keep>,
     ) -> Self {
+        Self::install_with_bootstrap(cx, runtime, persistence, reads, gate, keep, None)
+    }
+
+    pub(crate) fn install_with_bootstrap(
+        cx: &mut App,
+        runtime: DesktopRuntime,
+        persistence: Option<PersistentState>,
+        reads: Option<ReadPool>,
+        gate: Option<super::owner::OwnerGate>,
+        keep: Option<super::snapshot::Keep>,
+        binding: Option<crate::host::bootstrap::Binding>,
+    ) -> Self {
         let store = DataStore::install_with_owner(cx, runtime.snapshot(), reads, gate.clone(), keep);
         let attached = store.clone();
         let root = cx.new(|cx| {
+            let origin = runtime.snapshot();
             let mut root = UiRootEntity::new(runtime, persistence);
+            // Keep the launch origin even if discovery completed while the
+            // platform was starting: local edits always win the cold merge.
+            root.bootstrap = binding.map(|binding| (binding, origin));
             root.attach(Some(attached), cx);
             root
         });

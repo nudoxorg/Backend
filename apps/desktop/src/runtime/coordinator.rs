@@ -99,6 +99,29 @@ impl DesktopRuntime {
         Arc::clone(&self.snapshot)
     }
 
+    /// The bootstrap host admits local state once before the first serving
+    /// root. This grants no producer authority and submits no engine work.
+    pub(crate) fn admit_bootstrap(&mut self, bound: &crate::host::bootstrap::BoundWorkspace, origin: &AppSnapshot) {
+        self.snapshot = Arc::new(bound.admit_snapshot(&self.snapshot, origin));
+    }
+
+    /// A synchronous local preflight refusal, callable only inside the runtime
+    /// boundary. It cannot be queued as an unrestricted late UI intent.
+    pub(crate) fn reject_unsent_index(&mut self, project: &LocalProjectId, basis: crate::core::VersionedRoot, message: Arc<str>) -> Vec<RuntimeEvent> {
+        if !self.snapshot.key().same_authority(basis) { return Vec::new(); }
+        let mut workspace = self.snapshot.workspace().clone();
+        let mut projects = workspace.projects.to_vec();
+        let Some(row) = projects.iter_mut().find(|row| row.id == *project
+            && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none()) else { return Vec::new(); };
+        row.phase = crate::model::ProjectPhase::Failed;
+        row.error = Some(message);
+        row.progress = None;
+        row.files_indexed = None;
+        workspace.projects = projects.into();
+        self.snapshot = Arc::new(self.snapshot.with_workspace(workspace));
+        vec![RuntimeEvent::SnapshotChanged(self.snapshot.clone()), RuntimeEvent::PersistRequested(self.snapshot.clone())]
+    }
+
     /// Returns the next request identity without touching the engine.
     pub fn allocate_request(&mut self) -> RequestId {
         let request = RequestId::from_authority(self.snapshot.key(), self.next_request);

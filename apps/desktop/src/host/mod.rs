@@ -3,6 +3,7 @@
 //! Nothing here renders; it only decides which service this window talks to.
 
 pub(crate) mod aside;
+pub(crate) mod bootstrap;
 pub(crate) mod editor;
 #[cfg(test)]
 mod embedded_owner_tests;

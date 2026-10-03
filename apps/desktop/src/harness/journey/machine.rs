@@ -72,7 +72,7 @@ pub(super) fn open_production(root: &Path, size: (u32, u32), scale: u8) -> Resul
     let mut boot = launch::prepare(Ok(paths), crate::host::owner::spawn);
     let owner = boot.owner.take();
     let reading = boot.keep.take();
-    let Boot { snapshot, persistence, client, endpoint, gate, owner: _, keep: _ } = boot;
+    let Boot { snapshot, persistence, client, endpoint, gate, owner: _, keep: _, .. } = boot;
     let (runtime, reads) = launch::start_workers(snapshot, client, endpoint, &gate)
         .ok_or_else(|| "the engine actor did not start (backend-desktop said why on stderr)".to_owned())?;
     let viewport = Viewport::new(size.0, size.1, scale).map_err(err)?;

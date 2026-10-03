@@ -67,6 +67,33 @@ pub(crate) fn spawn(paths: WorkspacePaths, gate: OwnerGate) -> Option<OwnerThrea
     )
 }
 
+/// Discovery has a real retry producer even when no initial workspace was
+/// available. Once installed, the binding is never rediscovered or replaced.
+pub(crate) fn spawn_discovering(
+    binding: super::bootstrap::Binding,
+    gate: OwnerGate,
+    mut discover: impl FnMut() -> Result<WorkspacePaths, String> + Send + 'static,
+) -> Option<OwnerThread> {
+    let mut first_fault = match gate.state() {
+        OwnerState::Failed(fault) => Some(fault.to_string()),
+        _ => None,
+    };
+    spawn_with_observer(gate, move |gate| {
+        if let Some(fault) = first_fault.take() { return Err(fault); }
+        let bound = match binding.get() {
+            Some(bound) => bound,
+            None => binding.install(discover()?)?,
+        };
+        start(&bound.paths, gate).map(|(host, key)| {
+            let mode = match host.mode() {
+                HostMode::Embedded => ServiceMode::Embedded,
+                HostMode::Attached => ServiceMode::Attached,
+            };
+            Started { host, key, mode }
+        })
+    }, |gate, host: &DesktopHost| super::observation::serve(gate, host.endpoint()))
+}
+
 /// [`spawn`] over any way of starting an owner (a test's panics).
 #[cfg(test)]
 fn spawn_with<H: 'static>(
@@ -91,6 +118,7 @@ fn spawn_with_observer<H: 'static>(
             join: Some(join),
         }),
         Err(error) => {
+            gate.disable_restart();
             gate.publish(OwnerState::Failed(OwnerFault::Host(
                 format!("the owner's thread could not start: {error}").into(),
             )));

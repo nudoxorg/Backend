@@ -12,13 +12,14 @@
 //! so the first frame is the page, not a skeleton (I2).
 
 use super::owner::OwnerThread;
+use super::bootstrap::{Binding, BindingReader, BoundWorkspace};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::{
     AppSnapshot, Note, PersistedDesktopState, PersistenceRecovery, PersistentState, SessionState,
     WindowSize,
 };
 use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
-use crate::runtime::reads::{ReadPool, SessionReader};
+use crate::runtime::reads::ReadPool;
 use crate::runtime::snapshot::{Keep, Seed, SnapshotFile};
 use crate::runtime::{
     DesktopRuntime, EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest,
@@ -47,7 +48,7 @@ pub fn main_entry() -> std::process::ExitCode {
     let discovered =
         super::paths::discover().map_err(|error| format!("find the local workspace: {error}"));
     crate::runtime::trace::span("boot.discover", discovering, "paths::discover");
-    run(prepare(discovered, super::owner::spawn));
+    run(prepare_recovering(discovered, || super::paths::discover().map_err(|error| format!("find the local workspace: {error}"))));
     std::process::ExitCode::SUCCESS
 }
 
@@ -55,6 +56,8 @@ pub fn main_entry() -> std::process::ExitCode {
 pub(crate) struct Boot {
     /// The restored route, shelf, settings and hand, at the unserved root.
     pub(crate) snapshot: AppSnapshot,
+    /// One immutable workspace shared by all startup lanes.
+    pub(crate) binding: Option<Binding>,
     /// Where the session is saved; `None` when it could not be read.
     pub(crate) persistence: Option<PersistentState>,
     /// The engine actor's client, gated on the owner.
@@ -130,57 +133,53 @@ pub(crate) fn prepare(
     discovered: Result<WorkspacePaths, String>,
     start_owner: impl FnOnce(WorkspacePaths, OwnerGate) -> Option<OwnerThread>,
 ) -> Boot {
+    let mut boot = prepare_window(discovered);
+    if let Some(bound) = boot.client.binding.get() {
+        boot.owner = start_owner(bound.paths.clone(), boot.gate.clone());
+        if boot.owner.is_none() { boot.gate.disable_restart(); }
+    } else {
+        // This fixed-path preparation has no discovery producer. Production
+        // uses prepare_recovering, which installs one before returning.
+        boot.gate.disable_restart();
+    }
+    boot
+}
+
+fn prepare_recovering(
+    discovered: Result<WorkspacePaths, String>,
+    discover: impl FnMut() -> Result<WorkspacePaths, String> + Send + 'static,
+) -> Boot {
+    let mut boot = prepare_window(discovered);
+    boot.owner = super::owner::spawn_discovering(boot.client.binding.clone(), boot.gate.clone(), discover);
+    boot
+}
+
+fn prepare_window(discovered: Result<WorkspacePaths, String>) -> Boot {
     let restoring = Instant::now();
     let gate = OwnerGate::starting();
-    let unserved = |message: String, gate: OwnerGate| {
-        gate.publish(OwnerState::Failed(OwnerFault::from(message.as_str())));
-        Boot {
-            snapshot: AppSnapshot::empty(VersionedRoot::unserved()),
-            persistence: None,
-            client: BootClient::Unserved(Arc::from(message)),
-            endpoint: None,
-            gate,
-            owner: None,
-            keep: None,
+    let binding = Binding::default();
+    let installation = discovered.and_then(|paths| binding.install(paths));
+    let pending_binding = installation.is_err().then(|| binding.clone());
+    let (snapshot, persistence, endpoint, keep) = match installation {
+        Ok(bound) => {
+            let snapshot = bound.snapshot.clone();
+            let keep = read_snapshot(bound.paths.data(), snapshot.route());
+            (snapshot, bound.persistence.clone(), Some(bound.paths.endpoint().to_path_buf()), keep)
+        }
+        Err(message) => {
+            gate.publish(OwnerState::Failed(OwnerFault::from(message.as_str())));
+            (AppSnapshot::empty(VersionedRoot::unserved()), None, None, None)
         }
     };
-    let paths = match discovered {
-        Ok(paths) => paths,
-        Err(message) => return unserved(message, gate),
-    };
-    let project = match LocalProjectId::from_path(paths.project()) {
-        Ok(project) => project,
-        Err(error) => {
-            return unserved(
-                format!("the discovered workspace path cannot be represented safely: {error}"),
-                gate,
-            );
-        }
-    };
-    let Restored { state: persisted, persistence, note } = restore(&paths);
-    let snapshot = restored_snapshot(&paths, &project, &persisted, note);
-    let keep = read_snapshot(paths.data(), snapshot.route());
-    let client = BootClient::Local(Box::new(LocalEngineClient::gated(
-        paths.endpoint(),
-        project,
-        gate.clone(),
-    )));
-    let endpoint = paths.endpoint().to_path_buf();
-    crate::runtime::trace::span(
-        "boot.state",
-        restoring,
-        "desktop-state.json + cold shelf/settings/session",
-    );
-    let owner = start_owner(paths, gate.clone());
-    Boot {
-        snapshot,
-        persistence,
-        client,
-        endpoint: Some(endpoint),
-        gate,
-        owner,
-        keep,
-    }
+    crate::runtime::trace::span("boot.state", restoring, "desktop-state.json + cold shelf/settings/session");
+    Boot { snapshot, persistence, client: BootClient::new(binding.clone(), gate.clone()), endpoint, binding: pending_binding, gate, owner: None, keep }
+}
+
+/// Restore before publishing the binding, so Ready cannot race persistence.
+pub(crate) fn restore_binding(paths: WorkspacePaths, project: LocalProjectId) -> BoundWorkspace {
+    let Restored { state, persistence, note } = restore(&paths);
+    let snapshot = restored_snapshot(&paths, &project, &state, note);
+    BoundWorkspace { paths, project, snapshot, persistence }
 }
 
 /// The session file, admitted, and the store to save it to (`None` when it
@@ -260,33 +259,40 @@ fn restored_snapshot(
         })
 }
 
-/// The engine actor's client: the gated local session, or — when no
-/// workspace was found — one that answers every request with why.
-pub(crate) enum BootClient {
-    /// The workspace's owner, waited for on the actor thread.
-    Local(Box<LocalEngineClient>),
-    /// No owner can exist for this window.
-    Unserved(Arc<str>),
+/// The actor exists before discovery succeeds and binds its local client
+/// exactly once on its own thread, after the host installs the workspace.
+pub(crate) struct BootClient {
+    binding: Binding,
+    gate: OwnerGate,
+    local: Option<Box<LocalEngineClient>>,
+}
+
+impl BootClient {
+    pub(crate) fn new(binding: Binding, gate: OwnerGate) -> Self { Self { binding, gate, local: None } }
 }
 
 impl EngineClient for BootClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        match self {
-            Self::Local(client) => client.execute(request),
-            Self::Unserved(message) => Err(EngineFault::Failed(ErrorValue::new(
-                FaultCode::Transport,
-                format!("the index could not start: {message}"),
-            ))),
+        if self.local.is_none() {
+            self.gate.wait_cancelled(request.cancellation()).map_err(|fault| {
+                if request.cancelled() { EngineFault::Cancelled }
+                else { EngineFault::Failed(ErrorValue::new(FaultCode::Transport, fault.to_string())) }
+            })?;
+            let bound = self.binding.get().ok_or_else(|| EngineFault::Failed(ErrorValue::new(
+                FaultCode::Transport, "the owner answered without a local workspace binding",
+            )))?;
+            self.local = Some(Box::new(LocalEngineClient::gated(bound.paths.endpoint(), bound.project.clone(), self.gate.clone())));
         }
+        self.local.as_mut().expect("client installed after workspace admission").execute(request)
     }
 }
 
 fn run(mut boot: Boot) {
     let reading = boot.keep.take();
-    let Boot { snapshot, persistence, client, endpoint, gate, owner, keep: _ } = boot;
+    let Boot { snapshot, persistence, client, endpoint, binding, gate, owner, keep: _ } = boot;
     let window = snapshot.settings().window;
     let Some((runtime, reads)) = start_workers(snapshot, client, endpoint, &gate) else { return };
-    let parts = AppParts { runtime, persistence, reads, gate: gate.clone(), reading, window };
+    let parts = AppParts { runtime, persistence, reads, binding, gate: gate.clone(), reading, window };
     let starting_platform = Instant::now();
     let application =
         gpui::Application::with_platform(gpui_platform::current_platform(false))
@@ -307,6 +313,7 @@ struct AppParts {
     runtime: DesktopRuntime,
     persistence: Option<PersistentState>,
     reads: Option<ReadPool>,
+    binding: Option<Binding>,
     gate: OwnerGate,
     reading: Option<SnapshotRead>,
     /// The size the person left the window at.
@@ -318,10 +325,11 @@ struct AppParts {
 pub(crate) fn start_workers(
     snapshot: AppSnapshot,
     client: BootClient,
-    endpoint: Option<PathBuf>,
+    _endpoint: Option<PathBuf>,
     gate: &OwnerGate,
 ) -> Option<(DesktopRuntime, Option<ReadPool>)> {
     let starting_actor = Instant::now();
+    let binding = client.binding.clone();
     let actor = match EngineActor::start(client, 32) {
         Ok(actor) => actor,
         Err(error) => {
@@ -332,24 +340,21 @@ pub(crate) fn start_workers(
     crate::runtime::trace::span("boot.actor", starting_actor, "EngineActor::start");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let starting_reads = Instant::now();
-    let reads = endpoint.and_then(|endpoint| {
-        let sessions = gate.clone();
-        match ReadPool::start(READ_SESSIONS, |_| SessionReader::gated(&endpoint, sessions.clone())) {
-            Ok(reads) => Some(reads),
-            Err(error) => {
-                // The window still opens; every page then says it has no read lane.
-                eprintln!("backend-desktop: start read pool: {error}");
-                None
-            }
+    let sessions = gate.clone();
+    let reads = match ReadPool::start(READ_SESSIONS, |_| BindingReader::new(binding.clone(), sessions.clone())) {
+        Ok(reads) => Some(reads),
+        Err(error) => {
+            eprintln!("backend-desktop: start read pool: {error}");
+            None
         }
-    });
+    };
     crate::runtime::trace::span("boot.read_pool", starting_reads, format_args!("{READ_SESSIONS} sessions"));
     Some((runtime, reads))
 }
 
 /// The platform's launch closure: assets, the data plane, the window.
 fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
-    let AppParts { runtime, persistence, reads, gate, reading, window: remembered } = parts;
+    let AppParts { runtime, persistence, reads, binding, gate, reading, window: remembered } = parts;
     crate::runtime::trace::span("boot.platform", starting_platform, "Application::with_platform..run");
     let installing = Instant::now();
     if let Err(error) = install(cx) {
@@ -370,7 +375,7 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     .detach();
     let keep = reading.map(SnapshotRead::joined);
     let installing_graph = Instant::now();
-    let graph = UiEntityGraph::install_with_owner(cx, runtime, persistence, reads, Some(gate), keep);
+    let graph = UiEntityGraph::install_with_bootstrap(cx, runtime, persistence, reads, Some(gate), keep, binding);
     // Quitting saves the route's pages for the next launch.
     let saved = graph.store.clone();
     cx.on_app_quit(move |cx| {
