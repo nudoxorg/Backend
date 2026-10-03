@@ -181,17 +181,21 @@ impl Ctx<'_> {
         std::rc::Rc::new(move |window, app| { if guard(app) { action(window, app); } })
     }
 
-    /// Setup controls require the exact painted visit AND the transient input
-    /// generation that exposed them. This predicate is idempotent so native
-    /// controls can check before focus on MouseDown and again before activation.
+    /// Setup controls belong to the exact painted local visit, independent of
+    /// producer readiness. Native activation scopes retain the down owner's
+    /// visit and retire covered presses before release; this predicate also
+    /// checks current input admission before taking focus or changing settings.
+    pub(crate) fn native_local_activation_scope(&self, cx: &Context<Reader>) -> gpui::NativeActivationScope {
+        self.links.shell.upgrade().map(|shell| shell.read(cx).local_activation_scope())
+            .unwrap_or_else(|| gpui::NativeActivationScope::new(cx.entity_id(), None))
+    }
+
     pub(crate) fn native_local_guard(
         &self,
         cx: &mut Context<Reader>,
     ) -> Rc<dyn Fn(&mut gpui::App) -> bool> {
         let shell = self.links.shell.clone();
-        let scope = shell
-            .upgrade()
-            .and_then(|shell| shell.read(cx).page_input_scope(cx));
+        let scope = self.native_local_activation_scope(cx);
         let reader = cx.weak_entity();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
@@ -199,10 +203,7 @@ impl Ctx<'_> {
         let overlay = snapshot.overlay();
         let root = snapshot.key();
         Rc::new(move |app| {
-            let Some(scope) = scope.as_ref() else { return false };
-            shell
-                .upgrade()
-                .is_some_and(|shell| shell.read(app).admits_page_input_scope(scope, app))
+            shell.upgrade().is_some_and(|shell| shell.read(app).admits_local_activation_scope(scope, app))
                 && reader.upgrade().is_some_and(|reader| {
                     let reader = reader.read(app);
                     reader.native_input_for(&route, overlay)

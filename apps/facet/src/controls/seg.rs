@@ -107,6 +107,7 @@ pub struct Seg {
     measure: Measure,
     on_select: Option<Select>,
     admit: Option<Admission>,
+    local_activation: Option<gpui::NativeActivationScope>,
 }
 
 /// An empty segmented control sized for `measure`.
@@ -124,6 +125,7 @@ pub fn seg(id: impl Into<ElementId>, measure: &Measure) -> Seg {
         measure: *measure,
         on_select: None,
         admit: None,
+        local_activation: None,
     }
 }
 
@@ -227,6 +229,14 @@ impl Seg {
     #[must_use]
     pub fn admit(mut self, admit: Rc<dyn Fn(&mut App) -> bool>) -> Self {
         self.admit = Some(admit);
+        self
+    }
+
+    /// Local setup choices retain their actual field owner across index changes.
+    /// Admission still retires a covered/departing field before activation.
+    #[must_use]
+    pub const fn local_activation(mut self, scope: gpui::NativeActivationScope) -> Self {
+        self.local_activation = Some(scope);
         self
     }
 
@@ -383,14 +393,19 @@ impl RenderOnce for Seg {
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled;
-        let touch = Touch::read(&self.id, self.look, active, window, cx);
+        let local_admitted = active && (self.local_activation.is_none() || self.admit.as_ref().is_none_or(|admit| admit(cx)));
+        let touch = if let Some(scope) = self.local_activation {
+            Touch::read_local(&self.id, self.look, active, scope, local_admitted, window, cx)
+        } else { Touch::read(&self.id, self.look, active, window, cx) };
+        let local_scope = self.local_activation.map(|scope| if local_admitted { scope.for_owner(touch.entity.entity_id()) }
+            else { gpui::NativeActivationScope::new(touch.entity.entity_id(), None) });
         let motion = touch.motion.clone();
         let id = self.id.clone();
         let pointer = window.use_keyed_state(track(&id, "pointer-admission"), cx, |_, _| {
             Rc::new(RefCell::new(None::<PointerAdmission>))
         });
         let pointer = pointer.read(cx).clone();
-        if !active {
+        if !active || self.local_activation.is_some() && !local_admitted {
             pointer.borrow_mut().take();
         }
         let count = self.choices.len().max(1);
@@ -755,7 +770,11 @@ impl RenderOnce for Seg {
         } else {
             well.into_any_element()
         };
-        hover_zone(well, &touch, f32::from(well_h) * 0.25, active)
+        let control = hover_zone(well, &touch, f32::from(well_h) * 0.25, active);
+        match local_scope {
+            Some(scope) => gpui::native_activation_scope(scope, control).into_any_element(),
+            None => control.into_any_element(),
+        }
     }
 }
 

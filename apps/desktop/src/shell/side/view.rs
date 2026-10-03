@@ -925,7 +925,7 @@ impl Shelf {
                 cell = cell.track_focus(&handle);
                 let does = item.does.clone();
                 let shelf = cx.weak_entity();
-                let guard = self.action_guard(cx);
+                let guard = self.action_guard_for(Some(super::super::root::ShelfNativeSurface::Spine), cx);
                 cell = cell.on_click(move |_: &ClickEvent, _, cx| {
                     if !guard(cx) { return; }
                     let _ = shelf.update(cx, |shelf, cx| shelf.perform(&does, cx));

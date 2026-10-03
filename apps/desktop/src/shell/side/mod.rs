@@ -384,8 +384,14 @@ impl Shelf {
     /// Pure reading visits may return through history. Mounted callbacks may
     /// act only in the native scene that painted them, before taking focus.
     fn action_guard(&self, cx: &App) -> Rc<dyn Fn(&mut App) -> bool> {
+        let surface = if self.overlay_surface { super::root::ShelfNativeSurface::Drawer } else { super::root::ShelfNativeSurface::Docked };
+        self.action_guard_for(Some(surface), cx)
+    }
+
+    fn action_guard_for(&self, surface: Option<super::root::ShelfNativeSurface>, cx: &App) -> Rc<dyn Fn(&mut App) -> bool> {
         let shell = self.links.shell.clone();
-        let scope = shell.upgrade().and_then(|shell| shell.read(cx).shelf_input_scope(self.overlay_surface, cx));
+        let scope = shell.upgrade().and_then(|shell| shell.read(cx).shelf_input_scope(self.overlay_surface, cx))
+            .filter(|scope| surface.is_none_or(|surface| scope.surface() == surface));
         Rc::new(move |cx| {
             scope.as_ref().is_some_and(|scope| shell.upgrade().is_some_and(|shell| shell.read(cx).admits_shelf_input_scope(scope, cx)))
         })
@@ -930,7 +936,7 @@ impl Render for Shelf {
             matched,
         } = self.listing(&snapshot, cx);
         let weak = cx.weak_entity();
-        let guard = self.action_guard(cx);
+        let guard = self.action_guard_for(None, cx);
         for row in &rows {
             if let Row::Item(item) = row
                 && item.is_target()

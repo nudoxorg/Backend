@@ -2201,6 +2201,9 @@ impl Interactivity {
             |element_state, window| {
                 let mut element_state =
                     element_state.map(|element_state| element_state.unwrap_or_default());
+                if let Some(state) = element_state.as_mut() {
+                    state.synchronize_activation_scope(window.native_activation_scope(), window.is_inert_subtree());
+                }
 
                 if let Some(element_state) = element_state.as_ref()
                     && (cx.has_active_drag() || window.is_inert_subtree())
@@ -2324,6 +2327,9 @@ impl Interactivity {
             |element_state, window| {
                 let mut element_state =
                     element_state.map(|element_state| element_state.unwrap_or_default());
+                if let Some(state) = element_state.as_mut() {
+                    state.synchronize_activation_scope(window.native_activation_scope(), window.is_inert_subtree());
+                }
                 let style = self.compute_style_internal(None, element_state.as_mut(), window, cx);
 
                 if let Some(element_state) = element_state.as_mut() {
@@ -2482,6 +2488,9 @@ impl Interactivity {
             |element_state, window| {
                 let mut element_state =
                     element_state.map(|element_state| element_state.unwrap_or_default());
+                if let Some(state) = element_state.as_mut() {
+                    state.synchronize_activation_scope(window.native_activation_scope(), window.is_inert_subtree());
+                }
 
                 let style = self.compute_style_internal(hitbox, element_state.as_mut(), window, cx);
 
@@ -2891,6 +2900,7 @@ impl Interactivity {
             });
         }
 
+        let activation_scope = window.native_activation_scope();
         if let Some(element_state) = element_state {
             if !click_listeners.is_empty()
                 || !aux_click_listeners.is_empty()
@@ -2919,8 +2929,9 @@ impl Interactivity {
                         if phase == DispatchPhase::Bubble
                             && (event.button == MouseButton::Left || has_aux_click_listeners)
                             && hitbox.is_hovered(window)
+                            && crate::NativeActivationScope::admits(activation_scope)
                         {
-                            *pending_mouse_down.borrow_mut() = Some(event.clone());
+                            *pending_mouse_down.borrow_mut() = Some(PendingMouseActivation { event: event.clone(), scope: activation_scope });
                             window.refresh();
                         }
                     }
@@ -2935,11 +2946,13 @@ impl Interactivity {
                         }
 
                         let mut pending_mouse_down = pending_mouse_down.borrow_mut();
-                        if let Some(mouse_down) = pending_mouse_down.clone()
+                        if let Some(pending) = pending_mouse_down.clone()
+                            && pending.scope == activation_scope
+                            && crate::NativeActivationScope::admits(activation_scope)
                             && !cx.has_active_drag()
-                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
+                            && (event.position - pending.event.position).magnitude() > DRAG_THRESHOLD
                             && let Some(listener) = drag_listener.take()
-                            && mouse_down.button == MouseButton::Left
+                            && pending.event.button == MouseButton::Left
                         {
                             *clicked_state.borrow_mut() = ElementClickedState::default();
                             let cursor_offset = event.position - hitbox.origin;
@@ -2990,7 +3003,9 @@ impl Interactivity {
                                     || stroke.key.eq("space"))
                                     && !stroke.modifiers.modified();
                                 *pending_keyboard_down.borrow_mut() =
-                                    is_activation_key.then_some(window.focus_generation);
+                                    (is_activation_key && crate::NativeActivationScope::admits(activation_scope)).then_some(PendingKeyboardActivation {
+                                        focus_generation: window.focus_generation, scope: activation_scope,
+                                    });
                             }
                         }
                     });
@@ -3015,7 +3030,8 @@ impl Interactivity {
                                 {
                                     let pending =
                                         std::mem::take(&mut *pending_keyboard_down.borrow_mut());
-                                    if pending != Some(window.focus_generation) {
+                                    if !crate::NativeActivationScope::admits(activation_scope)
+                                        || pending != Some(PendingKeyboardActivation { focus_generation: window.focus_generation, scope: activation_scope }) {
                                         return;
                                     }
 
@@ -3048,7 +3064,8 @@ impl Interactivity {
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                             if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
-                                captured_mouse_down = pending_mouse_down.take();
+                                captured_mouse_down = pending_mouse_down.take().filter(|pending|
+                                    pending.scope == activation_scope && crate::NativeActivationScope::admits(activation_scope));
                                 window.refresh();
                             } else if pending_mouse_down.is_some() {
                                 // Clear the pending mouse down event (without firing click handlers)
@@ -3062,7 +3079,8 @@ impl Interactivity {
                         }
                         // Fire click handlers during the bubble phase.
                         DispatchPhase::Bubble => {
-                            if let Some(mouse_down) = captured_mouse_down.take() {
+                            if let Some(pending) = captured_mouse_down.take() {
+                                let mouse_down = pending.event;
                                 let btn = mouse_down.button;
 
                                 let mouse_click = ClickEvent::Mouse(MouseClickEvent {
@@ -3194,7 +3212,8 @@ impl Interactivity {
                     .and_then(|group_active| GroupHitboxes::get(&group_active.group, cx));
                 let hitbox = hitbox.clone();
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, window, _cx| {
-                    if phase == DispatchPhase::Bubble && !window.default_prevented() {
+                    if phase == DispatchPhase::Bubble && !window.default_prevented()
+                        && crate::NativeActivationScope::admits(activation_scope) {
                         let group_hovered = active_group_hitbox
                             .is_some_and(|group_hitbox_id| group_hitbox_id.is_hovered(window));
                         let element_hovered = hitbox.is_hovered(window);
@@ -3549,7 +3568,8 @@ pub struct InteractiveElementState {
     pub(crate) clicked_state: Option<Rc<RefCell<ElementClickedState>>>,
     pub(crate) hover_state: Option<Rc<RefCell<ElementHoverState>>>,
     pub(crate) hover_listener_state: Option<Rc<RefCell<bool>>>,
-    pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
+    pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<PendingMouseActivation>>>>,
+    native_activation_scope: Option<crate::NativeActivationScope>,
     /// Set to the window's [`focus_generation`](crate::Window::focus_generation)
     /// when an Enter/Space keydown is received while this element is focused,
     /// recording that we are waiting for the matching keyup to fire a keyboard
@@ -3557,10 +3577,31 @@ pub struct InteractiveElementState {
     /// matches the window's current one, i.e. focus never moved during the
     /// press (mirroring the browser clearing a control's pressed state on
     /// blur). `None` means no activation key is pending.
-    pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<u64>>>>,
+    pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<PendingKeyboardActivation>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingMouseActivation {
+    event: MouseDownEvent,
+    scope: Option<crate::NativeActivationScope>,
+}
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct PendingKeyboardActivation {
+    focus_generation: u64,
+    scope: Option<crate::NativeActivationScope>,
+}
+impl InteractiveElementState {
+    fn synchronize_activation_scope(&mut self, scope: Option<crate::NativeActivationScope>, inert: bool) {
+        if self.native_activation_scope != scope || inert || !crate::NativeActivationScope::admits(scope) {
+            if let Some(pending) = &self.pending_mouse_down { pending.borrow_mut().take(); }
+            if let Some(pending) = &self.pending_keyboard_down { pending.borrow_mut().take(); }
+            if let Some(pressed) = &self.clicked_state { *pressed.borrow_mut() = ElementClickedState::default(); }
+        }
+        self.native_activation_scope = scope;
+    }
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.

@@ -307,6 +307,8 @@ struct ViewElementCacheKey {
     /// Inert subtrees are always freshly registered; this fence forces one fresh
     /// traversal when a retained child becomes interactive again.
     inert: bool,
+    /// Cached input listeners may be replayed only for the same activation owner.
+    native_activation_scope: Option<crate::NativeActivationScope>,
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -423,6 +425,7 @@ impl<V: View> Element for ViewElement<V> {
                             layer_transform: window.layer_transform(),
                             opacity: window.element_opacity(),
                             inert: true,
+                            native_activation_scope: window.native_activation_scope(),
                         };
 
                         return window.with_element_state::<ViewElementState, _>(
@@ -462,6 +465,7 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.layer_transform == layer_transform
                             && element_state.cache_key.opacity == opacity
                             && element_state.cache_key.inert == window.is_inert_subtree()
+                            && element_state.cache_key.native_activation_scope == window.native_activation_scope()
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
                             // Replayed prepaint/paint ranges do not contain AccessKit nodes or
@@ -509,6 +513,7 @@ impl<V: View> Element for ViewElement<V> {
                                     layer_transform,
                                     opacity,
                                     inert: window.is_inert_subtree(),
+                                    native_activation_scope: window.native_activation_scope(),
                                 },
                             },
                         )

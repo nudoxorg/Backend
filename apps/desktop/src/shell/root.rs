@@ -61,12 +61,40 @@ pub(crate) struct PageInputScope {
     retry: Option<OwnerRetryAttachment>,
 }
 
+impl PageInputScope {
+    fn same_producer(&self, other: &Self) -> bool {
+        self.authority == other.authority && self.attachment == other.attachment && self.retry == other.retry
+    }
+}
+
+/// One checked clock, with an explicit projection for independent local input.
+#[derive(Clone, Copy)]
+enum InputOwnerChange { Structure, Producer }
+
 /// A shelf control belongs to one current native scene, in its dock or drawer.
 /// It shares the page input epoch and producer identity, never reading history.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ShelfInputScope {
     input: PageInputScope,
-    drawer: bool,
+    surface: ShelfNativeSurface,
+}
+
+/// Native ownership follows the settled responsive surface, not its pixel size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShelfNativeSurface { Hidden, Spine, Docked, Drawer }
+impl ShelfNativeSurface {
+    fn of(frame: Option<Frame>, drawer: bool) -> Self {
+        let Some(frame) = frame else { return Self::Hidden };
+        if frame.shelf_overlays && drawer { return Self::Drawer; }
+        match frame.shelf {
+            ShelfMode::Hidden => Self::Hidden,
+            ShelfMode::Spine => Self::Spine,
+            ShelfMode::Shelf => Self::Docked,
+        }
+    }
+}
+impl ShelfInputScope {
+    pub(crate) const fn surface(&self) -> ShelfNativeSurface { self.surface }
 }
 
 /// Exact return claim for a covered native input owner. The model's top
@@ -135,6 +163,11 @@ pub struct Shell {
     pending_transient_return: Option<TransientFocusReturn>,
     /// Changes when the page's input owner changes, never mid-gesture.
     page_input_generation: Option<u64>,
+    /// Structural receipt selected from the same clock, never separately advanced.
+    local_native_input: gpui::NativeActivationScope,
+    /// Last mounted producer receipt; diagnostic observation is deliberately absent.
+    /// This shares the input factory's identity, not a second authority or epoch.
+    painted_native_input: Option<PageInputScope>,
     /// Changes on every user input to cancel a deferred focus return.
     transient_generation: Option<u64>,
     /// The shelf's width the person has dragged it to, at 100 % text.
@@ -281,6 +314,8 @@ impl Shell {
             ask_return: None,
             pending_transient_return: None,
             page_input_generation: Some(0),
+            local_native_input: gpui::NativeActivationScope::new(cx.entity_id(), Some(0)),
+            painted_native_input: None,
             transient_generation: Some(0),
             shelf_width: geo::SHELF,
             modes: Modes::new(),
@@ -587,6 +622,10 @@ impl Shell {
     // ── the store ──────────────────────────────────────────────────────
 
     fn store_event(&mut self, event: &StoreEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Owner publications may emit only a resource movement (including a
+        // repeated failure with identical words). Mount the changed scene at
+        // the root before a child can acquire listeners under old press state.
+        if self.native_producer_changed(cx) { cx.notify(); }
         match event {
             StoreEvent::Snapshot(Branch::Settings) => {
                 self.apply_facet(cx);
@@ -596,7 +635,7 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => {
                 self.advance_transient_generation();
-                self.advance_page_input_generation(cx);
+                self.advance_page_input_generation(InputOwnerChange::Structure, cx);
                 if self.links.snapshot(cx).overlay().is_some() {
                     self.reader
                         .update(cx, |reader, _| reader.cancel_native_return());
@@ -605,7 +644,7 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::Route) => {
                 self.advance_transient_generation();
-                self.advance_page_input_generation(cx);
+                self.advance_page_input_generation(InputOwnerChange::Structure, cx);
                 self.pending_transient_return = None;
                 let snapshot = self.links.snapshot(cx);
                 let route = snapshot.route().clone();
@@ -661,7 +700,7 @@ impl Shell {
                     cx.notify();
                 }
             }
-            StoreEvent::Snapshot(Branch::Root) => {}
+            StoreEvent::Snapshot(Branch::Root) => cx.notify(),
             StoreEvent::Snapshot(_) => {}
         }
     }
@@ -763,12 +802,16 @@ impl Shell {
         self.pending_transient_return = None;
     }
 
-    fn advance_page_input_generation(&mut self, cx: &mut Context<Self>) {
+    fn advance_page_input_generation(&mut self, change: InputOwnerChange, cx: &mut Context<Self>) {
         self.page_input_generation = self.page_input_generation.and_then(|generation| generation.checked_add(1));
+        if matches!(change, InputOwnerChange::Structure) || self.page_input_generation.is_none() {
+            self.local_native_input = gpui::NativeActivationScope::new(cx.entity_id(), self.page_input_generation);
+        }
         // Cached columns need fresh callbacks when native scene ownership changes.
         // An old callback retains its old scope; only a new paint gets this epoch.
         self.shelf.update(cx, |_, cx| cx.notify());
         self.shelf_over.update(cx, |_, cx| cx.notify());
+        self.reader.update(cx, |_, cx| cx.notify());
     }
 
     fn return_identity_current(&self, saved: &TransientFocusReturn, cx: &App) -> bool {
@@ -945,7 +988,7 @@ impl Shell {
     pub(crate) fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.advance_transient_generation();
         if self.frame.is_some_and(|frame| frame.shelf_overlays) {
-            self.advance_page_input_generation(cx);
+            self.advance_page_input_generation(InputOwnerChange::Structure, cx);
             self.shelf_over_open = !self.shelf_over_open;
             cx.notify();
         } else {
@@ -1363,6 +1406,15 @@ impl Shell {
         self.transient_generation
     }
 
+    pub(crate) fn local_activation_scope(&self) -> gpui::NativeActivationScope {
+        self.local_native_input
+    }
+
+    pub(crate) fn admits_local_activation_scope(&self, scope: gpui::NativeActivationScope, cx: &App) -> bool {
+        self.local_native_input == scope && self.page_input_allowed(cx)
+            && matches!(scope, gpui::NativeActivationScope::Active { .. })
+    }
+
     pub(crate) fn page_input_scope(&self, cx: &App) -> Option<PageInputScope> {
         if !self.page_input_allowed(cx) { return None; }
         self.native_input_scope(cx)
@@ -1378,18 +1430,27 @@ impl Shell {
         })
     }
 
+    fn native_producer_changed(&self, cx: &App) -> bool {
+        let current = self.native_input_scope(cx);
+        self.painted_native_input.as_ref().is_some_and(|previous|
+            current.as_ref().is_none_or(|current| !previous.same_producer(current)))
+    }
+
     pub(crate) fn admits_page_input_scope(&self, scope: &PageInputScope, cx: &App) -> bool {
         self.page_input_scope(cx).as_ref() == Some(scope)
     }
 
     pub(crate) fn shelf_input_scope(&self, drawer: bool, cx: &App) -> Option<ShelfInputScope> {
-        if !self.shelf_input_owner(drawer)
+        let surface = ShelfNativeSurface::of(self.frame, self.shelf_over_open);
+        let owns = if drawer { surface == ShelfNativeSurface::Drawer }
+            else { matches!(surface, ShelfNativeSurface::Docked | ShelfNativeSurface::Spine) };
+        if !owns || !self.background_input_allowed() || self.ask_open
             || matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject)) { return None; }
-        self.native_input_scope(cx).map(|input| ShelfInputScope { input, drawer })
+        self.native_input_scope(cx).map(|input| ShelfInputScope { input, surface })
     }
 
     pub(crate) fn admits_shelf_input_scope(&self, scope: &ShelfInputScope, cx: &App) -> bool {
-        self.shelf_input_scope(scope.drawer, cx).as_ref() == Some(scope)
+        self.shelf_input_scope(scope.surface == ShelfNativeSurface::Drawer, cx).as_ref() == Some(scope)
     }
 
     fn page_input_allowed(&self, cx: &App) -> bool {
@@ -1473,7 +1534,7 @@ impl Shell {
         }
         if self.shelf_over_open {
             self.advance_transient_generation();
-            self.advance_page_input_generation(cx);
+            self.advance_page_input_generation(InputOwnerChange::Structure, cx);
             self.shelf_over_open = false;
             cx.notify();
             return;
@@ -1821,6 +1882,7 @@ impl Render for Shell {
             },
             &self.modes,
         );
+        let previous_surface = ShelfNativeSurface::of(self.frame, self.shelf_over_open);
         self.frame = Some(frame);
         // The shelf opened over the reader answers a window too narrow to
         // hold it inline. A window that holds it has answered that ask: it
@@ -1828,6 +1890,16 @@ impl Render for Shell {
         if !frame.shelf_overlays {
             self.shelf_over_open = false;
         }
+        let structure_changed = previous_surface != ShelfNativeSurface::of(self.frame, self.shelf_over_open);
+        if structure_changed || self.native_producer_changed(cx) {
+            // Native ownership includes producer authority, exact serving attachment,
+            // and retry attachment. A same-root replacement must also retire GPUI's
+            // stored mouse-down; fresh listeners cannot inherit that old gesture.
+            // Pixel-only resize and diagnostic observation preserve ownership.
+            let change = if structure_changed { InputOwnerChange::Structure } else { InputOwnerChange::Producer };
+            self.advance_page_input_generation(change, cx);
+        }
+        self.painted_native_input = self.native_input_scope(cx);
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
         let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.notice().cloned()) };
@@ -1970,6 +2042,8 @@ impl Render for Shell {
         };
 
         let mut root = div()
+            // Element identity remains stable. Activation ownership below is
+            // independent of keyed editor, focus and local presentation state.
             .id("shell")
             // This is the actual keyboard-focus owner for the four custom
             // navigation zones. Their active target is reported as this
@@ -2114,7 +2188,7 @@ impl Render for Shell {
                                     // another activation from this same MouseUp.
                                     cx.stop_propagation();
                                     shell.advance_transient_generation();
-                                    shell.advance_page_input_generation(cx);
+                                    shell.advance_page_input_generation(InputOwnerChange::Structure, cx);
                                     shell.shelf_over_open = false;
                                     cx.notify();
                                 })),
@@ -2194,11 +2268,14 @@ impl Render for Shell {
             super::side::twin::rings(&regions, window.mouse_position(), cx)
         });
         self.flush_transient_return(window, cx);
-        root.children(self.ask_layer(&frame, status_height, ask_scene, cx)
-            .map(|ask| gpui::deferred(ask).with_priority(DRAWER_PRIORITY + 1)))
-            .children(self.hint_layer(cx))
-            .children(twins)
-            .child(float)
+        gpui::native_activation_scope(
+            gpui::NativeActivationScope::new(cx.entity_id(), self.page_input_generation),
+            root.children(self.ask_layer(&frame, status_height, ask_scene, cx)
+                .map(|ask| gpui::deferred(ask).with_priority(DRAWER_PRIORITY + 1)))
+                .children(self.hint_layer(cx))
+                .children(twins)
+                .child(float),
+        )
     }
 }
 
@@ -2304,4 +2381,325 @@ mod shelf_scene_admission_tests {
         let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
         assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "Rests on" && node["aria"]["selected"] == true), "a refreshed cached column has live callbacks: {tree}");
     }
+}
+
+#[cfg(test)]
+mod responsive_shelf_scene_tests {
+    use super::*;
+
+    fn scope(rig: &mut super::super::tests::Rig, drawer: bool) -> ShelfInputScope {
+        rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(drawer, cx).expect("current native shelf scope"))
+    }
+    fn admitted(rig: &mut super::super::tests::Rig, scope: &ShelfInputScope) -> bool {
+        rig.shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(scope, cx))
+    }
+    fn resize(rig: &mut super::super::tests::Rig, width: f32) {
+        rig.cx.simulate_resize(gpui::size(px(width), px(1400.0)));
+        rig.settle();
+    }
+    fn selected_tab(rig: &mut super::super::tests::Rig, label: &str) -> bool {
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Shelf tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
+        tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == label && node["aria"]["selected"] == true)
+    }
+
+    #[gpui::test]
+    fn responsive_hide_show_retires_actions_and_presses_but_plain_resize_keeps_them(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
+            let route = super::super::tests::page_route("RelationLabel");
+            let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0 * scale, 1400.0);
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            let dock = scope(&mut rig, false);
+            assert_eq!(dock.surface(), ShelfNativeSurface::Docked);
+            let retired = rig.shell.read_with(rig.cx, |shell, cx| {
+                let list = shell.shelf.read(cx).targets.list_probe().upgrade().expect("native shelf targets");
+                let target = list.borrow().first().cloned().expect("actionable native target");
+                target.act
+            });
+            resize(&mut rig, 1480.0 * scale);
+            assert!(admitted(&mut rig, &dock), "pixel-only resize preserves native owner at {percent}%");
+            resize(&mut rig, 360.0 * scale);
+            assert!(!admitted(&mut rig, &dock));
+            resize(&mut rig, 1440.0 * scale);
+            assert!(!admitted(&mut rig, &dock), "hide/show cannot revive dock callbacks");
+            let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+            let focused = rig.cx.update(|window, cx| window.focused(cx));
+            rig.cx.update(|window, cx| retired(window, cx));
+            rig.settle();
+            assert_eq!(rig.route(), route);
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone()), before);
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+            let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("fresh native tab");
+            rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"));
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("native press target");
+            rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            resize(&mut rig, 360.0 * scale);
+            resize(&mut rig, 1440.0 * scale);
+            rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"), "old down cannot transfer into a repainted scene");
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh native press target");
+            rig.cx.simulate_click(rests.center(), gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Rests on"), "new scene callbacks remain live");
+            let column = scope(&mut rig, false);
+            rig.keys("cmd-\\");
+            assert_eq!(scope(&mut rig, false).surface(), ShelfNativeSurface::Spine);
+            assert!(!admitted(&mut rig, &column), "settings shelf close changes native surface");
+            rig.keys("cmd-\\");
+            assert_eq!(scope(&mut rig, false).surface(), ShelfNativeSurface::Docked);
+            assert!(!admitted(&mut rig, &column), "settings shelf reopen cannot revive its old column");
+            let current = scope(&mut rig, false);
+            rig.keys("cmd-shift-.");
+            assert!(!admitted(&mut rig, &current), "zen retires visible shelf ownership");
+            rig.keys("cmd-shift-.");
+            assert!(!admitted(&mut rig, &current), "leaving zen cannot revive its predecessor");
+        }
+    }
+
+    #[gpui::test]
+    fn responsive_spine_and_automatic_drawer_close_have_distinct_live_surfaces(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
+            let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0 * scale, 1400.0);
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            let dock = scope(&mut rig, false);
+            resize(&mut rig, 760.0 * scale);
+            let spine = scope(&mut rig, false);
+            assert_eq!(spine.surface(), ShelfNativeSurface::Spine);
+            assert!(!admitted(&mut rig, &dock), "full-column ownership cannot become Spine");
+            rig.cx.update(|window, _| window.set_a11y_forced(true));
+            rig.repaint();
+            let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Spine tree");
+            let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
+            let node = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["role"] == "Button"
+                && node["element_id"].as_str().is_some_and(|id| id.contains("spine-"))).expect("actual native Spine button");
+            let debug_id = node["element_id"].as_str().expect("Spine ID");
+            let name = debug_id.strip_prefix("Name(").and_then(|id| id.strip_suffix(')')).expect("named Spine ID");
+            let id: String = serde_json::from_str(name).expect("native debug name string");
+            let label = node["aria"]["label"].as_str().expect("Spine label");
+            let button = super::super::tests::native_bounds_id(&mut rig, &id, "Button", label, true).expect("fresh mounted Spine target");
+            let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+            rig.cx.simulate_click(button.center(), gpui::Modifiers::none());
+            rig.settle();
+            let after = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+            assert!(after.route() != before.route() || after.session().reading.current.presentation != before.session().reading.current.presentation,
+                "actual Spine click must activate its typed row, not be rejected as hidden: {id}/{label}");
+            resize(&mut rig, 360.0 * scale);
+            rig.keys("cmd-\\");
+            let drawer = scope(&mut rig, true);
+            let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("current drawer tab");
+            rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
+            rig.settle();
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("drawer press target");
+            rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            resize(&mut rig, 1440.0 * scale);
+            assert!(!admitted(&mut rig, &drawer), "responsive automatic close retires its drawer scene");
+            resize(&mut rig, 360.0 * scale);
+            rig.keys("cmd-\\");
+            assert!(!admitted(&mut rig, &drawer), "reopen cannot revive an automatically closed drawer");
+            let fresh = scope(&mut rig, true);
+            assert_eq!(fresh.surface(), ShelfNativeSurface::Drawer);
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh drawer tab");
+            rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"), "automatic close/reopen cannot transfer a held drawer press");
+            rig.cx.simulate_click(rests.center(), gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Rests on"), "fresh drawer gesture remains live");
+        }
+    }
+
+    #[gpui::test]
+    fn producer_identity_retires_a_held_native_press_but_observation_does_not(cx: &mut gpui::TestAppContext) {
+        use crate::runtime::{owner::{OwnerGate, OwnerState}, reads::ReadPool};
+        use crate::core::VersionedRoot;
+        use std::sync::Arc;
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
+            let root = VersionedRoot::synthetic(
+                backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+            let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+            let mut rig = super::super::tests::rig_with_engine_gate(cx,
+                Some(super::super::tests::page_route("RelationLabel")), 1440.0 * scale, 1400.0,
+                ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"),
+                super::super::tests::RootOnly, Some(gate.clone()));
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            let initial = scope(&mut rig, false);
+            // Observation is local metadata, not a producer replacement. Preserve
+            // an actual held press across its publication and repaint.
+            let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native tab");
+            rig.cx.simulate_mouse_down(used.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.graph.store.update(rig.cx, |store, cx| {
+                let snapshot = store.snapshot();
+                let key = snapshot.key();
+                store.admit_snapshot(Arc::new(snapshot.with_key(key.observed_at(key.observation() + 1), None)), cx);
+            });
+            rig.repaint();
+            assert!(admitted(&mut rig, &initial));
+            rig.cx.simulate_mouse_up(used.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"));
+
+            // Coalesced same-root Ready replacement: no intermediate Starting
+            // paint is required to revoke the press from the predecessor.
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("native tab");
+            let previous = scope(&mut rig, false);
+            rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+            rig.settle();
+            assert!(!admitted(&mut rig, &previous));
+            rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"), "new owner listeners cannot inherit old down");
+
+            gate.publish(OwnerState::Failed("same fault".into()));
+            rig.settle();
+            let previous_fault = scope(&mut rig, false);
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("local tab remains usable during owner failure");
+            rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            gate.publish(OwnerState::Failed("same fault".into()));
+            rig.settle();
+            assert!(!admitted(&mut rig, &previous_fault), "same words do not identify the retry attachment");
+            rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"));
+
+            // Change the actual factory authority while keeping the route and
+            // local presentation. This changes only the synthetic test factory authority.
+            let previous_root = scope(&mut rig, false);
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("native tab");
+            rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.graph.store.update(rig.cx, |store, cx| {
+                let snapshot = store.snapshot();
+                let key = snapshot.key();
+                store.admit_snapshot(Arc::new(snapshot.with_key(key.with_generation(key.generation() + 1), None)), cx);
+            });
+            rig.settle();
+            assert!(!admitted(&mut rig, &previous_root));
+            rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Used by"));
+            let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh native tab");
+            rig.cx.simulate_click(rests.center(), gpui::Modifiers::none());
+            rig.settle();
+            assert!(selected_tab(&mut rig, "Rests on"), "fresh local gesture still acts");
+            let failed = scope(&mut rig, false);
+            gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+            rig.settle();
+            assert!(!admitted(&mut rig, &failed), "recovery changes the native producer receipt");
+        }
+    }
+
+    #[gpui::test]
+    fn local_settings_press_survives_producer_replacement_but_not_coalesced_cover(cx: &mut gpui::TestAppContext) {
+        use crate::runtime::{owner::{OwnerGate, OwnerState}, reads::ReadPool};
+        use crate::{core::VersionedRoot, model::MotionPreference, navigation::SettingsPage};
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
+            let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+            let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+            let mut rig = super::super::tests::rig_with_engine_gate(cx, None, 1440.0 * scale, 1400.0 * scale,
+                ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"), super::super::tests::RootOnly, Some(gate.clone()));
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+            let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("mounted local Settings control");
+            rig.cx.simulate_mouse_down(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            let focus = rig.cx.update(|window, cx| window.focused(cx));
+            let receipt = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+            rig.settle();
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope()), receipt);
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focus, "producer replacement keeps the local native focus handle");
+            rig.cx.simulate_mouse_up(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::Full);
+            rig.go(Intent::SetMotion(MotionPreference::System));
+            let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("current local control");
+            rig.cx.simulate_mouse_down(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            let before = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+            let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+            // Both real store transitions occur before another explicit paint.
+            // Merely sampling the final overlay would miss this ownership cycle.
+            rig.cx.update(|_, cx| {
+                links.dispatch(Intent::OpenCommandPalette, cx);
+                links.dispatch(Intent::DismissOverlay, cx);
+            });
+            rig.cx.run_until_parked();
+            assert_ne!(rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope()), before);
+            rig.settle();
+            let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("returned Settings control");
+            rig.cx.simulate_mouse_up(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::System, "an uncovered field cannot inherit its covered down");
+            rig.cx.simulate_click(full.center(), gpui::Modifiers::none());
+            rig.settle();
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::Full);
+            // Wheel input uses the existing reader scroll state, not a newly
+            // namespaced ancestor. Publication cannot reset that state.
+            rig.cx.simulate_resize(gpui::size(px(1440.0 * scale), px(568.0 * scale)));
+            rig.settle();
+            rig.repaint();
+            let viewport = rig.cx.debug_bounds("reader-scroll").expect("actual Settings reader viewport");
+            let before_wheel = rig.shell.read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            rig.cx.simulate_event(gpui::ScrollWheelEvent { position: viewport.center(), delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-320.0))), modifiers: gpui::Modifiers::none(), touch_phase: gpui::TouchPhase::Moved });
+            rig.draw();
+            let offset = rig.shell.read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            assert_ne!(offset, before_wheel, "actual native wheel moves the local Settings viewport");
+            gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+            rig.settle();
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx)), offset);
+        }
+    }
+
+    #[gpui::test]
+    fn mounted_find_query_entity_draft_and_focus_survive_same_root_replacement(cx: &mut gpui::TestAppContext) {
+        use crate::runtime::{owner::{OwnerGate, OwnerState}, reads::ReadPool};
+        use crate::{core::VersionedRoot, navigation::{BrowseRoute, OrbitRoute}};
+        for percent in [100_u16, 200] {
+            let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+            let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+            let scale = f32::from(percent) / 100.0;
+            let mut rig = super::super::tests::rig_with_engine_gate(cx, None, 1440.0 * scale, 1400.0 * scale,
+                ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"), super::super::tests::RootOnly, Some(gate.clone()));
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
+            let example = super::super::tests::native_bounds(&mut rig, "Button", "from_str", true).expect("mounted local Find example");
+            rig.cx.simulate_mouse_down(example.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+            rig.settle();
+            rig.cx.simulate_mouse_up(example.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert!(matches!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) if query.text.as_ref() == "from_str"), "a held local example still refines exactly once after producer replacement");
+            rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
+            rig.cx.update(|window, _| window.set_a11y_forced(true));
+            rig.repaint();
+            let query = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("Find native tree");
+            let tree: serde_json::Value = serde_json::from_str(&query).expect("tree");
+            let role = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"] == "Find query")
+                .and_then(|node| node["aria"]["role"].as_str()).expect("mounted query role").to_owned();
+            let query = super::super::tests::native_bounds(&mut rig, &role, "Find query", true).expect("actual Find query");
+            rig.cx.simulate_click(query.center(), gpui::Modifiers::none());
+            rig.cx.simulate_input("local unsent draft");
+            let focused = rig.cx.update(|window, cx| window.focused(cx));
+            gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+            // Repaint before the editing debounce commits the query route.
+            rig.cx.run_until_parked();
+            rig.repaint();
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+            let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("renewed native tree");
+            let tree: serde_json::Value = serde_json::from_str(&json).expect("tree");
+            assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "Find query" && node["aria"]["value"] == "local unsent draft"), "actual typed draft survives producer-only repaint: {tree}");
+        }
+    }
+
 }

@@ -76,6 +76,8 @@ pub(crate) struct Interact {
     /// and that ends by itself if the release never comes (focus moved, the
     /// window lost the key), so a key can never leave a control sunk.
     pub key_beat: bool,
+    /// Receipt for pressed visuals only, shared with GPUI's native activation.
+    native_activation_scope: Option<gpui::NativeActivationScope>,
     key_beats: u64,
     /// How many facet sweeps have started: one per hover-enter that finds
     /// no crossing in flight (an enter mid-crossing lets it finish).
@@ -99,6 +101,7 @@ pub(crate) fn interact(id: &ElementId, window: &mut Window, cx: &mut App) -> Ent
         pressed: false,
         key_pressed: false,
         key_beat: false,
+        native_activation_scope: None,
         key_beats: 0,
         sweeps: 0,
         sweeping: false,
@@ -251,7 +254,30 @@ impl Touch {
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
+        Self::read_owned(id, look, active, external_focus, None, window, cx)
+    }
+
+    /// A setup field is owned by its actual state entity, not an index producer.
+    pub(crate) fn read_local(id: &ElementId, look: Look, active: bool, scope: gpui::NativeActivationScope, admitted: bool, window: &mut Window, cx: &mut App) -> Self {
+        Self::read_owned(id, look, active, None, Some((scope, admitted)), window, cx)
+    }
+
+    fn read_owned(id: &ElementId, look: Look, active: bool, external_focus: Option<FocusHandle>, local: Option<(gpui::NativeActivationScope, bool)>, window: &mut Window, cx: &mut App) -> Self {
         let entity = interact(id, window, cx);
+        let scope = match local {
+            Some((scope, admitted)) => Some(if admitted { scope.for_owner(entity.entity_id()) }
+                else { gpui::NativeActivationScope::new(entity.entity_id(), None) }),
+            None => window.native_activation_scope(),
+        };
+        entity.update(cx, |state, _| {
+            if state.native_activation_scope != scope || !active
+                || matches!(scope, Some(gpui::NativeActivationScope::Retired { .. })) {
+                state.pressed = false;
+                state.key_pressed = false;
+                state.key_beat = false;
+            }
+            state.native_activation_scope = scope;
+        });
         let motion = Motion::scoped(ElementId::View(entity.entity_id()), cx);
         let state = entity.read(cx);
         let focus = external_focus.unwrap_or_else(|| state.focus.clone());

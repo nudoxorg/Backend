@@ -1765,6 +1765,7 @@ pub(crate) struct DeferredDraw {
     element_opacity: f32,
     group_opacity: f32,
     inert_subtree: bool,
+    native_activation_scope: Option<crate::NativeActivationScope>,
     inert_boundaries: SmallVec<[GlobalElementId; 2]>,
     inert_owner_boundaries: SmallVec<[InertOwnerBoundary; 2]>,
     prepaint_range: Range<PrepaintStateIndex>,
@@ -2088,6 +2089,8 @@ pub struct Window {
     focus_enabled: bool,
     /// Nesting depth for the currently constructed inert subtree.
     inert_subtree_depth: Rc<Cell<usize>>,
+    /// Drawing context only: native activation ownership never changes element IDs.
+    native_activation_scope: Rc<Cell<Option<crate::NativeActivationScope>>>,
     /// The wrapper element paths currently defining inert boundaries. Stored
     /// separately so deferred draws can restore the same ownership scope.
     inert_boundary_stack: Rc<RefCell<Vec<GlobalElementId>>>,
@@ -2905,6 +2908,7 @@ impl Window {
             focus: None,
             focus_enabled: true,
             inert_subtree_depth: Rc::new(Cell::new(0)),
+            native_activation_scope: Rc::new(Cell::new(None)),
             inert_boundary_stack: Rc::new(RefCell::new(Vec::new())),
             inert_owner_boundary_stack: Rc::new(RefCell::new(Vec::new())),
             element_owner_stack: Rc::new(RefCell::new(ElementOwnerStack::default())),
@@ -3067,6 +3071,25 @@ impl Window {
     pub fn focused(&self, cx: &App) -> Option<FocusHandle> {
         self.focus
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
+    }
+
+    /// The exact native activation context during element construction/drawing.
+    /// Controls may retain this receipt for their pressed visuals; it is not a
+    /// producer authority or a replacement for application action admission.
+    pub fn native_activation_scope(&self) -> Option<crate::NativeActivationScope> {
+        self.native_activation_scope.get()
+    }
+
+    pub(crate) fn with_native_activation_scope<R>(&mut self, scope: Option<crate::NativeActivationScope>, f: impl FnOnce(&mut Self) -> R) -> R {
+        struct Restore {
+            context: Rc<Cell<Option<crate::NativeActivationScope>>>,
+            previous: Option<crate::NativeActivationScope>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) { self.context.set(self.previous); }
+        }
+        let _restore = Restore { context: self.native_activation_scope.clone(), previous: self.native_activation_scope.replace(scope) };
+        f(self)
     }
 
     /// Move focus to the element associated with the given [`FocusHandle`].
@@ -4555,6 +4578,7 @@ impl Window {
                     layer_transform,
                     opacities,
                     inert_subtree,
+                    native_activation_scope,
                     inert_boundaries,
                     inert_owner_boundaries,
                 ) = {
@@ -4573,6 +4597,7 @@ impl Window {
                         deferred_draw.layer_transform,
                         (deferred_draw.element_opacity, deferred_draw.group_opacity),
                         deferred_draw.inert_subtree,
+                        deferred_draw.native_activation_scope,
                         deferred_draw.inert_boundaries.clone(),
                         deferred_draw.inert_owner_boundaries.clone(),
                     )
@@ -4593,7 +4618,7 @@ impl Window {
                                                 viewport,
                                                 opacities.1,
                                                 |window| {
-                                                    element.prepaint(window, cx);
+                                                    window.with_native_activation_scope(native_activation_scope, |window| element.prepaint(window, cx));
                                                 },
                                             );
                                         });
@@ -4682,7 +4707,7 @@ impl Window {
                                                 window.with_rem_size(
                                                     Some(deferred_draw.rem_size),
                                                     |window| {
-                                                        element.paint(window, cx);
+                                                        window.with_native_activation_scope(deferred_draw.native_activation_scope, |window| element.paint(window, cx));
                                                     },
                                                 );
                                             });
@@ -4851,6 +4876,7 @@ impl Window {
                         element_opacity: deferred_draw.element_opacity,
                         group_opacity: deferred_draw.group_opacity,
                         inert_subtree: true,
+                        native_activation_scope: deferred_draw.native_activation_scope,
                         inert_boundaries: active_boundaries
                             .iter()
                             .chain(deferred_draw.inert_boundaries.iter())
@@ -4902,6 +4928,7 @@ impl Window {
                         element_opacity: deferred_draw.element_opacity,
                         group_opacity: deferred_draw.group_opacity,
                         inert_subtree: deferred_draw.inert_subtree,
+                        native_activation_scope: deferred_draw.native_activation_scope,
                         inert_boundaries: deferred_draw.inert_boundaries.clone(),
                         inert_owner_boundaries: deferred_draw.inert_owner_boundaries.clone(),
                         prepaint_range: deferred_draw.prepaint_range.clone(),
@@ -5882,6 +5909,7 @@ impl Window {
             element_opacity: self.element_opacity,
             group_opacity: self.group_opacity,
             inert_subtree: self.is_inert_subtree(),
+            native_activation_scope: self.native_activation_scope(),
             inert_boundaries: self.inert_boundary_stack.borrow().iter().cloned().collect(),
             inert_owner_boundaries: self
                 .inert_owner_boundary_stack

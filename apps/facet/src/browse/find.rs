@@ -346,13 +346,18 @@ fn action_notice(reason: &str, window: &mut Window, cx: &mut App) {
 /// Compose a native Find folio.
 #[must_use]
 pub fn find(id: impl Into<ElementId>, model: Arc<Model>, actions: Actions, measure: &Measure) -> Find {
-    Find { id: id.into(), model, actions, admission: None, active: true, measure: *measure, #[cfg(test)] test_state: None }
+    Find { id: id.into(), model, actions, admission: None, active: true, local_activation: None, measure: *measure, #[cfg(test)] test_state: None }
 }
 
 #[derive(IntoElement)]
-pub struct Find { admission: Option<ReadAdmission>, active: bool, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
+pub struct Find { admission: Option<ReadAdmission>, active: bool, local_activation: Option<gpui::NativeActivationScope>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
 
 impl Find {
+    /// Existing structural input receipt for the independent local query field.
+    pub fn local_activation(mut self, scope: gpui::NativeActivationScope) -> Self {
+        self.local_activation = Some(scope);
+        self
+    }
     /// Supplies the live resource's authority/activity/terminal admission.
     #[must_use]
     pub fn admission(mut self, admission: ReadAdmission) -> Self { self.admission = Some(admission); self }
@@ -438,6 +443,13 @@ impl RenderOnce for Find {
                 .child(Input::new(&input).id(child(&self.id, "query")).aria_label("Find query").aria_description("Search package names and indexed declarations. Enter opens the selected current result; Up and Down move through results.").disabled(!self.active).appearance(false).bordered(false).focus_bordered(false)
                     .set(ty::TITLE, &m).px(px(0.0)).flex_1().min_w_0()))
             .child(words(child(&self.id, "hint"), "Search package names and indexed declarations. Select an item to inspect its recorded shape.", ty::CAPTION, p.ink2, &m));
+        // Query editing is owned by this actual input entity, not the index
+        // producer. Results below inherit the enclosing producer scope.
+        let local = if self.active {
+            self.local_activation.map(|scope| scope.for_owner(input.entity_id()))
+                .unwrap_or_else(|| gpui::NativeActivationScope::new(input.entity_id(), Some(0)))
+        } else { gpui::NativeActivationScope::new(input.entity_id(), None) };
+        let hero = gpui::native_activation_scope(local, hero);
         let keyboard_state = state.clone();
         let mut page = div().id(self.id.clone()).role(gpui::Role::Group).aria_label("Find").flex().flex_col().w(m.width()).gap(m.space(Space::Wide)).child(hero)
             .capture_key_down(move |event, _, cx| {
@@ -480,7 +492,7 @@ impl RenderOnce for Find {
                         (state.refine)(query.into(), cx);
                     })));
             }
-            page = page.child(examples);
+            page = page.child(gpui::native_activation_scope(local, examples));
             if !self.model.query.is_empty() || self.model.loading || self.model.candidates.is_empty() {
                 for (at, coverage) in self.model.coverage.iter().enumerate() {
                     page = page.child(words(child(&self.id, format!("coverage-{at}")), coverage.clone(), ty::CAPTION, p.ink2, &m));
