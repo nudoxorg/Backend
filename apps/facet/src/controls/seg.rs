@@ -616,10 +616,10 @@ impl RenderOnce for Seg {
                 };
                 let admit = self.admit.clone();
                 let down = pointer.clone();
-                item = item.capture_any_mouse_down(move |event, _, cx| {
+                item = item.capture_any_mouse_down(move |event, window, cx| {
                     if admit.as_ref().is_some_and(|admit| !admit(cx)) {
                         down.borrow_mut().take();
-                        cx.prevent_default();
+                        window.prevent_default();
                         cx.stop_propagation();
                     } else if event.button == MouseButton::Left {
                         *down.borrow_mut() = Some(match &admit {
