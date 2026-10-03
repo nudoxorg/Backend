@@ -390,6 +390,8 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
         rig.keys("cmd-o"); type_in(&mut rig, &format!("{}/toml_pin", first_parent.display()));
         rig.keys("enter");
         assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
+        assert!(rig.cx.update(|window, cx| window.focused(cx).is_some()),
+            "the submitted native field hands keyboard dispatch to a live window owner");
         release.set(false);
         rig.keys("cmd-o");
         assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "the second native shortcut reopens the folder dialog");
