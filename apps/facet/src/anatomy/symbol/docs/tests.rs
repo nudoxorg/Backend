@@ -343,7 +343,7 @@ fn retained_document_keeps_its_painted_words_without_a_semantic_copy(cx: &mut Te
     assert!(!has(&native, "Label", prose));
     assert!(
         cx.update(|window, _| window
-            .text_trace()
+            .painted_texts()
             .iter()
             .any(|run| run.text == prose && run.alpha > 0.)),
         "suppressed semantics do not remove the retained pixels"
