@@ -324,7 +324,7 @@ let
           pidfile="$endpoint.pid"
           ownerfile="$endpoint.owner"
           logfile="$endpoint.log"
-          bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+          bin_dir=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd)
           locald_executable="$bin_dir/backend-locald"
           process_start() {
             pid="$1"
@@ -439,13 +439,13 @@ let
           if [ -z "$endpoint" ]; then echo "NUDOX_GUI_LOCALD_ENDPOINT or --endpoint is required" >&2; exit 64; fi
           case "$endpoint" in unix:*) endpoint=''${endpoint#unix:} ;; esac
           if [ -z "$workspace" ]; then workspace=$(pwd)/.local/gui-live; fi
-          bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+          bin_dir=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd)
           exec "$bin_dir/backend-cli" --endpoint "$endpoint" --workspace "$workspace" --format json health
           EOF
                     cat > "$out/bin/nudox-gui-service-test" <<'EOF'
           #!/bin/sh
           set -eu
-          bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+          bin_dir=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd)
           root=$(mktemp -d "''${TMPDIR:-/tmp}/nudox-gui-service-test.XXXXXX")
           endpoint="$root/locald.sock"
           workspace="$root/workspace"
