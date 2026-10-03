@@ -338,12 +338,12 @@ pub(super) fn facts(
     facts.links = links(page);
     // Docs: the prose before any section, then each section the conventions
     // named; with no sections, the docs whole.
-    let lead: Vec<DocFragment> = if page.sections.sections.is_empty() {
-        page.docs.to_vec()
+    let lead: &[DocFragment] = if page.sections.sections.is_empty() {
+        &page.docs
     } else {
-        page.sections.lead.to_vec()
+        &page.sections.lead
     };
-    facts.docs = blocks(&lead);
+    facts.docs = blocks(lead);
     facts.sections = page.sections.sections.iter().map(section).collect();
     if let Some(location) = page.site.location.known() {
         facts.site = Some(Site {
