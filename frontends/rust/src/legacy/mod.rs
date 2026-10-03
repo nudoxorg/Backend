@@ -333,13 +333,14 @@ pub enum LoadError {
 /// A bare name also matches `name` plus the host executable suffix, because Windows installs
 /// `rustc.exe` and a process search that adds `.exe` implicitly does not exist here.
 fn resolve_executable(requested: &std::path::Path) -> Option<PathBuf> {
-    resolve_executable_in(requested, &std::env::var_os("PATH")?)
+    resolve_executable_in(requested, std::env::var_os("PATH").as_deref())
 }
 
-/// [`resolve_executable`] against an explicit search path.
+/// [`resolve_executable`] against an explicit search path; `None` is an unset `PATH`, which only
+/// a bare name needs.
 fn resolve_executable_in(
     requested: &std::path::Path,
-    search_path: &std::ffi::OsStr,
+    search_path: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
     let candidate = if requested.is_absolute() || requested.components().count() > 1 {
         Some(if requested.is_absolute() {
@@ -348,7 +349,7 @@ fn resolve_executable_in(
             std::env::current_dir().ok()?.join(requested)
         })
     } else {
-        std::env::split_paths(search_path)
+        std::env::split_paths(search_path?)
             .flat_map(|directory| {
                 let bare = directory.join(requested);
                 let suffixed = (!std::env::consts::EXE_SUFFIX.is_empty()
@@ -578,9 +579,25 @@ mod tests {
         std::fs::write(scratch.0.join(named("nudox-fixture-tool")), b"tool").expect("tool");
         let found = super::resolve_executable_in(
             std::path::Path::new("nudox-fixture-tool"),
-            &std::env::join_paths([scratch.0.as_path()]).expect("search path"),
+            Some(&std::env::join_paths([scratch.0.as_path()]).expect("search path")),
         )
         .expect("the suffixed file is found");
         assert_eq!(found, scratch.0.join(named("nudox-fixture-tool")));
+    }
+
+    /// An explicit path never consults `PATH`; only a bare name needs one.
+    #[test]
+    fn an_unset_path_refuses_a_bare_name_but_not_an_explicit_path() {
+        let scratch = Scratch::new("unset-path");
+        let tool = scratch.0.join(named("nudox-fixture-tool"));
+        std::fs::write(&tool, b"tool").expect("tool");
+        assert_eq!(
+            super::resolve_executable_in(&tool, None),
+            Some(tool.canonicalize().expect("canonical tool"))
+        );
+        assert_eq!(
+            super::resolve_executable_in(std::path::Path::new("nudox-fixture-tool"), None),
+            None
+        );
     }
 }
