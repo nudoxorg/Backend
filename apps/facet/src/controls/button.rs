@@ -72,6 +72,7 @@ pub struct Button {
     look: Look,
     measure: Measure,
     on_click: Option<Handler>,
+    admission: Option<ActivationAdmission>,
     focus_handle: Option<FocusHandle>,
 }
 
@@ -94,6 +95,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure:
         look: Look::LIVE,
         measure: *measure,
         on_click: None,
+        admission: None,
         focus_handle: None,
     }
 }
@@ -204,6 +206,14 @@ impl Button {
     #[must_use]
     pub const fn look(mut self, look: Look) -> Self {
         self.look = look;
+        self
+    }
+
+    /// Admit the current mounted owner at dispatch, before pointer focus,
+    /// and again when a native pointer, keyboard, or AX action activates.
+    #[must_use]
+    pub fn when_current(mut self, admit: ActivationAdmission) -> Self {
+        self.admission = Some(admit);
         self
     }
 
@@ -332,6 +342,24 @@ pub(crate) fn sunk(edge: Edge) -> Edge {
 /// Keyboard context shared by native controls and their host's shortcut table.
 /// Enter/Space belong to the focused control, not a background shell target.
 pub const NATIVE_CONTROL: &str = "NativeControl";
+
+/// The current producer's UI-thread callback admission. Hosts supply their
+/// existing dependency guard; controls do not cache or invent ownership.
+pub type ActivationAdmission = Rc<dyn Fn(&mut App) -> bool>;
+
+/// Deny a stale pointer press during native capture, before bubble listeners
+/// can focus or press the control. This is mouse capture; touch producers
+/// must use their native pointer admission path as well as guard activation.
+pub fn capture_activation_admission<E>(element: E, admit: ActivationAdmission) -> E
+where E: InteractiveElement,
+{
+    element.capture_any_mouse_down(move |_, window, cx| {
+        if !admit(cx) {
+            window.prevent_default();
+            cx.stop_propagation();
+        }
+    })
+}
 
 /// The same native click path used by CE's unstyled Button: GPUI admits
 /// Enter/Space release only for an uninterrupted focus generation, and emits
@@ -606,7 +634,21 @@ impl RenderOnce for Button {
             .aria_disabled(self.disabled || self.busy)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         let plate = if active {
-            wire(plate, &touch, self.on_click).into_any_element()
+            let activate = self.on_click.map(|activate| {
+                if let Some(admit) = &self.admission {
+                    let admit = admit.clone();
+                    Rc::new(move |window: &mut Window, cx: &mut App| {
+                        if admit(cx) { activate(window, cx); }
+                    }) as Handler
+                } else {
+                    activate
+                }
+            });
+            let plate = wire(plate, &touch, activate);
+            let plate = if let Some(admit) = self.admission {
+                capture_activation_admission(plate, admit)
+            } else { plate };
+            plate.into_any_element()
         } else {
             plate.into_any_element()
         };
@@ -615,3 +657,7 @@ impl RenderOnce for Button {
         hover_zone(plate, &touch, chamfer, active)
     }
 }
+
+#[cfg(test)]
+#[path = "button_admission_tests.rs"]
+mod admission_tests;
