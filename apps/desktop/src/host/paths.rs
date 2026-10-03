@@ -67,6 +67,14 @@ pub(crate) fn ambient_paths(application_root: &Path) -> Result<WorkspacePaths, R
     // every file and credential and leaving explicit BACKEND_DATA untouched.
     backend_platform::durable::ensure_private_application_directory(&starter).map_err(RuntimeError::Io)?;
     backend_platform::durable::ensure_private_application_directory(&data).map_err(RuntimeError::Io)?;
+    // The compiler's fixed state root predates private-directory enforcement
+    // too. Its service remains responsible for creation and everything inside.
+    let compiler = data.join("compiler");
+    match fs::symlink_metadata(&compiler) {
+        Ok(_) => backend_platform::durable::ensure_private_application_directory(&compiler).map_err(RuntimeError::Io)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RuntimeError::Io(error)),
+    }
     WorkspacePaths::discover(Some(starter), Some(data), None)
 }
 
@@ -310,9 +318,12 @@ mod tests {
             fs::create_dir(&child).expect("legacy application child");
             fs::set_permissions(&child, fs::Permissions::from_mode(0o755)).expect("legacy child mode");
         }
+        let compiler = public.join("workspace").join("compiler");
+        fs::create_dir(&compiler).expect("legacy compiler root");
+        fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).expect("legacy compiler mode");
         fs::write(public.join("workspace").join("desktop-state.json"), b"legacy state retained").expect("legacy state");
         let paths = ambient_paths(&public).expect("repair legacy ambient layout");
-        for child in [paths.project(), paths.data()] {
+        for child in [paths.project(), paths.data(), compiler.as_path()] {
             assert_eq!(fs::metadata(child).expect("repaired child").permissions().mode() & 0o777, 0o700);
         }
         assert_eq!(fs::read(paths.data().join("desktop-state.json")).expect("retained state"), b"legacy state retained");
