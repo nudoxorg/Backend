@@ -78,7 +78,7 @@ mod settings_focus_tests;
 pub(crate) mod tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
-pub(crate) use keys::OpenSettings as OpenSettingsAction;
+pub(crate) use keys::{AddFolder as AddFolderAction, OpenSettings as OpenSettingsAction};
 pub use keys::bindings as key_bindings;
 pub(crate) use keys::{Command as KeyCommand, TABLE as KEY_TABLE};
 pub use reader::Way;

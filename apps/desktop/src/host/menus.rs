@@ -59,7 +59,7 @@ pub(crate) fn install(cx: &mut App) {
             MenuItem::action("Quit Nudox", Quit),
         ]),
         Menu::new("File").items([
-            MenuItem::action("Add a Folder…", crate::shell::keys::AddFolder),
+            MenuItem::action("Add a Folder…", crate::shell::AddFolderAction),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),
