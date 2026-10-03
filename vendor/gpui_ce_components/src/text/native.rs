@@ -231,9 +231,7 @@ fn activate(
 }
 
 pub(super) fn current_admission(cx: &App) -> Option<super::text_view::LinkAdmission> {
-    UiGlobalState::global(cx)
-        .text_view_state()
-        .and_then(|state| state.read(cx).link_admission.clone())
+    UiGlobalState::global(cx).text_view_admission().cloned()
 }
 
 pub(super) fn admitted(predicate: &Option<super::text_view::LinkAdmission>, cx: &mut App) -> bool {
@@ -241,10 +239,7 @@ pub(super) fn admitted(predicate: &Option<super::text_view::LinkAdmission>, cx: 
 }
 
 fn clamped(cx: &App) -> bool {
-    UiGlobalState::global(cx)
-        .text_view_state_stack
-        .iter()
-        .any(|state| state.read(cx).max_lines.is_some())
+    UiGlobalState::global(cx).text_view_clamped()
 }
 
 /// One focus/action surface for a currently visible authored link. No pointer
@@ -997,6 +992,124 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|url| url == "https://docs.rs/reference")
+        );
+    }
+
+    struct GuardHeading {
+        state: Entity<TextViewState>,
+        extensions: super::super::MarkdownExtensions,
+        original: Rc<Cell<bool>>,
+        checks: Rc<Cell<usize>>,
+        opened: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Render for GuardHeading {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let original = self.original.clone();
+            let checks = self.checks.clone();
+            let opened = self.opened.clone();
+            super::super::TextView::new(&self.state)
+                .markdown_extensions(self.extensions.clone())
+                .link_admission(Rc::new(move |_| {
+                    checks.set(checks.get() + 1);
+                    original.get()
+                }))
+                .on_link_click(move |_, _, _, _| {
+                    opened.fetch_add(1, Ordering::SeqCst);
+                })
+        }
+    }
+
+    #[gpui::test]
+    fn prepared_heading_render_clones_admission_without_reading_or_evaluating_its_owner(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::{MarkdownExtensions, MarkdownNode, PreparedMarkdown, TextView};
+        cx.update(crate::init);
+        let original = Rc::new(Cell::new(true));
+        let checks = Rc::new(Cell::new(0));
+        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let retained_state = Rc::new(std::cell::RefCell::new(None));
+        let slot = retained_state.clone();
+        let current = original.clone();
+        let evaluations = checks.clone();
+        let activations = opened.clone();
+        let extensions = MarkdownExtensions::default()
+            .block_parser(|node, context| {
+                let markdown::mdast::Node::Heading(heading) = node else {
+                    return None;
+                };
+                Some(MarkdownNode::new(
+                    "guarded-heading",
+                    context.prepare_inline(&heading.children, "[Docs][id]"),
+                ))
+            })
+            .block_renderer_with_context("guarded-heading", |node, context, _, _| {
+                context.inherit_links(TextView::prepared_markdown(
+                    "guarded-inline",
+                    node.data::<PreparedMarkdown>().unwrap().clone(),
+                ))
+            });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            window.set_a11y_forced(true);
+            let state = cx.new(|cx| {
+                TextViewState::markdown("## [Docs][id]\n\n[id]: https://docs.rs/original", cx)
+            });
+            *slot.borrow_mut() = Some(state.clone());
+            let document = cx.new(|_| GuardHeading {
+                state,
+                extensions,
+                original: current,
+                checks: evaluations,
+                opened: activations,
+            });
+            crate::Root::new(document, window, cx)
+        });
+        for _ in 0..2 {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        }
+        assert_eq!(
+            checks.get(),
+            0,
+            "render/layout/prepaint must not evaluate a Reader guard"
+        );
+        let node = cx.update(|window, _| {
+            window
+                .a11y_tree()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == gpui::Role::Link && node.label() == Some("Docs"))
+                .map(|(id, _)| *id)
+                .expect("prepared parent reference link")
+        });
+        action(cx, node, AccessibleAction::Click);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        original.set(false);
+        // Install a different ambient frame to prove retained callbacks use
+        // their original frozen predicate, not a current global stack guard.
+        // This is a synthetic scope test, not a live owner admission claim.
+        cx.update(|_, cx| {
+            UiGlobalState::global_mut(cx).push_text_view(
+                retained_state.borrow().as_ref().unwrap().clone(),
+                Some(Rc::new(|_| true)),
+                false,
+            )
+        });
+        action(cx, node, AccessibleAction::Click);
+        action(cx, node, AccessibleAction::Focus);
+        cx.update(|_, cx| UiGlobalState::global_mut(cx).pop_text_view());
+        assert_eq!(
+            opened.load(Ordering::SeqCst),
+            1,
+            "late original admission rejects the replacement frame's guard"
+        );
+        assert!(
+            checks.get() >= 3,
+            "events evaluate the captured original predicate"
         );
     }
 

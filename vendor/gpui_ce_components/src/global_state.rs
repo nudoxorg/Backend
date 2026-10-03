@@ -1,6 +1,6 @@
 use gpui::{App, Entity, Global};
 
-use crate::text::TextViewState;
+use crate::text::{LinkAdmission, TextViewState};
 
 pub use gpui_base::GlobalState;
 
@@ -12,8 +12,16 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 /// UI-only global state whose types cannot cross into `gpui-base`.
+struct TextViewScope {
+    state: Entity<TextViewState>,
+    // Snapshot the UI predicate before rendering this entity. Reading the
+    // entity again from its own Render callback would alias its mutable borrow.
+    admission: Option<LinkAdmission>,
+    clamped: bool,
+}
+
 pub(crate) struct UiGlobalState {
-    pub(crate) text_view_state_stack: Vec<Entity<TextViewState>>,
+    text_view_state_stack: Vec<TextViewScope>,
     selection_document_order: u64,
 }
 
@@ -36,7 +44,34 @@ impl UiGlobalState {
     }
 
     pub(crate) fn text_view_state(&self) -> Option<&Entity<TextViewState>> {
-        self.text_view_state_stack.last()
+        self.text_view_state_stack.last().map(|scope| &scope.state)
+    }
+
+    pub(crate) fn text_view_admission(&self) -> Option<&LinkAdmission> {
+        self.text_view_state_stack
+            .last()
+            .and_then(|scope| scope.admission.as_ref())
+    }
+
+    pub(crate) fn text_view_clamped(&self) -> bool {
+        self.text_view_state_stack.iter().any(|scope| scope.clamped)
+    }
+
+    pub(crate) fn push_text_view(
+        &mut self,
+        state: Entity<TextViewState>,
+        admission: Option<LinkAdmission>,
+        clamped: bool,
+    ) {
+        self.text_view_state_stack.push(TextViewScope {
+            state,
+            admission,
+            clamped,
+        });
+    }
+
+    pub(crate) fn pop_text_view(&mut self) {
+        self.text_view_state_stack.pop();
     }
 
     pub(crate) fn begin_selection_frame(&mut self) {

@@ -118,6 +118,14 @@ impl Styled for TextView {
 }
 
 impl TextView {
+    fn push_scope(&self, state: &Entity<TextViewState>, cx: &mut App) {
+        UiGlobalState::global_mut(cx).push_text_view(
+            state.clone(),
+            self.link_admission.clone(),
+            self.max_lines.is_some() && !self.scrollable,
+        );
+    }
+
     pub(super) fn with_link_context(
         mut self,
         handler: Option<Arc<LinkClickHandlerFn>>,
@@ -571,7 +579,6 @@ impl Element for TextView {
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
             state.link_availability = self.link_availability.clone();
-            state.link_admission = self.link_admission.clone();
             if let Some(prepared) = &self.prepared {
                 state.set_prepared(prepared, cx);
             } else {
@@ -634,11 +641,9 @@ impl Element for TextView {
             .child(state.clone())
             .refine_style(&self.style)
             .into_any_element();
-        UiGlobalState::global_mut(cx)
-            .text_view_state_stack
-            .push(state.clone());
+        self.push_scope(&state, cx);
         let layout_id = el.request_layout(window, cx);
-        UiGlobalState::global_mut(cx).text_view_state_stack.pop();
+        UiGlobalState::global_mut(cx).pop_text_view();
         (layout_id, TextViewLayoutState { state, element: el })
     }
 
@@ -657,11 +662,9 @@ impl Element for TextView {
             state.update(cx, |state, _| state.line_spans.clear());
         }
         // All document descendants share the selection and admission owner.
-        UiGlobalState::global_mut(cx)
-            .text_view_state_stack
-            .push(state.clone());
+        self.push_scope(&state, cx);
         request_layout.element.prepaint(window, cx);
-        UiGlobalState::global_mut(cx).text_view_state_stack.pop();
+        UiGlobalState::global_mut(cx).pop_text_view();
 
         let mut clip_bottom = None;
         if max_lines_active {
@@ -710,9 +713,7 @@ impl Element for TextView {
             state.update(cx, |state, _| state.selection_adapter.begin_frame());
         }
 
-        UiGlobalState::global_mut(cx)
-            .text_view_state_stack
-            .push(state.clone());
+        self.push_scope(&state, cx);
         if let Some(clip_bottom) = prepaint.clip_bottom {
             // Snap the `max_lines` clip to the last whole line that fits, so a
             // line of glyphs is never cut in half.
@@ -725,7 +726,7 @@ impl Element for TextView {
         } else {
             request_layout.element.paint(window, cx);
         }
-        UiGlobalState::global_mut(cx).text_view_state_stack.pop();
+        UiGlobalState::global_mut(cx).pop_text_view();
 
         if self.selectable {
             let (adapter, scroll_offset, content_bounds) = {

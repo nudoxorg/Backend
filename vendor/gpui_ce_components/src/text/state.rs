@@ -167,7 +167,6 @@ pub struct TextViewState {
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
-    pub(super) link_admission: Option<super::text_view::LinkAdmission>,
     pub(super) link_availability: Option<Arc<super::text_view::LinkAvailabilityFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
@@ -266,7 +265,6 @@ impl TextViewState {
             table_actions: None,
             link_click_handler: None,
             link_availability: None,
-            link_admission: None,
             markdown_extensions,
             is_selecting: false,
             auto_scroll: AutoScroll::default(),

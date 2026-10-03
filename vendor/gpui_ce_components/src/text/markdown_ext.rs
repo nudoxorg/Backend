@@ -45,8 +45,8 @@ pub struct MarkdownRenderContext<'a> {
 impl<'a> MarkdownRenderContext<'a> {
     pub(crate) fn new(context: &'a super::node::NodeContext, cx: &App) -> Self {
         let admission = crate::global_state::UiGlobalState::global(cx)
-            .text_view_state()
-            .and_then(|state| state.read(cx).link_admission.clone());
+            .text_view_admission()
+            .cloned();
         Self { context, admission }
     }
 
