@@ -35,7 +35,7 @@ pub(super) struct ShellHost<'a> {
     pub said: RefCell<Vec<SharedString>>,
     pub docs: DocLinks,
     pub dependency: (PageKey, Stamp),
-    pub admit: Rc<dyn Fn(&mut gpui::App) -> bool>,
+    pub admit: facet::controls::button::ActivationAdmission,
 }
 
 impl ShellHost<'_> {
@@ -190,6 +190,10 @@ impl Host for ShellHost<'_> {
         })
     }
 
+    fn link_admission(&self) -> Option<facet::controls::button::ActivationAdmission> {
+        Some(self.admit.clone())
+    }
+
     fn lookup(&self, target: &str) -> Option<Act> {
         match self.docs.resolve(target)? {
             DocDestination::Declaration(symbol) => {
@@ -294,25 +298,19 @@ struct NativeTargetControl {
     handle: Option<gpui::FocusHandle>,
     act: Act,
     activation: facet::anatomy::symbol::docs::Activation,
-    admit: Rc<dyn Fn(&mut gpui::App) -> bool>,
+    admit: facet::controls::button::ActivationAdmission,
     active: bool,
 }
 
 impl gpui::RenderOnce for NativeTargetControl {
     fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
-        use gpui::{InteractiveElement as _, IntoElement as _, StatefulInteractiveElement as _};
+        use gpui::{IntoElement as _, StatefulInteractiveElement as _};
         let control = if self.active {
             let handle = self
                 .handle
                 .unwrap_or_else(|| self.targets.native_handle(&self.id, cx));
-            let admit = self.admit;
-            let control = self.control.capture_any_mouse_down(move |_, window, cx| {
-                // Capture precedes GPUI's bubble-phase automatic focus transfer.
-                if !admit(cx) {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                }
-            });
+            let control =
+                facet::controls::button::capture_activation_admission(self.control, self.admit);
             let activation = self.activation;
             let control = activation.pointer_down(control, self.act.clone());
             let act = self.act;
