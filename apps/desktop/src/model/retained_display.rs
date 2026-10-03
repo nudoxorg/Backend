@@ -31,8 +31,7 @@ impl DisplayAddress {
             Route::Symbol(_) | Route::Orbit(_) | Route::World => None,
         };
         // An unbound legacy Cargo address does not name an exact source scope.
-        if matches!(route, Route::CargoSource(source) if source.browse.context().is_none())
-            || matches!(route, Route::Package(package) if package.cargo.as_ref().is_some_and(|browse| browse.context().is_none())) {
+        if matches!(route, Route::CargoSource(source) if source.browse.context().is_none()) {
             return None;
         }
         Some(Self { route: crate::model::persistence::display_route_claim(route),
@@ -161,8 +160,8 @@ impl RetainedDisplay {
                     }
             }
             (DisplaySource::Cargo { binding, readme_origin, .. }, Route::Package(package)) => package.cargo.as_ref()
-                .and_then(|browse| browse.context()).is_some_and(|context| context.request_binding() == *binding)
-                && readme_origin.as_ref().is_some_and(|origin| origin.package == *package.package.reference()),
+                .is_some_and(|context| context.request_binding() == *binding)
+                && readme_origin.as_ref().is_some_and(|origin| origin.package.as_str() == package.package.as_str()),
             (DisplaySource::Indexed, Route::CargoSource(_)) => false,
             (DisplaySource::Indexed, _) => true,
             (DisplaySource::Cargo { .. }, _) => false,
