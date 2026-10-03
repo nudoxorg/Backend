@@ -1468,6 +1468,7 @@ impl Render for Map {
                     let snapshot = map.links.snapshot(cx);
                     map.visible && map.route.as_ref() == Some(snapshot.route())
                         && is_graph(snapshot.route()) && snapshot.page_overlay().is_none()
+                        && map.mounted_presentation(cx) == Some(MountedGraph::Scene(graph_id))
                         && map.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
                         && map.world_key == key && map.callback_current(&basis, cx)
                         && attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token))

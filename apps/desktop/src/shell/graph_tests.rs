@@ -474,3 +474,58 @@ fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppC
     rig.settle();
     assert!(matches!(rig.route(), Route::Symbol(route) if route.view == View::Code));
 }
+
+#[gpui::test]
+fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter");
+    rig.settle();
+    let name = "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
+    let row = super::tests::native_bounds(&mut rig, "Button", name, true).expect("rendered exact row");
+    let old_node = rig.cx.update(|window, _| window.a11y_tree().expect("native tree").nodes.iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some(name)).map(|(id, _)| *id).expect("AX exact row"));
+    tab_to_graph_control(&mut rig, "Hide declarations");
+    let focused = rig.cx.update(|window, cx| window.focused(cx));
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    rig.cx.simulate_mouse_down(row.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "stale row admission runs before automatic pointer focus");
+    rig.cx.simulate_mouse_up(row.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+    rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+        action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+        target_node: old_node, data: None,
+    }, cx));
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "stale native AX action cannot change current focus");
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same graph");
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
+    rig.repaint();
+    rig.settle();
+    let row = super::tests::native_bounds(&mut rig, "Button", name, true).expect("fresh exact row");
+    rig.cx.simulate_click(row.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1), "current owner remains operable through the shared native path");
+}
+
+#[gpui::test]
+fn selected_native_landmark_and_page_code_survive_caption_no_fit(cx: &mut TestAppContext) {
+    for (view, label) in [(View::Page, "Show Page view"), (View::Code, "Show Code view")] {
+        let (mut rig, _) = canary_native_rig(cx, 663.0, 2.0, facet::tokens::Appearance::Abyss);
+        tab_to_graph_control(&mut rig, "Declarations");
+        rig.native_press("enter");
+        tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+        rig.native_press("enter");
+        rig.settle();
+        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("painted graph");
+        assert_eq!(graph.read_with(rig.cx, |graph, _| graph.stats().selected_labels), 0,
+            "full caption does not fit beside actual measured native chrome at this scale");
+        let landmark = "Selected declaration real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
+        let bounds = super::tests::native_bounds(&mut rig, "Group", landmark, false).expect("full exact selected native landmark survives caption placement failure");
+        assert!(bounds.left() >= gpui::px(0.0) && bounds.right() <= gpui::px(663.0));
+        let action = super::tests::native_bounds(&mut rig, "Button", label, true).expect("fresh selected mode control");
+        rig.cx.simulate_click(action.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert!(matches!(rig.route(), Route::Symbol(route) if route.view == view && route.id.as_str().contains(&"2".repeat(64))));
+    }
+}

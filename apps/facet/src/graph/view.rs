@@ -233,6 +233,7 @@ pub struct GraphView {
     declaration_scroll: ScrollHandle,
     status: Option<(SharedString, Option<SharedString>)>,
     status_open: bool,
+    status_epoch: u64,
     status_scroll: ScrollHandle,
     status_focus: FocusHandle,
     on_peek_action: Option<super::peek::ActionHandler>,
@@ -367,6 +368,7 @@ impl GraphView {
             declaration_scroll: ScrollHandle::new(),
             status: None,
             status_open: false,
+            status_epoch: 0,
             status_scroll: ScrollHandle::new(),
             status_focus: cx.focus_handle(),
             on_peek_action: None,
@@ -394,6 +396,20 @@ impl GraphView {
 
     fn admits_native_interaction(&self, cx: &App) -> bool {
         self.interaction_admission.as_ref().is_none_or(|admit| admit(cx))
+    }
+
+    /// Capture this rendered producer and semantic control visit for native
+    /// admission, before a stale pointer can focus the leaf and on activation.
+    fn control_admission(&self, cx: &Context<Self>, current: impl Fn(&Self) -> bool + 'static) -> crate::controls::button::ActivationAdmission {
+        let owner = cx.entity().downgrade();
+        let producer = self.interaction_admission.clone();
+        Rc::new(move |cx| {
+            if producer.as_ref().is_some_and(|admit| !admit(cx)) { return false; }
+            owner.upgrade().is_some_and(|graph| {
+                let graph = graph.read(cx);
+                graph.admits_native_interaction(cx) && current(graph)
+            })
+        })
     }
 
     /// Where ↵ and double-click go.
@@ -2227,14 +2243,15 @@ impl GraphView {
                 .child(graph_text("graph-projection-status", summary.clone(), ty::MONO_SMALL, measure, palette.ink2, crate::probe::TextOverflow::Wrap));
         if let Some(detail) = detail {
             let owner = cx.entity().downgrade();
-            let admission = self.interaction_admission.clone();
             let open = self.status_open;
+            let epoch = self.status_epoch;
+            let admission = self.control_admission(cx, move |graph| graph.status_open == open && graph.status_epoch == epoch);
             status = status.child(crate::controls::button("graph-coverage-toggle", if open { "Hide coverage" } else { "Graph coverage" }, measure)
-                .focus_handle(self.status_focus.clone()).ghost().disabled(!self.admits_native_interaction(cx)).on_click(move |_, cx| {
-                    if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+                .focus_handle(self.status_focus.clone()).ghost().disabled(!self.admits_native_interaction(cx)).when_current(admission).on_click(move |_, cx| {
                     let _ = owner.update(cx, |graph, cx| {
-                        if !graph.admits_native_interaction(cx) || graph.status_open != open { return; }
+                        if !graph.admits_native_interaction(cx) || graph.status_open != open || graph.status_epoch != epoch { return; }
                         graph.status_open = !open;
+                        graph.status_epoch = graph.status_epoch.checked_add(1).expect("native coverage visit space exhausted");
                         cx.notify();
                     });
                 }));
@@ -2253,11 +2270,11 @@ impl GraphView {
         let open = self.declarations_open;
         let page = self.declaration_page;
         let epoch = self.declaration_epoch;
-        let admission = self.interaction_admission.clone();
+        let admission = self.control_admission(cx, move |graph| graph.declarations_open == open
+            && graph.declaration_page == page && graph.declaration_epoch == epoch);
         let owner = cx.entity().downgrade();
         let toggle = crate::controls::button("graph-declarations-toggle", if open { "Hide declarations" } else { "Declarations" }, measure)
-            .focus_handle(self.declaration_focus[32].clone()).disabled(!active).ghost().on_click(move |_, cx| {
-                if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+            .focus_handle(self.declaration_focus[32].clone()).disabled(!active).ghost().when_current(admission).on_click(move |_, cx| {
                 let _ = owner.update(cx, |graph, cx| {
                     if !graph.admits_native_interaction(cx) || graph.declarations_open != open || graph.declaration_page != page || graph.declaration_epoch != epoch { return; }
                     graph.declarations_open = !open;
@@ -2284,9 +2301,11 @@ impl GraphView {
                 .bg(palette.g1.hsla()).child(graph_text(format!("graph-declaration-label-{index}"), label, ty::MONO_SMALL, measure, palette.ink1, crate::probe::TextOverflow::Wrap));
             if active {
                 let owner = cx.entity().downgrade();
-                let admission = self.interaction_admission.clone();
+                let admission = self.control_admission(cx, move |graph| graph.declarations_open
+                    && graph.declaration_page == page && graph.declaration_epoch == epoch);
+                row = crate::controls::button::capture_activation_admission(row, admission.clone());
                 row = crate::controls::button::native_button(row, focus, move |window, cx| {
-                    if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+                    if !admission(cx) { return; }
                     let _ = owner.update(cx, |graph, cx| {
                         if !graph.admits_native_interaction(cx) || !graph.declarations_open || graph.declaration_page != page || graph.declaration_epoch != epoch { return; }
                         // Same immutable world and exact page; no label-based identity lookup.
@@ -2304,9 +2323,9 @@ impl GraphView {
         for (slot, step, label, allowed) in [(33, -1_isize, "Previous", page > 0), (34, 1, "Next", end < self.world.len())] {
             let owner = cx.entity().downgrade();
             let focus = self.declaration_focus[slot].clone();
-            let admission = self.interaction_admission.clone();
-            paging = paging.child(crate::controls::button(("graph-declaration-page", slot), label, measure).aria_label(format!("{label} declarations")).focus_handle(focus.clone()).disabled(!active || !allowed).on_click(move |window, cx| {
-                if admission.as_ref().is_some_and(|admit| !admit(cx)) { return; }
+            let admission = self.control_admission(cx, move |graph| allowed && graph.declarations_open
+                && graph.declaration_page == page && graph.declaration_epoch == epoch);
+            paging = paging.child(crate::controls::button(("graph-declaration-page", slot), label, measure).aria_label(format!("{label} declarations")).focus_handle(focus.clone()).disabled(!active || !allowed).when_current(admission).on_click(move |window, cx| {
                 let _ = owner.update(cx, |graph, cx| {
                     if !graph.admits_native_interaction(cx) || !graph.declarations_open || graph.declaration_page != page || graph.declaration_epoch != epoch || !allowed { return; }
                     graph.declaration_page = page.saturating_add_signed(step);
@@ -2605,7 +2624,9 @@ impl GraphView {
             .py(px(16.0))
             .max_h(px(reading_plate_height(self.view)))
             .child(body)
-            .id("graph-focus-card");
+            .id("graph-focus-card")
+            .role(gpui::Role::Group)
+            .aria_label(format!("Selected declaration {}::{} · {}. {}", world.qual(i), node.name, node.declaration_word(), node.source_words()));
         // A change of mode carries the card from where it was to where it goes
         // (it was a 588 px jump); its measured bounds stay the target, so the
         // camera frames the room the card leaves in one step.

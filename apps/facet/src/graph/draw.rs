@@ -947,6 +947,22 @@ fn endpoint_fade(view: &View, x: f32, y: f32) -> f32 {
     smooth(f64::from(distance), -24.0, 8.0) as f32
 }
 
+/// Admit a measured selected caption against native chrome and every visible
+/// glyph, including quiet glyphs which have no ordinary text label.
+fn selected_caption_position(view: &View, selected: NodeId, x: f32, y: f32, radius: f32, width: f32, half: f32,
+    glyphs: &[(NodeId, f32, f32, f32)], occupancy: &mut Occupancy) -> Option<(f32, f32)> {
+    for (lx, ly) in [(x - width * 0.5, y - radius - half - 9.0),
+        (x - width * 0.5, y + radius + half + 9.0), (x + radius + 9.0, y), (x - radius - 9.0 - width, y)] {
+        if lx - 3.0 < view.x + 8.0 || lx + width + 3.0 > view.x + view.w - 8.0
+            || ly - half < view.y + 8.0 || ly + half > view.y + view.h - 8.0 { continue; }
+        if glyphs.iter().any(|&(other, nx, ny, nr)| other != selected
+            && nx + nr > lx - 3.0 && nx - nr < lx + width + 3.0
+            && ny + nr > ly - half && ny - nr < ly + half) { continue; }
+        if occupancy.take(lx - 3.0, ly - half, lx + width + 3.0, ly + half) { return Some((lx, ly)); }
+    }
+    None
+}
+
 /// Paints one frame; returns what it drew.
 pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
     paint_with_regions(look, window, cx).stats
@@ -1859,6 +1875,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
         // zoom detail and the prism's reserved centre. Fit it to the actual
         // viewport, try four measured placements, and reserve its accepted
         // bounds before territories and resting labels compete for space.
+        let mut selected_caption = false;
         if let Some(i) = look.focus {
             let node = world.node(i);
             let x = sx(layout.x[i as usize]);
@@ -1868,16 +1885,13 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let label = crate::data::text::shape_fit(&caption, scaled(roles::MODULE, ts), tone(palette.ink0, 1.0), (view.w - 32.0).max(1.0), window);
             let w = label.width();
             let half = (label.ascent() + label.descent()) * 0.5 + 3.0;
-            for (lx, ly) in [(x - w * 0.5, y - radius - half - 9.0), (x - w * 0.5, y + radius + half + 9.0), (x + radius + 9.0, y), (x - radius - 9.0 - w, y)] {
-                if lx < view.x + 8.0 || lx + w > view.x + view.w - 8.0 || ly - half < view.y + 8.0 || ly + half > view.y + view.h - 8.0 { continue; }
-                if glyph_bounds.iter().any(|&(other, nx, ny, nr)| other != i && nx + nr > lx - 3.0 && nx - nr < lx + w + 3.0 && ny + nr > ly - half && ny - nr < ly + half) { continue; }
-                if !occ.take(lx - 3.0, ly - half, lx + w + 3.0, ly + half) { continue; }
+            if let Some((lx, ly)) = selected_caption_position(&view, i, x, y, radius, w, half, &glyph_bounds, &mut occ) {
                 let base = baseline(&label, ly);
                 crate::probe::record_bounds(cx, &"graph-selected-caption".into(), Bounds::new(point(px(lx - 3.0), px(ly - half)), size(px(w + 6.0), px(half * 2.0))));
                 texts.push((label, lx, base));
                 st.labels += 1;
                 st.selected_labels += 1;
-                break;
+                selected_caption = true;
             }
         }
         for &p in &vis_p {
@@ -2044,7 +2058,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 continue;
             }
             tried += 1;
-            if Some(i) == look.focus { continue; }
+            if Some(i) == look.focus && selected_caption { continue; }
             let node = &world.nodes[i as usize];
             let member = node.parent.is_some();
             let sought = look
@@ -2118,9 +2132,15 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
                 super::model::DeclarationRole::Module => format!("{} (module)", node.name).into(),
                 _ => node.name.clone(),
             };
-            let label = shape(name, scaled(r, ts), c, window);
-            let w = label.width();
             let lx = x + s + 5.0;
+            let label = if focused {
+                crate::data::text::shape_fit(&name, scaled(r, ts), c, (view.x + view.w - lx - 8.0).max(1.0), window)
+            } else { shape(name, scaled(r, ts), c, window) };
+            let w = label.width();
+            if focused && (lx + w > view.x + view.w - 8.0
+                || glyph_bounds.iter().any(|&(other, nx, ny, nr)| other != i
+                    && nx + nr > lx - 2.0 && nx - nr < lx + w + 2.0
+                    && ny + nr > y - 7.0 * ts && ny - nr < y + 7.0 * ts)) { continue; }
             if !occ.take(lx - 2.0, y - 7.0 * ts, lx + w + 2.0, y + 7.0 * ts) {
                 continue;
             }
@@ -2357,6 +2377,23 @@ pub fn group(n: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_caption_avoids_dense_quiet_glyphs_and_full_native_chrome() {
+        let view = View { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        // These neighbours are geometric glyphs without label records. Cover
+        // each of the measured placements without covering the selected node.
+        let glyphs = [(1, 200.0, 120.0, 4.0), (2, 200.0, 180.0, 4.0),
+            (3, 255.0, 150.0, 4.0), (4, 145.0, 150.0, 4.0)];
+        assert!(super::selected_caption_position(&view, 0, 200.0, 150.0, 10.0, 80.0, 10.0,
+            &glyphs, &mut super::Occupancy::new(&view)).is_none());
+        assert!(super::selected_caption_position(&view, 0, 200.0, 150.0, 10.0, 80.0, 10.0,
+            &[], &mut super::Occupancy::new(&view)).is_some(), "removing glyph obstacles restores measured placement");
+        let mut covered = super::Occupancy::new(&view);
+        covered.reserve([0.0, 0.0, 400.0, 300.0]);
+        assert!(super::selected_caption_position(&view, 0, 200.0, 150.0, 10.0, 80.0, 10.0,
+            &[], &mut covered).is_none(), "a selected caption never paints over native chrome");
+    }
+
     #[test]
     fn relation_count_ink_is_monotone_compressed_and_bounded() {
         use super::EdgeWeight;
