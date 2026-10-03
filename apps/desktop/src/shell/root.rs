@@ -629,6 +629,7 @@ impl Shell {
         match event {
             StoreEvent::Snapshot(Branch::Settings) => {
                 self.apply_facet(cx);
+                self.project_native_layout(self.links.snapshot(cx).settings().shelf_open, self.zen, cx);
                 // The shelf toggle moves the columns: the root lays them out.
                 cx.notify();
             }
@@ -824,6 +825,32 @@ impl Shell {
         self.reader.update(cx, |_, cx| cx.notify());
     }
 
+    // Resolve intent-time ownership with the same frame factory as paint. Keeping
+    // the projected frame here records a hide/show cycle even if neither state
+    // is painted; it is not another native input clock or producer authority.
+    fn project_native_layout(&mut self, shelf_open: bool, zen: bool, cx: &mut Context<Self>) {
+        let Some(previous) = self.frame else { return; };
+        let frame = Frame::resolve(FrameInput {
+            window: previous.room,
+            shelf_open,
+            zen,
+            shelf_width: self.shelf_width,
+            pinned: self.pinned > 0,
+        }, &self.modes);
+        let old = (ShelfNativeSurface::of(Some(previous), self.shelf_over_open), previous.pins);
+        let new = (ShelfNativeSurface::of(Some(frame), self.shelf_over_open), frame.pins);
+        self.frame = Some(frame);
+        if old != new {
+            self.advance_page_input_generation(InputOwnerChange::Structure, cx);
+        }
+    }
+
+    fn toggle_zen(&mut self, cx: &mut Context<Self>) {
+        self.zen = !self.zen;
+        self.project_native_layout(self.links.snapshot(cx).settings().shelf_open, self.zen, cx);
+        cx.notify();
+    }
+
     fn return_identity_current(&self, saved: &TransientFocusReturn, cx: &App) -> bool {
         let snapshot = self.links.snapshot(cx);
         snapshot.route() == &saved.route && snapshot.overlay() == saved.overlay
@@ -1002,6 +1029,8 @@ impl Shell {
             self.shelf_over_open = !self.shelf_over_open;
             cx.notify();
         } else {
+            let shelf_open = !self.links.snapshot(cx).settings().shelf_open;
+            self.project_native_layout(shelf_open, self.zen, cx);
             self.links.dispatch(Intent::ToggleShelf, cx);
         }
     }
@@ -1898,6 +1927,7 @@ impl Render for Shell {
             &self.modes,
         );
         let previous_surface = ShelfNativeSurface::of(self.frame, self.shelf_over_open);
+        let previous_pins = self.frame.is_some_and(|frame| frame.pins);
         self.frame = Some(frame);
         // The shelf opened over the reader answers a window too narrow to
         // hold it inline. A window that holds it has answered that ask: it
@@ -1905,7 +1935,8 @@ impl Render for Shell {
         if !frame.shelf_overlays {
             self.shelf_over_open = false;
         }
-        let structure_changed = previous_surface != ShelfNativeSurface::of(self.frame, self.shelf_over_open);
+        let structure_changed = previous_surface != ShelfNativeSurface::of(self.frame, self.shelf_over_open)
+            || previous_pins != frame.pins;
         if structure_changed || self.native_producer_changed(cx) {
             // Native ownership includes producer authority, exact serving attachment,
             // and retry attachment. A same-root replacement must also retire GPUI's
@@ -2087,8 +2118,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| { if shell.page_input_allowed(cx) { shell.links.dispatch(Intent::Forward, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| { if shell.page_input_allowed(cx) { shell.links.dispatch(Intent::ZoomOut, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| shell.with_background_input(|shell| {
-                shell.zen = !shell.zen;
-                cx.notify();
+                shell.toggle_zen(cx);
             })))
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.with_background_input(|shell| shell.toggle_shelf(cx))))
             .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
@@ -2416,6 +2446,65 @@ mod responsive_shelf_scene_tests {
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Shelf tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
         tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == label && node["aria"]["selected"] == true)
+    }
+
+    #[gpui::test]
+    fn native_shelf_press_cannot_survive_unpainted_toggle_pairs(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            for zen in [false, true] {
+                let scale = f32::from(percent) / 100.0;
+                let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0 * scale, 1400.0);
+                let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+                rig.go(Intent::ZoomTo { display, percent });
+                let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native current tab");
+                rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
+                rig.settle();
+                let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("native held tab");
+                let old = scope(&mut rig, false);
+                rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+                let renders = rig.shell.read_with(rig.cx, |shell, _| shell.renders);
+                // Actual action dispatch, not direct callbacks or seeded state;
+                // the two ownership transitions have no intervening draw.
+                rig.cx.update(|window, cx| {
+                    if zen {
+                        window.dispatch_action(Box::new(keys::Zen), cx);
+                        window.dispatch_action(Box::new(keys::Zen), cx);
+                    } else {
+                        window.dispatch_action(Box::new(keys::ToggleShelf), cx);
+                        window.dispatch_action(Box::new(keys::ToggleShelf), cx);
+                    }
+                });
+                rig.cx.run_until_parked();
+                assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.renders), renders, "pair must exercise the no-paint boundary");
+                assert!(!admitted(&mut rig, &old), "unpainted ownership cycle retires the old receipt");
+                rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+                rig.settle();
+                assert!(selected_tab(&mut rig, "Used by"), "old held press cannot activate after an unpainted cycle");
+                let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh native tab");
+                rig.cx.simulate_click(rests.center(), gpui::Modifiers::none());
+                rig.settle();
+                assert!(selected_tab(&mut rig, "Rests on"), "fresh gesture remains admitted");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn native_local_settings_press_survives_unrelated_settings_publication(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
+            let mut rig = super::super::tests::rig(cx, None, 1440.0 * scale, 1400.0 * scale);
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance));
+            let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("actual local motion control");
+            rig.cx.simulate_mouse_down(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            let scope = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            rig.go(Intent::SetAppearance(crate::model::AppearancePreference::Glacier));
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope()), scope, "appearance does not change native layout ownership");
+            rig.cx.simulate_mouse_up(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.settle();
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), crate::model::MotionPreference::Full);
+        }
     }
 
     #[gpui::test]
