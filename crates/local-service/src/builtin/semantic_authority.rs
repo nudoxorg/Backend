@@ -973,6 +973,15 @@ struct CompilerImageAdmission {
     recipe: CompileRecipeFact,
 }
 
+/// One image fact joins its independently authenticated CAS identity to its
+/// reopened source provenance, so consumers cannot accidentally cross-pair
+/// parallel maps by ordinal.
+#[derive(Clone, Copy)]
+struct AdmittedCompilerImage {
+    object_id: ObjectId,
+    provenance: CompilerImageAdmission,
+}
+
 impl CompilerImageAdmission {
     fn from_reopened(bytes: &[u8]) -> Result<Self, BuiltinModelError> {
         let reopened = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
@@ -1007,26 +1016,34 @@ impl CompilerImageAdmission {
 
 fn admit_compiler_image_provenance(
     store: &FileStore,
-    object_id: ObjectId,
+    gc_pin: &backend_store::GcPinGuard,
     image: &CompilerImageMember,
-) -> Result<CompilerImageAdmission, BuiltinModelError> {
+) -> Result<AdmittedCompilerImage, BuiltinModelError> {
     store
-        .with_verified_object(object_id, |object| {
-            if object.schema() != COMPILER_SEMANTIC_IMAGE_SCHEMA
-                || u32::try_from(object.bytes().len()).ok() != Some(image.byte_length())
-            {
-                return Err(backend_store::StoreError::Corrupt);
-            }
-            let identity =
+        .with_verified_object_claim_pinned(
+            gc_pin,
+            UntrustedObjectId::from_bytes(*image.object_id()),
+            |object| {
+                if object.schema() != COMPILER_SEMANTIC_IMAGE_SCHEMA
+                    || u32::try_from(object.bytes().len()).ok() != Some(image.byte_length())
+                {
+                    return Err(backend_store::StoreError::Corrupt);
+                }
+                let identity =
                 ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
                     object.bytes(),
                 );
-            if identity.as_ref() != image.semantic_image_identity() {
-                return Err(backend_store::StoreError::Corrupt);
-            }
-            CompilerImageAdmission::from_reopened(object.bytes())
-                .map_err(|_| backend_store::StoreError::Corrupt)
-        })
+                if identity.as_ref() != image.semantic_image_identity() {
+                    return Err(backend_store::StoreError::Corrupt);
+                }
+                let provenance = CompilerImageAdmission::from_reopened(object.bytes())
+                    .map_err(|_| backend_store::StoreError::Corrupt)?;
+                Ok(AdmittedCompilerImage {
+                    object_id: object.id(),
+                    provenance,
+                })
+            },
+        )
         .map_err(|error| {
             BuiltinModelError(format!(
                 "verify admitted compiler image provenance: {error:?}"
@@ -1081,21 +1098,17 @@ impl AdmittedCompilation {
             .map_err(|error| {
                 BuiltinModelError(format!("read admitted compiler output closure: {error:?}"))
             })?;
-        let mut image_ids = BTreeMap::new();
-        let mut image_admissions = BTreeMap::new();
+        let gc_pin = store.pin_garbage_collection().map_err(|error| {
+            BuiltinModelError(format!("pin admitted compiler output objects: {error:?}"))
+        })?;
+        let mut admitted_images = BTreeMap::new();
         let mut expected_members = BTreeSet::new();
         for image in metadata.images() {
             let ordinal = image.artifact_ordinal();
-            let object_id = store
-                .verify_object_claim(UntrustedObjectId::from_bytes(*image.object_id()))
-                .map_err(|error| {
-                    BuiltinModelError(format!("verify admitted compiler image: {error:?}"))
-                })?
-                .id();
-            expected_members.insert(object_id);
-            if image_ids.insert(ordinal, object_id).is_some()
+            let admitted = admit_compiler_image_provenance(store, &gc_pin, image)?;
+            if admitted_images.contains_key(&ordinal)
                 || !payload_index
-                    .contains_object_id(object_id)
+                    .contains_object_id(admitted.object_id)
                     .map_err(|error| {
                         BuiltinModelError(format!("check compiler image membership: {error:?}"))
                     })?
@@ -1105,9 +1118,10 @@ impl AdmittedCompilation {
                         .to_owned(),
                 ));
             }
-            let image_admission = admit_compiler_image_provenance(store, object_id, image)?;
-            image_admissions.insert(ordinal, image_admission);
+            expected_members.insert(admitted.object_id);
+            admitted_images.insert(ordinal, admitted);
         }
+        drop(gc_pin);
         for artifact in planes.artifacts() {
             let image_key = artifact.image_key();
             let ordinal = image_key.artifact_ordinal();
@@ -1127,14 +1141,9 @@ impl AdmittedCompilation {
                             "reopen admitted semantic-plane manifest: {error}"
                         ))
                     })?;
-            let image_id = image_ids.get(&ordinal).ok_or_else(|| {
+            let admitted_image = admitted_images.get(&ordinal).ok_or_else(|| {
                 BuiltinModelError(
                     "semantic-plane artifact has no corresponding compiler image".to_owned(),
-                )
-            })?;
-            let image_admission = image_admissions.get(&ordinal).ok_or_else(|| {
-                BuiltinModelError(
-                    "semantic-plane artifact has no reopened compiler image provenance".to_owned(),
                 )
             })?;
             if manifest.root() != image_key.manifest_root()
@@ -1142,9 +1151,9 @@ impl AdmittedCompilation {
                 || manifest.input().input_root() != attempt.input_digest()
                 || manifest.build().profile() != key.profile()
                 || !runtime_admission.matches(&manifest.build())
-                || !image_admission.matches(&manifest.build())
+                || !admitted_image.provenance.matches(&manifest.build())
                 || !payload_index
-                    .contains_object_id(*image_id)
+                    .contains_object_id(admitted_image.object_id)
                     .map_err(|error| {
                         BuiltinModelError(format!("check compiler image membership: {error:?}"))
                     })?
@@ -4207,8 +4216,12 @@ mod tests {
         let foreign_member =
             CompilerImageMember::from_verified_object(0, verified_first_object, second_identity)
                 .expect("construct typed metadata with a foreign image identity");
+        let image_gc_pin = authority
+            .store
+            .pin_garbage_collection()
+            .expect("pin wrong-image admission fixture");
         assert!(
-            admit_compiler_image_provenance(&authority.store, first_object_id, &foreign_member)
+            admit_compiler_image_provenance(&authority.store, &image_gc_pin, &foreign_member)
                 .is_err(),
             "a valid CAS object cannot be admitted under another image's identity"
         );
