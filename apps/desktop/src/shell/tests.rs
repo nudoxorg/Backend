@@ -2620,9 +2620,11 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     rig.settle();
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "an unavailable pinned symbol does not route arbitrary A or B");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
-    rig.graph.store.read_with(rig.cx, |store, cx| {
+    let store = rig.graph.store.clone();
+    rig.cx.update(|window, cx| {
+        let store = store.read(cx);
         let notice = store.notice().expect("hidden pinned failure has visible current-page feedback");
-        let (lines, _) = super::status::feedback_lines(&store.snapshot(), None, Some(notice), px(1440.0), cx);
+        let (lines, _) = super::status::feedback_lines(&store.snapshot(), None, Some(notice), px(1440.0), window, cx);
         assert!(lines.join("").contains("no exact match"));
     });
     rig.go(Intent::Navigate(page_route("RelationLabel")));
