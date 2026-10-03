@@ -899,7 +899,7 @@ pub enum IndexOperationFailureReason {
     Refused,
     /// The owner could not complete the operation before commit.
     WorkerFailed,
-    /// The bounded durable operation ledger could not admit a new key.
+    /// A capacity refusal that was durably recorded for an admitted key.
     LedgerFull,
 }
 
@@ -962,6 +962,15 @@ impl IndexOperationStatus {
 pub enum IndexOperationObservation {
     /// The exact key was accepted and has retained evidence.
     Known(IndexOperationStatus),
+    /// The key was consumed, but its full terminal receipt has aged out of the
+    /// bounded detail window. It can never be accepted again.
+    OutsideReceiptWindow {
+        /// Key that was queried.
+        operation_key: IndexOperationKey,
+        /// Canonical package and execution request digest retained as a compact tombstone.
+        #[serde(with = "hex_32")]
+        request_digest: [u8; 32],
+    },
     /// No retained operation has this key. The caller must not infer success.
     Unknown {
         /// Key that was queried.
@@ -973,6 +982,7 @@ impl IndexOperationObservation {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
         match self {
             Self::Unknown { .. } => Ok(()),
+            Self::OutsideReceiptWindow { .. } => Ok(()),
             Self::Known(status) => {
                 match &status.state {
                     IndexOperationState::Active { ticket, .. }
@@ -3735,6 +3745,24 @@ mod tests {
             encoded
                 .windows(key_hex.len())
                 .any(|window| window == key_hex.as_bytes())
+        );
+        let outside_window = IndexOperationObservation::OutsideReceiptWindow {
+            operation_key: key,
+            request_digest: index_operation_request_digest(
+                &PackageReference::parse("/workspace/demo").expect("package"),
+                crate::CompileExecutionIntent::Interactive,
+            ),
+        };
+        let outside_reply = SurfaceReply::IndexOperationStatus(outside_window.clone());
+        outside_reply
+            .admit(CommandId::IndexProgress)
+            .expect("archived operation remains a consumed-key receipt");
+        assert_eq!(
+            serde_json::from_slice::<IndexOperationObservation>(
+                &serde_json::to_vec(&outside_window).expect("outside-window json")
+            )
+            .expect("outside-window decode"),
+            outside_window
         );
 
         let command = SurfaceCommand::IndexOperationStart {
