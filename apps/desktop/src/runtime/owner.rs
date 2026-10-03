@@ -207,18 +207,12 @@ impl OwnerGate {
         (!inner.observation_suspended && matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })).then_some(inner.attachment)
     }
 
-    /// Publication of any serving owner, including an embedded owner that
-    /// restarted at the same producer root. This does not report socket loss.
-    pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
-        let inner = self.lock();
-        matches!(inner.state, OwnerState::Ready { .. }).then_some(inner.epoch)
-    }
-
     /// Read readiness and attachment together. Separate state/epoch reads
     /// could combine two different owners during a rapid same-root restart.
     pub(crate) fn serves_attachment(&self, expected: Option<Epoch>) -> bool {
         let inner = self.lock();
-        matches!(inner.state, OwnerState::Ready { .. }) && Some(inner.epoch) == expected
+        !inner.closed && !inner.observation_suspended
+            && matches!(inner.state, OwnerState::Ready { .. }) && Some(inner.attachment) == expected
     }
 
     /// Reports confirmed endpoint loss only for the attached generation that
