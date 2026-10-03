@@ -16,7 +16,7 @@ use crate::shell::reader::Reader;
 use facet::{Set as _, Space, tokens::ty};
 use gpui::{
     App, Context, ElementId, InteractiveElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    StatefulInteractiveElement, Styled, Window, WindowId, div, px,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
