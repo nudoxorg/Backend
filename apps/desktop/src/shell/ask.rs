@@ -15,7 +15,7 @@
 //! draws the plate. The field is `gpui_component`'s input (IME) until the
 //! facet input lands.
 
-use super::kit::{indexed_result_route, kind_of, text};
+use super::kit::{kind_of, search_result_route, text};
 use super::region::Links;
 use crate::core::{ReadHoldReason, Resource, ResourceAdmission, ResourceTerminal, VersionedRoot, admit_resource};
 use crate::model::pages::{KeyError, MatchReason, PageKey, SearchPage, SearchQuery, SearchRow};
@@ -621,10 +621,7 @@ fn result_choice(row: &SearchRow, query: &str, here: Option<&str>, hold: Option<
 /// The producer's package claim and coordinate must name the same exact
 /// destination before a live row may advertise navigation.
 fn row_route(row: &SearchRow) -> Option<Route> {
-    let package = row.decl.coordinate.package()?;
-    (row.package.as_deref() == Some(package.as_str()))
-        .then(|| indexed_result_route(&package, &row.decl.coordinate, crate::navigation::View::Page))
-        .flatten()
+    search_result_route(row, crate::navigation::View::Page)
 }
 
 /// Recheck the live owner at the input event, not only when the Link painted.
@@ -1276,6 +1273,12 @@ mod tests {
         assert!(super::row_route(&row).is_none(), "a foreign package claim must never advertise a link");
         row.package = None;
         assert!(super::row_route(&row).is_none(), "a missing claim is not authority either");
+        row.decl = DeclRef::from_label("external semantic target",
+            Some(backend_library::symbol_key("external-target")), None, None)
+            .expect("relation endpoint display label");
+        row.package = Some(Arc::from("external semantic target"));
+        assert!(super::row_route(&row).is_none(),
+            "a Symbol row with a root-looking display label is not a package page");
     }
 
     #[test]

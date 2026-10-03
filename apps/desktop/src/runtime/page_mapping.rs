@@ -31,7 +31,7 @@ use backend_library::{
     SemanticLinkTarget, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SurfaceReply,
     SymbolKey, ViewSnapshot,
 };
-use backend_present::{CoverageLine, Language, TokenKind};
+use backend_present::{CoverageLine, Identity, IdentityShape, Language, TokenKind};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -2329,7 +2329,15 @@ pub fn search_rows(
 ) -> SearchPage {
     // A snapshot holds its rows in key order; the owner's ranking is each
     // row's score (higher first). Rows without one keep their order, after.
-    let mut ranked = rows.iter().collect::<Vec<_>>();
+    // External semantic targets are relation endpoints, not readable package
+    // or declaration pages. Their producer rows have Symbol identities but
+    // only a generic display label; treating that label as a package root
+    // makes indistinguishable broken search links for one source.
+    let mut ranked = rows.iter().filter(|row| {
+        matches!((row.id, Identity::parse(&row.label).shape()),
+            (RowId::Package(_), IdentityShape::Package)
+                | (RowId::Symbol(_), IdentityShape::Module | IdentityShape::Declaration | IdentityShape::Semantic))
+    }).collect::<Vec<_>>();
     ranked.sort_by_key(|row| std::cmp::Reverse(row.score));
     let rows = ranked
         .into_iter()
@@ -4213,6 +4221,62 @@ mod tests {
             Some(GapReason::NotServed)
         );
         assert!(page.next.is_none());
+    }
+
+    #[test]
+    fn external_semantic_endpoints_do_not_become_indistinguishable_package_results() {
+        let mut rows = (0..8).map(|at| Row::new(
+            RowId::Symbol(key(&format!("external-{at}"))),
+            basis(),
+            "external semantic target",
+        )).collect::<Vec<_>>();
+        rows.push(Row::new(
+            RowId::Package(backend_library::package_key(PRESENT)), basis(), PRESENT,
+        ));
+        rows.push(row(&RowSpec {
+            label: present("error.rs:1::Error"),
+            kind: DeclarationKind::Enum,
+            signature: None,
+            parent: None,
+            doc: None,
+            site: Some(("error.rs", 1)),
+        }));
+        let external_only = SearchPage {
+            query: Arc::from("Error"),
+            rows: Arc::from([SearchRow {
+                rank: 0,
+                decl: DeclRef::from_row(&rows[0]).expect("external producer row"),
+                package: Some(Arc::from("external semantic target")),
+                score: Known::unknown(GapReason::NotServed, "score unavailable"),
+                signature: Known::unknown(GapReason::NotServed, "signature unavailable"),
+                snippet: None,
+                reason: MatchReason::Producer,
+            }]),
+            coverage: CoverageLine::new(&[backend_library::Coverage::Complete], Some(1)),
+            next: None,
+        };
+        let refused = crate::runtime::browse_views::prepare_find(
+            "Error", &Known::Known(external_only), &[], &Known::Known(()),
+        );
+        assert!(refused.candidates.is_empty() && refused.loose.is_empty(),
+            "Find cannot turn a generic external endpoint label into a package result");
+        let page = search_rows("Error", &rows, &[backend_library::Coverage::Complete], None, 0);
+        assert_eq!(page.rows.len(), 2, "relation-only external endpoints are not destinations");
+        assert_eq!(page.rows.iter().map(|row| row.rank).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(page.rows[0].decl.coordinate.as_str(), PRESENT);
+        assert!(matches!(crate::shell::kit::search_result_route(&page.rows[0], crate::navigation::View::Page),
+            Some(crate::navigation::Route::Package(_))));
+        assert!(matches!(crate::shell::kit::search_result_route(&page.rows[1], crate::navigation::View::Page),
+            Some(crate::navigation::Route::Symbol(_))));
+        let prepared = crate::runtime::browse_views::prepare_find(
+            "Error", &Known::Known(page), &[], &Known::Known(()),
+        );
+        assert_eq!(prepared.candidates.len(), 1);
+        assert_eq!(prepared.candidates[0].answers.len(), 2);
+        assert!(prepared.loose.is_empty());
+        let external = SymbolRef::new(&format!("{PRESENT}::external::opaque-id")).expect("external address");
+        let package = external.package().expect("project portion");
+        assert!(crate::shell::kit::indexed_result_route(&package, &external, crate::navigation::View::Page).is_none());
     }
 
     #[test]

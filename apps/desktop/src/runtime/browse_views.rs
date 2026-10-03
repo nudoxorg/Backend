@@ -90,7 +90,8 @@ pub fn prepare_find(query: &str, answers: &Known<SearchPage>, packages: &[FindPa
     }).collect::<Vec<_>>();
     let mut loose = Vec::new();
     if let Some(answers) = answers.known() {
-        for row in answers.rows.iter() {
+        for row in answers.rows.iter().filter(|row|
+            crate::shell::kit::search_result_route(row, crate::navigation::View::Page).is_some()) {
             if let Some(package) = row.decl.coordinate.package() {
                 let key = SharedString::from(package.as_str().to_owned());
                 let at = candidates.iter().position(|candidate| candidate.key == key).unwrap_or_else(|| {

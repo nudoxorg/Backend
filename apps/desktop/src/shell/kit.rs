@@ -292,9 +292,33 @@ pub(crate) fn indexed_result_route(
             .then(|| package_route(package))
             .flatten();
     }
+    if !matches!(symbol.identity().shape(),
+        backend_present::IdentityShape::Module
+            | backend_present::IdentityShape::Declaration
+            | backend_present::IdentityShape::Semantic)
+    {
+        return None;
+    }
     symbol.as_str().strip_prefix(package.as_str())
         .filter(|tail| tail.starts_with("::"))
         .and_then(|_| symbol_view_route(package.as_str(), symbol, view, None))
+}
+
+/// Admit a search row using both the producer's package claim and the
+/// declaration's typed shape. A Symbol row with a root-looking display label
+/// cannot borrow the package-root destination of an actual Package row.
+pub(crate) fn search_result_route(
+    row: &crate::model::pages::SearchRow,
+    view: crate::navigation::View,
+) -> Option<crate::navigation::Route> {
+    let package = crate::model::pages::PackageRef::parse(row.package.as_deref()?).ok()?;
+    if row.decl.coordinate.package()?.reference() != package.reference() {
+        return None;
+    }
+    if row.decl.coordinate.as_str() == package.as_str() && row.decl.key.is_some() {
+        return None;
+    }
+    indexed_result_route(&package, &row.decl.coordinate, view)
 }
 
 /// The package route for a package.
