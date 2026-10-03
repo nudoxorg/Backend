@@ -34,7 +34,7 @@
     {
       "at_ms": 350,
       "kind": "key",
-      "keycode": 123,
+      "keycode": 33,
       "modifiers": [
         "command"
       ],
