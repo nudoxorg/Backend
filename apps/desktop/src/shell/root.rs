@@ -1675,7 +1675,7 @@ impl Render for Shell {
         let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
             super::status::feedback_height(
                 &snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width,
-                snapshot.session().hand.held().len(), f32::from(frame.status), cx,
+                snapshot.session().hand.held().len(), f32::from(frame.status), window, cx,
             )
         } else {
             f32::from(frame.status)

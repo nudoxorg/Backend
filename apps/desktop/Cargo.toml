@@ -19,6 +19,7 @@ path = "src/bin/backend-desktop-gui-harness.rs"
 required-features = ["visual-harness"]
 
 [dependencies]
+blake3.workspace = true
 anyhow.workspace = true
 async-channel.workspace = true
 # Unpacks a registry archive from the local cargo cache (`host::registry`).
@@ -85,7 +86,6 @@ backend-gui-harness = { path = "../../tools/gui-harness" }
 backend-facet = { path = "../facet", features = ["release-fixture"] }
 # `write_state_from_another_build`: the host test of a workspace an earlier build wrote.
 backend-local-service = { path = "../../crates/local-service", features = ["test-support"] }
-blake3.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 proptest.workspace = true
 gpui = { workspace = true, features = ["test-support"] }

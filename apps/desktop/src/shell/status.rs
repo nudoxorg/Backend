@@ -46,24 +46,24 @@ pub(crate) fn display_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtim
     (wrap_identifier(&focus.status(), &role, room, cx), role)
 }
 
-pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
-    let feedback = feedback(snapshot, focus, notice, width, cx);
+pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, window: &Window, cx: &App) -> (Vec<String>, TypeRole) {
+    let feedback = feedback(snapshot, focus, notice, width, window, cx);
     (feedback.lines, feedback.role)
 }
 
-fn feedback(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> Feedback {
+fn feedback(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, window: &Window, cx: &App) -> Feedback {
     let notice = notice.filter(|notice| notice.active(snapshot));
     let message = feedback_message(snapshot, focus, notice);
     let measure = Measure::new(width, &cx.facet());
     let role = measure.role(ty::MONO_SMALL);
     let gap = measure.space(Space::Roomy);
     let retry = notice.is_some_and(|notice| notice.retry.is_some());
-    let retry_room = if retry { button_room("Try again", &measure, cx) + gap } else { px(0.0) };
+    let retry_room = if retry { button_room("Try again", &measure, window) + gap } else { px(0.0) };
     let room = (width - gap * 2.0 - retry_room).max(px(1.0));
     let mut lines = wrap_identifier(&message, &role, room, cx);
     let clipped = lines.len() > NOTICE_LINES;
     if clipped {
-        let room = (room - button_room("Details", &measure, cx) - gap).max(px(1.0));
+        let room = (room - button_room("Details", &measure, window) - gap).max(px(1.0));
         lines = wrap_identifier(&message, &role, room, cx);
         lines.truncate(NOTICE_LINES);
         if let Some(last) = lines.last_mut() {
@@ -81,14 +81,14 @@ fn feedback_message(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph
     )
 }
 
-fn button_room(label: &str, measure: &Measure, cx: &App) -> Pixels {
-    facet::controls::button::label_width(label, facet::Control::Small, measure, cx)
+fn button_room(label: &str, measure: &Measure, window: &Window) -> Pixels {
+    facet::controls::button::label_width(label, facet::Control::Small, measure, window)
 }
 
 /// The shell and rendered foot consume this same bounded presentation. Held
 /// marks get a separate line, preserving recovery controls at narrow widths.
-pub(crate) fn feedback_height(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cards: usize, one_line: f32, cx: &App) -> f32 {
-    let (lines, role) = feedback_lines(snapshot, focus, notice, width, cx);
+pub(crate) fn feedback_height(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cards: usize, one_line: f32, window: &Window, cx: &App) -> f32 {
+    let (lines, role) = feedback_lines(snapshot, focus, notice, width, window, cx);
     height(lines.len(), &role, one_line) + if cards == 0 { 0.0 } else { one_line }
 }
 
@@ -316,7 +316,7 @@ impl Render for Status {
 
 impl Status {
     fn render_feedback(&mut self, snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, measure: &Measure, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let feedback = feedback(snapshot, focus, notice, self.core.width(), cx);
+        let feedback = feedback(snapshot, focus, notice, self.core.width(), window, cx);
         let palette = cx.facet().palette();
         if self.details.as_deref() != Some(&feedback.message) { self.details = None; }
         let details_focus = window.use_keyed_state("status-details-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();

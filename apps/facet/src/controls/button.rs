@@ -31,9 +31,9 @@ use crate::motion::EASE;
 use crate::tokens::motion::EMPH;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    App, ColorExt, ElementId, FocusHandle, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    App, ColorExt, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
     MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
-    Pixels, TextRun, Window, black, div, layer, px,
+    Pixels, Window, div, layer, px,
 };
 use std::rc::Rc;
 
@@ -242,22 +242,10 @@ fn metrics(size: Control) -> (TypeRole, f32) {
 /// Hosts reserve this room before wrapping neighboring messages. Keep it
 /// paired with the label and plate metrics in `Button::render`.
 #[must_use]
-pub fn label_width(label: &str, size: Control, measure: &Measure, cx: &App) -> Pixels {
+pub fn label_width(label: &str, size: Control, measure: &Measure, window: &Window) -> Pixels {
     let (role, _) = metrics(size);
     let role = measure.role(role);
-    let run = TextRun {
-        len: label.len(),
-        font: Font {
-            family: SharedString::new_static(crate::fonts::family(role)),
-            features: crate::fonts::features(role),
-            fallbacks: None,
-            weight: FontWeight(role.weight),
-            style: if role.italic { FontStyle::Italic } else { FontStyle::Normal },
-        },
-        color: black(), background_color: None, underline: None, strikethrough: None,
-        letter_spacing: (role.tracking != 0.0).then(|| px(role.tracking * role.size)),
-    };
-    let words = cx.text_system().shape_line(SharedString::from(label.to_owned()), px(role.size), &[run], None).width;
+    let words = crate::probe::natural_width(&SharedString::from(label.to_owned()), role, 1.0, window);
     let height = measure.control(size);
     height.max(words + height * 0.86)
 }
