@@ -98,7 +98,11 @@ pub use local_types::{
 
 #[path = "../transport/client.rs"]
 mod client;
-pub use client::LocalControlClient;
+pub use client::{
+    LocalControlClient, LocalControlExchangeDecision, LocalControlExchangeError,
+    LocalControlExchangeFailure, LocalControlExchangePhase, LocalControlExchangeProgress,
+    PendingLocalControlExchange,
+};
 
 #[path = "../transport/local_codec.rs"]
 mod local_codec;

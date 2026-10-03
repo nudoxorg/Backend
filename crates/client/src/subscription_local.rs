@@ -20,6 +20,7 @@ use backend_library::{CoverageCapability, Cursor, CursorRead, SnapshotHydrator, 
 #[cfg(any(unix, windows))]
 use backend_replication::{
     LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR, LocalControlClient, LocalControlError,
+    LocalControlExchangeDecision, LocalControlExchangeError, LocalControlExchangeProgress,
     LocalControlLimits, LocalControlRequest, LocalControlResponse, LocalSubscriptionId,
     LocalSubscriptionOperation, LocalSubscriptionRequest, LocalSubscriptionResponse,
     ReplicationError,
@@ -27,11 +28,41 @@ use backend_replication::{
 #[cfg(any(unix, windows))]
 use std::{
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(any(unix, windows))]
 const CONNECTION_FRAME_BUDGET: usize = 240;
+
+/// Failure starting or completing one resumable local-control request.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalSubscriptionExchangeError {
+    /// Connection setup or request admission failed before the exchange began.
+    Setup(ClientError),
+    /// One in-flight request reached a typed terminal condition.
+    Exchange(LocalControlExchangeError),
+}
+
+#[cfg(any(unix, windows))]
+impl std::fmt::Display for LocalSubscriptionExchangeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Setup(error) => write!(formatter, "local subscription setup: {error}"),
+            Self::Exchange(error) => error.fmt(formatter),
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl std::error::Error for LocalSubscriptionExchangeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Setup(error) => Some(error),
+            Self::Exchange(error) => Some(error),
+        }
+    }
+}
 
 #[cfg(any(unix, windows))]
 fn control_limits() -> LocalControlLimits {
@@ -140,7 +171,7 @@ impl LocalSubscriptionTransport {
     }
 
     fn prepare_request(&mut self) -> Result<(), ClientError> {
-        if self.frames_on_connection < CONNECTION_FRAME_BUDGET {
+        if self.frames_on_connection < CONNECTION_FRAME_BUDGET && !self.client.requires_reconnect() {
             return Ok(());
         }
         let endpoint = self.endpoint.as_deref().ok_or_else(|| {
@@ -156,6 +187,8 @@ impl LocalSubscriptionTransport {
         self.client = LocalControlClient::new(stream, control_limits());
         if let Some(interrupt) = &self.interrupt {
             interrupt.replace(self.client.stream())?;
+        } else {
+            self.interrupt = Some(crate::TransportInterrupt::new(self.client.stream())?);
         }
         self.peer = Some(peer);
         self.frames_on_connection = 0;
@@ -238,6 +271,58 @@ impl LocalSubscriptionTransport {
         let response = self.client.request(request).map_err(map_control_error)?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
         Ok(response)
+    }
+
+    /// Sends exactly one request and resumes its byte offsets across short
+    /// readiness timeouts until the exact response arrives or the absolute
+    /// deadline/cancellation ends the exchange.
+    ///
+    /// The stream's configured I/O timeout controls tick granularity. The
+    /// callback runs before each potentially blocking socket operation and
+    /// after readiness timeouts; keep it short and nonblocking. A stalled,
+    /// cancelled, closed, or malformed in-flight exchange retires this socket
+    /// immediately, so a later request must reconnect instead of reusing an
+    /// ambiguous frame boundary. A stall does not prove the producer rejected
+    /// the request; subscription callers must resume their exact retained
+    /// lease or reacquire and fully admit a root.
+    ///
+    /// # Errors
+    ///
+    /// Returns a setup failure before bytes are sent, or a typed terminal
+    /// failure carrying the request correlation and last byte offsets.
+    pub fn request_with_tick(
+        &mut self,
+        request: &LocalControlRequest,
+        deadline: Instant,
+        tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
+    ) -> Result<LocalControlResponse, LocalSubscriptionExchangeError> {
+        self.prepare_request()
+            .map_err(LocalSubscriptionExchangeError::Setup)?;
+        let result = {
+            let mut exchange = self
+                .client
+                .begin_exchange(request, deadline)
+                .map_err(|error| LocalSubscriptionExchangeError::Setup(map_control_error(error)))?;
+            exchange.wait_with(tick)
+        };
+        match result {
+            Ok(response) => {
+                self.frames_on_connection = self.frames_on_connection.saturating_add(1);
+                Ok(response)
+            }
+            Err(error) => {
+                self.retire_connection();
+                Err(LocalSubscriptionExchangeError::Exchange(error))
+            }
+        }
+    }
+
+    fn retire_connection(&mut self) {
+        if let Some(interrupt) = self.interrupt.take() {
+            interrupt.interrupt();
+        }
+        self.peer = None;
+        self.frames_on_connection = CONNECTION_FRAME_BUDGET;
     }
 
     /// Sends one bounded request and admits the producer certificate attached
@@ -599,5 +684,46 @@ impl CertifiedSubscriptionTransport for LocalSubscriptionTransport {
         capability: Option<CoverageCapability>,
     ) -> Result<CursorRead, ClientError> {
         self.exchange_against(request, root, capability)
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::expect_used, clippy::panic)]
+mod exchange_tests {
+    use super::*;
+    use backend_replication::{LocalControlExchangeFailure, LocalControlExchangePhase};
+    use std::io::Read as _;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn terminal_exchange_closes_exact_socket_and_fails_closed_without_endpoint() {
+        let (stream, mut peer) = UnixStream::pair().expect("local socket pair");
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let request = LocalControlRequest::Subscribe {
+            request_id: 42,
+            cursor: Box::from(*b"cursor"),
+            credit: 1,
+        };
+        let error = transport
+            .request_with_tick(&request, Instant::now() + Duration::from_secs(1), |_| {
+                LocalControlExchangeDecision::Cancel
+            })
+            .expect_err("exchange cancelled before writing");
+        assert!(matches!(
+            error,
+            LocalSubscriptionExchangeError::Exchange(exchange)
+                if exchange.failure == LocalControlExchangeFailure::Cancelled
+                    && exchange.progress.phase == LocalControlExchangePhase::Sending
+                    && exchange.progress.write_offset == 0
+        ));
+        let mut byte = [0_u8; 1];
+        assert_eq!(peer.read(&mut byte).expect("peer observes close"), 0);
+        let next = transport.request_with_tick(&request, Instant::now() + Duration::from_secs(1), |_| {
+            LocalControlExchangeDecision::Continue
+        });
+        assert!(matches!(
+            next,
+            Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(_)))
+        ));
     }
 }

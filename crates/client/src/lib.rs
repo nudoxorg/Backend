@@ -27,7 +27,7 @@ pub use subscription::{
     snapshot_page_from_bytes, snapshot_page_from_value,
 };
 #[cfg(any(unix, windows))]
-pub use subscription_local::LocalSubscriptionTransport;
+pub use subscription_local::{LocalSubscriptionExchangeError, LocalSubscriptionTransport};
 #[cfg(any(unix, windows))]
 pub use subscription_observation::PublicationLease;
 
