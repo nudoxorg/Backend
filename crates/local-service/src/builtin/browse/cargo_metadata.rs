@@ -324,18 +324,32 @@ impl CargoMetadataInputs {
         request_context: &Path,
         workspace: &Path,
     ) -> Result<Vec<PathBuf>, String> {
+        // Cargo resolves configuration and rustup selectors from its exact
+        // invocation CWD. An explicitly associated workspace can be outside
+        // that ancestry; its manifest and package rows are witnessed below,
+        // but its unrelated config files are not part of this query.
+        let config_paths = cargo_config_paths(request_context)?;
+        let sccache_paths = sccache_configuration_paths(request_context)?;
+        let rustup_paths = rustup_selection_paths(request_context)?;
+        self.assemble_observation_paths(workspace, &config_paths, &sccache_paths, &rustup_paths)
+    }
+
+    fn assemble_observation_paths(
+        &self,
+        workspace: &Path,
+        config_paths: &[PathBuf],
+        sccache_paths: &[PathBuf],
+        rustup_paths: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, String> {
         let mut paths = basic_input_paths(workspace)?;
         paths.extend(self.package_manifests.iter().cloned());
         paths.extend(self.registry_checksums.iter().cloned());
         // Exact target membership and `src_path` values remain in the complete
         // Cargo metadata witness. Source contents do not affect this dependency
         // graph, so avoid reading every target file just to validate the cache.
-        paths.extend(cargo_config_paths(request_context)?);
-        paths.extend(cargo_config_paths(workspace)?);
-        paths.extend(sccache_configuration_paths(request_context)?);
-        paths.extend(sccache_configuration_paths(workspace)?);
-        paths.extend(rustup_selection_paths(request_context)?);
-        paths.extend(rustup_selection_paths(workspace)?);
+        paths.extend(config_paths.iter().cloned());
+        paths.extend(sccache_paths.iter().cloned());
+        paths.extend(rustup_paths.iter().cloned());
         paths.sort();
         paths.dedup();
         if paths.len() > MAX_CARGO_OBSERVATION_PATHS {
@@ -1525,8 +1539,44 @@ mod tests {
             "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2024\"\nworkspace = \"../../../shared-workspace\"\n",
         )
         .expect("explicit package workspace manifest");
+        let request_config = package.join(".cargo/config.toml");
+        let workspace_config = workspace.join(".cargo/config.toml");
+        let workspace_toolchain = workspace.join("rust-toolchain.toml");
+        let malformed_config = scratch.0.join("malformed-cargo-config.toml");
+        let malformed_toolchain = scratch.0.join("malformed-rust-toolchain.toml");
+        std::fs::create_dir_all(request_config.parent().expect("request config directory"))
+            .expect("request config directory");
+        std::fs::create_dir_all(
+            workspace_config
+                .parent()
+                .expect("workspace config directory"),
+        )
+        .expect("workspace config directory");
+        std::fs::write(&request_config, "[net]\noffline = true\n")
+            .expect("request-context Cargo config");
+        std::fs::write(&malformed_config, "[build\ntarget = [\n")
+            .expect("unrelated malformed Cargo config");
+        std::fs::write(&malformed_toolchain, "[toolchain\nchannel = [\n")
+            .expect("unrelated malformed rustup selector");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&malformed_config, &workspace_config)
+                .expect("unrelated workspace Cargo config symlink");
+            std::os::unix::fs::symlink(&malformed_toolchain, &workspace_toolchain)
+                .expect("unrelated workspace rustup selector symlink");
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&workspace_config, "[build\ntarget = [\n")
+                .expect("unrelated malformed workspace Cargo config");
+            std::fs::write(&workspace_toolchain, "[toolchain\nchannel = [\n")
+                .expect("unrelated malformed workspace rustup selector");
+        }
         let workspace = workspace.canonicalize().expect("canonical workspace");
         let package = package.canonicalize().expect("canonical package");
+        let request_config = package.join(".cargo/config.toml");
+        let workspace_config = workspace.join(".cargo/config.toml");
+        let workspace_toolchain = workspace.join("rust-toolchain.toml");
         let requested = requested_cargo_manifest(&package)
             .expect("exact package manifest read")
             .expect("package request");
@@ -1543,6 +1593,25 @@ mod tests {
             workspace,
             "the Cargo result, not ancestor scanning, selects the effective workspace"
         );
+        let cargo_home = scratch.0.join("isolated-cargo-home");
+        std::fs::create_dir_all(&cargo_home).expect("isolated Cargo home");
+        let config_paths = super::super::cargo_config_paths_with(&package, &cargo_home, None)
+            .expect("request-CWD Cargo config paths");
+        let sccache_paths = super::super::sccache_configuration_paths(&package)
+            .expect("request-CWD sccache config paths");
+        let rustup_paths =
+            super::super::rustup_selection_paths(&package).expect("request-CWD rustup selectors");
+        let document = CargoMetadataDocument::parse(&metadata).expect("bounded metadata inputs");
+        let watched = document
+            .inputs
+            .assemble_observation_paths(&workspace, &config_paths, &sccache_paths, &rustup_paths)
+            .expect("request-scoped observation paths with a non-ancestor workspace");
+        assert!(watched.contains(&request_config));
+        assert!(watched.contains(&workspace.join("Cargo.toml")));
+        assert!(!watched.contains(&workspace_config));
+        assert!(!watched.contains(&workspace_toolchain));
+        super::super::observation_witness_with_context(&workspace, &watched, [1; 32], [2; 32])
+            .expect("the strict source witness reads only selected CWD config and toolchain paths");
 
         let excluded_metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),

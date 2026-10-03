@@ -3548,6 +3548,27 @@ fn basic_input_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
 /// and configured custom target JSONs. Unresolvable includes/target files
 /// fail closed instead of leaving an unobserved input outside the witness.
 fn cargo_config_paths(request_context: &Path) -> Result<Vec<PathBuf>, String> {
+    let cargo_home = match std::env::var_os("CARGO_HOME") {
+        Some(home) => PathBuf::from(home),
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "Cargo home cannot be resolved for configuration observation".to_owned()
+            })?
+            .join(".cargo"),
+    };
+    let environment_target = std::env::var_os("CARGO_BUILD_TARGET");
+    cargo_config_paths_with(request_context, &cargo_home, environment_target.as_deref())
+}
+
+fn cargo_config_paths_with(
+    request_context: &Path,
+    cargo_home: &Path,
+    environment_target: Option<&std::ffi::OsStr>,
+) -> Result<Vec<PathBuf>, String> {
+    if !cargo_home.is_absolute() {
+        return Err("relative CARGO_HOME cannot be safely observed".to_owned());
+    }
     let mut pending = Vec::<(PathBuf, usize)>::new();
     let ancestors = request_context.ancestors().take(128).collect::<Vec<_>>();
     if ancestors.len() == 128 && ancestors.last().is_some_and(|path| path.parent().is_some()) {
@@ -3557,21 +3578,6 @@ fn cargo_config_paths(request_context: &Path) -> Result<Vec<PathBuf>, String> {
         pending.push((ancestor.join(".cargo/config"), 0));
         pending.push((ancestor.join(".cargo/config.toml"), 0));
     }
-    let cargo_home = match std::env::var_os("CARGO_HOME") {
-        Some(home) => {
-            let home = PathBuf::from(home);
-            if !home.is_absolute() {
-                return Err("relative CARGO_HOME cannot be safely observed".to_owned());
-            }
-            home
-        }
-        None => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                "Cargo home cannot be resolved for configuration observation".to_owned()
-            })?
-            .join(".cargo"),
-    };
     pending.push((cargo_home.join("config"), 0));
     pending.push((cargo_home.join("config.toml"), 0));
 
@@ -3667,7 +3673,7 @@ fn cargo_config_paths(request_context: &Path) -> Result<Vec<PathBuf>, String> {
             }
         }
     }
-    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
+    if let Some(target) = environment_target {
         let target = target
             .to_str()
             .ok_or_else(|| "CARGO_BUILD_TARGET is not UTF-8".to_owned())?;
