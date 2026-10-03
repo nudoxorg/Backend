@@ -1033,10 +1033,31 @@ impl BrowseCache {
     }
 
     fn input(&mut self, root: &Path) -> Result<Arc<TreeInput>, String> {
+        self.input_with_read_project(root, read_project)
+    }
+
+    /// Shares the owner input path with a narrow observation seam so the
+    /// manifest-scope rejection can prove that it never starts Cargo.
+    fn input_with_read_project(
+        &mut self,
+        root: &Path,
+        read: impl FnOnce(
+            &Path,
+            Option<&CargoToolWitnessReuse>,
+        ) -> Result<
+            (
+                TreeInput,
+                Vec<PathBuf>,
+                [u8; 32],
+                Option<CargoToolWitnessReuse>,
+            ),
+            String,
+        >,
+    ) -> Result<Arc<TreeInput>, String> {
         let workspace = workspace_root(root)?
             .ok_or_else(|| {
                 format!(
-                    "{} is not inside a Cargo project (no Cargo.toml above it)",
+                    "requested project {} is outside Cargo scope: its directory has no recognized Cargo package or workspace manifest; ancestor workspaces are not used for project-tree requests",
                     root.display()
                 )
             })?
@@ -1081,8 +1102,7 @@ impl BrowseCache {
         // A failed freshness check revokes every request binding before any
         // replacement observation can be admitted.
         self.remove_workspace(&workspace);
-        let (input, watched, witness, tool_witness_reuse) =
-            read_project(&workspace, cached_tool.as_ref())?;
+        let (input, watched, witness, tool_witness_reuse) = read(&workspace, cached_tool.as_ref())?;
         let input = Arc::new(input);
         let package_rows = source_package_row_index(&input);
         let retained_bytes = browse_entry_retained_bytes(
@@ -3746,27 +3766,39 @@ fn patched_names_bytes(manifest: &[u8]) -> BTreeSet<String> {
 }
 
 /// The nearest directory at or above `root` whose `Cargo.toml` declares
-/// `[workspace]`, else the nearest with a `Cargo.toml`: where Cargo itself
-/// would resolve the project.
+/// `[workspace]`, else the requested directory when it contains a package
+/// manifest. Cargo scope starts at the exact requested directory: an
+/// arbitrary source folder cannot inherit a Cargo project from an ancestor.
 fn workspace_root(root: &Path) -> Result<Option<PathBuf>, String> {
-    let mut nearest = None;
-    for directory in root.ancestors() {
+    let requested_manifest = root.join("Cargo.toml");
+    let Some(requested_bytes) = read_observation_file(&requested_manifest, MAX_CARGO_CONFIG_BYTES)?
+    else {
+        return Ok(None);
+    };
+    let requested_document = cargo_manifest_document(&requested_bytes).ok_or_else(|| {
+        format!(
+            "Cargo.toml at requested project root {} is not valid UTF-8 TOML",
+            requested_manifest.display()
+        )
+    })?;
+    if !cargo_manifest_has_project_scope(&requested_document) {
+        return Ok(None);
+    }
+
+    let nearest = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve Cargo project root: {error}"))?;
+    if cargo_manifest_has_workspace(&requested_document) {
+        return Ok(Some(nearest));
+    }
+    for directory in root.ancestors().skip(1) {
         observation_budget()?;
         let manifest = directory.join("Cargo.toml");
         let Some(bytes) = read_observation_file(&manifest, MAX_CARGO_CONFIG_BYTES)? else {
             continue;
         };
-        if nearest.is_none() {
-            nearest = Some(
-                directory
-                    .canonicalize()
-                    .map_err(|error| format!("cannot resolve Cargo project root: {error}"))?,
-            );
-        }
-        let is_workspace = std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| text.parse::<toml::Value>().ok())
-            .is_some_and(|document| document.get("workspace").is_some());
+        let is_workspace = cargo_manifest_document(&bytes)
+            .is_some_and(|document| cargo_manifest_has_workspace(&document));
         if is_workspace {
             let canonical = directory
                 .canonicalize()
@@ -3774,7 +3806,26 @@ fn workspace_root(root: &Path) -> Result<Option<PathBuf>, String> {
             return Ok(Some(canonical));
         }
     }
-    Ok(nearest)
+    Ok(Some(nearest))
+}
+
+fn cargo_manifest_document(bytes: &[u8]) -> Option<toml::Value> {
+    std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
+fn cargo_manifest_has_project_scope(document: &toml::Value) -> bool {
+    cargo_manifest_has_workspace(document)
+        || document
+            .get("package")
+            .and_then(toml::Value::as_table)
+            .is_some()
+}
+
+fn cargo_manifest_has_workspace(document: &toml::Value) -> bool {
+    document
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .is_some()
 }
 
 /// Runs `cargo metadata` for this host; returns the document, host, and exact
@@ -4069,11 +4120,145 @@ mod tests {
     }
 
     #[test]
+    fn a_manifestless_source_folder_under_a_workspace_never_starts_cargo() {
+        let scratch = scratch("backend-browse-manifest-scope");
+        let workspace = scratch.0.join("backend");
+        let member = workspace.join("tests/journeys");
+        let requested = member.join("fixtures/polyglot");
+        std::fs::create_dir_all(requested.join("src")).expect("polyglot source folder");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"tests/journeys\"]\nresolver = \"3\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"backend-journeys\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("member manifest");
+        let requested = requested.canonicalize().expect("canonical source folder");
+
+        let mut metadata_calls = 0;
+        let error = BrowseCache::default()
+            .input_with_read_project(&requested, |_workspace, _cached| {
+                metadata_calls += 1;
+                Err("Cargo metadata must not run for this request".to_owned())
+            })
+            .expect_err("a nested source folder is not a Cargo project");
+
+        assert_eq!(metadata_calls, 0, "no ancestor metadata read was attempted");
+        assert!(error.contains("outside Cargo scope"), "{error}");
+        assert!(error.contains(requested.to_str().expect("UTF-8 fixture path")));
+    }
+
+    #[test]
+    fn an_exact_manifest_member_resolves_and_binds_its_workspace() {
+        let scratch = scratch("backend-browse-member-scope");
+        let workspace = scratch.0.join("backend");
+        let member = workspace.join("tests/journeys");
+        std::fs::create_dir_all(&member).expect("workspace member");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"tests/journeys\"]\nresolver = \"3\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"backend-journeys\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("member manifest");
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let member = member.canonicalize().expect("canonical member");
+        let effective = workspace_root(&member)
+            .expect("workspace resolution")
+            .expect("member project scope");
+
+        assert_eq!(effective, workspace);
+        let effective_text = effective.to_str().expect("UTF-8 workspace path");
+        let member_binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            &member,
+            effective_text,
+        )
+        .expect("member request binding");
+        let workspace_binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            &workspace,
+            effective_text,
+        )
+        .expect("workspace request binding");
+        assert!(member_binding.matches_requested_root(&member));
+        assert!(member_binding.matches_effective_workspace_root(effective_text));
+        assert_ne!(
+            member_binding.requested_root_digest, workspace_binding.requested_root_digest,
+            "the requested member remains explicit in its workspace binding"
+        );
+        assert_eq!(
+            member_binding.effective_workspace_root_digest,
+            workspace_binding.effective_workspace_root_digest
+        );
+    }
+
+    #[test]
+    fn an_exact_nested_workspace_manifest_keeps_its_own_scope() {
+        let scratch = scratch("backend-browse-nested-workspace-scope");
+        let outer = scratch.0.join("outer");
+        let nested = outer.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested workspace");
+        std::fs::write(
+            outer.join("Cargo.toml"),
+            "[workspace]\nmembers = []\nexclude = [\"nested\"]\nresolver = \"3\"\n",
+        )
+        .expect("outer workspace manifest");
+        std::fs::write(
+            nested.join("Cargo.toml"),
+            "[workspace]\nmembers = []\nresolver = \"3\"\n",
+        )
+        .expect("nested workspace manifest");
+        let nested = nested.canonicalize().expect("canonical nested workspace");
+
+        assert_eq!(
+            workspace_root(&nested).expect("nested scope resolution"),
+            Some(nested.clone())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_project_scope_does_not_follow_requested_directory_or_manifest_symlinks() {
+        let scratch = scratch("backend-browse-symlink-scope");
+        let target = scratch.0.join("target");
+        std::fs::create_dir_all(&target).expect("target project");
+        std::fs::write(
+            target.join("Cargo.toml"),
+            "[package]\nname = \"symlink-target\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("target manifest");
+
+        let directory_link = scratch.0.join("directory-link");
+        std::os::unix::fs::symlink(&target, &directory_link).expect("project directory symlink");
+        assert!(
+            workspace_root(&directory_link).is_err(),
+            "requested project directories are opened without following links"
+        );
+
+        let manifest_link_root = scratch.0.join("manifest-link-root");
+        std::fs::create_dir_all(&manifest_link_root).expect("manifest-link project");
+        std::os::unix::fs::symlink(
+            target.join("Cargo.toml"),
+            manifest_link_root.join("Cargo.toml"),
+        )
+        .expect("manifest symlink");
+        assert!(
+            workspace_root(&manifest_link_root).is_err(),
+            "the exact requested manifest is opened without following links"
+        );
+    }
+
+    #[test]
     fn a_directory_outside_any_cargo_project_says_so() {
         let error = BrowseCache::default()
             .project_tree(Path::new("/"), None)
             .expect_err("no project at the root");
-        assert!(error.contains("is not inside a Cargo project"), "{error}");
+        assert!(error.contains("outside Cargo scope"), "{error}");
     }
 
     #[test]
