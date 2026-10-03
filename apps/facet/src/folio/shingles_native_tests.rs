@@ -108,6 +108,13 @@ fn native_authored_bounds(region: Bounds<Pixels>, device_scale: f32) -> Bounds<P
     Bounds::new(region.origin.map(metric), region.size.map(metric))
 }
 
+// Window::trace_text intersects the absolute bounds even when fully visible.
+// Bounds::intersect -> from_corners stores (top + height) - top, rather
+// than preserving the local shaped height. This is an exact f32 contract.
+fn full_row_receipt_height(top: Pixels, shaped_height: Pixels) -> Pixels {
+    (top + shaped_height) - top
+}
+
 fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
     cx.update(|window, _| {
         let labels = layout.labels.as_ref().unwrap();
@@ -133,8 +140,9 @@ fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
                     "native glyph rows must stay in the label band above the shingle grid"
                 );
                 assert_eq!(
-                    run.bounds.size.height, painted_rows,
-                    "actual native paint must contain exactly the measured glyph rows"
+                    run.bounds.size.height,
+                    full_row_receipt_height(run.bounds.top(), painted_rows),
+                    "actual native receipt must contain exactly the measured glyph rows after absolute-edge reconstruction"
                 );
                 assert!(
                     run.bounds.left() >= native_region.left()
@@ -499,4 +507,70 @@ fn native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx: &mut Te
             );
         });
     }
+}
+
+#[test]
+fn fully_visible_bounds_reconstruct_exact_float_edges() {
+    let clip = Bounds::new(gpui::point(px(0.), px(0.)), size(px(2000.), px(2000.)));
+    // Handwritten IEEE-754 results, independently of the helper. The first
+    // case is the wide compact label receipt from the real CDF failure.
+    for (top, height, expected_bits) in [
+        (0., 20.4, 0x41a33333),
+        (10.88, 20.4, 0x41a33332),
+        (512., 14.1, 0x41619980),
+    ] {
+        let shaped = Bounds::new(gpui::point(px(0.), px(top)), size(px(100.), px(height)));
+        let receipt = shaped.intersect(&clip);
+        let expected = px(f32::from_bits(expected_bits));
+        assert_eq!(receipt.size.height, expected);
+        assert_eq!(full_row_receipt_height(px(top), px(height)), expected);
+        assert_eq!(
+            receipt.bottom(),
+            shaped.bottom(),
+            "the full visible row edge is preserved"
+        );
+        assert_ne!(
+            full_row_receipt_height(px(top), px(height * 2.)),
+            expected,
+            "an extra row must fail this exact oracle"
+        );
+    }
+}
+
+#[gpui::test]
+fn wide_native_row_preserves_shaped_height_and_records_exact_visible_edges(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    let observed = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view(|window, _| {
+        window.set_a11y_forced(true);
+        Board {
+            modules: modules(&["lib"], 1),
+            width: 1600.,
+            measured: None,
+            observed: observed.clone(),
+            lit: false,
+            covered: false,
+            calls: Rc::new(Cell::new(0)),
+        }
+    });
+    cx.simulate_resize(size(px(1800.), px(700.)));
+    draw(cx);
+    let layout = observed.borrow().as_ref().unwrap().clone();
+    assert_eq!(layout.regions[0].label_lines, 1);
+    // At 1600 room and 100% text the role is 15 * 1.36 = 20.4,
+    // starting at 8 * 1.36 = 10.88. These are unsnapped native metrics.
+    assert_eq!(layout.labels.as_ref().unwrap().role.line, 20.4);
+    cx.update(|window, _| {
+        let row = window
+            .painted_texts()
+            .iter()
+            .find(|run| run.text.as_ref() == "lib")
+            .unwrap();
+        assert_eq!(row.bounds.top(), px(10.88));
+        assert_eq!(row.bounds.size.height, px(f32::from_bits(0x41a33332)));
+        assert_eq!(row.bounds.bottom(), px(f32::from_bits(0x41fa3d70)));
+    });
+    assert_painted(cx, &layout, &["lib"]);
 }
