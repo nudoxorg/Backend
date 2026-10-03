@@ -976,11 +976,37 @@ fn native_find_query_return_from_add_is_canceled_by_another_key(cx: &mut TestApp
     let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
     rig.settle();
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let query_focus = rig.cx.update(|window, cx| window.focused(cx)).expect("mounted Find query focus");
     rig.keys("cmd-o");
-    rig.cx.simulate_keystrokes("escape");
+    // Dispatch real key events synchronously. `simulate_keystrokes` drains
+    // the test executor after Escape, which lets the child finish its
+    // deferred return before a second input can interrupt it.
+    let escape = gpui::Keystroke::parse("escape").expect("Escape key");
+    rig.cx.update(|window, cx| {
+        let _ = window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke: escape,
+            is_held: false,
+            prefer_character_input: false,
+        }), cx);
+    });
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
-    rig.cx.simulate_keystrokes("left");
+    let before_left = rig.cx.update(|window, cx| window.focused(cx));
+    let before_return = rig.shell.read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx));
+    assert_ne!(before_left.as_ref(), Some(&query_focus),
+        "Escape has not yet returned focus before the intervening key");
+    assert!(before_return.1, "the exact Find return must be pending after Add dismissal");
+    let left = gpui::Keystroke::parse("left").expect("Left key");
+    rig.cx.update(|window, cx| {
+        let _ = window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke: left,
+            is_held: false,
+            prefer_character_input: false,
+        }), cx);
+    });
+    let after_return = rig.shell.read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx));
+    assert!(after_return.0 != before_return.0 && !after_return.1,
+        "Left must revoke the armed return generation before its callback; before={before_return:?}, after={after_return:?}");
     rig.settle();
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
-        "a key after Add's dismissal invalidates the deferred query return");
+        "a key after Add's dismissal invalidates the deferred query return; focus before Left={before_left:?}, generation/pending before={before_return:?}, after={after_return:?}");
 }
