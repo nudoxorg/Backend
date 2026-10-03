@@ -51,7 +51,8 @@ const LONG_PRESS: Duration = Duration::from_millis(400);
 #[derive(Clone)]
 struct JumpVisit {
     route: Route,
-    bar_route: Route,
+    subject: jump::JumpSubject,
+    attachment: Option<crate::runtime::store::OwnerAttachment>,
     overlay: Option<Overlay>,
     root: VersionedRoot,
 }
@@ -60,7 +61,8 @@ impl JumpVisit {
     fn at(snapshot: &AppSnapshot, store: &DataStore) -> Self {
         Self {
             route: snapshot.route().clone(),
-            bar_route: jump::bar_route(snapshot, store),
+            subject: jump::bar_subject(snapshot, store),
+            attachment: store.current_owner_attachment(),
             overlay: snapshot.overlay(),
             root: snapshot.key(),
         }
@@ -72,15 +74,16 @@ impl JumpVisit {
         snapshot.route() == &self.route
             && snapshot.overlay() == self.overlay
             && snapshot.key().same_authority(self.root)
-            && jump::bar_route(&snapshot, store) == self.bar_route
+            && jump::bar_subject(&snapshot, store) == self.subject
+            && store.current_owner_attachment() == self.attachment
     }
 }
 
 #[derive(Clone)]
 enum JumpAction {
     Ask,
-    Back,
-    Forward,
+    Back { visit: JumpVisit },
+    Forward { visit: JumpVisit },
     Navigate { visit: JumpVisit, index: usize, route: Route },
     Siblings { visit: JumpVisit, index: usize },
     View { visit: JumpVisit, view: View },
@@ -90,8 +93,14 @@ impl JumpAction {
     fn run(&self, links: &Links, targets: &Targets, window: &mut Window, cx: &mut App) {
         match self {
             Self::Ask => links.shell(cx, |shell, cx| shell.open_ask(cx)),
-            Self::Back if !links.snapshot(cx).session().back.is_empty() => links.dispatch(Intent::Back, cx),
-            Self::Forward if !links.snapshot(cx).session().forward.is_empty() => links.dispatch(Intent::Forward, cx),
+            Self::Back { visit } if visit.current(links, cx) => {
+                // Back can retire its own auxiliary-page button. Dispatch
+                // through the live Shell's existing top-layer boundary.
+                links.shell(cx, |shell, cx| shell.take_zone(super::focus::Zone::Titlebar, window, cx));
+                window.dispatch_action(Box::new(super::keys::Back), cx);
+            },
+            Self::Forward { visit } if visit.current(links, cx) && links.snapshot(cx).overlay().is_none()
+                && !links.snapshot(cx).session().forward.is_empty() => links.dispatch(Intent::Forward, cx),
             Self::Navigate { visit, index, route } if visit.current(links, cx) => {
                 let still_here = {
                     let store = links.store.read(cx);
@@ -107,6 +116,7 @@ impl JumpAction {
             }
             Self::View { visit, view }
                 if visit.current(links, cx)
+                    && visit.subject.page_route().is_some()
                     && links.snapshot(cx).overlay().is_none()
                     && links.snapshot(cx).page_overlay().is_none() => match view {
                 View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
@@ -140,7 +150,8 @@ fn jump_act(action: JumpAction, links: &Links, targets: &Targets) -> super::focu
 
 fn segment_action(visit: &JumpVisit, index: usize, segment: &Segment, store: &DataStore, current: bool) -> Option<JumpAction> {
     if segment.quiet { return None; }
-    if index > 0 && !jump::siblings(&visit.bar_route, index, store).is_empty() {
+    let route = visit.subject.page_route()?;
+    if index > 0 && !jump::siblings(route, index, store).is_empty() {
         return Some(JumpAction::Siblings { visit: visit.clone(), index });
     }
     if current { return None; }
@@ -246,7 +257,7 @@ impl Render for Titlebar {
         );
         // The altimeter's slot is the view switch (§8.4): Graph · Page · Code,
         // only the active view named. Below 760 it gives way to the bar.
-        if let Some(active) = view_of(snapshot.route())
+        if let Some(active) = jump::bar_subject(&snapshot, self.links.store.read(cx)).page_route().and_then(view_of)
             && bar.mode == Bar::Full
             && snapshot.overlay().is_none()
             && snapshot.page_overlay().is_none()
@@ -319,17 +330,22 @@ fn place_words(route: &Route) -> String {
 
 /// Opens the back menu under `anchor`: the last ten places, nearest first.
 fn back_menu(links: &Links, anchor: gpui::Bounds<gpui::Pixels>, window: &mut Window, cx: &mut App) {
+    // On an auxiliary page Back closes that page; its retained content
+    // history is not advertised as the auxiliary subject's history menu.
+    if jump::bar_subject(&links.snapshot(cx), links.store.read(cx)).page_route().is_none() { return; }
+    let visit = JumpVisit::at(&links.snapshot(cx), links.store.read(cx));
     let back = links.snapshot(cx).session().back.to_vec();
     let places: Vec<Route> = back.into_iter().take(10).collect();
     if places.is_empty() {
         return;
     }
     let items = places.iter().map(|route| MenuItem::new(place_words(route))).collect();
+    focus_menu_owner(links, window, cx);
     let links = links.clone();
     let steps = places.len();
     let expected = places;
     let menu = Menu::new(items, move |index, _, cx| {
-        if !links.snapshot(cx).session().back.iter().take(steps).eq(expected.iter()) {
+        if !visit.current(&links, cx) || !links.snapshot(cx).session().back.iter().take(steps).eq(expected.iter()) {
             return;
         }
         for _ in 0..=index.min(steps - 1) {
@@ -369,9 +385,11 @@ impl Titlebar {
         let mut bar = div().flex().items_center().min_w(px(0.0)).flex_1().gap(measure.space(Space::Snug));
 
         // Back: a click steps back; a long press or a right click lists.
-        let can_back = !session.back.is_empty();
+        let visit = JumpVisit::at(snapshot, self.links.store.read(cx));
+        let can_back = snapshot.overlay().is_some() || !session.back.is_empty()
+            || self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).shelf_input_owner(true));
         if can_back {
-            let act = jump_act(JumpAction::Back, &self.links, &self.targets);
+            let act = jump_act(JumpAction::Back { visit: visit.clone() }, &self.links, &self.targets);
             let key_act = Rc::clone(&act);
             let click_act = Rc::clone(&act);
             let menu_links = self.links.clone();
@@ -439,8 +457,8 @@ impl Titlebar {
                 .flex().items_center().justify_center().size(hit_side(measure))
                 .child(text(ty::ROW, measure, palette.ink3).child("‹")));
         }
-        if !session.forward.is_empty() {
-            let act = jump_act(JumpAction::Forward, &self.links, &self.targets);
+        if snapshot.overlay().is_none() && !session.forward.is_empty() {
+            let act = jump_act(JumpAction::Forward { visit: visit.clone() }, &self.links, &self.targets);
             let key_act = Rc::clone(&act);
             let click_act = Rc::clone(&act);
             self.targets.push(Target { id: "jump-forward".into(), label: "Forward".into(), act: Rc::clone(&act), peek: None, source: None });
@@ -827,6 +845,13 @@ pub(crate) fn menu_open(window: &Window, cx: &mut App) -> bool {
     facet::overlay::float::menu_open(window, cx)
 }
 
+/// A popup can outlive the titlebar leaf that opened it (for example when
+/// Settings covers a declaration). Its existing native return handle must
+/// therefore belong to the persistent titlebar dispatch owner, not that leaf.
+fn focus_menu_owner(links: &Links, window: &mut Window, cx: &mut App) {
+    links.shell(cx, |shell, cx| shell.take_zone(super::focus::Zone::Titlebar, window, cx));
+}
+
 /// Opens the siblings of segment `index` under it: the outline level it
 /// sits at; choosing one opens its page.
 fn siblings_menu(links: &Links, targets: &Targets, index: usize, visit: JumpVisit, window: &mut Window, cx: &mut App) {
@@ -834,7 +859,8 @@ fn siblings_menu(links: &Links, targets: &Targets, index: usize, visit: JumpVisi
         return;
     };
     if !visit.current(links, cx) { return; }
-    let siblings = jump::siblings(&visit.bar_route, index, links.store.read(cx));
+    let Some(route) = visit.subject.page_route() else { return; };
+    let siblings = jump::siblings(route, index, links.store.read(cx));
     if siblings.is_empty() {
         return;
     }
@@ -865,16 +891,19 @@ fn open_siblings(
     } else {
         items.extend(siblings.tests.iter().map(|sibling| MenuItem::new(sibling.name.clone())));
     }
+    focus_menu_owner(links, window, cx);
     let links = links.clone();
     let menu = Menu::new(items, move |choice, window, cx| {
         if !visit.current(&links, cx) { return; }
-        let current = jump::siblings(&visit.bar_route, index, links.store.read(cx));
+        let Some(route) = visit.subject.page_route() else { return; };
+        let current = jump::siblings(route, index, links.store.read(cx));
         if current.is_empty() { return; }
         if folded && choice == siblings.real.len() {
             let (links, visit) = (links.clone(), visit.clone());
             window.defer(cx, move |window, cx| {
                 if visit.current(&links, cx) {
-                    let fresh = jump::siblings(&visit.bar_route, index, links.store.read(cx));
+                    let Some(route) = visit.subject.page_route() else { return; };
+                    let fresh = jump::siblings(route, index, links.store.read(cx));
                     if !fresh.is_empty() { open_siblings(&links, anchor, index, fresh, true, visit, window, cx); }
                 }
             });
@@ -898,5 +927,129 @@ fn view_of(route: &Route) -> Option<View> {
         Route::Symbol(route) => Some(route.view),
         Route::World => Some(View::Graph),
         Route::CargoSource(_) | Route::Orbit(_) | Route::Package(_) => None,
+    }
+}
+
+
+#[cfg(test)]
+mod auxiliary_subject_tests {
+    use super::*;
+    use crate::shell::anatomy_tests::painted;
+    use crate::shell::tests::{Rig, page_route, rig};
+    use gpui::{Modifiers, TestAppContext, point};
+
+    fn native(rig: &mut Rig) {
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+            facet::probe::enable(cx);
+        });
+        rig.settle();
+    }
+    fn click_target(rig: &mut Rig, key: &str, right: bool) {
+        let ledger = painted(rig);
+        let target = ledger.targets.iter().find(|target| target.key == key).expect("painted target");
+        let at = point(px(target.bounds.x + target.bounds.width / 2.0), px(target.bounds.y + target.bounds.height / 2.0));
+        if right {
+            rig.cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+            rig.cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+        } else { rig.cx.simulate_click(at, Modifiers::none()); }
+        rig.settle();
+    }
+    fn overlay(rig: &mut Rig) -> Option<Overlay> {
+        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay())
+    }
+    fn assert_auxiliary_capsule(rig: &mut Rig, label: &str) {
+        let ledger = painted(rig);
+        let name = ledger.texts.iter().find(|text| text.key == "graph-test-here-name").expect("actual titlebar name");
+        assert_eq!(name.content, label);
+        assert!(!ledger.targets.iter().any(|target| target.key.starts_with("jump-seg-") || target.key.starts_with("view-")),
+            "auxiliary subject has no retained declaration action targets");
+        let at = point(px(name.bounds.x + name.bounds.width / 2.0), px(name.bounds.y + name.bounds.height / 2.0));
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native titlebar tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        assert!(!tree["nodes"].as_object().expect("native nodes").values().any(|node|
+            node["aria"]["label"].as_str() == Some(format!("Show {label} siblings").as_str())),
+            "accessibility cannot advertise a declaration action under an auxiliary name");
+        rig.cx.simulate_click(at, Modifiers::none()); rig.settle();
+        assert!(!rig.cx.update(|window, cx| menu_open(window, cx)), "clicking the name cannot open retained declaration siblings");
+    }
+
+    #[gpui::test]
+    fn native_settings_and_inbox_capsules_do_not_borrow_declaration_siblings(cx: &mut TestAppContext) {
+        let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+        native(&mut rig);
+        let route = rig.route();
+        rig.keys("cmd-,");
+        let settings = overlay(&mut rig);
+        assert!(matches!(settings, Some(Overlay::Settings(_))));
+        assert_auxiliary_capsule(&mut rig, "Settings");
+        assert_eq!(overlay(&mut rig), settings);
+        assert_eq!(rig.route(), route);
+        rig.keys("escape");
+        click_target(&mut rig, "tb-inbox", false);
+        assert_eq!(overlay(&mut rig), Some(Overlay::Inbox));
+        assert_auxiliary_capsule(&mut rig, "Inbox");
+        assert_eq!(overlay(&mut rig), Some(Overlay::Inbox));
+        assert_eq!(rig.route(), route);
+    }
+
+    #[gpui::test]
+    fn native_popup_escape_consumes_only_the_menu_above_settings(cx: &mut TestAppContext) {
+        let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+        native(&mut rig);
+        click_target(&mut rig, "jump-seg-1", false);
+        assert!(rig.cx.update(|window, cx| menu_open(window, cx)));
+        let route = rig.route();
+        rig.keys("cmd-,");
+        let settings = overlay(&mut rig);
+        assert!(matches!(settings, Some(Overlay::Settings(_))));
+        assert!(rig.cx.update(|window, cx| menu_open(window, cx)), "the menu remains the top input owner");
+        rig.keys("escape");
+        assert!(!rig.cx.update(|window, cx| menu_open(window, cx)));
+        assert_eq!(overlay(&mut rig), settings, "one native Escape must not also dismiss its underlay");
+        assert_eq!(rig.route(), route);
+        rig.keys("cmd-k");
+        assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette), "popup focus return keeps native dispatch alive");
+        rig.keys("escape");
+        assert_eq!(overlay(&mut rig), settings);
+    }
+
+    #[gpui::test]
+    fn native_menu_enter_cannot_commit_a_declaration_action_after_settings_covers_it(cx: &mut TestAppContext) {
+        for history in [false, true] {
+            let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+            native(&mut rig);
+            if history {
+                rig.go(Intent::Navigate(page_route("KindGlyph")));
+                click_target(&mut rig, "jump-back", true);
+            } else { click_target(&mut rig, "jump-seg-1", false); }
+            assert!(rig.cx.update(|window, cx| menu_open(window, cx)));
+            let route = rig.route();
+            rig.keys("cmd-,");
+            let settings = overlay(&mut rig);
+            assert!(matches!(settings, Some(Overlay::Settings(_))));
+            rig.keys("enter");
+            assert_eq!(overlay(&mut rig), settings, "a covered subject cannot admit a captured menu action");
+            assert_eq!(rig.route(), route);
+            rig.keys("cmd-k");
+            assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));
+        }
+    }
+
+    #[gpui::test]
+    fn native_back_closes_settings_with_no_content_history_and_keeps_keyboard_alive(cx: &mut TestAppContext) {
+        let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+        native(&mut rig);
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.is_empty()));
+        let route = rig.route();
+        rig.keys("cmd-,");
+        click_target(&mut rig, "jump-back", false);
+        assert_eq!(overlay(&mut rig), None);
+        assert_eq!(rig.route(), route);
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.is_empty()));
+        rig.keys("cmd-k");
+        assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));
     }
 }

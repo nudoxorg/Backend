@@ -8,7 +8,7 @@
 use super::kit::kind_of;
 use crate::model::pages::{OutlineNode, PackageRef, SymbolRef};
 use crate::model::AppSnapshot;
-use crate::navigation::{OrbitRoute, Overlay, Route};
+use crate::navigation::{OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::store::DataStore;
 use facet::icons::Kind;
 use gpui::SharedString;
@@ -37,21 +37,44 @@ pub(crate) struct Here {
 
 pub(crate) use crate::runtime::store::{route_package, route_symbol};
 
+/// The displayed place is the capability boundary for titlebar actions.
+/// Auxiliary pages retain a content route beneath them without advertising
+/// that route's siblings, breadcrumbs, or view controls as their own.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum JumpSubject {
+    Page(Route),
+    Settings(SettingsPage),
+    Inbox,
+}
+impl JumpSubject {
+    pub(crate) fn page_route(&self) -> Option<&Route> {
+        match self { Self::Page(route) => Some(route), Self::Settings(_) | Self::Inbox => None }
+    }
+}
+
+pub(crate) fn bar_subject(snapshot: &AppSnapshot, store: &DataStore) -> JumpSubject {
+    match snapshot.page_overlay() {
+        Some(Overlay::Settings(page)) => JumpSubject::Settings(page),
+        Some(Overlay::Inbox) => JumpSubject::Inbox,
+        _ => JumpSubject::Page(bar_route(snapshot, store)),
+    }
+}
+
 /// The capsule for the current place: a transient place (settings, inbox)
 /// names itself; otherwise the route does.
 pub(crate) fn here(snapshot: &AppSnapshot, store: &DataStore) -> Here {
-    match snapshot.overlay() {
-        Some(Overlay::Settings(page)) => Here {
+    match bar_subject(snapshot, store) {
+        JumpSubject::Settings(page) => Here {
             mark: Mark::Place,
             name: "Settings".into(),
             path: page.menu_label().into(),
         },
-        Some(Overlay::Inbox) => Here {
+        JumpSubject::Inbox => Here {
             mark: Mark::Place,
             name: "Inbox".into(),
             path: "followed releases".into(),
         },
-        _ => {
+        JumpSubject::Page(_) => {
             if let Some(focus) = store.graph_focus() {
                 return Here { mark: Mark::Kind(kind_of(Some(focus.kind))), name: focus.name.to_string().into(), path: focus.caption_path().into() };
             }
@@ -122,6 +145,8 @@ pub(crate) fn bar_route(snapshot: &AppSnapshot, store: &DataStore) -> Route {
 /// has no row for reads package › module › name, names only (never a
 /// guessed page).
 pub(crate) fn bar_segments(snapshot: &AppSnapshot, store: &DataStore) -> Vec<Segment> {
+    let subject = bar_subject(snapshot, store);
+    let Some(route) = subject.page_route() else { return Vec::new(); };
     if let Some(focus) = store.graph_focus()
         && focus.indexed.is_none()
     {
@@ -131,7 +156,7 @@ pub(crate) fn bar_segments(snapshot: &AppSnapshot, store: &DataStore) -> Vec<Seg
             .map(|name| Segment { name: name.to_owned().into(), route: None, quiet: true })
             .collect();
     }
-    segments(&bar_route(snapshot, store), snapshot, store)
+    segments(route, snapshot, store)
 }
 
 /// The segments for a declaration route: its package, then each module and
