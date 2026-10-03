@@ -1101,7 +1101,7 @@ mod tests {
                 base_workspace_sequence: 9
             }
         ));
-        assert!(journal.has_prepared().expect("prepared index lookup"));
+        assert!(journal.has_prepared());
         drop(journal);
         cleanup(&path);
     }
