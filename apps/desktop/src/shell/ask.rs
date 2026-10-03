@@ -15,7 +15,7 @@
 //! draws the plate. The field is `gpui_component`'s input (IME) until the
 //! facet input lands.
 
-use super::kit::{kind_of, symbol_route, text};
+use super::kit::{indexed_result_route, kind_of, text};
 use super::region::Links;
 use crate::core::{ReadHoldReason, Resource, ResourceAdmission, ResourceTerminal, VersionedRoot, admit_resource};
 use crate::model::pages::{KeyError, MatchReason, PageKey, SearchPage, SearchQuery, SearchRow};
@@ -601,7 +601,9 @@ fn result_choice(row: &SearchRow, query: &str, here: Option<&str>, hold: Option<
 /// destination before a live row may advertise navigation.
 fn row_route(row: &SearchRow) -> Option<Route> {
     let package = row.decl.coordinate.package()?;
-    (row.package.as_deref() == Some(package.as_str())).then(|| symbol_route(package.as_str(), &row.decl.coordinate)).flatten()
+    (row.package.as_deref() == Some(package.as_str()))
+        .then(|| indexed_result_route(&package, &row.decl.coordinate, crate::navigation::View::Page))
+        .flatten()
 }
 
 /// Recheck the live owner at the input event, not only when the Link painted.
@@ -1264,6 +1266,38 @@ mod tests {
         assert!(super::row_route(&row).is_none(), "a foreign package claim must never advertise a link");
         row.package = None;
         assert!(super::row_route(&row).is_none(), "a missing claim is not authority either");
+    }
+
+    #[test]
+    fn observed_local_package_root_search_row_opens_its_package_page() {
+        // This is the coordinate shape the real base16ct owner published:
+        // the package root itself is a search row, with no `::` declaration
+        // tail. A Symbol route for it is necessarily unreadable.
+        let root = "/private/tmp/nudox-gui-user-audit-20261003/real-source-base16ct-1.0.0";
+        let basis = backend_library::Basis::new(
+            backend_library::view_state_root(&[]), backend_library::object_version(b"root-result"),
+        );
+        let producer = backend_library::Row::new(
+            backend_library::RowId::Package(backend_library::package_key(root)), basis, root,
+        );
+        let page = crate::runtime::page_mapping::search_rows(
+            "base16ct", &[producer], &[backend_library::Coverage::Complete], None, 0,
+        );
+        let row = page.rows.first().expect("producer package row survives lowering");
+        assert_eq!(row.decl.coordinate.as_str(), root);
+        assert_eq!(row.package.as_deref(), Some(root));
+        let destination = super::row_route(row).expect("exact package root has a page");
+        assert!(matches!(destination, crate::navigation::Route::Package(ref route) if route.package.as_str() == root));
+
+        let module = format!("{root}::src/lib.rs");
+        let module = crate::model::pages::SymbolRef::new(&module).expect("module coordinate");
+        let package = module.package().expect("typed package root");
+        let destination = crate::shell::kit::indexed_result_route(&package, &module, crate::navigation::View::Page)
+            .expect("module belongs to its exact package");
+        assert!(matches!(destination, crate::navigation::Route::Symbol(_)));
+        assert!(crate::shell::kit::indexed_result_route(&package, &module, crate::navigation::View::Code).is_some());
+        assert!(crate::shell::kit::indexed_result_route(&package, &row.decl.coordinate, crate::navigation::View::Code).is_none(),
+            "a package root has no declaration Code view");
     }
 
     /// A search fixture whose one row has no package: the coordinate names

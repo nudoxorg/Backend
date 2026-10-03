@@ -13,7 +13,7 @@ use crate::model::browse::{
 };
 use crate::model::pages::{PackageRef, PageKey, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
-use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
+use crate::shell::kit::{indexed_result_route, package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
 use crate::shell::reader::NativeActionLease;
 use facet::browse::library::{InventoryHandle, ReleaseHandle};
@@ -133,7 +133,7 @@ fn query_input(text: &str) -> facet::browse::find::QueryInput {
 fn symbol_routability(key: &SharedString) -> facet::browse::find::Routability {
     use facet::browse::find::Routability;
     match SymbolRef::new(key) {
-        Ok(symbol) if symbol.package().is_some() => Routability::Available,
+        Ok(symbol) if symbol.package().is_some_and(|package| indexed_result_route(&package, &symbol, View::Page).is_some()) => Routability::Available,
         Ok(_) => Routability::Unavailable("This declaration has no addressable package in the owner reply. Its recorded facts can be read, but its page and code are unavailable.".into()),
         Err(error) => Routability::Unavailable(format!("This declaration's address was not admitted: {error}.").into()),
     }
@@ -301,9 +301,9 @@ fn find_symbol_action(
             let symbol = SymbolRef::new(&key).ok()?;
             let package = symbol.package()?;
             if code {
-                symbol_view_route(package.as_str(), &symbol, View::Code, None)
+                indexed_result_route(&package, &symbol, View::Code)
             } else {
-                symbol_route(package.as_str(), &symbol)
+                indexed_result_route(&package, &symbol, View::Page)
             }
         });
         match route {

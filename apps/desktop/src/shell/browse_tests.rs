@@ -406,6 +406,36 @@ fn find_source_callback_opens_a_member_of_the_unchanged_live_reading(cx: &mut Te
 }
 
 #[gpui::test]
+fn find_opens_an_observed_package_root_result_as_its_package(cx: &mut TestAppContext) {
+    let root = "/private/tmp/nudox-gui-user-audit-20261003/real-source-base16ct-1.0.0";
+    let query = SearchQuery::new("base16ct", SearchQuery::DEFAULT_LIMIT).expect("query");
+    let browse = BrowseRoute::Find(query.clone());
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Browse(browse.clone()))), 1200.0, 800.0);
+    let producer = backend_library::Row::new(
+        backend_library::RowId::Package(backend_library::package_key(root)),
+        backend_library::Basis::new(backend_library::view_state_root(&[]), backend_library::object_version(b"root-result")),
+        root,
+    );
+    let page = crate::runtime::page_mapping::search_rows(
+        query.text.as_ref(), &[producer], &[backend_library::Coverage::Complete], None, 0,
+    );
+    let answers = Known::Known(page);
+    let package_coverage = Known::Known(());
+    let prepared = Arc::new(crate::runtime::browse_views::prepare_find(
+        query.text.as_ref(), &answers, &[], &package_coverage,
+    ));
+    let value = BrowseValue::Find(Arc::new(FindModel {
+        answers, packages: Arc::from([]), package_coverage, prepared,
+    }));
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(&browse), value, cx));
+    let source = find_callback(&mut rig, &browse);
+    let open = super::find_symbol_action(source, false);
+    rig.cx.update(|window, cx| open(root.into(), window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Package(route) if route.package.as_str() == root));
+}
+
+#[gpui::test]
 fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mut TestAppContext) {
     let query = SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query");
     let browse = BrowseRoute::Find(query);

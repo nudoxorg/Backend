@@ -279,6 +279,24 @@ pub(crate) fn symbol_route(package: &str, symbol: &crate::model::pages::SymbolRe
     symbol_view_route(package, symbol, crate::navigation::View::Page, None)
 }
 
+/// A search row can name the package root itself. That exact coordinate is a
+/// package page; only a `package::...` coordinate is a declaration page.
+pub(crate) fn indexed_result_route(
+    package: &crate::model::pages::PackageRef,
+    symbol: &crate::model::pages::SymbolRef,
+    view: crate::navigation::View,
+) -> Option<crate::navigation::Route> {
+    if symbol.as_str() == package.as_str() {
+        return (view == crate::navigation::View::Page
+            && symbol.identity().shape() == backend_present::IdentityShape::Package)
+            .then(|| package_route(package))
+            .flatten();
+    }
+    symbol.as_str().strip_prefix(package.as_str())
+        .filter(|tail| tail.starts_with("::"))
+        .and_then(|_| symbol_view_route(package.as_str(), symbol, view, None))
+}
+
 /// The package route for a package.
 pub(crate) fn package_route(package: &crate::model::pages::PackageRef) -> Option<crate::navigation::Route> {
     Some(crate::navigation::Route::Package(crate::navigation::PackageRoute {
