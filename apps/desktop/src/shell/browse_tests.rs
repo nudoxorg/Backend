@@ -16,7 +16,9 @@ use crate::model::browse::{ApiItem, BrowseKey, BrowseValue, CompareModel, FindMo
 use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PackageRef, SearchPage, SearchQuery, SearchRow, SignatureText};
 use crate::navigation::{BrowseRoute, CompareSet, OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::reads::{ReadPool, SessionReader};
-use crate::shell::tests::{rig, rig_with_reads};
+use crate::model::ServiceMode;
+use crate::runtime::owner::{OwnerGate, OwnerState};
+use crate::shell::tests::{Fixture, RootOnly, rig, rig_with_engine_gate, rig_with_reads};
 use backend_client::Session;
 use backend_library::{DeclarationKind, SurfaceCommand, SurfaceReply};
 use gpui::{SharedString, TestAppContext};
@@ -171,8 +173,8 @@ fn owner() -> (
             % 100_000
     );
     // `/tmp`, not `temp_dir()`: a long socket path exceeds `sockaddr_un`.
-    let state = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}"));
-    let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
+    let state = crate::host::scratch_base().join(format!("nx-browse-{nonce}"));
+    let endpoint = crate::host::scratch_base().join(format!("nx-browse-{nonce}.sock"));
     // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
     crate::host::private_dir(&state.join("data")).expect("workspace");
     let paths = backend_runtime::WorkspacePaths::discover(
@@ -555,6 +557,36 @@ fn compare_callback_never_revives_on_a_new_same_route_visit(cx: &mut TestAppCont
     assert_eq!(rig.route(), route, "the painted old Compare choice opened after a new visit");
     let current = compare_callback(&mut rig, &selection);
     assert!(rig.cx.update(|_, cx| current.current(cx, |_| Some(())).is_ok()));
+}
+
+/// A Compare choice painted under one owner attachment cannot act after the
+/// same root is re-attached (Starting, then Ready again), even though the
+/// route, the selection and the root revision all still match.
+#[gpui::test]
+fn compare_painted_callback_cannot_cross_same_root_owner_attachment(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, ServiceMode::Attached);
+    let pool = ReadPool::start(2, |_| Fixture).expect("fixture pool");
+    let mut rig = rig_with_engine_gate(cx, None, 1200.0, 800.0, pool, RootOnly, Some(gate.clone()));
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    land_compare(&mut rig, &selection, true, true);
+    let painted = compare_callback(&mut rig, &selection);
+    let open = super::compare_package_action(painted.clone());
+    assert!(rig.cx.update(|_, cx| painted.current(cx, |_| Some(())).is_ok()),
+        "the Compare choice must first be live under its own attachment");
+    gate.publish(OwnerState::Starting);
+    rig.cx.run_until_parked();
+    gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+    rig.cx.run_until_parked();
+    assert!(rig.cx.update(|_, cx| painted.current(cx, |_| Some(())).is_err()),
+        "the old attachment's Compare lease survived a same-root re-attachment");
+    rig.cx.update(|window, cx| open("/fixture/second".into(), window, cx));
+    assert_eq!(rig.route(), route,
+        "a painted Compare choice from the old owner attachment opened on the renewed same root");
 }
 
 fn browse_visit(rig: &mut crate::shell::tests::Rig) -> super::CurrentBrowseVisit {

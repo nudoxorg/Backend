@@ -55,6 +55,14 @@ pub trait OwnerService {
     /// Runs one fair owner-loop operation. Returning `true` means work was
     /// processed. The listener uses this between client reads to prevent a
     /// busy or slow connection from starving another lane.
+    ///
+    /// It is also the owner's only idle-time hook: the listener calls it every
+    /// poll interval with no client connected, which is when abandoned leases
+    /// are reclaimed. Housekeeping of that kind is not served work and must not
+    /// be reported as progress, or it would hold off the daemon's idle
+    /// retirement. An owner that blocks inside a command delays that
+    /// housekeeping for as long as the command runs, so expiry must also be
+    /// enforced when a lease is *used*, not only when it is swept.
     fn serve_one(&mut self) -> bool;
 
     /// Handles one command body, or takes it and replies later under
@@ -259,6 +267,17 @@ impl<O: OwnerService> LocaldService<O> {
 
     /// Handles one already-connected byte stream until EOF, protocol error,
     /// shutdown, or the per-connection frame limit is reached.
+    ///
+    /// # Owner polling
+    ///
+    /// The owner's [`OwnerService::serve_one`] runs before each frame read and
+    /// again, until idle, after each reply. It cannot run *while* this method
+    /// is parked in a read, so a host that keeps one long-lived idle stream
+    /// here must itself keep driving `serve_one`, or lease expiry and every
+    /// other owner-side housekeeping waits for the next frame.
+    /// [`crate::UnixListenerService`] is that host: its loop polls the owner
+    /// every [`crate::ListenerConfig::poll_interval`] whether or not any client
+    /// is connected.
     ///
     /// # Errors
     ///

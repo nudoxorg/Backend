@@ -56,6 +56,20 @@ pub(crate) fn launcher(cx: &App) -> Rc<dyn Launch> {
     cx.try_global::<Launcher>().map_or_else(|| Rc::new(System) as Rc<dyn Launch>, |launcher| Rc::clone(&launcher.0))
 }
 
+/// VS Code's command-line launcher. On Windows it is the batch file
+/// `code.cmd`, which `std::process::Command` finds on `PATH` only by that name.
+pub(crate) const VS_CODE: &str = if cfg!(windows) { "code.cmd" } else { "code" };
+
+/// What the platform opens a file with: Finder's `open`, Explorer, or the
+/// desktop's `xdg-open` (Windows has no `xdg-open`).
+const PLATFORM_OPENER: &str = if cfg!(target_os = "macos") {
+    "open"
+} else if cfg!(windows) {
+    "explorer"
+} else {
+    "xdg-open"
+};
+
 /// The commands to try, in order, to open `path` at `line`.
 pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<Command> {
     let mut out = Vec::new();
@@ -71,9 +85,9 @@ pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<C
             out.push(Command { program: program.to_owned(), args });
         }
     }
-    out.push(Command { program: "code".to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")] });
+    out.push(Command { program: VS_CODE.to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")] });
     out.push(Command { program: "zed".to_owned(), args: vec![format!("{path}:{line}")] });
-    out.push(Command { program: if cfg!(target_os = "macos") { "open" } else { "xdg-open" }.to_owned(), args: vec![path.to_owned()] });
+    out.push(Command { program: PLATFORM_OPENER.to_owned(), args: vec![path.to_owned()] });
     out
 }
 
@@ -111,16 +125,16 @@ mod tests {
 
     #[test]
     fn code_first_at_the_line() {
-        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["code"] };
+        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec![VS_CODE] };
         let tried = open(&recorder, None, "/w/crates/engine/src/lib.rs", 40);
-        assert_eq!(tried, [Command { program: "code".into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()] }]);
+        assert_eq!(tried, [Command { program: VS_CODE.into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()] }]);
     }
 
     #[test]
     fn then_zed_then_the_platform() {
         let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["zed"] };
         let tried = open(&recorder, None, "/w/a.rs", 7);
-        assert_eq!(tried.iter().map(|c| c.program.as_str()).collect::<Vec<_>>(), ["code", "zed"]);
+        assert_eq!(tried.iter().map(|c| c.program.as_str()).collect::<Vec<_>>(), [VS_CODE, "zed"]);
         assert_eq!(tried[1].args, ["/w/a.rs:7"]);
         let none = Recorder { ran: RefCell::new(Vec::new()), works: vec![] };
         let tried = open(&none, None, "/w/a.rs", 7);

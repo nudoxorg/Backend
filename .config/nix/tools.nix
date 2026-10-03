@@ -28,13 +28,9 @@ let
     "apps"
     "tests"
     "tools"
-    "vendor/gpui-ce"
-    "vendor/gpui_ce_components"
-    "vendor/gpui_ce_components_base"
-    "vendor/gpui_ce_macos"
-    "vendor/gpui_ce_scheduler"
-    "vendor/ra_ap_project_model"
-    "vendor/ra_ap_toolchain"
+    # All vendored path dependencies (gpui-ce, components, scheduler, …):
+    # whitelisting the whole vendor tree keeps future vendored crates working.
+    "vendor"
   ];
   workspaceSource =
     if workspaceAvailable then

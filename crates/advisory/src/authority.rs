@@ -1487,6 +1487,36 @@ mod tests {
     use super::*;
     use crate::CanonicalAdvisoryId;
 
+    /// A temporary state directory that satisfies the private-state contract
+    /// on every platform.
+    ///
+    /// `tempfile::tempdir` creates a directory that inherits its parent's ACL
+    /// on Windows, and the directory capability refuses any root that does not
+    /// carry the protected current-user-only ACL. The child below is created
+    /// through the same platform boundary a product caller uses, so the tests
+    /// exercise the contract instead of bypassing it.
+    struct PrivateTempDir {
+        _parent: tempfile::TempDir,
+        state: PathBuf,
+    }
+
+    impl PrivateTempDir {
+        fn path(&self) -> &Path {
+            &self.state
+        }
+    }
+
+    fn private_tempdir() -> PrivateTempDir {
+        let parent = tempfile::tempdir().expect("temporary parent");
+        let state = parent.path().join("state");
+        backend_platform::durable::ensure_private_child_directory(&state)
+            .expect("private state directory");
+        PrivateTempDir {
+            _parent: parent,
+            state,
+        }
+    }
+
     fn osv() -> Vec<u8> {
         br#"{"schema_version":"1.3.1","id":"OSV-AUTH-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#.to_vec()
     }
@@ -1597,7 +1627,7 @@ mod tests {
 
     #[test]
     fn incomplete_osv_refresh_overlays_disk_snapshot_positive_facts() {
-        let directory = tempfile::tempdir().expect("snapshot root");
+        let directory = private_tempdir();
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
         let mut old = super::super::parse_osv(&osv(), 10).expect("old OSV object");
         old.summary = Some("older selected advisory".into());
@@ -1657,7 +1687,7 @@ mod tests {
             )
         }
 
-        let directory = tempfile::tempdir().expect("authority directory");
+        let directory = private_tempdir();
         let authority_path = directory.path().join("authority.json");
         let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
@@ -1733,7 +1763,7 @@ mod tests {
             )
         }
 
-        let directory = tempfile::tempdir().expect("authority directory");
+        let directory = private_tempdir();
         let authority_path = directory.path().join("authority.json");
         let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
@@ -1873,7 +1903,7 @@ mod tests {
             )
         }
 
-        let directory = tempfile::tempdir().expect("authority directory");
+        let directory = private_tempdir();
         let authority_path = directory.path().join("authority.json");
         let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
@@ -1997,7 +2027,7 @@ mod tests {
 
     #[test]
     fn active_snapshot_builder_holds_owner_lease_against_collection() {
-        let directory = tempfile::tempdir().expect("snapshot root");
+        let directory = private_tempdir();
         let builder = super::super::OsvSnapshotBuilder::create(
             directory.path(),
             OsvFeedScope::Ecosystem(OsvEcosystem::Cargo),
@@ -2028,7 +2058,7 @@ mod tests {
 
     #[test]
     fn attached_osv_index_mutation_cannot_change_a_lookup_to_clean() {
-        let directory = tempfile::tempdir().expect("snapshot root");
+        let directory = private_tempdir();
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
         let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
         let mut builder = super::super::OsvSnapshotBuilder::create(
@@ -2261,7 +2291,7 @@ mod tests {
 
     #[test]
     fn partial_osv_refresh_from_new_endpoint_cannot_relabel_old_snapshot() {
-        let directory = tempfile::tempdir().expect("snapshot root");
+        let directory = private_tempdir();
         let scope_a = OsvFeedScope::All;
         let scope_b = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
         let old = super::super::parse_osv(&osv(), 10).expect("old OSV object");
@@ -2321,7 +2351,7 @@ mod tests {
 
     #[test]
     fn authority_state_load_and_store_respect_the_configured_byte_ceiling() {
-        let directory = tempfile::tempdir().expect("authority directory");
+        let directory = private_tempdir();
         let path = directory.path().join("authority.json");
         let authority =
             AdvisoryAuthority::open_with_limit(&path, 10, 3).expect("missing authority is empty");
@@ -2351,7 +2381,7 @@ mod tests {
 
     #[test]
     fn missing_authority_prunes_complete_generation_left_before_selection() {
-        let directory = tempfile::tempdir().expect("authority directory");
+        let directory = private_tempdir();
         let authority_path = directory.path().join("authority.json");
         let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
@@ -2385,7 +2415,7 @@ mod tests {
 
     #[test]
     fn next_snapshot_builder_reclaims_same_process_unselected_generation() {
-        let directory = tempfile::tempdir().expect("snapshot root");
+        let directory = private_tempdir();
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
         let advisory = super::super::parse_osv(&osv(), 10).expect("OSV object");
         let mut first = super::super::OsvSnapshotBuilder::create(
@@ -2425,7 +2455,7 @@ mod tests {
 
     #[test]
     fn busy_snapshot_root_does_not_downgrade_a_durable_selection() {
-        let directory = tempfile::tempdir().expect("authority directory");
+        let directory = private_tempdir();
         let authority_path = directory.path().join("authority.json");
         let snapshot_root = AdvisoryAuthority::osv_snapshot_root(&authority_path);
         let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
@@ -2552,11 +2582,8 @@ mod tests {
 
     #[test]
     fn cold_persist_keeps_tombstones_and_alias_identity() {
-        let path = std::env::temp_dir().join(format!(
-            "nudox-advisory-authority-{}-{}.json",
-            std::process::id(),
-            1_u64
-        ));
+        let directory = private_tempdir();
+        let path = directory.path().join("authority.json");
         let mut authority = AdvisoryAuthority::new(100);
         authority.configure_osv_scope(Some(OsvFeedScope::All));
         let mut initial =
@@ -2589,6 +2616,5 @@ mod tests {
                 .and_then(|journal| journal.tombstone_reason(&key)),
             Some("snapshot-omitted")
         );
-        let _ = fs::remove_file(path);
     }
 }

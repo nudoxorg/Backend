@@ -10,6 +10,7 @@ publish = false
 test-support = []
 
 [dependencies]
+backend-platform = { path = "../platform" }
 backend-store = { path = "../store" }
 base64.workspace = true
 serde.workspace = true

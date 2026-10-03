@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn growth_after_metadata_is_bounded_by_the_stream_limit() {
-        let mut reader = std::io::Cursor::new([7_u8; 1024]);
+        let mut reader = io::Cursor::new([7_u8; 1024]);
         assert_eq!(
             read_bounded(&mut reader, 0, 31)
                 .expect_err("grew after metadata")

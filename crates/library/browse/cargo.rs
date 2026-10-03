@@ -213,6 +213,21 @@ fn metadata_observation_revision(
 mod source_tests {
     use super::*;
 
+    /// Parses a recorded document after spelling its roots in the host's
+    /// native absolute form; see [`crate::native_test_paths`]. It shadows the
+    /// production function of the same name for every test below.
+    fn metadata_input(
+        metadata: &[u8],
+        host: &str,
+        lockfile: Option<&str>,
+    ) -> Result<TreeInput, CargoTreeError> {
+        super::metadata_input(
+            &crate::native_test_paths::localize_cargo_metadata(metadata),
+            host,
+            lockfile,
+        )
+    }
+
     fn no_advisories(_: &str, _: &str) -> backend_advisory::AdvisoryObservation {
         let authority = backend_advisory::AdvisoryAuthority::new(0);
         let package =

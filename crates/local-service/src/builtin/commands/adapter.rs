@@ -2954,6 +2954,32 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// Creates a directory symlink. Windows needs Developer Mode or the
+    /// symbolic-link privilege; a refusal fails the test loudly rather than
+    /// skipping the case.
+    fn symlink_dir(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(original, link)
+        }
+    }
+
+    /// Creates a file symlink; see [`symlink_dir`] for the Windows requirement.
+    fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link)
+        }
+    }
+
     #[test]
     fn a_directory_is_indexed_in_place() {
         let tree = TempTree::new();
@@ -2973,7 +2999,7 @@ mod tests {
         let project = tree.0.join("project");
         let link = tree.0.join("link");
         fs::create_dir(&project).expect("project dir");
-        std::os::unix::fs::symlink(&project, &link).expect("directory symlink");
+        symlink_dir(&project, &link).expect("directory symlink");
         assert!(matches!(
             classify_add_target(&label(&link)),
             Ok(AddTarget::LocalDirectory)
@@ -3003,7 +3029,7 @@ mod tests {
         let file = tree.0.join("lib.rs");
         let link = tree.0.join("link.rs");
         fs::write(&file, "fn main() {}\n").expect("file");
-        std::os::unix::fs::symlink(&file, &link).expect("file symlink");
+        symlink_file(&file, &link).expect("file symlink");
         let error = classify_add_target(&label(&link)).expect_err("symlink add");
         assert_eq!(error.0, ADD_TARGET_REQUIRED);
     }

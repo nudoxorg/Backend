@@ -111,6 +111,13 @@ opacity). Off by default: one `has_global` check per painted line.
 Known gap: a cached view (`AnyView::cached`) that replays last frame's primitives does not
 repaint its lines, so they are not traced in the replayed frame.
 
+## Virtual list height hints (W-Library, 2026-10-02)
+
+| Site | Change | Why |
+|---|---|---|
+| `src/elements/list.rs` `ListState::remeasure_with_uniform_item_height` | new: re-hint every item at a new uniform height, keeping the logical scroll anchor and focus handles | a Library row's height follows the text size; offscreen estimates must follow a reflow |
+| `src/elements/list.rs` `StateInner::uniform_item_height`; `apply_uniform_item_height`, `remeasure_items_with_scroll_anchor`, `List::prepaint` | the declared uniform height is remembered, and the width-change invalidation in `prepaint` (which the first layout also takes) re-hints unmeasured items with it instead of `None` | upstream reset every hint to `None` there, so `with_uniform_item_height` was erased before its first use: unmeasured rows counted as zero height, the scrollbar covered only the measured rows, and a wheel scroll stopped at their end (`uniform_hints_survive_the_first_layout_and_a_width_change`) |
+
 ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
 
 Copied verbatim from crates.io, wired through `[patch.crates-io]`. Patched
@@ -134,3 +141,47 @@ lines carry `NUDOX:` comments.
 | `src/highlighter/languages.rs` | `Json` behind `tree-sitter-json`; C# uses the grammar's `HIGHLIGHTS_QUERY` (was `""`: no highlighting); C++ uses `languages/cpp/highlights.scm` | C# and C++ were unhighlighted |
 | `src/highlighter/languages/cpp/highlights.scm` (new) | C's query plus C++'s, specific patterns first (upstream's C++ query is written for `; inherits: c`, which this highlighter does not resolve) | C++ highlighting |
 | `src/highlighter/languages/rust/highlights.scm` | `(lifetime "'" @label)` | a lifetime reads as one token |
+| `Cargo.toml` (non-wasm dev-dependency), `src/highlighter/registry.rs` `test_registry` | `tree-sitter-json` is also a dev-dependency; the built-in `json` lookup is asserted present or absent by the `tree-sitter-json` feature | the registry and Markdown code-block tests register the JSON grammar as a custom language; after the split they no longer compiled with `tree-sitter` on and `tree-sitter-json` off (the desktop's feature set) |
+| `src/input/input.rs` (tests only) | the named-input identity test imports `crate::ElementExt as _`; the focus test drops an unused `Root` import | the identity test calls `on_prepaint`, a method of `ElementExt`, so the crate's lib test target did not compile |
+
+## Windows headless rendering (H, 2026-10-02)
+
+Headless captures must draw with the renderer a native window draws with. On
+Windows the desktop enables `gpui_platform`'s `wgpu` feature, so its windows
+draw with `gpui_ce_wgpu`'s `WgpuRenderer` on DX12 and shape text with
+`CosmicTextSystem`; upstream had no headless renderer there at all
+(`current_headless_renderer()` returned `None` off macOS), so every capture
+stopped at `NoRenderer`.
+
+### gpui-ce
+
+| Site | Change | Why |
+|---|---|---|
+| `src/platform.rs` `PlatformHeadlessRenderer::gpu_specs` | new, default `None` | a capture records which device drew its pixels |
+| `src/platform/test/window.rs` `TestWindow::gpu_specs` | asks its headless renderer (was `None`) | the same, through `Window::gpu_specs` |
+| `src/platform/test/window.rs` `TestWindowState::scale_factor`, `TestWindow::set_scale_factor`, `scale_factor()` | the display scale is stored, default 2.0 (was a constant 2.0) | a 1x capture drew into a 2x device surface (4x the pixels, cropped afterwards by the harness), and every `simulate_resize` reported 2.0, so the window re-laid out at 2x until the harness put the scale back |
+| `src/window.rs` `Window::set_scale_factor` | also sets a test window's display scale (test-support only) | the scene, the device surface and the next resize callback agree |
+
+### gpui_ce_wgpu 0.1.0 (vendored, `vendor/gpui_ce_wgpu`)
+
+Copied verbatim from crates.io; a workspace member so its unit tests run (the
+IBM Plex test font its upstream tests include sits at the expected relative
+path, `assets/fonts/ibm-plex-sans`).
+
+| Site | Change | Why |
+|---|---|---|
+| `src/wgpu_renderer.rs` `WgpuResources::target: FrameTarget` (was `surface`) | `Surface(wgpu::Surface)` or `Offscreen(Option<OffscreenTexture>)`; `FrameTarget::configure` reconfigures a surface or releases an offscreen texture of another size | one renderer, two kinds of frame destination |
+| `src/wgpu_renderer.rs` `new_internal` / `new_with_target` | the surface-capability choice (format, alpha modes, present mode) stays in `new_internal`; everything after it moved verbatim to `new_with_target` | an offscreen target supplies the same choices without a surface |
+| `src/wgpu_renderer.rs` `draw` / `encode_and_submit` | everything after acquiring the swapchain frame moved verbatim to `encode_and_submit`, which reports `SceneSubmission::{Submitted, InstanceBufferExhausted}`; `draw` still presents in both cases, as upstream did | the offscreen target encodes with the exact same code |
+| `src/wgpu_renderer/offscreen.rs` (new) | `WgpuRenderer::new_offscreen`, `render_offscreen`, `read_offscreen`: the window's format order (`Bgra8Unorm`, `Rgba8Unorm`), opaque composite, a texture plus a 256-byte-row-aligned readback buffer per viewport size, validation/OOM/internal error scopes per frame, a 60 s bounded GPU wait, typed `OffscreenError` | the readback; an opaque window's compositor ignores alpha, so readback pixels are opaque, colour untouched |
+| `src/headless.rs` (new, `test-support`) | `WgpuHeadlessRenderer`: `PlatformHeadlessRenderer` over the offscreen target; `compositing` left at the default `{false, false}` | same capabilities as a Windows window on the unpatched wgpu renderer, so group opacity and chamfer shadows fall back exactly as on screen |
+| `src/wgpu_context.rs` `WgpuContext::new_headless(HeadlessAdapterPolicy)`, `from_parts`, `native_backends`, `adapter_rank`, `device_id_filter_from_env` | a surface-free context; the backend choice, `ZED_DEVICE_ID` parsing, device-lost hook and adapter ranking moved out of `instance`/`new_with_options`/`select_adapter_and_device` unchanged (the rank's redundant `Cpu` pre-check folded into its `match`) | headless picks adapters exactly as a window does |
+| `src/wgpu_context.rs` `HeadlessAdapterPolicy` | `prefer-hardware` (default), `hardware`, `software` (WARP) | software rendering for sessions without a GPU; baselines per adapter class |
+| `Cargo.toml` | `test-support = ["gpui/test-support", "dep:image"]`, optional `image` | the trait and its `RgbaImage` |
+
+### gpui_ce_platform 0.1.0 (vendored, `vendor/gpui_ce_platform`)
+
+| Site | Change | Why |
+|---|---|---|
+| `src/gpui_platform.rs` `try_current_headless_renderer`, `HeadlessRendererError`, `HEADLESS_ADAPTER_VAR` | new; `current_headless_renderer` is its `.ok()` | Windows returns `WgpuHeadlessRenderer` when `wgpu` is on (the renderer windows then draw with) and says why otherwise; `GPUI_HEADLESS_ADAPTER` chooses the policy |
+| `Cargo.toml` | `wgpu` also enables the optional Windows `gpui_wgpu` dependency; `test-support` enables `gpui_wgpu?/test-support` and an optional `anyhow` | the above |

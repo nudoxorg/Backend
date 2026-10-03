@@ -253,72 +253,108 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
     Ok(Options { paths, mode })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
     use std::fs;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn stdio_returns_correlated_mcp_error_when_owner_startup_fails() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        // Nix's TMPDIR can itself exceed macOS's Unix-socket path budget.
-        // Keep the entire private fixture under the short Unix temporary root.
-        let root =
-            PathBuf::from("/tmp").join(format!("bmcp-outage-{}-{nonce:x}", std::process::id()));
-        let project = root.join("project");
-        let data = root.join("state");
-        fs::create_dir_all(&project).expect("fixture project");
-        fs::create_dir_all(&data).expect("fixture state");
+    /// A workspace laid out on disk for one stdio session.
+    struct Fixture {
+        /// Removed when the fixture is dropped; it holds the state directory
+        /// and the endpoint, and is the parent every private-state admission
+        /// inspects.
+        root: PathBuf,
+        project: PathBuf,
+        data: PathBuf,
+    }
 
-        // Keep the authority secret readable, but make the state directory's
-        // parent fail the same private-parent admission that prevented the
-        // reported process from starting. That failure now occurs only after
-        // initialize, initialized, and a complete status request have reached
-        // the normal JSON-RPC processor.
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755))
-            .expect("set deliberately invalid parent mode");
-        fs::set_permissions(&data, fs::Permissions::from_mode(0o700))
-            .expect("keep state directory private");
-        fs::write(data.join("authority.secret"), [0x41; 32]).expect("fixture authority secret");
-        fs::set_permissions(
-            data.join("authority.secret"),
-            fs::Permissions::from_mode(0o600),
-        )
-        .expect("keep authority secret private");
+    impl Fixture {
+        /// A fresh, uniquely named root. Unix socket paths are short-bounded
+        /// and Nix's `TMPDIR` can itself exceed macOS's budget, so Unix
+        /// fixtures live under `/tmp`; Windows uses the user's temporary
+        /// directory.
+        ///
+        /// The project is a sibling of the root, not a child. A Windows root
+        /// with a non-inheriting owner-only ACL and a child that has the
+        /// default ACL cannot be removed by `std::fs::remove_dir_all`
+        /// (`Access is denied`, reproduced without any product code), so the
+        /// restricted tree holds only objects that carry their own ACL.
+        fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            let base = if cfg!(unix) {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            let name = format!("bmcp-{label}-{}-{nonce:x}", std::process::id());
+            let root = base.join(&name);
+            let project = base.join(format!("{name}-project"));
+            let data = root.join("state");
+            fs::create_dir_all(&root).expect("fixture root");
+            fs::create_dir_all(&project).expect("fixture project");
+            Self {
+                root,
+                project,
+                data,
+            }
+        }
 
-        let paths = backend_runtime::WorkspacePaths::discover(
-            Some(project),
-            Some(data),
-            Some(root.join("owner.sock")),
-        )
-        .expect("fixture workspace paths");
-        let requests = [
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": { "name": "outage-fixture", "version": "1" }
-                }
-            }),
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            }),
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": { "name": "backend.status", "arguments": {} }
-            }),
-        ];
+        fn paths(&self) -> backend_runtime::WorkspacePaths {
+            backend_runtime::WorkspacePaths::discover(
+                Some(self.project.clone()),
+                Some(self.data.clone()),
+                Some(self.root.join("owner.sock")),
+            )
+            .expect("fixture workspace paths")
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+            let _ = fs::remove_dir_all(&self.project);
+        }
+    }
+
+    /// Makes `path` usable by its owner alone: mode `0700`, or a protected
+    /// DACL granting only the current user.
+    fn restrict_to_owner(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .expect("restrict fixture to its owner");
+        }
+        #[cfg(windows)]
+        backend_platform::win32::security::restrict_to_current_user(path)
+            .expect("restrict fixture to its owner");
+    }
+
+    /// Plants a readable authority secret under an already private `data`
+    /// directory, as a previous run of the product would have left it.
+    fn plant_authority_secret(data: &Path) {
+        let secret = data.join("authority.secret");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::write(&secret, [0x41; 32]).expect("fixture authority secret");
+            fs::set_permissions(&secret, fs::Permissions::from_mode(0o600))
+                .expect("keep authority secret private");
+        }
+        #[cfg(windows)]
+        backend_platform::durable::write_private_atomic(&secret, &[0x41; 32])
+            .expect("fixture authority secret");
+    }
+
+    /// Runs `requests` through the stdio server and returns every reply, in
+    /// order.
+    fn drive(paths: &backend_runtime::WorkspacePaths, requests: &[Value]) -> Vec<Value> {
         let input = requests
             .iter()
             .map(|request| {
@@ -330,93 +366,94 @@ mod tests {
             .collect::<String>();
         let mut input = io::Cursor::new(input.into_bytes());
         let mut output = Vec::new();
-
-        serve_json_rpc_stdio(&paths, &mut input, &mut output)
+        serve_json_rpc_stdio(paths, &mut input, &mut output)
             .expect("stdio processes complete JSON-RPC requests");
-
-        let replies = String::from_utf8(output)
+        String::from_utf8(output)
             .expect("JSON-RPC output is UTF-8")
             .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("reply JSON"))
-            .collect::<Vec<_>>();
+            .map(|line| serde_json::from_str::<Value>(line).expect("reply JSON"))
+            .collect()
+    }
+
+    /// The `initialize` request and its `initialized` acknowledgement.
+    fn handshake(client: &str) -> [Value; 2] {
+        [
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": client, "version": "1" }
+                }
+            }),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        ]
+    }
+
+    #[test]
+    fn stdio_returns_correlated_mcp_error_when_owner_startup_fails() {
+        let fixture = Fixture::new("outage");
+        fs::create_dir_all(&fixture.data).expect("fixture state");
+        // Keep the authority secret readable, but leave the state directory's
+        // parent shared with other users, so it fails the private-parent
+        // admission that prevented the reported process from starting. That
+        // failure now occurs only after initialize, initialized, and a
+        // complete status request have reached the normal JSON-RPC processor.
+        // The root stays shared: mode `0755` on Unix, set explicitly because a
+        // strict umask would otherwise make it private and hide the refusal,
+        // and an inherited (unprotected) DACL on Windows.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o755))
+                .expect("set deliberately invalid parent mode");
+        }
+        restrict_to_owner(&fixture.data);
+        plant_authority_secret(&fixture.data);
+
+        let [initialize, initialized] = handshake("outage-fixture");
+        let status = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "backend.status", "arguments": {} }
+        });
+        let replies = drive(&fixture.paths(), &[initialize, initialized, status]);
+
         assert_eq!(replies.len(), 2, "notification has no JSON-RPC reply");
         assert_eq!(replies[0]["id"], 1);
         assert!(replies[0]["result"]["serverInfo"].is_object());
         assert_eq!(replies[1]["id"], 2);
         assert_eq!(replies[1]["result"]["isError"], true);
         assert_eq!(replies[1]["result"]["structuredContent"]["answer"], "fault");
-        assert!(replies[1].to_string().contains("private state parent"));
-
-        fs::remove_dir_all(root).expect("remove outage fixture");
+        // The two platforms name the same refusal in their own terms.
+        let refusal = if cfg!(unix) {
+            "private state parent"
+        } else {
+            "protected DACL"
+        };
+        assert!(
+            replies[1].to_string().contains(refusal),
+            "the owner-startup refusal must reach the caller: {}",
+            replies[1]
+        );
     }
 
     #[test]
     fn stdio_initializes_a_new_workspace_before_any_owner_request() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            PathBuf::from("/tmp").join(format!("bmcp-fresh-{}-{nonce:x}", std::process::id()));
-        let project = root.join("project");
-        fs::create_dir_all(&project).expect("fixture project");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-            .expect("keep workspace parent private");
-        let data = root.join("state");
-        let paths = backend_runtime::WorkspacePaths::discover(
-            Some(project),
-            Some(data.clone()),
-            Some(root.join("owner.sock")),
-        )
-        .expect("fixture workspace paths");
-        let requests = [
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": { "name": "fresh-workspace-fixture", "version": "1" }
-                }
-            }),
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            }),
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list",
-                "params": {}
-            }),
-        ];
-        let input = requests
-            .iter()
-            .map(|request| {
-                format!(
-                    "{}\n",
-                    serde_json::to_string(request).expect("request JSON")
-                )
-            })
-            .collect::<String>();
-        let mut input = io::Cursor::new(input.into_bytes());
-        let mut output = Vec::new();
+        let fixture = Fixture::new("fresh");
+        restrict_to_owner(&fixture.root);
 
-        serve_json_rpc_stdio(&paths, &mut input, &mut output)
-            .expect("stdio initializes without an owner connection");
+        let [initialize, initialized] = handshake("fresh-workspace-fixture");
+        let tools = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
+        let replies = drive(&fixture.paths(), &[initialize, initialized, tools]);
 
-        let replies = String::from_utf8(output)
-            .expect("JSON-RPC output is UTF-8")
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("reply JSON"))
-            .collect::<Vec<_>>();
         assert_eq!(replies.len(), 2, "notification has no JSON-RPC reply");
         assert_eq!(replies[0]["id"], 1);
         assert_eq!(replies[1]["id"], 2);
         assert!(replies[1]["result"]["tools"].is_array());
-        assert!(data.join("authority.secret").is_file());
-
-        fs::remove_dir_all(root).expect("remove fresh workspace fixture");
+        assert!(fixture.data.join("authority.secret").is_file());
     }
 }

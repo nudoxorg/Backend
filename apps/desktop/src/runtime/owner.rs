@@ -204,18 +204,11 @@ impl OwnerGate {
         (!inner.observation_suspended && matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })).then_some(inner.attachment)
     }
 
-    /// Publication of any serving owner, including an embedded owner that
-    /// restarted at the same producer root. This does not report socket loss.
-    pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
-        let inner = self.lock();
-        matches!(inner.state, OwnerState::Ready { .. }).then_some(inner.epoch)
-    }
-
     /// Read readiness and attachment together. Separate state/epoch reads
     /// could combine two different owners during a rapid same-root restart.
     pub(crate) fn serves_attachment(&self, expected: Option<Epoch>) -> bool {
         let inner = self.lock();
-        matches!(inner.state, OwnerState::Ready { .. }) && Some(inner.epoch) == expected
+        matches!(inner.state, OwnerState::Ready { .. }) && Some(inner.attachment) == expected
     }
 
     /// Reports confirmed endpoint loss only for the attached generation that
@@ -284,8 +277,10 @@ impl OwnerGate {
             .then_some(inner.attachment)
     }
 
-    /// Current serving attachment, independent of publication wakes.
-    pub(crate) fn ready_attachment(&self) -> Option<Epoch> {
+    /// Current serving attachment, independent of publication wakes: any
+    /// serving owner, embedded or attached, including one that restarted at
+    /// the same producer root. It does not report socket loss.
+    pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
         let inner = self.lock();
         (!inner.closed
             && !inner.observation_suspended
@@ -911,7 +906,8 @@ mod publication_tests {
                 first.capability().expect("complete source"),
             )
             .expect("prepared external delta");
-        let (second, _) = ViewRoot::clone(&first).commit(prepared).expect("committed external delta");
+        // The base stays shared: commit against it instead of consuming it.
+        let (second, _) = prepared.commit(&first).expect("committed external delta");
         let second = Arc::new(second);
         let published = Cursor::for_view_root_at(&second, 1);
         assert_eq!(
@@ -920,6 +916,9 @@ mod publication_tests {
         );
         assert!(gate.lock().epoch > initial_wake);
         assert_eq!(gate.attached_ready_epoch(), Some(attachment));
+        // A publication advances the epoch, not the attachment, so the owner a
+        // reader captured through `ready_epoch` still counts as serving.
+        assert!(gate.serves_attachment(Some(attachment)));
         let (kept, kept_cursor) = gate.publication(attachment).expect("latest shared root");
         assert!(Arc::ptr_eq(&kept, &second));
         assert_eq!(kept_cursor, published);

@@ -1158,7 +1158,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("nudox-mcp-companion-{nonce}"));
         fs::create_dir_all(&directory).expect("create app bin directory");
         let mcp = directory.join("backend-mcp");
-        let locald = directory.join("backend-locald");
+        let locald = directory.join(format!("backend-locald{}", std::env::consts::EXE_SUFFIX));
         fs::write(&mcp, b"mcp").expect("write mcp marker");
         fs::write(&locald, b"locald").expect("write locald marker");
         #[cfg(unix)]

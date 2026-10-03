@@ -48,34 +48,70 @@ use std::time::{Duration, Instant};
 
 const INDEX_DEADLINE: Duration = Duration::from_mins(15);
 
+/// The repository root, spelled as Cargo spells the manifest directory: no
+/// `..` (the owner's private walk refuses parent traversal) and no `\\?\`
+/// verbatim prefix (`canonicalize` adds one on Windows, and the owner labels
+/// its rows with the plain spelling it was asked for).
 fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repository root")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("apps/desktop is two below the repository root")
+        .to_path_buf()
+}
+
+/// A project of this repository, joined with the platform's separators.
+fn repo_project(relative: &[&str]) -> PathBuf {
+    relative
+        .iter()
+        .fold(repo(), |path, component| path.join(component))
+}
+
+/// Where the capture owner keeps its state unless `NUDOX_CAPTURE_STATE`
+/// names a fresh directory.
+fn default_capture_state() -> PathBuf {
+    #[cfg(unix)]
+    let state = PathBuf::from("/tmp/nx-shell-cap");
+    #[cfg(not(unix))]
+    let state = std::env::temp_dir().join("nx-shell-cap");
+    state
 }
 
 /// Starts an embedded owner and waits until every requested project is Ready.
 fn serve(projects: &[PathBuf]) -> (backend_desktop::DesktopHost, PathBuf) {
-    let state = PathBuf::from(std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()));
+    let state =
+        std::env::var_os("NUDOX_CAPTURE_STATE").map_or_else(default_capture_state, PathBuf::from);
     serve_at(projects, &state)
+}
+
+/// Creates `state` and `state/data` with owner-only access. The real owner
+/// refuses state beneath a directory other users can reach; the capture
+/// fixture is subject to that same check, including first boot.
+fn private_state(state: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(state.join("data"))
+    }
+    #[cfg(windows)]
+    {
+        // The parent is an ordinary directory of this user (a capture root or
+        // the temporary directory); `state` is the first owner-only one.
+        if let Some(parent) = state.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        backend_platform::durable::ensure_private_child_directory(state)?;
+        backend_platform::durable::ensure_private_directory(&state.join("data"))
+    }
 }
 
 fn serve_at(projects: &[PathBuf], state: &Path) -> (backend_desktop::DesktopHost, PathBuf) {
     let primary = projects.first().expect("at least one indexed project");
     let endpoint = PathBuf::from(format!("{}.sock", state.display()));
-    // The real owner refuses state beneath a group-readable directory. Keep
-    // the capture fixture subject to that same check, including first boot.
-    let mut private_dir = std::fs::DirBuilder::new();
-    private_dir.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        private_dir.mode(0o700);
-    }
-    private_dir
-        .create(state.join("data"))
-        .expect("private state dir");
+    private_state(state).expect("private state dir");
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(primary.clone()),
         Some(state.join("data")),
@@ -200,6 +236,9 @@ impl Render for EarlySemanticErrorRoot {
     }
 }
 
+// Needs `gpui_platform::current_headless_renderer`: Metal on macOS, the wgpu
+// offscreen target on Windows (Linux has none).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn early_semantic_error_is_preserved_without_retaining_capture_entities() {
     let viewport = Viewport::new(64, 64, 1).expect("viewport");
@@ -374,26 +413,26 @@ fn find_settings_script() -> (Vec<InputStep>, Vec<u64>) {
         if let Some(action) = action { actions.push(action); }
         times.push(now);
     };
-    step(100, Some(InputStep::key("cmd-[")));          // 01 Code → Orbit
-    step(100, Some(InputStep::key("cmd-k")));          // 02 Ask
+    step(100, Some(InputStep::key("secondary-[")));          // 01 Code → Orbit
+    step(100, Some(InputStep::key("secondary-k")));          // 02 Ask
     step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 03 owner query
-    step(800, Some(InputStep::key("cmd-enter")));      // 04 Find route while Ask exit still paints
+    step(800, Some(InputStep::key("secondary-enter")));      // 04 Find route while Ask exit still paints
     step(800, None);                                    // 05 settled Find claims query focus
     step(100, Some(InputStep::key("tab")));            // 06 native result focus
     step(100, Some(InputStep::key("shift-tab")));      // 07 back to Find query
     step(100, Some(InputStep::key("enter")));          // 08 exact selected declaration
-    step(200, Some(InputStep::key("cmd-[")));          // 09 Find again
-    step(200, Some(InputStep::key("cmd-a")));          // 10 select Find query
+    step(200, Some(InputStep::key("secondary-[")));          // 09 Find again
+    step(200, Some(InputStep::key("secondary-a")));          // 10 select Find query
     step(100, Some(InputStep::Text { value: "AbsentMarker".to_owned() })); // 11 dirty query
     step(50, Some(InputStep::key("enter")));           // 12 commit query; never open old row
     step(450, None);                                    // 13 current empty reading
-    step(200, Some(InputStep::key("cmd-k")));          // 14 Ask again
+    step(200, Some(InputStep::key("secondary-k")));          // 14 Ask again
     step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 15 owner query
-    step(800, Some(InputStep::key("cmd-enter")));      // 16 Find at original root; Ask exits
+    step(800, Some(InputStep::key("secondary-enter")));      // 16 Find at original root; Ask exits
     step(800, None);                                    // 17 settled Find before replacement
     step(200, None);                                    // 18 owner source replaced in frame hook
     step(500, Some(InputStep::key("enter")));          // 19 old result cannot open
-    step(200, Some(InputStep::key("cmd-,")));          // 20 Settings
+    step(200, Some(InputStep::key("secondary-,")));          // 20 Settings
     step(100, Some(InputStep::FocusNext));              // 21 native entry
     step(100, Some(InputStep::key("tab")));            // 22 contrast
     step(100, Some(InputStep::key("tab")));            // 23 density
@@ -408,7 +447,7 @@ fn find_settings_script() -> (Vec<InputStep>, Vec<u64>) {
     step(100, Some(InputStep::Resize { width: 360, height: 900 }));  // 32
     step(100, Some(InputStep::Resize { width: 1440, height: 900 })); // 33
     step(200, Some(InputStep::key("escape")));         // 34 close Settings
-    step(200, Some(InputStep::key("cmd-[")));          // 35 Back at the current owner
+    step(200, Some(InputStep::key("secondary-[")));          // 35 Back at the current owner
     (actions, times)
 }
 
@@ -483,7 +522,7 @@ fn capture(
         // paint so the next paired tree proves the editor consumed the text.
         Script::Ask => vec![InputStep::Wait { milliseconds: 760 }, InputStep::Text { value: "RelationLabel".to_owned() }],
         Script::AskJourney => vec![
-            InputStep::Wait { milliseconds: 100 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 800 }, InputStep::key("down"),
             InputStep::Wait { milliseconds: 100 }, InputStep::key("tab"),
@@ -494,14 +533,14 @@ fn capture(
             // settled Reader frame is captured before the Up event.
             InputStep::Wait { milliseconds: 750 }, InputStep::key("up"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("enter"),
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-."),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-."),
             // Keep the first Code frame as transition evidence, then let
             // that Reader settle before the real Back event.
             InputStep::Wait { milliseconds: 750 },
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-["),
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-["),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("escape"),
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 500 }, InputStep::key("down"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 800, height: shot.height },
@@ -511,10 +550,10 @@ fn capture(
             InputStep::Wait { milliseconds: 400 },
             // Keep the old settled evidence, then capture the next modal
             // entrance, exit, interrupted reopen, and resize on real input.
-            InputStep::Wait { milliseconds: 100 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 100 }, InputStep::key("escape"),
-            InputStep::Wait { milliseconds: 80 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 80 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 20 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 60 }, InputStep::Resize { width: 800, height: shot.height },
             InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 1440, height: shot.height },
@@ -1122,7 +1161,7 @@ fn capture_the_shell_over_a_real_index() {
     } else {
         std::fs::create_dir_all(&out).expect("out");
     }
-    let projects = vec![repo().join("crates/present"), repo().join("crates/runtime")];
+    let projects = vec![repo_project(&["crates", "present"]), repo_project(&["crates", "runtime"])];
     let project = projects.first().expect("primary project");
     let (host, endpoint) = serve(&projects);
     let mut subscription = backend_client::LocalSubscriptionTransport::connect(&endpoint).expect("subscription");

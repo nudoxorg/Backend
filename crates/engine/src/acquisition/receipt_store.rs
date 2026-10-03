@@ -1038,19 +1038,9 @@ mod tests {
         AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, LeaseStore,
         ManifestEntry, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "acquisition-product-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create fixture");
-        fs::canonicalize(path).expect("canonicalize fixture")
+        crate::test_support::private_directory(&format!("acquisition-product-{label}"))
     }
 
     #[test]
@@ -1174,6 +1164,8 @@ mod tests {
             serde_json::to_vec(&borrowed).expect("borrowed delta JSON"),
             serde_json::to_vec(&owned).expect("owned delta JSON")
         );
+        // The store pins its directories, and Windows will not delete a pinned tree.
+        drop(store);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -1447,6 +1439,8 @@ mod tests {
                 .recover(&request, record.owner_cursor, record.facts_frontier, 7)
                 .is_err()
         );
+        // The store pins its directories, and Windows will not delete a pinned tree.
+        drop(store);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -1467,6 +1461,8 @@ mod tests {
         let error = read_bounded_json_with_limit::<serde_json::Value>(&store.root, &record, 96)
             .expect_err("metadata length exceeds the small test bound");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // The store pins its directories, and Windows will not delete a pinned tree.
+        drop(store);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

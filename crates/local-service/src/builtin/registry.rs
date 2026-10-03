@@ -2125,15 +2125,16 @@ fn read_rustsec_tree(
         #[cfg(unix)]
         mtime_nsec: i64,
         #[cfg(windows)]
-        revision: backend_platform::win32::project_fs::FileRevision,
+        identity: backend_platform::FileIdentity,
+        #[cfg(windows)]
+        last_write: u64,
     }
 
     impl FileStamp {
-        /// Stamps an open file. On Windows the volume, file ID, and NT change
-        /// time come from the handle: std's file ID accessors are unstable
-        /// (`windows_by_handle`).
+        /// Captures the size, times, and object identity of the file `file`
+        /// holds open. The identity comes from the handle, never from a name.
         fn capture(file: &std::fs::File) -> Result<Self, String> {
-            let metadata = &file.metadata().map_err(|error| error.to_string())?;
+            let metadata = file.metadata().map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
@@ -2148,11 +2149,13 @@ fn read_rustsec_tree(
             }
             #[cfg(windows)]
             {
+                use std::os::windows::fs::MetadataExt;
                 Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
-                    revision: backend_platform::win32::project_fs::revision_for_file(file)
+                    identity: backend_platform::FileIdentity::of_file(file)
                         .map_err(|error| error.to_string())?,
+                    last_write: metadata.last_write_time(),
                 })
             }
             #[cfg(not(any(unix, windows)))]
@@ -3240,7 +3243,11 @@ mod tests {
                 std::process::id()
             ));
             match fs::create_dir(&path) {
-                Ok(()) => return path,
+                Ok(()) => {
+                    crate::test_support::make_private(&path)
+                        .expect("make the registry fixture directory private");
+                    return path;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("create isolated registry fixture directory: {error}"),
             }

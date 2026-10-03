@@ -821,6 +821,7 @@ fn release_address<'a>(route: &'a Route, package: &PackageRef) -> Option<(Packag
         let pin = match route {
             Route::Package(route) => PackageRef::parse(route.package.as_str()).ok()?,
             Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok()?,
+            // A Cargo source file reads its exact package; it names no other release.
             Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()?,
             Route::Orbit(_) | Route::World => return None,
         };

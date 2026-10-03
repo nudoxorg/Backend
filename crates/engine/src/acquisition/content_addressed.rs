@@ -8,7 +8,10 @@
 //! incomplete transfer is a private `.part` file, and a completed transfer is
 //! linked into its digest path exactly once.
 
-use super::{ManifestEntry, RawArchiveObjectId, TreeManifest};
+use super::{
+    ManifestEntry, RawArchiveObjectId, TreeManifest,
+    owned_file::{self, OwnedFile, Reclaimed},
+};
 use blake3::Hasher;
 use std::{
     collections::BTreeSet,
@@ -698,43 +701,14 @@ impl ContentAddressedStore {
         } else {
             &safe_label
         };
-        let (token, path, file, lock) = loop {
+        let (token, path, file, claim) = loop {
             let token = self.next_token();
             let path = self
                 .root
                 .join("temps")
                 .join(format!("{}.{}.part", hex(&token), label));
-            match OpenOptions::new()
-                .write(true)
-                .read(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => {
-                    let lock =
-                        match backend_platform::durability::open_or_create_regular_file_nofollow(
-                            &path,
-                        ) {
-                            Ok(lock) => lock,
-                            Err(error) => {
-                                drop(file);
-                                let _ = fs::remove_file(&path);
-                                return Err(error.into());
-                            }
-                        };
-                    if let Err(error) = lock.try_lock() {
-                        drop(lock);
-                        drop(file);
-                        let _ = fs::remove_file(&path);
-                        return Err(match error {
-                            std::fs::TryLockError::WouldBlock => ContentStoreError::Io(
-                                io::Error::other("new private temp lock was unexpectedly busy"),
-                            ),
-                            std::fs::TryLockError::Error(error) => ContentStoreError::Io(error),
-                        });
-                    }
-                    break (token, path, file, lock);
-                }
+            match owned_file::create_owned(&path) {
+                Ok((file, claim)) => break (token, path, file, claim),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }
@@ -745,8 +719,8 @@ impl ContentAddressedStore {
             token,
             now_millis().saturating_add(TEMP_TTL.as_millis() as u64),
         ) {
-            drop(lock);
             drop(file);
+            drop(claim);
             let _ = fs::remove_file(&path);
             return Err(error);
         }
@@ -760,7 +734,7 @@ impl ContentAddressedStore {
             lease_path,
             token,
             file: Some(file),
-            _lock: lock,
+            claim: Some(claim),
             preserve: false,
         })
     }
@@ -910,26 +884,12 @@ impl ContentAddressedStore {
                 .duration_since(modified)
                 .unwrap_or_default();
             if age >= older_than.max(TEMP_TTL) {
-                let temp_lock =
-                    match backend_platform::durability::open_regular_file_readwrite_nofollow(&path)
-                    {
-                        Ok(file) => file,
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                        Err(error) => return Err(error.into()),
-                    };
-                match temp_lock.try_lock() {
-                    Ok(()) => match fs::remove_file(&path) {
-                        Ok(()) => {
-                            let _ = fs::remove_file(marker);
-                            removed += 1;
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error.into()),
-                    },
-                    Err(std::fs::TryLockError::WouldBlock) => {}
-                    Err(std::fs::TryLockError::Error(error))
-                        if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+                match owned_file::reclaim(&path)? {
+                    Reclaimed::Removed => {
+                        let _ = fs::remove_file(marker);
+                        removed += 1;
+                    }
+                    Reclaimed::Absent | Reclaimed::Owned => {}
                 }
             }
         }
@@ -961,32 +921,7 @@ impl ContentAddressedStore {
                         if active_now.contains(&path) {
                             false
                         } else {
-                            let stage_lock =
-                                match backend_platform::durability::open_regular_file_readwrite_nofollow(
-                                    &path,
-                                ) {
-                                    Ok(file) => file,
-                                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                                        continue;
-                                    }
-                                    Err(error) => return Err(error.into()),
-                                };
-                            match stage_lock.try_lock() {
-                                Ok(()) => match fs::remove_file(&path) {
-                                    Ok(()) => true,
-                                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-                                    Err(error) => return Err(error.into()),
-                                },
-                                Err(std::fs::TryLockError::WouldBlock) => false,
-                                Err(std::fs::TryLockError::Error(error))
-                                    if error.kind() == io::ErrorKind::NotFound =>
-                                {
-                                    false
-                                }
-                                Err(std::fs::TryLockError::Error(error)) => {
-                                    return Err(error.into());
-                                }
-                            }
+                            owned_file::reclaim(&path)? == Reclaimed::Removed
                         }
                     };
                     if removed_stage {
@@ -1282,6 +1217,9 @@ struct DestinationStage {
     store: ContentAddressedStore,
     path: PathBuf,
     file: Option<File>,
+    /// Released before the stage is removed, so a Windows owner's own
+    /// delete-denying handle cannot block its cleanup.
+    claim: Option<OwnedFile>,
 }
 
 impl DestinationStage {
@@ -1309,34 +1247,13 @@ impl DestinationStage {
             if !inserted {
                 continue;
             }
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => {
-                    if let Err(error) = file.try_lock() {
-                        drop(file);
-                        let _ = fs::remove_file(&path);
-                        store
-                            .active_artifacts
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&path);
-                        return Err(match error {
-                            std::fs::TryLockError::WouldBlock => {
-                                ContentStoreError::Io(io::Error::other(
-                                    "new destination stage lock was unexpectedly busy",
-                                ))
-                            }
-                            std::fs::TryLockError::Error(error) => ContentStoreError::Io(error),
-                        });
-                    }
+            match owned_file::create_owned(&path) {
+                Ok((file, claim)) => {
                     return Ok(Self {
                         store: store.clone(),
                         path,
                         file: Some(file),
+                        claim: Some(claim),
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -1372,6 +1289,7 @@ impl DestinationStage {
 impl Drop for DestinationStage {
     fn drop(&mut self) {
         self.file.take();
+        self.claim.take();
         let _ = fs::remove_file(&self.path);
         self.store
             .active_artifacts
@@ -1407,7 +1325,9 @@ struct TempArtifact {
     lease_path: PathBuf,
     token: [u8; ID_BYTES],
     file: Option<File>,
-    _lock: File,
+    /// Released before the file is removed so that, on Windows, the owner's
+    /// own delete-denying handle does not block its cleanup.
+    claim: Option<OwnedFile>,
     preserve: bool,
 }
 
@@ -1442,6 +1362,9 @@ impl TempArtifact {
 
     fn quarantine(&mut self, reason: &str) -> Result<PathBuf, ContentStoreError> {
         self.sync_close()?;
+        // A rename needs delete access, which the owner's own claim denies on
+        // Windows; the lease marker still names the file while it moves.
+        let _ = self.claim.take();
         let destination = self.store.root.join("quarantine").join(format!(
             "{}.{}.part",
             hex(&self.token),
@@ -1456,6 +1379,7 @@ impl TempArtifact {
 impl Drop for TempArtifact {
     fn drop(&mut self) {
         let _ = self.file.take();
+        let _ = self.claim.take();
         if !self.preserve {
             let _ = fs::remove_file(&self.path);
         }
@@ -1691,8 +1615,7 @@ impl ResumableTransfer {
         let owner_token = store.next_token();
         let owner_file = acquire_transfer_owner(&owner_path, owner_token)?;
         let open_result = (|| {
-            let mut file =
-                backend_platform::durability::open_or_create_append_file_nofollow(&data_path)?;
+            let mut file = open_transfer_data(&data_path)?;
             let file_length = file.metadata()?.len();
             let saved_checkpoint = read_checkpoint(&state_path)?;
             let persisted_length = saved_checkpoint
@@ -2032,9 +1955,7 @@ impl ResumableTransfer {
         fs::rename(&self.data_path, destination)?;
         sync_directory(&self.store.root.join("transfers"))?;
         sync_directory(&self.store.root.join("quarantine"))?;
-        self.file = Some(
-            backend_platform::durability::open_or_create_append_file_nofollow(&self.data_path)?,
-        );
+        self.file = Some(open_transfer_data(&self.data_path)?);
         Ok(())
     }
 
@@ -2154,6 +2075,27 @@ impl ResumableTransfer {
 impl Drop for ResumableTransfer {
     fn drop(&mut self) {
         let _ = self.file.take();
+    }
+}
+
+/// Opens a transfer's `.part` file for appending, truncation and rollback.
+///
+/// The sole writer is the transfer's owner, which every operation re-checks, so
+/// appending is "write at the end of file". Windows append mode grants
+/// `FILE_APPEND_DATA` but not `FILE_WRITE_DATA`, and `set_len` needs the latter,
+/// so the rollback and restart paths would fail with "access denied". Windows
+/// therefore opens read/write and positions the cursor at the end; other
+/// platforms keep `O_APPEND`.
+fn open_transfer_data(path: &Path) -> io::Result<File> {
+    #[cfg(windows)]
+    {
+        let mut file = backend_platform::durability::open_or_create_regular_file_nofollow(path)?;
+        file.seek(SeekFrom::End(0))?;
+        Ok(file)
+    }
+    #[cfg(not(windows))]
+    {
+        backend_platform::durability::open_or_create_append_file_nofollow(path)
     }
 }
 
@@ -2372,6 +2314,32 @@ mod tests {
         let _ = fs::remove_dir_all(path);
     }
 
+    /// Reads a transfer's owner marker through the handle that holds its lock.
+    /// Windows byte-range locks are mandatory, so a second handle cannot read a
+    /// marker its owner has locked; the owner's own handle can.
+    fn marker_via_owner_handle(transfer: &ResumableTransfer) -> Vec<u8> {
+        let mut handle = transfer
+            .owner_file
+            .try_clone()
+            .expect("duplicate the owner handle");
+        handle.seek(SeekFrom::Start(0)).expect("rewind the marker");
+        let mut marker = Vec::new();
+        handle.read_to_end(&mut marker).expect("read the marker");
+        marker
+    }
+
+    /// Makes `path` look older than any scavenging threshold. Windows needs a
+    /// handle with write-attribute access to set a timestamp, which a
+    /// read-only `File::open` does not carry.
+    fn age_to_epoch(path: &Path) {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open for aging")
+            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
+            .expect("age file");
+    }
+
     #[test]
     fn no_op_expected_object_does_not_touch_source() {
         let path = root("reuse");
@@ -2448,7 +2416,9 @@ mod tests {
         clean(&path);
         let store = ContentAddressedStore::open(&path).expect("store");
         let bytes = b"ordered staged publication";
-        let source = path.join("temps/source.part");
+        // The store resolves its root once (to the verbatim form on Windows), so a source inside
+        // it is named through that resolved root.
+        let source = store.root().join("temps").join("source.part");
         let mut file = File::create(&source).expect("source");
         file.write_all(bytes).expect("source bytes");
         file.sync_all().expect("sync source");
@@ -2498,7 +2468,9 @@ mod tests {
         clean(&path);
         let store = ContentAddressedStore::open(&path).expect("store");
         let bytes = b"private destination-stage publication";
-        let source = path.join("temps/source.part");
+        // The store resolves its root once (to the verbatim form on Windows), so a source inside
+        // it is named through that resolved root.
+        let source = store.root().join("temps").join("source.part");
         let mut file = File::create(&source).expect("source");
         file.write_all(bytes).expect("source bytes");
         file.sync_all().expect("sync source");
@@ -2561,7 +2533,9 @@ mod tests {
             let path = root(&format!("staged-interruption-{index}"));
             clean(&path);
             let store = ContentAddressedStore::open(&path).expect("store");
-            let source = path.join("temps/source.part");
+            // The store resolves its root once (to the verbatim form on Windows), so a source inside
+            // it is named through that resolved root.
+            let source = store.root().join("temps").join("source.part");
             let mut file = File::create(&source).expect("source");
             file.write_all(&bytes).expect("source bytes");
             file.sync_all().expect("sync source");
@@ -2813,7 +2787,7 @@ mod tests {
             stale.renew(),
             Err(ContentStoreError::TransferBusy)
         ));
-        let marker_before_stale_drop = fs::read(&owner_path).expect("current owner marker");
+        let marker_before_stale_drop = marker_via_owner_handle(&current);
         assert_eq!(
             marker_before_stale_drop.get(..ID_BYTES),
             Some(current_token.as_slice())
@@ -3184,10 +3158,7 @@ mod tests {
         let mut active = store_a.create_temp("long-verifier").expect("active temp");
         active.write_all(b"sealed bytes").expect("write temp");
         active.sync_close().expect("close writer before verifier");
-        File::open(active.path())
-            .expect("open temp for aging")
-            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
-            .expect("age temp");
+        age_to_epoch(active.path());
         let mut lease = OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -3207,7 +3178,7 @@ mod tests {
 
         // Releasing the lock models a crashed verifier; a second store can
         // then collect the aged orphan even while this test retains metadata.
-        active._lock.unlock().expect("release temp lock");
+        drop(active.claim.take());
         assert_eq!(
             store_b
                 .scavenge_stale(Duration::ZERO)
@@ -3241,10 +3212,7 @@ mod tests {
             .expect("target name");
         let stale_path = parent.join(format!(".{target_name}.{}.stage", "0".repeat(ID_BYTES * 2)));
         fs::write(&stale_path, b"crash-left stage").expect("stale stage");
-        File::open(&stale_path)
-            .expect("open stale stage")
-            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
-            .expect("age stale stage");
+        age_to_epoch(&stale_path);
 
         let other_store = ContentAddressedStore::open(&path).expect("second store handle");
         assert_eq!(
@@ -3321,10 +3289,7 @@ mod tests {
             .map(|entry| entry.expect("object entry").path())
             .find(|path| is_destination_stage(path))
             .expect("child stage");
-        File::open(&stage)
-            .expect("open stage for aging")
-            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
-            .expect("age live stage");
+        age_to_epoch(&stage);
         assert_eq!(
             store.scavenge_stale(Duration::ZERO).expect("live scavenge"),
             0

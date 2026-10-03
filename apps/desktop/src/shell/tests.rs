@@ -26,8 +26,8 @@ use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::runtime::{DesktopRuntime, UiEntityGraph};
 use backend_library::DeclarationKind;
 use gpui::{
-    AppContext as _, Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext, WindowHandle, point, px,
-    size,
+    AppContext as _, Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext,
+    WindowHandle, point, px, size,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -490,7 +490,7 @@ pub(crate) fn rig_with_engine(
     rig_with_engine_gate(cx, route, width, height, pool, engine, None)
 }
 
-fn rig_with_engine_gate(
+pub(crate) fn rig_with_engine_gate(
     cx: &mut TestAppContext,
     route: Option<Route>,
     width: f32,
@@ -1506,10 +1506,7 @@ fn back_to_a_route_a_click_left_restores_focus_there(cx: &mut TestAppContext) {
 fn holding_command_shows_keys_only_after_the_hold_and_only_where_keys_are(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let before = rig.counts();
-    rig.cx.simulate_modifiers_change(Modifiers {
-        platform: true,
-        ..Modifiers::default()
-    });
+    rig.cx.simulate_modifiers_change(Modifiers::secondary_key());
     rig.cx.run_until_parked();
     assert!(!rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).reveal.keys), "nothing shows before the hold");
     rig.cx.executor().advance_clock(super::reveal::HOLD + Duration::from_millis(10));
@@ -1524,10 +1521,7 @@ fn holding_command_shows_keys_only_after_the_hold_and_only_where_keys_are(cx: &m
     assert!(!rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).reveal.keys), "release hides them at once");
 
     // A chord never flashes caps.
-    rig.cx.simulate_modifiers_change(Modifiers {
-        platform: true,
-        ..Modifiers::default()
-    });
+    rig.cx.simulate_modifiers_change(Modifiers::secondary_key());
     rig.cx.simulate_keystrokes("secondary-c");
     rig.cx.executor().advance_clock(super::reveal::HOLD * 2);
     rig.cx.run_until_parked();
@@ -2325,6 +2319,82 @@ impl PageReader for HeldLookupFixture {
         }
         Ok(value)
     }
+}
+
+/// Holds the first Find read in its real worker until the test releases it,
+/// so the mounted Find visit is genuinely pending while Ask opens and closes.
+struct HeldFindFixture { gate: Arc<LookupGate> }
+impl PageReader for HeldFindFixture {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        let ReadRequest::Browse(crate::model::browse::BrowseKey::Find(query)) = request else {
+            return Fixture.read(request, context);
+        };
+        self.gate.hold_once();
+        let answers = Known::Known(SearchPage {
+            query: Arc::clone(&query.text), rows: Arc::from([]),
+            coverage: backend_present::CoverageLine::new(&[], Some(0)), next: None,
+        });
+        let package_coverage = Known::Known(());
+        let prepared = Arc::new(crate::runtime::browse_views::prepare_find(
+            query.text.as_ref(), &answers, &[], &package_coverage,
+        ));
+        Ok(PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(
+            crate::model::browse::FindModel {
+                answers, packages: Arc::from([]), package_coverage, prepared,
+            },
+        ))))
+    }
+}
+
+/// A Find visit whose read is still held in its worker is a settled, painted
+/// page: its query owns native focus, Ask's Escape returns that focus, and a
+/// late landing does not take it back from the stop the person moved to.
+#[gpui::test]
+fn pending_find_read_keeps_query_focus_across_ask_and_late_landing(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let gate = Arc::new(LookupGate::default());
+    let held = gate.clone();
+    let pool = ReadPool::start(2, move |_| HeldFindFixture { gate: held.clone() }).expect("held Find pool");
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    let _release_on_drop = LookupRelease(gate.clone());
+    let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
+    let key = crate::model::browse::BrowseKey::Find(query.clone());
+    let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query)));
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx));
+    crate::runtime::wait::until("the Find request enters its real read worker", || {
+        rig.frame(16);
+        gate.entered()
+    });
+    for _ in 0..3 { rig.frame(700); }
+    let native_focus = |rig: &mut Rig| {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let id = tree["accesskit_focus"].as_str().expect("native focus id");
+        tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
+    };
+    assert_eq!(rig.route(), route);
+    assert_eq!(gate.returned.load(Ordering::SeqCst), 0);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_none()),
+        "the Find read must still be pending in its worker");
+    assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"), "pending read blocked a settled native Find field");
+    rig.cx.simulate_keystrokes("secondary-k");
+    for _ in 0..2 { rig.frame(700); }
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"), "Find focused beneath Ask's departing plate");
+    for _ in 0..3 { rig.frame(700); }
+    assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"), "pending Find visit lost its pre-modal focus");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_none()),
+        "the return must have happened while the read was still pending");
+    rig.cx.update(|window, cx| window.focus_next(cx));
+    let away = native_focus(&mut rig);
+    assert_ne!(away.as_deref(), Some("Find query"));
+    gate.release();
+    rig.settle();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_some()));
+    assert_eq!(native_focus(&mut rig), away, "a late Find landing stole focus from the next native stop");
 }
 
 #[derive(Clone, Copy, Debug)]

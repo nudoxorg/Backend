@@ -1,5 +1,6 @@
 //! Failures from the selected package-index authority.
 
+use crate::sharing::SharingRefusal;
 use std::{fmt, path::PathBuf};
 
 /// Failure to persist, reopen, or advance selected index authority.
@@ -37,6 +38,8 @@ pub enum AuthorityError {
     ClosureVerification(String),
     /// Persisted authority bytes cannot represent a valid typed answer.
     CorruptRecord(&'static str),
+    /// The database cannot be opened in the requested process-sharing mode.
+    Sharing(SharingRefusal),
 }
 
 impl fmt::Display for AuthorityError {
@@ -86,6 +89,7 @@ impl fmt::Display for AuthorityError {
             Self::CorruptRecord(field) => {
                 write!(formatter, "malformed persisted authority field {field}")
             }
+            Self::Sharing(refusal) => refusal.fmt(formatter),
         }
     }
 }
@@ -94,6 +98,7 @@ impl std::error::Error for AuthorityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
+            Self::Sharing(refusal) => Some(refusal),
             _ => None,
         }
     }
@@ -102,5 +107,20 @@ impl std::error::Error for AuthorityError {
 impl From<turso::Error> for AuthorityError {
     fn from(error: turso::Error) -> Self {
         Self::Database(error)
+    }
+}
+
+impl From<SharingRefusal> for AuthorityError {
+    fn from(refusal: SharingRefusal) -> Self {
+        Self::Sharing(refusal)
+    }
+}
+
+impl From<crate::sharing::OpenFailure> for AuthorityError {
+    fn from(failure: crate::sharing::OpenFailure) -> Self {
+        match failure {
+            crate::sharing::OpenFailure::Sharing(refusal) => Self::Sharing(refusal),
+            crate::sharing::OpenFailure::Database(error) => Self::Database(error),
+        }
     }
 }

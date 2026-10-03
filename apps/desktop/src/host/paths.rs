@@ -156,6 +156,13 @@ fn ensure_private_application_root(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The same owner-only walk for a test's scratch tree on Windows, where a
+/// plain `create_dir_all` inherits a DACL the owner refuses.
+#[cfg(all(test, windows))]
+pub(super) fn ensure_private_tree(path: &Path) -> io::Result<()> {
+    ensure_private_application_root(path)
+}
+
 /// Returns whether no surface explicitly selected a project/session.
 fn ambient_gui_launch() -> bool {
     [PROJECT_ENV, DATA_ENV, ENDPOINT_ENV, AUTHORITY_SECRET_ENV]

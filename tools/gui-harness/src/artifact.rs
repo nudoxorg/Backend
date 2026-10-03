@@ -491,11 +491,7 @@ fn verify_run_inner(
                 continue;
             }
             let encoded = std::fs::read(&path)?;
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(path.as_path())
-                .display()
-                .to_string();
+            let relative = portable(path.strip_prefix(root).unwrap_or(path.as_path()));
             let image = image::load_from_memory(&encoded)?.into_rgba8();
             let expected_size = frame
                 .viewport
@@ -857,16 +853,14 @@ impl ArtifactWriter {
     ) -> Result<(String, String), ArtifactError> {
         let state = safe_component(state_id)?;
         let label = safe_component(label)?;
-        let relative = PathBuf::from("frames")
-            .join(state)
-            .join(format!("{label}.png"));
-        let path = self.root.join(&relative);
+        let relative = ArtifactPath::new(["frames".to_owned(), state, format!("{label}.png")])?;
+        let path = relative.under(&self.root);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let bytes = encode_png(image)?;
         std::fs::write(&path, &bytes)?;
-        Ok((relative.to_string_lossy().into_owned(), hash_bytes(&bytes)))
+        Ok((relative.manifest(), hash_bytes(&bytes)))
     }
 
     /// Writes a physical-pixel crop for close inspection of a captured frame.
@@ -888,10 +882,9 @@ impl ArtifactWriter {
         let state = safe_component(state_id)?;
         let frame = safe_component(frame_label)?;
         let label = safe_component(crop_label)?;
-        let relative = PathBuf::from("crops")
-            .join(state)
-            .join(format!("{frame}--{label}.png"));
-        let path = self.root.join(&relative);
+        let relative =
+            ArtifactPath::new(["crops".to_owned(), state, format!("{frame}--{label}.png")])?;
+        let path = relative.under(&self.root);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -903,7 +896,7 @@ impl ArtifactWriter {
             label,
             frame: frame_label.to_owned(),
             rect,
-            path: relative.to_string_lossy().into_owned(),
+            path: relative.manifest(),
             sha256: hash_bytes(&bytes),
         })
     }
@@ -944,13 +937,14 @@ impl ArtifactWriter {
                 ArtifactError::UnsafePath(format!("filmstrip frame {index} exceeds bounds"))
             })?;
         }
-        let relative = PathBuf::from("animations").join(format!("{state}.filmstrip.png"));
-        let path = self.root.join(&relative);
+        let relative =
+            ArtifactPath::new(["animations".to_owned(), format!("{state}.filmstrip.png")])?;
+        let path = relative.under(&self.root);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, encode_png(&strip)?)?;
-        Ok(relative.to_string_lossy().into_owned())
+        Ok(relative.manifest())
     }
 
     /// Writes a JSON value under the run root.
@@ -974,11 +968,9 @@ impl ArtifactWriter {
     ) -> Result<NativeAccessibilityArtifact, ArtifactError> {
         let state = safe_component(state_id)?;
         let label = safe_component(frame_label)?;
-        let relative = PathBuf::from("accessibility")
-            .join(state)
-            .join(format!("{label}.json"))
-            .to_string_lossy()
-            .into_owned();
+        let relative =
+            ArtifactPath::new(["accessibility".to_owned(), state, format!("{label}.json")])?
+                .manifest();
         self.write_json(&relative, evidence)?;
         let bytes = std::fs::read(self.root.join(&relative))?;
         Ok(NativeAccessibilityArtifact {
@@ -1042,6 +1034,41 @@ fn safe_component(value: &str) -> Result<String, ArtifactError> {
         return Err(ArtifactError::UnsafePath(value.to_owned()));
     }
     Ok(value.to_owned())
+}
+
+/// A path beneath a run root, made of checked single components. Manifests
+/// spell it with `/` on every platform, so a manifest written on Windows
+/// names the same files as one written on macOS and either verifies on both.
+struct ArtifactPath(Vec<String>);
+
+impl ArtifactPath {
+    fn new<const N: usize>(components: [String; N]) -> Result<Self, ArtifactError> {
+        components
+            .into_iter()
+            .map(|component| safe_component(&component))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Self)
+    }
+
+    /// The manifest spelling: components joined by `/`.
+    fn manifest(&self) -> String {
+        self.0.join("/")
+    }
+
+    /// The file beneath `root`, with the platform's separators.
+    fn under(&self, root: &Path) -> PathBuf {
+        self.0
+            .iter()
+            .fold(root.to_path_buf(), |path, component| path.join(component))
+    }
+}
+
+/// `path`'s components joined by `/`, for reports read on any platform.
+fn portable(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn safe_relative_path(value: &str) -> Result<PathBuf, ArtifactError> {

@@ -60,6 +60,7 @@ tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
 unicode-normalization = "0.1.25"
 
 [dev-dependencies]
+backend-client = { path = "../client", features = ["test-support"] }
 backend-store-s3 = { path = "../store-s3", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]

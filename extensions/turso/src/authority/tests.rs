@@ -10,7 +10,7 @@ use std::thread;
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
-struct AcceptVerifiedClosure;
+pub(super) struct AcceptVerifiedClosure;
 
 impl DurableClosureVerifier for AcceptVerifiedClosure {
     type Error = &'static str;
@@ -24,7 +24,7 @@ impl DurableClosureVerifier for AcceptVerifiedClosure {
     }
 }
 
-fn path() -> PathBuf {
+pub(super) fn path() -> PathBuf {
     let serial = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
         "backend-turso-index-authority-{}-{serial}.db",
@@ -32,17 +32,17 @@ fn path() -> PathBuf {
     ))
 }
 
-fn namespace() -> AuthorityNamespace {
+pub(super) fn namespace() -> AuthorityNamespace {
     AuthorityNamespace::package_metadata("pkg:cargo/widget", "registry:crates-io", "main", "stable")
         .unwrap_or_else(|error| panic!("namespace: {error}"))
 }
 
-fn observation(value: SourceObservationValue, observed_at_ms: u64) -> SourceObservation {
+pub(super) fn observation(value: SourceObservationValue, observed_at_ms: u64) -> SourceObservation {
     SourceObservation::new(namespace(), Some([11; 32]), observed_at_ms, value)
         .unwrap_or_else(|error| panic!("observation: {error}"))
 }
 
-fn candidate(
+pub(super) fn candidate(
     attempt: CandidateAttempt,
     candidate: u8,
     root: u8,

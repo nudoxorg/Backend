@@ -237,10 +237,8 @@ fn c_pipe(signature: &str, expected: &str) -> Option<Pipe> {
                 && c_node_text(signature, node).is_some_and(|text| matches!(text.trim(), "_Noreturn" | "noreturn"))
         })
     });
-    let returns_void = (0..declaration.named_child_count()).any(|index| {
-        declaration.named_child(index as u32).is_some_and(|node| {
-            node.kind() == "type_specifier" && c_node_text(signature, node).is_some_and(|text| text.trim() == "void")
-        })
+    let returns_void = declaration.child_by_field_name("type").is_some_and(|node| {
+        node.kind() == "primitive_type" && c_node_text(signature, node).is_some_and(|text| text.trim() == "void")
     });
     let base = c_base_type(signature, declaration)?;
     let mut pointers = String::new();
@@ -308,6 +306,16 @@ fn c_node_text<'source>(source: &'source str, node: tree_sitter::Node<'_>) -> Op
     source.get(node.byte_range())
 }
 
+/// Whether `child` is the node in its parent's `type` field.
+///
+/// The grammar's type specifier is the hidden `_type_specifier` supertype: a
+/// tree only ever holds its concrete kinds (`primitive_type`,
+/// `sized_type_specifier`, `type_identifier`, `struct_specifier`, …), so the
+/// type is identified by the field the declaration places it in.
+fn c_is_type_field(parent: tree_sitter::Node<'_>, child: tree_sitter::Node<'_>) -> bool {
+    parent.child_by_field_name("type") == Some(child)
+}
+
 /// Type specifiers and qualifiers form the base type. Storage classes affect
 /// declaration placement, not the parameter or result type.
 fn c_base_type(source: &str, declaration: tree_sitter::Node<'_>) -> Option<String> {
@@ -315,11 +323,12 @@ fn c_base_type(source: &str, declaration: tree_sitter::Node<'_>) -> Option<Strin
     let mut types = 0;
     for index in 0..declaration.named_child_count() {
         let child = declaration.named_child(index as u32)?;
+        if c_is_type_field(declaration, child) {
+            types += 1;
+            parts.push(c_node_text(source, child)?);
+            continue;
+        }
         match child.kind() {
-            "type_specifier" => {
-                types += 1;
-                parts.push(c_node_text(source, child)?);
-            }
             "type_qualifier" => {
                 let qualifier = c_node_text(source, child)?;
                 if !matches!(qualifier.trim(), "_Noreturn" | "noreturn") { parts.push(qualifier); }
@@ -344,11 +353,12 @@ fn c_parameter(
     let mut declarator = None;
     for index in 0..parameter.named_child_count() {
         let child = parameter.named_child(index as u32)?;
+        if c_is_type_field(parameter, child) {
+            types += 1;
+            specifiers.push(c_node_text(source, child)?);
+            continue;
+        }
         match child.kind() {
-            "type_specifier" => {
-                types += 1;
-                specifiers.push(c_node_text(source, child)?);
-            }
             "type_qualifier" => specifiers.push(c_node_text(source, child)?),
             "storage_class_specifier" => {}
             "attribute_specifier" | "attribute_declaration" | "ms_declspec_modifier" => return None,
@@ -548,6 +558,22 @@ mod tests {
         assert!(callable("int (*not_callable)(int);", "not_callable", Language::C).is_none());
         assert!(callable("int broken(int value", "broken", Language::C).is_none());
         assert!(callable("/* expected */ int other(void);", "expected", Language::C).is_none());
+    }
+
+    #[test]
+    fn c_reads_tagged_and_sized_types_from_the_grammar_type_field() {
+        let lookup = callable(
+            "struct item *lookup(struct table *table, unsigned long key, Entry entry);",
+            "lookup",
+            Language::C,
+        ).unwrap();
+        assert_eq!(lookup.inputs[0].ty.as_ref().unwrap().source.as_ref(), "struct table *");
+        assert_eq!(lookup.inputs[1].ty.as_ref().unwrap().source.as_ref(), "unsigned long");
+        assert_eq!(lookup.inputs[2].ty.as_ref().unwrap().source.as_ref(), "Entry");
+        assert_eq!(lookup.output.as_ref().unwrap().source.as_ref(), "struct item *");
+        let named = callable("enum mode pick(union value value);", "pick", Language::C).unwrap();
+        assert_eq!(named.inputs[0].ty.as_ref().unwrap().source.as_ref(), "union value");
+        assert_eq!(named.output.as_ref().unwrap().source.as_ref(), "enum mode");
     }
 
     #[test]

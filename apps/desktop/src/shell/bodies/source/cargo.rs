@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 mod inventory;
 
-pub(crate) fn body(
+pub(in crate::shell::bodies) fn body(
     route: &CargoSourceRoute,
     store: &Pages,
     ctx: &mut Ctx<'_>,

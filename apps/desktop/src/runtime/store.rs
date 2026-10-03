@@ -23,6 +23,9 @@
 //!
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
+//! The task lands at most [`LANDING_BATCH`] outcomes per executor poll and
+//! yields between turns, so a burst of finished reads cannot hold the UI
+//! thread for longer than one small turn at a time.
 
 mod dependencies;
 mod keeper;
@@ -40,7 +43,7 @@ use self::keeper::SnapshotKeeper;
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
-use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
+use super::reads::{Batch, Delivery, Evicted, Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
 use crate::core::{ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, admit_resource};
 use crate::model::AppSnapshot;
@@ -51,23 +54,48 @@ use crate::model::pages::{
 use crate::navigation::Route;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-/// What the read pool is doing: jobs waiting for a worker, and jobs a worker
-/// is running.
+/// Outcomes one UI turn lands at most. The wake task yields to the executor
+/// between turns, so input, paint, and other tasks run between batches.
+pub const LANDING_BATCH: NonZeroUsize = NonZeroUsize::MIN.saturating_add(7);
+
+/// Whether a landing turn left outcomes for the next turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Backlog {
+    /// Nothing was left undelivered when the turn took its batch.
+    Clear,
+    /// More outcomes wait; the wake task yields and lands them next turn.
+    Remaining,
+}
+
+/// What landing one outcome did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Landed {
+    /// A slot's visible state changed.
+    changed: bool,
+    /// The launch snapshot keeps this page and should be saved again.
+    save: bool,
+}
+
+/// What the read pool is doing: jobs waiting for a worker, jobs a worker is
+/// running, and finished outcomes waiting for the UI to land them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PoolLoad {
     /// Jobs no worker has taken yet.
     pub queued: usize,
     /// Jobs a worker is running.
     pub running: usize,
+    /// Finished outcomes the UI has not landed yet.
+    pub undelivered: usize,
 }
 
 impl PoolLoad {
-    /// Whether nothing is queued or running.
+    /// Whether nothing is queued, running, or waiting to land.
     #[must_use]
     pub const fn is_idle(self) -> bool {
-        self.queued == 0 && self.running == 0
+        self.queued == 0 && self.running == 0 && self.undelivered == 0
     }
 }
 
@@ -488,14 +516,26 @@ impl DataStore {
     }
 
     /// Spawns the one task that turns read-pool wakes into landings.
+    ///
+    /// Each wake lands one turn of at most [`LANDING_BATCH`] outcomes. When
+    /// more remain, the task re-arms its own wake (coalescing with any wake
+    /// a worker posts meanwhile) and yields to the executor before the next
+    /// turn: a pending wake resolves without suspending, so without the
+    /// yield one poll would land every batch back to back.
     fn start(&mut self, cx: &mut Context<Self>) {
         let Some(mut receiver) = self.pool.as_mut().and_then(ReadPool::take_wake) else {
             return;
         };
+        let rearm = receiver.sender();
         self.wake_task = Some(cx.spawn(async move |this, cx| {
             while receiver.wait().await.is_some() {
-                if this.update(cx, Self::drain).is_err() {
-                    break;
+                match this.update(cx, |store, cx| store.land_turn(cx).1) {
+                    Ok(Backlog::Clear) => {}
+                    Ok(Backlog::Remaining) => {
+                        rearm.wake();
+                        super::wake::yield_now().await;
+                    }
+                    Err(_) => break,
                 }
             }
         }));
@@ -544,22 +584,30 @@ impl DataStore {
     /// What the read pool is doing now.
     #[must_use]
     pub fn pool_activity(&self) -> PoolLoad {
-        self.pool
-            .as_ref()
-            .map_or_else(PoolLoad::default, |pool| PoolLoad {
-                queued: pool.queued(),
-                running: pool.running(),
-            })
+        self.pool.as_ref().map_or_else(PoolLoad::default, |pool| {
+            let load = pool.load();
+            PoolLoad {
+                queued: load.queued,
+                running: load.running,
+                undelivered: load.undelivered,
+            }
+        })
     }
 
-    /// The read pool's `(queued, running)` counts, as a tuple: the callers in
+    /// The read pool's `(waiting, running)` counts, as a tuple: the callers in
     /// `harness.rs`, `shell/tests.rs`, the folio capture and `tests/` still
-    /// destructure one. They move to [`Self::pool_activity`] (MIGRATE.md, R-Open3),
+    /// destructure one. `waiting` counts jobs no worker has taken and finished
+    /// outcomes the UI has not landed, so `(0, 0)` still means nothing is in
+    /// flight. They move to [`Self::pool_activity`] (MIGRATE.md, R-Open3),
     /// then this goes.
     #[must_use]
     pub fn pool_load(&self) -> (usize, usize) {
-        let PoolLoad { queued, running } = self.pool_activity();
-        (queued, running)
+        let PoolLoad {
+            queued,
+            running,
+            undelivered,
+        } = self.pool_activity();
+        (queued + undelivered, running)
     }
 
     fn emit(&mut self, event: StoreEvent, cx: &mut Context<Self>) {
@@ -879,7 +927,7 @@ impl DataStore {
             return;
         };
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
-        let accepted = pool.submit(ReadJob {
+        let admitted = pool.submit(ReadJob {
             key: key.clone(),
             request,
             generation,
@@ -887,23 +935,40 @@ impl DataStore {
             cancel: CancellationToken::new(),
             affinity,
         });
-        if accepted {
-            self.stats.submitted = self.stats.submitted.saturating_add(1);
-        } else if priority == Priority::Prefetch {
-            self.prefetching.remove(&key);
-            let before = self.pages.stamp(&key);
-            let _ = self.pages.cancel(&key);
-            self.emit_moved(key, before, cx);
-        } else if self.pages.land(
-            &key,
-            generation,
-            Err(ReadFailure::Fault(ErrorValue::new(
-                FaultCode::Transport,
-                "The reader is busy with too many pages. Try this page again.",
-            ))),
-        ) == Landing::Applied
-        {
-            self.emit(StoreEvent::Resource(key), cx);
+        match admitted {
+            Ok(admitted) => {
+                self.stats.submitted = self.stats.submitted.saturating_add(1);
+                if let Some(evicted) = admitted.evicted {
+                    self.cancel_evicted(evicted, cx);
+                }
+            }
+            // A refused prefetch leaves its slot as it was: hover is a hint.
+            Err(_) if priority == Priority::Prefetch => {
+                self.prefetching.remove(&key);
+                let before = self.pages.stamp(&key);
+                let _ = self.pages.cancel(&key);
+                self.emit_moved(key, before, cx);
+            }
+            // A view waits on this read: say why it will not come.
+            Err(refused) => {
+                if self.pages.land(&key, generation, Err(refused.failure())) == Landing::Applied {
+                    self.emit(StoreEvent::Resource(key), cx);
+                }
+            }
+        }
+    }
+
+    /// A queued prefetch gave its admission to a read a view waits on. It
+    /// never runs and posts nothing, so its slot is cancelled here, at once.
+    fn cancel_evicted(&mut self, evicted: Evicted, cx: &mut Context<Self>) {
+        if self.pages.inflight(&evicted.key) != Some(evicted.generation) {
+            return;
+        }
+        self.prefetching.remove(&evicted.key);
+        let before = self.pages.stamp(&evicted.key);
+        if self.pages.cancel(&evicted.key).is_some() {
+            self.stats.cancelled = self.stats.cancelled.saturating_add(1);
+            self.emit_moved(evicted.key, before, cx);
         }
     }
 
@@ -1014,67 +1079,102 @@ impl DataStore {
         }
     }
 
-    /// Lands every finished read. Called by the wake task; public so tests
-    /// and harnesses can drive it deterministically.
+    /// Lands one turn of finished reads: at most [`LANDING_BATCH`] outcomes,
+    /// reads a view waits on first. Returns how many changed a slot. Called
+    /// by the wake task; public so tests and harnesses can drive it
+    /// deterministically (they call it until the pool is idle).
     pub fn drain(&mut self, cx: &mut Context<Self>) -> usize {
+        self.land_turn(cx).0
+    }
+
+    /// [`Self::drain`], saying whether outcomes remain for another turn.
+    fn land_turn(&mut self, cx: &mut Context<Self>) -> (usize, Backlog) {
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
         }
         self.stats.turns = self.stats.turns.saturating_add(1);
         let Some(pool) = &self.pool else {
-            return 0;
+            return (0, Backlog::Clear);
         };
-        let outcomes = pool.drain();
+        let Batch {
+            outcomes,
+            remaining,
+        } = pool.take(LANDING_BATCH);
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {
-            if !outcome.complete {
-                match outcome.result {
-                    Ok(value) => match self.pages.stage(&outcome.key, outcome.generation, value) {
-                        Landing::Applied => {
-                            applied += 1;
-                            self.stats.landed = self.stats.landed.saturating_add(1);
-                            self.emit(StoreEvent::Resource(outcome.key), cx);
-                        }
-                        Landing::Superseded => {
-                            self.stats.superseded = self.stats.superseded.saturating_add(1)
-                        }
-                        Landing::Unchanged => {}
-                    },
-                    Err(_) => self.stats.superseded = self.stats.superseded.saturating_add(1),
-                }
-                continue;
-            }
-            if self.pages.inflight(&outcome.key) == Some(outcome.generation) {
-                self.prefetching.remove(&outcome.key);
-            }
-            match self
-                .pages
-                .land(&outcome.key, outcome.generation, outcome.result)
-            {
-                Landing::Applied => {
-                    applied += 1;
-                    super::trace::mark("read.land", format_args!("{:?}", outcome.key));
-                    self.stats.landed = self.stats.landed.saturating_add(1);
-                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
-                    self.emit(StoreEvent::Resource(outcome.key), cx);
-                }
-                Landing::Unchanged => {
-                    // The launch snapshot's value, confirmed at the new root:
-                    // nothing to draw.
-                    super::trace::mark("read.same", format_args!("{:?}", outcome.key));
-                    self.stats.landed = self.stats.landed.saturating_add(1);
-                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
-                }
-                Landing::Superseded => {
-                    self.stats.superseded = self.stats.superseded.saturating_add(1);
-                }
-            }
+            // The read's admission returns when `land` is done with it.
+            let landed = outcome.land(|key, generation, delivery| match delivery {
+                Delivery::Partial(value) => self.land_partial(key, generation, value, cx),
+                Delivery::Terminal(result) => self.land_terminal(key, generation, result, cx),
+            });
+            applied += usize::from(landed.changed);
+            save |= landed.save;
         }
         if save {
             self.keeper.save_at_rest(cx);
         }
-        applied
+        let backlog = if remaining == 0 {
+            Backlog::Clear
+        } else {
+            Backlog::Remaining
+        };
+        (applied, backlog)
+    }
+
+    /// Stages a partial page.
+    fn land_partial(
+        &mut self,
+        key: PageKey,
+        generation: Generation,
+        value: crate::model::pages::PageValue,
+        cx: &mut Context<Self>,
+    ) -> Landed {
+        match self.pages.stage(&key, generation, value) {
+            Landing::Applied => {
+                self.stats.landed = self.stats.landed.saturating_add(1);
+                self.emit(StoreEvent::Resource(key), cx);
+                Landed { changed: true, save: false }
+            }
+            Landing::Superseded => {
+                self.stats.superseded = self.stats.superseded.saturating_add(1);
+                Landed::default()
+            }
+            Landing::Unchanged => Landed::default(),
+        }
+    }
+
+    /// Lands a read's final result.
+    fn land_terminal(
+        &mut self,
+        key: PageKey,
+        generation: Generation,
+        result: Result<crate::model::pages::PageValue, ReadFailure>,
+        cx: &mut Context<Self>,
+    ) -> Landed {
+        if self.pages.inflight(&key) == Some(generation) {
+            self.prefetching.remove(&key);
+        }
+        match self.pages.land(&key, generation, result) {
+            Landing::Applied => {
+                super::trace::mark("read.land", format_args!("{key:?}"));
+                self.stats.landed = self.stats.landed.saturating_add(1);
+                let save = kept_keys(self.snapshot.route()).contains(&key);
+                self.emit(StoreEvent::Resource(key), cx);
+                Landed { changed: true, save }
+            }
+            Landing::Unchanged => {
+                // The launch snapshot's value, confirmed at the new root:
+                // nothing to draw.
+                super::trace::mark("read.same", format_args!("{key:?}"));
+                self.stats.landed = self.stats.landed.saturating_add(1);
+                Landed { changed: false, save: kept_keys(self.snapshot.route()).contains(&key) }
+            }
+            Landing::Superseded => {
+                self.stats.superseded = self.stats.superseded.saturating_add(1);
+                Landed::default()
+            }
+        }
     }
 
     /// Returns the visible-state stamp of one page slot.
@@ -1617,33 +1717,202 @@ mod tests {
         ));
     }
 
+
+    fn rig_with_limits(cx: &mut TestAppContext, workers: usize, limits: crate::runtime::reads::ReadLimits) -> Rig {
+        cx.executor().allow_parking();
+        let gate: Gate = Arc::new((Mutex::new(BTreeSet::new()), Condvar::new()));
+        let reader_gate = Arc::clone(&gate);
+        let pool = ReadPool::start_with(workers, limits, move |_| FixtureReader {
+            gate: Arc::clone(&reader_gate),
+        })
+        .expect("pool");
+        let store = cx.update(|cx| DataStore::install(cx, snapshot(), Some(pool)));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&events);
+        let subscription = cx.update(|cx| {
+            cx.subscribe(&store, move |_, event: &StoreEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+        let mut rig = Rig { store, events, gate, base: StoreStats::default(), _subscription: subscription };
+        rig.until(cx, |store| {
+            store.health().is_loaded() && store.orbit().activity() == Activity::Stopped && store.pool_activity().is_idle()
+        });
+        rig.take_events();
+        rig.base = rig.store.read_with(cx, |store, _| store.stats());
+        rig
+    }
+
+    fn limits(reads: usize, prefetch: usize) -> crate::runtime::reads::ReadLimits {
+        crate::runtime::reads::ReadLimits::new(NonZeroUsize::new(reads).expect("nonzero"), prefetch)
+    }
+
+    fn held(rig: &Rig, cx: &mut TestAppContext) -> crate::runtime::reads::Held {
+        rig.store
+            .read_with(cx, |store, _| store.pool.as_ref().map(|pool| pool.load().held))
+            .expect("the rig has a pool")
+    }
+
+    /// Asks for `count` fast pages and waits, without running the executor,
+    /// until every one of them finished and waits for the UI.
+    fn finish_without_landing(rig: &Rig, cx: &mut TestAppContext, count: usize) -> Vec<PageKey> {
+        let keys = (0..count)
+            .map(|index| PageKey::Symbol(symbol(&format!("fast-burst-{index}"))))
+            .collect::<Vec<_>>();
+        rig.store.update(cx, |store, cx| store.focus(keys.clone(), cx));
+        crate::runtime::wait::until("every burst read finished on its worker", || {
+            rig.store.read_with(cx, |store, _| store.pool_activity().undelivered) == count
+        });
+        rig.take_events();
+        keys
+    }
+
+    /// Schedule: 24 reads finish while the UI is not running. Each executor
+    /// poll then lands at most one batch, not the whole backlog.
+    #[gpui::test]
+    fn a_burst_of_finished_reads_lands_one_small_batch_per_executor_poll(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        finish_without_landing(&rig, cx, 24);
+        let landed = |cx: &mut TestAppContext| rig.store.read_with(cx, |store, _| store.stats().landed);
+        let mut before = landed(cx);
+        let mut turns = 0;
+        while cx.executor().tick() {
+            let now = landed(cx);
+            let batch = usize::try_from(now - before).expect("small");
+            assert!(batch <= LANDING_BATCH.get(), "one poll landed {batch} outcomes");
+            turns += usize::from(batch > 0);
+            before = now;
+        }
+        assert_eq!(landed(cx) - rig.base.landed, 24, "every read landed");
+        assert!(turns >= 3, "24 outcomes took {turns} turns");
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default(), "landing returned every admission");
+    }
+
+    /// Schedule: a backlog of finished reads and another foreground task
+    /// that wants the UI thread. The other task runs between landing turns
+    /// on the real (deterministic) executor, instead of after the backlog.
+    #[gpui::test]
+    fn other_ui_work_runs_between_landing_turns(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        let keys = finish_without_landing(&rig, cx, 24);
+        let log = Rc::new(RefCell::new(String::new()));
+        let landings = Rc::clone(&log);
+        let _landing = cx.update(|cx| {
+            cx.subscribe(&rig.store, move |_, event: &StoreEvent, _| {
+                if matches!(event, StoreEvent::Resource(_)) {
+                    landings.borrow_mut().push('L');
+                }
+            })
+        });
+        let probe = Rc::clone(&log);
+        let other = cx.update(|cx| {
+            cx.spawn(async move |_| {
+                for _ in 0..12 {
+                    probe.borrow_mut().push('P');
+                    crate::runtime::wake::yield_now().await;
+                }
+            })
+        });
+        cx.run_until_parked();
+        drop(other);
+        let log = log.borrow().clone();
+        assert_eq!(log.matches('L').count(), keys.len(), "{log}");
+        let first = log.find('L').expect("a landing");
+        let last = log.rfind('L').expect("a landing");
+        assert!(log[first..last].contains('P'), "the other task waited for the whole backlog: {log}");
+        let longest = log.split('P').map(str::len).max().unwrap_or(0);
+        assert!(longest <= LANDING_BATCH.get(), "a turn landed {longest} outcomes in one go: {log}");
+    }
+
+    /// Schedule: the pages a view waits on hold every admission. A further
+    /// read is refused with a typed busy fault instead of growing the pool,
+    /// and the next ask succeeds once the held reads land.
+    #[gpui::test]
+    fn a_read_refused_at_capacity_shows_a_busy_fault_and_recovers(cx: &mut TestAppContext) {
+        let rig = rig_with_limits(cx, 2, limits(2, 1));
+        let held_keys = vec![PageKey::Symbol(symbol("slow-held-1")), PageKey::Symbol(symbol("slow-held-2"))];
+        rig.store.update(cx, |store, cx| store.focus(held_keys, cx));
+        let refused = symbol("fast-refused");
+        rig.store.update(cx, |store, cx| {
+            store.ensure(PageKey::Symbol(refused.clone()), cx);
+        });
+        let busy = rig.store.read_with(cx, |store, _| store.symbol(&refused));
+        assert_eq!(busy.activity(), Activity::Stopped);
+        assert!(
+            matches!(busy.terminal(), ResourceTerminal::Fault(error) if error.code() == FaultCode::Transport && error.message().contains("busy")),
+            "{busy:?}"
+        );
+        assert_eq!(held(&rig, cx).total(), 2, "the refused read took no admission");
+        rig.open("slow-held-1");
+        rig.open("slow-held-2");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.update(cx, |store, cx| store.retry(PageKey::Symbol(refused.clone()), cx));
+        rig.until(cx, |store| store.symbol(&refused).is_loaded());
+    }
+
+    /// Schedule: every admission is held while a hover prefetch is still
+    /// queued, and a view asks for another page. The prefetch gives up its
+    /// admission and its slot is cancelled at once; it never runs.
+    #[gpui::test]
+    fn an_evicted_prefetch_is_cancelled_at_once_and_never_lands(cx: &mut TestAppContext) {
+        let rig = rig_with_limits(cx, 1, limits(3, 1));
+        let busy = PageKey::Symbol(symbol("slow-busy"));
+        rig.store.update(cx, |store, cx| store.focus(vec![busy.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        let hover = PageKey::Symbol(symbol("fast-hover"));
+        let waiting = PageKey::Symbol(symbol("fast-waiting"));
+        let evicting = PageKey::Symbol(symbol("fast-evicting"));
+        rig.store.update(cx, |store, cx| {
+            store.prefetch(hover.clone(), cx);
+            store.ensure(waiting.clone(), cx);
+        });
+        assert!(rig.store.read_with(cx, |store, _| store.is_prefetching(&hover)));
+        rig.take_events();
+        rig.store.update(cx, |store, cx| {
+            store.ensure(evicting.clone(), cx);
+        });
+        let (prefetching, hover_loading, evicting_loading) = rig.store.read_with(cx, |store, _| {
+            (store.is_prefetching(&hover), store.is_loading(&hover), store.is_loading(&evicting))
+        });
+        assert!(!prefetching && !hover_loading, "the evicted prefetch's slot was cancelled");
+        assert!(evicting_loading, "the view's read took the admission");
+        assert!(rig.take_events().contains(&StoreEvent::Resource(hover.clone())));
+        rig.open("slow-busy");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.read_with(cx, |store, _| {
+            assert!(store.symbol(&symbol("fast-evicting")).is_loaded());
+            assert!(store.symbol(&symbol("fast-waiting")).is_loaded());
+            assert!(store.symbol(&symbol("fast-hover")).loaded_value().is_none(), "the evicted prefetch never ran");
+        });
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default());
+    }
+
+    /// Schedule: the owner is lost while a read runs, and its late reply
+    /// arrives after the slot was revoked. It never lands, and its
+    /// admission returns once the UI discards it.
+    #[gpui::test]
+    fn a_late_generation_never_lands_and_returns_its_admission(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let late = symbol("slow-late");
+        let key = PageKey::Symbol(late.clone());
+        rig.store.update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        rig.store.update(cx, |store, cx| store.owner_failed(&OwnerFault::Lost("socket closed".into()), cx));
+        assert_eq!(held(&rig, cx).total(), 1, "the revoked read still runs");
+        rig.open("slow-late");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        assert!(rig.store.read_with(cx, |store, _| store.symbol(&late).loaded_value().is_none()));
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default());
+    }
+
     #[test]
-    fn a_pool_is_idle_only_when_nothing_is_queued_and_nothing_is_running() {
+    fn a_pool_is_idle_only_when_nothing_is_queued_running_or_undelivered() {
         assert!(PoolLoad::default().is_idle(), "no jobs is idle");
-        assert!(
-            !PoolLoad {
-                queued: 1,
-                running: 0
-            }
-            .is_idle(),
-            "a queued job is work"
-        );
-        assert!(
-            !PoolLoad {
-                queued: 0,
-                running: 1
-            }
-            .is_idle(),
-            "a running job is work"
-        );
-        assert!(
-            !PoolLoad {
-                queued: 2,
-                running: 3
-            }
-            .is_idle(),
-            "both is work"
-        );
+        let work = |queued, running, undelivered| PoolLoad { queued, running, undelivered };
+        assert!(!work(1, 0, 0).is_idle(), "a queued job is work");
+        assert!(!work(0, 1, 0).is_idle(), "a running job is work");
+        assert!(!work(0, 0, 1).is_idle(), "an outcome waiting to land is work");
+        assert!(!work(2, 3, 4).is_idle(), "all of it is work");
     }
 }
 

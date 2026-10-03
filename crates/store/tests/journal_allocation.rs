@@ -12,17 +12,21 @@ use backend_store::workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersio
 use thiserror::Error;
 
 const REPLAY_RECORDS: usize = 64;
-// The standard-library channel layout differs between the pinned Linux CI
-// toolchain and macOS. Keep each platform's observed cost explicit so a
-// channel-layout change cannot be mistaken for a zero-allocation admission.
-#[cfg(target_os = "linux")]
-const SYNC_CHANNEL_COUNT: u64 = 2;
-#[cfg(not(target_os = "linux"))]
+// The bound is kept explicit so a changed std channel layout fails this ledger rather than being
+// mistaken for a zero-allocation admission path. A one-slot channel costs the shared counter and
+// its slot buffer (656 bytes on 64-bit targets); platforms whose std mutex is a lazily boxed
+// pthread mutex add one 64-byte allocation when the channel first locks. The numbers are measured
+// per platform family with the workspace toolchain (rustc 1.97.1): the unix figure is the one the
+// ledger recorded, the Windows figure was measured on x86_64-pc-windows-msvc where the SRW lock is
+// inline.
+#[cfg(not(windows))]
 const SYNC_CHANNEL_COUNT: u64 = 3;
-#[cfg(target_os = "linux")]
-const SYNC_CHANNEL_BYTES: u64 = 656;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(windows))]
 const SYNC_CHANNEL_BYTES: u64 = 720;
+#[cfg(windows)]
+const SYNC_CHANNEL_COUNT: u64 = 2;
+#[cfg(windows)]
+const SYNC_CHANNEL_BYTES: u64 = 656;
 
 #[derive(Debug, Error)]
 enum AllocationTestError {

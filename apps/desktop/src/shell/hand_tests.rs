@@ -237,7 +237,7 @@ fn holding_cmd_shows_each_cards_digit(cx: &mut TestAppContext) {
         ledger.texts.iter().filter(|text| text.key.starts_with("hand-digit:")).map(|text| text.content.clone()).collect()
     };
     assert!(digits(&mut rig).is_empty(), "no digits at rest");
-    rig.cx.simulate_modifiers_change(gpui::Modifiers { platform: true, ..gpui::Modifiers::default() });
+    rig.cx.simulate_modifiers_change(gpui::Modifiers::secondary_key());
     rig.cx.executor().advance_clock(super::reveal::HOLD + std::time::Duration::from_millis(10));
     rig.cx.run_until_parked();
     rig.draw();

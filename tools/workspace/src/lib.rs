@@ -540,6 +540,9 @@ mod tests {
         let result = canonical_dag();
         assert!(result.is_ok());
         let Some(dag) = result.ok() else { return };
+        // Adding a product package is a deliberate act: it must also be added
+        // to `docs/architecture/package-dag.json`, and this count moves with
+        // it. `backend-facet` made it 30.
         assert_eq!(dag.packages.len(), 30);
         assert_eq!(dag.core_names.len(), 11);
         let names = dag

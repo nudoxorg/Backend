@@ -433,8 +433,8 @@ fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
             facet::fonts::install(cx).expect("fonts");
             facet::probe::enable(cx);
             let settings = SettingsState { appearance: shot_build.appearance, shelf_open: true, ..SettingsState::default() };
-            // SessionState keeps a crate-private field, so set the public ones
-            // on a default rather than with struct-update syntax.
+            // `SessionState` keeps crate-private fields (a cold-start focus
+            // claim), so a binary starts from the default and sets its route.
             let mut session = SessionState::default();
             session.route = shot_build.route.clone();
             session.back = vec![Route::Orbit(OrbitRoute::Home)].into();

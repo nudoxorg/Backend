@@ -1764,20 +1764,14 @@ fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
     Some(file_system_revision_from_metadata(&metadata))
 }
 
-/// The entry itself, as `symlink_metadata` reads it on Unix: a reparse point
-/// is described, never followed.
+/// Reads the revision of the object `path` names, walking every component
+/// relative to a held handle. A reparse point anywhere, including the final
+/// component, makes the revision unavailable rather than describing its target.
 #[cfg(windows)]
 fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    let entry = fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-        .ok()?;
-    file_system_revision_from_open_file(&entry).ok()
+    backend_platform::win32::project_fs::revision_of_path(path)
+        .ok()
+        .map(file_system_revision_from_windows)
 }
 
 #[cfg(not(windows))]
@@ -4942,7 +4936,16 @@ mod compiler_workspace_snapshot_tests {
     #[test]
     fn workspace_paths_must_be_utf8_nfc_and_portable() {
         assert!(normalized_workspace_path(Path::new("src/main.rs")).is_ok());
+        // A backslash inside a component is a non-portable name on Unix. On
+        // Windows it is the separator, so the same text is the path
+        // `src/main.rs`, and must normalize to exactly that.
+        #[cfg(unix)]
         assert!(normalized_workspace_path(Path::new("src\\main.rs")).is_err());
+        #[cfg(windows)]
+        assert_eq!(
+            normalized_workspace_path(Path::new("src\\main.rs")).as_deref(),
+            Ok("src/main.rs")
+        );
         assert!(normalized_workspace_path(Path::new("src/e\u{301}.txt")).is_err());
     }
 

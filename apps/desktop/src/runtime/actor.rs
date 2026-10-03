@@ -68,6 +68,13 @@ impl CancellationToken {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
+    /// The flag itself, for blocking platform work that polls an atomic
+    /// (bounded child capture). Setting it directly would skip the waiters:
+    /// cancel through [`Self::cancel`].
+    pub(crate) fn flag(&self) -> &AtomicBool {
+        &self.0.cancelled
+    }
+
     /// Registers one condition-variable wakeup for a worker wait. The
     /// callback fires immediately when cancellation already happened.
     pub(crate) fn on_cancel(&self, wake: impl Fn() + Send + Sync + 'static) -> CancellationWake {
@@ -716,7 +723,7 @@ fn run_local_reads(
         let result = if read.cancel.is_cancelled() {
             Err(EngineFault::Cancelled)
         } else {
-            let package = loader.load_with_cancel(&read.project, &|| read.cancel.is_cancelled());
+            let package = loader.load_with_cancel(&read.project, read.cancel.flag());
             match package {
                 Some(package) if !read.cancel.is_cancelled() => Ok(EngineDto::LocalPackage {
                     request: read.request,

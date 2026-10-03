@@ -1897,13 +1897,15 @@ fn map_residency_error(error: IrResidencyError) -> ClientError {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
+    use crate::test_socket::local_pair;
     use backend_engine::cluster_transport::{
         RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexPermission,
         RemoteIndexSemanticSelection,
     };
+    use backend_replication::LocalStream;
     use backend_replication::{
         LocalControlLimits, LocalControlRequest, LocalControlResponse, SemanticCatalogChunk,
         SemanticCatalogGet, decode_request, encode_response, read_frame, write_frame,
@@ -1915,7 +1917,6 @@ mod tests {
     use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
     use std::fs;
     use std::net::UdpSocket;
-    use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::thread;
@@ -2093,7 +2094,7 @@ mod tests {
     }
 
     fn serve_catalog_pages(
-        mut stream: UnixStream,
+        mut stream: LocalStream,
         catalog: SemanticPlaneCatalog,
         stamp: SelectedGenerationStamp,
         stop_after_first: bool,
@@ -2140,11 +2141,11 @@ mod tests {
     #[test]
     fn cold_client_assembles_and_admits_a_mult_page_catalog() {
         let (target, catalog, stamp) = catalog_fixture();
-        let (client_stream, server_stream) = UnixStream::pair().expect("stream pair");
+        let (client_stream, server_stream) = local_pair();
         let server_catalog = catalog.clone();
         let server =
             thread::spawn(move || serve_catalog_pages(server_stream, server_catalog, stamp, false));
-        let mut client = LocalSemanticRangeTransport::from_unix_stream(client_stream);
+        let mut client = LocalSemanticRangeTransport::from_stream(client_stream);
         let mut source = Source {
             stamp,
             changed_stamp: changed_stamp(stamp),
@@ -2164,11 +2165,11 @@ mod tests {
     #[test]
     fn client_rejects_catalog_page_when_head_moves_after_first_page() {
         let (target, catalog, stamp) = catalog_fixture();
-        let (client_stream, server_stream) = UnixStream::pair().expect("stream pair");
+        let (client_stream, server_stream) = local_pair();
         let server_catalog = catalog.clone();
         let server =
             thread::spawn(move || serve_catalog_pages(server_stream, server_catalog, stamp, true));
-        let mut client = LocalSemanticRangeTransport::from_unix_stream(client_stream);
+        let mut client = LocalSemanticRangeTransport::from_stream(client_stream);
         let mut source = Source {
             stamp,
             changed_stamp: changed_stamp(stamp),
@@ -2257,8 +2258,8 @@ mod tests {
     fn image_current_check_rejects_a_stale_cached_selection() {
         let (_, catalog, stamp) = catalog_fixture();
         let image = catalog.entries()[0].image();
-        let (client_stream, _server_stream) = UnixStream::pair().expect("stream pair");
-        let transport = LocalSemanticRangeTransport::from_unix_stream(client_stream);
+        let (client_stream, _server_stream) = local_pair();
+        let transport = LocalSemanticRangeTransport::from_stream(client_stream);
         let mut source = Source {
             stamp,
             changed_stamp: changed_stamp(stamp),
@@ -2277,8 +2278,8 @@ mod tests {
     fn image_current_check_rejects_changed_image_membership() {
         let (_, catalog, stamp) = catalog_fixture();
         let image = catalog.entries()[0].image();
-        let (client_stream, _server_stream) = UnixStream::pair().expect("stream pair");
-        let transport = LocalSemanticRangeTransport::from_unix_stream(client_stream);
+        let (client_stream, _server_stream) = local_pair();
+        let transport = LocalSemanticRangeTransport::from_stream(client_stream);
         let mut source = MembershipSource {
             stamp,
             selected: false,

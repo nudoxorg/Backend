@@ -581,7 +581,10 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 let started = Instant::now();
                 let ticket = self.next_ticket;
                 self.next_ticket = self.next_ticket.wrapping_add(1);
-                let result = match self.service.handle_payload_or_defer(&inbound.payload, ticket) {
+                let result = match self
+                    .service
+                    .handle_payload_or_defer(&inbound.payload, ticket)
+                {
                     Ok(crate::service::Handled::Deferred) => {
                         self.deferred.insert(ticket, inbound.reply);
                         return true;
@@ -746,14 +749,14 @@ impl<O> UnixListenerService<O> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::test_support::socket_path;
     use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, read_frame};
     use crate::service::OwnerService;
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
     #[derive(Debug, Default)]
@@ -892,14 +895,20 @@ mod tests {
             idle_timeout: None,
         };
         let long = Duration::from_millis(900);
-        let service = LocaldService::new(DeferringOwner { long, pending: None }, config.limits)
-            .unwrap_or_else(|error| panic!("service: {error}"));
+        let service = LocaldService::new(
+            DeferringOwner {
+                long,
+                pending: None,
+            },
+            config.limits,
+        )
+        .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let ask = |body: &'static [u8]| {
             let path = path.clone();
             thread::spawn(move || {
-                let mut stream = std::os::unix::net::UnixStream::connect(path)
+                let mut stream = backend_engine::LocalStream::connect(path)
                     .unwrap_or_else(|error| panic!("connect: {error}"));
                 let request = crate::protocol::frame(body, limits())
                     .unwrap_or_else(|error| panic!("frame: {error}"));
@@ -912,7 +921,8 @@ mod tests {
         };
         let started = Instant::now();
         let indexing = ask(b"index");
-        let drive = |listener: &mut UnixListenerService<DeferringOwner>, until: &dyn Fn() -> bool| {
+        let drive = |listener: &mut UnixListenerService<DeferringOwner>,
+                     until: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(10);
             while Instant::now() < deadline && !until() {
                 let _ = listener
@@ -922,12 +932,20 @@ mod tests {
             }
         };
         // The index command is with the owner before the read arrives.
-        drive(&mut listener, &|| started.elapsed() >= Duration::from_millis(100));
+        drive(&mut listener, &|| {
+            started.elapsed() >= Duration::from_millis(100)
+        });
         let reading = ask(b"read");
         drive(&mut listener, &|| reading.is_finished());
-        assert!(!indexing.is_finished(), "the index command is still running when the read is answered");
+        assert!(
+            !indexing.is_finished(),
+            "the index command is still running when the read is answered"
+        );
         let (read, read_at) = reading.join().unwrap_or_else(|_| panic!("read thread"));
-        assert_eq!(read.unwrap_or_else(|error| panic!("read: {error}")), b"read");
+        assert_eq!(
+            read.unwrap_or_else(|error| panic!("read: {error}")),
+            b"read"
+        );
         assert!(
             read_at.duration_since(started) < long,
             "the read waited for the deferred command: answered after {:?}",
@@ -935,8 +953,14 @@ mod tests {
         );
         drive(&mut listener, &|| indexing.is_finished());
         let (indexed, indexed_at) = indexing.join().unwrap_or_else(|_| panic!("index thread"));
-        assert_eq!(indexed.unwrap_or_else(|error| panic!("index: {error}")), b"indexed");
-        assert!(indexed_at.duration_since(started) >= long, "the deferred reply came when its work was done");
+        assert_eq!(
+            indexed.unwrap_or_else(|error| panic!("index: {error}")),
+            b"indexed"
+        );
+        assert!(
+            indexed_at.duration_since(started) >= long,
+            "the deferred reply came when its work was done"
+        );
         listener.shutdown();
         drop(listener);
     }
@@ -945,10 +969,7 @@ mod tests {
     struct RejectPeers;
 
     impl PeerPolicy for RejectPeers {
-        fn authorize(
-            &self,
-            _stream: &std::os::unix::net::UnixStream,
-        ) -> Result<(), PeerPolicyError> {
+        fn authorize(&self, _stream: &backend_engine::LocalStream) -> Result<(), PeerPolicyError> {
             Err(PeerPolicyError::Rejected)
         }
     }
@@ -963,21 +984,6 @@ mod tests {
         assert!(workers.iter().all(JoinHandle::is_finished));
         assert_eq!(reap_finished_workers(&mut workers), 0);
         assert!(workers.is_empty());
-    }
-
-    fn socket_path(label: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let leaf = format!("backend-locald-{label}-{nonce}.sock");
-        let preferred = std::env::temp_dir().join(&leaf);
-        // The per-session macOS temporary directory does not leave room for a
-        // bindable `sun_path`, so fall back to `/tmp` when it does not fit.
-        if backend_engine::UnixEndpointRef::new(&preferred).is_ok() {
-            preferred
-        } else {
-            Path::new("/tmp").join(leaf)
-        }
     }
 
     fn limits() -> FrameLimits {
@@ -1014,7 +1020,7 @@ mod tests {
             .with_telemetry(telemetry.clone());
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             let request = crate::protocol::frame(b"ping", limits())
                 .unwrap_or_else(|error| panic!("frame: {error}"));
@@ -1042,10 +1048,19 @@ mod tests {
         assert_eq!(transport.completed, 1);
         assert_eq!(transport.failed, 0);
         assert_eq!(transport.units, 4);
-        let mode = std::fs::metadata(&path)
-            .unwrap_or_else(|error| panic!("socket metadata: {error}"))
-            .permissions();
-        assert_eq!(mode.mode() & 0o777, 0o600);
+        let metadata =
+            std::fs::metadata(&path).unwrap_or_else(|error| panic!("socket metadata: {error}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
+        // Windows keeps the endpoint private with a protected owner-only DACL
+        // instead of a mode; the platform recognizes the file as that endpoint.
+        #[cfg(windows)]
+        assert!(backend_platform::win32::security::is_endpoint_metadata(
+            &metadata
+        ));
         drop(listener);
         assert!(!path.exists());
     }
@@ -1082,7 +1097,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             // Longer than the per-frame deadline: this is a client thinking,
             // not a client trickling a frame.
@@ -1145,7 +1160,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             let request = crate::protocol::frame(b"slow", limits())
                 .unwrap_or_else(|error| panic!("frame: {error}"));
@@ -1216,7 +1231,7 @@ mod tests {
         struct RunningListener {
             shutdown: super::ListenerShutdown,
             worker: Option<thread::JoinHandle<Result<usize, super::ListenerError>>>,
-            client: Option<std::os::unix::net::UnixStream>,
+            client: Option<backend_engine::LocalStream>,
         }
 
         impl Drop for RunningListener {
@@ -1248,30 +1263,41 @@ mod tests {
             .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
-        let mut held = std::os::unix::net::UnixStream::connect(&path)
+        let mut held = backend_engine::LocalStream::connect(&path)
             .unwrap_or_else(|error| panic!("connect: {error}"));
         held.set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap_or_else(|error| panic!("read timeout: {error}"));
         let shutdown = listener.shutdown_handle();
         let worker = thread::spawn(move || listener.run().map(|report| report.connections));
-        let mut runner = RunningListener { shutdown, worker: Some(worker), client: Some(held) };
+        let mut runner = RunningListener {
+            shutdown,
+            worker: Some(worker),
+            client: Some(held),
+        };
 
         // Six idle windows with the client connected. Nothing may retire.
         thread::sleep(Duration::from_millis(600));
         assert!(
-            !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
+            !runner
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished),
             "a listener retired while a client was connected"
         );
         assert!(path.exists());
         let poll_count = owner_polls.load(Ordering::Relaxed);
-        assert!(poll_count < 5_000, "idle connected client caused {poll_count} owner polls in 600ms");
+        assert!(
+            poll_count < 5_000,
+            "idle connected client caused {poll_count} owner polls in 600ms"
+        );
 
         // The no-work wait must not add a request-sized delay after a client
         // actually submits work on the connection it already holds.
         let request = crate::protocol::frame(b"ping", limits())
             .unwrap_or_else(|error| panic!("frame: {error}"));
         let held = runner.client.as_mut().expect("held client");
-        held.write_all(&request).unwrap_or_else(|error| panic!("write: {error}"));
+        held.write_all(&request)
+            .unwrap_or_else(|error| panic!("write: {error}"));
         assert_eq!(
             read_frame(held, limits()).unwrap_or_else(|error| panic!("read: {error}")),
             b"ping"
@@ -1279,15 +1305,26 @@ mod tests {
 
         runner.client.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished) {
+        while Instant::now() < deadline
+            && !runner
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished)
+        {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
+            runner
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished),
             "a listener stayed resident after its last client left"
         );
         assert_eq!(
-            runner.worker.take().expect("listener worker")
+            runner
+                .worker
+                .take()
+                .expect("listener worker")
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
                 .unwrap_or_else(|error| panic!("run: {error}")),
@@ -1325,7 +1362,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+            let mut stream = backend_engine::LocalStream::connect(client_path)
                 .unwrap_or_else(|error| panic!("connect: {error}"));
             let body =
                 crate::protocol::encode_engine_request(11, &EngineRequest::Shutdown, limits())
@@ -1378,7 +1415,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("bind: {error}"));
         let client_path = path.clone();
         let client = thread::spawn(move || {
-            let _ = std::os::unix::net::UnixStream::connect(client_path);
+            let _ = backend_engine::LocalStream::connect(client_path);
         });
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && listener.report().failures == 0 {
