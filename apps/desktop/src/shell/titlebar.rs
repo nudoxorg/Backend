@@ -107,12 +107,13 @@ impl JumpAction {
             }
             Self::View { visit, view }
                 if visit.current(links, cx)
-                    && links.shell.upgrade().is_some_and(|shell| shell.read(cx).mode_input_allowed(cx)) => match view {
+                    && links.snapshot(cx).overlay().is_none()
+                    && links.snapshot(cx).page_overlay().is_none() => match view {
                 View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
                 View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
                 View::Graph => {
                     if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
-                        links.dispatch(Intent::SetView(View::Graph), cx);
+                        window.dispatch_action(Box::new(super::keys::Graph), cx);
                     }
                 }
             },
