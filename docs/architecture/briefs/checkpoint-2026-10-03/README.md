@@ -4,7 +4,7 @@ This extends the [2 October exhaustive checkpoint](../checkpoint-2026-10-02/READ
 
 ## Current continuation
 
-The [19:27 UTC integration and evidence brief](CONTINUATION-1927.md) supersedes the present-tense status below. It records the composed source, actual passing and failing gates, native search/kind findings, cache and transport boundaries, remote policy checks, and remaining acceptance work. The [17:20 brief](CONTINUATION-1720.md) remains historical evidence. The campaign remains active.
+The [20:38 UTC continuation](CONTINUATION-2038.md) supersedes the present-tense status below. It records the later composed source, actual runtime gates, native-evidence qualifications, compiler role and shape contracts, and the remote local-fallback outcome. The [19:27 brief](CONTINUATION-1927.md) and [17:20 brief](CONTINUATION-1720.md) remain historical evidence. The campaign remains active.
 
 ## Earlier checkpoint: 13:40 UTC
 
