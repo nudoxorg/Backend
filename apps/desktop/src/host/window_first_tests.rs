@@ -77,14 +77,14 @@ fn left_on_a_package_page(tag: &str) -> WorkspacePaths {
 }
 
 #[test]
-fn the_window_is_prepared_without_waiting_for_the_owner() {
+fn the_window_is_prepared_even_when_no_owner_worker_could_be_installed() {
     let paths = left_on_a_package_page("prepare");
     let (sent, received) = mpsc::channel();
     // `prepare` runs beside this thread so a regression (a wait on the owner
     // before the window) fails with a measured bound instead of hanging.
     std::thread::spawn(move || {
         let started = Instant::now();
-        // An owner that never answers: it is "started" and never publishes.
+        // No worker could be installed: local restoration still opens the window.
         let boot = prepare(Ok(paths), |_, _| None);
         let took = started.elapsed();
         sent.send((
@@ -106,7 +106,7 @@ fn the_window_is_prepared_without_waiting_for_the_owner() {
         "the window opens on the page it was left on, not on Home: {route}"
     );
     assert!(unserved, "no root is claimed before the owner answers");
-    assert_eq!(state, OwnerState::Starting, "the owner is still starting when the window opens");
+    assert!(matches!(state, OwnerState::Failed(_)), "a missing worker is an honest failure rather than phantom Starting: {state:?}");
     assert!(persisted, "the session file is kept for saving");
     assert!(took < Duration::from_millis(500), "prepare took {took:?}");
 }

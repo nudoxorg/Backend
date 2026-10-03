@@ -136,7 +136,12 @@ pub(crate) fn prepare(
     let mut boot = prepare_window(discovered);
     if let Some(bound) = boot.client.binding.get() {
         boot.owner = start_owner(bound.paths.clone(), boot.gate.clone());
-        if boot.owner.is_none() { boot.gate.disable_restart(); }
+        if boot.owner.is_none() {
+            boot.gate.disable_restart();
+            if matches!(boot.gate.state(), OwnerState::Starting) {
+                boot.gate.publish(OwnerState::Failed(OwnerFault::Host("the local owner could not install a startup worker".into())));
+            }
+        }
     } else {
         // This fixed-path preparation has no discovery producer. Production
         // uses prepare_recovering, which installs one before returning.

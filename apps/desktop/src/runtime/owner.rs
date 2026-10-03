@@ -556,7 +556,7 @@ impl OwnerGate {
     /// starting or answering owner is left alone.
     #[must_use]
     pub fn restart(&self) -> bool {
-        let waker = {
+        let (cancel, waker) = {
             let mut inner = self.lock();
             if !inner.retry_enabled || inner.closed || !matches!(inner.state, OwnerState::Failed(_)) {
                 return false;
@@ -564,16 +564,18 @@ impl OwnerGate {
             // Capability, request, and Starting are one admission. A cloned
             // handle cannot disable the producer between checking and publish.
             inner.restart = true;
-            inner.observation_cancel.cancel();
-            inner.observation_cancel = super::actor::CancellationToken::new();
+            let cancel = std::mem::replace(&mut inner.observation_cancel, super::actor::CancellationToken::new());
             inner.publication = None;
             inner.observation_suspended = false;
             inner.state = OwnerState::Starting;
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            inner.waker.take()
+            (cancel, inner.waker.take())
         };
+        // Cancellation may synchronously call back into this same gate.
+        // Keep the atomic admission above, then release the lock first.
+        cancel.cancel();
         crate::runtime::trace::mark("owner.starting", "retry");
         self.0.changed.notify_all();
         if let Some(waker) = waker { waker.wake(); }
@@ -787,6 +789,28 @@ mod tests {
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).expect("cancellation woke worker"), Err(OwnerFault::Cancelled));
         thread.join().expect("join worker");
         assert_eq!(gate.state(), OwnerState::Starting, "one revoked request cannot fail the owner");
+    }
+
+    #[test]
+    fn retry_cancellation_can_reenter_the_same_gate_after_atomic_starting_admission() {
+        let gate = OwnerGate::starting();
+        gate.publish(OwnerState::Failed("restart this worker".into()));
+        let cancellation = gate.lock().observation_cancel.clone();
+        let callback_gate = gate.clone();
+        let (observed, observation) = mpsc::channel();
+        let _wake = cancellation.on_cancel(move || {
+            // These take the actual OwnerGate mutex synchronously. A try_lock
+            // assertion would not exercise the production callback contract.
+            observed.send((callback_gate.state(), callback_gate.ready_epoch())).expect("callback observation");
+        });
+        let retry_gate = gate.clone();
+        let (done, result) = mpsc::channel();
+        let retry = std::thread::spawn(move || { done.send(retry_gate.restart()).expect("restart result"); });
+        let (state, serving) = observation.recv_timeout(Duration::from_secs(1)).expect("cancellation reentered without deadlocking");
+        assert_eq!(state, OwnerState::Starting);
+        assert_eq!(serving, None);
+        assert!(result.recv_timeout(Duration::from_secs(1)).expect("restart completed"));
+        retry.join().expect("restart thread");
     }
 
     #[test]
