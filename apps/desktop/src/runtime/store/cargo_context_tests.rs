@@ -239,3 +239,50 @@ fn visible_symbol_titlebar_package_renews_without_becoming_page_readiness(cx: &m
     let counts = counts.lock().unwrap_or_else(PoisonError::into_inner);
     for key in plan.keys() { assert_eq!(counts.get(key), Some(&2), "visible key {key:?} renewed lazily through the route plan"); }
 }
+
+
+#[test]
+fn required_tree_refusal_is_visible_for_every_optional_dossier_phase() {
+    for optional in 0..4 {
+        let requested = LocalProjectId::new("/workspace/backend/member").expect("member");
+        let (mut tree, package, context) = fixture(&requested);
+        let route = package_route(&package, context);
+        let plan = RouteDependencies::new(&route, None);
+        let tree_key = PageKey::Browse(BrowseKey::Tree(requested.clone()));
+        let dossier_key = PageKey::Package(package.clone());
+        let mut store = DataStore::new(Arc::new(at(route)), None);
+        tree.request_binding = Some(backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            Path::new(requested.service_coordinate().expect("coordinate")), "/replacement/workspace",
+        ).expect("changed binding"));
+        land(&mut store, &tree_key, PageValue::Browse(BrowseValue::Tree(Arc::new(tree))));
+        let generation = store.pages.begin(&dossier_key, root()).expect("optional read");
+        match optional {
+            0 => {} // Pending optional metadata must not hide a finished refusal.
+            1 => { store.pages.land(&dossier_key, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, "optional dossier missing")))); }
+            2 => { store.pages.land(&dossier_key, generation, Err(ReadFailure::Unavailable(UnavailableReason::OutOfScope, "optional semantics unavailable".into()))); }
+            _ => { store.pages.land(&dossier_key, generation, Ok(PageValue::Package(crate::shell::tests::registry_dossier(&package)))); }
+        }
+        let pages = crate::shell::bodies::Pages::gather(&store, &plan);
+        let (key, failure) = pages.content_failure().expect("required Tree refusal is painted");
+        assert_eq!(key, &tree_key, "optional dossier phase {optional} selected the wrong refusal");
+        assert!(matches!(failure, ContentFailure::Fault(error) if error.code() == FaultCode::Protocol && error.message().contains("saved Cargo source binding")));
+        assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Terminal);
+    }
+}
+
+#[test]
+fn required_symbol_fault_wins_over_pending_source_and_optional_package_fault() {
+    let symbol = crate::shell::tests::symbol("RelationLabel");
+    let route = crate::shell::kit::symbol_view_route(crate::shell::tests::PACKAGE, &symbol, crate::navigation::View::Code, None).expect("code address");
+    let mut store = DataStore::new(Arc::new(at(route.clone())), None);
+    let key = PageKey::Symbol(symbol.clone());
+    let generation = store.pages.begin(&key, root()).expect("symbol request");
+    store.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, "declaration revoked"))));
+    let optional = PageKey::Package(route_package(&route).expect("package"));
+    let generation = store.pages.begin(&optional, root()).expect("optional dossier request");
+    store.pages.land(&optional, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Transport, "optional dossier offline"))));
+    let pages = crate::shell::bodies::Pages::gather(&store, &RouteDependencies::new(&route, None));
+    let (selected, failure) = pages.content_failure().expect("required fault before source arrives");
+    assert_eq!(selected, &key);
+    assert!(matches!(failure, ContentFailure::Fault(error) if error.message() == "declaration revoked"));
+}

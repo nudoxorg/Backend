@@ -333,7 +333,7 @@ impl Lens {
 #[derive(Clone, Default)]
 pub(crate) struct Pages {
     /// An explicit terminal destination bypasses retained values in its body.
-    terminal_destination: Option<(PageKey, crate::core::ResourceTerminal)>,
+    terminal_destination: Option<(PageKey, crate::runtime::store::ContentFailure)>,
     dependencies: Option<RouteDependencies>,
     symbols: BTreeMap<SymbolRef, Resource<SymbolPage>>,
     sources: BTreeMap<SymbolRef, Resource<SourceView>>,
@@ -345,23 +345,12 @@ pub(crate) struct Pages {
 }
 
 impl Pages {
-    /// Capture one exact failed key before the renderer can prefer a retained
-    /// value or another still-pending read. Only selected body handles are
-    /// inspected; the shared cache's refresh policy stays unchanged.
-    pub(crate) fn expose_terminal(&mut self) {
-        fn terminal<T>(key: PageKey, resource: &Resource<T>) -> Option<(PageKey, crate::core::ResourceTerminal)> {
-            matches!(resource.terminal(), crate::core::ResourceTerminal::Fault(_) | crate::core::ResourceTerminal::Unavailable(_))
-                .then(|| (key, resource.terminal().clone()))
-        }
-        self.terminal_destination = self.symbols.iter().find_map(|(key, resource)| terminal(PageKey::Symbol(key.clone()), resource))
-            .or_else(|| self.sources.iter().find_map(|(key, resource)| terminal(PageKey::Source(key.clone()), resource)))
-            .or_else(|| self.packages.iter().find_map(|(key, resource)| terminal(PageKey::Package(key.clone()), resource)))
-            .or_else(|| self.orbit.as_ref().and_then(|resource| terminal(PageKey::Orbit, resource)));
-    }
-
     /// Takes the visible route's complete dependency plan from the store.
     pub(crate) fn gather(store: &DataStore, dependencies: &RouteDependencies) -> Self {
         let mut pages = Self { dependencies: Some(dependencies.clone()), ..Self::default() };
+        if let crate::runtime::store::ContentAdmission::Terminal { key, failure } = dependencies.content_admission(store) {
+            pages.terminal_destination = Some((key, failure));
+        }
         for key in dependencies.keys() {
             match key {
                 PageKey::Symbol(symbol) => {
@@ -385,6 +374,11 @@ impl Pages {
             }
         }
         pages
+    }
+
+    /// The exact required-content refusal chosen by this captured plan.
+    pub(crate) fn content_failure(&self) -> Option<&(PageKey, crate::runtime::store::ContentFailure)> {
+        self.terminal_destination.as_ref()
     }
 
     /// Address dependencies may be retained by a transition; current Cargo
@@ -433,11 +427,10 @@ pub(crate) fn build(
     window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
-    if let Some((key, terminal)) = &store.terminal_destination {
+    if let Some((key, terminal)) = store.content_failure() {
         let shown = match terminal {
-            crate::core::ResourceTerminal::Fault(error) => state::Shown::<()>::Fault(error),
-            crate::core::ResourceTerminal::Unavailable(reason) => state::Shown::Unavailable(reason, None),
-            _ => unreachable!("only terminal faults are captured"),
+            crate::runtime::store::ContentFailure::Fault(error) => state::Shown::<()>::Fault(error),
+            crate::runtime::store::ContentFailure::Unavailable(reason) => state::Shown::Unavailable(reason, None),
         };
         let what = match key {
             PageKey::Symbol(symbol) | PageKey::Source(symbol) => symbol.identity().name().to_owned(),
@@ -461,24 +454,5 @@ pub(crate) fn build(
             View::Graph => graph::body(route, store, ctx),
         },
         Route::World => graph::body(route, store, ctx),
-    }
-}
-
-#[cfg(test)]
-mod terminal_destination_tests {
-    use super::Pages;
-    use crate::core::{FaultCode, Resource, ResourceTerminal};
-    use crate::model::pages::PageKey;
-
-    #[test]
-    fn a_failed_symbol_exposes_its_fault_before_pending_source_rendering() {
-        let symbol = crate::shell::tests::symbol("RelationLabel");
-        let mut pages = Pages::default();
-        pages.symbols.insert(symbol.clone(), Resource::error(FaultCode::Missing, "declaration revoked"));
-        pages.sources.insert(symbol.clone(), Resource::not_yet().waiting());
-        pages.expose_terminal();
-        let (key, terminal) = pages.terminal_destination.expect("one exact terminal destination");
-        assert_eq!(key, PageKey::Symbol(symbol));
-        assert!(matches!(terminal, ResourceTerminal::Fault(error) if error.message() == "declaration revoked"));
     }
 }

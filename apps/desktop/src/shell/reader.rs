@@ -2472,9 +2472,7 @@ impl Render for Reader {
         let pending_pages = if waiting && previous.is_none() {
             Some(Pages::default())
         } else if readiness == DestinationState::Terminal {
-            let mut pages = Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&requested.route, requested.overlay));
-            pages.expose_terminal();
-            Some(pages)
+            Some(Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&requested.route, requested.overlay)))
         } else { None };
         let body = self.body(&current, previous.is_none(), &body_snapshot, &layout, &facet, current_edge,
             previous.as_ref().map(|page| &page.pages).or(pending_pages.as_ref()), window, cx);

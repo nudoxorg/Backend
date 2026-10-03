@@ -1,7 +1,7 @@
 //! The exact visible resources and admitted Cargo observations of one route.
 
 use super::{CargoReadAdmission, DataStore, OwnerAttachment, route_package, route_symbol};
-use crate::core::{LocalProjectId, ReadPhase, Resource, VersionedRoot, admit_resource};
+use crate::core::{ErrorValue, FaultCode, LocalProjectId, ReadPhase, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, VersionedRoot, admit_resource};
 use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey, TreeModel};
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{CargoBrowseContext, Overlay, Route, View};
@@ -77,6 +77,41 @@ struct TreeDependency {
     requested_project: LocalProjectId,
     expected: Option<CargoBrowseContext>,
     package: Option<PackageRef>,
+}
+
+/// A required read can fail without an optional read or retained value
+/// choosing the message. Complete and partial responses cannot inhabit this
+/// type: neither is a failure destination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ContentFailure {
+    Fault(ErrorValue),
+    Unavailable(UnavailableReason),
+}
+
+#[derive(Debug)]
+enum DependencyAdmission {
+    Ready,
+    Pending,
+    Terminal(ContentFailure),
+}
+
+/// Readiness and its exact failure destination are one decision, made from
+/// the same required dependencies. Optional chrome never contributes.
+#[derive(Debug)]
+pub(crate) enum ContentAdmission {
+    Ready,
+    Pending,
+    Terminal { key: PageKey, failure: ContentFailure },
+}
+
+impl ContentAdmission {
+    pub(crate) fn phase(&self) -> ReadPhase {
+        match self {
+            Self::Ready => ReadPhase::Ready,
+            Self::Pending => ReadPhase::Pending,
+            Self::Terminal { .. } => ReadPhase::Terminal,
+        }
+    }
 }
 
 /// One construction supplies fetching, residency, watching and body gathering.
@@ -214,34 +249,46 @@ impl RouteDependencies {
     }
 
     fn current_key(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> bool {
-        self.key_phase(store, root, key) == ReadPhase::Ready
+        matches!(self.key_admission(store, root, key), DependencyAdmission::Ready)
     }
 
-    fn key_phase(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> ReadPhase {
+    fn key_admission(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> DependencyAdmission {
         match key {
-            PageKey::Orbit => resource_phase(&store.orbit(), root, store.owner_serving()),
-            PageKey::Package(package) => resource_phase(&store.package(package), root, store.owner_serving()),
-            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => cargo_phase(store, root, key, &store.pages().browse(browse)),
+            PageKey::Orbit => resource_admission(&store.orbit(), root, store.owner_serving()),
+            PageKey::Package(package) => resource_admission(&store.package(package), root, store.owner_serving()),
+            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => cargo_admission(store, root, key, &store.pages().browse(browse)),
             PageKey::Browse(BrowseKey::Tree(project)) if self.tree.as_ref().is_some_and(|tree| &tree.requested_project == project && tree.expected.is_some()) => {
-                let selected = resource_phase(&store.pages().browse(&BrowseKey::Tree(project.clone())), root, store.owner_serving());
-                if selected == ReadPhase::Ready && self.current_tree(store).is_none() {
-                    // The reply completed, but describes a different binding.
-                    // Let the body disclose refusal instead of waiting forever.
-                    ReadPhase::Terminal
+                let selected = resource_admission(&store.pages().browse(&BrowseKey::Tree(project.clone())), root, store.owner_serving());
+                if matches!(selected, DependencyAdmission::Ready) && self.current_tree(store).is_none() {
+                    DependencyAdmission::Terminal(ContentFailure::Fault(ErrorValue::new(
+                        FaultCode::Protocol,
+                        "The current Library tree does not admit this saved Cargo source binding. Open its Library to select the current package observation.",
+                    )))
                 } else { selected }
             }
-            PageKey::Browse(browse) => resource_phase(&store.pages().browse(browse), root, store.owner_serving()),
-            PageKey::CargoSource(file) => cargo_phase(store, root, key, &store.cargo_source(file)),
-            PageKey::Source(symbol) => resource_phase(&store.source(symbol), root, store.owner_serving()),
-            PageKey::Symbol(symbol) => resource_phase(&store.symbol(symbol), root, store.owner_serving()),
-            PageKey::Search(query) => resource_phase(&store.search(query), root, store.owner_serving()),
-            PageKey::Health => resource_phase(&store.health(), root, store.owner_serving()),
+            PageKey::Browse(browse) => resource_admission(&store.pages().browse(browse), root, store.owner_serving()),
+            PageKey::CargoSource(file) => cargo_admission(store, root, key, &store.cargo_source(file)),
+            PageKey::Source(symbol) => resource_admission(&store.source(symbol), root, store.owner_serving()),
+            PageKey::Symbol(symbol) => resource_admission(&store.symbol(symbol), root, store.owner_serving()),
+            PageKey::Search(query) => resource_admission(&store.search(query), root, store.owner_serving()),
+            PageKey::Health => resource_admission(&store.health(), root, store.owner_serving()),
         }
     }
 
+    pub(crate) fn content_admission(&self, store: &DataStore) -> ContentAdmission {
+        let mut pending = false;
+        for key in &self.content {
+            match self.key_admission(store, store.snapshot().key(), key) {
+                DependencyAdmission::Ready => {}
+                DependencyAdmission::Pending => pending = true,
+                DependencyAdmission::Terminal(failure) => return ContentAdmission::Terminal { key: key.clone(), failure },
+            }
+        }
+        if pending { ContentAdmission::Pending } else { ContentAdmission::Ready }
+    }
+
     pub(crate) fn content_phase(&self, store: &DataStore) -> ReadPhase {
-        self.content.iter().map(|key| self.key_phase(store, store.snapshot().key(), key))
-            .fold(ReadPhase::Ready, ReadPhase::join)
+        self.content_admission(store).phase()
     }
 
     pub(crate) fn content_loaded(&self, store: &DataStore) -> bool {
@@ -249,14 +296,21 @@ impl RouteDependencies {
     }
 }
 
-fn resource_phase<T>(resource: &Resource<T>, root: VersionedRoot, serving: bool) -> ReadPhase {
-    admit_resource(resource, root, serving).phase()
+fn resource_admission<T>(resource: &Resource<T>, root: VersionedRoot, serving: bool) -> DependencyAdmission {
+    match admit_resource(resource, root, serving) {
+        ResourceAdmission::Current(_) => DependencyAdmission::Ready,
+        ResourceAdmission::Pending(_) | ResourceAdmission::Retained { .. } => DependencyAdmission::Pending,
+        ResourceAdmission::Failed { terminal: ResourceTerminal::Fault(error), .. } => DependencyAdmission::Terminal(ContentFailure::Fault(error.clone())),
+        ResourceAdmission::Failed { terminal: ResourceTerminal::Unavailable(reason), .. } => DependencyAdmission::Terminal(ContentFailure::Unavailable(reason.clone())),
+        ResourceAdmission::Failed { terminal: ResourceTerminal::Complete | ResourceTerminal::Partial, .. } => DependencyAdmission::Pending,
+    }
 }
 
-fn cargo_phase<T>(store: &DataStore, root: VersionedRoot, key: &PageKey, resource: &Resource<T>) -> ReadPhase {
+fn cargo_admission<T>(store: &DataStore, root: VersionedRoot, key: &PageKey, resource: &Resource<T>) -> DependencyAdmission {
     match store.cargo_read_admission(key, resource) {
-        CargoReadAdmission::Current if root.same_authority(store.snapshot().key()) => ReadPhase::Ready,
-        CargoReadAdmission::Current | CargoReadAdmission::Checking => ReadPhase::Pending,
-        CargoReadAdmission::Fault(_) | CargoReadAdmission::Unavailable(_) => ReadPhase::Terminal,
+        CargoReadAdmission::Current if root.same_authority(store.snapshot().key()) => DependencyAdmission::Ready,
+        CargoReadAdmission::Current | CargoReadAdmission::Checking => DependencyAdmission::Pending,
+        CargoReadAdmission::Fault(error) => DependencyAdmission::Terminal(ContentFailure::Fault(error)),
+        CargoReadAdmission::Unavailable(reason) => DependencyAdmission::Terminal(ContentFailure::Unavailable(reason)),
     }
 }
