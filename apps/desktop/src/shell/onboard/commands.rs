@@ -25,6 +25,8 @@ pub(crate) enum ProjectCommand {
     Retry,
     /// Ask the owner to index it again after it was paused.
     Resume,
+    /// Read the durable outcome of its saved operation; starts no new index.
+    CheckOutcome,
     /// Show its folder in the file manager.
     Reveal,
     /// Add its folder again (the one it was is gone).
@@ -52,6 +54,7 @@ impl ProjectCommand {
             Self::Activate => "Make active",
             Self::Retry => "Try again",
             Self::Resume => "Resume",
+            Self::CheckOutcome => "Check outcome",
             Self::Reveal => "Reveal",
             Self::Locate => "Add it again",
             Self::Remove => "Remove from shelf",
@@ -62,7 +65,7 @@ impl ProjectCommand {
     #[must_use]
     pub(crate) const fn weight(self) -> Weight {
         match self {
-            Self::Retry | Self::Resume | Self::Locate => Weight::Primary,
+            Self::Retry | Self::Resume | Self::Locate | Self::CheckOutcome => Weight::Primary,
             Self::Activate | Self::Reveal => Weight::Plain,
             Self::Remove => Weight::Danger,
         }
@@ -74,10 +77,20 @@ impl ProjectCommand {
         match self {
             Self::Activate => Intent::ActivateProject(project.clone()),
             Self::Retry | Self::Resume => Intent::RetryIndex(project.clone()),
+            Self::CheckOutcome => Intent::CheckIndexOutcome(project.clone()),
             Self::Reveal => Intent::RevealProject(project.clone()),
             Self::Locate => Intent::OpenAddProject,
             Self::Remove => Intent::RemoveProject(project.clone()),
         }
+    }
+
+    /// A recovery read needs both the exact saved claim and a serving owner.
+    pub(crate) fn for_project(project: &crate::model::WorkspaceProject, active: bool, owner_serving: bool) -> Vec<Self> {
+        let mut commands = Self::for_phase(project.phase, active);
+        if owner_serving && project.phase == ProjectPhase::Unconfirmed && project.request.is_none()
+            && project.operation.as_ref().is_some_and(|operation| operation.belongs_to(&project.id))
+        { commands.insert(0, Self::CheckOutcome); }
+        commands
     }
 
     /// The commands that make sense for a project in `phase`, in the order a

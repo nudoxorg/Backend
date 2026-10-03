@@ -465,3 +465,79 @@ fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(c
     rig.keys("escape");
     assert_eq!(overlay(&mut rig), None);
 }
+
+/// A fixture owner keeps the saved operation unknown until the explicit read.
+/// It never reports success from a catalog, a timeout or a second start.
+struct Reconciles { starts: Arc<AtomicUsize>, checks: Arc<AtomicUsize> }
+impl EngineClient for Reconciles {
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        match request {
+            EngineRequest::IndexProject { request, basis, project, operation, .. } => {
+                self.starts.fetch_add(1, Ordering::SeqCst);
+                Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
+                    operation: operation.clone(), observation: backend_library::IndexOperationObservation::Unknown { operation_key: operation.key } })
+            }
+            EngineRequest::IndexOperationStatus { request, basis, project, operation, .. } => {
+                self.checks.fetch_add(1, Ordering::SeqCst);
+                Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
+                    operation: operation.clone(), observation: crate::model::index_operation::tests::published(operation) })
+            }
+            other => RootOnly.execute(other),
+        }
+    }
+}
+
+#[gpui::test]
+fn native_check_outcome_queries_the_saved_key_and_admits_its_publication_without_starting_again(cx: &mut TestAppContext) {
+    let (_, folder) = project("reconcile");
+    let starts = Arc::new(AtomicUsize::new(0));
+    let checks = Arc::new(AtomicUsize::new(0));
+    let authority = crate::core::VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(authority, crate::model::ServiceMode::Attached);
+    let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0,
+        ReadPool::start(2, |_| NothingYet).expect("pool"),
+        Reconciles { starts: starts.clone(), checks: checks.clone() }, Some(gate));
+    rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
+    assert_eq!(phases(&mut rig), [ProjectPhase::Unconfirmed]);
+    let saved = snapshot(&mut rig).workspace().projects[0].operation.clone().expect("saved operation");
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let native = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+    let tree: serde_json::Value = serde_json::from_str(&native).expect("native AccessKit JSON");
+    assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
+        node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Check outcome")),
+        "recovery is a real native accessible button");
+    assert!(rig.said().iter().any(|line| line.contains("No operation receipt is available")));
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Check outcome").expect("native recovery bounds");
+    assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
+    click(&mut rig, "Check outcome");
+    assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
+    let settled = snapshot(&mut rig).workspace().projects[0].operation.clone().expect("receipt retained");
+    assert!(settled.same_request(&saved));
+    assert_eq!(starts.load(Ordering::SeqCst), 1, "recovery never sends a second mutation");
+    assert_eq!(checks.load(Ordering::SeqCst), 1, "the exact operation was read");
+}
+
+#[gpui::test]
+fn retained_check_outcome_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppContext) {
+    let (_, folder) = project("stale-reconcile");
+    let starts = Arc::new(AtomicUsize::new(0));
+    let checks = Arc::new(AtomicUsize::new(0));
+    let authority = crate::core::VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(authority, crate::model::ServiceMode::Attached);
+    let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0,
+        ReadPool::start(2, |_| NothingYet).expect("pool"),
+        Reconciles { starts: starts.clone(), checks: checks.clone() }, Some(gate.clone()));
+    rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let action = targets.iter().find(|(target, _)| target.label == "Check outcome").expect("live recovery").0.act.clone();
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: authority, mode: crate::model::ServiceMode::Attached });
+    rig.cx.update(|window, cx| action(window, cx));
+    assert_eq!(checks.load(Ordering::SeqCst), 0, "a former native visit cannot use the replacement owner");
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(snapshot(&mut rig).workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+}

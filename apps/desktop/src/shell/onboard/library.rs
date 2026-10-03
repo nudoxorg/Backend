@@ -58,14 +58,23 @@ pub(crate) fn stages(phase: ProjectPhase) -> Option<[Stage; 3]> {
 /// Its seam stays at the completed local admission while the owner is absent.
 fn project_stages(project: &WorkspaceProject) -> Option<[Stage; 3]> {
     let mut steps = stages(project.phase)?;
-    if project.phase == ProjectPhase::Indexing && project.request.is_none() {
+    if project.phase == ProjectPhase::Indexing && project.request.is_none() && project.operation.is_none() {
         steps[1] = Stage::new("indexing", StageState::Todo);
     }
     Some(steps)
 }
 
 fn project_door(project: &WorkspaceProject) -> Door {
-    if project.phase == ProjectPhase::Indexing && project.request.is_none() {
+    if let Some(operation) = project.operation.as_ref() {
+        let words = project.index_status_text().unwrap_or_else(|| operation.status_text());
+        return Door::tip(move |step, measure, window, cx| {
+            let (title, body) = if step == 0 { ("Folder added", "It is on your shelf.") }
+                else if step == 1 { ("Index operation", words) }
+                else { ("Ready to browse", "Readiness follows the owner's publication receipt.") };
+            content(TipText { title: Some(title.into()), body: body.into(), chord: Vec::new() })(measure, window, cx)
+        });
+    }
+    if project.phase == ProjectPhase::Indexing && project.request.is_none() && project.operation.is_none() {
         Door::tip(|step, measure, window, cx| {
             let (title, body) = if step == 0 { ("Folder added", "It is on your shelf.") }
                 else { ("Waiting for the index", "Starts once the owner answers.") };
@@ -314,7 +323,7 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
         .iter()
         .filter(|project| project.phase == ProjectPhase::Indexing)
         .collect();
-    let ids: Vec<LocalProjectId> = running.iter().filter(|project| project.request.is_some()).map(|project| project.id.clone()).collect();
+    let ids: Vec<LocalProjectId> = running.iter().filter(|project| project.request.is_some() || project.operation.is_some()).map(|project| project.id.clone()).collect();
     let ages = Ages::observe(&ids, cx);
     let view = cx.entity_id();
     let additions = snapshot
@@ -337,12 +346,14 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
         block = block.child(package_block(&path, &words, ctx));
     }
     for project in running {
-        let submitted = project.request.is_some();
-        let headline = ctx.say(if submitted { format!("Compiling {}.", project.label) }
-            else { format!("{} is on your shelf.", project.label) });
-        let promise = ctx.say(if submitted {
-            "Then each package it uses is indexed from your cargo cache, one at a time. A first install takes a few minutes."
-        } else { "Waiting for the local index to answer. Your folder will start once it is available." });
+        let submitted = project.request.is_some() || project.operation.is_some();
+        let headline = ctx.say(project.operation.as_ref().map_or_else(
+            || if submitted { format!("Waiting for {}'s index receipt.", project.label) } else { format!("{} is on your shelf.", project.label) },
+            |operation| format!("{}: {}.", project.label, operation.status_text()),
+        ));
+        let native_status = headline.clone();
+        let promise = ctx.say(if submitted { "The owner reports its operation stage. This project is ready after its exact publication receipt arrives." }
+            else { "Waiting for the local index to answer. Your folder will start once it is available." });
         let since = submitted.then(|| ctx.say(format!("started {}", ago(ages.of(&project.id)))));
         // The seam is the strip under the thing being worked on: as wide as
         // its words, never wider than the room.
@@ -354,7 +365,7 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
                 .flex_col()
                 .items_center()
                 .gap(measure.space(Space::Snug))
-                .child(text(ty::ROW, &measure, palette.ink0).text_center().child(headline))
+                .child(text(ty::ROW, &measure, palette.ink0).role(gpui::Role::Status).aria_label(native_status).text_center().child(headline))
                 .child(seam(seam_id, project_stages(project).map_or_else(Vec::new, |steps| steps.to_vec()), &strip).door(project_door(project)))
                 .child(text(ty::SMALL, &measure, palette.ink2).text_center().child(promise))
                 .children(since.map(|since| text(ty::MONO_SMALL, &measure, palette.ink3).child(since))),

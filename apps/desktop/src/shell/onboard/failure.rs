@@ -128,7 +128,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
         }
         ProjectPhase::Cancelled => (format!("{} is paused.", project.label), vec!["Its index was stopped before it finished.".to_owned()], None),
         ProjectPhase::Unconfirmed => (
-            format!("{} may still be indexing.", project.label),
+            format!("{}: {}.", project.label, project.index_status_text().unwrap_or("index outcome unconfirmed")) ,
             vec![project.error.as_deref().unwrap_or("The owner's answer was lost. A new index request is held until this attempt can be checked.").to_owned()],
             None,
         ),
@@ -139,6 +139,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
         ),
     };
     let headline = ctx.say(headline);
+    let native_status = headline.clone();
     let mut stack = div().flex().flex_col().items_center().gap(measure.space(Space::Snug)).max_w(px(560.0 * measure.scale()));
     stack = stack.child(
         div()
@@ -146,7 +147,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             .items_center()
             .gap(measure.space(Space::Base))
             .child(ui(Icon::Alert, IconSize::S14, palette.coral.base).size(measure.icon(14.0)))
-            .child(text(ty::ROW, &measure, palette.ink0).child(headline)),
+            .child(text(ty::ROW, &measure, palette.ink0).role(gpui::Role::Status).aria_label(native_status).child(headline)),
     );
     for line in lines {
         let line = ctx.say(line);
@@ -154,7 +155,7 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
     }
     let id = project.id.clone();
     let mut actions = div().flex().flex_wrap().justify_center().gap(measure.space(Space::Base)).pt(measure.space(Space::Snug));
-    for command in ProjectCommand::for_phase(project.phase, false).into_iter().filter(|command| *command != ProjectCommand::Activate) {
+    for command in ProjectCommand::for_project(project, false, ctx.links.store.read(cx).owner_serving()).into_iter().filter(|command| *command != ProjectCommand::Activate) {
         actions = actions.child(act(ctx, format!("{command:?}-{}", project.path).to_lowercase(), command, &id, cx));
     }
     stack = stack.child(actions);
@@ -207,8 +208,16 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
 fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalProjectId, cx: &mut Context<Reader>) -> gpui::AnyElement {
     let links = ctx.links.clone();
     let intent = command.intent(project);
-    let act: Act = Rc::new(move |_, cx| links.dispatch(intent.clone(), cx));
-    let act = ctx.native_local_action(act, cx);
+    let expected = ctx.links.snapshot(cx).workspace().projects.iter().find(|row| row.id == *project).and_then(|row| row.operation.clone());
+    let project = project.clone();
+    let act: Act = Rc::new(move |_, cx| {
+        if command == ProjectCommand::CheckOutcome && !links.snapshot(cx).workspace().projects.iter().any(|row|
+            row.id == project && row.phase == ProjectPhase::Unconfirmed && row.request.is_none()
+                && row.operation.as_ref().zip(expected.as_ref()).is_some_and(|(saved, expected)| saved.same_request(expected))) { return; }
+        links.dispatch(intent.clone(), cx);
+    });
+    let act = if command == ProjectCommand::CheckOutcome { ctx.native_snapshot_action(act, cx) }
+        else { ctx.native_local_action(act, cx) };
     ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), act: Rc::clone(&act), peek: None, source: None });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
     let control = button(gpui::SharedString::from(id.clone()), command.label(), &ctx.measure).on_click(move |window, cx| act(window, cx));
