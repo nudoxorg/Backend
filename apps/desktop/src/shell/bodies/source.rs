@@ -45,6 +45,13 @@ fn source_piece_label(number: u32, source_line: &str, piece: &crate::shell::text
     Some(format!("Line {number}{}: {words}", if piece.continued { " continued" } else { "" }))
 }
 
+fn paired_admission(
+    source: Rc<dyn Fn(&mut App) -> bool>,
+    semantic: Rc<dyn Fn(&mut App) -> bool>,
+) -> Rc<dyn Fn(&mut App) -> bool> {
+    Rc::new(move |app| source(app) && semantic(app))
+}
+
 struct Pager {
     state: Rc<RefCell<Option<PagingState>>>,
     first: u32,
@@ -54,6 +61,7 @@ struct Pager {
     recall: Recall,
     reveal: Rc<Cell<bool>>,
     row_id: Rc<dyn Fn(u32) -> SharedString>,
+    admission: RefCell<Option<Rc<dyn Fn(&mut App) -> bool>>>,
     _subscription: Subscription,
 }
 
@@ -73,7 +81,8 @@ impl Pager {
             &input,
             window,
             |pager, input, event: &InputEvent, _window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
+                if matches!(event, InputEvent::PressEnter { .. })
+                    && pager.admission.borrow().as_ref().is_some_and(|admit| admit(cx)) {
                     pager.jump(&input.read(cx).value().to_string(), cx);
                 }
             },
@@ -87,6 +96,7 @@ impl Pager {
             recall,
             reveal,
             row_id,
+            admission: RefCell::new(None),
             _subscription: subscription,
         }
     }
@@ -525,6 +535,7 @@ fn code(
         (live.stamp(&source_key), live.stamp(&semantic_key), current)
     };
     let source_guard = ctx.native_dependency_guard((source_key, source_stamp), cx);
+    *pager.read(cx).admission.borrow_mut() = Some(Rc::clone(&source_guard));
     let semantic_guard = semantic_current.then(|| ctx.native_dependency_guard((semantic_key.clone(), semantic_stamp), cx));
     let cursor = paging
         .borrow()
@@ -571,7 +582,7 @@ fn code(
     let below = last_line.saturating_sub(rendered_to);
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     column = column.child(pager_controls(
-        "top", &pager, cursor, &page, source, ctx, cx,
+        "top", &pager, cursor, &page, source, &source_guard, ctx, cx,
     ));
     if above > 0 || cursor.byte > 0 {
         let label = if cursor.byte > 0 {
@@ -836,7 +847,7 @@ fn code(
         };
         column = column.child(quiet(continuation.clone(), &measure, palette).role(gpui::Role::Label).aria_label(continuation));
         column = column.child(pager_controls(
-            "bottom", &pager, cursor, &page, source, ctx, cx,
+            "bottom", &pager, cursor, &page, source, &source_guard, ctx, cx,
         ));
     }
     if let Some(editor_path) = view.editor_path.known() {
@@ -867,6 +878,7 @@ fn code(
         let focus = ctx.native_handle(&id, cx);
         let mut button = facet::controls::button(id.clone(), "Open in editor", &measure)
             .ghost().size(Control::Small).aria_label("Request to open source file in editor")
+            .when_current(Rc::clone(&source_guard))
             .on_click(move |window, app| act(window, app));
         if let Some(focus) = focus { button = button.focus_handle(focus); }
         column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
@@ -916,6 +928,7 @@ fn code(
                 });
                 let focus = ctx.native_handle(&id, cx);
                 let mut button = facet::controls::button(id.clone(), label, &measure)
+                    .when_current(Rc::clone(&source_guard))
                     .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
                 if let Some(focus) = focus { button = button.focus_handle(focus); }
                 reference_controls = reference_controls.child(
@@ -933,6 +946,7 @@ fn code(
             .skip(reference_start)
             .take(MAX_PAGE_REFERENCES)
         {
+            let Some(current_semantic) = semantic_guard.as_ref() else { continue; };
             let id: SharedString = format!("source-reference-{index}").into();
             let label: SharedString = symbol.identity().name().to_owned().into();
             let links = ctx.links.clone();
@@ -943,6 +957,7 @@ fn code(
             let source_guard = Rc::clone(&source_guard);
             let semantic_guard = semantic_guard.clone();
             let dependency = (semantic_key.clone(), semantic_stamp);
+            let admission = paired_admission(Rc::clone(&source_guard), Rc::clone(current_semantic));
             let target = Target {
                 id: id.clone(),
                 label: label.clone(),
@@ -971,6 +986,7 @@ fn code(
             ctx.targets.push(target);
             let focus = ctx.native_handle(&id, cx);
             let mut button = facet::controls::button(id.clone(), label, &measure)
+                .when_current(admission)
                 .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
             if let Some(focus) = focus { button = button.focus_handle(focus); }
             column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
@@ -992,6 +1008,7 @@ fn code(
     });
     let focus = ctx.native_handle(&copy_id, cx);
     let mut copy_button = facet::controls::button(copy_id.clone(), "Copy visible page", &measure)
+        .when_current(Rc::clone(&source_guard))
         .ghost().size(Control::Small).on_click(move |window, app| copy(window, app));
     if let Some(focus) = focus { copy_button = copy_button.focus_handle(focus); }
     column = column.child(ctx.targets.track(copy_id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(copy_button)));
@@ -1004,6 +1021,7 @@ fn pager_controls(
     cursor: SourceCursor,
     page: &SourcePage,
     source: &SourceText,
+    source_guard: &Rc<dyn Fn(&mut App) -> bool>,
     ctx: &mut Ctx<'_>,
     cx: &mut Context<Reader>,
 ) -> gpui::AnyElement {
@@ -1053,6 +1071,7 @@ fn pager_controls(
         });
         let focus = ctx.native_handle(&id, cx);
         let mut control = facet::controls::button(id.clone(), "Previous lines", &measure)
+            .when_current(Rc::clone(source_guard))
             .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
         if let Some(focus) = focus { control = control.focus_handle(focus); }
         controls = controls.child(
@@ -1082,6 +1101,7 @@ fn pager_controls(
         });
         let focus = ctx.native_handle(&id, cx);
         let mut control = facet::controls::button(id.clone(), "Next lines", &measure)
+            .when_current(Rc::clone(source_guard))
             .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
         if let Some(focus) = focus { control = control.focus_handle(focus); }
         controls = controls.child(
@@ -1114,14 +1134,14 @@ fn pager_controls(
         controls = controls.child(
             ctx.targets.track(
                 field_id.clone(),
-                div()
+                facet::controls::button::capture_activation_admission(div()
                     .id(field_id)
                     .role(gpui::Role::Label)
                     .aria_label("Source line number input")
                     .w(px(112.0 * measure.scale()))
                     .min_w_0()
                     .on_click(move |_: &ClickEvent, window, app| focus(window, app))
-                    .child(field),
+                    .child(field), Rc::clone(source_guard)),
             ),
         );
         let id: SharedString = "source-jump-go".into();
@@ -1140,6 +1160,7 @@ fn pager_controls(
         });
         let focus = ctx.native_handle(&id, cx);
         let mut button = facet::controls::button(id.clone(), "Go to line", &measure)
+            .when_current(Rc::clone(source_guard))
             .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
         if let Some(focus) = focus { button = button.focus_handle(focus); }
         controls = controls.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
@@ -1250,6 +1271,7 @@ fn margin(
             let source_guard = Rc::clone(&source_guard);
             let semantic_guard = Rc::clone(&semantic_guard);
             let dependency = (semantic_key.clone(), semantic_stamp);
+            let admission = paired_admission(Rc::clone(&source_guard), Rc::clone(&semantic_guard));
             let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
                 if !source_guard(app) || !semantic_guard(app) { return; }
                 if let Some(route) = target.clone() { links.dispatch_read(Intent::Navigate(route), dependency.clone(), app); }
@@ -1257,6 +1279,7 @@ fn margin(
             ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: act.clone(), peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
             let mut button = facet::controls::button(id.clone(), name, &measure)
+                .when_current(admission)
                 .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
             if let Some(focus) = focus { button = button.focus_handle(focus); }
             column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
@@ -1406,6 +1429,42 @@ mod tests {
         rig.cx.update(|window, cx| old_editor(window, cx));
         rig.settle();
         assert_eq!(attempts.borrow().len(), 3, "a previous Code visit cannot launch after Back");
+    }
+
+    #[gpui::test]
+    fn mounted_source_copy_requires_current_owner_before_pointer_focus(cx: &mut TestAppContext) {
+        let root = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+        );
+        let gate = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| EditorSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_engine_gate(
+            cx, Some(route), 900.0, 700.0, pool, crate::shell::tests::RootOnly, Some(gate.clone()),
+        );
+        let bounds = crate::shell::tests::native_bounds(&mut rig, "Button", "Copy visible page", true)
+            .expect("the painted copy control has a native Click and bounds");
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("before-copy".into()));
+        rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert!(rig.cx.read_from_clipboard().and_then(|item| item.text())
+            .is_some_and(|words| words.contains("pub enum RelationLabel")),
+            "the fresh native control copies the visible bounded source");
+
+        let other_owner = rig.cx.update(|window, cx| {
+            let targets = rig.shell.read(cx).reader_targets(cx);
+            assert!(targets.focus_native("source-jump-go", window, cx), "the unrelated Go control owns native focus");
+            window.focused(cx).expect("Go control focus")
+        });
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("stale-copy-sentinel".into()));
+        gate.publish(crate::runtime::owner::OwnerState::Starting);
+        gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+        // The old button is still painted; no watcher or redraw has replaced
+        // it. A stale pointer must fail before GPUI can give it native focus.
+        rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(other_owner));
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+            Some("stale-copy-sentinel"));
     }
 
     fn text(words: String) -> SourceText {
