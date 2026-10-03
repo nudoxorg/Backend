@@ -3545,6 +3545,87 @@ fn reject_lane_job(job: LaneJob, cause: CompilerRuntimeCause) {
     }
 }
 
+fn run_lane_attempt<Output, Error>(
+    run: impl FnOnce() -> Result<Output, Error>,
+    terminalize_panic: impl FnOnce(backend_library::interface::CompilerRuntimePanic) -> Error,
+) -> Result<Output, Error> {
+    match catch_unwind(AssertUnwindSafe(run)) {
+        Ok(result) => result,
+        Err(payload) => Err(terminalize_panic(
+            backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref()),
+        )),
+    }
+}
+
+fn publish_on_success<Staged, Published, Error>(
+    staged: Result<Staged, Error>,
+    publish: impl FnOnce(Staged) -> Result<Published, Error>,
+) -> Result<Published, Error> {
+    staged.and_then(publish)
+}
+
+#[cfg(test)]
+mod lane_failure_boundary_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn panicking_job_is_terminal_skips_publication_and_leaves_lane_usable() {
+        let failure = run_lane_attempt(
+            || -> Result<(), CompilerTerminal> {
+                std::panic::panic_any("synthetic Rustdoc mapping failure")
+            },
+            |panic| facts().terminal(CompilerRuntimeCause::WorkerPanic(panic)),
+        );
+        assert!(matches!(
+            &failure,
+            Err(CompilerTerminal::Runtime {
+                cause: CompilerRuntimeCause::WorkerPanic(panic),
+                ..
+            }) if panic.class
+                == backend_semantic::vocabulary::NativeWorkerPanicClass::StaticMessage
+                && panic.message.byte_len == "synthetic Rustdoc mapping failure".len()
+                && &panic.message.bytes[..panic.message.byte_len]
+                    == b"synthetic Rustdoc mapping failure"
+        ));
+
+        let published = AtomicBool::new(false);
+        let rejected = publish_on_success(failure, |_| {
+            published.store(true, Ordering::Release);
+            Ok::<(), CompilerTerminal>(())
+        });
+        assert!(
+            rejected.is_err(),
+            "the fault must be returned to its caller"
+        );
+        assert!(
+            !published.load(Ordering::Acquire),
+            "a panicking job must never publish a partial head"
+        );
+
+        let next = run_lane_attempt(
+            || Ok::<_, CompilerTerminal>(41_u8),
+            |panic| facts().terminal(CompilerRuntimeCause::WorkerPanic(panic)),
+        );
+        let completed = publish_on_success(next, |output| {
+            published.store(true, Ordering::Release);
+            Ok::<_, CompilerTerminal>(output)
+        });
+        assert_eq!(completed, Ok(41));
+        assert!(published.load(Ordering::Acquire));
+    }
+
+    fn facts() -> RequestFacts {
+        let profile = LanguageProfile::C(backend_semantic::vocabulary::CStandard::C23);
+        RequestFacts {
+            profile,
+            language: profile.language(),
+            stage: Stage::LowerIr,
+            target: None,
+        }
+    }
+}
+
 fn run_lane(
     execution: LocalCompilerExecution<'_, '_>,
     mut scratch: LocalCompilerScratch,
@@ -3567,43 +3648,39 @@ fn run_lane(
                 let staged = if cancelled.load(Ordering::Acquire) {
                     Err(facts.terminal(CompilerRuntimeCause::RequestCancelled))
                 } else {
-                    catch_unwind(AssertUnwindSafe(|| match &request {
-                        OwnedCompilerRequest::Generate {
-                            profile,
-                            stage,
-                            source,
-                        } => execution.stage_generate(
-                            CompilerRequest {
-                                profile: *profile,
-                                stage: *stage,
+                    run_lane_attempt(
+                        || match &request {
+                            OwnedCompilerRequest::Generate {
+                                profile,
+                                stage,
                                 source,
-                            },
-                            &mut scratch,
-                            &cancelled,
-                            &mut |phase| {
-                                if response.send(RuntimeEvent::Phase(phase)).is_err() {
-                                    cancelled.store(true, Ordering::Release);
-                                }
-                            },
-                        ),
-                        OwnedCompilerRequest::Package(request) => execution.stage_package(
-                            request,
-                            &mut scratch,
-                            &cancelled,
-                            &mut |phase| {
-                                if response.send(RuntimeEvent::Phase(phase)).is_err() {
-                                    cancelled.store(true, Ordering::Release);
-                                }
-                            },
-                        ),
-                    }))
-                    .unwrap_or_else(|payload| {
-                        Err(facts.terminal(CompilerRuntimeCause::WorkerPanic(
-                            backend_library::interface::CompilerRuntimePanic::capture(
-                                payload.as_ref(),
+                            } => execution.stage_generate(
+                                CompilerRequest {
+                                    profile: *profile,
+                                    stage: *stage,
+                                    source,
+                                },
+                                &mut scratch,
+                                &cancelled,
+                                &mut |phase| {
+                                    if response.send(RuntimeEvent::Phase(phase)).is_err() {
+                                        cancelled.store(true, Ordering::Release);
+                                    }
+                                },
                             ),
-                        )))
-                    })
+                            OwnedCompilerRequest::Package(request) => execution.stage_package(
+                                request,
+                                &mut scratch,
+                                &cancelled,
+                                &mut |phase| {
+                                    if response.send(RuntimeEvent::Phase(phase)).is_err() {
+                                        cancelled.store(true, Ordering::Release);
+                                    }
+                                },
+                            ),
+                        },
+                        |cause| facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
+                    )
                 };
                 let panicked = matches!(
                     &staged,
@@ -3648,49 +3725,47 @@ fn run_lane(
                         facts.terminal(CompilerRuntimeCause::RequestCancelled),
                     ))
                 } else {
-                    catch_unwind(AssertUnwindSafe(|| {
-                        let sources = borrow_package_sources(&request.sources)?;
-                        let package = PackageSourceSet::new_for_unit(
-                            &request.request,
-                            &request.package_target,
-                            &request.package_root,
-                            &sources,
-                        )?;
-                        let package = match go_authority_witness.as_ref() {
-                            Some(witness) => package.with_go_authority_witness(witness),
-                            None => package,
-                        };
-                        let package = match request.input_claim {
-                            Some(input) => package.with_input_claim(input),
-                            None => package,
-                        };
-                        let package = match embedding_provisioning_failure {
-                            Some(cause) => package.with_embedding_provisioning_failure(cause),
-                            None => package,
-                        };
-                        execution
-                            .stage_package_sources(
-                                package,
-                                execution_identity,
-                                plane_execution_seed,
-                                embedding_runtime.as_deref(),
-                                embedding_cache_session,
-                                embedding_requirement,
-                                &mut scratch,
-                                &cancelled,
-                                &mut |_| {},
+                    run_lane_attempt(
+                        || {
+                            let sources = borrow_package_sources(&request.sources)?;
+                            let package = PackageSourceSet::new_for_unit(
+                                &request.request,
+                                &request.package_target,
+                                &request.package_root,
+                                &sources,
+                            )?;
+                            let package = match go_authority_witness.as_ref() {
+                                Some(witness) => package.with_go_authority_witness(witness),
+                                None => package,
+                            };
+                            let package = match request.input_claim {
+                                Some(input) => package.with_input_claim(input),
+                                None => package,
+                            };
+                            let package = match embedding_provisioning_failure {
+                                Some(cause) => package.with_embedding_provisioning_failure(cause),
+                                None => package,
+                            };
+                            execution
+                                .stage_package_sources(
+                                    package,
+                                    execution_identity,
+                                    plane_execution_seed,
+                                    embedding_runtime.as_deref(),
+                                    embedding_cache_session,
+                                    embedding_requirement,
+                                    &mut scratch,
+                                    &cancelled,
+                                    &mut |_| {},
+                                )
+                                .map_err(PackageSemanticRuntimeError::from)
+                        },
+                        |cause| {
+                            PackageSemanticRuntimeError::Runtime(
+                                facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
                             )
-                            .map_err(PackageSemanticRuntimeError::from)
-                    }))
-                    .unwrap_or_else(|payload| {
-                        Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
-                            CompilerRuntimeCause::WorkerPanic(
-                                backend_library::interface::CompilerRuntimePanic::capture(
-                                    payload.as_ref(),
-                                ),
-                            ),
-                        )))
-                    })
+                        },
+                    )
                 };
                 let panicked = matches!(
                     &staged,
@@ -3740,9 +3815,9 @@ fn publish_lane_completion(
             _reservation,
         } => {
             let facts = request.facts();
-            let result = match staged {
-                Err(terminal) => Err(terminal),
-                Ok(staged) => match catch_unwind(AssertUnwindSafe(|| {
+            let mut publisher_panicked = false;
+            let result = publish_on_success(staged, |staged| {
+                match catch_unwind(AssertUnwindSafe(|| {
                     let generated =
                         compiler.publish_staged_single(staged, &cancelled, &mut |phase| {
                             if response.send(RuntimeEvent::Phase(phase)).is_err() {
@@ -3756,18 +3831,16 @@ fn publish_lane_completion(
                 })) {
                     Ok(result) => result,
                     Err(payload) => {
+                        publisher_panicked = true;
                         let cause = backend_library::interface::CompilerRuntimePanic::capture(
                             payload.as_ref(),
                         );
-                        let _ = response.send(RuntimeEvent::Complete(Err(
-                            facts.terminal(CompilerRuntimeCause::WorkerPanic(cause))
-                        )));
-                        return false;
+                        Err(facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)))
                     }
-                },
-            };
+                }
+            });
             let _ = response.send(RuntimeEvent::Complete(result));
-            true
+            !publisher_panicked
         }
         LaneCompletion::PackageSources {
             facts,
@@ -3779,49 +3852,52 @@ fn publish_lane_completion(
         } => {
             match response {
                 PackageCompileResponse::Published(response) => {
-                    let result = match staged {
-                        Err(error) => Err(error),
-                        Ok(staged) => match catch_unwind(AssertUnwindSafe(|| {
+                    let mut publisher_panicked = false;
+                    let result = publish_on_success(staged, |staged| {
+                        match catch_unwind(AssertUnwindSafe(|| {
                             compiler
                                 .publish_staged_package(staged, &cancelled, &mut |_| {})
                                 .map_err(PackageSemanticRuntimeError::from)
                         })) {
                             Ok(result) => result,
                             Err(payload) => {
+                                publisher_panicked = true;
                                 let cause =
                                     backend_library::interface::CompilerRuntimePanic::capture(
                                         payload.as_ref(),
                                     );
-                                let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                                Err(PackageSemanticRuntimeError::Runtime(
                                     facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
-                                )));
-                                return false;
+                                ))
                             }
-                        },
-                    };
+                        }
+                    });
                     let _ = response.send(result);
+                    if publisher_panicked {
+                        return false;
+                    }
                 }
                 PackageCompileResponse::Staged(response) => {
-                    let result = match staged {
-                        Err(error) => Err(error),
-                        Ok(staged) => match catch_unwind(AssertUnwindSafe(|| {
+                    let mut publisher_panicked = false;
+                    let result = publish_on_success(staged, |staged| {
+                        match catch_unwind(AssertUnwindSafe(|| {
                             compiler
                                 .prepare_staged_package(staged, &cancelled)
                                 .map_err(PackageSemanticRuntimeError::from)
                         })) {
                             Ok(result) => result,
                             Err(payload) => {
+                                publisher_panicked = true;
                                 let cause =
                                     backend_library::interface::CompilerRuntimePanic::capture(
                                         payload.as_ref(),
                                     );
-                                let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                                Err(PackageSemanticRuntimeError::Runtime(
                                     facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
-                                )));
-                                return false;
+                                ))
                             }
-                        },
-                    };
+                        }
+                    });
                     match result {
                         Ok(mut staged) => {
                             staged.retain_budget_lease(reservation);
@@ -3830,6 +3906,9 @@ fn publish_lane_completion(
                         Err(error) => {
                             let _ = response.send(Err(error));
                         }
+                    }
+                    if publisher_panicked {
+                        return false;
                     }
                 }
             }

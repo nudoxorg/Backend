@@ -10050,8 +10050,6 @@ dependencies = [
 [[package]]
 name = "ra_ap_hir_def"
 version = "0.0.341"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ca8a7a983347be37e971c3d57dfdb6fdd937575afa27cad85bccd870046281f"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.1",
