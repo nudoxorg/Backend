@@ -214,6 +214,10 @@ fn signature_binding_image(reversed: bool) -> Result<Ir, crate::ir::BuildError> 
         item(b"carrier", ItemKind::Parameter, Some(scalar)),
         item(b"different", ItemKind::Parameter, Some(different_scalar)),
     ];
+    let carrier_old_index = original_items
+        .iter()
+        .position(|item| item.name == b"carrier" && item.kind == ItemKind::Parameter)
+        .expect("fixture contains the named parameter carrier");
     let original_versions = [
         version(10),
         version(11),
@@ -263,7 +267,12 @@ fn signature_binding_image(reversed: bool) -> Result<Ir, crate::ir::BuildError> 
         match old_index {
             0 => {
                 owners.push(SignatureCarrierOwnerInput::captured(owner, 2, 1));
-                let carrier = EntityId::new(old_to_new[3]);
+                let carrier = EntityId::new(old_to_new[carrier_old_index]);
+                let selected = ordered_items
+                    .get(usize::try_from(carrier.raw).expect("fixture carrier index fits usize"))
+                    .expect("fixture carrier index names an item");
+                assert_eq!(selected.name, b"carrier");
+                assert_eq!(selected.kind, ItemKind::Parameter);
                 targets.extend_from_slice(&[carrier, carrier, carrier]);
             }
             1 => owners.push(SignatureCarrierOwnerInput::unavailable(owner)),
