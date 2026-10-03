@@ -525,7 +525,7 @@ fn code(
         (live.stamp(&source_key), live.stamp(&semantic_key), current)
     };
     let source_guard = ctx.native_dependency_guard((source_key, source_stamp), cx);
-    let semantic_guard = semantic_current.then(|| ctx.native_dependency_guard((semantic_key, semantic_stamp), cx));
+    let semantic_guard = semantic_current.then(|| ctx.native_dependency_guard((semantic_key.clone(), semantic_stamp), cx));
     let cursor = paging
         .borrow()
         .as_ref()
@@ -765,6 +765,7 @@ fn code(
                 let click_leaving = leaving.clone();
                 let source_guard = Rc::clone(&source_guard);
                 let semantic_guard = semantic_guard.clone();
+                let dependency = (semantic_key.clone(), semantic_stamp);
                 InteractiveText::new(
                     ElementId::Name(SharedString::from(format!(
                         "source-links-{number}-{piece_index}"
@@ -778,7 +779,7 @@ fn code(
                     {
                         click_recall.focus(id.clone());
                         click_recall.remember_leave(click_leaving.clone(), id.clone());
-                        click_links.dispatch(Intent::Navigate(target_route.clone()), app);
+                        click_links.dispatch_read(Intent::Navigate(target_route.clone()), dependency.clone(), app);
                     }
                 })
                 .into_any_element()
@@ -941,6 +942,7 @@ fn code(
             let target_id = id.clone();
             let source_guard = Rc::clone(&source_guard);
             let semantic_guard = semantic_guard.clone();
+            let dependency = (semantic_key.clone(), semantic_stamp);
             let target = Target {
                 id: id.clone(),
                 label: label.clone(),
@@ -948,7 +950,7 @@ fn code(
                     if !source_guard(app) || !semantic_guard.as_ref().is_some_and(|guard| guard(app)) { return; }
                     recall.focus(target_id.clone());
                     recall.remember_leave(leaving.clone(), target_id.clone());
-                    links.dispatch(Intent::Navigate(destination.clone()), app);
+                    links.dispatch_read(Intent::Navigate(destination.clone()), dependency.clone(), app);
                 }),
                 peek: Some(PageKey::Symbol(symbol.clone())),
                 source: Some(symbol),
