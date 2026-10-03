@@ -570,6 +570,7 @@ impl Element for Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ElementExt as _;
     use gpui::{AppContext as _, Context, Render, TestAppContext, VisualTestContext};
     use std::sync::{
         Mutex,
