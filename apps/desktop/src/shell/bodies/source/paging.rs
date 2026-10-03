@@ -9,7 +9,7 @@ pub(super) const MAX_SOURCE_BYTES: usize = 8 * 1024;
 pub(super) const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
 const MAX_PAGE_HISTORY: usize = 64;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SourceCursor {
     pub(super) line: u32,
     pub(super) byte: usize,
@@ -24,6 +24,7 @@ pub(super) struct VisibleLine {
 }
 
 pub(super) struct SourcePage {
+    start: SourceCursor,
     pub(super) lines: Vec<VisibleLine>,
     pub(super) next: Option<SourceCursor>,
 }
@@ -32,12 +33,14 @@ impl SourcePage {
     pub(super) fn at(source: &SourceText, cursor: SourceCursor) -> Self {
         let Some(range) = source.line_range() else {
             return Self {
+                start: cursor,
                 lines: Vec::new(),
                 next: None,
             };
         };
         if !(range.first..=range.last).contains(&cursor.line) {
             return Self {
+                start: cursor,
                 lines: Vec::new(),
                 next: None,
             };
@@ -48,6 +51,7 @@ impl SourcePage {
             .and_then(|index| usize::try_from(index).ok())
         else {
             return Self {
+                start: cursor,
                 lines: Vec::new(),
                 next: None,
             };
@@ -124,7 +128,39 @@ impl SourcePage {
                 next = Some(SourceCursor { line, byte: 0 });
             }
         }
-        Self { lines, next }
+        Self {
+            start: cursor,
+            lines,
+            next,
+        }
+    }
+
+    /// A saved cursor already painted inside this exact bounded byte window
+    /// cannot produce a new page. The end of a partial line is excluded: it
+    /// is the first byte of the next continuation. The end of a complete
+    /// line, including an empty line, is already represented here.
+    fn contains(&self, cursor: SourceCursor) -> bool {
+        self.lines.iter().any(|line| {
+            if line.number != cursor.line {
+                return false;
+            }
+            let start = if line.number == self.start.line {
+                self.start.byte
+            } else {
+                0
+            };
+            let end = start.saturating_add((line.span.end - line.span.start) as usize);
+            cursor.byte >= start && (cursor.byte < end || cursor.byte == end && !line.more_in_line)
+        })
+    }
+}
+
+impl SourceCursor {
+    fn valid_for(self, source: &SourceText) -> bool {
+        source
+            .line_span(self.line)
+            .and_then(|span| source.text().get(span.range()))
+            .is_some_and(|line| self.byte <= line.len() && line.is_char_boundary(self.byte))
     }
 }
 
@@ -245,31 +281,54 @@ impl PagingState {
         }
     }
 
-    pub(super) fn previous_target(&self, source: &SourceText) -> Option<SourceCursor> {
+    pub(super) fn previous_target(
+        &self,
+        source: &SourceText,
+        page: &SourcePage,
+    ) -> Option<SourceCursor> {
         self.back
-            .last()
+            .iter()
+            .rev()
             .copied()
+            .find(|candidate| {
+                *candidate < self.cursor
+                    && candidate.valid_for(source)
+                    && !page.contains(*candidate)
+            })
             .or_else(|| previous_cursor(source, self.cursor))
     }
 
-    pub(super) fn next_target(&self, page: &SourcePage) -> Option<SourceCursor> {
-        self.forward.last().copied().or(page.next)
+    pub(super) fn next_target(
+        &self,
+        source: &SourceText,
+        page: &SourcePage,
+    ) -> Option<SourceCursor> {
+        self.forward
+            .iter()
+            .rev()
+            .copied()
+            .find(|candidate| {
+                *candidate > self.cursor
+                    && candidate.valid_for(source)
+                    && !page.contains(*candidate)
+            })
+            .or(page.next)
     }
 
-    pub(super) fn previous(&mut self, fallback: SourceCursor) -> SourceCursor {
-        let previous = self.back.pop().unwrap_or(fallback);
+    pub(super) fn previous(&mut self, target: SourceCursor) -> SourceCursor {
+        consume_history(&mut self.back, target);
         push_history(&mut self.forward, self.cursor);
-        self.cursor = previous;
+        self.cursor = target;
         self.reference_page = 0;
-        previous
+        target
     }
 
-    pub(super) fn next(&mut self, fallback: SourceCursor) -> SourceCursor {
-        let next = self.forward.pop().unwrap_or(fallback);
+    pub(super) fn next(&mut self, target: SourceCursor) -> SourceCursor {
+        consume_history(&mut self.forward, target);
         push_history(&mut self.back, self.cursor);
-        self.cursor = next;
+        self.cursor = target;
         self.reference_page = 0;
-        next
+        target
     }
 
     pub(super) fn jump(&mut self, line: u32) -> SourceCursor {
@@ -279,6 +338,16 @@ impl PagingState {
         self.forward.clear();
         self.reference_page = 0;
         next
+    }
+}
+
+fn consume_history(history: &mut Vec<SourceCursor>, target: SourceCursor) {
+    if let Some(index) = history.iter().rposition(|candidate| *candidate == target) {
+        history.truncate(index);
+    } else {
+        // A fresh source-page boundary supersedes history inside its visible
+        // window; retaining it would resurrect a duplicate Next/Previous.
+        history.clear();
     }
 }
 

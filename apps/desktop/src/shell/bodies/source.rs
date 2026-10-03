@@ -90,23 +90,25 @@ impl Pager {
         cx.notify();
     }
 
-    fn next(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
+    fn next(&mut self, expected: SourceCursor, target: SourceCursor, cx: &mut Context<Self>) {
         let line = self
             .state
             .borrow_mut()
             .as_mut()
-            .map(|state| state.next(fallback).line);
+            .filter(|state| state.cursor == expected)
+            .map(|state| state.next(target).line);
         if let Some(line) = line {
             self.focus_line(line, cx);
         }
     }
 
-    fn previous(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
+    fn previous(&mut self, expected: SourceCursor, target: SourceCursor, cx: &mut Context<Self>) {
         let line = self
             .state
             .borrow_mut()
             .as_mut()
-            .map(|state| state.previous(fallback).line);
+            .filter(|state| state.cursor == expected)
+            .map(|state| state.previous(target).line);
         if let Some(line) = line {
             self.focus_line(line, cx);
         }
@@ -803,12 +805,12 @@ fn pager_controls(
     let previous = memory
         .borrow()
         .as_ref()
-        .and_then(|state| state.previous_target(source));
+        .and_then(|state| state.previous_target(source, page));
     if let Some(previous) = previous {
         let id: SharedString = format!("source-page-{position}-previous").into();
         let state = pager.clone();
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
-            state.update(app, |pager, cx| pager.previous(previous, cx));
+            state.update(app, |pager, cx| pager.previous(cursor, previous, cx));
         });
         let act = ctx.native_action(act, cx);
         ctx.targets.push(Target {
@@ -832,12 +834,12 @@ fn pager_controls(
     let next = memory
         .borrow()
         .as_ref()
-        .and_then(|state| state.next_target(page));
+        .and_then(|state| state.next_target(source, page));
     if let Some(next) = next {
         let id: SharedString = format!("source-page-{position}-next").into();
         let state = pager.clone();
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
-            state.update(app, |pager, cx| pager.next(next, cx));
+            state.update(app, |pager, cx| pager.next(cursor, next, cx));
         });
         let act = ctx.native_action(act, cx);
         ctx.targets.push(Target {
@@ -1054,6 +1056,80 @@ mod tests {
     }
 
     #[test]
+    fn history_inside_a_complete_31_line_page_is_terminal() {
+        // A deep jump followed by Previous is the native 31-line case: the
+        // whole file fits in the preceding page, including the jump's line.
+        let source = text((1..=31).map(|line| format!("line {line}\n")).collect());
+        let mut state = PagingState::new(SourceCursor { line: 31, byte: 0 });
+        let deep = SourcePage::at(&source, state.cursor);
+        assert_eq!(deep.lines.len(), 1);
+        let previous = state.previous_target(&source, &deep).expect("earlier lines");
+        assert_eq!(previous, SourceCursor { line: 1, byte: 0 });
+        state.previous(previous);
+        let whole = SourcePage::at(&source, state.cursor);
+        assert_eq!(whole.lines.len(), 31);
+        assert!(whole.next.is_none());
+        assert!(
+            state.next_target(&source, &whole).is_none(),
+            "line 31 is already visible, so saved forward history is not a Next page"
+        );
+    }
+
+    #[test]
+    fn visible_history_yields_to_the_real_next_page_boundary() {
+        let source = text((1..=100).map(|line| format!("line {line}\n")).collect());
+        let mut state = PagingState::new(SourceCursor { line: 31, byte: 0 });
+        let deep = SourcePage::at(&source, state.cursor);
+        let previous = state.previous_target(&source, &deep).expect("earlier lines");
+        state.previous(previous);
+        let first = SourcePage::at(&source, state.cursor);
+        assert_eq!(first.lines.last().map(|line| line.number), Some(64));
+        assert_eq!(
+            state.next_target(&source, &first),
+            Some(SourceCursor { line: 65, byte: 0 }),
+            "saved line 31 is visible; Next must follow the bounded page boundary"
+        );
+    }
+
+    #[test]
+    fn utf8_continuation_at_the_visible_byte_boundary_still_has_next() {
+        let source = text(format!("{}\ntail", "é".repeat(1600)));
+        let mut state = PagingState::new(SourceCursor { line: 1, byte: 0 });
+        let first = SourcePage::at(&source, state.cursor);
+        let continuation = first.next.expect("long line continues");
+        assert_eq!(continuation, SourceCursor { line: 1, byte: MAX_SOURCE_LINE_BYTES });
+        state.next(continuation);
+        let second = SourcePage::at(&source, state.cursor);
+        assert!(second.lines[0].continued);
+        let previous = state.previous_target(&source, &second).expect("earlier bytes");
+        state.previous(previous);
+        let restored = SourcePage::at(&source, state.cursor);
+        assert_eq!(
+            state.next_target(&source, &restored),
+            Some(continuation),
+            "the first byte after a partial segment is outside the visible window"
+        );
+    }
+
+    #[test]
+    fn empty_and_crlf_lines_do_not_create_a_phantom_terminal_page() {
+        let source = text("a\r\n\r\n🎯\r\nend".to_owned());
+        let mut state = PagingState::new(SourceCursor { line: 4, byte: 0 });
+        let deep = SourcePage::at(&source, state.cursor);
+        let previous = state.previous_target(&source, &deep).expect("earlier lines");
+        state.previous(previous);
+        let whole = SourcePage::at(&source, state.cursor);
+        assert_eq!(whole.lines.len(), 4);
+        assert!(
+            whole
+                .lines
+                .iter()
+                .any(|line| line.number == 2 && line.span.start == line.span.end)
+        );
+        assert!(state.next_target(&source, &whole).is_none());
+    }
+
+    #[test]
     fn a_long_utf8_line_is_paged_without_omitting_a_character() {
         let original = format!("{}\ntail", "é".repeat(80_000));
         let source = text(original);
@@ -1196,6 +1272,73 @@ mod tests {
             }
             Ok(value)
         }
+    }
+
+    struct CompactSource;
+
+    impl PageReader for CompactSource {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
+            let mut fixture = crate::shell::tests::Fixture;
+            let mut value = fixture.read(request, context)?;
+            if let PageValue::Source(view) = &mut value {
+                view.text = Known::Known(text(
+                    (1..=31).map(|line| format!("line {line}\n")).collect()
+                ));
+                view.declaration = Known::Known(LineSpan { first: 31, last: 31 });
+                view.identifiers = Known::Known(Arc::from([]));
+            }
+            Ok(value)
+        }
+    }
+
+    #[gpui::test]
+    fn mounted_previous_click_on_whole_31_line_file_has_no_next(cx: &mut TestAppContext) {
+        let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code) else { unreachable!() };
+        route.line = Some(31);
+        let pool = ReadPool::start(2, |_| CompactSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 720.0, 700.0, pool);
+        let field = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-field").expect("mounted line jump");
+        rig.cx.simulate_click(field.center(), gpui::Modifiers::none());
+        rig.keys("3 1 enter");
+        assert!(rig.said().iter().any(|word| word.contains("Lines 31–31 of 31")));
+        let previous = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-page-top-previous").expect("mounted previous");
+        rig.cx.simulate_click(previous.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert!(rig.said().iter().any(|word| word.contains("Lines 1–31 of 31")));
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.bounds_of("source-page-top-next").is_none(),
+            "the entire file is visible after Previous, so no native Next target remains");
+        assert!(!targets.native_keys().iter().any(|id| id == "source-page-top-next"));
+    }
+
+    #[gpui::test]
+    fn mounted_previous_keyboard_on_whole_file_has_no_next(cx: &mut TestAppContext) {
+        let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code) else { unreachable!() };
+        route.line = Some(31);
+        let pool = ReadPool::start(2, |_| CompactSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 720.0, 700.0, pool);
+        let field = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-field").expect("mounted line jump");
+        rig.cx.simulate_click(field.center(), gpui::Modifiers::none());
+        rig.keys("3 1 enter");
+        let field = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-field").expect("jump field remains mounted");
+        rig.cx.simulate_click(field.center(), gpui::Modifiers::none());
+        rig.keys("shift-tab");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
+            Some("source-page-top-previous"));
+        rig.keys("enter");
+        rig.settle();
+        assert!(rig.said().iter().any(|word| word.contains("Lines 1–31 of 31")));
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-page-top-next").is_none());
     }
 
     fn activate_reader_target(rig: &mut crate::shell::tests::Rig, id: &str) {
