@@ -10,7 +10,7 @@ use super::lens::{Counts, Lens};
 use super::listing::{Head, Releases, StepDoes, StepOut, Title};
 use super::row::{Do, Fold, Heading, Item, Mark, Row, Trailing};
 use crate::navigation::Intent;
-use crate::shell::focus::Zone;
+use crate::shell::focus::{FocusRepresentative, Zone};
 use crate::shell::kit::{kind_mark, text};
 use facet::icons::{self, IconSize, Kind, KindSize};
 use facet::tokens::fluid::SideForm;
@@ -91,8 +91,8 @@ impl Shelf {
         let list = uniform_list(
             "shelf-rows",
             count,
-            cx.processor(move |shelf: &mut Self, range: Range<usize>, _window, cx| {
-                shelf.render_rows(range, &row_measure, cx)
+            cx.processor(move |shelf: &mut Self, range: Range<usize>, window, cx| {
+                shelf.render_rows(range, &row_measure, window, cx)
             }),
         )
         .size_full()
@@ -555,13 +555,19 @@ impl Shelf {
         &mut self,
         range: Range<usize>,
         measure: &Measure,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let palette = cx.facet().palette();
         let rows = Rc::clone(&self.rows);
+        self.targets.retain_native_handles(|key| {
+            rows.get(range.clone()).unwrap_or(&[]).iter().filter_map(Row::item).any(|item| item.key.as_ref() == key)
+                || rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
+                    .take(24).any(|item| key == format!("spine-{}", item.key))
+        });
         range
             .filter_map(|index| rows.get(index).map(|row| (index, row)))
-            .map(|(index, row)| self.line(index, row, measure, palette, cx))
+            .map(|(index, row)| self.line(index, row, measure, palette, window, cx))
             .collect()
     }
 
@@ -571,11 +577,12 @@ impl Shelf {
         row: &Row,
         measure: &Measure,
         palette: &Palette,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let height = measure.row() + measure.space(Space::Tight);
         match row {
-            Row::Item(item) => self.item(item, height, measure, palette, cx),
+            Row::Item(item) => self.item(item, height, measure, palette, window, cx),
             Row::Heading(Heading { words, count }) => div()
                 .id(SharedString::from(format!("shelf-heading-{index}")))
                 .role(gpui::Role::Heading)
@@ -628,6 +635,7 @@ impl Shelf {
         height: gpui::Pixels,
         measure: &Measure,
         palette: &Palette,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let indent =
@@ -657,12 +665,11 @@ impl Shelf {
             .child(self.chevron(item, measure, palette, cx))
             .child(mark(item.mark, measure, palette))
             .child(self.name(item, ink, measure, palette));
-        if self.targets.is_focused(&item.key) {
+        let handle = self.targets.native_handle(&item.key, cx);
+        if FocusRepresentative::for_leaf(self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
             element = element.aria_active_descendant();
         }
-        if item.does != Do::Nothing {
-            element = element.focusable();
-        }
+        if item.does != Do::Nothing { element = element.track_focus(&handle); }
         if let Some(sub) = item
             .sub
             .as_ref()
@@ -823,8 +830,12 @@ impl Shelf {
         &mut self,
         measure: &Measure,
         palette: &Palette,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.targets.retain_native_handles(|key| !key.starts_with("spine-")
+            || self.rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
+                .take(24).any(|item| key == format!("spine-{}", item.key)));
         let side = px(28.0 * measure.scale());
         let gap = measure.space(Space::Snug);
         let mut column = div()
@@ -855,7 +866,9 @@ impl Shelf {
                 .opacity(if item.current { 1.0 } else { 0.62 })
                 .hover(|style| style.opacity(1.0))
                 .child(mark(item.mark, measure, palette));
-            if self.targets.is_focused(&item.key) {
+            let spine_key = SharedString::from(format!("spine-{}", item.key));
+            let handle = self.targets.native_handle(&spine_key, cx);
+            if FocusRepresentative::for_leaf(self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
                 cell = cell.aria_active_descendant();
             }
             if item.current {
@@ -870,7 +883,7 @@ impl Shelf {
                 );
             }
             if item.does != Do::Nothing {
-                cell = cell.focusable();
+                cell = cell.track_focus(&handle);
                 let does = item.does.clone();
                 let shelf = cx.weak_entity();
                 cell = cell.on_click(move |_: &ClickEvent, _, cx| {

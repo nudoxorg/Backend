@@ -957,7 +957,7 @@ impl Render for Shelf {
                     .h_full()
                     .w(self.spine)
                     .opacity(1.0 - open)
-                    .child(self.spine_column(&measure, palette, cx)),
+                    .child(self.spine_column(&measure, palette, window, cx)),
             );
         }
         let _ = window;

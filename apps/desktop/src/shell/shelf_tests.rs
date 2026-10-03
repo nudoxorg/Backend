@@ -649,3 +649,34 @@ fn a_lens_tab_is_a_target_and_a_click_on_it_gives_the_sidebar_the_keyboard(cx: &
     let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Shelf, "a click on a lens gives the sidebar the keyboard");
 }
+
+
+/// Native accessibility must never claim a node as its own descendant.
+/// The right click changes GPUI native focus independently of Shelf Recall.
+#[gpui::test]
+fn forced_accessibility_survives_native_pointer_then_right_click_on_local_and_registry_rows(cx: &mut TestAppContext) {
+    for registry in [false, true] {
+        let mut rig = if registry { open(cx) } else {
+            let mut local = super::tests::rig(cx, Some(super::tests::page_route("RelationLabel")), 1440.0, 900.0);
+            local.cx.update(|_, cx| facet::probe::enable(cx));
+            local
+        };
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        let route = rig.route();
+        let words = if registry { "Types" } else { "glyph" };
+        click_text(&mut rig, words);
+        // Re-read the actual painted row after the left gesture; its bounds
+        // may move as the fold opens. Deliver native right mouse events.
+        let texts = shelf_texts(&mut rig);
+        let (_, x, y, w, h) = texts.iter().find(|text| text.0 == words)
+            .unwrap_or_else(|| panic!("the clicked row {words:?} disappeared: {texts:#?}")).clone();
+        let at = point(px(x + w / 2.0), px(y + h / 2.0));
+        rig.cx.simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::none());
+        rig.cx.simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::none());
+        rig.settle();
+        rig.repaint();
+        assert!(rig.cx.update(|window, _| window.is_a11y_active()), "the real tree was built");
+        assert_eq!(rig.route(), route, "a row fold/context gesture does not navigate");
+        assert!(!shelf_texts(&mut rig).is_empty(), "the native shelf remains rendered");
+    }
+}

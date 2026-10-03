@@ -45,6 +45,18 @@ impl Zone {
 /// What a target does when it is activated (Enter, a click, a hint).
 pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// A native leaf reports itself. Only a logical selection represented by
+/// its focused ancestor may advertise an active descendant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FocusRepresentative { Native, Descendant, None }
+impl FocusRepresentative {
+    pub(crate) fn for_leaf(selected: bool, handle: &FocusHandle, window: &Window) -> Self {
+        if handle.is_focused(window) { Self::Native }
+        else if selected { Self::Descendant }
+        else { Self::None }
+    }
+}
+
 /// A raw Reader target's native semantics and activation. The caller owns
 /// visual styling and the existing target list owns order and hints. Facet
 /// buttons keep their own native control implementation.
@@ -357,6 +369,13 @@ impl Targets {
             .or_insert_with(|| (cx.focus_handle().tab_stop(true), frame));
         *seen = frame;
         handle.clone()
+    }
+
+    /// Virtualized regions retire offscreen native owners before constructing
+    /// the next visible range. Handles remain alive in GPUI for that paint,
+    /// but cannot become a later return/input claim through this registry.
+    pub(crate) fn retain_native_handles(&self, keep: impl Fn(&str) -> bool) {
+        self.native.borrow_mut().handles.retain(|key, _| keep(key));
     }
 
     pub(crate) fn finish_native(&self) {
