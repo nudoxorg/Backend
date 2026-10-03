@@ -2534,8 +2534,8 @@ mod tests {
             clean(&path);
             let store = ContentAddressedStore::open(&path).expect("store");
             // The store resolves its root once (to the verbatim form on Windows), so a source inside
-        // it is named through that resolved root.
-        let source = store.root().join("temps").join("source.part");
+            // it is named through that resolved root.
+            let source = store.root().join("temps").join("source.part");
             let mut file = File::create(&source).expect("source");
             file.write_all(&bytes).expect("source bytes");
             file.sync_all().expect("sync source");

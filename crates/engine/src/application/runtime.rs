@@ -3962,8 +3962,8 @@ mod input_witness_store_tests {
 
 #[cfg(test)]
 mod portable_recipe_tests {
-    use crate::test_support::host_path;
     use super::*;
+    use crate::test_support::host_path;
     use backend_semantic::vocabulary::PythonVersion;
 
     fn python_recipe(

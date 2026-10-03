@@ -169,9 +169,7 @@ fn reclaim_unowned(path: &Path) -> io::Result<Reclaimed> {
     match fs::remove_file(path) {
         Ok(()) => Ok(Reclaimed::Removed),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Reclaimed::Absent),
-        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
-            Ok(Reclaimed::Owned)
-        }
+        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => Ok(Reclaimed::Owned),
         Err(error) => Err(error),
     }
 }
@@ -238,7 +236,10 @@ mod tests {
         assert!(path.exists(), "a live owner's file must not be removed");
 
         drop(claim);
-        assert_eq!(reclaim(&path).expect("reclaim abandoned"), Reclaimed::Removed);
+        assert_eq!(
+            reclaim(&path).expect("reclaim abandoned"),
+            Reclaimed::Removed
+        );
         assert!(!path.exists(), "an abandoned file is removed");
     }
 

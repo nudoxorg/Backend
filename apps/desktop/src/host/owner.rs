@@ -283,7 +283,9 @@ mod tests {
         use crate::runtime::actor::{CancellationToken, EngineActor, EngineDto, EngineRequest};
         use crate::runtime::client::LocalEngineClient;
         use crate::runtime::mailbox::PushResult;
-        use crate::runtime::reads::{Delivery, Priority, ReadJob, ReadPool, ReadRequest, SessionReader};
+        use crate::runtime::reads::{
+            Delivery, Priority, ReadJob, ReadPool, ReadRequest, SessionReader,
+        };
         use std::sync::mpsc;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -355,14 +357,17 @@ mod tests {
         )
         .expect("actor lane");
         let submit_page = |generation| {
-            assert!(pool.submit(ReadJob {
-                key: PageKey::Health,
-                request: ReadRequest::Health,
-                generation: Generation::new(generation),
-                priority: Priority::Normal,
-                cancel: CancellationToken::new(),
-                affinity: None,
-            }).is_ok());
+            assert!(
+                pool.submit(ReadJob {
+                    key: PageKey::Health,
+                    request: ReadRequest::Health,
+                    generation: Generation::new(generation),
+                    priority: Priority::Normal,
+                    cancel: CancellationToken::new(),
+                    affinity: None,
+                })
+                .is_ok()
+            );
         };
         let submit_root = |request| {
             assert!(matches!(
@@ -376,9 +381,12 @@ mod tests {
         };
         let page = |generation| {
             crate::runtime::wait::until_some("page read completed", || {
-                pool.take(std::num::NonZeroUsize::MAX).outcomes.into_iter().find(|outcome| {
-                    outcome.generation == Generation::new(generation) && outcome.is_terminal()
-                })
+                pool.take(std::num::NonZeroUsize::MAX)
+                    .outcomes
+                    .into_iter()
+                    .find(|outcome| {
+                        outcome.generation == Generation::new(generation) && outcome.is_terminal()
+                    })
             })
         };
         let root_reply = |request| {
@@ -393,7 +401,10 @@ mod tests {
         submit_page(1);
         submit_root(1);
         assert!(
-            matches!(page(1).delivery, Delivery::Terminal(Ok(PageValue::Health(_)))),
+            matches!(
+                page(1).delivery,
+                Delivery::Terminal(Ok(PageValue::Health(_)))
+            ),
             "the attached owner answered the page lane"
         );
         assert!(
@@ -435,7 +446,10 @@ mod tests {
             )
         });
         assert!(
-            matches!(page(3).delivery, Delivery::Terminal(Ok(PageValue::Health(_)))),
+            matches!(
+                page(3).delivery,
+                Delivery::Terminal(Ok(PageValue::Health(_)))
+            ),
             "the waiting page uses the replacement owner"
         );
         assert!(
