@@ -139,6 +139,43 @@ pub struct Layout {
     pub regions: Vec<Region>,
     /// The scale the geometry was made at (text scale × fluid growth).
     pub k: f32,
+    // The production labels shaped for these exact regions. Layout-only
+    // utilities have none; no paint/display list is cached here.
+    labels: Option<Rc<Labels>>,
+}
+
+#[derive(Debug, PartialEq)]
+struct Labels {
+    role: TypeRole,
+    entries: Vec<MeasuredLabel>,
+}
+#[derive(Debug)]
+struct MeasuredLabel {
+    words: SharedString,
+    natural_width: f32,
+    room: f32,
+    lines: Vec<gpui::WrappedLine>,
+}
+impl PartialEq for MeasuredLabel {
+    fn eq(&self, other: &Self) -> bool {
+        self.words == other.words
+            && self.natural_width == other.natural_width
+            && self.room == other.room
+            && self.lines.len() == other.lines.len()
+            && self.lines.iter().zip(&other.lines).all(|(a, b)| {
+                a.unwrapped_layout.width == b.unwrapped_layout.width
+                    && a.wrap_boundaries() == b.wrap_boundaries()
+            })
+    }
+}
+impl MeasuredLabel {
+    fn line_count(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| 1 + line.wrap_boundaries().len())
+            .sum::<usize>()
+            .max(1)
+    }
 }
 
 impl Layout {
@@ -168,7 +205,7 @@ pub fn layout(modules: &[(usize, usize)], width: f32, k: f32) -> Layout {
 fn layout_sized(
     modules: &[(usize, usize)],
     label_widths: Option<&[f32]>,
-    labels: Option<(&[SharedString], TypeRole, &Window)>,
+    mut labels: Option<(&mut [MeasuredLabel], TypeRole, &Window)>,
     label_line_height: f32,
     width: f32,
     k: f32,
@@ -179,15 +216,20 @@ fn layout_sized(
     let gap = (GAP * k).min(width);
     let char_w = LABEL.size * ADVANCE * k * 1.02;
     #[allow(clippy::cast_precision_loss)]
-    let want: Vec<f32> = modules
+    let inner: Vec<f32> = modules
         .iter()
         .enumerate()
         .map(|(index, &(chars, items))| {
             let cols = items.div_ceil(3).clamp(1, MAX_COLUMNS);
             let label = label_widths.map_or(chars as f32 * char_w, |widths| widths[index]);
-            ((label).max(cols as f32 * pitch - (pitch - stone)) + 2.0 * pad).min(width)
+            label
+                .max(cols as f32 * pitch - (pitch - stone))
+                .min((width - 2.0 * pad).max(0.0))
         })
         .collect();
+    // Preserve the text room before adding padding. Reconstructing it with
+    // (natural + 2*pad) - 2*pad can lose an ULP and wrap the final glyph.
+    let want: Vec<f32> = inner.iter().map(|room| room + 2.0 * pad).collect();
     let mut rows: Vec<Vec<usize>> = Vec::new();
     let mut current: Vec<usize> = Vec::new();
     let mut used = 0.0_f32;
@@ -222,7 +264,11 @@ fn layout_sized(
             (width - base).max(0.0)
         };
         #[allow(clippy::cast_precision_loss)]
-        let weight: f32 = row.iter().map(|&i| modules[i].1 as f32).sum::<f32>().max(1.0);
+        let weight: f32 = row
+            .iter()
+            .map(|&i| modules[i].1 as f32)
+            .sum::<f32>()
+            .max(1.0);
         let mut x = 0.0_f32;
         let mut placed = Vec::new();
         let mut tallest = 0usize;
@@ -230,15 +276,35 @@ fn layout_sized(
             // Spare room widens a region, but a big module grows down, not
             // into one long strip.
             #[allow(clippy::cast_precision_loss)]
-            let w = (want[i] + slack * modules[i].1 as f32 / weight).min((width - x).max(0.0));
+            let growth = slack * modules[i].1 as f32 / weight;
+            let remaining = (width - x).max(0.0);
+            let intended = want[i] + growth;
+            // Preserve the measured inner room. Reconstructing it with
+            // (natural + 2 * pad) - 2 * pad can lose one f32 ULP;
+            // GPUI then correctly wraps the final glyph at that smaller room.
+            let (w, room) = if intended <= remaining {
+                (intended, inner[i] + growth)
+            } else {
+                (remaining, (remaining - 2.0 * pad).max(0.0))
+            };
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let columns = (((w - 2.0 * pad + (pitch - stone)).max(0.0) / pitch).floor() as usize).max(1);
+            let columns =
+                (((w - 2.0 * pad + (pitch - stone)).max(0.0) / pitch).floor() as usize).max(1);
             let lines = modules[i].1.div_ceil(columns);
-            let label_lines = if let Some((labels, role, window)) = labels {
-                wrapped_line_count(&labels[i], role, (w - 2.0 * pad).max(1.0), window)
+            let label_lines = if let Some((labels, role, window)) = labels.as_mut() {
+                let label = &mut labels[i];
+                label.room = room;
+                if room < label.natural_width {
+                    label.lines =
+                        wrap_label(label.words.clone(), *role, Hsla::default(), room, window);
+                }
+                label.line_count()
             } else {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                ((label_widths.map_or(modules[i].0 as f32 * char_w, |widths| widths[i]) / (w - 2.0 * pad).max(1.0)).ceil() as usize).max(1)
+                ((label_widths.map_or(modules[i].0 as f32 * char_w, |widths| widths[i])
+                    / room.max(1.0))
+                .ceil() as usize)
+                    .max(1)
             };
             tallest = tallest.max(lines);
             placed.push((i, x, w, columns, label_lines));
@@ -268,10 +334,27 @@ fn layout_sized(
         height: (y - gap).max(0.0),
         regions,
         k,
+        labels: None,
     }
 }
 
-fn wrap_label(text: SharedString, role: TypeRole, ink: Hsla, width: f32, window: &Window) -> Vec<gpui::WrappedLine> {
+fn wrap_label(
+    text: SharedString,
+    role: TypeRole,
+    ink: Hsla,
+    width: f32,
+    window: &Window,
+) -> Vec<gpui::WrappedLine> {
+    shape_label(text, role, ink, Some(px(width.max(1.0))), window)
+}
+
+fn shape_label(
+    text: SharedString,
+    role: TypeRole,
+    ink: Hsla,
+    width: Option<Pixels>,
+    window: &Window,
+) -> Vec<gpui::WrappedLine> {
     let run = TextRun {
         len: text.len(),
         font: font(role),
@@ -283,7 +366,7 @@ fn wrap_label(text: SharedString, role: TypeRole, ink: Hsla, width: f32, window:
     };
     window
         .text_system()
-        .shape_text(text, px(role.size), &[run], Some(px(width.max(1.0))), None)
+        .shape_text(text, px(role.size), &[run], width, None)
         .unwrap_or_default()
         .into_iter()
         .collect()
@@ -317,21 +400,41 @@ fn wrapped_line_count(text: &str, role: TypeRole, width: f32, window: &Window) -
 #[must_use]
 pub fn measured(modules: &[ModuleFacts], measure: &Measure, window: &Window) -> Rc<Layout> {
     let k = measure.scale() * (0.94 + 0.42 * measure.t());
-    let sizes: Vec<(usize, usize)> = modules.iter().map(|module| (module.name.chars().count(), module.shingles.len())).collect();
-    let role = scaled(measure.role(LABEL), k / measure.scale());
-    let widths: Vec<f32> = modules
+    let sizes: Vec<(usize, usize)> = modules
         .iter()
-        .map(|module| shape(module.name.clone(), role, Hsla::default(), window).width())
+        .map(|module| (module.name.chars().count(), module.shingles.len()))
         .collect();
-    let labels: Vec<SharedString> = modules.iter().map(|module| module.name.clone()).collect();
-    Rc::new(layout_sized(
+    let role = scaled(measure.role(LABEL), k / measure.scale());
+    let mut labels: Vec<MeasuredLabel> = modules
+        .iter()
+        .map(|module| {
+            let lines = shape_label(module.name.clone(), role, Hsla::default(), None, window);
+            let natural_width = lines
+                .iter()
+                .map(|line| f32::from(line.unwrapped_layout.width))
+                .fold(0.0, f32::max);
+            MeasuredLabel {
+                words: module.name.clone(),
+                natural_width,
+                room: 0.0,
+                lines,
+            }
+        })
+        .collect();
+    let widths: Vec<f32> = labels.iter().map(|label| label.natural_width).collect();
+    let mut layout = layout_sized(
         &sizes,
         Some(&widths),
-        Some((&labels, role, window)),
+        Some((&mut labels, role, window)),
         role.line,
         f32::from(measure.width()),
         k,
-    ))
+    );
+    layout.labels = Some(Rc::new(Labels {
+        role,
+        entries: labels,
+    }));
+    Rc::new(layout)
 }
 
 /// What the pointer or the walk is on.
@@ -443,6 +546,7 @@ impl Shingles {
     }
 
     /// Reuses the measured geometry that also positions the host's keyboard targets.
+    /// Measure this value from the same current modules and container measure.
     #[must_use]
     pub fn geometry(mut self, geometry: Rc<Layout>) -> Self {
         self.geometry = Some(geometry);
@@ -466,12 +570,12 @@ impl Shingles {
         self
     }
 
-    fn k(&self) -> f32 {
-        self.measure.scale() * (0.94 + 0.42 * self.measure.t())
-    }
-
     fn layout(&self, window: &Window) -> Rc<Layout> {
-        self.geometry.clone().unwrap_or_else(|| measured(&self.modules, &self.measure, window))
+        self.geometry
+            .as_ref()
+            .filter(|layout| layout.labels.is_some())
+            .cloned()
+            .unwrap_or_else(|| measured(&self.modules, &self.measure, window))
     }
 
     fn foot(&self, window: &Window) -> f32 {
@@ -650,47 +754,80 @@ impl Element for Shingles {
         }
 
         // Labels: always drawn, always whole (the layout gave them room).
-        let label_role = scaled(self.measure.role(LABEL), k / scale);
+        let labels = map
+            .layout
+            .labels
+            .as_ref()
+            .expect("production measured labels");
+        let label_role = labels.role;
         let mut painted: Vec<(SharedString, Bounds<Pixels>, f32)> = Vec::new();
-        for (i, module) in modules.iter().enumerate() {
+        for (i, label) in labels.entries.iter().enumerate() {
             let region = &map.layout.regions[i];
-            let (rx, ry, rw, _) = region.rect;
+            let (rx, ry, _, _) = region.rect;
             let pad = region.origin.0 - rx;
-            let label_width = (rw - 2.0 * pad).max(1.0);
             let ink: Hsla = if lit_region == Some(i) || self.open == Some(i) {
                 palette.ink0.into()
             } else {
                 palette.ink1.into()
             };
-            let natural = shape(module.name.clone(), label_role, ink, window);
-            let wrapped = wrap_label(module.name.clone(), label_role, ink, label_width, window);
             let (lx, mut ly) = (ox + rx + pad, oy + ry + pad);
-            for line in &wrapped {
-                line.paint(gpui::point(px(lx), px(ly)), px(label_role.line), TextAlign::Left, None, window, cx)
-                    .ok();
-                let line_count = 1 + line.wrap_boundaries().len();
-                #[allow(clippy::cast_precision_loss)]
-                let line_count = line_count as f32;
-                ly += line_count * label_role.line;
+            for line in &label.lines {
+                line.paint_with_text_color(
+                    gpui::point(px(lx), px(ly)),
+                    px(label_role.line),
+                    TextAlign::Left,
+                    None,
+                    ink,
+                    window,
+                    cx,
+                )
+                .ok();
+                ly += (1 + line.wrap_boundaries().len()) as f32 * label_role.line;
             }
             let label_height = (ly - (oy + ry + pad)).max(label_role.line);
             painted.push((
-                module.name.clone(),
-                Bounds::new(gpui::point(px(lx), px(oy + ry + pad)), gpui::size(px(label_width), px(label_height))),
-                natural.width(),
+                label.words.clone(),
+                Bounds::new(
+                    gpui::point(px(lx), px(oy + ry + pad)),
+                    gpui::size(px(label.room), px(label_height)),
+                ),
+                label.natural_width,
             ));
         }
         if probe::enabled(cx) {
             for (name, at, natural) in painted {
-                let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), SharedString::from(format!("region-{name}")));
-                publish(cx, &key, at, &name, label_role, natural, TextOverflow::Wrap, label_role.size * 2.0, window);
+                let key = ElementId::NamedChild(
+                    std::sync::Arc::new(self.id.clone()),
+                    SharedString::from(format!("region-{name}")),
+                );
+                publish(
+                    cx,
+                    &key,
+                    at,
+                    &name,
+                    label_role,
+                    natural,
+                    TextOverflow::Wrap,
+                    label_role.size * 2.0,
+                    window,
+                );
             }
             // Where every shingle stands, for tests that rest on one.
             for (i, module) in modules.iter().enumerate() {
                 for j in 0..module.shingles.len() {
                     if let Some((sx, sy)) = map.layout.shingle(i, j) {
-                        let key = ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), SharedString::from(format!("shingle-{i}-{j}")));
-                        probe::record_bounds(cx, &key, Bounds::new(gpui::point(px(ox + sx), px(oy + sy)), gpui::size(px(stone), px(stone))));
+                        let key = ElementId::NamedChild(
+                            std::sync::Arc::new(self.id.clone()),
+                            SharedString::from(format!("shingle-{i}-{j}")),
+                        );
+                        probe::record_bounds(
+                            cx,
+                            &key,
+                            Bounds::new(
+                                gpui::point(px(ox + sx), px(oy + sy)),
+                                gpui::size(px(stone), px(stone)),
+                            ),
+                        );
                     }
                 }
             }
@@ -1152,3 +1289,7 @@ mod tests {
         assert_eq!(foot_more(&ModuleFacts::new("e", vec![])), "nothing public");
     }
 }
+
+#[cfg(test)]
+#[path = "shingles_native_tests.rs"]
+mod native_tests;
