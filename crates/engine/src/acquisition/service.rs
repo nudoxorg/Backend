@@ -386,7 +386,7 @@ fn concurrent_page_outcome(
     };
     let result = match registry_result(owner, base, target, published, request, current_epoch) {
         Ok(result) => Arc::new(result),
-        Err(outcome) => return Some(outcome),
+        Err(outcome) => return Some(promote_bytes_outcome(outcome)),
     };
     Some(AcquisitionOutcome::Hit(result))
 }
