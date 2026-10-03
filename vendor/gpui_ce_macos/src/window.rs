@@ -735,6 +735,10 @@ impl MacWindowState {
     }
 
     fn start_display_link(&mut self) {
+        if self.closed.load(Ordering::Acquire) {
+            self.stop_display_link();
+            return;
+        }
         unsafe {
             if !self
                 .native_window
