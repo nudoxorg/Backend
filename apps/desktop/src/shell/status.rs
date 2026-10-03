@@ -445,6 +445,7 @@ mod tests {
     }
 
     fn long_notice(rig: &mut crate::shell::tests::Rig) -> String {
+        rig.cx.update(|_, cx| facet::probe::enable(cx));
         let message = "The local index could not answer this request. The connection ended before the package read completed; try again after the connection is restored. ".repeat(12);
         rig.graph.store.update(rig.cx, |store, cx| {
             let snapshot = store.snapshot();
