@@ -2432,6 +2432,75 @@ fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn graph_without_a_projection_keeps_its_current_declaration_page_and_code_actions(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    for view in [View::Page, View::Code] {
+        let gate = Arc::new(TestProjectionGate::default());
+        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        rig.cx.update(|_, cx| {
+            super::bodies::graph::install_test_fixture_with_gate(root, Some(Arc::clone(&gate)), cx);
+        });
+        rig.repaint();
+        rig.cx.run_until_parked();
+        assert!(gate.entered(), "the optional graph projection is genuinely pending");
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(view), cx));
+        rig.frame(16);
+        gate.release();
+        rig.settle();
+        assert_eq!(rig.route(), view_route("RelationLabel", view), "the current typed declaration remains navigable");
+        if view == View::Page {
+            rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
+        }
+    }
+}
+
+#[gpui::test]
+fn modal_page_overlays_do_not_offer_or_run_retained_mode_controls(cx: &mut TestAppContext) {
+    use crate::navigation::{Overlay, SettingsPage};
+
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    for overlay in [Overlay::Settings(SettingsPage::Index), Overlay::Inbox] {
+        match overlay {
+            Overlay::Settings(page) => rig.go(Intent::OpenSettings(page)),
+            Overlay::Inbox => rig.go(Intent::OpenInbox),
+            _ => unreachable!(),
+        }
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none(),
+            "the retained declaration's mode button is inactive while the modal page owns input");
+        rig.keys("cmd-.");
+        rig.keys("ctrl-4");
+        assert_eq!(rig.route(), page_route("RelationLabel"));
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
+        rig.go(Intent::DismissOverlay);
+    }
+}
+
+#[gpui::test]
+fn departing_settings_keeps_mode_input_with_the_painted_page_until_return_settles(cx: &mut TestAppContext) {
+    use crate::navigation::SettingsPage;
+
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.go(Intent::OpenSettings(SettingsPage::Index));
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::DismissOverlay, cx));
+    rig.cx.run_until_parked();
+    rig.draw();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()).is_none());
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)),
+        "clearing the snapshot overlay cannot activate the departing page early");
+    rig.cx.simulate_keystrokes("cmd-.");
+    rig.draw();
+    assert_eq!(rig.route(), page_route("RelationLabel"));
+    rig.settle();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    rig.keys("cmd-.");
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Code));
+}
+
+#[gpui::test]
 fn direct_graph_view_intents_resolve_the_native_current_selection(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     for view in [View::Page, View::Code] {

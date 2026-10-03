@@ -2122,6 +2122,19 @@ impl Reader {
             && self.places.last().is_some_and(|place| self.painted == Some(place.key))
     }
 
+    /// Page/Code/Graph controls belong to the settled, actually painted page.
+    /// A closing Settings or Inbox plate still blocks the underlay until its
+    /// replacement owns a painted frame, even after the snapshot has cleared
+    /// the modal overlay.
+    pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
+        let store = self.links.store.read(cx);
+        let snapshot = store.snapshot();
+        snapshot.overlay().is_none()
+            && snapshot.page_overlay().is_none()
+            && store.current_owner_attachment().is_some()
+            && self.native_input_for(snapshot.route(), None)
+    }
+
     pub(crate) fn current_place_key(&self) -> Option<u64> {
         self.places.last().map(|place| place.key)
     }

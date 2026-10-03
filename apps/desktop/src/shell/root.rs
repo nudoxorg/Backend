@@ -1081,6 +1081,7 @@ impl Shell {
     /// S: the focused declaration's code. On the page's own declaration it
     /// is a view switch (the entry is replaced); on another one it goes there.
     fn peel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.mode_input_allowed(cx) { return; }
         if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let own = route_symbol(snapshot.route());
@@ -1112,6 +1113,7 @@ impl Shell {
 
     /// All graph-to-declaration commands use the visible graph selection.
     fn open_graph_view(&mut self, target: OpenView, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.mode_input_allowed(cx) { return false; }
         let snapshot = self.links.snapshot(cx);
         if super::bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
             self.reader.update(cx, |reader, cx| reader.open_graph_current(target, window, cx));
@@ -1122,6 +1124,7 @@ impl Shell {
 
     /// G enters the graph, or opens the graph's current symbol page.
     fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.mode_input_allowed(cx) { return; }
         if self.reader.read(cx).graph_focused(cx) && self.open_graph_view(OpenView::Page, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let intent = match snapshot.route() {
@@ -1139,6 +1142,7 @@ impl Shell {
 
     /// ⌘.: a declaration's code ↔ its page.
     fn code_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.mode_input_allowed(cx) { return; }
         if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         if let Route::Symbol(route) = snapshot.route() {
@@ -1249,6 +1253,11 @@ impl Shell {
     fn page_input_allowed(&self, cx: &App) -> bool {
         self.background_input_allowed() && !self.ask_open && !self.shelf_over_open
             && !matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject))
+    }
+
+    pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
+        self.background_input_allowed()
+            && self.reader.read(cx).mode_input_allowed(cx)
     }
 
     fn with_background_input(&mut self, action: impl FnOnce(&mut Self)) {
@@ -1479,6 +1488,7 @@ impl Shell {
     }
 
     fn depth(&mut self, depth: RouteDepth, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.mode_input_allowed(cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route();
         match depth {

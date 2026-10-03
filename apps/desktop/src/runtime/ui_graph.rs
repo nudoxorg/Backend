@@ -84,6 +84,9 @@ pub(crate) struct GraphViewRequest {
     /// Full observation metadata retained for diagnostics.
     pub root: crate::core::VersionedRoot,
     pub authority: ProducerAuthority,
+    /// The serving owner captured with this graph visit. A later same-root
+    /// attachment cannot turn an old native view callback into a new action.
+    pub attachment: Option<OwnerAttachment>,
     pub sequence: u64,
 }
 
@@ -354,6 +357,7 @@ impl UiRootEntity {
                     route: snapshot.route().clone(),
                     root: snapshot.key(),
                     authority: snapshot.key().authority(),
+                    attachment: self.store.as_ref().and_then(|store| store.read(cx).current_owner_attachment()),
                     sequence: self.graph_view_generation,
                 });
             }

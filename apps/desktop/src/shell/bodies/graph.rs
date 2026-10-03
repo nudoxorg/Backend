@@ -9,7 +9,7 @@ use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, Versi
 use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
 use crate::runtime::indexed_world::{self, Coverage, Key as WorldKey};
-use crate::runtime::store::{Branch, StoreEvent, route_symbol};
+use crate::runtime::store::{Branch, RouteReadLease, StoreEvent, route_symbol};
 use crate::shell::region::Links;
 #[cfg(test)]
 use facet::graph::World;
@@ -205,6 +205,9 @@ impl Map {
                         && request.root.authority() == request.authority
                         && snapshot.key().authority() == request.authority
                         && snapshot.overlay().is_none()
+                        && request.attachment.as_ref().is_some_and(|attachment| {
+                            map.links.store.read(cx).admits_owner_attachment(attachment)
+                        })
                         && map.visible
                     {
                         map.open_current(request.target, window, cx);
@@ -641,6 +644,35 @@ impl Map {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let snapshot = self.links.snapshot(cx);
+        if self.graph.is_none() {
+            // A symbol page and its source are independent of the optional
+            // whole-index projection. Retain the declaration's exact typed
+            // route when the map has no selected node to override it.
+            if let Route::Symbol(route) = snapshot.route()
+                && route.view == View::Graph
+                && snapshot.overlay().is_none()
+                && self.visible
+                && self.route.as_ref() == Some(snapshot.route())
+                && let Some(symbol) = route_symbol(snapshot.route())
+            {
+                let dependency = {
+                    let store = self.links.store.read(cx);
+                    let dependency = PageKey::Symbol(symbol);
+                    let stamped = (dependency.clone(), store.stamp(&dependency));
+                    RouteReadLease::capture(store, stamped.clone()).map(|_| stamped)
+                };
+                if let Some(dependency) = dependency {
+                    if let Some(target_route) = snapshot.route().with_view(target.view()) {
+                        self.links.dispatch_read(Intent::Navigate(target_route), dependency, cx);
+                        return;
+                    }
+                }
+                self.error = Some("The current declaration is not ready to open from this graph visit.".into());
+                cx.notify();
+                return;
+            }
+        }
         let Some(node) = self
             .graph
             .as_ref()

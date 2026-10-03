@@ -105,7 +105,9 @@ impl JumpAction {
             Self::Siblings { visit, index } if visit.current(links, cx) => {
                 siblings_menu(links, targets, *index, visit.clone(), window, cx);
             }
-            Self::View { visit, view } if visit.current(links, cx) => match view {
+            Self::View { visit, view }
+                if visit.current(links, cx)
+                    && links.shell.upgrade().is_some_and(|shell| shell.read(cx).mode_input_allowed(cx)) => match view {
                 View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
                 View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
                 View::Graph => {
@@ -245,6 +247,8 @@ impl Render for Titlebar {
         // only the active view named. Below 760 it gives way to the bar.
         if let Some(active) = view_of(snapshot.route())
             && bar.mode == Bar::Full
+            && snapshot.overlay().is_none()
+            && snapshot.page_overlay().is_none()
         {
             let fade = if bar.from.is_some_and(|from| from < Bar::Full) { arriving } else { 1.0 };
             left = left.child(div().opacity(fade).child(self.view_switch(active, &measure, palette, keys, cx)));
