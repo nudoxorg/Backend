@@ -144,6 +144,10 @@ pub use backend_execution::{
 };
 pub use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 pub use backend_frontend_rust::legacy::RustCargoMetadataPolicy;
+/// Default Rust Cargo metadata policy shared by locald, scope inspection, and compiler workers.
+pub const DEFAULT_RUST_CARGO_METADATA_POLICY: RustCargoMetadataPolicy =
+    RustCargoMetadataPolicy::Online;
+
 pub use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };

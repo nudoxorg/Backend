@@ -15,7 +15,8 @@ use crate::cluster_runtime::{
     inspect_pending_results, reap_orphaned_workspace_snapshots,
 };
 use backend_engine::application::{
-    LocalCompilerCapability, LocalCompilerCapabilityState, LocalCompilerClient, LocalCompilerHost,
+    DEFAULT_RUST_CARGO_METADATA_POLICY, LocalCompilerCapability, LocalCompilerCapabilityState,
+    LocalCompilerClient, LocalCompilerHost, RustCargoMetadataPolicy,
 };
 use backend_engine::cluster_transport::{
     AssignmentScope, ClusterExecutionClass, ClusterInviteError, EndpointAddr, EndpointId,
@@ -435,13 +436,13 @@ pub fn run_cluster_cli(args: &[String]) -> Result<(), ClusterConfigError> {
             );
             println!("       backend-worker cluster identity show --config ABSOLUTE_PATH");
             println!(
-                "       backend-worker cluster trust import --config ABSOLUTE_PATH --data-dir ABSOLUTE_PATH --invite TOKEN --fingerprint HEX"
+                "       backend-worker cluster trust import --config ABSOLUTE_PATH --data-dir ABSOLUTE_PATH --invite TOKEN --fingerprint HEX [--cargo-metadata-policy online|offline]"
             );
             println!(
                 "       backend-worker cluster trust revoke --config ABSOLUTE_PATH --coordinator ENDPOINT_ID"
             );
             println!(
-                "       backend-worker cluster run --config ABSOLUTE_PATH --data-dir ABSOLUTE_PATH"
+                "       backend-worker cluster run --config ABSOLUTE_PATH --data-dir ABSOLUTE_PATH [--cargo-metadata-policy online|offline]"
             );
             println!(
                 "       backend-worker cluster embedding install --data-dir ABSOLUTE_PATH --program ABSOLUTE_PATH --model-file ABSOLUTE_PATH --tokenizer-file ABSOLUTE_PATH --dimension N --normalization none|l2 --options-digest HEX [--requirement optional|required] [--arg ARG] [--dependency ABSOLUTE_PATH] [--env KEY=VALUE]"
@@ -511,9 +512,16 @@ pub fn run_cluster_cli(args: &[String]) -> Result<(), ClusterConfigError> {
         }
         "trust" if args.get(1).is_some_and(|arg| arg == "import") => {
             let options = CliOptions::parse(&args[2..])?;
-            options.check_keys(&["--config", "--data-dir", "--invite", "--fingerprint"])?;
+            options.check_keys(&[
+                "--config",
+                "--data-dir",
+                "--invite",
+                "--fingerprint",
+                "--cargo-metadata-policy",
+            ])?;
             let path = options.path("--config")?;
             let data_dir = options.path("--data-dir")?;
+            let cargo_metadata_policy = cargo_metadata_policy(&options)?;
             ensure_private_data_directory(data_dir)?;
             let mut config = PersistedClusterConfig::load(path)?;
             let invite = ScopedClusterInvite::decode_token(options.value("--invite")?)?;
@@ -525,6 +533,7 @@ pub fn run_cluster_cli(args: &[String]) -> Result<(), ClusterConfigError> {
             let coordinator = invite.coordinator();
             let recipe = invite.recipe();
             let compiler = LocalCompilerHost::production_at(data_dir.join("compiler-runtime"))
+                .with_rust_cargo_metadata_policy(cargo_metadata_policy)
                 .open()
                 .map_err(runtime_error)?;
             let capability = local_compiler_capability_for_profile(&compiler, invite.profile())?;
@@ -532,6 +541,7 @@ pub fn run_cluster_cli(args: &[String]) -> Result<(), ClusterConfigError> {
             config.save_atomic(path)?;
             println!("scoped coordinator {coordinator} invite imported and persisted");
             println!("recipe: {}", hex(&recipe));
+            println!("Rust Cargo metadata policy: {cargo_metadata_policy:?}");
             println!("execution class: {class:?}");
             if class == WorkerExecutionClass::TrustedCoordinatorHostExecution {
                 println!(
@@ -605,15 +615,16 @@ pub fn run_cluster_cli(args: &[String]) -> Result<(), ClusterConfigError> {
         }
         "run" => {
             let options = CliOptions::parse(&args[1..])?;
-            options.check_keys(&["--config", "--data-dir"])?;
+            options.check_keys(&["--config", "--data-dir", "--cargo-metadata-policy"])?;
             let config = PersistedClusterConfig::load(options.path("--config")?)?;
             let data_dir = options.path("--data-dir")?.to_path_buf();
+            let cargo_metadata_policy = cargo_metadata_policy(&options)?;
             ensure_private_data_directory(&data_dir)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .map_err(|error| ClusterConfigError::Runtime(error.to_string()))?;
-            runtime.block_on(run_cluster_worker(config, data_dir))
+            runtime.block_on(run_cluster_worker(config, data_dir, cargo_metadata_policy))
         }
         "pending" => {
             let options = CliOptions::parse(&args[1..])?;
@@ -844,9 +855,23 @@ fn parse_u64(value: &str) -> Result<u64, ClusterConfigError> {
     value.parse().map_err(|_| ClusterConfigError::Invalid)
 }
 
+fn cargo_metadata_policy(
+    options: &CliOptions<'_>,
+) -> Result<RustCargoMetadataPolicy, ClusterConfigError> {
+    let Some(value) = options.optional_value("--cargo-metadata-policy") else {
+        return Ok(DEFAULT_RUST_CARGO_METADATA_POLICY);
+    };
+    match value {
+        "online" => Ok(RustCargoMetadataPolicy::Online),
+        "offline" => Ok(RustCargoMetadataPolicy::Offline),
+        _ => Err(ClusterConfigError::Invalid),
+    }
+}
+
 async fn run_cluster_worker(
     config: PersistedClusterConfig,
     data_dir: PathBuf,
+    cargo_metadata_policy: RustCargoMetadataPolicy,
 ) -> Result<(), ClusterConfigError> {
     let store = open_result_store(&data_dir, &config)?;
     let input_store = FileStore::open(data_dir.join("input-cas"), store_pack_limit(&config)?)
@@ -885,6 +910,7 @@ async fn run_cluster_worker(
     println!(
         "execution: exact persisted host-trusted grants only; workspace snapshot is not an OS sandbox"
     );
+    println!("Rust Cargo metadata policy: {cargo_metadata_policy:?}");
 
     // Reconcile ACK-governed durable results before opening the compiler runtime. A retained
     // closure must remain replayable even when this host no longer has the compiler toolchain.
@@ -941,7 +967,8 @@ async fn run_cluster_worker(
             );
         }
     }
-    let compiler_host = LocalCompilerHost::production_at(data_dir.join("compiler-runtime"));
+    let compiler_host = LocalCompilerHost::production_at(data_dir.join("compiler-runtime"))
+        .with_rust_cargo_metadata_policy(cargo_metadata_policy);
     let compiler =
         match embedding.provisioning_failure() {
             Some(cause) => compiler_host
@@ -1617,6 +1644,26 @@ mod tests {
         backend_platform::win32::security::restrict_to_current_user(&dir)
             .expect("restrict temporary config directory");
         dir
+    }
+
+    #[test]
+    fn worker_cargo_metadata_policy_defaults_online_and_accepts_explicit_offline() {
+        let default_options = CliOptions::parse(&[]).expect("empty policy options");
+        assert_eq!(
+            cargo_metadata_policy(&default_options).expect("shared online default"),
+            RustCargoMetadataPolicy::Online
+        );
+
+        let offline_args = ["--cargo-metadata-policy".to_owned(), "offline".to_owned()];
+        let offline_options = CliOptions::parse(&offline_args).expect("offline policy options");
+        assert_eq!(
+            cargo_metadata_policy(&offline_options).expect("offline policy"),
+            RustCargoMetadataPolicy::Offline
+        );
+
+        let invalid_args = ["--cargo-metadata-policy".to_owned(), "sometimes".to_owned()];
+        let invalid_options = CliOptions::parse(&invalid_args).expect("invalid policy options");
+        assert!(cargo_metadata_policy(&invalid_options).is_err());
     }
 
     #[test]

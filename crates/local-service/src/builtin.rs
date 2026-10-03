@@ -1384,7 +1384,7 @@ pub(crate) fn compose_owner(
     .map_err(|error| ProcessError::Profile(format!("open compiler embedding runtime: {error}")))?;
     let cargo_metadata_policy = match config.registry.policy {
         backend_engine::registry::AcquisitionPolicy::Online => {
-            backend_frontend_rust::legacy::RustCargoMetadataPolicy::Online
+            backend_engine::application::DEFAULT_RUST_CARGO_METADATA_POLICY
         }
         backend_engine::registry::AcquisitionPolicy::Offline => {
             backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline

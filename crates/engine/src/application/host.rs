@@ -29,9 +29,9 @@ use backend_store::journal::PublicationLimits;
 use paths::create_directory;
 
 use crate::application::{
-    EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerCapabilities,
-    LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
-    LocalCompilerScratch, LocalCompilerTimeout, ToolchainProbeLimits,
+    DEFAULT_RUST_CARGO_METADATA_POLICY, EmbeddingProvisioningFailure, EmbeddingRequirement,
+    LocalCompilerCapabilities, LocalCompilerClient, LocalCompilerRuntimeConfiguration,
+    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout, ToolchainProbeLimits,
 };
 
 pub use error::LocalCompilerHostError;
@@ -176,7 +176,7 @@ impl<Environment> LocalCompilerHost<Environment> {
         Self {
             environment,
             discovery,
-            rust_cargo_metadata_policy: RustCargoMetadataPolicy::Offline,
+            rust_cargo_metadata_policy: DEFAULT_RUST_CARGO_METADATA_POLICY,
             embedding_cache_directory: None,
         }
     }
@@ -580,6 +580,10 @@ mod tests {
         let host = LocalCompilerHost::new(
             InspectionEnvironment(data_root.clone()),
             LocalHostDiscovery::ExplicitOnly,
+        );
+        assert_eq!(
+            host.rust_cargo_metadata_policy,
+            DEFAULT_RUST_CARGO_METADATA_POLICY
         );
         let capabilities = host
             .inspect_capabilities()

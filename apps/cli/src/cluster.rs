@@ -3,8 +3,9 @@
 use crate::options::{Format, Options};
 use backend_client::{LocalSemanticIndexClient, RemoteIndexCommandTransport, Session};
 use backend_engine::application::{
-    CompilerPackageTargetV2, GoPackageAuthorityWitness, LocalCompilerCapabilityState,
-    LocalCompilerExecutionIdentity, LocalCompilerHost, RustCargoMetadataPolicy,
+    CompilerPackageTargetV2, DEFAULT_RUST_CARGO_METADATA_POLICY, GoPackageAuthorityWitness,
+    LocalCompilerCapabilityState, LocalCompilerExecutionIdentity, LocalCompilerHost,
+    RustCargoMetadataPolicy,
 };
 use backend_engine::cluster_transport::{
     ClusterExecutionClass, EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims,
@@ -113,7 +114,7 @@ pub(super) const fn help_text() -> &'static str {
      Inviting a worker atomically records its exact peer and execution grant in compiler-worker-trust.v1 and prints the one-time import token.\n\
      Use --workspace PATH to select an isolated private data root; by default each project has a separate root under per-user app data.\n\
      `cluster scope show` reports the exact namespace and admitted lower-ir compiler identity for a package/profile. A pinned package URL is its default compiler coordinate; local package labels use locald's package-coordinate resolver unless --coordinate is supplied. For Go, `--package-root` inspects module/workspace manifests and local filesystem directives; packages that depend on local workspace, replace, or use targets remain local-only until those inputs are in the transferable closure. Without a root, package eligibility requires project inspection. Go cgo package graphs are unsupported by the current closed oracle policy.\n\
-     Scope inspection creates no runtime directories and starts no compiler owner; it performs bounded version/authority probes. Rust metadata policy defaults to offline; select online when locald uses its default online registry policy, or offline when locald was started with --registry-offline. Its identity matches locald when both admit the same compiler and authority configuration for the same target platform.\n\
+     Scope inspection creates no runtime directories and starts no compiler owner; it performs bounded version/authority probes. Rust metadata policy defaults to online, matching locald and workers; select offline when locald was started with --registry-offline. The policy is reported because it changes the portable recipe, though scope inspection does not run Cargo metadata or fetch registry data. The identity matches locald and worker when all three use the same policy and admit the same compiler and authority configuration for the same target platform.\n\
      The authenticated peer identity and every execution-scope field must match exactly."
 }
 
@@ -230,7 +231,7 @@ fn scope_cargo_metadata_policy(
     profile: LanguageProfile,
 ) -> Result<RustCargoMetadataPolicy, Fault> {
     let Some(value) = value else {
-        return Ok(RustCargoMetadataPolicy::Offline);
+        return Ok(DEFAULT_RUST_CARGO_METADATA_POLICY);
     };
     if profile.language() != backend_semantic::vocabulary::Language::Rust {
         return Err(usage(
@@ -416,8 +417,8 @@ mod scope_policy_tests {
     fn scope_policy_parser_exposes_rust_owner_acquisition_mode_explicitly() {
         let rust = LanguageProfile::Rust(RustEdition::Rust2024);
         assert_eq!(
-            scope_cargo_metadata_policy(None, rust).expect("compatibility default"),
-            RustCargoMetadataPolicy::Offline
+            scope_cargo_metadata_policy(None, rust).expect("shared online default"),
+            RustCargoMetadataPolicy::Online
         );
         assert_eq!(
             scope_cargo_metadata_policy(Some("online"), rust).expect("online policy"),

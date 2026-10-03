@@ -565,16 +565,16 @@ scope command performs bounded probes without starting locald or creating
 runtime state. Source it with the same toolchain environment file that the
 service manager will load:
 
-Rust scope inspection defaults to Cargo metadata `offline` mode. That policy
-is part of the compiler recipe, so it must match the owner runtime: locald
-uses online metadata acquisition by default and switches to offline only when
-it is started with `--registry-offline`. Pass
-`--cargo-metadata-policy online` here for the default locald configuration,
-or `--cargo-metadata-policy offline` when that flag is active. Online
-inspection may fetch missing registry index or resolution data through the
-configured Cargo home. The JSON report includes `cargo_metadata_policy`
-alongside the recipe to make the selection auditable. A policy mismatch
-changes the recipe; do not loosen an existing exact grant to compensate.
+Rust scope inspection defaults to Cargo metadata `online` mode, matching the
+locald and worker default. The policy is part of the compiler recipe. Select
+`--cargo-metadata-policy offline` when locald is started with
+`--registry-offline`; use that same option for worker invite import and worker
+startup. `scope show` itself only performs bounded executable/version and
+authority probes: it does not run Cargo metadata or fetch registry data. The
+JSON report includes `cargo_metadata_policy` alongside the recipe to make the
+selected identity auditable. Actual Rust compilation applies that policy when
+resolving Cargo metadata. A policy mismatch changes the recipe; do not loosen
+an existing exact grant to compensate.
 
 ```sh
 set -a
@@ -721,7 +721,8 @@ INVITE_FINGERPRINT=$(sed -n '2p' "$INVITE_FILE")
 /opt/nudox/current/bin/backend-worker cluster trust import \
   --config /etc/nudox-worker/cluster.bin \
   --data-dir /var/lib/nudox-worker \
-  --invite "$INVITE_TOKEN" --fingerprint "$INVITE_FINGERPRINT"
+  --invite "$INVITE_TOKEN" --fingerprint "$INVITE_FINGERPRINT" \
+  --cargo-metadata-policy online
 unset INVITE_TOKEN INVITE_FINGERPRINT
 rm -f "$INVITE_FILE"
 ```
@@ -817,7 +818,7 @@ User=nudox-worker
 Group=nudox-worker
 UMask=0077
 EnvironmentFile=/etc/nudox-worker/compiler.env
-ExecStart=/opt/nudox/current/bin/backend-worker cluster run --config /etc/nudox-worker/cluster.bin --data-dir /var/lib/nudox-worker
+ExecStart=/opt/nudox/current/bin/backend-worker cluster run --config /etc/nudox-worker/cluster.bin --data-dir /var/lib/nudox-worker --cargo-metadata-policy online
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=30
@@ -867,7 +868,7 @@ set -eu
 set -a
 . /etc/nudox-worker/compiler.env
 set +a
-exec /opt/nudox/current/bin/backend-worker cluster run --config /etc/nudox-worker/cluster.bin --data-dir /var/db/nudox-worker
+exec /opt/nudox/current/bin/backend-worker cluster run --config /etc/nudox-worker/cluster.bin --data-dir /var/db/nudox-worker --cargo-metadata-policy online
 EOF
 sudo chown root:wheel /usr/local/libexec/nudox-worker
 sudo chmod 0755 /usr/local/libexec/nudox-worker
