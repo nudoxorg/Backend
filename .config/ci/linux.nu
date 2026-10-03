@@ -95,6 +95,28 @@ def warm-registry-cache []: nothing -> nothing {
         | save ($scratch | path join "Cargo.toml")
     run-external "cargo" "fetch" "--manifest-path" ($scratch | path join "Cargo.toml")
     rm --recursive --force $scratch
+    # The owner indexes each release as its own root under an offline
+    # policy, which resolves that release's whole graph, dev-dependencies
+    # included ("Full Cargo dependency and feature resolution is incomplete
+    # under the offline policy"). Fetch each one's graph from a copy, so the
+    # registry sources themselves are never written to.
+    let releases = (
+        ["frontends/rust/fixtures/toml_pin/Cargo.lock" "apps/desktop/tests/fixtures/browse_tree/Cargo.lock"]
+        | each {|lock| open --raw $lock | from toml | get package | where {|package| ($package.source? | default "") starts-with "registry+" } | each {|package| $"($package.name)-($package.version)" } }
+        | flatten
+        | append ["toml-0.5.11" "anyhow-1.0.104"]
+        | uniq
+    )
+    let cargo_home = ($env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo"))
+    for release in $releases {
+        let matches = (glob ($cargo_home | path join "registry" "src" "*" $release))
+        let unpacked = if ($matches | is-empty) { null } else { $matches | first }
+        if $unpacked == null { continue }
+        let copy = (mktemp --directory)
+        cp --recursive ($unpacked | path join "*" | into glob) $copy
+        try { run-external "cargo" "fetch" "--manifest-path" ($copy | path join "Cargo.toml") } catch { print $"cache warm-up: could not fetch ($release)'s graph" }
+        rm --recursive --force $copy
+    }
 }
 
 # Runs one named step, streaming its output, and returns whether it passed.
