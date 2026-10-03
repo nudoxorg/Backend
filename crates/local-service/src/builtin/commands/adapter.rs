@@ -3542,12 +3542,31 @@ fn map_semantic_authority_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ADD_TARGET_REQUIRED, AddTarget, admitted_project_source_root, classify_add_target,
+        ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, IndexJob, IndexJobWork,
+        MAX_WAITING_COMMANDS, ProductDaemon, admitted_project_source_root, classify_add_target,
     };
-    use crate::builtin::BuiltinIntent;
+    use crate::builtin::{
+        BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinProfile,
+        BuiltinSemanticRelation, BuiltinValidator, BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET,
+        SemanticDeployment, builtin_dispatcher, forge_gateway::ForgeGateway, genesis,
+        profile_descriptor, publish_builtin_view,
+    };
+    use crate::process::{ForgeAuthentication, ForgeConfig};
+    use backend_engine::application::{
+        LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
+        LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
+        LocalRuntimeToolchain,
+    };
+    use backend_library::CompileExecutionIntent;
+    use backend_semantic::vocabulary::NativeTool;
     use std::fs;
+    use std::num::NonZeroUsize;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::{Command, WireCertificate, WireClaim};
 
     struct TempTree(PathBuf);
 
@@ -3569,6 +3588,237 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    struct AdapterFixture {
+        root: TempTree,
+        daemon: Option<ProductDaemon>,
+        adapter: Option<CommandAdapter>,
+        package: backend_engine::PackageKey,
+        label: String,
+    }
+
+    impl AdapterFixture {
+        fn new() -> Self {
+            let root = TempTree::new();
+            let workspace = root.0.join("workspace");
+            fs::create_dir_all(&workspace).expect("workspace directory");
+            let project = workspace.join("project");
+            fs::create_dir_all(&project).expect("project directory");
+            let label = project.to_str().expect("UTF-8 fixture path").to_owned();
+            let package = backend_engine::package_key(&label);
+
+            let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
+            let dispatcher =
+                builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
+                    .expect("test dispatcher");
+            let registry = backend_engine::RelationAdmissionRegistry::new()
+                .with_relation::<BuiltinWorkspaceRelation>()
+                .expect("workspace relation registry")
+                .with_relation::<BuiltinSemanticRelation>()
+                .expect("semantic relation registry");
+            let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+                &workspace,
+                BuiltinModel,
+                genesis().expect("product genesis"),
+                dispatcher,
+                backend_engine::DaemonConfig::default(),
+                registry,
+            )
+            .expect("open product daemon");
+            let intent = BuiltinIntent::add(package, label.clone()).expect("seed project intent");
+            super::commit_builtin_intent(&mut daemon, 1, &intent).expect("commit seed project");
+
+            let compiler_root = workspace.join("compiler-fixture");
+            let paths = LocalCompilerRuntimePaths::new(
+                compiler_root.join("artifacts"),
+                compiler_root.join("journal"),
+                compiler_root.join("native-work"),
+            )
+            .expect("absolute compiler fixture paths");
+            let compiler_configuration = LocalCompilerRuntimeConfiguration::new(
+                paths,
+                vec![LocalRuntimeToolchain::unavailable(NativeTool::Python)].into_boxed_slice(),
+                Box::new([]),
+                LocalRuntimePackageAuthority::default(),
+                LocalCompilerTimeout::new(Duration::from_secs(2)).expect("bounded timeout"),
+                backend_store::journal::PublicationLimits::new(
+                    NonZeroUsize::MIN,
+                    NonZeroUsize::MIN,
+                )
+                .expect("bounded publication limits"),
+                LocalCompilerScratch::with_fragment_capacity(
+                    NonZeroUsize::new(1024 * 1024).expect("nonzero scratch capacity"),
+                )
+                .expect("bounded compiler scratch"),
+            )
+            .expect("canonical compiler runtime configuration");
+            let compiler = LocalCompilerClient::start(compiler_configuration)
+                .expect("start unavailable-toolchain compiler owner");
+
+            let mut authority =
+                super::super::super::semantic_authority::SemanticAuthority::open(&workspace)
+                    .expect("open semantic authority");
+            let mut image_rows = super::super::super::view_build::ImageRowResidence::default();
+            let mut generations = super::super::super::SemanticGenerationResidence::default();
+            authority.install_image_loader(&mut generations);
+            let remote = super::super::super::query::RemoteSemantic::Unconfigured;
+            let publication = publish_builtin_view(
+                &mut daemon,
+                &compiler,
+                SemanticDeployment::from_remote(&remote),
+                &workspace,
+                None,
+                Some(&intent),
+                &mut image_rows,
+                &mut generations,
+            )
+            .expect("publish seeded product view");
+            let projection_path = workspace.join(backend_extension_turso::FILE_NAME);
+            let mut sql_projection = futures_executor::block_on(
+                backend_extension_turso::TursoProjection::open_or_rebuild(&projection_path),
+            )
+            .expect("open projection");
+            futures_executor::block_on(
+                sql_projection.synchronize(daemon.engine().daemon().library().view()),
+            )
+            .expect("synchronize projection");
+            authority
+                .mark_projections_current()
+                .expect("mark semantic projections current");
+            let product_state =
+                super::super::super::ProductState::open(workspace.join("product-state.json"))
+                    .expect("open product state");
+            let forge = ForgeGateway::open(
+                workspace.join("forge"),
+                ForgeConfig {
+                    policy: backend_engine::ForgeAcquisitionPolicy::Offline,
+                    limits: backend_engine::ForgeAcquisitionLimits::default(),
+                    authentication: ForgeAuthentication::default(),
+                },
+            )
+            .expect("open offline forge gateway");
+            let adapter = CommandAdapter::new(
+                sql_projection,
+                None,
+                forge,
+                None,
+                product_state,
+                compiler,
+                super::super::super::query::SearchSnapshotOwner::default(),
+                remote,
+                Some(publication.roots),
+                image_rows,
+                generations,
+                authority,
+                None,
+                None,
+            )
+            .expect("build command adapter");
+
+            Self {
+                root,
+                daemon: Some(daemon),
+                adapter: Some(adapter),
+                package,
+                label,
+            }
+        }
+
+        fn parts(&mut self) -> (&mut CommandAdapter, &mut ProductDaemon) {
+            let adapter = self.adapter.as_mut().expect("adapter is present");
+            let daemon = self.daemon.as_mut().expect("daemon is present");
+            (adapter, daemon)
+        }
+
+        fn add_target(&self) -> (backend_engine::PackageKey, String) {
+            let path = self.root.0.join("workspace").join("add-target");
+            fs::create_dir_all(&path).expect("empty Add target directory");
+            let label = path.to_str().expect("UTF-8 fixture path").to_owned();
+            (backend_engine::package_key(&label), label)
+        }
+    }
+
+    impl Drop for AdapterFixture {
+        fn drop(&mut self) {
+            if let Some(mut adapter) = self.adapter.take() {
+                adapter.close();
+                drop(adapter);
+            }
+            if let Some(mut daemon) = self.daemon.take() {
+                daemon.close();
+            }
+            let _ = fs::remove_dir_all(&self.root.0);
+        }
+    }
+
+    fn install_transition_job(adapter: &mut CommandAdapter) -> Arc<AtomicBool> {
+        let package = backend_library::PackageReference::parse("pkg:cargo/fixture@1.0.0")
+            .expect("fixture package reference");
+        let owner_ticket = adapter.issue_index_ticket(package).expect("owner ticket");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        adapter.indexing = Some(IndexJob {
+            owner_ticket,
+            operation_key: None,
+            legacy_add: None,
+            awaiters: Vec::new(),
+            cancelled: Arc::clone(&cancelled),
+            progress_sequence: 0,
+            progress_stage: None,
+            request_id: 0,
+            requested_package: backend_engine::package_key("pkg:cargo/fixture@1.0.0"),
+            execution_intent: CompileExecutionIntent::Interactive,
+            _staged_project: None,
+            work: IndexJobWork::Transition,
+        });
+        cancelled
+    }
+
+    fn remove_body(request_id: u64, package: backend_engine::PackageKey, label: &str) -> Vec<u8> {
+        let certificate = WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Package,
+            id: backend_engine::encode_id(package.as_bytes()),
+            value: label.to_owned(),
+        });
+        serde_json::to_vec(
+            &backend_engine::CommandDto::new(request_id, Command::Remove { package })
+                .with_certificate(certificate),
+        )
+        .expect("encode certified remove command")
+    }
+
+    fn add_body(request_id: u64, package: backend_engine::PackageKey, label: &str) -> Vec<u8> {
+        let certificate = WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Package,
+            id: backend_engine::encode_id(package.as_bytes()),
+            value: label.to_owned(),
+        });
+        serde_json::to_vec(
+            &backend_engine::CommandDto::new(
+                request_id,
+                Command::Add {
+                    package,
+                    execution_intent: CompileExecutionIntent::Interactive,
+                },
+            )
+            .with_certificate(certificate),
+        )
+        .expect("encode certified add command")
+    }
+
+    fn project_is_admitted(daemon: &ProductDaemon, package: backend_engine::PackageKey) -> bool {
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot
+            .relation::<BuiltinWorkspaceRelation>()
+            .expect("workspace relation");
+        relation
+            .lookup(&package.to_bytes())
+            .expect("project relation lookup")
+            .is_some()
+    }
+
+    fn owner_cursor(daemon: &ProductDaemon) -> backend_library::Cursor {
+        daemon.engine().daemon().library().cursor()
     }
 
     fn label(path: &std::path::Path) -> String {
@@ -3643,6 +3893,116 @@ mod tests {
             classify_add_target("PKG:cargo/serde@1.0.0"),
             Ok(AddTarget::PackageUrl)
         ));
+    }
+
+    #[test]
+    fn abandoned_queued_remove_runs_once_through_the_command_adapter() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        let cancelled = install_transition_job(adapter);
+        let before = owner_cursor(daemon);
+        assert!(project_is_admitted(daemon, package));
+
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(501, package, &label), 9001),
+            Ok(Executed::Deferred)
+        ));
+        adapter.abandon_reply(9001);
+        assert!(adapter.abandoned_replies.contains(&9001));
+        assert!(!cancelled.load(Ordering::Acquire));
+
+        let replies = adapter.poll_deferred(daemon);
+        assert!(replies.iter().all(|(ticket, _)| *ticket != 9001));
+        assert!(!adapter.abandoned_replies.contains(&9001));
+        assert!(adapter.waiting.is_empty());
+        assert!(adapter.indexing.is_none());
+        assert!(!project_is_admitted(daemon, package));
+        let after = owner_cursor(daemon);
+        assert_ne!(after, before, "the admitted remove must commit");
+
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(owner_cursor(daemon), after, "the queued command runs once");
+        assert!(!project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn abandoning_legacy_add_reply_does_not_cancel_accepted_scan() {
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let before = owner_cursor(daemon);
+        assert!(!project_is_admitted(daemon, package));
+
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &add_body(502, package, &label), 9002),
+            Ok(Executed::Deferred)
+        ));
+        let indexing = adapter.indexing.as_ref().expect("Add scan accepted");
+        assert_eq!(indexing.legacy_add, Some((9002, 502)));
+        let cancelled = Arc::clone(&indexing.cancelled);
+        adapter.abandon_reply(9002);
+        let indexing = adapter
+            .indexing
+            .as_ref()
+            .expect("accepted scan remains active");
+        assert!(indexing.legacy_add.is_none(), "only the reply is detached");
+        assert!(
+            !cancelled.load(Ordering::Acquire),
+            "Add work is not cancelled"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut replies = Vec::new();
+        while adapter.indexing.is_some() {
+            replies.extend(adapter.poll_deferred(daemon));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "accepted Add scan did not reach a terminal state"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(replies.iter().all(|(ticket, _)| *ticket != 9002));
+        assert!(!cancelled.load(Ordering::Acquire));
+        assert!(project_is_admitted(daemon, package));
+        let after = owner_cursor(daemon);
+        assert_ne!(after, before, "the accepted Add publishes its project");
+
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(owner_cursor(daemon), after);
+        assert!(project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn saturated_mutation_queue_refuses_before_admission() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        let cancelled = install_transition_job(adapter);
+        let before = owner_cursor(daemon);
+
+        for offset in 0..MAX_WAITING_COMMANDS {
+            let request_id = 600 + u64::try_from(offset).expect("bounded request index");
+            assert!(matches!(
+                adapter.execute_or_defer(
+                    daemon,
+                    &remove_body(request_id, package, &label),
+                    10_000 + request_id,
+                ),
+                Ok(Executed::Deferred)
+            ));
+        }
+        assert_eq!(adapter.waiting.len(), MAX_WAITING_COMMANDS);
+        let refused = adapter
+            .execute_or_defer(daemon, &remove_body(700, package, &label), 20_000)
+            .expect_err("the full mutation queue refuses the next command");
+        assert!(refused.0.contains("mutation queue is full"));
+        assert_eq!(adapter.waiting.len(), MAX_WAITING_COMMANDS);
+        assert_eq!(owner_cursor(daemon), before, "refusal precedes admission");
+        assert!(project_is_admitted(daemon, package));
+        assert!(!cancelled.load(Ordering::Acquire));
     }
 
     #[test]

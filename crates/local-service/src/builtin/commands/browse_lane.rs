@@ -648,6 +648,7 @@ mod tests {
     use super::*;
     use backend_library::ProductText;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     fn tree(path: &str) -> SurfaceCommand {
@@ -841,6 +842,51 @@ mod tests {
         let (_, _, _, _, terminal) = wait_for(&mut lane, 2, Duration::from_secs(1));
         assert!(matches!(terminal, Terminal::Reply(_, _)));
         lane.close();
+    }
+
+    #[test]
+    fn abandoning_queued_reply_drops_its_payload_permit_after_unlocking() {
+        let mut lane = BrowseLane::start().expect("browse lane");
+        {
+            let mut queue = lane
+                .completions
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            queue.payload_reserved[0] = true;
+            queue.ready.push_back(Completion {
+                ticket: 77,
+                request_id: 700,
+                owner_cursor: backend_engine::Cursor::new(),
+                advisory: AdvisorySelection::NotTree,
+                terminal: Terminal::Reply(
+                    CommandReply::Failed(CommandFailure::InvalidQuery("ready".to_owned())),
+                    PayloadPermit {
+                        completions: Arc::clone(&lane.completions),
+                        shard: 0,
+                    },
+                ),
+            });
+        }
+
+        let (released_tx, released_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            lane.abandon_reply(77);
+            let released = !lane
+                .completions
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .payload_reserved[0];
+            let _ = released_tx.send(released);
+            lane.close();
+        });
+        assert_eq!(
+            released_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(true),
+            "abandon must not drop a permit while holding its queue lock"
+        );
+        worker.join().expect("abandon worker exits");
     }
 
     #[test]
