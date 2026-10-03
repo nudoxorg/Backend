@@ -10,7 +10,7 @@ pub(super) use cargo::body as cargo_body;
 use paging::{MAX_SOURCE_BYTES, MAX_SOURCE_LINE_BYTES, MAX_SOURCE_LINES, previous_cursor};
 use paging::{PagingState, SourceCursor, SourcePage, initial_cursor, verified_link};
 
-use super::state::{Shown, not_ready, shown};
+use super::state::{DisplayEvidence, display_evidence, earlier_notice, not_ready};
 use super::{Ctx, Leaf};
 #[cfg(test)]
 use crate::model::pages::ByteSpan;
@@ -159,12 +159,44 @@ pub(super) fn body(
         Err(unread) => return ctx.unread(&unread),
     };
     let resource = store.source(&symbol);
-    let view = match shown(&resource) {
-        Shown::Ready(view) => view.clone(),
-        other => {
-            let name = symbol.identity().name().to_owned();
-            return not_ready(&other, &PageKey::Source(symbol), &name, ctx, cx);
+    let live = ctx.links.store.read(cx);
+    let root = live.snapshot().key();
+    let serving = live.owner_serving();
+    let symbol_resource = live.symbol(&symbol);
+    let symbol_current = matches!(
+        crate::core::admit_resource(&symbol_resource, root, serving),
+        crate::core::ResourceAdmission::Current(page)
+            if page.identity.coordinate.as_str() == symbol.as_str()
+    );
+    let semantic_notice = match symbol_resource.terminal() {
+        crate::core::ResourceTerminal::Fault(error) => format!(
+            "The source is current, but the declaration reading failed: {}. Semantic links and source controls are disabled.",
+            error.message(),
+        ),
+        crate::core::ResourceTerminal::Unavailable(_) =>
+            "The source is current, but this declaration is not served by the current producer. Semantic links and source controls are disabled.".to_owned(),
+        crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Partial =>
+            "The source is current, but this declaration's semantic reading is still pending. Semantic links and source controls are disabled.".to_owned(),
+    };
+    drop(live);
+    let evidence = display_evidence(&resource, root, serving, |view| {
+        view.symbol.coordinate.as_str() == symbol.as_str()
+    });
+    let view = match &evidence {
+        DisplayEvidence::Current(view) if symbol_current => (**view).clone(),
+        DisplayEvidence::Current(view) => {
+            return read_only_source(view, &semantic_notice, route, ctx);
         }
+        DisplayEvidence::Earlier { value, .. } => {
+            return read_only_source(value, &earlier_notice(&evidence).unwrap_or_default(), route, ctx);
+        }
+        DisplayEvidence::Missing(other) => {
+            let name = symbol.identity().name().to_owned();
+            return not_ready(other, &PageKey::Source(symbol), &name, ctx, cx);
+        }
+        DisplayEvidence::WrongIdentity => return vec![Leaf::new(quiet(
+            "The saved source belongs to another exact declaration or release.", &ctx.measure, ctx.palette,
+        ))],
     };
     let measure = ctx.measure;
     let palette = ctx.palette;
@@ -220,6 +252,34 @@ pub(super) fn body(
                 leaves.push(Leaf::new(quiet(words, &measure, palette)));
             }
         }
+    }
+    leaves
+}
+
+fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+    let mut leaves = Vec::new();
+    let status = ctx.say(notice.to_owned());
+    leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
+    let heading = ctx.say(view.symbol.coordinate.as_str().to_owned());
+    leaves.push(Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).child(heading)));
+    match view.text.known() {
+        Some(source) => {
+            let line = route.line.filter(|line| source.line_range().is_some_and(|range| (range.first..=range.last).contains(line)))
+                .unwrap_or(source.first_line());
+            let cursor = initial_cursor(source, line, CONTEXT_BEFORE);
+            let page = SourcePage::at(source, cursor);
+            let rows = page.lines.iter().filter_map(|line| {
+                source.text().get(line.span.range()).map(|text| format!("{}  {text}", line.number))
+            }).collect::<Vec<_>>().join("\n");
+            let words = ctx.say(rows);
+            leaves.push(Leaf::new(div().id("read-only-source-page").role(gpui::Role::Label)
+                .aria_label("Read-only source excerpt")
+                .child(text(ty::CODE, &ctx.measure, ctx.palette.ink1).child(words))));
+            if page.next.is_some() {
+                leaves.push(Leaf::new(quiet("Earlier source continues beyond this bounded excerpt; a current reading is needed for source paging.", &ctx.measure, ctx.palette)));
+            }
+        }
+        None => leaves.push(Leaf::new(quiet("No source text was recorded in this reading.", &ctx.measure, ctx.palette))),
     }
     leaves
 }
@@ -304,6 +364,23 @@ fn code(
             cx,
         )
     });
+    let selected = crate::runtime::store::route_declaration(&leaving)
+        .unwrap_or_else(|_| view.symbol.coordinate.clone());
+    let source_key = PageKey::Source(selected.clone());
+    let semantic_key = PageKey::Symbol(selected.clone());
+    let (source_stamp, semantic_stamp, semantic_current) = {
+        let live = ctx.links.store.read(cx);
+        let root = live.snapshot().key();
+        let serving = live.owner_serving();
+        let current = matches!(
+            crate::core::admit_resource(&live.symbol(&selected), root, serving),
+            crate::core::ResourceAdmission::Current(page)
+                if page.identity.coordinate.as_str() == selected.as_str()
+        );
+        (live.stamp(&source_key), live.stamp(&semantic_key), current)
+    };
+    let source_guard = ctx.native_dependency_guard((source_key, source_stamp), cx);
+    let semantic_guard = semantic_current.then(|| ctx.native_dependency_guard((semantic_key, semantic_stamp), cx));
     let cursor = paging
         .borrow()
         .as_ref()
@@ -373,7 +450,7 @@ fn code(
         vec![Vec::<&crate::model::pages::IdentifierSpan>::new(); numbers.len()];
     let identifiers = match source.coverage() {
         SourceCoverage::CapturedExcerpt | SourceCoverage::LiveFileExcerptVerified { .. } => {
-            view.identifiers.known()
+            semantic_guard.as_ref().and_then(|_| view.identifiers.known())
         }
         SourceCoverage::Unverified => None,
     };
@@ -413,7 +490,9 @@ fn code(
         }
         let copy_source = source.clone();
         let copy_span = page.lines[source_index].span;
+        let copy_guard = Rc::clone(&source_guard);
         let copy_line: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            if !copy_guard(app) { return; }
             let words = copy_source
                 .text()
                 .get(copy_span.range())
@@ -536,6 +615,8 @@ fn code(
                 let click_links = ctx.links.clone();
                 let click_recall = ctx.targets.recall();
                 let click_leaving = leaving.clone();
+                let source_guard = Rc::clone(&source_guard);
+                let semantic_guard = semantic_guard.clone();
                 InteractiveText::new(
                     ElementId::Name(SharedString::from(format!(
                         "source-links-{number}-{piece_index}"
@@ -543,6 +624,7 @@ fn code(
                     styled,
                 )
                 .on_click(link_ranges, move |which, _, app| {
+                    if !source_guard(app) || !semantic_guard.as_ref().is_some_and(|guard| guard(app)) { return; }
                     if let (Some(target_route), Some(id)) =
                         (click_routes.get(which), click_ids.get(which))
                     {
@@ -619,7 +701,9 @@ fn code(
             .or_else(|| declaration.map(|span| span.first))
             .unwrap_or(first_line);
         let links = ctx.links.clone();
+        let editor_guard = Rc::clone(&source_guard);
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            if !editor_guard(app) { return; }
             links.dispatch(
                 Intent::OpenSource {
                     path: Arc::clone(&path),
@@ -711,10 +795,13 @@ fn code(
             let leaving = leaving.clone();
             let destination = target_route.clone();
             let target_id = id.clone();
+            let source_guard = Rc::clone(&source_guard);
+            let semantic_guard = semantic_guard.clone();
             let target = Target {
                 id: id.clone(),
                 label: label.clone(),
                 act: Rc::new(move |_, app| {
+                    if !source_guard(app) || !semantic_guard.as_ref().is_some_and(|guard| guard(app)) { return; }
                     recall.focus(target_id.clone());
                     recall.remember_leave(leaving.clone(), target_id.clone());
                     links.dispatch(Intent::Navigate(destination.clone()), app);
@@ -746,8 +833,10 @@ fn code(
         }
     }
     let snippet = shown.clone();
+    let copy_guard = Rc::clone(&source_guard);
     let copy_id: SharedString = "source-copy-excerpt".into();
     let copy: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+        if !copy_guard(app) { return; }
         app.write_to_clipboard(gpui::ClipboardItem::new_string(snippet.to_string()));
     });
     ctx.targets.push(Target {

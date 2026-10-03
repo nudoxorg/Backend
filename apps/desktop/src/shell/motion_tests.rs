@@ -242,11 +242,11 @@ fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frame
 
 
 /// Native shell fixture coverage: hold an uncached read at the owner boundary.
-/// The previous body is visible but cannot register targets or activate links;
-/// resize and preference wakes must not turn its internal motion back on.
+/// The requested destination paints its own pending state, never the previous
+/// declaration's body or targets. Resizes do not revive old motion.
 /// Live owner/screenshots remain a separate product acceptance gate.
 #[gpui::test]
-fn pending_destination_keeps_one_inert_page_then_back_restores_real_focus(cx: &mut TestAppContext) {
+fn pending_destination_paints_its_own_visit_and_back_recovers_the_prior_reading(cx: &mut TestAppContext) {
     use gpui::{Modifiers, px, size};
     let a = page_route("RelationLabel");
     let b = page_route("KindGlyph");
@@ -265,8 +265,9 @@ fn pending_destination_keeps_one_inert_page_then_back_restores_real_focus(cx: &m
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(b.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), b);
-    assert!(rig.said().iter().any(|line| line.contains("Opening") && line.contains("KindGlyph") && line.contains("previous page") && line.contains("RelationLabel")));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "retained body cannot publish stale keyboard targets");
+    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")));
+    assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "the old declaration cannot impersonate the destination");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "pending destination has no stale keyboard targets");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None);
     rig.cx.simulate_click(click, Modifiers::default());
     rig.frame(0);
@@ -282,12 +283,13 @@ fn pending_destination_keeps_one_inert_page_then_back_restores_real_focus(cx: &m
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
     rig.repaint();
     for _ in 0..4 { rig.frame(250); }
-    assert_eq!(rig.cx.update(|_, cx| facet::motion::frames_requested(cx)), requested, "a pending retained body stays still through owner/repaint wakes");
+    assert_eq!(rig.cx.update(|_, cx| facet::motion::frames_requested(cx)), requested, "a pending destination stays still through owner/repaint wakes");
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Back, cx));
     rig.frame(0);
     rig.settle();
     assert_eq!(rig.route(), a);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), Some(leave));
+    assert!(rig.said().iter().any(|line| line.contains("Earlier producer reading") || line.contains("Saved or earlier reading")));
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None, "retained destination has no semantic target focus");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
     assert!(!rig.said().iter().any(|line| line.contains("previous page:")));
     rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
@@ -310,10 +312,11 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
         rig.frame(0);
     }
     assert_eq!(rig.route(), c);
-    assert!(rig.said().iter().any(|line| line.contains("Opening") && line.contains("RelationDirection") && line.contains("previous page") && line.contains("RelationLabel")));
+    assert!(rig.said().iter().any(|line| line.contains("RelationDirection") && line.contains("on its way")));
+    assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "C must never borrow A's body");
     rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("retention fixture failure".into()), cx));
     rig.frame(0);
-    assert!(!rig.said().iter().any(|line| line.contains("previous page:")), "terminal fault releases prior body immediately");
+    assert!(!rig.said().iter().any(|line| line.as_str() == "RelationLabel"), "terminal fault belongs to C, not A");
     assert!(rig.said().iter().any(|line| line.contains("retention fixture failure")), "the exact terminal destination is exposed");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
     rig.graph.store.update(rig.cx, |store, cx| {
@@ -327,15 +330,15 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
 }
 
 
-/// An incompatible producer root must wake the retained Reader even when the
-/// requested page is held before any fetch can emit a Resource event.
+/// A changed root cannot resurrect a different prior route as the pending
+/// destination, even before its read emits a Resource event.
 #[gpui::test]
-fn pending_retention_drops_on_root_wake_before_reads_start(cx: &mut TestAppContext) {
+fn pending_destination_stays_exact_on_root_wake_before_reads_start(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
     rig.frame(0);
-    assert!(rig.said().iter().any(|line| line.contains("previous page:")));
+    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")));
     rig.graph.store.update(rig.cx, |store, cx| {
         let root = crate::core::VersionedRoot::synthetic(
             backend_library::view_state_root(&[("retention".to_owned(), "new owner root".to_owned())]), 5,

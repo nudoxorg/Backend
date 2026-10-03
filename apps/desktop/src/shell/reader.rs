@@ -469,10 +469,6 @@ pub(crate) struct Reader {
     painted: Option<u64>,
     /// The owner revision of the last painted place, for exact overlay returns.
     painted_root: Option<crate::core::VersionedRoot>,
-    /// Exactly one indexed body, with only its selected resource handles.
-    retained: Option<RetainedPage>,
-    /// Requested identity while a distinct previous page remains visible.
-    pending_place: Option<u64>,
     /// Deferred Back focus belongs to the requested place, never its predecessor.
     pending_page_focus: Option<SettingsReturn>,
     /// Reader focus when Settings covered a painted place.
@@ -535,8 +531,6 @@ impl Reader {
             last_way: None,
             painted: None,
             painted_root: None,
-            retained: None,
-            pending_place: None,
             pending_page_focus: None,
             settings_departure: None,
             pending_settings_focus: None,
@@ -648,7 +642,7 @@ impl Reader {
 
     /// Pages drawn by the last render (the current one plus any leaving).
     pub(crate) fn pages_on_screen(&self) -> usize {
-        self.places.iter().filter(|place| Some(place.key) != self.pending_place).count()
+        self.places.len()
     }
 
     /// How many descents played, and which way the last one went.
@@ -1677,23 +1671,6 @@ struct Place {
     hop: bool,
 }
 
-/// Last-good indexed content, captured at one exact producer root. Cargo file
-/// capabilities are intentionally excluded: their revocation is independent
-/// of the index root and requires a live resource subscription.
-#[derive(Clone)]
-struct RetainedPage {
-    place: Place,
-    root: crate::core::VersionedRoot,
-    snapshot: std::sync::Arc<AppSnapshot>,
-    pages: Pages,
-    words: Vec<SharedString>,
-}
-
-fn retainable(place: &Place) -> bool {
-    place.overlay.is_none() && matches!(&place.route,
-        Route::Package(_) | Route::Symbol(crate::navigation::SymbolRoute { view: View::Page | View::Code, .. }))
-}
-
 struct SettingsDeparture {
     route: Route,
     root: crate::core::VersionedRoot,
@@ -2278,43 +2255,13 @@ impl Render for Reader {
             self.find_held_root = None;
         }
         let Some(requested) = self.places.last().cloned() else { return div(); };
-        let readiness = RouteDependencies::new(&requested.route, requested.overlay).content_phase(self.links.store.read(cx));
+        let readiness = RouteDependencies::new(&requested.route, requested.overlay).display_phase(self.links.store.read(cx));
         let waiting = readiness == DestinationState::Pending;
-        let was_waiting = self.pending_place.is_some();
-        self.pending_place = None;
-        if self.retained.as_ref().is_some_and(|page| !page.root.same_authority(snapshot.key())) {
-            self.retained = None;
-            self.arrival = None;
-            self.transit = None;
-            self.pending_page_focus = None;
-        }
-        if readiness == DestinationState::Terminal {
-            // One fault wins over every other pending key. Draw the exact
-            // destination's fault instead of hiding it behind the predecessor.
-            self.retained = None;
-            self.arrival = None;
-            self.transit = None;
-            self.tint = None;
-            self.pending_page_focus = None;
-            self.pending_scroll_restore = None;
-            self.scroll.set_offset(point(px(0.0), px(0.0)));
-        }
-        let previous = waiting.then(|| self.retained.clone()).flatten()
-            .filter(|page| page.place.key != requested.key);
-        let current = previous.as_ref().map_or_else(|| requested.clone(), |page| page.place.clone());
-        let body_snapshot = previous.as_ref().map_or_else(|| snapshot.clone(), |page| page.snapshot.clone());
+        let current = requested.clone();
         if waiting {
             if let Some(target) = self.targets.focused() {
                 self.pending_page_focus = Some(SettingsReturn { place: requested.key, root: snapshot.key(), target: Some(target) });
                 self.targets.clear_focus();
-            }
-            if previous.is_some() {
-                self.pending_place = Some(requested.key);
-            } else {
-                // First sighting, revoked Cargo capability, or incompatible
-                // root: there is no admissible old body to keep on screen.
-                self.arrival = None;
-                self.transit = None;
             }
         }
         if self.pending_page_focus.as_ref().is_some_and(|focus| focus.place != requested.key || !focus.root.same_authority(snapshot.key())) {
@@ -2324,10 +2271,10 @@ impl Render for Reader {
         let layout = self.layout(&current.route, current.overlay, &measure, &facet);
         let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
-        // A page counts as painted once it drew its content: a skeleton "on its
-        // way" is not a page that can leave (a route that supersedes it cuts
-        // past it, and the change in flight goes on to the newer route).
-        if !waiting && RouteDependencies::new(&current.route, current.overlay).content_loaded(self.links.store.read(cx)) {
+        // Scroll restoration waits for the primary pane's current read. The
+        // requested route itself paints even when that read is pending, so
+        // local navigation and later focus belong to its own visit.
+        if !waiting && RouteDependencies::new(&current.route, current.overlay).display_loaded(self.links.store.read(cx)) {
             if let Some((key, offset)) = self.pending_scroll_restore.take() {
                 if key == current.key {
                     self.scroll.set_offset(offset);
@@ -2335,8 +2282,6 @@ impl Render for Reader {
                     self.pending_scroll_restore = Some((key, offset));
                 }
             }
-            self.painted = Some(current.key);
-            self.painted_root = Some(snapshot.key());
         } else if !waiting && self
             .pending_scroll_restore
             .as_ref()
@@ -2483,27 +2428,14 @@ impl Render for Reader {
         if !on_the_library {
             self.ring_flow.forget(cx);
         }
-        let still = previous.as_ref().map(|_| facet::motion::still(cx));
-        // Without an admissible predecessor, pending indexed content is a
-        // loading state; never paint stale resource bytes under a new root.
-        let pending_pages = if waiting && previous.is_none() {
-            Some(Pages::default())
-        } else if readiness == DestinationState::Terminal {
-            Some(Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&requested.route, requested.overlay)))
-        } else { None };
-        let body = self.body(&current, previous.is_none(), &body_snapshot, &layout, &facet, current_edge,
-            previous.as_ref().map(|page| &page.pages).or(pending_pages.as_ref()), window, cx);
-        drop(still);
-        if !waiting && readiness == DestinationState::Ready {
-            self.retained = retainable(&current).then(|| RetainedPage {
-                place: Place { lens: self.lens, ..current.clone() },
-                root: snapshot.key(),
-                snapshot: snapshot.clone(),
-                pages: Pages::gather(self.links.store.read(cx), &RouteDependencies::new(&current.route, current.overlay)),
-                words: self.said.clone(),
-            });
-        }
-        if !waiting && staged.is_some() && (was_waiting || self.pending_page_focus.is_some()) {
+        // Gather for this exact typed destination even while an owner is
+        // starting, failed, or replacing its root. Bodies decide whether a
+        // retained value has a valid embedded identity for read-only paint.
+        let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge,
+            None, window, cx);
+        self.painted = Some(current.key);
+        self.painted_root = Some(snapshot.key());
+        if !waiting && staged.is_some() && self.pending_page_focus.is_some() {
             if self.pending_page_focus.is_none() && let Some(target) = self.targets.focused() {
                 self.pending_page_focus = Some(SettingsReturn { place: current.key, root: snapshot.key(), target: Some(target) });
             }
@@ -2612,10 +2544,7 @@ impl Render for Reader {
             land,
             child: scroller.into_any_element(),
         });
-        let scroller = if let Some(previous) = &previous {
-            gpui::inert(("waiting-previous-page", previous.place.key),
-                format!("Previous page: {}. Opening {}.", place_name(&previous.place.route), place_name(&requested.route)), scroller).into_any_element()
-        } else { scroller.into_any_element() };
+        let scroller = scroller.into_any_element();
         let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
@@ -2702,16 +2631,6 @@ impl Render for Reader {
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller)).children(gem(&staged));
             }
             _ => root = root.child(scroller),
-        }
-        if let Some(previous) = previous {
-            let message: SharedString = format!("Opening {} · previous page: {}", place_name(&requested.route), place_name(&previous.place.route)).into();
-            self.said = previous.words;
-            self.said.push(message.clone());
-            let role = measure.role(ty::MONO_SMALL);
-            let lines = super::text_fit::wrap_identifier(&message, &role, (measure.width() - pad * 2.0).max(px(1.0)), cx);
-            root = root.child(div().id("reader-pending-destination").absolute().left_0().top_0().w_full()
-                .role(gpui::Role::Status).aria_label(message).px(pad).py(px(8.0 * scale))
-                .bg(palette.g1.hsla()).child(super::text_fit::name_lines(&lines, role, palette.ink2.hsla())));
         }
         // A full Ask sheet or a transitional plate with less than the
         // readable preview minimum owns these pixels. Preserve the Reader's
@@ -3709,19 +3628,5 @@ mod transit_ledger {
         let path = std::path::PathBuf::from(dir).join("route-film.ledger");
         std::fs::write(&path, &ledger).expect("write the ledger");
         eprint!("{ledger}");
-    }
-}
-
-#[cfg(test)]
-mod retained_destination_tests {
-    use super::retainable;
-    use crate::navigation::{OrbitRoute, Route};
-
-    #[test]
-    fn non_document_destinations_cannot_enter_last_good_retention() {
-        for route in [Route::Orbit(OrbitRoute::Home), Route::World] {
-            let place = super::Place { key: 1, route, overlay: None, way: super::Way::Down, lens: super::Lens::Reference, from: None, opened: None, hop: false };
-            assert!(!retainable(&place));
-        }
     }
 }

@@ -8,7 +8,7 @@ use super::*;
 use crate::core::{LocalProjectId, PackageId, VersionedRoot, admit_resource};
 use crate::model::ServiceMode;
 use crate::model::browse::{BrowseKey, BrowseValue, TreeModel};
-use crate::model::pages::{CargoSourcePage, PageValue, SourceOrigin, SourceText};
+use crate::model::pages::{CargoSourcePage, GapReason, Known, LineSpan, PageValue, SourceOrigin, SourceText, SourceView};
 use crate::navigation::{
     CargoBrowseContext, CargoSourcePath, CargoSourceRoute, PackageLane, PackageRoute,
 };
@@ -670,6 +670,55 @@ fn required_symbol_fault_wins_over_pending_source_and_optional_package_fault() {
     assert!(
         matches!(failure, ContentFailure::Fault(error) if error.message() == "declaration revoked")
     );
+}
+
+#[test]
+fn current_code_display_does_not_wait_for_a_failed_symbol_pane() {
+    let symbol = crate::shell::tests::symbol("RelationLabel");
+    let route = crate::shell::tests::view_route("RelationLabel", crate::navigation::View::Code);
+    let plan = RouteDependencies::new(&route, None);
+    let mut store = DataStore::new(Arc::new(at(route)), None);
+    let page = crate::shell::tests::page("RelationLabel");
+    let source = SourceView {
+        symbol: page.identity,
+        file: Known::Known(Arc::from("relation.rs")),
+        editor_path: Known::unknown(GapReason::NotServed, "no editor path"),
+        text: Known::Known(SourceText::new(
+            Arc::from("pub enum RelationLabel { Typed }\n"), 1, SourceOrigin::LocalFile, true,
+        ).expect("source text")),
+        declaration: Known::Known(LineSpan { first: 1, last: 1 }),
+        identifiers: Known::Known(Arc::from([])),
+        uses: Known::Known(Arc::from([])),
+        uses_elsewhere: Arc::from([]),
+    };
+    land(&mut store, &PageKey::Source(symbol.clone()), PageValue::Source(source));
+    let key = PageKey::Symbol(symbol);
+    let generation = store.pages.begin(&key, root()).expect("symbol request");
+    store.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(
+        FaultCode::Missing, "symbol unavailable",
+    ))));
+    assert_eq!(plan.display_phase(&store), crate::core::ReadPhase::Ready);
+    assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Terminal);
+}
+
+#[test]
+fn current_dossier_display_does_not_wait_for_a_failed_cargo_sibling() {
+    let requested = LocalProjectId::new("/workspace/backend/member").expect("member");
+    let (_, package, context) = fixture(&requested);
+    let route = package_route(&package, context.clone());
+    let plan = RouteDependencies::new(&route, None);
+    let mut store = DataStore::new(Arc::new(at(route)), None);
+    land(&mut store, &PageKey::Package(package.clone()), PageValue::Package(
+        crate::shell::tests::registry_dossier(&package),
+    ));
+    let key = PageKey::Browse(BrowseKey::Tree(requested));
+    let generation = store.pages.begin(&key, root()).expect("Tree request");
+    store.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(
+        FaultCode::Transport, "Tree unavailable",
+    ))));
+    assert_eq!(plan.display_phase(&store), crate::core::ReadPhase::Ready);
+    assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Terminal);
+    assert!(plan.current_cargo_package(&store, &package).is_none());
 }
 
 #[test]

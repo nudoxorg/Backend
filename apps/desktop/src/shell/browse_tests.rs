@@ -25,6 +25,22 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[test]
+fn retained_tree_names_require_the_exact_requested_and_effective_roots() {
+    let requested = LocalProjectId::new("/workspace/backend/member").expect("member");
+    let (tree, _, _) = crate::runtime::store::cargo_context_tests::fixture(&requested);
+    let route = BrowseRoute::Tree(requested);
+    assert!(super::retained_tree_matches_route(&route, &tree));
+    let other = BrowseRoute::Tree(LocalProjectId::new("/workspace/other/member").expect("other member"));
+    assert!(!super::retained_tree_matches_route(&other, &tree));
+    let mut wrong_root = tree.clone();
+    wrong_root.root = "/replacement/workspace".into();
+    assert!(!super::retained_tree_matches_route(&route, &wrong_root));
+    let mut no_binding = tree;
+    no_binding.request_binding = None;
+    assert!(!super::retained_tree_matches_route(&route, &no_binding));
+}
+
+#[test]
 fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
     use crate::model::browse::{TreeDestination, TreeReleaseLink, TreeRoleLinks, TreeRowLinks};
     use crate::model::pages::PackageRef;

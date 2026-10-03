@@ -5,9 +5,8 @@
 //! say what each name is. A future tour needs live typed use evidence;
 //! prototype fixture-world rankings never recommend a starting declaration.
 
-use super::state::{Shown, not_ready};
+use super::state::{DisplayEvidence, display_evidence, earlier_notice, not_ready};
 use super::{Ctx, Leaf};
-use crate::core::{ResourceAdmission, ResourceTerminal, admit_resource};
 use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
@@ -97,27 +96,22 @@ pub(super) fn body(
     let cargo_offer = cargo_manifest_offer(&package, place, snapshot, ctx, cx);
     let owner_readme = cargo_readme::body(place, ctx, cx);
     let qualified_cargo = crate::core::PackageId::new(package.as_str()).ok().is_some_and(|package| CargoSourceRoute::supports_package(&package));
-    let dossier = match admit_resource(&resource, snapshot.key(), serving) {
-        ResourceAdmission::Current(dossier) => dossier.clone(),
-        ResourceAdmission::Retained { value, .. } => {
-            let words = ctx.say(format!("Earlier reading of {} is retained while the current package is checked. Its semantic links are unavailable.", value.package.display_name()));
-            return with_cargo_offer(vec![Leaf::new(quiet(words, &ctx.measure, ctx.palette))], cargo_offer, owner_readme);
-        }
-        ResourceAdmission::Pending(_) => {
-            let leaves = not_ready(&Shown::<PackageDossier>::Pending, &PageKey::Package(package), "The indexed package", ctx, cx);
+    let evidence = display_evidence(&resource, snapshot.key(), serving, |dossier| {
+        dossier_matches_package(dossier, &package)
+    });
+    let dossier = match &evidence {
+        DisplayEvidence::Current(dossier) => (**dossier).clone(),
+        DisplayEvidence::Earlier { value, .. } => {
+            let notice = earlier_notice(&evidence).unwrap_or_default();
+            let leaves = retained_dossier(value, place, &notice, ctx);
             return with_cargo_offer(leaves, cargo_offer, owner_readme);
         }
-        ResourceAdmission::Failed { retained, terminal } => {
-            let mut leaves = Vec::new();
-            if retained.is_some() {
-                let words = ctx.say("An earlier package reading is retained; its controls are unavailable.");
-                leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
-            }
-            match terminal {
-                ResourceTerminal::Fault(error) => leaves.extend(not_ready(&Shown::<PackageDossier>::Fault(error), &PageKey::Package(package), "The package", ctx, cx)),
-                ResourceTerminal::Unavailable(reason) => leaves.extend(not_ready(&Shown::<PackageDossier>::Unavailable(reason, None), &PageKey::Package(package), "The package", ctx, cx)),
-                ResourceTerminal::Complete | ResourceTerminal::Partial => {}
-            }
+        DisplayEvidence::Missing(shown) => {
+            let leaves = not_ready(shown, &PageKey::Package(package), "The indexed package", ctx, cx);
+            return with_cargo_offer(leaves, cargo_offer, owner_readme);
+        }
+        DisplayEvidence::WrongIdentity => {
+            let leaves = vec![Leaf::new(quiet("The saved package content belongs to another exact package or release.", &ctx.measure, ctx.palette))];
             return with_cargo_offer(leaves, cargo_offer, owner_readme);
         }
     };
@@ -339,6 +333,100 @@ fn with_cargo_offer(mut leaves: Vec<Leaf>, offer: Option<Leaf>, readme: Vec<Leaf
     if let Some(offer) = offer { leaves.push(offer); }
     leaves.extend(readme);
     leaves
+}
+
+/// Earlier semantic facts remain readable, but this projection deliberately
+/// creates no target, link, or release action. Each line comes from the one
+/// exact dossier whose embedded package and record were checked above.
+fn retained_dossier(
+    dossier: &PackageDossier,
+    place: &Route,
+    notice: &str,
+    ctx: &mut Ctx<'_>,
+) -> Vec<Leaf> {
+    let mut lines = vec![notice.to_owned(), dossier.package.display_name().to_owned()];
+    if let Some(record) = dossier.record.known() {
+        if let Some(version) = record.version.known() {
+            lines.push(format!("Recorded release: {version}"));
+        }
+        if let Some(description) = record.description.known() {
+            lines.push(description.to_string());
+        }
+    }
+    if let Route::Package(route) = place {
+        match route.lane {
+            crate::navigation::PackageLane::Overview => {
+                if let Some(record) = dossier.record.known() {
+                    if let Some(license) = record.license.known() {
+                        lines.push(format!("Recorded license: {license}"));
+                    }
+                }
+            }
+            crate::navigation::PackageLane::Dependencies => {
+                match dossier.dependencies.known() {
+                    Some(dependencies) => lines.extend(dependencies.iter().map(|dependency| {
+                        format!("{} {} · {}", dependency.name, dependency.requirement, dependency.scope.name())
+                    })),
+                    None => lines.push("Dependencies were not recorded in this reading.".to_owned()),
+                }
+            }
+            crate::navigation::PackageLane::Dependents => {
+                match dossier.dependents.known() {
+                    Some(dependents) => lines.extend(dependents.iter().map(|dependent| dependent.name.to_string())),
+                    None => {
+                        lines.push("Complete reverse dependencies were not recorded in this reading.".to_owned());
+                        lines.extend(dossier.observed_dependents.iter().map(|dependent| format!("Observed: {}", dependent.name)));
+                    }
+                }
+            }
+            crate::navigation::PackageLane::Releases => {
+                match dossier.versions.known() {
+                    Some(versions) => lines.extend(versions.iter().map(|version| {
+                        format!("{} · {}", version.version, version.standing.name())
+                    })),
+                    None => lines.push("Release history was not recorded in this reading.".to_owned()),
+                }
+            }
+            crate::navigation::PackageLane::Security => {
+                match dossier.record.known().and_then(|record| record.advisory.known()) {
+                    Some(advisory) => lines.push(format!(
+                        "Earlier advisory observation: {} matching advisories; {} decision. Recheck before acting.",
+                        advisory.advisories, advisory.decision,
+                    )),
+                    None => lines.push("Advisory coverage was not recorded in this reading.".to_owned()),
+                }
+            }
+        }
+    }
+    lines.into_iter().map(|line| {
+        let words = ctx.say(line);
+        Leaf::new(quiet(words, &ctx.measure, ctx.palette))
+    }).collect()
+}
+
+fn dossier_matches_package(dossier: &PackageDossier, package: &PackageRef) -> bool {
+    dossier.package.as_str() == package.as_str()
+        && dossier.record.known().is_none_or(|record| record.package.as_str() == package.as_str())
+}
+
+#[cfg(test)]
+mod display_identity_tests {
+    use super::dossier_matches_package;
+    use crate::model::pages::{Known, PackageRef};
+
+    #[test]
+    fn a_saved_dossier_and_its_embedded_record_must_both_match_the_exact_release() {
+        let dossier = crate::shell::tests::dossier();
+        let expected = dossier.package.clone();
+        let other = PackageRef::parse("/fixture/other").expect("other package");
+        assert!(dossier_matches_package(&dossier, &expected));
+        assert!(!dossier_matches_package(&dossier, &other));
+        let mut wrong_record = dossier;
+        if let Known::Known(record) = &mut wrong_record.record {
+            record.package = other;
+        }
+        assert!(!dossier_matches_package(&wrong_record, &expected));
+    }
 }
 
 /// Independent of the optional semantic dossier: only this route's selected

@@ -13,9 +13,9 @@
 //! (`Intent::OpenSource`), and the shared elements a hop flies (the mark and
 //! the title).
 
-use super::state::{Shown, not_ready, shown};
+use super::state::{DisplayEvidence, display_evidence, earlier_notice, not_ready};
 use super::{Ctx, Leaf};
-use crate::model::pages::{PageKey, SymbolPage};
+use crate::model::pages::{DocFragment, PackageRef, PageKey, SymbolPage, SymbolRef};
 use crate::navigation::{Route, SymbolRoute};
 use crate::shell::kit::{HoverIntent, shared_id, text};
 use crate::shell::reader::Reader;
@@ -51,9 +51,24 @@ pub(super) fn body(
     };
     let resource = store.symbol(&symbol);
     let name = symbol.identity().name().to_owned();
-    let page = match shown(&resource) {
-        Shown::Ready(page) => page.clone(),
-        other => return not_ready(&other, &PageKey::Symbol(symbol), &name, ctx, cx),
+    let live = ctx.links.store.read(cx);
+    let root = live.snapshot().key();
+    let serving = live.owner_serving();
+    drop(live);
+    let expected_package = crate::runtime::store::route_package(place);
+    let evidence = display_evidence(&resource, root, serving, |page| {
+        page_matches_symbol(page, &symbol, expected_package.as_ref())
+    });
+    let page = match &evidence {
+        DisplayEvidence::Current(page) => (**page).clone(),
+        DisplayEvidence::Earlier { value, .. } => {
+            return retained_symbol_page(value, &earlier_notice(&evidence).unwrap_or_default(), ctx);
+        }
+        DisplayEvidence::Missing(other) => return not_ready(other, &PageKey::Symbol(symbol), &name, ctx, cx),
+        DisplayEvidence::WrongIdentity => return vec![Leaf::new(super::super::kit::quiet(
+            "The saved declaration content belongs to another exact symbol, package, or release.",
+            &ctx.measure, ctx.palette,
+        ))],
     };
     let package = route.package.as_str().to_owned();
     let companions = companions::gather(&companions::of(&page), ctx.links, ctx.active, cx);
@@ -120,6 +135,49 @@ pub(super) fn body(
         leaves.push(Leaf::new(section));
     }
     leaves
+}
+
+fn retained_symbol_page(page: &SymbolPage, notice: &str, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+    let mut lines = vec![notice.to_owned(), page.identity.coordinate.as_str().to_owned()];
+    if let Some(signature) = page.signature.known() {
+        lines.push(signature.text.to_string());
+    }
+    let docs = DocFragment::plain_text(&page.docs);
+    if !docs.is_empty() {
+        lines.push(docs);
+    }
+    if let Some(excerpt) = page.site.excerpt.known() {
+        lines.push(excerpt.text.to_string());
+    }
+    lines.into_iter().map(|line| {
+        let words = ctx.say(line);
+        Leaf::new(super::super::kit::quiet(words, &ctx.measure, ctx.palette))
+    }).collect()
+}
+
+fn page_matches_symbol(page: &SymbolPage, symbol: &SymbolRef, package: Option<&PackageRef>) -> bool {
+    page.identity.coordinate.as_str() == symbol.as_str()
+        && page.package.known().is_none_or(|found| {
+            package.is_some_and(|expected| found.as_str() == expected.as_str())
+        })
+}
+
+#[cfg(test)]
+mod display_identity_tests {
+    use super::page_matches_symbol;
+    use crate::model::pages::PackageRef;
+
+    #[test]
+    fn saved_declaration_identity_cannot_cross_symbol_or_package_addresses() {
+        let page = crate::shell::tests::page("RelationLabel");
+        let symbol = crate::shell::tests::symbol("RelationLabel");
+        let other = crate::shell::tests::symbol("KindGlyph");
+        let package = PackageRef::parse(crate::shell::tests::PACKAGE).expect("package");
+        let wrong_package = PackageRef::parse("/fixture/other").expect("other package");
+        assert!(page_matches_symbol(&page, &symbol, Some(&package)));
+        assert!(!page_matches_symbol(&page, &other, Some(&package)));
+        assert!(!page_matches_symbol(&page, &symbol, Some(&wrong_package)));
+    }
 }
 
 /// The mark, shared by the declaration's address so the row, the page and

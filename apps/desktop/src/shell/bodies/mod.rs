@@ -428,24 +428,14 @@ pub(crate) fn build(
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
     // Local transient content is independent of the underlying page's read.
-    // A captured failure plate must not consume Settings or Inbox navigation.
     match overlay {
         Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, window, cx),
         Some(Overlay::Inbox) => return inbox::body(ctx),
         Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
     }
-    if let Some((key, terminal)) = store.content_failure() {
-        let shown = match terminal {
-            crate::runtime::store::ContentFailure::Fault(error) => state::Shown::<()>::Fault(error),
-            crate::runtime::store::ContentFailure::Unavailable(reason) => state::Shown::Unavailable(reason, None),
-        };
-        let what = match key {
-            PageKey::Symbol(symbol) | PageKey::Source(symbol) => symbol.identity().name().to_owned(),
-            _ => key.to_string(),
-        };
-        return state::not_ready(&shown, key, &what, ctx, cx);
-    }
-    match route {
+    // A terminal sibling belongs to its own pane. Replacing the whole body
+    // here would hide an independent current Source, dossier, or local shell.
+    let mut leaves = match route {
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
         Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
@@ -456,5 +446,17 @@ pub(crate) fn build(
             View::Graph => graph::body(route, store, ctx),
         },
         Route::World => graph::body(route, store, ctx),
+    };
+    if matches!(route, Route::Package(package) if package.cargo.is_some())
+        && let Some((PageKey::Browse(crate::model::browse::BrowseKey::Tree(_)), failure)) = store.content_failure()
+    {
+        let reason = match failure {
+            crate::runtime::store::ContentFailure::Fault(error) => error.message().to_owned(),
+            crate::runtime::store::ContentFailure::Unavailable(crate::core::UnavailableReason::Unsupported) => "not served by the current owner".to_owned(),
+            crate::runtime::store::ContentFailure::Unavailable(crate::core::UnavailableReason::OutOfScope) => "outside the selected owner scope".to_owned(),
+        };
+        let words = ctx.say(format!("The selected Cargo Tree could not be checked: {reason}. Current semantic facts, if present, remain separate from Cargo source links."));
+        leaves.push(Leaf::new(super::kit::quiet(words, &ctx.measure, ctx.palette)));
     }
+    leaves
 }

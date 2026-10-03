@@ -1268,6 +1268,38 @@ fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut 
 }
 
 #[gpui::test]
+fn mounted_code_copy_from_an_old_visit_cannot_cross_same_root_owner_replacement(cx: &mut TestAppContext) {
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(
+        cx,
+        Some(view_route("RelationLabel", View::Code)),
+        1440.0,
+        900.0,
+        ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly,
+        Some(gate.clone()),
+    );
+    rig.settle();
+    let old_copy = rig.shell.read_with(rig.cx, |shell, cx| {
+        shell.reader_targets(cx).placed().into_iter()
+            .find(|(target, _)| target.id == "source-copy-excerpt")
+            .map(|(target, _)| target.act)
+    }).expect("mounted code has a copy action");
+    rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("source-lease-sentinel".into()));
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    rig.cx.update(|window, cx| old_copy(window, cx));
+    assert_eq!(
+        rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+        Some("source-lease-sentinel"),
+        "same-root owner replacement revoked the old source action before a UI watcher ran",
+    );
+}
+
+#[gpui::test]
 fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut TestAppContext) {
     let gate = OwnerGate::starting();
     let mut rig = rig_with_engine_gate_at_root(

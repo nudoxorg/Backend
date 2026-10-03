@@ -140,8 +140,9 @@ enum DependencyAdmission {
     Terminal(ContentFailure),
 }
 
-/// Readiness and its exact failure destination are one decision, made from
-/// the same required dependencies. Optional chrome never contributes.
+/// Strict required-read readiness and its exact failure destination. Display
+/// readiness is a separate projection; this remains useful for complete
+/// route/action diagnostics and existing Cargo receipt checks.
 #[derive(Debug)]
 pub(crate) enum ContentAdmission {
     Ready,
@@ -163,12 +164,14 @@ impl ContentAdmission {
 }
 
 /// One construction supplies fetching, residency, watching and body gathering.
-/// Page readiness selects only content reads; optional chrome does not hold a
-/// valid Symbol or Cargo file behind an unavailable semantic package dossier.
+/// The fetched and strictly required route reads, plus a separate primary
+/// display pane. Sibling panes retain their own admission and action lease;
+/// their failure cannot erase an independently readable destination body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RouteDependencies {
     keys: Vec<PageKey>,
     content: Vec<PageKey>,
+    display: Vec<PageKey>,
     cargo: Option<CargoSourceDependencies>,
     tree: Option<TreeDependency>,
     readme: Option<CargoReadmeKey>,
@@ -289,9 +292,23 @@ impl RouteDependencies {
                 keys.push(key);
             }
         }
+        let display = match overlay {
+            Some(Overlay::Settings(_) | Overlay::Inbox) => Vec::new(),
+            _ => match route {
+                Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
+                Route::Symbol(symbol) if symbol.view == View::Code =>
+                    route_symbol(route).map(PageKey::Source).into_iter().collect(),
+                Route::Symbol(_) => route_symbol(route).map(PageKey::Symbol).into_iter().collect(),
+                Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))) =>
+                    vec![PageKey::Browse(BrowseKey::Tree(project.clone()))],
+                Route::CargoSource(_) => content.clone(),
+                Route::Orbit(_) | Route::World => Vec::new(),
+            },
+        };
         Self {
             keys,
             content,
+            display,
             cargo,
             tree,
             readme,
@@ -553,8 +570,18 @@ impl RouteDependencies {
     }
 
     pub(crate) fn content_admission(&self, store: &DataStore) -> ContentAdmission {
+        self.admission_for(&self.content, store)
+    }
+
+    /// Readiness for the primary displayed pane. A sibling read may still be
+    /// pending or failed; its body decides its own read-only or fault pixels.
+    pub(crate) fn display_admission(&self, store: &DataStore) -> ContentAdmission {
+        self.admission_for(&self.display, store)
+    }
+
+    fn admission_for(&self, keys: &[PageKey], store: &DataStore) -> ContentAdmission {
         let mut pending = false;
-        for key in &self.content {
+        for key in keys {
             match self.key_admission(store, store.snapshot().key(), key) {
                 DependencyAdmission::Ready => {}
                 DependencyAdmission::Pending => pending = true,
@@ -575,6 +602,14 @@ impl RouteDependencies {
 
     pub(crate) fn content_phase(&self, store: &DataStore) -> ReadPhase {
         self.content_admission(store).phase()
+    }
+
+    pub(crate) fn display_phase(&self, store: &DataStore) -> ReadPhase {
+        self.display_admission(store).phase()
+    }
+
+    pub(crate) fn display_loaded(&self, store: &DataStore) -> bool {
+        self.display_phase(store) == ReadPhase::Ready
     }
 
     pub(crate) fn content_loaded(&self, store: &DataStore) -> bool {

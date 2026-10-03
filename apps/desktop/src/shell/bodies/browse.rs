@@ -12,7 +12,7 @@ use crate::model::browse::{
     BrowseKey, BrowseValue, CompareModel, FindModel, TreeDestination, TreeInventoryLink, TreeModel, TreeRoleLinks,
 };
 use crate::model::pages::{PackageRef, PageKey, SearchQuery, SymbolRef};
-use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
+use crate::navigation::{BrowseRoute, CargoBrowseContext, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{indexed_result_route, package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
 use crate::shell::reader::NativeActionLease;
@@ -361,16 +361,27 @@ fn tree_body(route: &BrowseRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
     let admission = admit_resource(&resource, root, serving);
     match &admission {
         ResourceAdmission::Retained { value, .. } | ResourceAdmission::Failed { retained: Some(value), .. } => {
-            let words = ctx.say("Earlier Library observations are retained while the current owner checks this tree. Their controls are unavailable.");
+            let words = ctx.say(if matches!(&admission, ResourceAdmission::Failed { .. }) {
+                "Earlier Library observations are retained after the current Tree read failed. Their controls are unavailable."
+            } else {
+                "Earlier Library observations are retained while the current owner checks this tree. Their controls are unavailable."
+            });
             let mut leaves = vec![Leaf::new(crate::shell::kit::quiet(words, &ctx.measure, ctx.palette))];
             if let BrowseValue::Tree(tree) = value {
-                let mut names = div().flex().flex_col();
-                for row in tree.inventory_links.iter().take(8) {
-                    let name = ctx.say(format!("{} {} · earlier observation", row.name, row.version));
-                    names = names.child(div().id(format!("retained-library:{:?}", row.key)).role(gpui::Role::Label).aria_label(name.clone())
-                        .child(crate::shell::kit::text(facet::tokens::ty::BODY, &ctx.measure, ctx.palette.ink2).child(name)));
+                if !retained_tree_matches_route(route, tree) {
+                    leaves.push(Leaf::new(crate::shell::kit::quiet(
+                        "The earlier Tree reply belongs to another requested project or effective workspace root; its package names cannot be shown for this address.",
+                        &ctx.measure, ctx.palette,
+                    )));
+                } else {
+                    let mut names = div().flex().flex_col();
+                    for row in tree.inventory_links.iter().take(8) {
+                        let name = ctx.say(format!("{} {} · earlier observation", row.name, row.version));
+                        names = names.child(div().id(format!("retained-library:{:?}", row.key)).role(gpui::Role::Label).aria_label(name.clone())
+                            .child(crate::shell::kit::text(facet::tokens::ty::BODY, &ctx.measure, ctx.palette.ink2).child(name)));
+                    }
+                    leaves.push(Leaf::new(names));
                 }
-                leaves.push(Leaf::new(names));
             }
             if let ResourceAdmission::Failed { terminal, .. } = &admission {
                 match terminal {
@@ -386,6 +397,13 @@ fn tree_body(route: &BrowseRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
         ResourceAdmission::Current(_) => vec![Leaf::new(crate::shell::kit::quiet("The Library reply changed shape.", &ctx.measure, ctx.palette))],
         ResourceAdmission::Pending(_) | ResourceAdmission::Failed { .. } => not_ready::<BrowseValue>(&Shown::Pending, &PageKey::Browse(key), "Library", ctx, cx),
     }
+}
+
+fn retained_tree_matches_route(route: &BrowseRoute, tree: &TreeModel) -> bool {
+    let BrowseRoute::Tree(project) = route else { return false };
+    let Some(binding) = tree.request_binding else { return false };
+    binding.matches_effective_workspace_root(&tree.root)
+        && CargoBrowseContext::from_binding_address(project.clone(), binding).is_some()
 }
 
 fn observed_package_route(plan: &RouteDependencies, store: &DataStore, package: &PackageRef) -> Option<Route> {
