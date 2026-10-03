@@ -7,7 +7,7 @@ use super::view::{ImportsListed, Listed, TestsListed, Verb};
 use crate::anatomy::page::{Door, Doors, Fold};
 use crate::motion::Flow;
 use crate::motion::presence::Presence;
-use gpui::{AnyElement, App, Bounds, Pixels, SharedString, Window};
+use gpui::{AnyElement, App, Bounds, Div, IntoElement as _, InteractiveElement as _, Pixels, SharedString, Stateful, Window};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -138,6 +138,17 @@ pub trait Host: Doors {
     fn lookup(&self, target: &str) -> Option<Act>;
     /// `element` as a keyboard target labelled `label` that runs `act`.
     fn target(&self, key: &Key, label: SharedString, act: Act, element: AnyElement) -> AnyElement;
+    /// Attach native focus to the actual semantic control that was painted.
+    /// Production hosts bind this same element to their current page's target
+    /// handle; still/gallery hosts retain the existing target behavior.
+    fn target_control(&self, key: &Key, label: SharedString, act: Act, activation: super::docs::Activation, control: Stateful<Div>) -> AnyElement {
+        let run = act.clone();
+        let accessible = act.clone();
+        let control = activation.pointer_down(control, act.clone())
+            .on_click(move |event, window, cx| { if activation.admits_click(event) { run(window, cx); } })
+            .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| accessible(window, cx));
+        self.target(key, label, act, control.into_any_element())
+    }
     /// An action that scrolls `section` into view.
     fn reveal(&self, section: Sec) -> Act;
     /// What the page remembers between frames.

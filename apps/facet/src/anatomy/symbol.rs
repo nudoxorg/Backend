@@ -8,6 +8,7 @@
 
 pub mod derive;
 mod body;
+pub mod docs;
 #[cfg(any(test, feature = "gallery"))]
 mod board;
 mod call;

@@ -2,6 +2,7 @@
 //! as [`Env`], text that publishes itself to the probe, the rail joint,
 //! chips, section heads, and prose with code runs and links.
 
+use super::docs::{self, ControlKind, TextKind};
 use super::host::{Act, Host, Spots};
 use super::key::{Key, Part, Sec, Slot};
 use super::layout::Layout;
@@ -10,7 +11,7 @@ use crate::probe::{self, TextOverflow};
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
     AnyElement, App, Bounds, Div, Element, ElementId, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla,
-    InspectorElementId, InteractiveElement, InteractiveText, IntoElement, LayoutId, ParentElement, Pixels,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, ParentElement, Pixels,
     Refineable, SharedString, StatefulInteractiveElement, Style, StyleRefinement, Styled, StyledText,
     UnderlineStyle, Window, div, fill, px,
 };
@@ -177,16 +178,16 @@ pub(super) fn said(env: &Env<'_>, key: &Key, content: impl Into<SharedString>, r
 
 /// [`said`] for a closure that holds only the measure.
 pub(super) fn said_in(m: &Measure, key: &Key, content: impl Into<SharedString>, role: TypeRole, color: Hsla) -> AnyElement {
-    let content = content.into();
-    probe::text(
-        key.id(),
-        content.clone(),
-        m.role(role),
-        1.0,
-        TextOverflow::Clip,
-        div().set(role, m).text_color(color).whitespace_nowrap().flex_none().child(content),
-    )
-    .into_any_element()
+    said_as(m, key, content.into(), role, color, TextKind::Text)
+}
+
+fn said_as(m: &Measure, key: &Key, content: SharedString, role: TypeRole, color: Hsla, kind: TextKind) -> AnyElement {
+    probe::text(key.id(), content.clone(), m.role(role), 1.0, TextOverflow::Clip,
+        docs::text(key.id(), content, kind, |words| div().set(role, m).text_color(color).whitespace_nowrap().flex_none().child(words))).into_any_element()
+}
+
+pub(super) fn heading(env: &Env<'_>, key: &Key, content: impl Into<SharedString>, role: TypeRole, color: Hsla) -> AnyElement {
+    said_as(&env.m, key, content.into(), role, color, TextKind::Heading)
 }
 
 /// Text that may wrap, published to the probe under `key`.
@@ -198,7 +199,7 @@ pub(super) fn wrapped(env: &Env<'_>, key: &Key, content: impl Into<SharedString>
         env.m.role(role),
         1.0,
         TextOverflow::Wrap,
-        div().set(role, &env.m).text_color(color).min_w_0().child(content),
+        docs::text(key.id(), content, TextKind::Text, |words| div().set(role, &env.m).text_color(color).min_w_0().child(words)),
     )
     .into_any_element()
 }
@@ -215,7 +216,7 @@ pub(super) enum Ellipsis {
 /// [`wrapped`] for code that holds only the measure (a float card).
 pub(super) fn wrapped_in(m: &Measure, key: &Key, content: impl Into<SharedString>, role: TypeRole, color: Hsla) -> AnyElement {
     let content = content.into();
-    probe::text(key.id(), content.clone(), m.role(role), 1.0, TextOverflow::Wrap, div().set(role, m).text_color(color).min_w_0().child(content)).into_any_element()
+    probe::text(key.id(), content.clone(), m.role(role), 1.0, TextOverflow::Wrap, docs::text(key.id(), content, TextKind::Text, |words| div().set(role, m).text_color(color).min_w_0().child(words))).into_any_element()
 }
 
 /// Text that gives way with an ellipsis.
@@ -226,7 +227,7 @@ pub(super) fn truncated(env: &Env<'_>, key: &Key, content: impl Into<SharedStrin
         Ellipsis::Start => inner.text_ellipsis_start(),
         Ellipsis::End => inner.text_ellipsis(),
     };
-    probe::text(key.id(), content.clone(), env.m.role(role), 1.0, TextOverflow::Ellipsis, inner.child(content)).into_any_element()
+    probe::text(key.id(), content.clone(), env.m.role(role), 1.0, TextOverflow::Ellipsis, docs::text(key.id(), content, TextKind::Text, |words| inner.child(words))).into_any_element()
 }
 
 /// Uppercase for small-caps heads (the face has no small caps).
@@ -375,6 +376,7 @@ pub(super) enum Fires {
 pub(super) struct Chip<'a> {
     pub key: &'a Key,
     pub label: AnyElement,
+    pub words: SharedString,
     pub chosen: Chosen,
     pub voice: Voice,
     pub tone: Hsla,
@@ -384,7 +386,7 @@ pub(super) struct Chip<'a> {
 /// A filter chip running `act`.
 pub(super) fn chip(env: &Env<'_>, chip: Chip<'_>, act: Act) -> AnyElement {
     let i = ink(env.p);
-    let Chip { key, label, chosen, voice, tone, fires } = chip;
+    let Chip { key, label, words, chosen, voice, tone, fires } = chip;
     let on = chosen == Chosen::On;
     let el = div()
         .id(key.id())
@@ -400,26 +402,19 @@ pub(super) fn chip(env: &Env<'_>, chip: Chip<'_>, act: Act) -> AnyElement {
         .border_color(if on { tone } else if voice == Voice::Quiet { i.line1 } else { i.line2 })
         .hover(|style| style.bg(i.g3))
         .child(label);
-    let words = key.text();
-    let run = act.clone();
-    let el = match fires {
-        Fires::Click => el.on_click(move |_, window, cx| run(window, cx)).into_any_element(),
-        Fires::Press => el
-            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                run(window, cx);
-                // What the press opened has the focus: nothing under it takes it back.
-                cx.stop_propagation();
-            })
-            .into_any_element(),
+    let el = docs::control(words.clone(), ControlKind::Filter(on), el);
+    let activation = match fires {
+        Fires::Click => docs::Activation::Release,
+        Fires::Press => docs::Activation::PointerDown,
     };
-    env.host.target(key, words, act, el)
+    env.host.target_control(key, words, act, activation, el)
 }
 
 /// A section's head: small caps, a count, an aside at the right.
 pub(super) fn head(env: &Env<'_>, section: Sec, title: &str, count: Option<String>, aside: Option<AnyElement>) -> AnyElement {
     let i = ink(env.p);
     let key = Key::of(Part::Sec(section)).field(Slot::Head);
-    let mut row = div().flex().flex_wrap().items_baseline().gap_x(env.k(10.0)).mb(env.k(12.0)).child(said(env, &key.field(Slot::Title), caps(title), roles::HEAD, i.ink2));
+    let mut row = div().flex().flex_wrap().items_baseline().gap_x(env.k(10.0)).mb(env.k(12.0)).child(heading(env, &key.field(Slot::Title), caps(title), roles::HEAD, i.ink2));
     if let Some(count) = count {
         row = row.child(said(env, &key.field(Slot::Count), count, roles::COUNT, i.ink3));
     }
@@ -449,13 +444,8 @@ pub(super) fn runs(markup: &str, i: &Ink, code_bg: Hsla) -> (String, Vec<(Range<
             Piece::Emphasis(_) => highlights.push((range, HighlightStyle { font_style: Some(FontStyle::Italic), ..HighlightStyle::default() })),
             Piece::Strong(_) => highlights.push((range, HighlightStyle { color: Some(i.ink0), font_weight: Some(FontWeight(700.0)), ..HighlightStyle::default() })),
             Piece::Reference { target, .. } => {
-                if !["http:", "https:", "mailto:", "#"].iter().any(|prefix| target.starts_with(prefix)) {
-                    highlights.push((
-                        range.clone(),
-                        HighlightStyle { color: Some(i.ink0), underline: Some(UnderlineStyle { thickness: px(1.0), color: Some(i.line3), wavy: false }), ..HighlightStyle::default() },
-                    ));
-                    links.push((range, target));
-                }
+                highlights.push((range.clone(), HighlightStyle { color: Some(i.ink0), underline: Some(UnderlineStyle { thickness: px(1.0), color: Some(i.line3), wavy: false }), ..HighlightStyle::default() }));
+                links.push((range, target));
             }
             Piece::Shortcut { code, .. } => {
                 if code {
@@ -472,22 +462,12 @@ pub(super) fn runs(markup: &str, i: &Ink, code_bg: Hsla) -> (String, Vec<(Range<
 pub(super) fn prose(env: &Env<'_>, key: &Key, markup: &str, role: TypeRole, color: Hsla) -> AnyElement {
     let i = ink(env.p);
     let (text, highlights, links) = runs(markup, &i, i.plate2);
-    let shared = SharedString::from(text.clone());
-    let styled = StyledText::new(shared.clone()).with_highlights(highlights);
-    let host_links: Vec<(Range<usize>, Option<Act>)> = links.into_iter().map(|(range, target)| (range, env.host.lookup(&target))).collect();
-    let body: AnyElement = if host_links.iter().any(|(_, act)| act.is_some()) {
-        let (ranges, acts): (Vec<_>, Vec<_>) = host_links.into_iter().filter_map(|(r, a)| a.map(|a| (r, a))).unzip();
-        InteractiveText::new(key.field(Slot::Run).id(), styled)
-            .on_click(ranges, move |which, window: &mut Window, cx: &mut App| {
-                if let Some(act) = acts.get(which) {
-                    act(window, cx);
-                }
-            })
-            .into_any_element()
-    } else {
-        styled.into_any_element()
-    };
-    probe::text(key.id(), shared, env.m.role(role), 1.0, TextOverflow::Wrap, div().set(role, &env.m).text_color(color).min_w_0().child(body)).into_any_element()
+    let shared = SharedString::from(text);
+    let links = links.into_iter().filter_map(|(range, target)| env.host.lookup(&target)
+        .map(|activate| docs::Link { range, destination: target.into(), activate })).collect();
+    let body = docs::rich_text(key.field(Slot::Run).id(), shared.clone(), highlights, links);
+    probe::text(key.id(), shared, env.m.role(role), 1.0, TextOverflow::Wrap,
+        div().set(role, &env.m).text_color(color).min_w_0().child(body)).into_any_element()
 }
 
 /// `color` at `alpha` of the alpha it has.
@@ -585,8 +565,15 @@ pub(super) fn recorded_after(record: impl Fn(Bounds<Pixels>, &mut App) + 'static
 /// on the page has (a plate under it, a pointer), and a stop in the keyboard
 /// walk labelled `label`.
 pub(super) fn action(env: &Env<'_>, key: &Key, label: impl Into<SharedString>, act: Act, child: AnyElement) -> AnyElement {
+    action_as(env, key, label.into(), act, child, ControlKind::Button)
+}
+
+pub(super) fn disclosure(env: &Env<'_>, key: &Key, words: SharedString, open: bool, act: Act, child: AnyElement) -> AnyElement {
+    action_as(env, key, words, act, child, ControlKind::Disclosure(open))
+}
+
+fn action_as(env: &Env<'_>, key: &Key, label: SharedString, act: Act, child: AnyElement, kind: ControlKind) -> AnyElement {
     let i = ink(env.p);
-    let run = act.clone();
     let el = div()
         .id(key.id())
         .flex()
@@ -596,8 +583,19 @@ pub(super) fn action(env: &Env<'_>, key: &Key, label: impl Into<SharedString>, a
         .mx(-env.k(6.0))
         .cursor_pointer()
         .hover(|style| style.bg(i.g3))
-        .on_click(move |_, window, cx| run(window, cx))
-        .child(child)
-        .into_any_element();
-    env.host.target(key, label.into(), act, el)
+        .child(child);
+    env.host.target_control(key, label.clone(), act, docs::Activation::Release, docs::control(label, kind, el))
+}
+
+#[cfg(test)]
+mod native_docs_tests {
+    #[test]
+    fn authored_external_and_symbol_references_reach_the_typed_host_unchanged() {
+        let facet = crate::Facet::default();
+        let palette = facet.palette();
+        let ink = super::ink(palette);
+        let (words, _, links) = super::runs("[café](https://docs.rs/caf%C3%A9) [mail](mailto:a@example.org) [Tick](crate::Tick) [local](#tick)", &ink, ink.plate2);
+        let destinations: Vec<_> = links.iter().map(|(range, destination)| (&words[range.clone()], destination.as_str())).collect();
+        assert_eq!(destinations, [("café", "https://docs.rs/caf%C3%A9"), ("mail", "mailto:a@example.org"), ("Tick", "crate::Tick"), ("local", "#tick")]);
+    }
 }

@@ -38,7 +38,7 @@ fn visible<'a>(uses: &'a Uses, ui: &Ui) -> Vec<&'a Use> {
 /// start elided when more than a third of `capacity` comes before the mark, so
 /// a cut line still shows the name it marks: the text and the mark in it.
 fn windowed(text: &str, mark: Option<Range<usize>>, capacity: usize) -> (String, Option<Range<usize>>) {
-    let Some(mark) = mark.filter(|mark| mark.end <= text.len() && text.is_char_boundary(mark.start)) else { return (text.to_owned(), None) };
+    let Some(mark) = mark.filter(|mark| mark.start <= mark.end && mark.end <= text.len() && text.is_char_boundary(mark.start) && text.is_char_boundary(mark.end)) else { return (text.to_owned(), None) };
     if text.chars().count() <= capacity {
         return (text.to_owned(), Some(mark));
     }
@@ -64,14 +64,13 @@ fn code_line(env: &Env<'_>, key: &Key, place: &Use) -> AnyElement {
         ));
     }
     let shared = SharedString::from(text);
-    let styled = StyledText::new(shared.clone()).with_highlights(highlights);
     probe::text(
         key.id(),
-        shared,
+        shared.clone(),
         env.m.role(roles::CODE),
         1.0,
         TextOverflow::Ellipsis,
-        div().set(roles::CODE, &env.m).text_color(i.ink2).whitespace_nowrap().overflow_hidden().text_ellipsis().min_w_0().w_full().child(styled),
+        super::docs::text(key.id(), shared, super::docs::TextKind::Text, |words| div().set(roles::CODE, &env.m).text_color(i.ink2).whitespace_nowrap().overflow_hidden().text_ellipsis().min_w_0().w_full().child(StyledText::new(words).with_highlights(highlights))),
     )
     .into_any_element()
 }
@@ -95,7 +94,6 @@ fn row(env: &Env<'_>, place: &Use, key: &Key, open: Act) -> AnyElement {
             .child(said(env, &key.field(Slot::Open), "open", roles::CHIP, i.peri))
             .child(mark(G::Open, env.p, 11.0 * env.m.scale())),
     );
-    let act = open.clone();
     let line = div()
         .id(key.id())
         .group(group)
@@ -108,14 +106,12 @@ fn row(env: &Env<'_>, place: &Use, key: &Key, open: Act) -> AnyElement {
         .pr(env.s(6.0))
         .cursor_pointer()
         .hover(|style| style.bg(i.g3))
-        .on_click(move |_, window, cx| act(window, cx))
         .child(glyph)
         .child(loc)
         .child(div().min_w(env.s(200.0)).flex_1().child(code_line(env, &key.field(Slot::Code), place)))
-        .child(end)
-        .into_any_element();
+        .child(end);
     let label = SharedString::from(format!("{}:{}", place.file, place.line));
-    env.host.target(key, label, open, line)
+    env.host.target_control(key, label.clone(), open, super::docs::Activation::Release, super::docs::control(label, super::docs::ControlKind::Link, line))
 }
 
 fn verb_marks(env: &Env<'_>, verbs: &[Verb]) -> AnyElement {
@@ -159,16 +155,16 @@ fn picker(env: &Env<'_>, uses: &Uses, ui: &Ui) -> AnyElement {
         .flex()
         .items_center()
         .gap(env.k(6.0))
-        .child(said(env, &base.field(Slot::Name), words, if ui.package.is_some() { roles::PACKAGE } else { roles::CHIP }, colour))
+        .child(said(env, &base.field(Slot::Name), words.clone(), if ui.package.is_some() { roles::PACKAGE } else { roles::CHIP }, colour))
         .child(said(env, &base.field(Slot::Count), count.to_string(), roles::COUNT, i.ink3))
         .child(said(env, &base.field(Slot::Caret), "▾", roles::COUNT, i.ink3))
         .into_any_element();
     let chosen = if ui.package.is_some() { Chosen::On } else { Chosen::Off };
-    let opener = chip(env, Chip { key: &base, label, chosen, voice: Voice::Plain, tone, fires: Fires::Press }, open_menu(env, uses, ui));
+    let opener = chip(env, Chip { key: &base, label, words: words.into(), chosen, voice: Voice::Plain, tone, fires: Fires::Press }, open_menu(env, uses, ui));
     let mut out = div().flex().items_center().gap(env.k(6.0)).child(spot(Sec::Picker, &env.host.spots(), opener));
     if ui.package.is_some() {
         let all = said(env, &base.field(Slot::AllWords), "× all", roles::CHIP, i.ink1);
-        out = out.child(chip(env, Chip { key: &base.field(Slot::All), label: all, chosen: Chosen::Off, voice: Voice::Plain, tone: i.line2, fires: Fires::Click }, env.host.change(Change::Package(None))));
+        out = out.child(chip(env, Chip { key: &base.field(Slot::All), label: all, words: "× all".into(), chosen: Chosen::Off, voice: Voice::Plain, tone: i.line2, fires: Fires::Click }, env.host.change(Change::Package(None))));
     }
     out.into_any_element()
 }
@@ -195,7 +191,7 @@ fn filters(env: &Env<'_>, uses: &Uses, ui: &Ui) -> AnyElement {
             .child(said(env, &key.field(Slot::Count), count.to_string(), roles::COUNT, i.ink3))
             .into_any_element();
         let chosen = if ui.verb == Some(verb) { Chosen::On } else { Chosen::Off };
-        row = row.child(chip(env, Chip { key: &key, label, chosen, voice: if quiet { Voice::Quiet } else { Voice::Plain }, tone: i.peri, fires: Fires::Click }, env.host.change(Change::Verb(verb))));
+        row = row.child(chip(env, Chip { key: &key, label, words: verb.word().into(), chosen, voice: if quiet { Voice::Quiet } else { Voice::Plain }, tone: i.peri, fires: Fires::Click }, env.host.change(Change::Verb(verb))));
     }
     let tests = uses.all.iter().filter(|u| u.ctx == Ctx::Test).count();
     if tests > 0 {
@@ -207,7 +203,7 @@ fn filters(env: &Env<'_>, uses: &Uses, ui: &Ui) -> AnyElement {
             .child(said(env, &key.field(Slot::Word), "include tests", roles::CHIP, i.ink1))
             .child(said(env, &key.field(Slot::Count), tests.to_string(), roles::COUNT, i.ink3))
             .into_any_element();
-        row = row.child(chip(env, Chip { key: &key, label, chosen: if ui.tests { Chosen::On } else { Chosen::Off }, voice: Voice::Plain, tone: i.peri, fires: Fires::Click }, env.host.change(Change::Tests)));
+        row = row.child(chip(env, Chip { key: &key, label, words: "include tests".into(), chosen: if ui.tests { Chosen::On } else { Chosen::Off }, voice: Voice::Plain, tone: i.peri, fires: Fires::Click }, env.host.change(Change::Tests)));
     }
     row.into_any_element()
 }
@@ -283,6 +279,14 @@ pub(super) fn workspace(env: &Env<'_>, uses: &Uses, ui: &Ui) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::windowed;
+
+    #[test]
+    fn malformed_unicode_marks_cannot_slice_or_mislabel_the_painted_line() {
+        let line = "déjà 🧭 signal.tick";
+        for mark in [1..2, 2..1, 0..usize::MAX, 8..9] {
+            assert_eq!(windowed(line, Some(mark), 4), (line.to_owned(), None));
+        }
+    }
 
     #[test]
     fn a_long_lead_is_cut_so_the_marked_name_stays_in_view() {

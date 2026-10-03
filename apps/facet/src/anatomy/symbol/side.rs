@@ -63,9 +63,9 @@ fn source_block(env: &Env<'_>, rail: &Rail, n: usize) -> Option<AnyElement> {
     let link = match &source.open {
         Some(path) => {
             let open = env.host.open_source(path, source.line);
-            let again = open.clone();
-            link = link.cursor_pointer().on_click(move |_, window, cx| open(window, cx));
-            env.host.target(&key, SharedString::from(place), again, link.into_any_element())
+            link = link.cursor_pointer();
+            env.host.target_control(&key, place.clone().into(), open, super::docs::Activation::Release,
+                super::docs::control(place, super::docs::ControlKind::Link, link))
         }
         None => link.into_any_element(),
     };

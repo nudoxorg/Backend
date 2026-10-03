@@ -6,7 +6,7 @@ use super::call::{Tone, ty_el};
 use super::card::Cards;
 use super::ink::{G, group_mark, mark};
 use super::key::{CaseName, FoldKey, Key, Part, Sec, Slot};
-use super::kit::{Env, Ellipsis, Ink, Stop, action, caps, faded, head, ink, joint, prose, roles, said, said_in, truncated, wrapped};
+use super::kit::{Env, Ellipsis, Ink, Stop, action, caps, disclosure, faded, head, heading, ink, joint, prose, roles, said, said_in, truncated, wrapped};
 use super::view::{Block, Case, Docs, Fails, Field, Group, Outcomes, Owed, Row, Shape};
 use crate::anatomy::page::named_as;
 use crate::anatomy::unroll::unroll;
@@ -33,7 +33,7 @@ fn fold_line(env: &Env<'_>, key: &Key, words: &str, open: bool, toggle: super::h
         .child(said(env, &key.field(Slot::Words), words.to_owned(), roles::CHIP, i.peri))
         .child(said(env, &key.field(Slot::Caret), caret, roles::CHIP, i.peri))
         .into_any_element();
-    action(env, &key.field(Slot::Line), format!("{words} {}", if open { "(close)" } else { "(open)" }), toggle, line)
+    disclosure(env, &key.field(Slot::Line), words.to_owned().into(), open, toggle, line)
 }
 
 /// A fold: its line, and its body unrolled in place beneath it.
@@ -54,7 +54,7 @@ fn folded(env: &Env<'_>, fold: &FoldKey, key: &Key, words: &str, body: AnyElemen
 fn block(env: &Env<'_>, i: &Ink, key: &Key, block: &Block) -> AnyElement {
     match block {
         Block::Para(text) => div().mb(env.k(12.0)).max_w(env.s(720.0)).child(prose(env, key, text, roles::PROSE, i.ink1)).into_any_element(),
-        Block::Head(text) => div().mt(env.k(18.0)).mb(env.k(8.0)).child(said(env, key, caps(text), roles::HEAD, i.ink3)).into_any_element(),
+        Block::Head(text) => div().mt(env.k(18.0)).mb(env.k(8.0)).child(heading(env, key, caps(text), roles::HEAD, i.ink3)).into_any_element(),
         Block::Item(text) => div()
             .flex()
             .items_start()
