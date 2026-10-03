@@ -65,8 +65,13 @@ def main [
         {platform: "windows", shell: "windows-wine", triple: "x86_64-pc-windows-gnu"}
         {platform: "arm64", shell: "arm64-emu", triple: "aarch64-unknown-linux-gnu"}
     ] | each {|lane|
+        # `nix develop` makes its TMPDIR inside the current one. Nested in
+        # this shell's, test socket paths outgrow sun_path's 107 bytes
+        # (EndpointTooLong), so start the inner shell from plain /tmp.
         let passed = (try {
-            run-external "nix" "develop" $".#($lane.shell)" "-c" "nu" ".config/ci/emulated.nu" $lane.platform
+            with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
+                run-external "nix" "develop" $".#($lane.shell)" "-c" "nu" ".config/ci/emulated.nu" $lane.platform
+            }
             true
         } catch { false })
         if not $keep_artifacts {
