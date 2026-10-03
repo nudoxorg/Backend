@@ -1,7 +1,9 @@
 //! Owner-selected README content and its bounded, worker-prepared addresses.
 
+use crate::model::document_identity::{DocumentIdentity, DocumentPaintIdentity};
 use crate::model::local_package::ReadmeHeading;
 use crate::model::pages::PackageRef;
+use crate::model::pages::Stamp;
 use crate::navigation::{CargoBrowseContext, CargoReadmeLinkAddress};
 use backend_library::{CargoPackageReadmeAbsenceV1, CargoPackageReadmeOriginV1};
 use std::sync::Arc;
@@ -56,6 +58,7 @@ pub struct CargoReadmeDocument {
     /// Complete bounded UTF-8 Markdown returned by the owner.
     pub source: Arc<str>,
     identity: Arc<str>,
+    document_identity: DocumentIdentity,
     navigation: Arc<NavigationIndex>,
 }
 
@@ -72,12 +75,14 @@ impl CargoReadmeDocument {
         source: Arc<str>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self, PreparationError> {
-        let navigation = NavigationIndex::prepare(&origin, &source, cancelled)?;
-        let identity = endpoint_identity(&origin_identity(&origin), "document", "");
+        let document_identity = DocumentIdentity::readme(&origin);
+        let navigation = NavigationIndex::prepare(&origin, document_identity, &source, cancelled)?;
+        let identity = endpoint_identity(&document_identity, "document", "");
         Ok(Self {
             origin,
             source,
             identity,
+            document_identity,
             navigation: Arc::new(navigation),
         })
     }
@@ -92,13 +97,22 @@ impl CargoReadmeDocument {
         self.navigation.heading_count()
     }
     pub(crate) fn link(&self, index: usize) -> Option<CargoReadmeLink> {
-        self.navigation.link(index, &self.origin)
+        self.navigation.link(index, &self.origin, None)
     }
     pub(crate) fn heading(&self, index: usize) -> Option<ReadmeHeading> {
-        self.navigation.heading(index)
+        self.navigation.heading(index, None)
     }
     pub(crate) fn heading_id(&self, index: usize) -> Option<Arc<str>> {
         self.navigation.heading_id(index)
+    }
+
+    /// Transient pixel/address projections for an actual Reader visit. The
+    /// caller must separately hold the current selected resource/action lease.
+    pub(crate) fn paint(&self, place: u64, stamp: Stamp) -> CargoReadmePaint<'_> {
+        CargoReadmePaint {
+            document: self,
+            identity: self.document_identity.for_visit(place, stamp),
+        }
     }
 
     /// Actual prepared index storage for bounded result payload accounting.
@@ -118,50 +132,41 @@ impl CargoReadmeDocument {
     }
 
     pub(crate) fn destination(&self, href: &str) -> CargoReadmeDestination {
-        self.navigation.destination(href, &self.origin)
+        self.navigation.destination(href, &self.origin, None)
     }
 }
 
-/// UI identity only. Neither this digest nor a native ID admits owner reads.
-fn origin_identity(origin: &CargoPackageReadmeOriginV1) -> blake3::Hash {
-    use backend_library::{
-        CargoPackageReadmeRootScopeV1 as Scope, CargoPackageReadmeSelectionV1 as Selection,
-    };
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"nudox-cargo-readme-focus-v1");
-    identity_field(&mut hash, origin.package.as_str().as_bytes());
-    hash.update(&origin.request_binding.schema.to_le_bytes());
-    hash.update(&origin.request_binding.requested_root_digest);
-    hash.update(&origin.request_binding.effective_workspace_root_digest);
-    hash.update(&[match origin.root_scope {
-        Scope::Package => 0,
-        Scope::EffectiveWorkspace => 1,
-    }]);
-    identity_field(&mut hash, origin.path.as_str().as_bytes());
-    hash.update(&[match origin.selection {
-        Selection::ManifestPath => 0,
-        Selection::ManifestTrueDefault => 1,
-        Selection::CargoConventionalDefault => 2,
-        Selection::WorkspaceInherited => 3,
-    }]);
-    hash.update(&origin.content_digest);
-    hash.finalize()
+/// Shared scoped projections keep native heading actions and Markdown's
+/// painted bounds on the same document/visit identity.
+pub(crate) struct CargoReadmePaint<'a> {
+    document: &'a CargoReadmeDocument,
+    identity: DocumentPaintIdentity,
 }
 
-fn identity_field(hash: &mut blake3::Hasher, bytes: &[u8]) {
-    hash.update(&(bytes.len() as u64).to_le_bytes());
-    hash.update(bytes);
+impl CargoReadmePaint<'_> {
+    pub(crate) fn identity(&self) -> DocumentPaintIdentity {
+        self.identity
+    }
+    pub(crate) fn heading(&self, index: usize) -> Option<ReadmeHeading> {
+        self.document.navigation.heading(index, Some(self.identity))
+    }
+    pub(crate) fn link(&self, index: usize) -> Option<CargoReadmeLink> {
+        self.document
+            .navigation
+            .link(index, &self.document.origin, Some(self.identity))
+    }
+    pub(crate) fn destination(&self, href: &str) -> CargoReadmeDestination {
+        self.document
+            .navigation
+            .destination(href, &self.document.origin, Some(self.identity))
+    }
 }
 
-fn endpoint_digest(origin: &blake3::Hash, kind: &str, endpoint: &str) -> blake3::Hash {
-    let mut hash = blake3::Hasher::new();
-    hash.update(origin.as_bytes());
-    identity_field(&mut hash, kind.as_bytes());
-    identity_field(&mut hash, endpoint.as_bytes());
-    hash.finalize()
+fn endpoint_digest(origin: &DocumentIdentity, kind: &str, endpoint: &str) -> blake3::Hash {
+    origin.endpoint(kind, endpoint)
 }
 
-fn endpoint_identity(origin: &blake3::Hash, kind: &str, endpoint: &str) -> Arc<str> {
+fn endpoint_identity(origin: &DocumentIdentity, kind: &str, endpoint: &str) -> Arc<str> {
     Arc::from(format!(
         "cargo-readme-{kind}-{}",
         endpoint_digest(origin, kind, endpoint).to_hex()

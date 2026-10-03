@@ -2,6 +2,7 @@
 //! checked byte arena; repeated reference links share one destination.
 
 use super::{CargoReadmeDestination, CargoReadmeFocus, CargoReadmeLink, endpoint_digest};
+use crate::model::document_identity::{DocumentIdentity, DocumentPaintIdentity};
 use crate::model::local_package::{ReadmeHeading, readme_external_address};
 use crate::navigation::CargoReadmeLinkAddress;
 use backend_library::{CargoPackageReadmeLinkTargetV1, CargoPackageReadmeOriginV1};
@@ -159,6 +160,7 @@ pub(super) struct NavigationIndex {
 impl NavigationIndex {
     pub(super) fn prepare(
         origin: &CargoPackageReadmeOriginV1,
+        identity: DocumentIdentity,
         source: &str,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self, PreparationError> {
@@ -173,7 +175,7 @@ impl NavigationIndex {
         if cancelled() {
             return Err(PreparationError::Cancelled);
         }
-        let mut builder = Builder::new(origin, source.len())?;
+        let mut builder = Builder::new(origin, identity, source.len())?;
         let mut definitions = HashMap::new();
         walk(&ast, source.len(), cancelled, |node| {
             if let Node::Definition(definition) = node {
@@ -217,6 +219,7 @@ impl NavigationIndex {
         &self,
         index: usize,
         origin: &CargoPackageReadmeOriginV1,
+        paint: Option<DocumentPaintIdentity>,
     ) -> Option<CargoReadmeLink> {
         let link = self.links.get(index)?;
         let href = self.hrefs.get(link.href as usize)?;
@@ -224,15 +227,22 @@ impl NavigationIndex {
             id: link_id(&href.focus, link.occurrence),
             label: Arc::from(self.arena.text(link.label)),
             href: Arc::from(self.arena.text(href.text)),
-            destination: self.project(href, origin),
+            destination: self.project(href, origin, paint),
         })
     }
 
-    pub(super) fn heading(&self, index: usize) -> Option<ReadmeHeading> {
+    pub(super) fn heading(
+        &self,
+        index: usize,
+        paint: Option<DocumentPaintIdentity>,
+    ) -> Option<ReadmeHeading> {
         let heading = self.headings.get(index)?;
         Some(ReadmeHeading {
             slug: Arc::from(self.arena.text(heading.slug)),
-            element_id: Arc::from(format!("readme-heading-{}", heading.offset)),
+            element_id: paint.map_or_else(
+                || Arc::from(format!("readme-heading-{}", heading.offset)),
+                |identity| identity.heading_id(heading.offset as usize),
+            ),
             title: Arc::from(self.arena.text(heading.title)),
             level: heading.level,
         })
@@ -248,12 +258,13 @@ impl NavigationIndex {
         &self,
         href: &str,
         origin: &CargoPackageReadmeOriginV1,
+        paint: Option<DocumentPaintIdentity>,
     ) -> CargoReadmeDestination {
         self.find_href(href).map_or(
             CargoReadmeDestination::Unavailable(
                 "This destination is not an authored link in the current README.",
             ),
-            |found| self.project(found, origin),
+            |found| self.project(found, origin, paint),
         )
     }
 
@@ -322,12 +333,17 @@ impl NavigationIndex {
         self.hrefs.get(*self.href_order.get(at)? as usize)
     }
 
-    fn project(&self, href: &Href, origin: &CargoPackageReadmeOriginV1) -> CargoReadmeDestination {
+    fn project(
+        &self,
+        href: &Href,
+        origin: &CargoPackageReadmeOriginV1,
+        paint: Option<DocumentPaintIdentity>,
+    ) -> CargoReadmeDestination {
         match href.destination {
             Destination::External => {
                 CargoReadmeDestination::External(Arc::from(self.arena.text(href.text)))
             }
-            Destination::Anchor(index) => self.heading(index as usize).map_or(
+            Destination::Anchor(index) => self.heading(index as usize, paint).map_or(
                 CargoReadmeDestination::Unavailable(
                     "This heading is unavailable in the current README.",
                 ),
@@ -351,7 +367,7 @@ impl NavigationIndex {
 
 struct Builder<'a> {
     origin: &'a CargoPackageReadmeOriginV1,
-    origin_key: blake3::Hash,
+    origin_key: DocumentIdentity,
     strings: Interner,
     links: Vec<Link>,
     hrefs: Vec<Href>,
@@ -364,11 +380,12 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     fn new(
         origin: &'a CargoPackageReadmeOriginV1,
+        identity: DocumentIdentity,
         source_bytes: usize,
     ) -> Result<Self, PreparationError> {
         Ok(Self {
             origin,
-            origin_key: super::origin_identity(origin),
+            origin_key: identity,
             strings: Interner::new(source_bytes)?,
             links: Vec::new(),
             hrefs: Vec::new(),

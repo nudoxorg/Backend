@@ -137,6 +137,9 @@ fn document_leaf(
     let measure = ctx.measure;
     let palette = ctx.palette;
     let rows = cx.default_global::<Cache>().for_document(&document);
+    let paint_place = ctx.place_key;
+    let paint_stamp = dependency.1;
+    let painted = document.paint(paint_place, paint_stamp);
     let scope = match document.origin.root_scope {
         backend_library::CargoPackageReadmeRootScopeV1::Package => "package root",
         backend_library::CargoPackageReadmeRootScopeV1::EffectiveWorkspace => {
@@ -162,11 +165,12 @@ fn document_leaf(
     let links = ctx.links.clone();
     let recall = ctx.targets.recall();
     let scroll = ctx.reader_scroll.clone();
-    let document_id: SharedString = document.identity().to_owned().into();
+    let document_id = SharedString::from(painted.identity().document_id());
     let rich_id = document_id.clone();
-    let rich = crate::shell::markdown::view(
+    let rich = crate::shell::markdown::scoped_view(
         ElementId::Name(document_id),
         SharedString::from(Arc::clone(&document.source)),
+        painted.identity(),
     )
     .w_full();
     column = column.child(
@@ -177,7 +181,9 @@ fn document_leaf(
                 if rich_guard(app)
                     && current_origin(&rich_dependencies, &rich_document, &links, app)
                 {
-                    let outcome = rich_document.destination(&action.destination);
+                    let outcome = rich_document
+                        .paint(paint_place, paint_stamp)
+                        .destination(&action.destination);
                     let id = rich_document
                         .inline_focus_id(&action.destination)
                         .map_or_else(|| rich_id.clone(), SharedString::from);
@@ -217,7 +223,7 @@ fn document_leaf(
         )));
     }
     for index in heading_range {
-        let Some(heading) = document.heading(index) else {
+        let Some(heading) = painted.heading(index) else {
             continue;
         };
         let Some(id) = document.heading_id(index) else {
@@ -283,7 +289,7 @@ fn document_leaf(
         )));
     }
     for index in link_range {
-        let Some(link) = document.link(index) else {
+        let Some(link) = painted.link(index) else {
             continue;
         };
         let id = SharedString::from(Arc::clone(&link.id));
