@@ -21,6 +21,7 @@ use super::outline::{Listed, Outline};
 use super::row::{Do, Folds, Heading, Item, Mark, ReleaseMark, Row, RowId, Trailing};
 use super::scope::{Crumbs, Located, Scope, locate};
 use super::state::{Change, Reach, RowState, StateBook};
+use crate::core::{ReadHoldReason, ResourceAdmission, ResourceTerminal};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
     DependencyScope, Known, OrbitModel, OutlineNode, OutlineTree, PackageDossier, PackageRef,
@@ -136,9 +137,9 @@ pub(super) struct Inputs<'a> {
     /// What each item of the package carries.
     pub book: &'a StateBook,
     /// The dossier of the package on the path down to the scope.
-    pub dossier: Option<&'a PackageDossier>,
+    pub dossier: Option<ResourceAdmission<'a, PackageDossier>>,
     /// The Orbit model.
-    pub orbit: Option<&'a OrbitModel>,
+    pub orbit: ResourceAdmission<'a, OrbitModel>,
     /// The declaration the reader is on.
     pub current: Option<SymbolRef>,
     /// The release data of this package.
@@ -188,7 +189,7 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
         for row in std::mem::take(&mut listing.rows) {
             match row {
                 Row::Heading(_) => heading = Some(row),
-                Row::Note(_) => {}
+                Row::Note(_) => kept.push(row),
                 Row::Item(mut item) => {
                     if let Some(hit) = super::narrow::find_fold(&item.name, query) {
                         item.hit = Some(hit);
@@ -328,10 +329,35 @@ pub(crate) fn beside_your_projects<'a>(
     list
 }
 
+/// Disclose why current facts are unavailable without treating retained bytes
+/// as a completed reading. Both pixels and native note semantics use this text.
+fn admission_note<T>(reading: &ResourceAdmission<'_, T>) -> Option<SharedString> {
+    let (reason, retained) = match reading {
+        ResourceAdmission::Current(_) => return None,
+        ResourceAdmission::Pending(reason) => (Some(*reason), false),
+        ResourceAdmission::Retained { reason, .. } => (Some(*reason), true),
+        ResourceAdmission::Failed { terminal, retained } => {
+            let words = match terminal {
+                ResourceTerminal::Fault(error) => format!("The current reading failed. {}", error.message()),
+                ResourceTerminal::Unavailable(crate::core::UnavailableReason::Unsupported) => "The index does not provide this reading.".to_owned(),
+                ResourceTerminal::Unavailable(crate::core::UnavailableReason::OutOfScope) => "This reading is outside the selected scope.".to_owned(),
+                ResourceTerminal::Complete | ResourceTerminal::Partial => "The current reading is unavailable.".to_owned(),
+            };
+            return Some(format!("{words}{}", if retained.is_some() { " An earlier reading is retained; it does not establish current relationships." } else { "" }).into());
+        }
+    };
+    let words = match reason.expect("pending or retained reason") {
+        ReadHoldReason::OwnerUnavailable => "The index owner is not serving this reading.",
+        ReadHoldReason::AuthorityChanged => "Waiting for a reading from the current index.",
+        ReadHoldReason::Reading | ReadHoldReason::NotReady => "The current reading is not complete yet.",
+    };
+    Some(format!("{words}{}", if retained { " An earlier reading is retained; it does not establish current relationships." } else { "" }).into())
+}
+
 fn library(inputs: &Inputs<'_>) -> Listing {
+    let orbit = inputs.orbit.current_value();
     let workspace = inputs.snapshot.workspace();
-    let library: Option<Vec<&crate::model::pages::IndexedPackage>> = inputs
-        .orbit
+    let library: Option<Vec<&crate::model::pages::IndexedPackage>> = orbit
         .and_then(|model| model.indexed.known())
         .map(|list| beside_your_projects(list, workspace, LibraryOrder::Name));
     let indexed = library.as_deref();
@@ -339,7 +365,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
     // row already opens it. The title reports the full indexed package count,
     // as Orbit's arrival sentence does; Contents still counts mounted rows.
     let packages = indexed.map(<[_]>::len);
-    let all_packages = inputs.orbit.and_then(|model| model.indexed.known().map(|list| list.len()));
+    let all_packages = orbit.and_then(|model| model.indexed.known().map(|list| list.len()));
     let projects = workspace.projects.len();
     let detail = match all_packages {
         Some(packages) => format!(
@@ -347,7 +373,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
             if projects == 1 { "" } else { "s" },
             if packages == 1 { "" } else { "s" }
         ),
-        None if inputs.orbit.is_none() => format!("{projects} project{} · packages reading", if projects == 1 { "" } else { "s" }),
+        None if matches!(inputs.orbit, ResourceAdmission::Pending(ReadHoldReason::Reading | ReadHoldReason::NotReady) | ResourceAdmission::Retained { reason: ReadHoldReason::Reading | ReadHoldReason::NotReady, .. }) => format!("{projects} project{} · packages reading", if projects == 1 { "" } else { "s" }),
         None => format!("{projects} project{} · packages unavailable", if projects == 1 { "" } else { "s" }),
     };
     // The count is what the list shows: your projects and the packages beside them.
@@ -355,7 +381,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         contents: packages.map(|packages| projects + packages),
         versions: None,
         rests_on: None,
-        used_by: Some(projects),
+        used_by: None,
     };
     let head = Head {
         title: Some(Title::Library {
@@ -439,26 +465,29 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         rows.push(Row::Item(item));
                     }
                 }
-                None => rows.push(Row::Note(match inputs.orbit.and_then(|orbit| orbit.indexed.gap()) {
+                None => rows.push(Row::Note(admission_note(&inputs.orbit).unwrap_or_else(|| match orbit.and_then(|orbit| orbit.indexed.gap()) {
                     Some(gap) => format!("The library's packages are unavailable. {}", gap_words(gap)).into(),
                     None => "The library's packages are still being read.".into(),
-                })),
+                }))),
             }
         }
         Lens::UsedBy => {
+            rows.push(Row::Note("Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages.".into()));
+            if let Some(note) = admission_note(&inputs.orbit) { rows.push(Row::Note(note)); }
             if projects == 0 {
-                rows.push(Row::Note(
-                    "No project of yours uses the library yet.".into(),
-                ));
+                rows.push(Row::Note("There are no saved projects.".into()));
             } else {
-                rows.push(Row::heading("Yours", projects));
+                rows.push(Row::heading("Saved projects", projects));
                 rows.extend(project_rows());
             }
         }
         Lens::Versions => rows.push(Row::Note(
             "Newer releases across the library are not indexed yet.".into(),
         )),
-        Lens::RestsOn => rows.push(Row::Note("The library rests on nothing.".into())),
+        Lens::RestsOn => {
+            rows.push(Row::Note("Library dependency relationships are not indexed. Choose a package to read its dependencies.".into()));
+            if let Some(note) = admission_note(&inputs.orbit) { rows.push(Row::Note(note)); }
+        }
     }
     Listing {
         head,
@@ -551,7 +580,7 @@ fn up_label(inputs: &Inputs<'_>, tree: Option<&OutlineTree>) -> Option<StepOut> 
 }
 
 fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
-    let dossier = inputs.dossier;
+    let dossier = inputs.dossier.as_ref().and_then(ResourceAdmission::current_value);
     let tree = dossier.and_then(|dossier| dossier.outline.known());
     let version = dossier
         .and_then(|dossier| dossier.record.known())
@@ -568,7 +597,9 @@ fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
         ..Head::default()
     };
     let mut matched = None;
-    let rows = match inputs.lens {
+    let rows = if dossier.is_none() {
+        vec![Row::Note(inputs.dossier.as_ref().and_then(admission_note).unwrap_or_else(|| "The package has not been read yet.".into()))]
+    } else { match inputs.lens {
         Lens::Contents => {
             let (rows, narrowed) = contents(inputs, package, dossier);
             matched = narrowed;
@@ -577,7 +608,7 @@ fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
         Lens::Versions => dossier.map_or_else(Vec::new, |dossier| versions(inputs, dossier)),
         Lens::RestsOn => dossier.map_or_else(Vec::new, rests_on),
         Lens::UsedBy => dossier.map_or_else(Vec::new, |dossier| used_by(inputs, dossier)),
-    };
+    }};
     Listing {
         head,
         rows,
@@ -609,7 +640,7 @@ fn package_counts(
         }),
         versions: dossier.versions.known().map(|list| list.len()),
         rests_on: dossier.dependencies.known().map(|list| list.len()),
-        used_by: (crates > 0 || dependents.is_some()).then(|| crates + dependents.unwrap_or(0)),
+        used_by: dependents.map(|dependents| crates + dependents),
     }
 }
 
@@ -883,8 +914,10 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
         rows.push(Row::heading("In the library", others.len()));
         rows.extend(others.iter().map(|record| dependent_row(record)));
     }
-    if let Some(gap) = gap.filter(|gap| gap.reason == crate::model::pages::GapReason::Unknown) {
-        rows.push(Row::Note(format!("Partial coverage: {}", gap.detail).into()));
+    if let Some(gap) = gap {
+        rows.push(Row::Note(if gap.reason == crate::model::pages::GapReason::Unknown {
+            format!("Partial coverage: {}", gap.detail).into()
+        } else { gap_words(gap) }));
     }
     if rows.is_empty() {
         rows.push(Row::Note("Nothing here uses it yet".into()));
@@ -926,14 +959,18 @@ fn node_scope(inputs: &Inputs<'_>, symbol: &SymbolRef) -> Listing {
             matched: None,
         };
     };
-    let tree = inputs.dossier.and_then(|dossier| dossier.outline.known());
+    let dossier = inputs.dossier.as_ref().and_then(ResourceAdmission::current_value);
+    let tree = dossier.and_then(|dossier| dossier.outline.known());
     let found = tree.and_then(|tree| locate(tree, symbol));
     let Some(Located { node, ancestors }) = found else {
-        let rows = if inputs.dossier.is_some() {
-            vec![Row::Note("It is not in this release's outline.".into())]
+        let words = if tree.is_some() {
+            "It is not in this release's outline.".into()
+        } else if let Some(gap) = dossier.and_then(|dossier| dossier.outline.gap()) {
+            gap_words(gap)
         } else {
-            Vec::new()
+            inputs.dossier.as_ref().and_then(admission_note).unwrap_or_else(|| "The package has not been read yet.".into())
         };
+        let rows = vec![Row::Note(words)];
         return Listing {
             head: bare_head(inputs),
             rows,
@@ -1047,6 +1084,98 @@ fn bare_head(inputs: &Inputs<'_>) -> Head {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fact_listing(
+        dossier: Option<&crate::core::Resource<PackageDossier>>,
+        orbit: &crate::core::Resource<OrbitModel>,
+        current: crate::core::VersionedRoot,
+        serving: bool,
+        lens: Lens,
+        node: bool,
+        query: &str,
+    ) -> Listing {
+        let route = if dossier.is_some() { crate::shell::tests::page_route("Identity") } else { Route::Orbit(OrbitRoute::Home) };
+        let snapshot = AppSnapshot::empty(current);
+        let mut crumbs = Crumbs::following(&route);
+        if node { crumbs.hoist(Scope::Node(crate::shell::tests::symbol("Identity"))); }
+        build(&Inputs {
+            snapshot: &snapshot, route: &route, crumbs: &crumbs, lens,
+            folds: &Folds::default(), filter: Filter { query, via: None }, book: &StateBook::none(),
+            dossier: dossier.map(|resource| crate::core::admit_resource(resource, current, serving)),
+            orbit: crate::core::admit_resource(orbit, current, serving),
+            current: None, diffs: None, settings: None, held: Vec::new(), trail: Vec::new(),
+        })
+    }
+
+    fn fact_root(epoch: u64) -> crate::core::VersionedRoot {
+        crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shelf-facts".into(), "fixture".into())]), epoch)
+    }
+
+    fn empty_orbit() -> OrbitModel {
+        OrbitModel { indexed: Known::Known(std::sync::Arc::from([])), projects: Known::Known(std::sync::Arc::from([])), explore: Known::Known(std::sync::Arc::from([])), tree: Known::Known(std::sync::Arc::from([])) }
+    }
+
+    #[test]
+    fn only_current_complete_package_relationships_establish_empty() {
+        use crate::core::{FaultCode, Resource};
+        let root = fact_root(1);
+        let orbit = Resource::loaded_at(empty_orbit(), root);
+        let mut package = crate::shell::tests::dossier();
+        package.dependents = Known::Known(std::sync::Arc::from([]));
+        let read = Resource::loaded_at(package, root);
+        for (lens, empty) in [(Lens::RestsOn, "Rests on nothing"), (Lens::UsedBy, "Nothing here uses it yet")] {
+            let ready = fact_listing(Some(&read), &orbit, root.observed_at(999), true, lens, false, "");
+            assert_eq!(ready.head.counts.expect("counts").of(lens), Some(0));
+            assert!(words(&ready).iter().any(|words| words == empty));
+            for (resource, authority, serving, note) in [
+                (Resource::not_yet(), root, true, "not complete"),
+                (Resource::error(FaultCode::Transport, "shelf read failed"), root, true, "shelf read failed"),
+                (read.clone().mark_error(FaultCode::Transport, "retained read failed"), root, true, "earlier reading is retained"),
+                (read.clone(), fact_root(2), true, "current index"),
+                (read.clone(), root, false, "not serving"),
+                (read.clone().working(), root, true, "not complete"),
+            ] {
+                // Narrowing must not erase a gap or turn it into an empty claim.
+                for query in ["", "unmatched"] {
+                    let held = fact_listing(Some(&resource), &orbit, authority, serving, lens, false, query);
+                    assert_eq!(held.head.counts.expect("counts").of(lens), None);
+                    let said = words(&held);
+                    assert!(!said.iter().any(|words| words == empty), "{said:?}");
+                    assert!(said.iter().any(|words| words.contains(note)), "{said:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn library_inventory_never_fabricates_aggregate_relationships() {
+        use crate::core::{FaultCode, Resource};
+        let root = fact_root(1);
+        for resource in [Resource::loaded_at(empty_orbit(), root), Resource::not_yet(), Resource::error(FaultCode::Transport, "offline index")] {
+            for lens in [Lens::RestsOn, Lens::UsedBy] {
+                let listed = fact_listing(None, &resource, root, true, lens, false, "");
+                assert_eq!(listed.head.counts.expect("counts").of(lens), None);
+                let said = words(&listed);
+                assert!(said.iter().any(|words| words.contains("relationships are not indexed")));
+                assert!(!said.iter().any(|words| words.contains("rests on nothing") || words.contains("uses the library yet")));
+                if matches!(resource.terminal(), ResourceTerminal::Fault(_)) { assert!(said.iter().any(|words| words.contains("offline index"))); }
+            }
+        }
+    }
+
+    #[test]
+    fn unread_outline_does_not_establish_that_a_hoisted_node_is_absent() {
+        use crate::core::Resource;
+        let root = fact_root(1);
+        let orbit = Resource::loaded_at(empty_orbit(), root);
+        let mut package = crate::shell::tests::dossier();
+        package.outline = Known::Unknown(crate::model::pages::Gap { reason: crate::model::pages::GapReason::ReadFailed, detail: "outline unavailable".into() });
+        let read = Resource::loaded_at(package, root);
+        let listed = fact_listing(Some(&read), &orbit, root, true, Lens::Contents, true, "");
+        let said = words(&listed);
+        assert!(said.iter().any(|words| words.contains("outline unavailable")));
+        assert!(!said.iter().any(|words| words.contains("not in this release")));
+    }
 
     fn dependency(name: &str) -> Row {
         Row::Item(Item::new(

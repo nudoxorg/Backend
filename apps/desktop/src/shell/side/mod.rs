@@ -312,10 +312,8 @@ impl Shelf {
                 via: self.via.as_ref(),
             },
             book: &book,
-            dossier: dossier
-                .as_ref()
-                .and_then(|resource| resource.loaded_value()),
-            orbit: orbit.loaded_value(),
+            dossier: dossier.as_ref().map(|resource| crate::core::admit_resource(resource, snapshot.key(), store.owner_serving())),
+            orbit: crate::core::admit_resource(&orbit, snapshot.key(), store.owner_serving()),
             current,
             diffs,
             settings,
