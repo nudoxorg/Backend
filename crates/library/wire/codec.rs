@@ -8,18 +8,45 @@
 use super::ReplyDto;
 use crate::{CommandDto, Cursor};
 use backend_version::ProducerObservationVerifier;
+use serde::de::DeserializeOwned;
 
 /// Largest admitted command envelope before JSON parsing or owned string allocation.
 pub const MAX_COMMAND_BODY: usize = 256 * 1024;
+/// Largest admitted reply envelope before JSON parsing or owned string allocation.
+///
+/// Four MiB matches the local command/reply frame ceiling. Remote-index reply
+/// bodies use a slightly smaller ceiling to leave room for their frame
+/// envelope; this shared codec remains transport neutral and accepts the full
+/// local reply body allowance.
+pub const MAX_REPLY_BODY: usize = 4 * 1024 * 1024;
+
+/// Deserializes one reply envelope after enforcing the shared encoded-body cap.
+///
+/// All byte-oriented reply entry points use this before constructing JSON
+/// strings or invoking producer verification.
+pub(super) fn parse_reply_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    if bytes.len() > MAX_REPLY_BODY {
+        return Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"));
+    }
+    serde_json::from_slice(bytes).map_err(|error| error.to_string())
+}
+
+fn parse_command_body_value(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    if bytes.len() > MAX_COMMAND_BODY {
+        return Err(format!("command body exceeds {MAX_COMMAND_BODY} bytes"));
+    }
+    serde_json::from_slice(bytes).map_err(|error| error.to_string())
+}
 
 /// Extracts the correlation ID from a syntactically valid command envelope.
 ///
 /// This is deliberately weaker than command admission: listeners use it only
 /// to correlate an error that prevented the full DTO from being admitted. It
-/// never constructs an identity-bearing [`CommandDto`].
+/// never constructs an identity-bearing [`CommandDto`]. Bodies larger than
+/// [`MAX_COMMAND_BODY`] bytes do not reach the JSON parser.
 #[must_use]
 pub fn command_request_id(bytes: &[u8]) -> Option<u64> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let value = parse_command_body_value(bytes).ok()?;
     value.get("request_id")?.as_u64()
 }
 
@@ -94,20 +121,30 @@ pub fn encode_command_body(request: &CommandDto) -> Result<Vec<u8>, String> {
 /// A certificate-bearing envelope always takes the canonical producer path;
 /// identity-free error replies may use the ordinary serde path. The caller
 /// still runs [`crate::admit_reply`] against its request after this body
-/// decoder returns.
+/// decoder returns. Envelopes larger than [`MAX_REPLY_BODY`] bytes are rejected
+/// before parsing.
 ///
 /// # Errors
 ///
 /// Returns an error for malformed JSON, unknown fields, unsupported versions,
-/// or invalid producer canonical claims.
+/// invalid producer canonical claims, or envelopes larger than the 4 MiB reply
+/// body limit.
 pub fn decode_reply_body(bytes: &[u8]) -> Result<ReplyDto, String> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    decode_reply_body_with(bytes, |bytes| {
+        ReplyDto::decode_with_certificate(bytes, None)
+    })
+}
+
+fn decode_reply_body_with(
+    bytes: &[u8],
+    decode_certificate: impl FnOnce(&[u8]) -> Result<ReplyDto, String>,
+) -> Result<ReplyDto, String> {
+    let value: serde_json::Value = parse_reply_body(bytes)?;
     if value
         .get("certificate")
         .is_some_and(|certificate| !certificate.is_null())
     {
-        ReplyDto::decode_with_certificate(bytes, None)
+        decode_certificate(bytes)
     } else {
         serde_json::from_value(value).map_err(|error| error.to_string())
     }
@@ -121,19 +158,200 @@ pub fn decode_reply_body(bytes: &[u8]) -> Result<ReplyDto, String> {
 /// # Errors
 ///
 /// Returns an error for malformed JSON, unknown fields, unsupported versions,
-/// or a producer observation rejected by `verifier`.
+/// a producer observation rejected by `verifier`, or envelopes larger than
+/// the 4 MiB reply body limit.
 pub fn decode_reply_body_with_verifier<V: ProducerObservationVerifier>(
     bytes: &[u8],
     verifier: &V,
 ) -> Result<ReplyDto, String> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    if value
-        .get("certificate")
-        .is_some_and(|certificate| !certificate.is_null())
-    {
+    decode_reply_body_with(bytes, |bytes| {
         ReplyDto::decode_with_verifier(bytes, verifier)
-    } else {
-        serde_json::from_value(value).map_err(|error| error.to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::{
+        MAX_COMMAND_BODY, MAX_REPLY_BODY, command_request_id, decode_reply_body,
+        decode_reply_body_with_verifier,
+    };
+    use crate::{
+        Cursor, ProducerObservationClaims, ProducerObservationVerifier, ReplyDto,
+        UntrustedProducerObservation, WireCertificate,
+    };
+    use std::cell::Cell;
+
+    struct CountingVerifier(Cell<usize>);
+
+    impl CountingVerifier {
+        fn new() -> Self {
+            Self(Cell::new(0))
+        }
+
+        fn calls(&self) -> usize {
+            self.0.get()
+        }
+    }
+
+    impl ProducerObservationVerifier for CountingVerifier {
+        type Error = &'static str;
+
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            self.0.set(self.0.get() + 1);
+            if observation.producer_identity() != *observation.scope_root().as_bytes()
+                || observation.context() != *observation.scope_root().as_bytes()
+                || observation.evidence() != observation.scope_root().as_bytes()
+            {
+                return Err("invalid test producer observation");
+            }
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+
+    fn certified_health_reply() -> ReplyDto {
+        let source_root = crate::view_state_root(&[]);
+        let basis = crate::Basis::new(source_root, crate::object_version(b"source"));
+        let root = crate::ViewRoot::empty_checked(
+            crate::view_key(b"view"),
+            basis,
+            crate::Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+            crate::wire::tests::capability(basis.object),
+        )
+        .expect("complete test root");
+        let certificate = crate::wire::tests::certificate(&root);
+        ReplyDto::health(41, root.clone(), Cursor::for_view_root(&root))
+            .with_certificate(certificate)
+    }
+
+    fn over_limit_padding(bytes: &[u8], limit: usize) -> Vec<u8> {
+        let mut padded = bytes.to_vec();
+        padded.resize(limit + 1, b' ');
+        padded
+    }
+
+    #[test]
+    fn reply_decoders_reject_oversized_bodies_before_json_or_verification() {
+        let too_large = vec![b'{'; MAX_REPLY_BODY + 1];
+        let limit_error = format!("reply body exceeds {MAX_REPLY_BODY} bytes");
+        assert_eq!(decode_reply_body(&too_large), Err(limit_error.clone()));
+
+        let verifier = CountingVerifier::new();
+        assert_eq!(
+            decode_reply_body_with_verifier(&too_large, &verifier),
+            Err(limit_error.clone())
+        );
+
+        let expected = ReplyDto::error(41, "failure");
+        assert_eq!(
+            ReplyDto::decode_against(&too_large, &expected),
+            Err(limit_error.clone())
+        );
+        assert_eq!(
+            ReplyDto::decode_with_certificate(&too_large, None),
+            Err(limit_error.clone())
+        );
+        assert_eq!(
+            ReplyDto::decode_with_verifier(&too_large, &verifier),
+            Err(limit_error)
+        );
+        assert_eq!(verifier.calls(), 0);
+
+        let expected = ReplyDto::error(41, "failure");
+        let encoded_expected = serde_json::to_vec(&expected).expect("encode expected reply");
+        let padded_error = over_limit_padding(&encoded_expected, MAX_REPLY_BODY);
+        assert_eq!(
+            decode_reply_body(&padded_error),
+            Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"))
+        );
+        assert_eq!(
+            ReplyDto::decode_against(&padded_error, &expected),
+            Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"))
+        );
+
+        let certified_error =
+            ReplyDto::error(42, "certified failure").with_certificate(WireCertificate::new());
+        let encoded_certified_error =
+            serde_json::to_vec(&certified_error).expect("encode certified error");
+        let padded_certified_error = over_limit_padding(&encoded_certified_error, MAX_REPLY_BODY);
+        assert_eq!(
+            ReplyDto::decode_with_certificate(&padded_certified_error, None),
+            Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"))
+        );
+
+        let certified = serde_json::to_vec(&certified_health_reply()).expect("encode health");
+        let padded_certificate = over_limit_padding(&certified, MAX_REPLY_BODY);
+        assert_eq!(
+            decode_reply_body_with_verifier(&padded_certificate, &verifier),
+            Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"))
+        );
+        assert_eq!(
+            ReplyDto::decode_with_verifier(&padded_certificate, &verifier),
+            Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"))
+        );
+        assert_eq!(verifier.calls(), 0);
+    }
+
+    #[test]
+    fn reply_codec_keeps_certificate_and_identity_free_error_paths() {
+        let large_error_text = "x".repeat(MAX_COMMAND_BODY + 1);
+        let failure = ReplyDto::error(41, large_error_text);
+        let encoded_failure = serde_json::to_vec(&failure).expect("encode error reply");
+        assert!(encoded_failure.len() > MAX_COMMAND_BODY);
+        assert!(encoded_failure.len() < MAX_REPLY_BODY);
+        assert_eq!(decode_reply_body(&encoded_failure), Ok(failure.clone()));
+
+        let verifier = CountingVerifier::new();
+        assert_eq!(
+            decode_reply_body_with_verifier(&encoded_failure, &verifier),
+            Ok(failure.clone())
+        );
+        assert_eq!(verifier.calls(), 0);
+
+        let certified = certified_health_reply();
+        let encoded_certified = serde_json::to_vec(&certified).expect("encode health");
+        let decoded = decode_reply_body_with_verifier(&encoded_certified, &verifier)
+            .expect("verified certificate path");
+        assert_eq!(decoded.request_id, certified.request_id);
+        let direct_decoded = ReplyDto::decode_with_verifier(&encoded_certified, &verifier)
+            .expect("verified direct certificate path");
+        assert_eq!(direct_decoded.request_id, certified.request_id);
+        assert!(verifier.calls() > 0);
+        assert!(decode_reply_body(&encoded_certified).is_err());
+
+        let expected = ReplyDto::error(42, "expected");
+        let encoded_expected = serde_json::to_vec(&expected).expect("encode expected reply");
+        assert_eq!(
+            ReplyDto::decode_against(&encoded_expected, &expected),
+            Ok(expected)
+        );
+
+        let certified_error =
+            ReplyDto::error(43, "certified failure").with_certificate(WireCertificate::new());
+        let encoded_certified_error =
+            serde_json::to_vec(&certified_error).expect("encode certified error");
+        assert_eq!(
+            ReplyDto::decode_with_certificate(&encoded_certified_error, None),
+            Ok(certified_error)
+        );
+    }
+
+    #[test]
+    fn command_request_id_refuses_invalid_and_oversized_envelopes() {
+        assert_eq!(command_request_id(br#"{"request_id":41}"#), Some(41));
+        assert_eq!(command_request_id(br#"{"request_id":"41"}"#), None);
+        assert_eq!(command_request_id(b"{"), None);
+
+        let valid_but_oversized = over_limit_padding(br#"{"request_id":41}"#, MAX_COMMAND_BODY);
+        assert_eq!(command_request_id(&valid_but_oversized), None);
     }
 }

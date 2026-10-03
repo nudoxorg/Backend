@@ -242,9 +242,9 @@ pub use view::{
     ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage,
 };
 pub use wire::{
-    CommandDto, DTO_VERSION, EventDto, MAX_COMMAND_BODY, MAX_COMMAND_TEXT, ReplyAdmissionError,
-    ReplyDto, RequestAdmissionError, SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto,
-    SubscriptionDto, ViewDto, WireCertificate, WireClaim, WireSchema, admit_reply,
+    CommandDto, DTO_VERSION, EventDto, MAX_COMMAND_BODY, MAX_COMMAND_TEXT, MAX_REPLY_BODY,
+    ReplyAdmissionError, ReplyDto, RequestAdmissionError, SnapshotHydrator, SnapshotPageClaim,
+    SnapshotPageDto, SubscriptionDto, ViewDto, WireCertificate, WireClaim, WireSchema, admit_reply,
     admit_reply_with_capability, admit_request, command_request_id, decode_command_body,
     decode_command_body_for_owner, decode_compact_view_event, decode_reply_body,
     decode_reply_body_with_verifier, encode_command_body, encode_compact_subscription,

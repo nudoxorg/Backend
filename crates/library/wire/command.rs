@@ -249,11 +249,10 @@ impl ReplyDto {
     ///
     /// # Errors
     ///
-    /// Returns an error for malformed, unsupported, unknown-field, or changed
-    /// wire payloads.
+    /// Returns an error for bodies larger than the shared 4 MiB reply limit,
+    /// malformed, unsupported, unknown-field, or changed wire payloads.
     pub fn decode_against(bytes: &[u8], expected: &Self) -> Result<Self, String> {
-        let envelope: ReplyEnvelope =
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let envelope: ReplyEnvelope = super::codec::parse_reply_body(bytes)?;
         ensure_version(envelope.version, "reply")?;
         if envelope.semantic_search.is_some() && !matches!(&expected.reply, CommandReply::Search(_))
         {
@@ -273,14 +272,14 @@ impl ReplyDto {
     ///
     /// # Errors
     ///
-    /// Returns an error when any claim, canonical value, transition, or
-    /// complete-coverage witness is invalid.
+    /// Returns an error for bodies larger than the shared 4 MiB reply limit,
+    /// or when any claim, canonical value, transition, or complete-coverage
+    /// witness is invalid.
     pub fn decode_with_certificate(
         bytes: &[u8],
         capability: Option<CoverageCapability>,
     ) -> Result<Self, String> {
-        let envelope: ReplyEnvelope =
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let envelope: ReplyEnvelope = super::codec::parse_reply_body(bytes)?;
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire(envelope.reply, certificate, capability)?;
@@ -323,14 +322,14 @@ impl ReplyDto {
     ///
     /// # Errors
     ///
-    /// Returns an error when the certificate, canonical identities, complete
-    /// coverage observation, cursor, or view projection is invalid.
+    /// Returns an error for bodies larger than the shared 4 MiB reply limit,
+    /// or when the certificate, canonical identities, complete coverage
+    /// observation, cursor, or view projection is invalid.
     pub fn decode_with_verifier<V: ProducerObservationVerifier>(
         bytes: &[u8],
         verifier: &V,
     ) -> Result<Self, String> {
-        let envelope: ReplyEnvelope =
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let envelope: ReplyEnvelope = super::codec::parse_reply_body(bytes)?;
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire_with_verifier(envelope.reply, certificate, verifier)?;
