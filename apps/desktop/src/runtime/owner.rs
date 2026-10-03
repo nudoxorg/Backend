@@ -388,6 +388,35 @@ impl OwnerGate {
         PublicationAdmission::Admitted
     }
 
+    /// Withdraws serving reads when the current producer exchange has not
+    /// confirmed freshness, while allowing that one exchange to finish.
+    /// The attachment is the read fence; the observation cancellation token
+    /// belongs to the in-flight socket and is deliberately retained. Only a
+    /// fresh certified publication may reopen the new attachment.
+    pub(crate) fn suspend_observation(&self, expected: Epoch) -> Option<Epoch> {
+        let (attachment, waker) = {
+            let mut inner = self.lock();
+            if inner.closed || inner.attachment != expected
+                || inner.observation_cancel.is_cancelled()
+                || !matches!(inner.state, OwnerState::Ready { .. })
+            {
+                return None;
+            }
+            if inner.observation_suspended {
+                return Some(expected);
+            }
+            inner.observation_suspended = true;
+            inner.fresh_publication = None;
+            inner.since = Instant::now();
+            inner.epoch = inner.epoch.next();
+            inner.attachment = inner.epoch;
+            (inner.attachment, inner.waker.take())
+        };
+        self.0.changed.notify_all();
+        if let Some(waker) = waker { waker.wake(); }
+        Some(attachment)
+    }
+
     /// A rejected producer lease immediately withdraws readiness and rotates
     /// the attachment. Conservatively fence in-flight reads, preserving the exact
     /// admitted root and all healthy values already loaded at that authority.
@@ -1070,6 +1099,48 @@ mod publication_tests {
             gate.publish_view(new, root, cursor),
             PublicationAdmission::Admitted
         );
+    }
+
+    #[test]
+    fn stalled_observation_fences_reads_without_cancelling_its_one_live_exchange() {
+        let root = view();
+        let (gate, old, cursor) = attached(&root);
+        let io = gate.observation_scope(old).expect("active observation socket");
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
+
+        let suspended = gate.suspend_observation(old).expect("current attachment");
+        assert_ne!(suspended, old);
+        assert!(!io.is_cancelled(), "the one in-flight response must remain readable");
+        assert_eq!(gate.ready_epoch(), None);
+        assert_eq!(gate.attached_ready_epoch(), None);
+        assert!(!gate.serves_attachment(Some(old)));
+        assert!(!gate.serves_attachment(Some(suspended)));
+        let (retained, retained_cursor) = gate.publication(suspended).expect("display-only complete root");
+        assert!(Arc::ptr_eq(&retained, &root));
+        assert_eq!(retained_cursor, cursor);
+        assert_eq!(gate.suspend_observation(suspended), Some(suspended), "a second tick must not rotate again");
+        assert!(!gate.complete_observation(suspended), "retained root alone is not fresh producer proof");
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Withdrawn);
+
+        assert_eq!(gate.publish_view(suspended, root, cursor), PublicationAdmission::Admitted);
+        assert!(gate.complete_observation(suspended), "a certified same-root response reopens this attachment");
+        assert_eq!(gate.attached_ready_epoch(), Some(suspended));
+        assert!(!io.is_cancelled());
+    }
+
+    #[test]
+    fn suspended_observation_terminal_failure_cancels_its_socket_and_cannot_reopen() {
+        let root = view();
+        let (gate, old, cursor) = attached(&root);
+        let io = gate.observation_scope(old).expect("active observation socket");
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
+        let suspended = gate.suspend_observation(old).expect("current attachment");
+        assert!(gate.observation_failed(suspended, "response stalled".into()));
+        assert!(io.is_cancelled(), "terminal failure must interrupt the socket");
+        assert_eq!(gate.attached_ready_epoch(), None);
+        assert!(gate.publication(suspended).is_none());
+        assert_eq!(gate.publish_view(suspended, root, cursor), PublicationAdmission::Withdrawn);
+        assert!(!gate.complete_observation(suspended));
     }
 
     #[test]
