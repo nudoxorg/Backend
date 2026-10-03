@@ -2480,6 +2480,25 @@ fn modal_page_overlays_do_not_offer_or_run_retained_mode_controls(cx: &mut TestA
 }
 
 #[gpui::test]
+fn failed_owner_preserves_local_depth_navigation_but_denies_declaration_modes(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Code)), 1440.0, 900.0);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+        &OwnerFault::Lost("owner unavailable during navigation".into()), cx,
+    ));
+    rig.settle();
+    rig.keys("cmd-.");
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Code), "source/page actions still require the serving owner");
+    rig.keys("ctrl-2");
+    assert!(matches!(rig.route(), Route::Package(_)), "walking to an existing parent address does not require the index");
+    rig.keys("ctrl-1");
+    assert!(matches!(rig.route(), Route::Orbit(_)), "the local Library remains reachable during owner loss");
+    rig.keys("g");
+    assert_eq!(rig.route(), Route::World, "the optional graph can open its honest unavailable state");
+    rig.keys("g");
+    assert!(matches!(rig.route(), Route::Orbit(_)), "the graph cannot strand local navigation");
+}
+
+#[gpui::test]
 fn departing_settings_keeps_mode_input_with_the_painted_page_until_return_settles(cx: &mut TestAppContext) {
     use crate::navigation::SettingsPage;
 

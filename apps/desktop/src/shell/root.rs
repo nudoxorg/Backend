@@ -1124,9 +1124,10 @@ impl Shell {
 
     /// G enters the graph, or opens the graph's current symbol page.
     fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.mode_input_allowed(cx) { return; }
-        if self.reader.read(cx).graph_focused(cx) && self.open_graph_view(OpenView::Page, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
+        let local_navigation = matches!(snapshot.route(), Route::Orbit(_) | Route::Package(_) | Route::World);
+        if if local_navigation { !self.local_navigation_allowed(cx) } else { !self.mode_input_allowed(cx) } { return; }
+        if self.reader.read(cx).graph_focused(cx) && self.open_graph_view(OpenView::Page, window, cx) { return; }
         let intent = match snapshot.route() {
             Route::Symbol(route) if route.view == View::Graph => Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view")),
             Route::Symbol(_) => Intent::SetView(View::Graph),
@@ -1256,8 +1257,12 @@ impl Shell {
     }
 
     pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
-        self.background_input_allowed()
+        self.page_input_allowed(cx)
             && self.reader.read(cx).mode_input_allowed(cx)
+    }
+
+    fn local_navigation_allowed(&self, cx: &App) -> bool {
+        self.page_input_allowed(cx) && self.reader.read(cx).local_navigation_allowed(cx)
     }
 
     fn with_background_input(&mut self, action: impl FnOnce(&mut Self)) {
@@ -1488,7 +1493,11 @@ impl Shell {
     }
 
     fn depth(&mut self, depth: RouteDepth, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.mode_input_allowed(cx) { return; }
+        let allowed = match depth {
+            RouteDepth::Orbit | RouteDepth::Package => self.local_navigation_allowed(cx),
+            RouteDepth::Page | RouteDepth::Source => self.mode_input_allowed(cx),
+        };
+        if !allowed { return; }
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route();
         match depth {

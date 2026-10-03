@@ -2126,13 +2126,17 @@ impl Reader {
     /// A closing Settings or Inbox plate still blocks the underlay until its
     /// replacement owns a painted frame, even after the snapshot has cleared
     /// the modal overlay.
-    pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
+    pub(crate) fn local_navigation_allowed(&self, cx: &App) -> bool {
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
         snapshot.overlay().is_none()
             && snapshot.page_overlay().is_none()
-            && store.current_owner_attachment().is_some()
             && self.native_input_for(snapshot.route(), None)
+    }
+
+    pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
+        self.local_navigation_allowed(cx)
+            && self.links.store.read(cx).current_owner_attachment().is_some()
     }
 
     pub(crate) fn current_place_key(&self) -> Option<u64> {
