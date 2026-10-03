@@ -547,7 +547,7 @@ impl Reader {
             places: vec![Place {
                 key: 0,
                 route: snapshot.route().clone(),
-                overlay: snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)),
+                overlay: snapshot.page_overlay(),
                 way: Way::Across,
                 lens: Lens::Reference,
                 from: None,
@@ -772,7 +772,7 @@ impl Reader {
         let snapshot = self.links.snapshot(cx);
         if !self.native_motion_settled()
             || snapshot.route() != &current.route
-            || snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)) != current.overlay
+            || snapshot.page_overlay() != current.overlay
         {
             return None;
         }
@@ -2035,7 +2035,7 @@ impl Region for Reader {
     fn observe(&mut self, event: &StoreEvent, store: &DataStore) {
         if event.is_branch(Branch::Route) || event.is_branch(Branch::Overlay) {
             let snapshot = store.snapshot();
-            let overlay = snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox));
+            let overlay = snapshot.page_overlay();
             if *snapshot.route() != self.route || overlay != self.overlay {
                 if overlay == self.overlay && (find_refinement(&self.route, snapshot.route()) || cargo_binding_refinement(&self.route, snapshot.route())) {
                     // Typing refines one place. Keeping its keyed surface
@@ -2101,7 +2101,7 @@ fn immediate_page_source(previous: &Route, next: &Route) -> Option<crate::model:
 
 /// The page keys the reader draws for a snapshot's place.
 pub(crate) fn reader_keys(snapshot: &AppSnapshot) -> Vec<PageKey> {
-    place_keys(snapshot.route(), snapshot.overlay())
+    place_keys(snapshot.route(), snapshot.page_overlay())
 }
 
 impl Reader {

@@ -17,7 +17,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::Navigate(_) | Intent::ZoomOut | Intent::Tour(_) | Intent::Forward | Intent::SetView(_) | Intent::SetRelease(_) => {
             commit_preview(&mut next);
         }
-        Intent::Back | Intent::DismissOverlay if next.session().preview.is_some() => {
+        Intent::Back | Intent::DismissOverlay if next.overlay() == Some(Overlay::CommandPalette) && next.session().preview.is_some() => {
             end_preview(&mut next, true);
             return Reduction { snapshot: next, effects };
         }
@@ -115,9 +115,14 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 }
             }
         }
+        Intent::Back if next.overlay().is_some() => {
+            let mut session = next.session().clone();
+            session.dismiss_overlay();
+            next = next.with_session(session);
+        }
         Intent::Back => {
             let mut session = next.session().clone();
-            session.overlay = None;
+            session.clear_overlays();
             if let Some((previous, back)) = session.back.pop() {
                 let current = session.route.clone();
                 let forward = session.forward.push(current);
@@ -131,7 +136,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         }
         Intent::Forward => {
             let mut session = next.session().clone();
-            session.overlay = None;
+            session.clear_overlays();
             if let Some((forward_route, forward)) = session.forward.pop() {
                 let current = session.route.clone();
                 let back = session.back.push(current);
@@ -162,7 +167,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             if snapshot.overlay().is_some() {
                 let mut session = next.session().clone();
                 let persist = matches!(session.overlay, Some(Overlay::Settings(_)));
-                session.overlay = None;
+                session.dismiss_overlay();
                 next = next.with_session(session);
                 if persist {
                     effects.push(Effect::Persist);
@@ -285,7 +290,7 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     let back = session.back.push(session.route.clone());
     session.route = route;
     session.pending_selection = None;
-    session.overlay = None;
+    session.clear_overlays();
     session.back = back;
     session.forward = Default::default();
     *snapshot = snapshot.with_session(session);
@@ -311,7 +316,7 @@ fn end_preview(snapshot: &mut crate::model::AppSnapshot, close: bool) {
         session.route = origin;
     }
     if close {
-        session.overlay = None;
+        session.dismiss_overlay();
     }
     *snapshot = snapshot.with_session(session);
 }
@@ -321,13 +326,13 @@ fn replace(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     let mut session = snapshot.session().clone();
     session.route = route;
     session.pending_selection = None;
-    session.overlay = None;
+    session.clear_overlays();
     *snapshot = snapshot.with_session(session);
 }
 
 fn open_overlay(snapshot: &mut crate::model::AppSnapshot, overlay: Overlay) {
     let mut session = snapshot.session().clone();
-    session.overlay = Some(overlay);
+    session.open_overlay(overlay);
     *snapshot = snapshot.with_session(session);
 }
 
@@ -586,4 +591,74 @@ mod tests {
             })] if *actual_object == object && *actual_delta == delta && *actual_basis == basis
         ));
     }
+
+    #[test]
+    fn every_cover_order_unwinds_without_changing_route_or_history() {
+        use super::super::SettingsPage;
+        let kinds = [Overlay::Settings(SettingsPage::Appearance), Overlay::Inbox,
+            Overlay::CommandPalette, Overlay::AddProject];
+        let open = |kind| match kind {
+            Overlay::Settings(page) => Intent::OpenSettings(page),
+            Overlay::Inbox => Intent::OpenInbox,
+            Overlay::CommandPalette => Intent::OpenCommandPalette,
+            Overlay::AddProject => Intent::OpenAddProject,
+        };
+        for a in 0..4 { for b in 0..4 { for c in 0..4 { for d in 0..4 {
+            let order = [a, b, c, d];
+            if order.iter().enumerate().any(|(at, key)| order[..at].contains(key)) { continue; }
+            let base = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+            let mut covered = base.clone();
+            for key in order { covered = reduce(&covered, open(kinds[key])).snapshot; }
+            for (at, key) in order.into_iter().enumerate().rev() {
+                assert_eq!(covered.overlay(), Some(kinds[key]));
+                let expected_page = order[..=at].iter().rev().map(|key| kinds[*key])
+                    .find(|kind| matches!(kind, Overlay::Settings(_) | Overlay::Inbox));
+                assert_eq!(covered.page_overlay(), expected_page);
+                let escaped = reduce(&covered, Intent::DismissOverlay).snapshot;
+                let backed = reduce(&covered, Intent::Back).snapshot;
+                assert_eq!(escaped.session(), backed.session(), "Back and dismissal share top ownership");
+                assert_eq!(escaped.route(), base.route());
+                assert_eq!(escaped.session().back, base.session().back);
+                assert_eq!(escaped.session().forward, base.session().forward);
+                covered = escaped;
+            }
+            assert_eq!(covered.overlay(), None);
+            assert_eq!(covered.page_overlay(), None);
+        } } } }
+    }
+
+    #[test]
+    fn reopening_a_kind_coalesces_and_navigation_retires_all_covers() {
+        use super::super::SettingsPage;
+        let base = snapshot();
+        let settings = reduce(&base, Intent::OpenSettings(SettingsPage::Appearance)).snapshot;
+        let ask = reduce(&settings, Intent::OpenCommandPalette).snapshot;
+        let add = reduce(&ask, Intent::OpenAddProject).snapshot;
+        let reopened = reduce(&add, Intent::OpenCommandPalette).snapshot;
+        assert_eq!(reopened.overlay(), Some(Overlay::CommandPalette));
+        assert_eq!(reopened.session().covered_overlay(), settings.overlay());
+        let dismissed = reduce(&reopened, Intent::DismissOverlay).snapshot;
+        assert_eq!(dismissed.overlay(), settings.overlay());
+        assert_eq!(reduce(&dismissed, Intent::DismissOverlay).snapshot.overlay(), None);
+        let navigated = reduce(&add, Intent::Navigate(package_route(None))).snapshot;
+        assert_eq!(navigated.overlay(), None);
+        assert_eq!(navigated.page_overlay(), None);
+        assert_eq!(reduce(&navigated, Intent::DismissOverlay).snapshot.overlay(), None);
+    }
+
+    #[test]
+    fn dismissing_add_above_a_preview_keeps_ask_and_its_preview() {
+        let base = snapshot();
+        let ask = reduce(&base, Intent::OpenCommandPalette).snapshot;
+        let preview = reduce(&ask, Intent::Preview(package_route(None))).snapshot;
+        let add = reduce(&preview, Intent::OpenAddProject).snapshot;
+        let restored = reduce(&add, Intent::DismissOverlay).snapshot;
+        assert_eq!(restored.overlay(), Some(Overlay::CommandPalette));
+        assert_eq!(restored.route(), preview.route());
+        assert_eq!(restored.session().preview, preview.session().preview);
+        let origin = reduce(&restored, Intent::DismissOverlay).snapshot;
+        assert_eq!(origin.overlay(), None);
+        assert_eq!(origin.route(), base.route());
+    }
+
 }

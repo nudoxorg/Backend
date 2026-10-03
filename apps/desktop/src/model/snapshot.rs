@@ -178,6 +178,20 @@ pub struct CatalogState {
     pub packages: Arc<[PackageSummary]>,
 }
 
+/// Underlays for the four closed transient kinds. Reopening a kind
+/// coalesces to its existing layer, so at most three distinct underlays exist.
+/// This is session-only state; durable route/history never contains covers.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OverlayUnderlays([Option<Overlay>; 3]);
+
+fn same_overlay_kind(left: Overlay, right: Overlay) -> bool {
+    matches!((left, right),
+        (Overlay::Settings(_), Overlay::Settings(_))
+        | (Overlay::Inbox, Overlay::Inbox)
+        | (Overlay::CommandPalette, Overlay::CommandPalette)
+        | (Overlay::AddProject, Overlay::AddProject))
+}
+
 /// Session-local state restored on cold start.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionState {
@@ -185,6 +199,8 @@ pub struct SessionState {
     pub route: Route,
     /// Orthogonal shell overlay, if one is open.
     pub overlay: Option<Overlay>,
+    /// Bounded transient covers beneath the top overlay; never persisted.
+    pub overlay_underlays: OverlayUnderlays,
     /// Bounded persistent back history.
     pub back: RouteHistory,
     /// Bounded persistent forward history.
@@ -215,11 +231,50 @@ pub(crate) struct PendingSelectionClaim {
     pub(crate) object: [u8; 32],
 }
 
+impl SessionState {
+    /// Opens or refines one transient kind, preserving its covered surfaces.
+    pub(crate) fn open_overlay(&mut self, next: Overlay) {
+        if self.overlay.is_some_and(|top| same_overlay_kind(top, next)) {
+            self.overlay = Some(next);
+            return;
+        }
+        if let Some(at) = self.overlay_underlays.0.iter().position(|entry| entry.is_some_and(|entry| same_overlay_kind(entry, next))) {
+            self.overlay_underlays.0[at..].fill(None);
+        } else if let Some(top) = self.overlay {
+            if let Some(at) = self.overlay_underlays.0.iter().position(Option::is_none) {
+                self.overlay_underlays.0[at] = Some(top);
+            }
+        }
+        self.overlay = Some(next);
+    }
+    pub(crate) fn overlay_is_covered(&self, kind: Overlay) -> bool {
+        self.overlay_underlays.0.iter().flatten().any(|entry| same_overlay_kind(*entry, kind))
+    }
+    pub(crate) fn covered_overlay(&self) -> Option<Overlay> {
+        self.overlay_underlays.0.iter().rev().copied().flatten().next()
+    }
+    /// Dismisses exactly the top cover without touching route/history.
+    pub(crate) fn dismiss_overlay(&mut self) {
+        self.overlay = self.overlay_underlays.0.iter_mut().rev().find_map(Option::take);
+    }
+    pub(crate) fn clear_overlays(&mut self) {
+        self.overlay = None;
+        self.overlay_underlays = OverlayUnderlays::default();
+    }
+    /// The page painted beneath temporary Ask/Add covers. Input admission
+    /// still uses `overlay`, which identifies only the actual top layer.
+    pub(crate) fn page_overlay(&self) -> Option<Overlay> {
+        self.overlay.into_iter().chain(self.overlay_underlays.0.iter().rev().copied().flatten())
+            .find(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox))
+    }
+}
+
 impl Default for SessionState {
     fn default() -> Self {
         Self {
             route: Route::Orbit(crate::navigation::OrbitRoute::Home),
             overlay: None,
+            overlay_underlays: OverlayUnderlays::default(),
             back: RouteHistory::new(),
             forward: RouteHistory::new(),
             selected: None,
@@ -363,6 +418,10 @@ impl AppSnapshot {
     pub fn overlay(&self) -> Option<Overlay> {
         self.data.session.overlay
     }
+
+    /// Reader page under transient Ask/Add covers; this grants no input lease.
+    #[must_use]
+    pub fn page_overlay(&self) -> Option<Overlay> { self.data.session.page_overlay() }
 
     /// Re-keys this same immutable projection at a newer engine root.
     #[must_use]

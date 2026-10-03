@@ -80,7 +80,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::OpenInbox => {
             let mut session = next.session().clone();
-            session.overlay = Some(Overlay::Inbox);
+            session.open_overlay(Overlay::Inbox);
             next = next.with_session(session);
         }
         Intent::TogglePrivacy => {
@@ -136,7 +136,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::OpenAddProject => {
             let mut session = next.session().clone();
-            session.overlay = Some(Overlay::AddProject);
+            session.open_overlay(Overlay::AddProject);
             next = next.with_session(session);
             let mut workspace = next.workspace().clone();
             workspace.path_error = None;
@@ -151,7 +151,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 // The dialog the picker was opened from has done its work.
                 if next.overlay() == Some(Overlay::AddProject) {
                     let mut session = next.session().clone();
-                    session.overlay = None;
+                    session.dismiss_overlay();
                     next = next.with_session(session);
                 }
                 effects.push(Effect::Persist);
@@ -407,7 +407,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::OpenHelp => {
             let mut session = next.session().clone();
-            session.overlay = Some(Overlay::Settings(SettingsPage::Help));
+            session.open_overlay(Overlay::Settings(SettingsPage::Help));
             next = next.with_session(session);
         }
         _ => return None,
