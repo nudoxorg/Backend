@@ -99,6 +99,13 @@ pub(super) fn body(
     let view = facet::anatomy::symbol::with_uses(view, &workspace);
 
     let disclosure = ctx.symbol_disclosure.clone();
+    let dependency = {
+        let store = ctx.links.store.read(cx);
+        let key = PageKey::Symbol(symbol.clone());
+        let stamp = store.stamp(&key);
+        (key, stamp)
+    };
+    let admit = ctx.native_dependency_guard(dependency.clone(), cx);
     let host = host::ShellHost {
         package: package.clone(),
         symbol: symbol.clone(),
@@ -110,6 +117,9 @@ pub(super) fn body(
         reader: cx.weak_entity(),
         scroll: ctx.reader_scroll.clone(),
         said: std::cell::RefCell::new(Vec::new()),
+        docs: host::DocLinks::of(&page),
+        dependency,
+        admit,
     };
     let lay = facet::anatomy::symbol::layout::Layout::of(&ctx.measure, &ctx.modes);
     let title = title(

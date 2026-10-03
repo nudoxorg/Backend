@@ -4,7 +4,9 @@
 //! keyboard walk. The page's filters and folds live in the reader's
 //! per-symbol disclosure, so they survive a repaint.
 
-use crate::model::pages::{PageKey, SymbolRef};
+use crate::model::pages::{
+    DocFragment, DocSections, PageKey, SearchQuery, Stamp, SymbolPage, SymbolRef,
+};
 use crate::navigation::Intent;
 use crate::shell::focus::{Act as Action, Target, Targets};
 use crate::shell::kit::symbol_route;
@@ -31,9 +33,31 @@ pub(super) struct ShellHost<'a> {
     pub reader: WeakEntity<Reader>,
     pub scroll: ScrollHandle,
     pub said: RefCell<Vec<SharedString>>,
+    pub docs: DocLinks,
+    pub dependency: (PageKey, Stamp),
+    pub admit: Rc<dyn Fn(&mut gpui::App) -> bool>,
 }
 
 impl ShellHost<'_> {
+    /// All page callbacks share the exact painted Reader visit and read receipt.
+    fn action(&self, action: Act) -> Act {
+        let admit = self.admit.clone();
+        let active = self.active;
+        Rc::new(move |window, cx| {
+            if active && admit(cx) {
+                action(window, cx);
+            }
+        })
+    }
+
+    fn navigate(&self, intent: Intent) -> Act {
+        let links = self.links.clone();
+        let dependency = self.dependency.clone();
+        self.action(Rc::new(move |_, cx| {
+            links.dispatch_read(intent.clone(), dependency.clone(), cx)
+        }))
+    }
+
     /// What the page said, in order.
     pub(super) fn take_said(&self) -> Vec<SharedString> {
         std::mem::take(&mut *self.said.borrow_mut())
@@ -53,16 +77,13 @@ impl Doors for ShellHost<'_> {
         let store = self.links.store.clone();
         let label = SharedString::from(target.identity().name().to_owned());
         let key = PageKey::Symbol(target);
-        let links = self.links.clone();
         let peek_key = key.clone();
         Some(Door {
             subject: Subject::new(link.to_owned()),
             peek: Some(Rc::new(move |bounds| {
                 crate::shell::peeks::request(peek_key.clone(), label.clone(), bounds, store.clone())
             })),
-            open: Some(Rc::new(move |_, cx| {
-                links.dispatch(Intent::Navigate(route.clone()), cx)
-            })),
+            open: Some(self.navigate(Intent::Navigate(route))),
             from,
         })
     }
@@ -117,8 +138,7 @@ impl Doors for ShellHost<'_> {
     }
 
     fn up(&self) -> Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>> {
-        let links = self.links.clone();
-        Some(Rc::new(move |_, cx| links.dispatch(Intent::ZoomOut, cx)))
+        Some(self.navigate(Intent::ZoomOut))
     }
 
     fn mark(&self, link: &str) -> Option<gpui::ElementId> {
@@ -141,24 +161,17 @@ impl Host for ShellHost<'_> {
 
     fn change(&self, change: Change) -> Act {
         let (reader, symbol) = (self.reader.clone(), self.symbol.clone());
-        Rc::new(move |_, cx| {
+        self.action(Rc::new(move |_, cx| {
             let _ = reader.update(cx, |reader, cx| {
                 reader.change_symbol(symbol.clone(), &change, cx)
             });
-        })
+        }))
     }
 
     fn open_source(&self, path: &str, line: u32) -> Act {
-        let links = self.links.clone();
-        let (path, line): (std::sync::Arc<str>, u32) = (std::sync::Arc::from(path), line);
-        Rc::new(move |_, cx| {
-            links.dispatch(
-                Intent::OpenSource {
-                    path: std::sync::Arc::clone(&path),
-                    line,
-                },
-                cx,
-            )
+        self.navigate(Intent::OpenSource {
+            path: std::sync::Arc::from(path),
+            line,
         })
     }
 
@@ -169,37 +182,28 @@ impl Host for ShellHost<'_> {
         Some(Fold {
             open: self.disclosure.is_open(&fold),
             presence: self.disclosure.unroll(fold),
-            toggle: Rc::new(move |_, cx| {
+            toggle: self.action(Rc::new(move |_, cx| {
                 let _ = reader.update(cx, |reader, cx| {
                     reader.toggle_symbol(symbol.clone(), toggle_fold.clone(), cx)
                 });
-            }),
+            })),
         })
     }
 
     fn lookup(&self, target: &str) -> Option<Act> {
-        let links = self.links.clone();
-        let package = self.package.clone();
-        // A link to a declaration goes to its page; a path goes to Find.
-        if let Ok(symbol) = SymbolRef::new(target)
-            && symbol.identity().path().is_some()
-            && let Some(route) = symbol_route(&package, &symbol)
-        {
-            return Some(Rc::new(move |_, cx| {
-                links.dispatch(Intent::Navigate(route.clone()), cx)
-            }));
-        }
-        let query = crate::model::pages::SearchQuery::new(target, 50).ok()?;
-        Some(Rc::new(move |_, cx| {
-            links.dispatch(
-                Intent::Navigate(crate::navigation::Route::Orbit(
-                    crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(
-                        query.clone(),
-                    )),
+        match self.docs.resolve(target)? {
+            DocDestination::Declaration(symbol) => {
+                Some(self.navigate(Intent::Navigate(symbol_route(&self.package, &symbol)?)))
+            }
+            DocDestination::External(uri) => {
+                Some(self.action(Rc::new(move |_, cx| cx.open_url(&uri.0))))
+            }
+            DocDestination::Query(query) => Some(self.navigate(Intent::Navigate(
+                crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                    crate::navigation::BrowseRoute::Find(query),
                 )),
-                cx,
-            );
-        }))
+            ))),
+        }
     }
 
     fn target(&self, key: &Key, label: SharedString, act: Act, element: AnyElement) -> AnyElement {
@@ -218,13 +222,13 @@ impl Host for ShellHost<'_> {
 
     fn reveal(&self, section: Sec) -> Act {
         let (spots, scroll) = (self.spots(), self.scroll.clone());
-        Rc::new(move |_, _| {
+        self.action(Rc::new(move |_, _| {
             if let Some(bounds) = spots.get(section) {
                 let offset = scroll.offset();
                 let delta = bounds.top() - scroll.bounds().top() - gpui::px(20.0);
                 scroll.set_offset(gpui::point(offset.x, offset.y - delta));
             }
-        })
+        }))
     }
 
     fn spots(&self) -> Rc<Spots> {
@@ -242,5 +246,201 @@ impl Host for ShellHost<'_> {
         } else {
             facet::motion::Flow::new("s6-inert")
         }
+    }
+}
+
+/// Targets from producer links are exact coordinates, including opaque semantic
+/// coordinates. Display labels and source locations cannot disambiguate them.
+#[derive(Default)]
+pub(super) struct DocLinks(std::collections::BTreeSet<SymbolRef>);
+
+enum DocDestination {
+    Declaration(SymbolRef),
+    External(ExternalUri),
+    Query(SearchQuery),
+}
+
+/// Uses the same spelling admission as the README model; arbitrary schemes
+/// and malformed addresses cannot reach the platform opener.
+struct ExternalUri(String);
+
+impl ExternalUri {
+    fn parse(target: &str) -> Option<Self> {
+        crate::model::local_package::readme_external_address(target).map(|uri| Self(uri.to_owned()))
+    }
+}
+
+impl DocLinks {
+    pub(super) fn of(page: &SymbolPage) -> Self {
+        let mut links = Self::default();
+        links.fragments(&page.docs);
+        links.sections(&page.sections);
+        if let Some(members) = page.members.known() {
+            for member in members.all() {
+                links.fragments(&member.docs);
+                links.sections(&member.sections);
+            }
+        }
+        links
+    }
+
+    fn fragments(&mut self, fragments: &[DocFragment]) {
+        self.0
+            .extend(fragments.iter().filter_map(|fragment| match fragment {
+                DocFragment::Link { coordinate, .. } => coordinate.clone(),
+                _ => None,
+            }));
+    }
+
+    fn sections(&mut self, sections: &DocSections) {
+        self.fragments(&sections.lead);
+        for section in sections.sections.iter() {
+            self.fragments(&section.body);
+            for entry in section.entries.iter() {
+                self.fragments(&entry.body);
+            }
+        }
+    }
+
+    fn resolve(&self, target: &str) -> Option<DocDestination> {
+        let candidate = SymbolRef::new(target).ok()?;
+        if let Some(symbol) = self.0.get(&candidate) {
+            return Some(DocDestination::Declaration(symbol.clone()));
+        }
+        if let Some(uri) = ExternalUri::parse(target) {
+            return Some(DocDestination::External(uri));
+        }
+        if target.contains("://") || target.to_ascii_lowercase().starts_with("mailto:") {
+            return None;
+        }
+        let identity = candidate.identity();
+        if !matches!(identity.shape(), backend_present::IdentityShape::Opaque)
+            || target.starts_with('#')
+        {
+            return None;
+        }
+        SearchQuery::new(target, 50).ok().map(DocDestination::Query)
+    }
+}
+
+#[cfg(test)]
+mod doc_link_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn link(target: &SymbolRef) -> DocFragment {
+        DocFragment::Link {
+            label: Arc::from("advance_signal"),
+            target: crate::model::pages::RowKey::from(backend_library::symbol_key(target.as_str())),
+            coordinate: Some(target.clone()),
+        }
+    }
+
+    #[test]
+    fn producer_target_disambiguates_same_named_function_and_reexport_without_a_path() {
+        let function = SymbolRef::new("/abs/project::semantic::00ff::advance_signal").unwrap();
+        let reexport = SymbolRef::new("/abs/project::semantic::11ff::advance_signal").unwrap();
+        assert!(function.identity().path().is_none());
+        let mut links = DocLinks::default();
+        links.fragments(&[link(&function), link(&reexport)]);
+        for exact in [&function, &reexport] {
+            let Some(DocDestination::Declaration(actual)) = links.resolve(exact.as_str()) else {
+                panic!("producer coordinate must remain semantic")
+            };
+            assert_eq!(&actual, exact);
+            let route = symbol_route("/abs/project", &actual).unwrap();
+            let crate::navigation::Route::Symbol(route) = route else {
+                panic!("declaration route")
+            };
+            assert_eq!(route.id.as_str(), exact.as_str());
+            assert_eq!(route.package.as_str(), "/abs/project");
+        }
+    }
+
+    #[test]
+    fn old_or_unresolved_coordinates_are_not_text_searches() {
+        let old = SymbolRef::new("/abs/project::semantic::00ff::advance_signal").unwrap();
+        let current = SymbolRef::new("/abs/project::semantic::22ff::advance_signal").unwrap();
+        let mut links = DocLinks::default();
+        links.fragments(&[link(&current)]);
+        assert!(links.resolve(old.as_str()).is_none());
+        assert!(
+            links
+                .resolve("/abs/project::src/lib.rs:4::advance_signal")
+                .is_none()
+        );
+        assert!(matches!(
+            links.resolve("advance_signal"),
+            Some(DocDestination::Query(_))
+        ));
+        assert!(matches!(
+            links.resolve("https://example.org/doc"),
+            Some(DocDestination::External(_))
+        ));
+        assert!(matches!(
+            links.resolve("mailto:docs@example.org"),
+            Some(DocDestination::External(_))
+        ));
+        assert!(links.resolve("#local").is_none());
+        for invalid in [
+            "https://",
+            "https://user@example.org",
+            "https://example.org/%0A",
+            "https://example.org/has space",
+            "file:///tmp/file",
+        ] {
+            assert!(
+                links.resolve(invalid).is_none(),
+                "malformed/unsupported external URI: {invalid}"
+            );
+        }
+        assert!(ExternalUri::parse("javascript:alert(1)").is_none());
+    }
+
+    #[gpui::test]
+    fn a_mounted_symbol_door_rejects_a_callback_from_the_previous_reader_visit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let pool = crate::runtime::reads::ReadPool::start(2, |_| super::super::page_tests::Pinned)
+            .unwrap();
+        let mut rig = crate::shell::tests::rig_with_reads(
+            cx,
+            Some(super::super::page_tests::route("de.rs", 2709, "from_str")),
+            1440.0,
+            900.0,
+            pool,
+        );
+        rig.settle();
+        rig.repaint();
+        let targets = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let action = targets
+            .placed()
+            .into_iter()
+            .find_map(|(target, _)| {
+                target
+                    .source
+                    .as_ref()
+                    .filter(|symbol| symbol.identity().name() == "from_slice")
+                    .map(|_| target.act.clone())
+            })
+            .expect("the mounted producer sibling has a real ShellHost door");
+        rig.cx.update(|window, cx| action(window, cx));
+        rig.settle();
+        let crate::navigation::Route::Symbol(route) = rig.route() else {
+            panic!("door opens a symbol page")
+        };
+        assert!(route.id.as_str().ends_with("::from_slice"));
+        let later = super::super::page_tests::route("value/mod.rs", 116, "Value");
+        rig.go(Intent::Navigate(later.clone()));
+        rig.settle();
+        rig.cx.update(|window, cx| action(window, cx));
+        rig.settle();
+        assert_eq!(
+            rig.route(),
+            later,
+            "a stale mounted door cannot replace the later Reader visit"
+        );
     }
 }
