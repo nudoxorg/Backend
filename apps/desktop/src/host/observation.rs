@@ -157,6 +157,12 @@ fn serve_with_timing(
             break;
         };
         let result = {
+            // Select the initial operation before the progress callback may
+            // suspend this attachment. A later suspension still cancels the
+            // in-flight operation through `tick`.
+            let may_renew = !suspended
+                && reset_ceiling.get().is_none()
+                && last_renew.elapsed() >= timing.renew;
             let _wake = cancel.on_cancel(move || interrupt.interrupt());
             let cancelled = || {
                 cancel.is_cancelled()
@@ -197,10 +203,7 @@ fn serve_with_timing(
                 break;
             };
             let result = match lease.as_mut() {
-                Some(state)
-                    if !suspended
-                        && reset_ceiling.get().is_none()
-                        && last_renew.elapsed() >= timing.renew =>
+                Some(state) if may_renew =>
                 {
                     transport
                         .renew_publications_observed(state, &mut control)
