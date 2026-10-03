@@ -18,10 +18,6 @@ sha2.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
 
-# Temp-spool file identity on Windows: std's file ID accessors are unstable.
-[target.'cfg(windows)'.dependencies]
-backend-platform = { path = "../platform" }
-
 [dev-dependencies]
 backend-version = { path = "../version" }
 

@@ -57,7 +57,6 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
 const STATUS_SUCCESS: i32 = 0;
-const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const FILE_OPEN: u32 = 1;
 const FILE_CREATE: u32 = 2;
 const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -354,7 +353,7 @@ impl WorkspaceRoot {
         let open_existing = || open_directory_child(&parent.0, name.existing()).map(Self);
         match open_existing() {
             Ok(child) => {
-                Self(child).flush_dir()?;
+                child.flush_dir()?;
                 parent.flush_dir()
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -887,7 +886,7 @@ impl WorkspaceRoot {
         for part in parent_path {
             parent = open_directory_child(&parent, ExistingName::parse(part)?)?;
         }
-        Ok((parent, *leaf))
+        Ok((parent, leaf))
     }
 
     fn parent_and_leaf_source<'path>(
@@ -905,7 +904,7 @@ impl WorkspaceRoot {
         for part in parent_path {
             parent = open_directory_child_unchecked(&parent, ExistingName::parse(part)?)?;
         }
-        Ok((parent, *leaf))
+        Ok((parent, leaf))
     }
 }
 

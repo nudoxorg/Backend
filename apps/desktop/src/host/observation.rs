@@ -17,7 +17,7 @@ const FIRST_ROOT: Duration = Duration::from_secs(60);
 /// Keeps the host alive and observes its exact serving attachment until
 /// closure, or until an explicit retry replaces a failed subscription.
 pub(super) fn serve(gate: &OwnerGate, endpoint: &Path) -> bool {
-    let Some(mut attachment) = gate.ready_attachment() else {
+    let Some(mut attachment) = gate.ready_epoch() else {
         return gate.await_close_or_restart();
     };
     let Some(mut cancel) = gate.observation_scope(attachment) else {

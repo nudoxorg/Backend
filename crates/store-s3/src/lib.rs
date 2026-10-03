@@ -36,7 +36,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     net::IpAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -1195,8 +1195,6 @@ struct TempFileSnapshot {
     ctime_nsec: i64,
     #[cfg(unix)]
     nlink: u64,
-    /// Volume, file ID, NT change time and link count read from the opened
-    /// object; `None` where the filesystem gives no stable identity.
     #[cfg(windows)]
     last_write_time: u64,
 }
@@ -1206,6 +1204,8 @@ impl TempFileSnapshot {
     fn capture(file: &File) -> io::Result<Self> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::MetadataExt;
 
         let metadata = file.metadata()?;
         Ok(Self {
@@ -1326,8 +1326,10 @@ impl TempEnvelope {
     }
 
     fn capture_snapshot(&mut self) -> Result<(), RemoteStoreError> {
-        let (metadata, snapshot) =
-            TempFileSnapshot::of_file(&self.file).map_err(|_| RemoteStoreError::Unavailable)?;
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|_| RemoteStoreError::Unavailable)?;
         if metadata.len() != self.len {
             return Err(RemoteStoreError::Identity);
         }
@@ -1406,7 +1408,7 @@ impl Drop for TempEnvelope {
 
 impl TempEnvelope {
     fn path_is_same_file(&self) -> bool {
-        let Ok((metadata, snapshot)) = TempFileSnapshot::of_path(&self.path) else {
+        let Ok(metadata) = fs::symlink_metadata(&self.path) else {
             return false;
         };
         metadata.file_type().is_file()

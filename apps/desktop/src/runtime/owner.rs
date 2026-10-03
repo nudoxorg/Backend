@@ -882,7 +882,7 @@ mod publication_tests {
             VersionedRoot::from_revision(1, cursor, 0),
             ServiceMode::Attached,
         );
-        let attachment = gate.ready_attachment().expect("serving attachment");
+        let attachment = gate.ready_epoch().expect("serving attachment");
         (gate, attachment, cursor)
     }
 
@@ -974,7 +974,7 @@ mod publication_tests {
             key: VersionedRoot::from_revision(1, cursor, 0),
             mode: ServiceMode::Attached,
         });
-        let new = gate.ready_attachment().expect("new attachment");
+        let new = gate.ready_epoch().expect("new attachment");
         assert_ne!(old, new);
         assert_eq!(
             gate.publish_view(old, Arc::clone(&root), cursor),
