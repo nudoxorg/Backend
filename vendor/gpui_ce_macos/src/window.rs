@@ -1808,7 +1808,7 @@ impl PlatformWindow for MacWindow {
             && (window.isKeyWindow()
                 || window
                     .occlusionState()
-                    .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible))
+                    .contains(objc2_app_kit::NSWindowOcclusionState::Visible))
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
