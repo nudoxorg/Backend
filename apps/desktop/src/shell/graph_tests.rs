@@ -382,28 +382,95 @@ fn real_canary_shape_has_native_exact_selection_at_each_text_scale(cx: &mut Test
     }
 }
 
+fn graph_native_inventory(rig: &mut Rig) -> (Option<String>, Vec<serde_json::Value>) {
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("tree");
+    let focused = tree["gpui_focus"].as_str().map(|id| tree["nodes"][id]["aria"]["label"].as_str().unwrap_or("<unlabelled native focus>").to_owned());
+    let controls = tree["nodes"].as_object().expect("native nodes").values()
+        .filter(|node| matches!(node["aria"]["role"].as_str(), Some("Button" | "TextInput")))
+        .cloned().collect();
+    (focused, controls)
+}
+
 fn tab_to_graph_control(rig: &mut Rig, label: &str) {
     rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let (_, controls) = graph_native_inventory(rig);
+    assert!(controls.iter().any(|node| node["aria"]["label"].as_str() == Some(label)
+        && node["aria"]["disabled"] != true
+        && node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action == "Click"))),
+        "requested graph stop is not an enabled mounted Click control: {label}; {controls:?}");
+    let mut walked = Vec::new();
     for _ in 0..64 {
         rig.keys("tab");
-        rig.repaint();
-        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
-        let tree: serde_json::Value = serde_json::from_str(&json).expect("tree");
-        if tree["gpui_focus"].as_str().is_some_and(|id| tree["nodes"][id]["aria"]["label"].as_str() == Some(label)) { return; }
+        let (focused, _) = graph_native_inventory(rig);
+        if focused.as_deref() == Some(label) { return; }
+        walked.push(focused);
     }
-    panic!("native Tab never reached {label}");
+    let (_, controls) = graph_native_inventory(rig);
+    panic!("native Tab never reached {label}; actual focus walk={walked:?}; mounted controls={controls:?}");
 }
 
 #[gpui::test]
 fn native_tab_and_enter_select_the_exact_definition(cx: &mut TestAppContext) {
     let (mut rig, _) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");
-    rig.native_press("enter");
-    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+    rig.native_press("enter"); rig.settle();
+    let import = "Select real-rust-canary::advance_signal · import / re-export. src/lib.rs:17";
+    let definition = "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
+    rig.keys("tab");
+    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some(import), "Tab takes the first actual mounted row");
+    rig.keys("shift-tab");
+    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some("Hide declarations"), "Shift-Tab returns to the same real chooser handle");
+    rig.keys("tab"); rig.keys("tab");
+    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some(definition), "bounded native order preserves the distinct definition");
     rig.native_press("enter");
     let focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()).expect("native selected definition");
     assert_eq!(focus.node, 1);
     assert_eq!(focus.kind, backend_library::DeclarationKind::Function);
+}
+
+#[gpui::test]
+fn native_graph_tab_denial_preserves_focus_before_owner_repaint(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter"); rig.settle();
+    let before = rig.cx.update(|window, cx| window.focused(cx));
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // Real native key, no watcher, draw, refresh or input between renewal and
+    // dispatch. Denied is consumed rather than mistaken for a zone boundary.
+    rig.cx.simulate_keystrokes("tab");
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().is_none()));
+}
+
+#[gpui::test]
+fn graph_find_uses_guarded_component_tab_and_stays_locally_editable(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.keys("shift-tab");
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "Shift-Tab reaches the real local text engine");
+    rig.keys("tab");
+    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some("Graph coverage"), "Input's existing component Tab reaches the same actual native order");
+    rig.keys("shift-tab");
+    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some("Declarations"), "blur restores the collapsed chooser in its authored order");
+    rig.keys("shift-tab");
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)));
+    let before = rig.cx.update(|window, cx| window.focused(cx));
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    rig.cx.simulate_keystrokes("tab");
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before, "component Root cannot bypass revoked resource focus admission");
+    rig.cx.simulate_input("cadence");
+    rig.draw();
+    assert!(rig.cx.update(|window, _| window.a11y_tree().expect("local editor frame").nodes.iter()
+        .any(|(_, node)| node.value() == Some("cadence"))), "the actual native text engine retained the local edit");
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "owner absence does not disable the local editor");
+    rig.native_press("enter");
+    assert_eq!(rig.route(), Route::World, "local editing grants no producer navigation");
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
 }
 
 #[gpui::test]
