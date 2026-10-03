@@ -20,6 +20,7 @@ use crate::listener::{
 };
 use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, ProtocolError};
 use crate::service::{LocaldService, OwnerService};
+use crate::test_support::socket_path;
 use backend_client::LocalSubscriptionTransport;
 use backend_client::lease_contract::{PUBLICATION_CREDIT, PUBLICATION_LEASE, max_reset_time};
 use backend_client::monotonic::{ManualClock, MonotonicClock};
@@ -186,12 +187,7 @@ impl Wire {
         limits: SubscriptionLeaseLimits,
         script: impl FnOnce(&mut ScriptedSource),
     ) -> Self {
-        static ENDPOINTS: AtomicUsize = AtomicUsize::new(0);
-        let endpoint = std::env::temp_dir().join(format!(
-            "nx-pub-{}-{}.sock",
-            std::process::id(),
-            ENDPOINTS.fetch_add(1, Ordering::Relaxed)
-        ));
+        let endpoint = socket_path("publication");
         let mut source = ScriptedSource::new(clock.clone());
         source.use_production_pager();
         script(&mut source);
@@ -439,12 +435,7 @@ fn rewriting_wire(
     + Send
     + 'static,
 ) -> RewritingWire {
-    static ENDPOINTS: AtomicUsize = AtomicUsize::new(0);
-    let endpoint = std::env::temp_dir().join(format!(
-        "nx-rew-{}-{}.sock",
-        std::process::id(),
-        ENDPOINTS.fetch_add(1, Ordering::Relaxed)
-    ));
+    let endpoint = socket_path("rewrite");
     let mut source = ScriptedSource::new(clock.clone());
     source.use_production_pager();
     script(&mut source);

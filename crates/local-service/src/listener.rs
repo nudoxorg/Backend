@@ -753,6 +753,7 @@ impl<O> UnixListenerService<O> {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::test_support::socket_path;
     use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, read_frame};
     use crate::service::OwnerService;
     use std::io::Write;
@@ -983,21 +984,6 @@ mod tests {
         assert!(workers.iter().all(JoinHandle::is_finished));
         assert_eq!(reap_finished_workers(&mut workers), 0);
         assert!(workers.is_empty());
-    }
-
-    fn socket_path(label: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let leaf = format!("backend-locald-{label}-{nonce}.sock");
-        let preferred = std::env::temp_dir().join(&leaf);
-        // The per-session macOS temporary directory does not leave room for a
-        // bindable `sun_path`, so fall back to `/tmp` when it does not fit.
-        if backend_engine::UnixEndpointRef::new(&preferred).is_ok() {
-            preferred
-        } else {
-            Path::new("/tmp").join(leaf)
-        }
     }
 
     fn limits() -> FrameLimits {

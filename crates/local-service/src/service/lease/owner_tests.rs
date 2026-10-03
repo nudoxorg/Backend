@@ -14,14 +14,14 @@ use crate::builtin::{EmptyOwner, open_empty_owner};
 use crate::listener::{ListenerConfig, UnixListenerService};
 use crate::protocol::{EngineRequest, EngineStatus, FrameLimits};
 use crate::service::{CommandOutcome, DeferredCommands, LocaldService, OwnerService};
+use crate::test_support::socket_path;
 use backend_client::lease_contract::PUBLICATION_LEASE;
 use backend_client::monotonic::ManualClock;
 use backend_engine::{
     LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionRequest,
     LocalSubscriptionResponse, SubscriptionReply, ViewRoot,
 };
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -107,12 +107,7 @@ fn the_production_listener_drives_the_idle_poll_with_no_client_connected() {
     let clock = ManualClock::new();
     let mut owner = real_owner(&directory, &clock);
     open_on(&mut owner, &clock);
-    static ENDPOINTS: AtomicUsize = AtomicUsize::new(0);
-    let socket: PathBuf = std::env::temp_dir().join(format!(
-        "nx-lease-{}-{}.sock",
-        std::process::id(),
-        ENDPOINTS.fetch_add(1, Ordering::Relaxed)
-    ));
+    let socket = socket_path("lease-poll");
     let mut config = ListenerConfig::new(&socket);
     config.poll_interval = Duration::from_millis(1);
     config.idle_timeout = None;
