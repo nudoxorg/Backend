@@ -924,7 +924,8 @@ fn native_find_pointer_arrival_and_failed_owner_edit_keep_one_current_query_focu
     });
     rig.settle();
     let ledger = painted(&mut rig);
-    let find = ledger.targets.iter().find(|target| target.label == "Find packages and declarations").expect("actual Library Find affordance");
+    let find = ledger.targets.iter().find(|target| target.key == "shelf-find" && target.state.clickable)
+        .expect("actual clickable Library Find affordance");
     rig.cx.simulate_click(point(px(find.bounds.x + find.bounds.width / 2.0), px(find.bounds.y + find.bounds.height / 2.0)), Modifiers::none());
     for ms in [0, 16, 700] {
         rig.frame(ms);

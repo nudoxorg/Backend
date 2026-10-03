@@ -4,7 +4,7 @@
 use super::anatomy_tests::painted;
 use super::tests::{Rig, page_route, rig};
 use crate::navigation::Overlay;
-use gpui::{Modifiers, TestAppContext, point, px};
+use gpui::{Focusable as _, Modifiers, TestAppContext, point, px};
 
 fn overlay(rig: &mut Rig) -> Option<Overlay> {
     rig.graph
@@ -32,7 +32,7 @@ fn click_text(rig: &mut Rig, words: &str) {
     let text = ledger
         .texts
         .iter()
-        .find(|text| text.content.as_ref() == words)
+        .find(|text| text.content == words)
         .unwrap_or_else(|| panic!("painted text {words:?} was absent"));
     let at = point(
         px(text.bounds.x + text.bounds.width / 2.0),
@@ -233,7 +233,7 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
         painted(&mut rig)
             .texts
             .iter()
-            .any(|text| text.content.as_ref() == "base")
+            .any(|text| text.content == "base")
     );
     assert!(
         rig.shell

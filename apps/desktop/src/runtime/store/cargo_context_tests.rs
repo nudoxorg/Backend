@@ -38,7 +38,7 @@ pub(crate) fn fixture(project: &LocalProjectId) -> (TreeModel, PackageRef, Cargo
         metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", None, [7; 32])
             .expect("producer fixture");
     let authority = AdvisoryAuthority::new(1);
-    let mut tree = build_tree(&input, &|name, version| {
+    let mut tree = build_tree(&input, &|name: &str, version: &str| {
         authority.observe(
             &normalize_package("cargo", name).expect("identity"),
             version,

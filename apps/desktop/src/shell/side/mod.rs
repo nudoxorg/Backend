@@ -1018,6 +1018,7 @@ mod release_address_tests {
         let pin = "pkg:cargo/toml@0.8.23?repository_url=https%3A%2F%2Fone.example";
         let route = Route::Package(PackageRoute {
             project: None,
+            cargo: None,
             package: PackageId::new(pin).expect("qualified pin"),
             lane: PackageLane::Overview,
             selected: None,

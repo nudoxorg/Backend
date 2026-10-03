@@ -361,7 +361,7 @@ pub(crate) mod tests {
         )
         .expect("metadata witness fixture");
         let advisories = AdvisoryAuthority::new(1);
-        let mut tree = build_tree(&input, &|name, version| {
+        let mut tree = build_tree(&input, &|name: &str, version: &str| {
             advisories.observe(
                 &normalize_package("cargo", name).expect("identity"),
                 version,
@@ -618,7 +618,7 @@ pub(crate) mod tests {
                     if let Some(cancel) = &self.cancel_after_tree {
                         cancel.cancel();
                     }
-                    Ok(SurfaceReply::ProjectTree(self.tree.clone()))
+                    Ok(SurfaceReply::ProjectTree(Box::new(self.tree.clone())))
                 }
                 _ => Err(backend_client::ClientError::Protocol(
                     "unexpected surface".into(),

@@ -902,7 +902,7 @@ mod find_tests {
         )
         .expect("real lockfile fallback");
         let authority = AdvisoryAuthority::new(0);
-        let tree = build_tree(&input, &|_, _| {
+        let tree = build_tree(&input, &|_: &str, _: &str| {
             authority.observe(
                 &normalize_package("cargo", "none").expect("test identity"),
                 "0.0.0",

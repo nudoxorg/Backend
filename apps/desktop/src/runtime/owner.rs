@@ -992,7 +992,7 @@ mod publication_tests {
                 first.capability().expect("complete source"),
             )
             .expect("prepared external delta");
-        let (second, _) = first.commit(prepared).expect("committed external delta");
+        let (second, _) = first.as_ref().clone().commit(prepared).expect("committed external delta");
         let second = Arc::new(second);
         let published = Cursor::for_view_root_at(&second, 1);
         assert_eq!(

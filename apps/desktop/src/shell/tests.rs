@@ -26,7 +26,7 @@ use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::runtime::{DesktopRuntime, UiEntityGraph};
 use backend_library::DeclarationKind;
 use gpui::{
-    AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext, WindowHandle, point, px,
+    AppContext as _, Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext, WindowHandle, point, px,
     size,
 };
 use std::sync::Arc;

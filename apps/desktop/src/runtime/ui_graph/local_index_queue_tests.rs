@@ -5,7 +5,7 @@ use super::*;
 use crate::core::{LocalProjectId, PackageId, VersionedRoot};
 use crate::model::{CatalogState, ObjectId, PackageSummary, ProjectPhase, ServiceMode};
 use crate::navigation::OrbitRoute;
-use crate::runtime::actor::{EngineClient, EngineDto, EngineFault, EngineRequest};
+use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use gpui::TestAppContext;
 
