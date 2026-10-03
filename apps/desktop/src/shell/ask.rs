@@ -116,7 +116,7 @@ struct Choice {
 }
 
 /// Result identity is distinct from the scroll container's child index:
-/// statuses and group headings occupy child slots but are not choices.
+/// the semantic status and group headings occupy child slots but are not choices.
 #[derive(Clone)]
 enum ResultScrollTarget {
     Page { route: Route, occurrence: usize },
@@ -156,8 +156,8 @@ struct ResultScrollMap {
     all: Option<ScrollChildIndex>,
 }
 impl ResultScrollMap {
-    fn new(choices: &[Choice], read_status: bool, semantic_status: bool, all: bool) -> Self {
-        let mut child = usize::from(read_status) + usize::from(semantic_status);
+    fn new(choices: &[Choice], semantic_status: bool, all: bool) -> Self {
+        let mut child = usize::from(semantic_status);
         let mut group = None;
         let mut indices = Vec::with_capacity(choices.len());
         for choice in choices {
@@ -859,18 +859,11 @@ impl Ask {
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
         let (read_status, semantic_status) = self.read_status(cx);
         let read_status = self.refusal.as_ref().map(SubmitRefusal::words).or(read_status);
-        let scroll_map = ResultScrollMap::new(&choices, read_status.is_some(), semantic_status.is_some(), all_results.is_some());
+        let scroll_map = ResultScrollMap::new(&choices, semantic_status.is_some(), all_results.is_some());
         self.apply_result_scroll(&choices, &scroll_map, cx);
         let mut list = div().id("ask-results").role(Role::List).aria_label("Search results")
             .flex().flex_col().pt(measure.space(Space::Tight))
-            .size_full().overflow_y_scroll().track_scroll(&self.scroll);
-        if let Some(words) = read_status.clone() {
-            list = list.child(
-                div().id("ask-read-status").role(Role::Status).aria_label(words.clone())
-                    .px(measure.space(Space::Gutter)).py(measure.space(Space::Snug))
-                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(words)),
-            );
-        }
+            .flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll);
         if let Some(status) = semantic_status {
             let status_words = semantic_search_label(status);
             list = list.child(
@@ -927,9 +920,15 @@ impl Ask {
         div()
             .id("ask")
             .size_full()
+            .flex().flex_col()
             .bg(palette.g2)
             .border_r_1()
             .border_color(palette.line2.hsla())
+            .children(read_status.map(|words| {
+                div().id("ask-read-status").role(Role::Status).aria_label(words.clone())
+                    .flex_none().px(measure.space(Space::Gutter)).py(measure.space(Space::Snug))
+                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(words))
+            }))
             .child(list)
             .into_any_element()
     }
