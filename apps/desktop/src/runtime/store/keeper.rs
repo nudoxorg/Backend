@@ -142,8 +142,8 @@ impl SnapshotKeeper {
             .collect::<Vec<_>>();
         let capture = DisplayCapture::select(pages, snapshot.route(), root);
         let prepared = self.prepared.as_ref().filter(|display| display.source_matches_route(snapshot.route())
-            && display.observation.cursor.as_slice() == root.revision().encode_control().as_ref()
-            && display.observation.producer_epoch == root.producer_epoch()).cloned();
+            && display.observation().cursor.as_slice() == root.revision().encode_control().as_ref()
+            && display.observation().producer_epoch == root.producer_epoch()).cloned();
         (!kept.is_empty() || capture.is_some() || prepared.is_some()).then_some(PendingSave {
             file, root, pages: kept, capture, prepared,
         })
@@ -163,7 +163,14 @@ impl SnapshotKeeper {
             .map_or(Ok(0), |mut save| {
                 // New projection traversal is never performed on the UI
                 // thread, including quit. Reuse only worker-prepared bytes.
+                if save.capture.is_some() && save.prepared.is_none() {
+                    // The requested route's new display has not been prepared.
+                    // Keep the previous exact-scope file, rather than replacing
+                    // it with only unrelated legacy support sections on quit.
+                    return Ok(0);
+                }
                 save.capture = None;
+                if save.pages.is_empty() && save.prepared.is_none() { return Ok(0); }
                 save.write("on quit")
             })
     }
@@ -199,8 +206,8 @@ impl SnapshotKeeper {
                     // attach its old observation to newer current bytes.
                     let root = store.snapshot.key();
                     if store.owner_serving() && prepared.source_matches_route(store.snapshot.route())
-                        && prepared.observation.cursor.as_slice() == root.revision().encode_control().as_ref()
-                        && prepared.observation.producer_epoch == root.producer_epoch() {
+                        && prepared.observation().cursor.as_slice() == root.revision().encode_control().as_ref()
+                        && prepared.observation().producer_epoch == root.producer_epoch() {
                         store.keeper.prepared = Some(prepared);
                     }
                 });
@@ -213,6 +220,31 @@ impl SnapshotKeeper {
 mod tests {
     use super::*;
     use crate::model::pages::{Known, OrbitModel, PageValue};
+
+    #[test]
+    fn quit_without_worker_prepared_destination_preserves_the_previous_private_file() {
+        let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "quit-preparation".into())]), 1);
+        let dir = std::env::temp_dir().join(format!("nx-keeper-quit-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_nanos()));
+        crate::host::private_dir(&dir).expect("private scratch");
+        let file = SnapshotFile::in_data(&dir);
+        let model = OrbitModel { indexed: Known::Known(Arc::from([])), projects: Known::Known(Arc::from([])),
+            explore: Known::Known(Arc::from([])), tree: Known::Known(Arc::from([])) };
+        file.write(root, &[SeedEntry::Orbit(Arc::new(model.clone()))]).expect("previous usable snapshot");
+        let prior = std::fs::read(file.path()).expect("prior bytes");
+        let mut pages = PageStore::default();
+        let generation = pages.begin(&PageKey::Orbit, root).expect("fresh read");
+        pages.land(&PageKey::Orbit, generation, Ok(PageValue::Orbit(model)));
+        let mut snapshot = AppSnapshot::empty(root);
+        let mut session = snapshot.session().clone(); session.route = crate::navigation::Route::World;
+        snapshot = snapshot.with_session(session);
+        let keeper = SnapshotKeeper { file: Some(file.clone()), ..SnapshotKeeper::default() };
+        assert!(keeper.to_save(&pages, &snapshot, true).expect("pending capture").capture.is_some());
+        assert_eq!(keeper.save_now(&pages, &snapshot, true).expect("quit"), 0);
+        assert_eq!(std::fs::read(file.path()).expect("preserved cache"), prior);
+        assert!(file.read(&[PageKey::Orbit]).is_some(), "the preserved file remains useful at its exact scope");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn revoked_predecessors_cannot_be_saved_as_current_launch_pages() {

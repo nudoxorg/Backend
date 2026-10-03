@@ -596,9 +596,9 @@ fn refusal_never_overwrites_existing_diagnostic_bytes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn display(route: &Route, root: VersionedRoot) -> RetainedDisplay {
+fn display_wire(route: &Route, root: VersionedRoot) -> RetainedDisplayWire {
     use crate::model::retained_display::*;
-    RetainedDisplay {
+    RetainedDisplayWire {
         address: DisplayAddress::for_route(route).expect("exact display address"),
         observation: DisplayObservation::at(root).expect("served observation"),
         coverage: CaptureCoverage::Complete,
@@ -607,6 +607,10 @@ fn display(route: &Route, root: VersionedRoot) -> RetainedDisplay {
             label: Arc::from("Recorded fact"), detail: Arc::from("An earlier bounded answer"),
         }] },
     }
+}
+
+fn display(route: &Route, root: VersionedRoot) -> RetainedDisplay {
+    RetainedDisplay::admit(display_wire(route, root), route).expect("background fixture admission")
 }
 
 #[test]
@@ -706,7 +710,7 @@ fn a_valid_hashed_display_copied_to_another_workspace_is_unavailable() {
 #[test]
 fn valid_hashes_cannot_admit_mismatched_observation_or_unknown_projection_fields() {
     let root = served("bound-observation", 4);
-    let projection = display(&Route::World, root);
+    let projection = display_wire(&Route::World, root);
     let mut invalid = projection.clone();
     invalid.observation = crate::model::retained_display::DisplayObservation::at(served("other", 5)).expect("observation");
     // Craft a structurally valid table with recomputed hashes, bypassing the
@@ -718,20 +722,20 @@ fn valid_hashes_cannot_admit_mismatched_observation_or_unknown_projection_fields
     assert!(decode_selected(&encoded_table(&table, &payload), &[], None, Some(&Route::World)).is_err());
     let mut json = serde_json::to_value(projection).expect("projection JSON");
     json["current_authority"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<RetainedDisplay>(json).is_err(), "unrecognized capabilities never deserialize");
+    assert!(serde_json::from_value::<RetainedDisplayWire>(json).is_err(), "unrecognized capabilities never deserialize");
 }
 
 #[test]
 fn retained_display_decode_and_capture_have_closed_word_and_row_budgets() {
     use crate::model::retained_display::*;
     let root = served("display-bounds", 1);
-    let mut projection = display(&Route::World, root);
+    let mut projection = display_wire(&Route::World, root);
     projection.body = DisplayBody::Reading { title: Arc::from("bounded"), rows: vec![DisplayRow {
         label: Arc::from(""), detail: Arc::from(""),
     }; MAX_DISPLAY_ROWS + 1] };
     assert!(!projection.has_shape());
     let encoded = serde_json::to_vec(&projection).expect("too many rows");
-    assert!(serde_json::from_slice::<RetainedDisplay>(&encoded).is_err(), "decoder stops at the row budget");
+    assert!(serde_json::from_slice::<RetainedDisplayWire>(&encoded).is_err(), "decoder stops at the row budget");
     projection.body = DisplayBody::Markdown { source: Arc::from("x".repeat(MAX_DISPLAY_SOURCE + 1)) };
     assert!(!projection.has_shape());
     projection.body = DisplayBody::Reading { title: Arc::from("x".repeat(MAX_DISPLAY_WORDS + 1)), rows: vec![] };
@@ -752,7 +756,7 @@ fn cargo_display_checks_project_binding_target_revision_and_exact_content() {
         CargoSourcePath::new("src/lib.rs").expect("path"), Some(5)).expect("source");
     let route = Route::CargoSource(source.clone());
     let text: Arc<str> = Arc::from("pub fn earlier() {}\n");
-    let projection = RetainedDisplay {
+    let projection = RetainedDisplayWire {
         address: DisplayAddress::for_route(&route).expect("address"),
         observation: DisplayObservation::at(served("cargo-display", 2)).expect("root"),
         coverage: CaptureCoverage::Complete,
@@ -761,6 +765,34 @@ fn cargo_display_checks_project_binding_target_revision_and_exact_content() {
         body: DisplayBody::Source { path: Arc::from("src/lib.rs"), text, first_line: 1 },
     };
     assert!(projection.source_matches_route(&route));
+    let admitted = RetainedDisplay::admit(projection.clone(), &route).expect("background admission");
+    let indexed = Arc::clone(admitted.source_text().expect("prepared source"));
+    let DisplayBody::Source { text, .. } = &projection.body else { panic!("source") };
+    assert_eq!(indexed.text().as_ptr(), text.as_ptr(), "preparation shares the original Arc text");
+    let offsets = Arc::clone(indexed.prepared_line_index().expect("background prepared offsets"));
+    assert!(Arc::ptr_eq(indexed.prepared_line_index().expect("offsets"), &offsets));
+    let mut dense = projection.clone();
+    let too_many_lines: Arc<str> = "\n".repeat(MAX_DISPLAY_SOURCE).into();
+    if let DisplaySource::Cargo { content_digest, .. } = &mut dense.source { *content_digest = *blake3::hash(too_many_lines.as_bytes()).as_bytes(); }
+    if let DisplayBody::Source { text, .. } = &mut dense.body { *text = too_many_lines; }
+    assert!(RetainedDisplay::admit(dense, &route).is_none(), "direct offset heap budget refuses an excessively line-dense cache");
+
+    for _ in 0..128 {
+        assert!(admitted.source_matches_route(&route));
+        assert!(Arc::ptr_eq(&indexed, admitted.source_text().expect("same prepared index")));
+        assert_eq!(indexed.line_span(1), admitted.source_text().expect("prepared").line_span(1));
+    }
+    let mut excerpt = projection.clone();
+    excerpt.coverage = CaptureCoverage::VisibleExcerpt { first_line: 2, last_line: 2 };
+    assert!(RetainedDisplay::admit(excerpt, &route).is_none(), "coverage and body first line must agree");
+    let mut excerpt = projection.clone();
+    excerpt.coverage = CaptureCoverage::VisibleExcerpt { first_line: 1, last_line: 3 };
+    assert!(RetainedDisplay::admit(excerpt, &route).is_none(), "coverage last line must match prepared source extent");
+    let mut overflowing = projection.clone();
+    if let DisplayBody::Source { first_line, text, .. } = &mut overflowing.body { *first_line = u32::MAX; *text = Arc::from("a\nb\n"); }
+    if let DisplaySource::Cargo { content_digest, .. } = &mut overflowing.source { *content_digest = *blake3::hash(b"a\nb\n").as_bytes(); }
+    assert!(RetainedDisplay::admit(overflowing, &route).is_none(), "prepared source cannot bypass checked first-line overflow");
+
     let mut other = source.clone(); other.line = Some(6);
     assert!(!projection.source_matches_route(&Route::CargoSource(other)));
     let mut other = source; other.target = crate::navigation::CargoSourceTarget::PackageFile(CargoSourcePath::new("src/other.rs").expect("path"));
@@ -771,6 +803,7 @@ fn cargo_display_checks_project_binding_target_revision_and_exact_content() {
             match change { 0 => binding.requested_root_digest = [3; 32], 1 => *source_revision = [0; 32], _ => *content_digest = [2; 32] }
         }
         assert!(!broken.source_matches_route(&route), "scope/content negative {change}");
+        assert!(RetainedDisplay::admit(broken, &route).is_none(), "forged raw payload cannot construct a runtime display");
     }
 }
 
@@ -797,5 +830,103 @@ fn cold_display_refuses_nonprivate_and_linked_files_without_reading_them_as_cach
     std::fs::rename(file.path(), &target).expect("target");
     symlink(&target, file.path()).expect("symlink");
     assert!(file.read_route(&Route::World).is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[gpui::test]
+fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross_visits(cx: &mut gpui::TestAppContext) {
+    use crate::core::{LocalProjectId, PackageId};
+    use crate::model::retained_display::*;
+    use crate::navigation::{CargoSourcePath, CargoSourceRoute, Intent, OrbitRoute};
+    use crate::runtime::owner::OwnerGate;
+    let project = LocalProjectId::new("/workspace/prepared-native-source").expect("project");
+    let (_, package, context) = crate::runtime::store::cargo_context_tests::fixture(&project);
+    let route = Route::CargoSource(CargoSourceRoute::new(context.clone(), PackageId::new(package.as_str()).expect("package"),
+        CargoSourcePath::new("src/lib.rs").expect("path"), None).expect("source"));
+    let root = served("native-prepared-source", 9);
+    let content: Arc<str> = (0..256).map(|at| format!("// retained line {at:03}\n")).collect::<String>().into();
+    let wire = RetainedDisplayWire {
+        address: DisplayAddress::for_route(&route).expect("address"), observation: DisplayObservation::at(root).expect("observation"),
+        coverage: CaptureCoverage::Complete,
+        source: DisplaySource::Cargo { binding: context.request_binding(), source_revision: [6; 32],
+            content_digest: *blake3::hash(content.as_bytes()).as_bytes(), readme_origin: None },
+        body: DisplayBody::Source { path: Arc::from("src/lib.rs"), text: content, first_line: 1 },
+    };
+    let prepared = RetainedDisplay::admit(wire, &route).expect("background fixture");
+    let dir = scratch("native-prepared-source");
+    let file = SnapshotFile::in_data(&dir);
+    file.write_displays(root, &[], &[Arc::new(prepared)]).expect("save");
+    let seed = file.read_route(&route).expect("background cold decode");
+    let indexed = Arc::clone(seed.displays[0].source_text().expect("prepared source index"));
+    let offsets = Arc::clone(indexed.prepared_line_index().expect("prepared line offsets"));
+    let mut rig = crate::shell::tests::rig_with_cold_keep(cx, route.clone(), OwnerGate::starting(), Keep { file, seed: Some(seed) });
+    rig.cx.simulate_resize(gpui::size(gpui::px(1440.0), gpui::px(2000.0)));
+    rig.draw();
+    for _ in 0..8 {
+        rig.repaint();
+        rig.graph.store.read_with(rig.cx, |store, _| {
+            let display = store.retained_display(&route).expect("exact mounted display");
+            assert!(Arc::ptr_eq(display.source_text().expect("reused index"), &indexed));
+            assert!(Arc::ptr_eq(display.source_text().expect("source").prepared_line_index().expect("offsets"), &offsets));
+            assert!(!display.served());
+        });
+    }
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let tree: serde_json::Value = serde_json::from_str(&rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("AX tree")).expect("AX JSON");
+    assert!(tree["nodes"].as_object().expect("nodes").values().any(|node|
+        node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Next saved text")));
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved text").expect("local pager");
+    assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
+    let stale = target.act.clone();
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.draw();
+    assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "native activation reaches the next bounded source page");
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.cx.update(|window, app| stale(window, app));
+    rig.draw();
+    assert!(matches!(rig.route(), Route::Orbit(OrbitRoute::Home)));
+    assert!(!rig.said().iter().any(|line| line.contains("retained line")), "old saved-text callback cannot render into another visit");
+    rig.go(Intent::Back);
+    assert_eq!(rig.route(), route);
+    assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "Back restores only its own local pager position");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[gpui::test]
+fn retained_reading_mounts_only_bounded_rows_and_partitions_pager_by_visit(cx: &mut gpui::TestAppContext) {
+    use crate::model::retained_display::*;
+    use crate::navigation::{BrowseRoute, Intent, OrbitRoute};
+    use crate::runtime::owner::OwnerGate;
+    let route = Route::World;
+    let root = served("bounded-native-rows", 12);
+    let mut wire = display_wire(&route, root);
+    wire.body = DisplayBody::Reading { title: Arc::from("Bounded saved reading"), rows: (0..70).map(|at|
+        DisplayRow { label: Arc::from(""), detail: format!("saved row {at:03}").into() }).collect() };
+    let prepared = RetainedDisplay::admit(wire, &route).expect("background rows");
+    let dir = scratch("bounded-native-rows");
+    let file = SnapshotFile::in_data(&dir);
+    file.write_displays(root, &[], &[Arc::new(prepared)]).expect("save");
+    let seed = file.read_route(&route).expect("cold decode");
+    let mut rig = crate::shell::tests::rig_with_cold_keep(cx, route.clone(), OwnerGate::starting(), Keep { file, seed: Some(seed) });
+    rig.cx.simulate_resize(gpui::size(gpui::px(1440.0), gpui::px(2000.0)));
+    rig.draw();
+    assert!(rig.said().iter().any(|line| line == "saved row 031"));
+    assert!(!rig.said().iter().any(|line| line == "saved row 032"), "a paint mounts at most 32 rows");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved rows").expect("native rows pager");
+    let stale = target.act.clone();
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.draw();
+    assert!(rig.said().iter().any(|line| line == "saved row 032"));
+    assert!(!rig.said().iter().any(|line| line == "saved row 000"));
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
+    rig.cx.update(|window, app| stale(window, app));
+    rig.draw();
+    assert!(!rig.said().iter().any(|line| line.starts_with("saved row")), "another typed visit cannot inherit World rows");
+    rig.go(Intent::Back);
+    assert_eq!(rig.route(), route);
+    assert!(rig.said().iter().any(|line| line == "saved row 032"), "Back restores the route's own row page");
     let _ = std::fs::remove_dir_all(dir);
 }

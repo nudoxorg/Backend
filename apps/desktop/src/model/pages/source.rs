@@ -104,6 +104,9 @@ const MAX_DESERIALIZED_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 struct SourceLineIndex {
     line_count: u32,
     checkpoints: Arc<[SourceLineCheckpoint]>,
+    /// Optional compact u32 start/end offsets prepared for a bounded saved
+    /// display. Ordinary current-source reads retain their sparse policy.
+    prepared: Option<Arc<[ByteSpan]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +145,31 @@ impl SourceText {
             complete,
         })
     }
+
+    /// Prepare direct line spans for a bounded historical display off-thread.
+    /// ByteSpan stores two u32 offsets, not strings or platform-sized pairs.
+    /// This optional index is runtime-only and grants no source-match evidence.
+    pub(crate) fn with_prepared_line_index(mut self, maximum_bytes: usize) -> Option<Self> {
+        let bytes = self.line_count().checked_mul(std::mem::size_of::<ByteSpan>())?;
+        // Account for Arc headers of the direct spans and the now-empty
+        // checkpoint array as well as compact offset payloads.
+        if bytes.checked_add(4 * std::mem::size_of::<usize>())? > maximum_bytes { return None; }
+        let spans = self.line_index.spans_in(self.text(), 0, self.line_count());
+        if spans.len() != self.line_count() { return None; }
+        self.line_index.prepared = Some(spans.into());
+        // The direct spans replace sparse checkpoint storage for this saved
+        // display, so the explicit index budget accounts for all its offsets.
+        self.line_index.checkpoints = Arc::from([]);
+        Some(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepared_line_index(&self) -> Option<&Arc<[ByteSpan]>> { self.line_index.prepared.as_ref() }
+    #[cfg(test)]
+    pub(crate) fn reset_line_scan_probe() { SPARSE_LINE_SCAN_BYTES.with(|count| count.set(0)); }
+    #[cfg(test)]
+    pub(crate) fn line_scan_probe() -> usize { SPARSE_LINE_SCAN_BYTES.with(std::cell::Cell::get) }
+
 
     /// Records the exact excerpt range independently verified in this live
     /// file by the bounded source worker.
@@ -248,6 +276,9 @@ impl<'de> serde::Deserialize<'de> for SourceText {
     }
 }
 
+#[cfg(test)]
+thread_local! { static SPARSE_LINE_SCAN_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 impl SourceLineIndex {
     fn build(text: &str) -> Self {
         if text.is_empty() {
@@ -272,6 +303,7 @@ impl SourceLineIndex {
         Self {
             line_count: u32::try_from(line_index).unwrap_or(u32::MAX),
             checkpoints: checkpoints.into(),
+            prepared: None,
         }
     }
 
@@ -281,6 +313,9 @@ impl SourceLineIndex {
         }
         if first_index >= self.line_count as usize {
             return Vec::new();
+        }
+        if let Some(spans) = &self.prepared {
+            return spans[first_index..first_index.saturating_add(maximum).min(spans.len())].to_vec();
         }
         let checkpoint_index = first_index / LINE_CHECKPOINT_STRIDE;
         let Some(checkpoint) = self.checkpoints.get(checkpoint_index).copied() else {
@@ -299,9 +334,13 @@ impl SourceLineIndex {
             let Some(segment) = segments.next() else {
                 return spans;
             };
+            #[cfg(test)]
+            SPARSE_LINE_SCAN_BYTES.with(|count| count.set(count.get().saturating_add(segment.len())));
             byte_offset = byte_offset.saturating_add(segment.len());
         }
         for segment in segments.take(last_index.saturating_sub(first_index)) {
+            #[cfg(test)]
+            SPARSE_LINE_SCAN_BYTES.with(|count| count.set(count.get().saturating_add(segment.len())));
             let start = byte_offset;
             let content_end = start + segment.trim_end_matches(['\n', '\r']).len();
             if let (Ok(start), Ok(content_end)) = (u32::try_from(start), u32::try_from(content_end))

@@ -2171,7 +2171,8 @@ impl Reader {
             self.links.store.read(cx), &place.route, place.overlay,
         ).map(SourceGeneration::Retained));
         let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code)
-            || matches!(&place.route, Route::CargoSource(_) | Route::Package(_)) {
+            || matches!(&place.route, Route::CargoSource(_) | Route::Package(_))
+            || matches!(paging_generation, Some(SourceGeneration::Retained(_))) {
             self.source_paging.for_route(&place.route, paging_generation, current)
         } else {
             Rc::clone(&self.empty_source_paging)

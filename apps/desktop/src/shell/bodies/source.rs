@@ -289,17 +289,16 @@ fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &
 /// checks the exact mounted visit and retained projection again.
 pub(super) fn retained_page(
     display: Arc<crate::model::retained_display::RetainedDisplay>,
-    content: Arc<str>,
-    first_line: u32,
     route: &Route,
     ctx: &mut Ctx<'_>,
     cx: &mut Context<Reader>,
 ) -> gpui::AnyElement {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let Ok(source) = SourceText::new(content, first_line, SourceOrigin::Excerpt, true) else {
-        return quiet("The saved text has an invalid line range.", &measure, palette).into_any_element();
+    let Some(source) = display.source_text() else {
+        return quiet("The saved display has no prepared source text.", &measure, palette).into_any_element();
     };
+    let first_line = source.first_line();
     let requested = match route {
         Route::CargoSource(route) => route.line,
         _ => None,
@@ -342,7 +341,7 @@ pub(super) fn retained_page(
                 .is_some_and(|now| Arc::ptr_eq(&now, &expected)) { return; }
             if let Some(reader) = reader.upgrade() {
                 reader.update(app, |_, cx| {
-                    if let Some(paging) = state.borrow_mut().as_mut() {
+                    if let Some(paging) = state.borrow_mut().as_mut().filter(|paging| paging.cursor == cursor) {
                         if forward { paging.next(target); } else { paging.previous(target); }
                         cx.notify();
                     }
@@ -358,6 +357,66 @@ pub(super) fn retained_page(
         controls = controls.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)));
     }
     column.child(controls).into_any_element()
+}
+
+/// Read-only rows share the existing per-route/per-window pager memory.
+/// Only a bounded page is mounted; the full projection remains background
+/// prepared and every native callback is fenced to its exact visit/display.
+pub(super) fn retained_row_page(
+    display: Arc<crate::model::retained_display::RetainedDisplay>,
+    count: usize,
+    route: &Route,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> (std::ops::Range<usize>, gpui::AnyElement) {
+    const ROWS_PER_PAGE: usize = 32;
+    let memory = Rc::clone(&ctx.source_paging);
+    let cursor = {
+        let mut state = memory.borrow_mut();
+        let paging = state.get_or_insert_with(|| PagingState::new(SourceCursor { line: 1, byte: 0 }));
+        if paging.cursor.byte != 0 || paging.cursor.line == 0 || paging.cursor.line as usize > count.max(1) {
+            *paging = PagingState::new(SourceCursor { line: 1, byte: 0 });
+        }
+        paging.cursor
+    };
+    let start = (cursor.line.saturating_sub(1) as usize / ROWS_PER_PAGE) * ROWS_PER_PAGE;
+    let end = start.saturating_add(ROWS_PER_PAGE).min(count);
+    let mut controls = div().flex().flex_col().gap(ctx.measure.space(Space::Base))
+        .child(quiet(ctx.say(format!("Saved rows {}–{end} of {count}; read-only.", if count == 0 { 0 } else { start + 1 })), &ctx.measure, ctx.palette));
+    let mut buttons = div().flex().flex_wrap().gap(ctx.measure.space(Space::Base));
+    for (target, label, forward) in [
+        ((start > 0).then(|| SourceCursor { line: start.saturating_sub(ROWS_PER_PAGE) as u32 + 1, byte: 0 }), "Previous saved rows", false),
+        ((end < count).then(|| SourceCursor { line: end as u32 + 1, byte: 0 }), "Next saved rows", true),
+    ] {
+        let Some(target) = target else { continue; };
+        let state = Rc::clone(&memory);
+        let expected = Arc::clone(&display);
+        let route = route.clone();
+        let links = ctx.links.clone();
+        let reader = cx.weak_entity();
+        let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            let store = links.store.read(app);
+            if !super::retained::select(store, &route, store.snapshot().overlay())
+                .is_some_and(|now| Arc::ptr_eq(&now, &expected)) { return; }
+            if let Some(reader) = reader.upgrade() {
+                reader.update(app, |_, cx| {
+                    if let Some(paging) = state.borrow_mut().as_mut().filter(|paging| paging.cursor == cursor) {
+                        if forward { paging.next(target); } else { paging.previous(target); }
+                        cx.notify();
+                    }
+                });
+            }
+        });
+        let act = ctx.native_local_action(act, cx);
+        let id: SharedString = if forward { "saved-rows-next" } else { "saved-rows-previous" }.into();
+        ctx.targets.push(Target { id: id.clone(), label: label.into(), act: act.clone(), peek: None, source: None });
+        let mut button = facet::controls::button(id.clone(), label, &ctx.measure).ghost().size(Control::Small)
+            .on_click(move |window, app| act(window, app));
+        if let Some(focus) = ctx.native_handle(&id, cx) { button = button.focus_handle(focus); }
+        buttons = buttons.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
+    }
+    controls = controls.child(buttons);
+    (start..end, controls.into_any_element())
 }
 
 fn code(
@@ -1169,6 +1228,31 @@ fn margin(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
+
+    #[test]
+    fn prepared_minified_source_pages_share_offsets_and_never_rescan_the_full_line() {
+        let content: Arc<str> = "λ".repeat(1 << 19).into();
+        let ordinary = SourceText::new(Arc::clone(&content), 1, SourceOrigin::Excerpt, true).expect("minified text");
+        assert!(ordinary.prepared_line_index().is_none(), "ordinary current-source policy remains sparse");
+        SourceText::reset_line_scan_probe();
+        let _ = SourcePage::at(&ordinary, SourceCursor { line: 1, byte: 0 });
+        assert!(SourceText::line_scan_probe() >= content.len(), "the sparse oracle exercises the demonstrated full-line scan");
+        let source = Arc::new(ordinary.with_prepared_line_index(8 << 20).expect("bounded direct index"));
+        let offsets = Arc::clone(source.prepared_line_index().expect("prepared offsets"));
+        assert_eq!(std::mem::size_of::<crate::model::pages::ByteSpan>(), 8, "two compact u32 offsets");
+        assert_eq!(source.text().as_ptr(), content.as_ptr(), "text is shared, not duplicated");
+        SourceText::reset_line_scan_probe();
+        let mut cursor = SourceCursor { line: 1, byte: 0 };
+        for _ in 0..64 {
+            assert!(Arc::ptr_eq(source.prepared_line_index().expect("same offsets"), &offsets));
+            let page = SourcePage::at(&source, cursor);
+            assert!(page.lines.len() <= MAX_SOURCE_LINES);
+            assert!(page.lines.iter().map(|line| (line.span.end - line.span.start) as usize).sum::<usize>() <= MAX_SOURCE_BYTES);
+            cursor = page.next.expect("long line continuation");
+        }
+        assert_eq!(SourceText::line_scan_probe(), 0, "bounded paint takes prepared offsets instead of scanning line bytes");
+    }
+
 
     use super::*;
     use crate::model::pages::{

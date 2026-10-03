@@ -13,6 +13,8 @@ use std::sync::Arc;
 pub(crate) const MAX_DISPLAY_ROWS: usize = 2_048;
 pub(crate) const MAX_DISPLAY_WORDS: usize = 1 << 20;
 pub(crate) const MAX_DISPLAY_SOURCE: usize = 2 << 20;
+pub(crate) const MAX_DISPLAY_ROW_WORDS: usize = 4 << 10;
+pub(crate) use crate::runtime::snapshot::RetainedDisplay;
 
 /// A cache claim compared only with an already requested typed destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -100,25 +102,25 @@ pub(crate) enum DisplaySource {
         readme_origin: Option<backend_library::CargoPackageReadmeOriginV1> },
 }
 
-/// A worker-prepared display from a completed earlier read.
+/// Untrusted serde payload. Only snapshot background admission can create
+/// the closed immutable runtime display that GUI consumers receive.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RetainedDisplay {
+pub(crate) struct RetainedDisplayWire {
     pub(crate) address: DisplayAddress,
     pub(crate) observation: DisplayObservation,
     pub(crate) coverage: CaptureCoverage,
     pub(crate) source: DisplaySource,
     pub(crate) body: DisplayBody,
 }
-impl RetainedDisplay {
-    /// Present owner capability is deliberately absent from this type.
-    pub(crate) const fn served(&self) -> bool { false }
+impl RetainedDisplayWire {
     pub(crate) fn matches(&self, route: &Route) -> bool { self.address.matches(route) && self.has_shape() }
     pub(crate) fn has_shape(&self) -> bool {
         if !self.observation.has_shape() { return false; }
         let text = match &self.body {
             DisplayBody::Reading { title, rows } => {
-                if rows.len() > MAX_DISPLAY_ROWS { return false; }
+                if rows.len() > MAX_DISPLAY_ROWS || title.len() > MAX_DISPLAY_ROW_WORDS
+                    || rows.iter().any(|row| row.label.len().saturating_add(row.detail.len()) > MAX_DISPLAY_ROW_WORDS) { return false; }
                 let bytes = rows.iter().try_fold(title.len(), |bytes, row|
                     bytes.checked_add(row.label.len())?.checked_add(row.detail.len()));
                 if bytes.is_none_or(|bytes| bytes > MAX_DISPLAY_WORDS) { return false; }
@@ -134,7 +136,7 @@ impl RetainedDisplay {
             }
         };
         if let CaptureCoverage::VisibleExcerpt { first_line, last_line } = self.coverage {
-            if first_line == 0 || last_line < first_line || !matches!(self.body, DisplayBody::Source { .. }) { return false; }
+            if first_line == 0 || last_line < first_line || !matches!(self.body, DisplayBody::Source { first_line: body_first, .. } if body_first == first_line) { return false; }
         }
         match &self.source {
             DisplaySource::Indexed => true,

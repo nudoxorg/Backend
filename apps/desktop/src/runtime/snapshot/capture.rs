@@ -2,7 +2,7 @@
 use crate::core::{Resource, VersionedRoot};
 use crate::model::browse::{BrowseKey, BrowseValue, CargoReadmeState};
 use crate::model::pages::{PageKey, PageStore, Known, CargoSourcePage, OrbitModel};
-use crate::model::retained_display::{CaptureCoverage, DisplayAddress, DisplayBody, DisplayObservation, DisplayRow, DisplaySource, RetainedDisplay, MAX_DISPLAY_ROWS, MAX_DISPLAY_WORDS};
+use crate::model::retained_display::{CaptureCoverage, DisplayAddress, DisplayBody, DisplayObservation, DisplayRow, DisplaySource, RetainedDisplayWire, RetainedDisplay, MAX_DISPLAY_ROWS, MAX_DISPLAY_WORDS};
 use crate::navigation::{BrowseRoute, OrbitRoute, Route};
 use std::sync::Arc;
 
@@ -154,8 +154,8 @@ impl DisplayCapture {
         };
         // Complete refers only to this closed display projection. It grants
         // no complete source inventory, search universe, graph or API proof.
-        let projection = RetainedDisplay { address, observation, coverage, source, body };
-        projection.source_matches_route(&self.route).then_some(projection)
+        let projection = RetainedDisplayWire { address, observation, coverage, source, body };
+        RetainedDisplay::admit(projection, &self.route)
     }
 }
 struct Rows { title: Arc<str>, rows: Vec<DisplayRow>, bytes: usize }
@@ -163,7 +163,8 @@ impl Rows {
     fn new(title: &str) -> Option<Self> { (title.len() <= MAX_DISPLAY_WORDS).then(|| Self { title: Arc::from(title), rows: Vec::new(), bytes: title.len() }) }
     fn push(&mut self, label: &str, detail: &str) -> Option<()> {
         let bytes = self.bytes.checked_add(label.len())?.checked_add(detail.len())?;
-        if self.rows.len() == MAX_DISPLAY_ROWS || bytes > MAX_DISPLAY_WORDS { return None; }
+        if self.rows.len() == MAX_DISPLAY_ROWS || bytes > MAX_DISPLAY_WORDS
+            || label.len().saturating_add(detail.len()) > crate::model::retained_display::MAX_DISPLAY_ROW_WORDS { return None; }
         self.rows.push(DisplayRow { label: Arc::from(label), detail: Arc::from(detail) }); self.bytes = bytes; Some(())
     }
     fn answer(&mut self, answer: &facet::browse::find::Answer) -> Option<()> {

@@ -33,7 +33,9 @@
 use crate::core::VersionedRoot;
 use crate::model::pages::{PackageRef, PageKey, SeedEntry, SymbolRef};
 use crate::navigation::Route;
-use crate::model::retained_display::{DisplayAddress, RetainedDisplay};
+use crate::model::retained_display::{DisplayAddress, RetainedDisplayWire};
+mod admitted;
+pub(crate) use admitted::RetainedDisplay;
 mod capture;
 pub(super) use capture::DisplayCapture;
 use backend_platform::durable::BoundedWriter;
@@ -624,12 +626,12 @@ fn encode_full(root: VersionedRoot, pages: &[SeedEntry], writer: Writer, namespa
         });
     }
     for display in displays.iter().take(SECTION_CAP.saturating_sub(sections.len())) {
-        if !display.has_shape() || display.observation.cursor.as_slice() != root.revision().encode_control().as_ref()
-            || display.observation.producer_epoch != root.producer_epoch() { continue; }
-        let key = SectionKey::Display(display.address.clone());
+        if display.observation().cursor.as_slice() != root.revision().encode_control().as_ref()
+            || display.observation().producer_epoch != root.producer_epoch() { continue; }
+        let key = SectionKey::Display(display.wire().address.clone());
         if sections.iter().any(|section| section.key == key) { continue; }
         let offset = payload.len();
-        if serde_json::to_writer(BoundedWriter::new(&mut payload, CAP)?, display.as_ref()).is_err() { payload.truncate(offset); continue; }
+        if serde_json::to_writer(BoundedWriter::new(&mut payload, CAP)?, display.wire()).is_err() { payload.truncate(offset); continue; }
         if payload.len() - offset > DISPLAY_SECTION_CAP { payload.truncate(offset); continue; }
         sections.push(Section { key, offset, len: payload.len() - offset, hash: Digest::of(&payload[offset..]) });
     }
@@ -742,11 +744,12 @@ fn decode_selected(bytes: &[u8], wanted: &[PageKey], namespace: Option<Digest>, 
                 let fault = |why| Refusal::Section { key: section.key.clone(), fault: why };
                 if section.len > DISPLAY_SECTION_CAP { return Err(fault(SectionFault::Decode("retained display exceeds section budget".into()))); }
                 let body = &payload[section.offset..section.offset + section.len];
-                let display: RetainedDisplay = serde_json::from_slice(body).map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
-                if !display.source_matches_route(route) || display.observation.cursor != table.root.cursor.0
+                let display: RetainedDisplayWire = serde_json::from_slice(body).map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
+                if display.observation.cursor != table.root.cursor.0
                     || display.observation.producer_epoch != table.root.epoch {
                     return Err(fault(SectionFault::Decode("display address, observation or source scope mismatch".into())));
                 }
+                let display = RetainedDisplay::admit(display, route).ok_or_else(|| fault(SectionFault::Decode("display address or source scope mismatch".into())))?;
                 displays.push(Arc::new(display));
             }
         }
