@@ -21,6 +21,29 @@ pub struct IndexOperationClaim {
 }
 
 impl IndexOperationClaim {
+    /// Allocate an owner-independent key from the operating system. Allocation
+    /// does not submit anything; the caller must save the claim before send.
+    pub fn fresh(project: &LocalProjectId) -> Result<Self, String> {
+        let mut bytes = [0_u8; 32];
+        #[cfg(unix)]
+        {
+            use std::io::Read as _;
+            std::fs::File::open("/dev/urandom").and_then(|mut source| source.read_exact(&mut bytes))
+                .map_err(|error| format!("The index operation key could not be generated: {error}"))?;
+        }
+        #[cfg(windows)]
+        backend_platform::win32::random::fill(&mut bytes)
+            .map_err(|error| format!("The index operation key could not be generated: {error}"))?;
+        #[cfg(not(any(unix, windows)))]
+        return Err("This platform cannot generate a durable index operation key.".to_owned());
+        // The canonical key owns nonzero and lower-hex admission. An entropy
+        // failure is never replaced by a timestamp, PID, root or local counter.
+        let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let wire = serde_json::to_string(&text).map_err(|error| error.to_string())?;
+        let key = serde_json::from_str(&wire).map_err(|error| error.to_string())?;
+        Self::for_project(key, project)
+    }
+
     /// Bind an already generated key to the selected native project.
     pub fn for_project(key: IndexOperationKey, project: &LocalProjectId) -> Result<Self, String> {
         let coordinate = project.service_coordinate().map_err(|error| error.to_string())?;
@@ -47,6 +70,16 @@ pub(crate) mod tests {
         let wire = format!("\"{}\"", format!("{byte:02x}").repeat(32));
         let key = serde_json::from_str(&wire).expect("nonzero canonical caller key");
         IndexOperationClaim::for_project(key, project).expect("exact project payload")
+    }
+
+    #[test]
+    fn fresh_attempts_for_one_project_have_distinct_admitted_keys() {
+        let project = LocalProjectId::new("/fixture/exact-operation").expect("project");
+        let first = IndexOperationClaim::fresh(&project).expect("OS key");
+        let second = IndexOperationClaim::fresh(&project).expect("OS key");
+        assert_ne!(first.key, second.key);
+        assert_eq!(first.package, second.package);
+        assert_eq!(first.execution_intent, second.execution_intent);
     }
 
     #[test]
