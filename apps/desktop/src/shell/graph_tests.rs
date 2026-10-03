@@ -213,6 +213,44 @@ fn cmd_d_on_an_unindexed_graph_focus_speaks_through_the_notice(cx: &mut TestAppC
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
 }
 
+#[gpui::test]
+fn graph_messages_keep_full_native_semantics_inside_their_painted_bounds(cx: &mut TestAppContext) {
+    let mut rig = world_rig(cx, Route::World);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    for appearance in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
+        rig.go(Intent::SetAppearance(appearance));
+        for percent in [100_u16, 150, 200] {
+            rig.go(Intent::ZoomTo { display: display.clone(), percent });
+            for width in [360.0, 480.0, 663.0, 1440.0] {
+                rig.cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.0)));
+                rig.settle();
+                rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
+                let ledger = painted(&mut rig);
+                let caption = ledger.texts.iter().find(|text| text.key == "graph-projection-status").expect("painted graph status");
+                assert!(!caption.clipped_without_ellipsis() && !caption.clipped_vertically());
+                assert!(caption.bounds.x >= -0.5 && caption.bounds.x + caption.bounds.width <= width + 0.5);
+                let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native graph tree");
+                let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+                assert!(tree["nodes"].as_object().expect("nodes").values().any(|node|
+                    node["aria"]["role"].as_str() == Some("Status") && node["aria"]["label"].as_str() == Some(caption.content.as_str())), "the native status must preserve the exact projected coverage words");
+            }
+        }
+    }
+    // Advance the fixture owner's exact authority without fabricating a
+    // projection for the new root. Its unavailable state must be native too.
+    let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 801) });
+    rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
+    let ledger = painted(&mut rig);
+    let terminal = ledger.texts.iter().find(|text| text.key == "graph-terminal-message").expect("actual unavailable graph message");
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native terminal graph tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    assert!(tree["nodes"].as_object().expect("nodes").values().any(|node|
+        node["aria"]["role"].as_str() == Some("Status") && node["aria"]["label"].as_str() == Some(terminal.content.as_str())));
+    assert!(!terminal.clipped_without_ellipsis() && !terminal.clipped_vertically());
+}
+
 /// T on a package page: the world, flying the package's reading path from
 /// its first stop (the graph was not mounted yet: the cold path). Back
 /// returns to the page, and T again flies again.
