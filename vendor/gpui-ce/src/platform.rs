@@ -896,6 +896,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn toggle_fullscreen(&self);
     fn is_fullscreen(&self) -> bool;
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>);
+    /// Whether a queued next-frame callback may use a one-shot software wake
+    /// when the platform frame source is temporarily silent. Backends with a
+    /// reliable frame source need not opt in.
+    fn allows_frame_callback_wake(&self) -> bool {
+        false
+    }
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>);

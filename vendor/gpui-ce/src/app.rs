@@ -1756,6 +1756,25 @@ impl App {
                     .unwrap();
                 }
 
+                // `on_next_frame` is a separate obligation from invalidation:
+                // an eager draw may have submitted a scene while leaving
+                // animation callbacks queued. A platform that opts in arms
+                // exactly one visibility-gated wake per such window.
+                let frame_wakes: SmallVec<[AnyWindowHandle; 2]> = self
+                    .windows
+                    .values()
+                    .filter_map(|window| {
+                        let window = window.as_deref()?;
+                        window.needs_frame_callback_wake().then_some(window.handle)
+                    })
+                    .collect();
+                for window in frame_wakes {
+                    self.update_window(window, |_, window, cx| {
+                        window.arm_frame_callback_wake(cx);
+                    })
+                    .log_err();
+                }
+
                 if self.pending_effects.is_empty() {
                     self.event_arena.clear();
                     break;

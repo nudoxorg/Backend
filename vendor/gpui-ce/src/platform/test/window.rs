@@ -31,6 +31,7 @@ pub(crate) struct TestWindowState {
     hit_test_window_control_callback: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
     input_callback: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    frame_callback_wake_visible: bool,
     active_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     hover_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
@@ -94,6 +95,7 @@ impl TestWindow {
             hit_test_window_control_callback: None,
             input_callback: None,
             request_frame_callback: None,
+            frame_callback_wake_visible: false,
             active_status_change_callback: None,
             hover_status_change_callback: None,
             resize_callback: None,
@@ -179,6 +181,10 @@ impl TestWindow {
         };
         callback(options);
         self.0.lock().request_frame_callback = Some(callback);
+    }
+
+    pub(crate) fn set_frame_callback_wake_visible(&self, visible: bool) {
+        self.0.lock().frame_callback_wake_visible = visible;
     }
 }
 
@@ -338,6 +344,10 @@ impl PlatformWindow for TestWindow {
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.lock().request_frame_callback = Some(callback);
+    }
+
+    fn allows_frame_callback_wake(&self) -> bool {
+        self.0.lock().frame_callback_wake_visible
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>) {

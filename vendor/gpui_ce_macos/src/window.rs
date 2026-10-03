@@ -1793,6 +1793,24 @@ impl PlatformWindow for MacWindow {
         state.start_display_link();
     }
 
+    fn allows_frame_callback_wake(&self) -> bool {
+        let state = self.0.lock();
+        if state.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        let window = state.native_window();
+        // AppKit can briefly report an ordered, key window as occluded while
+        // its CVDisplayLink subscription is being retired. Keep finite motion
+        // progressing in that case. An ordered-out or minimized window never
+        // runs the software wake; its queued callbacks wait for visibility.
+        window.isVisible()
+            && !window.isMiniaturized()
+            && (window.isKeyWindow()
+                || window
+                    .occlusionState()
+                    .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible))
+    }
+
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
         self.0.as_ref().lock().event_callback = Some(callback);
     }

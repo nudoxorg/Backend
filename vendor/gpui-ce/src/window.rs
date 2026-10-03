@@ -2056,6 +2056,8 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    /// One cancellable, callback-owned wake when a native frame source is silent.
+    frame_callback_wake: Rc<RefCell<Option<Task<()>>>>,
     grouped_animation_frame_requests: GroupedAnimationFrameRequests,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
@@ -2408,6 +2410,7 @@ impl Window {
         let needs_present = Rc::new(Cell::new(false));
         let presentation_retry = Rc::new(Cell::new(PresentationRetry::Ready));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
+        let frame_callback_wake: Rc<RefCell<Option<Task<()>>>> = Default::default();
         let input_rate_tracker = Rc::new(RefCell::new(InputRateTracker::default()));
         let last_frame_time = Rc::new(Cell::new(None));
 
@@ -2523,6 +2526,7 @@ impl Window {
             let needs_present = needs_present.clone();
             let presentation_retry = presentation_retry.clone();
             let next_frame_callbacks = next_frame_callbacks.clone();
+            let frame_callback_wake = frame_callback_wake.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             let mut deferred_force_render = false;
             let mut deferred_require_presentation = false;
@@ -2596,6 +2600,11 @@ impl Window {
                 last_frame_time.set(Some(now));
 
                 let next_frame_callbacks = next_frame_callbacks.take();
+                if !next_frame_callbacks.is_empty() {
+                    // A real platform frame supersedes the one-shot software
+                    // wake. Cancel it before a callback can queue its successor.
+                    frame_callback_wake.borrow_mut().take();
+                }
                 let draw_was_already_pending = invalidator.is_dirty() || force_render;
                 let has_scoped_callbacks = next_frame_callbacks
                     .iter()
@@ -2865,6 +2874,7 @@ impl Window {
             ),
             frame_sequence: 0,
             next_frame_callbacks,
+            frame_callback_wake,
             grouped_animation_frame_requests: GroupedAnimationFrameRequests::default(),
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
@@ -3046,6 +3056,7 @@ impl Window {
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
+        self.frame_callback_wake.borrow_mut().take();
         self.grouped_animation_frame_requests = GroupedAnimationFrameRequests::default();
         self.next_frame_callbacks
             .borrow_mut()
@@ -3481,6 +3492,71 @@ impl Window {
     pub fn request_animation_frame(&self) {
         let entity = self.current_view();
         self.on_next_frame(move |_, cx| cx.notify(entity));
+    }
+
+    pub(crate) fn needs_frame_callback_wake(&self) -> bool {
+        !self.removed
+            && !self.next_frame_callbacks.borrow().is_empty()
+            && self.frame_callback_wake.borrow().is_none()
+            && self.platform_window.allows_frame_callback_wake()
+    }
+
+    /// A queued callback is work even when an eager draw has cleared the
+    /// invalidator. Give it one paced opportunity to advance without requiring
+    /// another user event. The platform decides whether the window is visible
+    /// enough to run this fallback; native frames cancel the pending task.
+    pub(crate) fn arm_frame_callback_wake(&mut self, cx: &App) {
+        if !self.needs_frame_callback_wake() {
+            return;
+        }
+        // The task is owned by the slot; retain only a Weak handle inside its
+        // future so dropping the window also cancels the timer without a cycle.
+        let slot = Rc::downgrade(&self.frame_callback_wake);
+        let wake = self.spawn(cx, async move |cx| {
+            cx.background_executor
+                .timer(Duration::from_millis(16))
+                .await;
+            let Some(slot) = slot.upgrade() else { return };
+            // Detach only the task that is already executing its final poll;
+            // dropping its own handle would cancel it before delivery. There
+            // is at most one outstanding timer for this window.
+            if let Some(current) = slot.borrow_mut().take() {
+                current.detach();
+            }
+            cx.update(|window, cx| {
+                if window.removed || !window.platform_window.allows_frame_callback_wake() {
+                    return;
+                }
+                let callbacks = window.next_frame_callbacks.take();
+                if callbacks.is_empty() {
+                    return;
+                }
+                let scoped = callbacks.iter().any(|callback| callback.owner.is_some());
+                if scoped && window.invalidator.is_dirty() {
+                    let clear = window.draw(cx);
+                    window.present();
+                    clear.clear(cx);
+                }
+                window.run_frame_callbacks(callbacks, cx);
+            })
+            .log_err();
+            // Notifications from the callbacks are applied by the preceding
+            // update's effect flush. In production (without test-support),
+            // submit that resulting scene here instead of waiting for a
+            // display-link tick which may never arrive.
+            cx.update(|window, cx| {
+                if !window.removed
+                    && window.platform_window.allows_frame_callback_wake()
+                    && window.invalidator.is_dirty()
+                {
+                    let clear = window.draw(cx);
+                    window.present();
+                    clear.clear(cx);
+                }
+            })
+            .log_err();
+        });
+        *self.frame_callback_wake.borrow_mut() = Some(wake);
     }
 
     /// Runs all callbacks scheduled via [`Self::on_next_frame`], returning how many ran.
@@ -9089,6 +9165,141 @@ mod tests {
             self.0.set(self.0.get() + 1);
             div().child("retained scene")
         }
+    }
+
+    struct PacedView {
+        renders: Rc<Cell<usize>>,
+        frames_remaining: Rc<Cell<usize>>,
+    }
+
+    impl Render for PacedView {
+        fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            let remaining = self.frames_remaining.get();
+            if remaining != 0 {
+                self.frames_remaining.set(remaining - 1);
+                window.request_animation_frame();
+            }
+            div().child("paced scene")
+        }
+    }
+
+    #[gpui::test]
+    fn queued_animation_frames_continue_after_eager_draw_without_platform_ticks(
+        cx: &mut TestAppContext,
+    ) {
+        let renders = Rc::new(Cell::new(0));
+        let remaining = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let renders = renders.clone();
+            let remaining = remaining.clone();
+            move |_, _| PacedView {
+                renders,
+                frames_remaining: remaining,
+            }
+        });
+        cx.run_until_parked();
+        let platform = cx.test_window(window.into());
+        let initial_renders = renders.get();
+        platform.set_frame_callback_wake_visible(true);
+        let initial_submissions = platform.presentation_attempts();
+
+        remaining.set(2);
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        assert_eq!(renders.get(), initial_renders + 1);
+        assert_eq!(platform.presentation_attempts(), initial_submissions + 1);
+
+        // No simulated platform frame or later input: the callback queue alone
+        // drives the finite motion and stops when the view stops requesting it.
+        for expected in 2..=3 {
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(16));
+            cx.run_until_parked();
+            assert_eq!(renders.get(), initial_renders + expected);
+            assert_eq!(
+                platform.presentation_attempts(),
+                initial_submissions + expected
+            );
+        }
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(renders.get(), initial_renders + 3);
+        assert_eq!(platform.presentation_attempts(), initial_submissions + 3);
+    }
+
+    #[gpui::test]
+    fn hidden_animation_wake_waits_for_native_visibility_frame(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let remaining = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let renders = renders.clone();
+            let remaining = remaining.clone();
+            move |_, _| PacedView {
+                renders,
+                frames_remaining: remaining,
+            }
+        });
+        cx.run_until_parked();
+        let platform = cx.test_window(window.into());
+        remaining.set(1);
+        platform.set_frame_callback_wake_visible(true);
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        let drawn = renders.get();
+        let submissions = platform.presentation_attempts();
+
+        platform.set_frame_callback_wake_visible(false);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(renders.get(), drawn);
+        assert_eq!(platform.presentation_attempts(), submissions);
+
+        platform.set_frame_callback_wake_visible(true);
+        platform.simulate_frame(RequestFrameOptions::default());
+        assert!(renders.get() > drawn);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(remaining.get(), 0);
+    }
+
+    #[gpui::test]
+    fn native_frame_cancels_the_queued_callback_wake(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let remaining = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let renders = renders.clone();
+            let remaining = remaining.clone();
+            move |_, _| PacedView {
+                renders,
+                frames_remaining: remaining,
+            }
+        });
+        cx.run_until_parked();
+        let platform = cx.test_window(window.into());
+        platform.set_frame_callback_wake_visible(true);
+        remaining.set(1);
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        let before_native = renders.get();
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(window.frame_callback_wake.borrow().is_some());
+        })
+        .unwrap();
+
+        platform.simulate_frame(RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        });
+        assert_eq!(renders.get(), before_native + 1);
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(window.frame_callback_wake.borrow().is_none());
+        })
+        .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(renders.get(), before_native + 1);
     }
 
     #[gpui::test]
