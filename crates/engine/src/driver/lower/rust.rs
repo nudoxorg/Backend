@@ -4981,9 +4981,8 @@ mod tests {
     /// carry their exact ownership cell.
     #[test]
     fn function_signatures_commit_carriers_and_receiver_ownership() -> Result<(), TestError> {
-        let view = lower(
-            "pub struct Cafe;\n\nimpl Cafe {\n    pub fn brew(&self, shots: u8) -> u8 { shots }\n    pub fn stir(&mut self) {}\n}\n\npub fn serve(value: String) {}\n",
-        )?;
+        let source = "pub struct Cafe;\n\nimpl Cafe {\n    pub fn brew(&self, shots: u8) -> u8 { shots }\n    pub fn stir(&mut self) {}\n}\n\npub fn serve(value: String) {}\n";
+        let view = lower(source)?;
         let brew = fact_of(&view, b"brew", EntityKind::Function)?;
         let rows = rows(&view)?;
         let brew_row = row_for_entity(&view, brew)?;
@@ -5058,6 +5057,46 @@ mod tests {
             rust_row(&view, moved_owner)?.ok_or(TestError::Missing("moved parameter extension"))?;
         if moved[0] != 3 {
             return Err(TestError::Missing("moved by-value ownership"));
+        }
+        let owned = owned_ir(source)?;
+        let role_of = |name: &[u8], kind: backend_semantic::ir::ItemKind| {
+            owned
+                .items()
+                .find(|item| item.name() == name && item.kind() == kind)
+                .and_then(|item| owned.signature_carrier_role(item.id()))
+        };
+        if role_of(b"shots", backend_semantic::ir::ItemKind::Parameter)
+            != Some(
+                backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Input,
+                ),
+            )
+            || role_of(b"brew", backend_semantic::ir::ItemKind::Function)
+                != Some(
+                    backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                        backend_semantic::ir::SignatureCarrierRole::NotCarrier,
+                    ),
+                )
+        {
+            return Err(TestError::Missing("owned Rust signature carrier roles"));
+        }
+        let mut saw_result = false;
+        for item in owned.items() {
+            if item.kind() != backend_semantic::ir::ItemKind::Parameter {
+                continue;
+            }
+            if owned.signature_carrier_role(item.id())
+                == Some(
+                    backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                        backend_semantic::ir::SignatureCarrierRole::Result,
+                    ),
+                )
+            {
+                saw_result = true;
+            }
+        }
+        if !saw_result {
+            return Err(TestError::Missing("owned Rust result carrier role"));
         }
         Ok(())
     }

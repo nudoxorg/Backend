@@ -9,9 +9,10 @@ use backend_semantic::ir::{
     ParentageAuthority, PrepareError, PreparedFragment, PythonFacts, PythonParameterKind,
     ReferenceKind, RelSpan, ReopenedTypeParameterList, RustFacts, RustOwnership,
     SemanticCoreReader, SemanticImageView, SemanticReader, SemanticTypeChild, SemanticTypeFault,
-    SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr, TypeHeader, TypePairPayload,
-    TypeParameterListId, TypeQuadPayload, TypeTriplePayload, VariadicForm, Visibility,
-    encode_full_semantic_image, full_semantic_image_len,
+    SemanticTypeRecord, SemanticTypeTag, SignatureCarrierRole, SignatureCarrierRoleObservation,
+    SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
+    TypeTriplePayload, VariadicForm, Visibility, encode_full_semantic_image,
+    full_semantic_image_len,
 };
 use backend_semantic::ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use backend_semantic::vocabulary::{
@@ -542,12 +543,12 @@ fn recovered_pending_rows_match_control(
     Ok(())
 }
 
-/// The two-fact lane under mutation: a constant product fact plus a function
-/// fact whose single ordered child targets the constant fact.
+/// The two-fact lane under mutation: a parameter carrier plus a function fact
+/// whose single ordered result child targets that carrier.
 fn base_facts() -> [SemanticFact<'static>; 2] {
     [
         SemanticFact::new(
-            EntityKind::Constant,
+            EntityKind::Parameter,
             b"alpha",
             SemanticProductConstructor::PRODUCT,
         ),
@@ -709,6 +710,41 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids() -> Re
     )?;
     assert_eq!(ir.items().len(), 12);
     assert!(ir.items().all(|item| item.semantic_type().is_some()));
+    let role = |name: &[u8]| {
+        ir.items()
+            .find(|item| item.name() == name)
+            .and_then(|item| ir.signature_carrier_role(item.id()))
+    };
+    assert_eq!(
+        role(b"argument"),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Input,
+        )),
+    );
+    assert_eq!(
+        role(b"left"),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Result,
+        )),
+    );
+    assert_eq!(
+        role(b"right"),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Result,
+        )),
+    );
+    assert_eq!(
+        role(b"solo"),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Result,
+        )),
+    );
+    assert_eq!(
+        role(b"many"),
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::NotCarrier,
+        )),
+    );
     let many = ir
         .items()
         .find(|item| item.name() == b"many")
@@ -860,6 +896,64 @@ fn constructor_role_and_name_mutations_change_committed_fragment_bytes() -> Resu
         });
     }
     Ok(())
+}
+
+#[test]
+fn result_roles_reject_constant_targets_instead_of_relabeling_them() -> Result<(), TestError> {
+    let facts = admit_facts([
+        SemanticFact::new(
+            EntityKind::Constant,
+            b"not_a_carrier",
+            SemanticProductConstructor::PRODUCT,
+        ),
+        SemanticFact::new(
+            EntityKind::Function,
+            b"returns_constant",
+            SemanticProductConstructor::function(0, 1),
+        )
+        .child(ProductChildRole::FunctionResult, 0),
+    ])?;
+    match facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        recipe(),
+        crate::driver::types::DeclarationScope::fixture(),
+    ) {
+        Err(BuildError::SignatureCarrierRoleKind {
+            entity,
+            kind: backend_semantic::ir::ItemKind::Constant,
+        }) if entity == EntityId::new(0) => Ok(()),
+        _ => Err(TestError::Tail),
+    }
+}
+
+#[test]
+fn signature_roles_reject_nonfunction_product_owners() -> Result<(), TestError> {
+    let facts = admit_facts([
+        SemanticFact::new(
+            EntityKind::Parameter,
+            b"result",
+            SemanticProductConstructor::PRODUCT,
+        ),
+        SemanticFact::new(
+            EntityKind::Constant,
+            b"not_a_function",
+            SemanticProductConstructor::function(0, 1),
+        )
+        .child(ProductChildRole::FunctionResult, 0),
+    ])?;
+    match facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        recipe(),
+        crate::driver::types::DeclarationScope::fixture(),
+    ) {
+        Err(BuildError::SignatureCarrierRoleOwnerKind {
+            owner,
+            kind: backend_semantic::ir::ItemKind::Constant,
+        }) if owner == EntityId::new(1) => Ok(()),
+        _ => Err(TestError::Tail),
+    }
 }
 
 #[test]

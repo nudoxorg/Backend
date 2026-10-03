@@ -34,6 +34,7 @@ pub(super) struct FullSemanticImagePlan<'image> {
     pub(super) externals: Vec<[u8; EXTERNAL_ROW_BYTES]>,
     pub(super) links: Vec<[u8; LINK_ROW_BYTES]>,
     pub(super) occurrences: Vec<[u8; OCCURRENCE_ROW_BYTES]>,
+    pub(super) signature_carrier_roles: Option<Vec<u8>>,
     pub(super) members: CanonicalVariablePool,
     pub(super) documentation: CanonicalVariablePool,
     pub(super) extensions: FullExtensionPayloads,
@@ -102,6 +103,7 @@ impl<'image> FullSemanticImagePlan<'image> {
         let externals = plan_externals(ir, &semantic)?;
         let links = plan_links(ir, &semantic)?;
         let occurrences = plan_occurrences(ir, &semantic)?;
+        let signature_carrier_roles = plan_signature_carrier_roles(ir, &semantic)?;
         let members = canonical_variable_pool(
             &semantic.terminal.members.order,
             &semantic.terminal.members.key_ranges,
@@ -123,6 +125,11 @@ impl<'image> FullSemanticImagePlan<'image> {
             java: extension_payload(&semantic.extensions.java)?,
             clang: extension_payload(&semantic.extensions.clang)?,
         };
+        let schema = if signature_carrier_roles.is_some() {
+            super::wire::SCHEMA_CARRIER_ROLES
+        } else {
+            super::wire::SCHEMA_LEGACY
+        };
         let lanes = lanes(
             &semantic,
             &entities,
@@ -132,8 +139,9 @@ impl<'image> FullSemanticImagePlan<'image> {
             &members,
             &documentation,
             &extensions,
+            signature_carrier_roles.as_deref(),
         )?;
-        let (layout, required, required_wire) = layout(lanes)?;
+        let (layout, required, required_wire) = layout(lanes, schema)?;
         Ok(Self {
             semantic,
             image,
@@ -142,6 +150,7 @@ impl<'image> FullSemanticImagePlan<'image> {
             externals,
             links,
             occurrences,
+            signature_carrier_roles,
             members,
             documentation,
             extensions,
@@ -150,6 +159,57 @@ impl<'image> FullSemanticImagePlan<'image> {
             required_wire,
         })
     }
+}
+
+fn plan_signature_carrier_roles(
+    ir: &Ir,
+    semantic: &FullSemanticPlan<'_>,
+) -> Result<Option<Vec<u8>>, FullPlanError> {
+    let Some(source) = ir.signature_carrier_role_plane() else {
+        return Ok(None);
+    };
+    if source.entity_count() != semantic.entities.rows.len() {
+        return Err(FullSemanticImageFault::DirectoryCountLane {
+            kind: FullDirectoryKind::SignatureCarrierRoles,
+            expected: count(
+                semantic.entities.rows.len(),
+                FullSemanticImageField::SignatureCarrierRoles,
+            )?,
+            observed: count(
+                source.entity_count(),
+                FullSemanticImageField::SignatureCarrierRoles,
+            )?,
+        }
+        .into());
+    }
+    let byte_count = semantic.entities.rows.len().div_ceil(4);
+    let mut roles = Vec::with_capacity(byte_count);
+    roles.resize(byte_count, 0_u8);
+    for (canonical_index, row) in semantic.entities.rows.iter().enumerate() {
+        let canonical_row = count(
+            canonical_index,
+            FullSemanticImageField::SignatureCarrierRoles,
+        )?;
+        let role = source
+            .role(row.entity.index())
+            .ok_or(FullSemanticImageFault::Reference {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+                row: canonical_row,
+                expected: count(
+                    semantic.entities.rows.len(),
+                    FullSemanticImageField::SignatureCarrierRoles,
+                )?,
+                observed: row.entity.raw,
+            })?;
+        let slot =
+            roles
+                .get_mut(canonical_index / 4)
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierRoles,
+                })?;
+        *slot |= role.bits() << ((canonical_index % 4) * 2);
+    }
+    Ok(Some(roles))
 }
 
 fn extension_payload(
@@ -370,9 +430,10 @@ fn lanes(
     members: &CanonicalVariablePool,
     documentation: &CanonicalVariablePool,
     extensions: &FullExtensionPayloads,
-) -> Result<[Lane; 26], FullPlanError> {
+    signature_carrier_roles: Option<&[u8]>,
+) -> Result<[Lane; 27], FullPlanError> {
     let canonical = semantic.typed.canonical();
-    let mut lanes = [Lane::ZERO; 26];
+    let mut lanes = [Lane::ZERO; 27];
     set_lane(
         &mut lanes,
         FullDirectoryKind::Atoms,
@@ -402,6 +463,17 @@ fn lanes(
         )?,
         count(entities.len(), FullSemanticImageField::Entities)?,
     );
+    if let Some(roles) = signature_carrier_roles {
+        set_lane(
+            &mut lanes,
+            FullDirectoryKind::SignatureCarrierRoles,
+            roles.len(),
+            count(
+                entities.len(),
+                FullSemanticImageField::SignatureCarrierRoles,
+            )?,
+        );
+    }
     set_lane(
         &mut lanes,
         FullDirectoryKind::TypedNodes,
@@ -515,7 +587,7 @@ fn lanes(
 }
 
 fn set_terminal_lanes(
-    lanes: &mut [Lane; 26],
+    lanes: &mut [Lane; 27],
     range_kind: FullDirectoryKind,
     bytes_kind: FullDirectoryKind,
     rows: &[crate::ir::ArenaRange],
@@ -533,7 +605,7 @@ fn set_terminal_lanes(
 }
 
 fn set_extension_lanes(
-    lanes: &mut [Lane; 26],
+    lanes: &mut [Lane; 27],
     facts: FullDirectoryKind,
     bindings: FullDirectoryKind,
     plan: &crate::ir::semantic_image::full::ExtensionPlanePlan,
@@ -572,9 +644,22 @@ fn set_extension_lanes(
     Ok(())
 }
 
-fn layout(lanes: [Lane; 26]) -> Result<(FullImageLayout, usize, u32), FullSemanticImageFault> {
+fn layout(
+    lanes: [Lane; 27],
+    schema: u16,
+) -> Result<(FullImageLayout, usize, u32), FullSemanticImageFault> {
+    let kinds =
+        FullDirectoryKind::kinds_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
+            expected: super::wire::SCHEMA_CARRIER_ROLES,
+            observed: schema,
+        })?;
+    let directory_count =
+        FullDirectoryKind::count_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
+            expected: super::wire::SCHEMA_CARRIER_ROLES,
+            observed: schema,
+        })?;
     let directory_bytes = DIRECTORY_BYTES
-        .checked_mul(usize::from(FullDirectoryKind::count()))
+        .checked_mul(usize::from(directory_count))
         .ok_or(FullSemanticImageFault::LengthOverflow {
             field: FullSemanticImageField::Directory,
         })?;
@@ -583,14 +668,8 @@ fn layout(lanes: [Lane; 26]) -> Result<(FullImageLayout, usize, u32), FullSemant
             field: FullSemanticImageField::Directory,
         },
     )?;
-    let mut entries = [FullDirectoryEntry {
-        offset: 0,
-        length: 0,
-        offset_wire: 0,
-        length_wire: 0,
-        count: 0,
-    }; 26];
-    for kind in FullDirectoryKind::ALL {
+    let mut entries = [FullDirectoryEntry::EMPTY; 27];
+    for kind in kinds.iter().copied() {
         let lane = lanes[kind.index()];
         entries[kind.index()] = FullDirectoryEntry {
             offset: next,
@@ -606,13 +685,13 @@ fn layout(lanes: [Lane; 26]) -> Result<(FullImageLayout, usize, u32), FullSemant
             })?;
     }
     Ok((
-        FullImageLayout { entries },
+        FullImageLayout { schema, entries },
         next,
         count(next, FullSemanticImageField::Header)?,
     ))
 }
 
-fn set_lane(lanes: &mut [Lane; 26], kind: FullDirectoryKind, length: usize, count: u32) {
+fn set_lane(lanes: &mut [Lane; 27], kind: FullDirectoryKind, length: usize, count: u32) {
     lanes[kind.index()] = Lane { length, count };
 }
 

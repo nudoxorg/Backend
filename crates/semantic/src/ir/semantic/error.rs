@@ -143,6 +143,24 @@ pub enum BuildError {
         start: u32,
         end: u32,
     },
+    /// A complete signature-carrier role plane did not align with the exact
+    /// committed entity row count.
+    SignatureCarrierRoleCount {
+        expected: usize,
+        observed: usize,
+    },
+    /// Signature-carrier role evidence was attached to a non-parameter row.
+    SignatureCarrierRoleKind {
+        entity: EntityId,
+        kind: crate::ir::ItemKind,
+    },
+    /// A function-signature product edge was attached to a non-function owner.
+    SignatureCarrierRoleOwnerKind {
+        owner: EntityId,
+        kind: crate::ir::ItemKind,
+    },
+    /// A complete signature-carrier role plane was already captured.
+    SignatureCarrierRoleAlreadyCaptured,
     /// Parentage formed a cycle, so no stable qualified ownership key exists.
     ParentCycle {
         entity: EntityId,
@@ -426,6 +444,23 @@ impl fmt::Display for BuildError {
                 formatter,
                 "language profile {requested:?} cannot replace {existing:?}"
             ),
+            Self::SignatureCarrierRoleCount { expected, observed } => write!(
+                formatter,
+                "signature-carrier role plane has {observed} rows, expected {expected}"
+            ),
+            Self::SignatureCarrierRoleKind { entity, kind } => write!(
+                formatter,
+                "signature-carrier role for entity {} is attached to non-parameter kind {kind:?}",
+                entity.raw
+            ),
+            Self::SignatureCarrierRoleOwnerKind { owner, kind } => write!(
+                formatter,
+                "function-signature role edge is attached to non-function owner {} of kind {kind:?}",
+                owner.raw
+            ),
+            Self::SignatureCarrierRoleAlreadyCaptured => {
+                formatter.write_str("signature-carrier role plane was already captured")
+            }
         }
     }
 }

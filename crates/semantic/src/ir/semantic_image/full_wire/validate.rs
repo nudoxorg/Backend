@@ -23,7 +23,7 @@ use super::{
     fault::{FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField},
     wire::{
         ATOM_ROW_BYTES, ENTITY_ROW_BYTES, FullDirectoryEntry, FullDirectoryKind, FullImageLayout,
-        NONE, RANGE_ROW_BYTES, get_u32,
+        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_ROLES, get_u32,
     },
 };
 
@@ -87,6 +87,7 @@ pub(crate) fn reopen_full_semantic_image(
     let typed = typed::validate_typed(bytes, layout)?;
     super::typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
     validate_entities(bytes, layout, typed)?;
+    validate_signature_carrier_roles(bytes, layout)?;
     validate_terminal_lists(bytes, layout, typed)?;
     graph::validate_externals(bytes, layout)?;
     graph::validate_graph(bytes, layout)?;
@@ -96,6 +97,76 @@ pub(crate) fn reopen_full_semantic_image(
         image,
         typed,
     })
+}
+
+fn validate_signature_carrier_roles(
+    bytes: &[u8],
+    layout: FullImageLayout,
+) -> Result<(), FullSemanticImageFault> {
+    if layout.schema != SCHEMA_CARRIER_ROLES {
+        return Ok(());
+    }
+    let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
+    let entities = layout.entry(FullDirectoryKind::Entities);
+    for row in 0..entities.count {
+        let byte_index =
+            usize::try_from(row / 4).map_err(|_| FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+            })?;
+        let offset =
+            roles
+                .offset
+                .checked_add(byte_index)
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierRoles,
+                })?;
+        let byte = *bytes.get(offset).ok_or(FullSemanticImageFault::Truncated {
+            field: FullSemanticImageField::SignatureCarrierRoles,
+            offset,
+        })?;
+        let code = (byte >> ((row % 4) * 2)) & 0b11;
+        let role = crate::ir::SignatureCarrierRole::from_bits(code).ok_or(
+            FullSemanticImageFault::Discriminant {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+                row,
+                observed: code,
+            },
+        )?;
+        if role != crate::ir::SignatureCarrierRole::NotCarrier {
+            let entity = decode::entity(bytes, layout, row)?;
+            if entity.kind != crate::ir::ItemKind::Parameter {
+                return Err(FullSemanticImageFault::SignatureCarrierRoleKind {
+                    row,
+                    role: code,
+                    kind: entity.kind,
+                });
+            }
+        }
+    }
+    let remainder = entities.count % 4;
+    if remainder != 0 {
+        let final_offset = roles
+            .offset
+            .checked_add(roles.length.saturating_sub(1))
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+            })?;
+        let final_byte = *bytes
+            .get(final_offset)
+            .ok_or(FullSemanticImageFault::Truncated {
+                field: FullSemanticImageField::SignatureCarrierRoles,
+                offset: final_offset,
+            })?;
+        let used_mask = (1_u16 << (remainder * 2)) - 1;
+        let padding = final_byte & !(used_mask as u8);
+        if padding != 0 {
+            return Err(FullSemanticImageFault::SignatureCarrierRolePadding {
+                byte: roles.length.saturating_sub(1),
+                observed: padding,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_entities(

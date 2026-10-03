@@ -1,3 +1,5 @@
+use super::super::SignatureCarrierRoleObservation;
+use super::super::signature_carrier::PackedSignatureCarrierRoles;
 use super::columns::{
     EntityColumns, GraphColumns, IrIndices, ItemColumns, LanguageExtensionColumnView,
     LanguageExtensions, LanguageExtensionsView, LinkOccurrenceColumns, PackedLinkOccurrences,
@@ -60,6 +62,7 @@ pub struct Ir {
     pub(in crate::ir::semantic) links: PackedLinks,
     pub(in crate::ir::semantic) link_occurrences: PackedLinkOccurrences,
     pub(in crate::ir::semantic) occurrence_authority: OccurrenceAuthorityColumn,
+    pub(in crate::ir) signature_carrier_roles: Option<PackedSignatureCarrierRoles>,
 }
 
 impl Ir {
@@ -67,6 +70,31 @@ impl Ir {
     #[must_use]
     pub fn entity_count(&self) -> usize {
         self.items.len()
+    }
+
+    /// Returns one entity's structural function-signature carrier role.
+    ///
+    /// Manually assembled images without compiler product-role capture return
+    /// `Unavailable`, while an invalid entity coordinate returns `None`.
+    #[must_use]
+    pub fn signature_carrier_role(
+        &self,
+        entity: crate::ir::EntityId,
+    ) -> Option<SignatureCarrierRoleObservation> {
+        if entity.index() >= self.items.len() {
+            return None;
+        }
+        let role = match self.signature_carrier_roles.as_ref() {
+            Some(roles) => SignatureCarrierRoleObservation::Captured(roles.role(entity.index())?),
+            None => SignatureCarrierRoleObservation::Unavailable,
+        };
+        Some(role)
+    }
+
+    pub(in crate::ir) fn signature_carrier_role_plane(
+        &self,
+    ) -> Option<&PackedSignatureCarrierRoles> {
+        self.signature_carrier_roles.as_ref()
     }
 
     /// Returns the image-level source, recipe, and scope authority when this

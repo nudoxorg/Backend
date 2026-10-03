@@ -23,7 +23,7 @@ use backend_frontend_python::legacy::{
 };
 use backend_semantic::ir::{
     ConcreteType, DecodedTypeFact, EntityKind, FragmentView, Ir, ItemKind, PrimitiveShape,
-    SemanticTypeTag, TypeExpr, TypeReason,
+    SemanticTypeTag, SignatureCarrierRole, SignatureCarrierRoleObservation, TypeExpr, TypeReason,
 };
 use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
@@ -850,6 +850,15 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
                 match item.kind() {
                     ItemKind::Function => {
                         functions += 1;
+                        if ir.signature_carrier_role(item.id())
+                            != Some(SignatureCarrierRoleObservation::Captured(
+                                SignatureCarrierRole::NotCarrier,
+                            ))
+                        {
+                            return Err(TestError::Falsified(
+                                "function name was mistaken for a signature carrier",
+                            ));
+                        }
                         let ty = item
                             .semantic_type()
                             .ok_or(TestError::Falsified("function value is untyped"))?;
@@ -869,7 +878,18 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
                             ));
                         }
                     }
-                    ItemKind::Parameter => parameters += 1,
+                    ItemKind::Parameter => {
+                        parameters += 1;
+                        if ir.signature_carrier_role(item.id())
+                            != Some(SignatureCarrierRoleObservation::Captured(
+                                SignatureCarrierRole::Both,
+                            ))
+                        {
+                            return Err(TestError::Falsified(
+                                "same row did not retain both input and result roles",
+                            ));
+                        }
+                    }
                     _ => {}
                 }
             }

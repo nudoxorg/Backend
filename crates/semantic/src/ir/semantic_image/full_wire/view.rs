@@ -13,10 +13,10 @@ use crate::ir::{
     DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget, FreePredicate,
     FreePredicateListId, GoFacts, JavaFacts, Link, LinkId, LinkOccurrence, LinkOccurrenceId,
     ObjectMember, ObjectMemberListId, OccurrenceAuthorityFacts, PythonFacts, RustFacts,
-    SemanticCoreReader, SemanticEntity, SemanticImageFacts, SemanticReader, TemplatePart,
-    TemplatePartListId, TupleElement, TupleElementListId, TypeExpr, TypeId, TypeListId,
-    TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterListId,
-    TypeScriptFacts,
+    SemanticCoreReader, SemanticEntity, SemanticImageFacts, SemanticReader, SignatureCarrierRole,
+    SignatureCarrierRoleObservation, TemplatePart, TemplatePartListId, TupleElement,
+    TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
+    TypeParameterBoundListId, TypeParameterListId, TypeScriptFacts,
 };
 
 use super::{
@@ -581,6 +581,18 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity> {
         decode::entity(self.bytes, self.layout(), id.raw).ok()
+    }
+    fn signature_carrier_role(&self, entity: EntityId) -> Option<SignatureCarrierRoleObservation> {
+        self.entity(entity)?;
+        let layout = self.layout();
+        if layout.schema == super::wire::SCHEMA_LEGACY {
+            return Some(SignatureCarrierRoleObservation::Unavailable);
+        }
+        let entry = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
+        let offset = entry.offset.checked_add(entity.index() / 4)?;
+        let packed = *self.bytes.get(offset)?;
+        let bits = (packed >> ((entity.index() % 4) * 2)) & 0b11;
+        SignatureCarrierRole::from_bits(bits).map(SignatureCarrierRoleObservation::Captured)
     }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity> {
         binary_entity(self, identity).and_then(|id| self.entity(id))

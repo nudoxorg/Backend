@@ -1045,13 +1045,26 @@ fn update_string_list_identity(identity: &mut blake3::Hasher, values: &[Box<str>
 /// Identifies the closed environment recipe supplied to native compiler children.
 /// Exact tools, versions, portable options, and target platform are attested in
 /// their own recipe fields; adapter-specific fixed environment values are
-/// versioned with the native payload.
+/// versioned with the native payload. The shared semantic projection epoch is
+/// included here so persisted output identity changes without rewriting the
+/// compiler or toolchain provenance claim.
 fn compiler_environment_identity(profile: LanguageProfile) -> [u8; 32] {
+    compiler_environment_identity_for_projection(
+        profile,
+        backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION,
+    )
+}
+
+fn compiler_environment_identity_for_projection(
+    profile: LanguageProfile,
+    semantic_projection_version: u16,
+) -> [u8; 32] {
     let mut environment = blake3::Hasher::new();
-    environment.update(b"compiler-application.execution-environment.v2\0");
+    environment.update(b"compiler-application.execution-environment.v3\0");
     environment.update(&<[u8; 2]>::from(profile));
     environment.update(crate::application::NATIVE_COMPILER_ENVIRONMENT_POLICY_ID);
     environment.update(&backend_compile::NATIVE_PAYLOAD_VERSION.to_be_bytes());
+    environment.update(&semantic_projection_version.to_be_bytes());
     *environment.finalize().as_bytes()
 }
 
@@ -4183,6 +4196,14 @@ mod portable_recipe_tests {
     fn portable_environment_identity_is_profile_specific_and_recipe_binds_real_inputs() {
         let profile = LanguageProfile::Python(PythonVersion::Python314);
         let baseline = compiler_environment_identity(profile);
+        let preceding_projection = compiler_environment_identity_for_projection(
+            profile,
+            backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION.saturating_sub(1),
+        );
+        assert_ne!(
+            baseline, preceding_projection,
+            "semantic output projection epoch is part of the existing build identity",
+        );
 
         let baseline_recipe = crate::application::CompilerInvocationRecipeV2::new(
             profile,

@@ -37,6 +37,62 @@ pub struct ExternalTargetIdentity([u8; 32]);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ScopedExternalTargetIdentity([u8; 32]);
 
+/// Structural signature-carrier role captured from a function product edge.
+///
+/// This value is derived from `ProductChildRole::FunctionParameter` and
+/// `ProductChildRole::FunctionResult` edges. Declaration spelling and type
+/// shape are not evidence for any variant.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SignatureCarrierRole {
+    /// The row was observed and is not used as a function parameter or result.
+    NotCarrier = 0,
+    /// The row is a function parameter.
+    Input = 1,
+    /// The row is a function result.
+    Result = 2,
+    /// The same row is used as both a parameter and a result.
+    Both = 3,
+}
+
+impl SignatureCarrierRole {
+    pub(crate) const fn from_bits(bits: u8) -> Option<Self> {
+        match bits {
+            0 => Some(Self::NotCarrier),
+            1 => Some(Self::Input),
+            2 => Some(Self::Result),
+            3 => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn bits(self) -> u8 {
+        self as u8
+    }
+
+    pub(crate) const fn union(self, other: Self) -> Self {
+        match self.bits() | other.bits() {
+            0 => Self::NotCarrier,
+            1 => Self::Input,
+            2 => Self::Result,
+            _ => Self::Both,
+        }
+    }
+}
+
+/// Availability of one entity's signature-carrier role observation.
+///
+/// `Unavailable` means the reader has no complete carrier-role capture (for
+/// example, an older image schema). `Captured(NotCarrier)` is a known negative
+/// observation and must not be confused with that historical absence.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SignatureCarrierRoleObservation {
+    /// This image format or producer did not capture the role plane.
+    Unavailable,
+    /// The role plane completely observed this entity.
+    Captured(SignatureCarrierRole),
+}
+
 impl ExternalTargetIdentity {
     /// Captures one endpoint only after resolving its typed coordinate against
     /// the supplied complete image.
@@ -324,6 +380,16 @@ pub trait SemanticReader: SemanticCoreReader {
         Self: 'image;
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity>;
+    /// Returns one entity's structural function-signature carrier role.
+    ///
+    /// The default preserves compatibility for readers that predate this
+    /// complete plane. Implementations with a captured plane should override
+    /// it. Invalid entity coordinates return `None`; valid coordinates with no
+    /// captured plane return `Some(Unavailable)`.
+    fn signature_carrier_role(&self, entity: EntityId) -> Option<SignatureCarrierRoleObservation> {
+        self.entity(entity)
+            .map(|_| SignatureCarrierRoleObservation::Unavailable)
+    }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity>;
     fn external(&self, id: ExternalId) -> Option<ExternalTarget>;
     fn link(&self, id: LinkId) -> Option<Link>;
@@ -609,6 +675,9 @@ impl SemanticReader for Ir {
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity> {
         Ir::semantic_entity(self, id)
+    }
+    fn signature_carrier_role(&self, entity: EntityId) -> Option<SignatureCarrierRoleObservation> {
+        Ir::signature_carrier_role(self, entity)
     }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity> {
         Ir::find_declaration(self, identity).and_then(|item| Ir::semantic_entity(self, item.id()))

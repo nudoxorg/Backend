@@ -411,6 +411,7 @@ pub(crate) const fn field_for(kind: FullDirectoryKind) -> FullSemanticImageField
         FullDirectoryKind::Externals => FullSemanticImageField::Externals,
         FullDirectoryKind::Links => FullSemanticImageField::Links,
         FullDirectoryKind::Occurrences => FullSemanticImageField::Occurrences,
+        FullDirectoryKind::SignatureCarrierRoles => FullSemanticImageField::SignatureCarrierRoles,
         FullDirectoryKind::TypeScriptFacts
         | FullDirectoryKind::CSharpFacts
         | FullDirectoryKind::GoFacts

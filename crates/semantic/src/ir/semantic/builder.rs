@@ -1,3 +1,4 @@
+use super::super::signature_carrier::PackedSignatureCarrierRoles;
 use super::columns::{
     IrIndices, ItemColumns, LanguageExtensionCounts, LanguageExtensions, PackedLinkOccurrences,
     PackedLinks, SourceColumns,
@@ -33,8 +34,8 @@ use crate::ir::{
     ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
     ImageProvenanceClaim, Interner, ListId, ListInterner, ListTable, ListTableView,
     OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
-    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SourceIdentity, StableRef, TextId,
-    Type, TypeId, VariantFingerprint,
+    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SignatureCarrierRole, SourceIdentity,
+    StableRef, TextId, Type, TypeId, VariantFingerprint,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
     columnar::{RawColumn, Slab, SlabPlan},
     interner::{HashIndex, hash},
@@ -155,6 +156,7 @@ pub struct IrBuilder {
     links: PackedLinks,
     link_occurrences: PackedLinkOccurrences,
     occurrence_authority: OccurrenceAuthorityColumn,
+    signature_carrier_roles: Option<PackedSignatureCarrierRoles>,
     entity_scratch: Vec<EntityId>,
     atom_scratch: Vec<AtomId>,
     doc_scratch: Vec<DocFragment>,
@@ -175,6 +177,45 @@ impl IrBuilder {
             });
         }
         self.authority = requested;
+        Ok(())
+    }
+
+    /// Captures a complete entity-aligned plane of structural function
+    /// parameter/result roles before finalizing the image.
+    ///
+    /// The caller must supply one exact observation for every committed entity
+    /// row. Non-carrier observations are explicit; they are not synthesized
+    /// from labels, kinds, or type shapes.
+    #[doc(hidden)]
+    pub fn capture_signature_carrier_roles(
+        &mut self,
+        roles: &[SignatureCarrierRole],
+    ) -> Result<(), BuildError> {
+        if self.signature_carrier_roles.is_some() {
+            return Err(BuildError::SignatureCarrierRoleAlreadyCaptured);
+        }
+        if roles.len() != self.items.len() {
+            return Err(BuildError::SignatureCarrierRoleCount {
+                expected: self.items.len(),
+                observed: roles.len(),
+            });
+        }
+        for (index, role) in roles.iter().copied().enumerate() {
+            if role != SignatureCarrierRole::NotCarrier
+                && self.items.kinds.get(index) != Some(&ItemKind::Parameter)
+            {
+                return Err(BuildError::SignatureCarrierRoleKind {
+                    entity: EntityId::new(u32::try_from(index).unwrap_or(u32::MAX)),
+                    kind: self
+                        .items
+                        .kinds
+                        .get(index)
+                        .copied()
+                        .unwrap_or(ItemKind::Function),
+                });
+            }
+        }
+        self.signature_carrier_roles = Some(PackedSignatureCarrierRoles::from_roles(roles)?);
         Ok(())
     }
     /// Binds one owned compile provenance header before entity materialization.
@@ -667,10 +708,44 @@ impl IrBuilder {
             links,
             link_occurrences,
             occurrence_authority: self.occurrence_authority,
+            signature_carrier_roles: self.signature_carrier_roles,
         })
     }
 
     fn validate(&self) -> Result<(), BuildError> {
+        if let Some(roles) = self.signature_carrier_roles.as_ref()
+            && roles.entity_count() != self.items.len()
+        {
+            return Err(BuildError::SignatureCarrierRoleCount {
+                expected: self.items.len(),
+                observed: roles.entity_count(),
+            });
+        }
+        if let Some(roles) = self.signature_carrier_roles.as_ref() {
+            for index in 0..self.items.len() {
+                let role = roles
+                    .role(index)
+                    .ok_or(BuildError::SignatureCarrierRoleCount {
+                        expected: self.items.len(),
+                        observed: roles.entity_count(),
+                    })?;
+                let kind = self
+                    .items
+                    .kinds
+                    .get(index)
+                    .copied()
+                    .ok_or(BuildError::Dangling {
+                        space: SemanticSpace::Entity,
+                        raw: u32::try_from(index).unwrap_or(u32::MAX),
+                    })?;
+                if role != SignatureCarrierRole::NotCarrier && kind != ItemKind::Parameter {
+                    return Err(BuildError::SignatureCarrierRoleKind {
+                        entity: EntityId::new(u32::try_from(index).unwrap_or(u32::MAX)),
+                        kind,
+                    });
+                }
+            }
+        }
         if !self.authority_facts.aligned(self.items.len()) {
             return Err(BuildError::AuthorityRowCount {
                 entities: self.items.len(),

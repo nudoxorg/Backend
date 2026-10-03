@@ -14,12 +14,14 @@ use crate::ir::{
     DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
     FreePredicate, Ir, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
     ParentageAuthority, RustEdition, RustFacts, RustOwnership, SemanticCoreReader,
-    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, TreeItemInput, TypeExpr,
-    TypeParameterBound, TypeScriptSource, VariantFingerprint, Visibility,
+    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, SignatureCarrierRole,
+    SignatureCarrierRoleObservation, TreeItemInput, TypeExpr, TypeParameterBound, TypeScriptSource,
+    VariantFingerprint, Visibility,
 };
 
 use super::wire::{
-    DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES, SPARSE_BINDING_ROW_BYTES,
+    DIRECTORY_BYTES, ENTITY_ROW_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES,
+    SPARSE_BINDING_ROW_BYTES,
 };
 use super::{
     FullSemanticImageError, FullSemanticImageFault, SemanticImageProofOwner, SemanticImageView,
@@ -81,6 +83,62 @@ fn image(reversed: bool) -> Result<Ir, crate::ir::BuildError> {
             links: &[],
         })?;
     }
+    builder.finish()
+}
+
+fn carrier_image(
+    roles: &[SignatureCarrierRole],
+    reversed: bool,
+) -> Result<Ir, crate::ir::BuildError> {
+    let parameter = TreeItemInput {
+        name: b"a",
+        kind: ItemKind::Parameter,
+        visibility: Visibility::Private,
+        authority: authority(),
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: None,
+    };
+    let items = [
+        parameter,
+        TreeItemInput {
+            name: b"b",
+            ..parameter
+        },
+        TreeItemInput {
+            name: b"c",
+            ..parameter
+        },
+        TreeItemInput {
+            name: b"d",
+            ..parameter
+        },
+    ];
+    let versions = [version(1), version(2), version(3), version(4)];
+    let mut ordered_items = Vec::with_capacity(roles.len());
+    let mut ordered_versions = Vec::with_capacity(roles.len());
+    let mut ordered_roles = Vec::with_capacity(roles.len());
+    for input_index in 0..roles.len() {
+        let canonical_index = if reversed {
+            roles.len() - input_index - 1
+        } else {
+            input_index
+        };
+        ordered_items.push(items[canonical_index]);
+        ordered_versions.push(versions[canonical_index]);
+        ordered_roles.push(roles[canonical_index]);
+    }
+    let mut builder = IrBuilder::new();
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &ordered_versions,
+        items: &ordered_items,
+        links: &[],
+    })?;
+    builder.capture_signature_carrier_roles(&ordered_roles)?;
     builder.finish()
 }
 
@@ -156,6 +214,182 @@ fn owned_proof_cache_only_admits_successful_validation() {
     assert!(invalid.reopen().is_err());
     assert!(invalid.reopen().is_err());
     assert_eq!(semantic_image_validations(), 2);
+}
+
+#[test]
+fn legacy_full_images_report_role_unavailable_without_inventing_negative_facts()
+-> Result<(), crate::ir::BuildError> {
+    let legacy = encoded(&image(false)?)?;
+    assert_eq!(u16::from_le_bytes([legacy[4], legacy[5]]), 1);
+    assert_eq!(u16::from_le_bytes([legacy[6], legacy[7]]), 26);
+    let view = SemanticImageView::reopen(&legacy).expect("legacy image reopens");
+    assert_eq!(
+        SemanticReader::signature_carrier_role(&view, EntityId::new(0)),
+        Some(SignatureCarrierRoleObservation::Unavailable)
+    );
+    assert_eq!(
+        SemanticReader::signature_carrier_role(&view, EntityId::new(99)),
+        None
+    );
+    Ok(())
+}
+
+#[test]
+fn complete_carrier_roles_round_trip_in_canonical_entity_order() -> Result<(), crate::ir::BuildError>
+{
+    let expected = [
+        SignatureCarrierRole::NotCarrier,
+        SignatureCarrierRole::Input,
+        SignatureCarrierRole::Result,
+        SignatureCarrierRole::Both,
+    ];
+    let ir = carrier_image(&expected, true)?;
+    for item in ir.items() {
+        let observed =
+            SemanticReader::signature_carrier_role(&ir, item.id()).expect("owned entity exists");
+        let role = if item.name() == b"a" {
+            expected[0]
+        } else if item.name() == b"b" {
+            expected[1]
+        } else if item.name() == b"c" {
+            expected[2]
+        } else if item.name() == b"d" {
+            expected[3]
+        } else {
+            return Err(crate::ir::BuildError::Dangling {
+                space: crate::ir::SemanticSpace::Entity,
+                raw: item.id().raw,
+            });
+        };
+        assert_eq!(
+            observed,
+            Some(SignatureCarrierRoleObservation::Captured(role))
+        );
+    }
+
+    let bytes = encoded(&ir)?;
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2);
+    assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), 27);
+    // The result owner retains the exact canonical payload and cached proof,
+    // so the role lane must survive the owned-output reopen boundary.
+    let image_owner = super::SemanticImageProofOwner::new(bytes.into_boxed_slice());
+    let view = image_owner.reopen().expect("schema-2 image reopens");
+    for entity in view.canonical_entities() {
+        let name = view.atom(entity.name).expect("canonical entity name");
+        let expected_role = if name == b"a" {
+            expected[0]
+        } else if name == b"b" {
+            expected[1]
+        } else if name == b"c" {
+            expected[2]
+        } else if name == b"d" {
+            expected[3]
+        } else {
+            return Err(crate::ir::BuildError::Dangling {
+                space: crate::ir::SemanticSpace::Entity,
+                raw: entity.id.raw,
+            });
+        };
+        assert_eq!(
+            SemanticReader::signature_carrier_role(&view, entity.id),
+            Some(SignatureCarrierRoleObservation::Captured(expected_role))
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn carrier_role_lane_is_identity_bearing_and_rejects_malformed_capture()
+-> Result<(), crate::ir::BuildError> {
+    let first_roles = [
+        SignatureCarrierRole::NotCarrier,
+        SignatureCarrierRole::Input,
+        SignatureCarrierRole::Result,
+    ];
+    let second_roles = [
+        SignatureCarrierRole::Input,
+        SignatureCarrierRole::NotCarrier,
+        SignatureCarrierRole::Result,
+    ];
+    let first = encoded(&carrier_image(&first_roles, false)?)?;
+    let second = encoded(&carrier_image(&second_roles, false)?)?;
+    assert_ne!(first, second);
+    assert_ne!(
+        crate::ir::SemanticImageIdentity::from_encoded_bytes(&first),
+        crate::ir::SemanticImageIdentity::from_encoded_bytes(&second),
+    );
+
+    let mut bad_padding = first.clone();
+    let role_directory =
+        HEADER_BYTES + FullDirectoryKind::SignatureCarrierRoles.index() * DIRECTORY_BYTES;
+    let role_offset = u32::from_le_bytes(
+        bad_padding[role_directory + 4..role_directory + 8]
+            .try_into()
+            .expect("role lane offset"),
+    ) as usize;
+    bad_padding[role_offset] |= 0b0100_0000;
+    assert!(matches!(
+        SemanticImageView::reopen(&bad_padding),
+        Err(super::FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierRolePadding {
+                observed: 0b0100_0000,
+                ..
+            }
+        ))
+    ));
+
+    let mut wrong_count = first.clone();
+    wrong_count[role_directory + 12..role_directory + 16].copy_from_slice(&2_u32.to_le_bytes());
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_count),
+        Err(super::FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierRoleCount {
+                expected: 3,
+                observed: 2,
+            }
+        ))
+    ));
+
+    let mut wrong_length = first.clone();
+    wrong_length[role_directory + 8..role_directory + 12].copy_from_slice(&0_u32.to_le_bytes());
+    let shortened = wrong_length.len().saturating_sub(1);
+    wrong_length.truncate(shortened);
+    wrong_length[8..12].copy_from_slice(
+        &u32::try_from(shortened)
+            .expect("shortened image fits wire length")
+            .to_le_bytes(),
+    );
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_length),
+        Err(super::FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierRoleLength {
+                expected: 1,
+                observed: 0,
+            }
+        ))
+    ));
+
+    let mut wrong_kind = first.clone();
+    let entity_directory = HEADER_BYTES + FullDirectoryKind::Entities.index() * DIRECTORY_BYTES;
+    let entity_offset = u32::from_le_bytes(
+        wrong_kind[entity_directory + 4..entity_directory + 8]
+            .try_into()
+            .expect("entity lane offset"),
+    ) as usize;
+    let role_row = entity_offset + ENTITY_ROW_BYTES + 4;
+    wrong_kind[role_row..role_row + 2]
+        .copy_from_slice(&u16::from(crate::ir::ItemKind::Function).to_le_bytes());
+    assert!(matches!(
+        SemanticImageView::reopen(&wrong_kind),
+        Err(super::FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierRoleKind {
+                row: 1,
+                role: 1,
+                ..
+            }
+        ))
+    ));
+    Ok(())
 }
 
 #[cfg(feature = "mmap")]

@@ -22,6 +22,7 @@ pub enum FullSemanticImageField {
     Occurrences,
     ExtensionFacts,
     ExtensionBindings,
+    SignatureCarrierRoles,
 }
 
 /// Exact content-identity cell whose domain tag failed to reopen.
@@ -100,6 +101,22 @@ pub enum FullSemanticImageFault {
     },
     #[error("full semantic image entity {row} has kind code {observed}")]
     EntityKind { row: u32, observed: u16 },
+    #[error("full semantic image signature-role lane has {observed} rows, expected {expected}")]
+    SignatureCarrierRoleCount { expected: u32, observed: u32 },
+    #[error("full semantic image signature-role lane has {observed} bytes, expected {expected}")]
+    SignatureCarrierRoleLength { expected: u32, observed: u32 },
+    #[error(
+        "full semantic image signature-role row {row} has role {role} on non-parameter kind {kind:?}"
+    )]
+    SignatureCarrierRoleKind {
+        row: u32,
+        role: u8,
+        kind: crate::ir::ItemKind,
+    },
+    #[error(
+        "full semantic image signature-role byte {byte} has nonzero padding bits {observed:#04x}"
+    )]
+    SignatureCarrierRolePadding { byte: usize, observed: u8 },
     #[error("full semantic image entity {row} has invalid source span {start}..{end}")]
     SourceSpan { row: u32, start: u32, end: u32 },
     #[error(

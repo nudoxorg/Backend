@@ -40,6 +40,7 @@ mod semantic_image;
 /// The maintained renderer surface: prepared semantic-document, canonical-type,
 /// neutral, and zero-allocation display lanes over one static reader.
 pub mod semantic_render;
+mod signature_carrier;
 mod type_facts;
 mod typed_plane_manifest_v2;
 mod typed_plane_manifest_v3;
@@ -153,7 +154,14 @@ pub use reader::{
     CoreSemanticEntity, ExternalTargetIdentity, ExternalTargetIdentityFault,
     IrCanonicalCoreEntities, IrCanonicalEntities, IrExtensionRows, ScopedExternalTargetIdentity,
     SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
+    SignatureCarrierRole, SignatureCarrierRoleObservation,
 };
+
+/// Semantic-image projection epoch bound into compiler execution identities.
+///
+/// Increment this when the compiler's complete semantic output projection
+/// changes without changing the source-language compiler or its toolchain.
+pub const SEMANTIC_IR_PROJECTION_VERSION: u16 = 2;
 pub use segment_boundary_policy::{
     CanonicalSemanticPlaneBoundaryFamilyVerifier, SemanticPlaneSegmentBoundaryAlgorithm,
     SemanticPlaneSegmentBoundaryPolicy,

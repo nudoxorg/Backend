@@ -2625,6 +2625,8 @@ mod tests {
         Admission(crate::driver::lower::AdmissionFault),
         #[error("fragment validation rejected the bytes: {0:?}")]
         Validate(backend_semantic::ir::FragmentError),
+        #[error("owned semantic image rejected the fixture: {0:?}")]
+        Build(backend_semantic::ir::BuildError),
         #[error("expected {0}")]
         Missing(&'static str),
         #[error("committed bytes changed")]
@@ -2648,6 +2650,12 @@ mod tests {
     impl From<backend_semantic::ir::FragmentError> for TestError {
         fn from(error: backend_semantic::ir::FragmentError) -> Self {
             Self::Validate(error)
+        }
+    }
+
+    impl From<backend_semantic::ir::BuildError> for TestError {
+        fn from(error: backend_semantic::ir::BuildError) -> Self {
+            Self::Build(error)
         }
     }
 
@@ -3263,6 +3271,31 @@ mod tests {
         }
         output.truncate(length);
         Ok(output)
+    }
+
+    fn owned_ir(fix: &Fixture, source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
+        let image = fix.encode(source)?;
+        let mut facts = FactSet::new();
+        collect(source, &image, &mut facts)?;
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Num)?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            Stage::LowerIr,
+            NativeTool::CSharpCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"csharp-authority-toolchain"),
+        );
+        facts
+            .build_ir(
+                LanguageProfile::CSharp(CSharpVersion::CSharp14),
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(TestError::from)
     }
 
     /// Decodes one entity row as its name bytes and kind.
@@ -4060,6 +4093,43 @@ mod tests {
             || method_row.record.children.length != 2
         {
             return Err(TestError::Missing("function pointer over carriers"));
+        }
+        let owned = owned_ir(&fix, source)?;
+        let count = owned
+            .items()
+            .find(|item| {
+                item.name() == b"count" && item.kind() == backend_semantic::ir::ItemKind::Parameter
+            })
+            .ok_or(TestError::Missing("owned C# input carrier"))?;
+        let brew = owned
+            .items()
+            .find(|item| {
+                item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned C# method"))?;
+        if owned.signature_carrier_role(count.id())
+            != Some(
+                backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Input,
+                ),
+            )
+            || owned.signature_carrier_role(brew.id())
+                != Some(
+                    backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                        backend_semantic::ir::SignatureCarrierRole::NotCarrier,
+                    ),
+                )
+            || !owned.items().any(|item| {
+                item.kind() == backend_semantic::ir::ItemKind::Parameter
+                    && owned.signature_carrier_role(item.id())
+                        == Some(
+                            backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                                backend_semantic::ir::SignatureCarrierRole::Result,
+                            ),
+                        )
+            })
+        {
+            return Err(TestError::Missing("owned C# signature carrier roles"));
         }
         let zero_arity = row(&view, 5)?;
         if zero_arity.record.children.length != 1 {

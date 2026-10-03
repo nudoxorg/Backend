@@ -3484,6 +3484,31 @@ mod tests {
         if listed != vec![3] {
             return Err(TestError::Missing("overload sibling ordinal"));
         }
+        let owned = owned(&fix, source)?;
+        let brew = owned
+            .items()
+            .find(|item| {
+                item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned Java method"))?;
+        if owned.signature_carrier_role(brew.id())
+            != Some(
+                backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::NotCarrier,
+                ),
+            )
+            || !owned.items().any(|item| {
+                item.kind() == backend_semantic::ir::ItemKind::Parameter
+                    && owned.signature_carrier_role(item.id())
+                        == Some(
+                            backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                                backend_semantic::ir::SignatureCarrierRole::Result,
+                            ),
+                        )
+            })
+        {
+            return Err(TestError::Missing("owned Java result carrier roles"));
+        }
         // Falsifier: renaming the second method empties the sibling list and
         // changes the committed bytes.
         let mut mutated = fix.clone();

@@ -3440,6 +3440,8 @@ mod tests {
         },
         #[error("the fragment failed validation: {0:?}")]
         Validate(backend_semantic::ir::FragmentError),
+        #[error("owned semantic image rejected the fixture: {0:?}")]
+        Build(backend_semantic::ir::BuildError),
         #[error("the fragment output tail changed")]
         Tail,
         #[error("entity {ordinal} differed from the expected fact row")]
@@ -3465,6 +3467,12 @@ mod tests {
     impl From<backend_semantic::ir::FragmentError> for TestError {
         fn from(error: backend_semantic::ir::FragmentError) -> Self {
             Self::Validate(error)
+        }
+    }
+
+    impl From<backend_semantic::ir::BuildError> for TestError {
+        fn from(error: backend_semantic::ir::BuildError) -> Self {
+            Self::Build(error)
         }
     }
 
@@ -3524,6 +3532,39 @@ mod tests {
         }
         output.truncate(length);
         Ok(output)
+    }
+
+    fn owned_ir(source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
+        let profile = LanguageProfile::C(CStandard::C23);
+        let mut facts = FactSet::new();
+        let environment = selected_clang_environment()?;
+        collect(
+            profile,
+            None,
+            &environment,
+            source,
+            &AtomicBool::new(false),
+            &mut facts,
+        )?;
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Clang,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
+        );
+        facts
+            .build_ir(
+                profile,
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(TestError::from)
     }
 
     fn selected_clang_environment() -> Result<ClangAuthorityEnvironment, TestError> {
@@ -3897,6 +3938,46 @@ mod tests {
             != u32::try_from(call_site - owner_start).map_err(|_| TestError::Tail)?
         {
             return Err(TestError::Entity { ordinal: 4 });
+        }
+        let owned = owned_ir(source)?;
+        let add = owned
+            .items()
+            .find(|item| {
+                item.name() == b"add" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned Clang function"))?;
+        let mut saw_input = false;
+        let mut saw_result = false;
+        for item in owned.items() {
+            if item.kind() != backend_semantic::ir::ItemKind::Parameter {
+                continue;
+            }
+            match owned.signature_carrier_role(item.id()) {
+                Some(backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Input,
+                )) => saw_input = true,
+                Some(backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Result,
+                )) => saw_result = true,
+                Some(backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Both,
+                )) => {
+                    saw_input = true;
+                    saw_result = true;
+                }
+                _ => {}
+            }
+        }
+        if owned.signature_carrier_role(add.id())
+            != Some(
+                backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::NotCarrier,
+                ),
+            )
+            || !saw_input
+            || !saw_result
+        {
+            return Err(TestError::Missing("owned Clang signature carrier roles"));
         }
         Ok(())
     }

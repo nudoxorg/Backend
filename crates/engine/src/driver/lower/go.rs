@@ -5305,6 +5305,47 @@ mod tests {
         if !variadic_facts.signature.variadic || variadic_facts.signature.results.raw != 0 {
             return Err(TestError::Missing("variadic signature fact"));
         }
+        let owned = lower_ir(&fix, b"package demo\n")?;
+        let brew = owned
+            .items()
+            .find(|item| {
+                item.name() == b"Brew" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned Go function"))?;
+        if owned.signature_carrier_role(brew.id())
+            != Some(
+                backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::NotCarrier,
+                ),
+            )
+        {
+            return Err(TestError::Missing("owned Go function role"));
+        }
+        let mut saw_input = false;
+        let mut saw_result = false;
+        for item in owned.items() {
+            if item.kind() != backend_semantic::ir::ItemKind::Parameter {
+                continue;
+            }
+            match owned.signature_carrier_role(item.id()) {
+                Some(backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Input,
+                )) => saw_input = true,
+                Some(backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Result,
+                )) => saw_result = true,
+                Some(backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::Both,
+                )) => {
+                    saw_input = true;
+                    saw_result = true;
+                }
+                _ => {}
+            }
+        }
+        if !saw_input || !saw_result {
+            return Err(TestError::Missing("owned Go input/result carrier roles"));
+        }
         Ok(())
     }
 

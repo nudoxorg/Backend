@@ -8,7 +8,11 @@ use core::fmt;
 use super::fault::{FullSemanticImageFault, FullSemanticImageField};
 
 pub(crate) const MAGIC: [u8; 4] = *b"NXFI";
-pub(crate) const SCHEMA: u16 = 1;
+pub(crate) const SCHEMA_LEGACY: u16 = 1;
+/// Schema 2 adds the complete packed signature-carrier-role lane.  This is
+/// deliberately independent from the semantic projection epoch used in build
+/// identities: future projection changes must not reinterpret this grammar.
+pub(crate) const SCHEMA_CARRIER_ROLES: u16 = 2;
 /// The first 176 bytes are the same explicitly documented image
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
@@ -59,6 +63,7 @@ pub enum FullDirectoryKind {
     JavaBindings = 24,
     ClangFacts = 25,
     ClangBindings = 26,
+    SignatureCarrierRoles = 27,
 }
 
 impl FullDirectoryKind {
@@ -91,6 +96,53 @@ impl FullDirectoryKind {
         Self::ClangBindings,
     ];
 
+    /// Schema-2 directory order, extending schema 1 with one trailing lane.
+    pub const ALL_WITH_CARRIER_ROLES: [Self; 27] = [
+        Self::Atoms,
+        Self::AtomBytes,
+        Self::Entities,
+        Self::TypedNodes,
+        Self::TypedEdges,
+        Self::EntityLists,
+        Self::EntityListBytes,
+        Self::Documentation,
+        Self::DocumentationBytes,
+        Self::Externals,
+        Self::Links,
+        Self::Occurrences,
+        Self::TypeScriptFacts,
+        Self::TypeScriptBindings,
+        Self::CSharpFacts,
+        Self::CSharpBindings,
+        Self::GoFacts,
+        Self::GoBindings,
+        Self::RustFacts,
+        Self::RustBindings,
+        Self::PythonFacts,
+        Self::PythonBindings,
+        Self::JavaFacts,
+        Self::JavaBindings,
+        Self::ClangFacts,
+        Self::ClangBindings,
+        Self::SignatureCarrierRoles,
+    ];
+
+    pub(crate) const fn kinds_for_schema(schema: u16) -> Option<&'static [Self]> {
+        match schema {
+            SCHEMA_LEGACY => Some(&Self::ALL),
+            SCHEMA_CARRIER_ROLES => Some(&Self::ALL_WITH_CARRIER_ROLES),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn count_for_schema(schema: u16) -> Option<u16> {
+        match schema {
+            SCHEMA_LEGACY => Some(26),
+            SCHEMA_CARRIER_ROLES => Some(27),
+            _ => None,
+        }
+    }
+
     pub const fn code(self) -> u16 {
         match self {
             Self::Atoms => 1,
@@ -119,6 +171,7 @@ impl FullDirectoryKind {
             Self::JavaBindings => 24,
             Self::ClangFacts => 25,
             Self::ClangBindings => 26,
+            Self::SignatureCarrierRoles => 27,
         }
     }
 
@@ -150,11 +203,8 @@ impl FullDirectoryKind {
             Self::JavaBindings => 23,
             Self::ClangFacts => 24,
             Self::ClangBindings => 25,
+            Self::SignatureCarrierRoles => 26,
         }
-    }
-
-    pub const fn count() -> u16 {
-        26
     }
 }
 
@@ -176,15 +226,29 @@ pub(crate) struct FullDirectoryEntry {
     pub(crate) count: u32,
 }
 
+impl FullDirectoryEntry {
+    pub(crate) const EMPTY: Self = Self {
+        offset: 0,
+        length: 0,
+        offset_wire: 0,
+        length_wire: 0,
+        count: 0,
+    };
+}
+
 /// Borrowed directory facts held by a fully validated full-image view.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FullImageLayout {
-    pub(crate) entries: [FullDirectoryEntry; 26],
+    pub(crate) schema: u16,
+    pub(crate) entries: [FullDirectoryEntry; 27],
 }
 
 impl FullImageLayout {
     pub(crate) const fn entry(self, kind: FullDirectoryKind) -> FullDirectoryEntry {
-        self.entries[kind.index()]
+        match (self.schema, kind) {
+            (SCHEMA_LEGACY, FullDirectoryKind::SignatureCarrierRoles) => FullDirectoryEntry::EMPTY,
+            _ => self.entries[kind.index()],
+        }
     }
 }
 

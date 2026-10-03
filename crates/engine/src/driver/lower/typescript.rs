@@ -8566,11 +8566,19 @@ mod lane_tests {
         let ir = owned_ir(HONO_SOURCE, Some(&report))?;
         let mut route_span = None;
         let mut context_span = None;
+        let mut route_entity = None;
+        let mut app_parameter = None;
         for entity in ir.canonical_entities() {
             if ir.atom(entity.name) == Some(b"route".as_slice())
                 && entity.kind == EntityKind::Function
             {
                 route_span = entity.source;
+                route_entity = Some(entity.id);
+            }
+            if ir.atom(entity.name) == Some(b"app".as_slice())
+                && entity.kind == EntityKind::Parameter
+            {
+                app_parameter = Some(entity.id);
             }
             if ir.atom(entity.name) == Some(b"Context".as_slice())
                 && entity.kind == EntityKind::Reexport
@@ -8591,6 +8599,23 @@ mod lane_tests {
             || span.end() as usize > HONO_SOURCE.len()
         {
             return Err(LaneError::Missing("route declaration extent span"));
+        }
+        let route_entity = route_entity.ok_or(LaneError::Missing("route semantic entity"))?;
+        let app_parameter = app_parameter.ok_or(LaneError::Missing("app parameter entity"))?;
+        if ir.signature_carrier_role(route_entity)
+            != Some(
+                backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                    backend_semantic::ir::SignatureCarrierRole::NotCarrier,
+                ),
+            )
+            || ir.signature_carrier_role(app_parameter)
+                != Some(
+                    backend_semantic::ir::SignatureCarrierRoleObservation::Captured(
+                        backend_semantic::ir::SignatureCarrierRole::Input,
+                    ),
+                )
+        {
+            return Err(LaneError::Missing("owned TypeScript carrier roles"));
         }
         // The import binding's provenance span is the import declaration.
         if context_span.is_none() {

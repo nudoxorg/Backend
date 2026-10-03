@@ -3026,7 +3026,91 @@ impl<'source> FactSet<'source> {
                 source,
             });
         }
+        let mut carrier_roles =
+            vec![backend_semantic::ir::SignatureCarrierRole::NotCarrier; fact_count];
+        for owner in 0..fact_count {
+            let owner_raw = u32::try_from(owner).map_err(|_| {
+                backend_semantic::ir::BuildError::Capacity(backend_semantic::ir::CapacityError {
+                    space: backend_semantic::ir::CapacitySpace::Value,
+                    actual: owner,
+                })
+            })?;
+            let start = usize::try_from(*self.child_starts.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                },
+            )?)
+            .map_err(|_| backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::Entity,
+                raw: owner_raw,
+            })?;
+            let count = usize::from(*self.child_counts.get(owner).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: owner_raw,
+                },
+            )?);
+            let end =
+                start
+                    .checked_add(count)
+                    .ok_or(backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    })?;
+            for child in start..end {
+                let product_role = *self.child_roles.get(child).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    },
+                )?;
+                let role = match product_role {
+                    ProductChildRole::FunctionParameter => {
+                        backend_semantic::ir::SignatureCarrierRole::Input
+                    }
+                    ProductChildRole::FunctionResult => {
+                        backend_semantic::ir::SignatureCarrierRole::Result
+                    }
+                    _ => continue,
+                };
+                let owner_kind = items.get(owner).map(|item| item.kind).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    },
+                )?;
+                if owner_kind != backend_semantic::ir::ItemKind::Function {
+                    return Err(
+                        backend_semantic::ir::BuildError::SignatureCarrierRoleOwnerKind {
+                            owner: backend_semantic::ir::EntityId::new(owner_raw),
+                            kind: owner_kind,
+                        },
+                    );
+                }
+                let target = *self.child_targets.get(child).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: owner_raw,
+                    },
+                )?;
+                let target_index = usize::try_from(target).map_err(|_| {
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: target,
+                    }
+                })?;
+                let carrier = carrier_roles.get_mut(target_index).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Entity,
+                        raw: target,
+                    },
+                )?;
+                *carrier = carrier.union(role);
+            }
+        }
         tree.commit(&items[..fact_count], &links)?;
+        builder.capture_signature_carrier_roles(&carrier_roles)?;
         builder.finish()
     }
 
