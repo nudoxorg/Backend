@@ -2,7 +2,7 @@ use std::{
     env, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         Arc, Barrier, Mutex,
@@ -46,6 +46,29 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256, Sha512};
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+fn write_test_marker(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker has no name"))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        TEMPORARY.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temporary, contents)?;
+    match fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(temporary);
+            Err(error)
+        }
+    }
+}
 
 fn poll_owner<T: RegistryTransport>(
     owner: &mut RegistryOwner,
@@ -5402,8 +5425,8 @@ fn distinct_coordinate_registry_journal_process_worker() {
             &mut self,
             request: FeedRequest,
         ) -> Result<TransportResult<FeedPage>, TransportFailure> {
-            fs::write(
-                self.barrier.join(format!("{}.fetch", self.worker)),
+            write_test_marker(
+                &self.barrier.join(format!("{}.fetch", self.worker)),
                 b"ready",
             )
             .map_err(|_| TransportFailure::Configuration)?;
@@ -5496,7 +5519,8 @@ fn deferred_registry_tail_process_worker() {
         .write_all(&frame[..split_at])
         .expect("publish partial frame prefix");
     target.sync_all().expect("sync partial prefix");
-    fs::write(root.join("tail.ready"), frame.len().to_string()).expect("signal partial frame");
+    write_test_marker(&root.join("tail.ready"), frame.len().to_string())
+        .expect("signal partial frame");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !root.join("tail.continue").is_file() {
@@ -5559,7 +5583,7 @@ fn cold_registry_open_does_not_truncate_an_active_partial_frame() {
         "cold open must not truncate a writer's incomplete frame"
     );
     drop(owner);
-    fs::write(root.join("tail.continue"), b"complete").expect("release writer");
+    write_test_marker(&root.join("tail.continue"), b"complete").expect("release writer");
     let output = worker.wait_with_output().expect("wait for frame writer");
     assert!(
         output.status.success(),

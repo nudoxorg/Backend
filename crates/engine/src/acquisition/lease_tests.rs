@@ -77,6 +77,45 @@ fn wait_for_path(path: &Path, timeout: Duration) -> bool {
     path.exists()
 }
 
+fn write_marker(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "marker has no name"))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temporary, contents)?;
+    match fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(temporary);
+            Err(error)
+        }
+    }
+}
+
+fn publish_pair_retrying_bounded_contention(
+    first: &mut LeaseGuard,
+    second: &mut LeaseGuard,
+    ttl: Duration,
+    mut publish: impl FnMut(AcquisitionLease, AcquisitionLease) -> io::Result<()>,
+) -> io::Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        match first.publish_if_both_current(second, ttl, |first, second| publish(first, second))? {
+            Some(()) => return Ok(true),
+            None if Instant::now() < deadline => thread::sleep(Duration::from_millis(1)),
+            None => return Ok(false),
+        }
+    }
+}
+
 fn spawn_child(mode: &str, root: &Path, markers: &Path) -> Child {
     Command::new(env::current_exe().expect("test executable"))
         .args([
@@ -114,7 +153,7 @@ fn lease_child_process_helper() {
                 .acquire(key, Duration::from_secs(30))
                 .expect("race acquire");
             let outcome = if guard.is_some() { "winner" } else { "loser" };
-            fs::write(markers.join(outcome), std::process::id().to_string())
+            write_marker(&markers.join(outcome), std::process::id().to_string())
                 .expect("write race outcome");
             if let Some(guard) = guard {
                 assert!(wait_for_path(
@@ -129,7 +168,7 @@ fn lease_child_process_helper() {
                 .acquire(key, Duration::from_millis(120))
                 .expect("crash acquire")
                 .expect("child owns lease");
-            fs::write(markers.join("held"), "held").expect("write crash marker");
+            write_marker(&markers.join("held"), "held").expect("write crash marker");
             loop {
                 thread::sleep(Duration::from_millis(100));
                 std::hint::black_box(&guard);
@@ -155,14 +194,18 @@ fn lease_child_process_helper() {
                 Duration::from_secs(5)
             ));
             let marker = markers.join(mode);
-            let result = first
-                .publish_if_both_current(&mut second, Duration::from_secs(30), |_, _| {
+            let published = publish_pair_retrying_bounded_contention(
+                &mut first,
+                &mut second,
+                Duration::from_secs(30),
+                |_, _| {
                     thread::sleep(Duration::from_millis(5));
-                    fs::write(marker, "published")?;
+                    write_marker(&marker, "published")?;
                     Ok(())
-                })
-                .expect("paired process publication");
-            assert!(result.is_some(), "paired process publication was fenced");
+                },
+            )
+            .expect("paired process publication");
+            assert!(published, "paired process publication was fenced");
         }
         other => panic!("unknown helper mode {other}"),
     }
@@ -218,7 +261,9 @@ fn expired_long_effect_fails_closed_before_publication() {
         .acquire(test_key(), Duration::from_secs(30))
         .expect("acquire")
         .expect("lease");
-    lease.expire_for_test().expect("expire long-running effect lease");
+    lease
+        .expire_for_test()
+        .expect("expire long-running effect lease");
 
     let mut committed = false;
     assert!(
@@ -299,7 +344,11 @@ fn torn_alternate_slot_keeps_previous_lease_recoverable() {
         .acquire(key, Duration::from_secs(30))
         .expect("acquire")
         .expect("lease");
-    assert!(lease.renew(Duration::from_secs(30)).expect("second generation"));
+    assert!(
+        lease
+            .renew(Duration::from_secs(30))
+            .expect("second generation")
+    );
     let current = store
         .latest_lease(key)
         .expect("read current lease")
@@ -444,17 +493,23 @@ fn reverse_stripe_order_threads_publish_without_deadlock() {
     let second_start = Arc::clone(&start);
     let first_thread = thread::spawn(move || {
         first_start.wait();
-        first_low
-            .publish_if_both_current(&mut first_high, Duration::from_secs(30), |_, _| Ok(()))
-            .expect("low-high publication")
-            .is_some()
+        publish_pair_retrying_bounded_contention(
+            &mut first_low,
+            &mut first_high,
+            Duration::from_secs(30),
+            |_, _| Ok(()),
+        )
+        .expect("low-high publication")
     });
     let second_thread = thread::spawn(move || {
         second_start.wait();
-        second_high
-            .publish_if_both_current(&mut second_low, Duration::from_secs(30), |_, _| Ok(()))
-            .expect("high-low publication")
-            .is_some()
+        publish_pair_retrying_bounded_contention(
+            &mut second_high,
+            &mut second_low,
+            Duration::from_secs(30),
+            |_, _| Ok(()),
+        )
+        .expect("high-low publication")
     });
     start.wait();
 
@@ -522,7 +577,7 @@ fn paired_publication_recovers_after_torn_followup_generation() {
     assert!(
         endpoint
             .publish_if_both_current(&mut product, Duration::from_secs(30), |_, _| {
-                fs::write(&published_marker, "both fences renewed")?;
+                write_marker(&published_marker, "both fences renewed")?;
                 Ok(())
             })
             .expect("paired durable publication")
@@ -573,7 +628,7 @@ fn reverse_stripe_order_processes_publish_without_deadlock() {
     fs::create_dir_all(&markers).expect("markers");
     let mut low_first = spawn_child("pair-race-low-first", &root, &markers);
     let mut high_first = spawn_child("pair-race-high-first", &root, &markers);
-    fs::write(markers.join("start"), "go").expect("start children");
+    write_marker(&markers.join("start"), "go").expect("start children");
     let first_done = wait_for_path(&markers.join("pair-race-low-first"), Duration::from_secs(5));
     let second_done = wait_for_path(
         &markers.join("pair-race-high-first"),
@@ -618,11 +673,11 @@ fn independent_processes_have_one_lease_winner() {
     fs::create_dir_all(&markers).expect("markers");
     let mut first = spawn_child("race", &root, &markers);
     let mut second = spawn_child("race", &root, &markers);
-    fs::write(markers.join("start"), "go").expect("start children");
+    write_marker(&markers.join("start"), "go").expect("start children");
 
     let completed = wait_for_path(&markers.join("winner"), Duration::from_secs(5))
         && wait_for_path(&markers.join("loser"), Duration::from_secs(5));
-    fs::write(markers.join("release"), "release").expect("release winner");
+    write_marker(&markers.join("release"), "release").expect("release winner");
     let first_status = first.wait().expect("first child exit");
     let second_status = second.wait().expect("second child exit");
     assert!(completed, "both process results were not written");
