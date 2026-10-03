@@ -123,28 +123,67 @@ fn record_facts(record: &PackageRecord) -> Vec<(SharedString, SharedString)> {
     if let Some(standing) = record.standing.known() { facts.push(("Release standing".into(), standing.name().into())); }
     if let Some(bytes) = record.bytes.known() { facts.push(("Package archive".into(), format!("{bytes} bytes").into())); }
     if let Some(advisory) = record.advisory.known() {
-        // A known zero with incomplete coverage is not a clean health verdict.
-        facts.push(("Advisories in the configured authority".into(), format!("{} matching this release", advisory.advisories).into()));
+        use backend_library::AdvisoryCoverage;
+        let (label, detail) = match advisory.coverage {
+            AdvisoryCoverage::Complete => ("Advisories in the configured authority", format!("{} matching this release; complete coverage", advisory.advisories)),
+            AdvisoryCoverage::Partial => ("Advisories in the configured authority", format!("{} matching in partial coverage", advisory.advisories)),
+            AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable if advisory.advisories == 0 =>
+                ("Advisory coverage", "No advisory feed coverage is established for this release".to_owned()),
+            AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable =>
+                ("Advisories in the configured authority", format!("{} matching; coverage is not established", advisory.advisories)),
+        };
+        facts.push((label.into(), detail.into()));
     }
     facts
 }
 
-fn package_facts(dossier: &PackageDossier) -> Vec<(SharedString, SharedString)> {
-    let mut facts = dossier.record.known().map(record_facts).unwrap_or_default();
+/// A record is usable only for the selected source kind and exact address.
+fn bound_record(dossier: &PackageDossier) -> Option<&PackageRecord> {
+    use backend_library::PackageReference;
+    use crate::model::pages::RecordSource;
+    dossier.record.known().filter(|record| {
+        record.package.reference() == dossier.package.reference()
+            && match (dossier.package.reference(), record.source) {
+                (PackageReference::Purl(coordinate), RecordSource::Registry) => {
+                    record.name.as_ref() == coordinate.lineage_name()
+                        && record.version.known().is_some_and(|version| version.as_ref() == coordinate.version())
+                        && record.ecosystem.known().is_some_and(|ecosystem| ecosystem.package_type() == coordinate.package_type())
+                }
+                (PackageReference::Local(_), RecordSource::LocalManifest) => true,
+                _ => false,
+            }
+    })
+}
+
+fn package_facts(dossier: &PackageDossier, record: Option<&PackageRecord>) -> Vec<(SharedString, SharedString)> {
+    let mut facts = record.map(record_facts).unwrap_or_default();
     if let Some(dependencies) = dossier.dependencies.known() {
         facts.push(("Declared dependency edges".into(), format!("{} edges; not a cost against your tree", dependencies.len()).into()));
     }
-    if let Some(dependents) = dossier.dependents.known() { facts.push(("Dependents recorded here".into(), dependents.len().to_string().into())); }
+    if !dossier.package.is_local() && let Some(dependents) = dossier.dependents.known() {
+        facts.push(("Dependents recorded here".into(), dependents.len().to_string().into()));
+    }
     facts
 }
 
 pub fn prepare_compare(packages: &[PackageDossier], apis: &[Known<PackageApi>]) -> facet::browse::compare::Model {
     use facet::browse::compare::{Candidate, Model, Operation};
     let candidates = packages.iter().enumerate().map(|(at, package)| {
-        let record = package.record.known();
-        let api = apis.get(at).and_then(|api| api.known());
-        let coverage = apis.get(at).and_then(|api| api.gap()).map(gap_words)
-            .or_else(|| api.filter(|api| !api.complete).map(|_| "Indexed outline is partial".into()));
+        let record = bound_record(package);
+        let offered_api = apis.get(at).and_then(|api| api.known());
+        let api = offered_api.filter(|api| api.package.reference() == package.package.reference()
+            && api.items.iter().all(|item| item.decl.coordinate.package()
+                .is_some_and(|owner| owner.reference() == package.package.reference())));
+        let mut gaps = Vec::new();
+        if package.record.known().is_some() && record.is_none() {
+            gaps.push("Package facts did not match this source address".to_owned());
+        }
+        if offered_api.is_some() && api.is_none() {
+            gaps.push("Indexed declarations did not match this source address".to_owned());
+        }
+        if let Some(gap) = apis.get(at).and_then(|api| api.gap()) { gaps.push(gap_words(gap).to_string()); }
+        if api.is_some_and(|api| !api.complete) { gaps.push("Indexed outline is partial".to_owned()); }
+        let coverage = (!gaps.is_empty()).then(|| gaps.join("; ").into());
         let operations = api.map(|api| api.items.iter().map(|item| {
             let signature = item.signature.known().map(|sig| sig.text.to_string());
             Operation { path: item.decl.path.as_ref().map(|path| path.to_string().into()), answer: facet::browse::find::Answer {
@@ -155,10 +194,14 @@ pub fn prepare_compare(packages: &[PackageDossier], apis: &[Known<PackageApi>]) 
                 source_available: item.decl.path.is_some() && item.decl.line.is_some(),
             }}
         }).collect());
-        Candidate { key: package.package.as_str().to_owned().into(), name: record.map_or_else(|| package.package.display_name().to_owned(), |record| record.name.to_string()).into(),
+        let origin = match package.package.reference() {
+            backend_library::PackageReference::Purl(_) => format!("Registry release · {}", package.package.as_str()),
+            backend_library::PackageReference::Local(_) => format!("Local source · {}", package.package.as_str()),
+        };
+        Candidate { key: package.package.as_str().to_owned().into(), name: record.map_or_else(|| package.package.display_name().to_owned(), |record| record.name.to_string()).into(), origin: origin.into(),
             version: record.and_then(|record| record.version.known()).map(|version| version.to_string().into()),
             description: record.and_then(|record| record.description.known()).map(|description| summary(description)),
-            facts: package_facts(package), operations, complete: api.is_some_and(|api| api.complete), coverage }
+            facts: package_facts(package, record), operations, complete: api.is_some_and(|api| api.complete), coverage }
     }).collect::<Vec<_>>();
     let model = Model::new(candidates);
     model

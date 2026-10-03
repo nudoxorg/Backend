@@ -1827,35 +1827,6 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
     }
 }
 
-/// Fills description and license from `local`'s manifest read when the
-/// registry-shaped record left them unknown.
-///
-/// `registry_record` is honest that the wire DTO behind every "package"
-/// surface reply never carries these two facts (real registry releases and
-/// the engine's own local-manifest fallback alike — see `not_served`
-/// above). For a package this session has also read locally (`compose_package`'s
-/// `local`, whether through `LocalPackageLoader::readme` or `::load`), the
-/// Cargo manifest already states them; without this merge, that local read
-/// is computed and then discarded; this was the toml/present package-page bug.
-/// Other ecosystems never borrow fields from this Cargo-only projection.
-fn with_local_facts(mut record: PackageRecord, local: Option<&LocalPackage>) -> PackageRecord {
-    // This projection reads Cargo.toml only. A NuGet/npm/etc. record must not
-    // inherit an incidental Cargo manifest's description or licence.
-    if record.ecosystem.known() != Some(&RegistryEcosystem::Cargo) {
-        return record;
-    }
-    let Some(local) = local else { return record };
-    if record.description.known().is_none()
-        && let Some(description) = &local.description
-    {
-        record.description = Known::Known(Arc::clone(description));
-    }
-    if record.license.known().is_none() {
-        record.license = local.license.clone();
-    }
-    record
-}
-
 fn local_manifest_facts(local: &LocalPackage) -> bool {
     matches!(
         local.source,
@@ -1903,10 +1874,9 @@ fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
     }
 }
 
-/// Selects a record for the requested route. A registry route is pinned by
-/// its exact PURL. A local path has no PURL identity, but the owner serves a
-/// single record read from that path's manifest. In either case its typed
-/// ecosystem must agree with the coordinate's package type.
+/// Selects a registry record only for its exact PURL route. A local path is
+/// never evidence that a same-name registry release belongs to that project;
+/// its facts come from the local manifest instead.
 fn package_record_for<'a>(
     records: &'a [RegistryPackageRecord],
     package: &PackageRef,
@@ -1914,7 +1884,9 @@ fn package_record_for<'a>(
     let admitted = |record: &RegistryPackageRecord| {
         matches!(&record.coordinate,
             backend_library::PackageReference::Purl(coordinate)
-                if coordinate.package_type() == record.ecosystem.package_type())
+                if coordinate.package_type() == record.ecosystem.package_type()
+                    && coordinate.lineage_name() == record.name.as_str()
+                    && coordinate.version() == record.version.as_str())
     };
     match package.reference() {
         backend_library::PackageReference::Purl(_) => {
@@ -1926,11 +1898,22 @@ fn package_record_for<'a>(
                 _ => None,
             }
         }
-        backend_library::PackageReference::Local(_) => match records {
-            [only] if admitted(only) => Some(only),
-            _ => None,
-        },
+        backend_library::PackageReference::Local(_) => None,
     }
+}
+
+fn version_record_for(record: &RegistryPackageRecord, package: &PackageRef) -> bool {
+    let (
+        backend_library::PackageReference::Purl(query),
+        backend_library::PackageReference::Purl(candidate),
+    ) = (package.reference(), &record.coordinate) else { return false };
+    candidate.package_type() == record.ecosystem.package_type()
+        && candidate.package_type() == query.package_type()
+        && candidate.lineage_name() == query.lineage_name()
+        && candidate.lineage_name() == record.name.as_str()
+        && candidate.version() == record.version.as_str()
+        && candidate.qualifiers() == query.qualifiers()
+        && candidate.subpath() == query.subpath()
 }
 
 /// Everything a dossier is assembled from. Each part carries its own failure.
@@ -1986,7 +1969,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         Ok(records) => package_record_for(records, package)
             .map_or_else(
                 || local_manifest_record(package, inputs.local, local),
-                |record| Known::Known(with_local_facts(registry_record(record), inputs.local)),
+                |record| Known::Known(registry_record(record)),
             ),
         Err(gap) => inputs.local.filter(|_| local).map_or_else(
             || Known::Unknown(gap.clone()),
@@ -1999,12 +1982,14 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
             },
         ),
     };
-    let current_version = record
-        .known()
-        .and_then(|record| record.version.known().cloned());
     let versions = match inputs.versions {
-        Ok(SurfaceReply::PackageVersions(records)) if records.is_empty() && local => {
-            Known::Unknown(local_gap("release history"))
+        // A local source can share a manifest name and version with a
+        // publication without acquiring that publication's release history.
+        _ if local => Known::Unknown(local_gap("release history")),
+        Ok(SurfaceReply::PackageVersions(records))
+            if !records.iter().all(|record| version_record_for(record, package)) =>
+        {
+            Known::unknown(GapReason::ReadFailed, "release history was not bound to this package profile")
         }
         Ok(SurfaceReply::PackageVersions(records)) => Known::Known(
             records
@@ -2013,10 +1998,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                     package: PackageRef::from_reference(record.coordinate.clone()),
                     version: Arc::from(record.version.as_str()),
                     standing: standing(record.standing),
-                    current: record.coordinate == *package.reference()
-                        || current_version
-                            .as_deref()
-                            .is_some_and(|version| version == record.version.as_str()),
+                    current: record.coordinate == *package.reference(),
                 })
                 .collect::<Vec<_>>()
                 .into(),
@@ -3716,6 +3698,10 @@ mod tests {
             let mut row = crate::runtime::tests::registry_record("widget", "1.0.0");
             row.coordinate = package.reference().clone();
             row.ecosystem = ecosystem;
+            if let backend_library::PackageReference::Purl(coordinate) = package.reference() {
+                row.name = backend_library::ProductText::new(coordinate.lineage_name()).expect("lineage");
+                row.version = backend_library::ProductText::new(coordinate.version()).expect("version");
+            }
             let native = backend_library::RegistryNativeMetadata::unavailable(ecosystem, "fixture");
             row.native_metadata_version = native.identity().expect("native fact identity");
             row.native_metadata = native;
@@ -3758,7 +3744,30 @@ mod tests {
     }
 
     #[test]
-    fn a_local_route_accepts_only_one_manifest_record_with_matching_ecosystem() {
+    fn a_purl_release_history_refuses_a_same_version_from_another_profile() {
+        let package = PackageRef::parse("pkg:cargo/beta@1.0.0").expect("release");
+        let exact = crate::runtime::tests::registry_record("beta", "1.0.0");
+        let records = SurfaceReply::Package(Box::new([exact]));
+        let mut other_profile = crate::runtime::tests::registry_record("beta", "1.0.0");
+        other_profile.coordinate = PackageRef::parse("pkg:cargo/other@1.0.0")
+            .expect("other profile").reference().clone();
+        let versions = SurfaceReply::PackageVersions(Box::new([other_profile]));
+        let unavailable = no_semantics();
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Err(&unavailable),
+            dependents: Err(&unavailable),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+        assert_eq!(dossier.record.known().map(|record| record.source), Some(RecordSource::Registry));
+        assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::ReadFailed));
+    }
+
+    #[test]
+    fn a_local_route_never_adopts_a_single_registry_record() {
         let local = PackageRef::parse(PRESENT).expect("local package");
         let mut nuget = crate::runtime::tests::registry_record("Widget", "1.0.0");
         nuget.coordinate = PackageRef::parse("pkg:nuget/Widget@1.0.0")
@@ -3766,8 +3775,7 @@ mod tests {
             .reference()
             .clone();
         nuget.ecosystem = RegistryEcosystem::Nuget;
-        assert_eq!(package_record_for(&[nuget.clone()], &local).map(|record| record.ecosystem),
-            Some(RegistryEcosystem::Nuget));
+        assert!(package_record_for(&[nuget.clone()], &local).is_none());
         assert!(package_record_for(&[nuget.clone(), nuget], &local).is_none());
     }
 
@@ -3799,16 +3807,10 @@ mod tests {
         assert!(gap.detail.contains("some registry sources"));
     }
 
-    /// The toml/present package-page bug: a package can be *both* registry-
-    /// shaped (the "package" surface reply matches, so `standing`/
-    /// `downloads`/etc. are real registry facts) *and* locally readable
-    /// (the engine indexed its actual source, so `PackageInputs::local` is
-    /// `Some`). The record-selection branch that picks a registry-shaped
-    /// record used to ignore `local` completely, so description and
-    /// license — which the wire DTO never carries for *any* release, see
-    /// `not_served` — stayed unknown even though the manifest states both.
+    /// An incidental local manifest is not proof that a registry release
+    /// owns its description or license, even when the names coincide.
     #[test]
-    fn a_registry_dossier_still_states_its_own_manifests_description_and_license() {
+    fn a_registry_dossier_does_not_borrow_a_local_manifest() {
         let package = PackageRef::parse("pkg:cargo/beta@1.0.0").expect("package");
         let record = crate::runtime::tests::registry_record("beta", "1.0.0");
         let records = SurfaceReply::Package(Box::new([record.clone()]));
@@ -3857,29 +3859,11 @@ mod tests {
             local: Some(&local),
         });
         let head = dossier.record.known().expect("record");
-        // The registry-shaped facts are untouched...
         assert_eq!(head.source, RecordSource::Registry);
         assert_eq!(head.standing.known(), Some(&Standing::Available));
         assert_eq!(head.downloads.known(), Some(&Downloads::Exact(42)));
-        // ...but description and license come from the manifest `local`
-        // already read, not the hardcoded "not served" gap.
-        assert_eq!(
-            head.description.known().map(AsRef::as_ref),
-            Some("A native Rust encoder and decoder.")
-        );
-        assert_eq!(head.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT OR Apache-2.0"));
-
-        // A mixed root can also have another ecosystem's manifest. Cargo
-        // description and licence do not become that package's facts.
-        let mut nuget = crate::runtime::tests::registry_record("beta", "1.0.0");
-        nuget.coordinate = PackageRef::parse("pkg:nuget/beta@1.0.0")
-            .expect("NuGet package")
-            .reference()
-            .clone();
-        nuget.ecosystem = RegistryEcosystem::Nuget;
-        let mapped = with_local_facts(registry_record(&nuget), Some(&local));
-        assert_eq!(mapped.description.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
-        assert_eq!(mapped.license.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(head.description.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(head.license.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
     }
 
     #[test]
@@ -3911,11 +3895,12 @@ mod tests {
             features: Arc::from([]),
             members: 1,
         };
-        let records = SurfaceReply::Package(Box::new([]));
+        let registry = crate::runtime::tests::registry_record("backend-present", "0.3.0");
+        let records = SurfaceReply::Package(Box::new([registry.clone()]));
         let other = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("registry route");
         assert!(local_manifest_record(&other, Some(&local), false).known().is_none(),
             "a registry route cannot borrow this local Cargo manifest");
-        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let versions = SurfaceReply::PackageVersions(Box::new([registry]));
         let dependencies =
             SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
                 backend_library::ProductText::new(
@@ -3938,6 +3923,7 @@ mod tests {
         });
         let head = dossier.record.known().expect("manifest record");
         assert_eq!(head.source, RecordSource::LocalManifest);
+        assert_eq!(head.package.reference(), package.reference());
         assert_eq!(head.name.as_ref(), "backend-present");
         assert_eq!(head.version.known().map(AsRef::as_ref), Some("0.3.0"));
         assert_eq!(head.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT"));
@@ -3945,6 +3931,9 @@ mod tests {
             head.downloads.gap().map(|gap| gap.reason),
             Some(GapReason::LocalProject)
         );
+        assert_eq!(head.standing.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+        assert_eq!(head.bytes.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+        assert_eq!(head.advisory.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
         assert_eq!(
             dossier.versions.gap().map(|gap| gap.reason),
             Some(GapReason::LocalProject)
@@ -3985,10 +3974,53 @@ mod tests {
             dossier.readme.known().map(AsRef::as_ref),
             Some([ReadmeBlock::Paragraph(text)]) if text.as_ref() == "Presentation model."
         ));
+
+        let registry_package = PackageRef::parse("pkg:cargo/backend-present@0.3.0").expect("release");
+        let registry_row = crate::runtime::tests::registry_record("backend-present", "0.3.0");
+        let registry_reply = SurfaceReply::Package(Box::new([registry_row.clone()]));
+        let registry_versions = SurfaceReply::PackageVersions(Box::new([registry_row.clone()]));
+        let unavailable = no_semantics();
+        let registry_dossier = package_dossier(&PackageInputs {
+            package: &registry_package,
+            records: Ok(&registry_reply),
+            versions: Ok(&registry_versions),
+            dependencies: Err(&unavailable),
+            dependents: Err(&unavailable),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+        assert_eq!(registry_dossier.record.known().map(|record| record.source), Some(RecordSource::Registry));
+        assert_eq!(registry_dossier.versions.known().map(|rows| rows[0].current), Some(true));
+
+        let mut poisoned = dossier.clone();
+        poisoned.record = Known::Known(registry_record(&registry_row));
+        let refused = crate::runtime::browse_views::prepare_compare(&[poisoned], &[]);
+        assert!(refused.candidates[0].coverage.as_deref().is_some_and(|text| text.contains("did not match")));
+        assert!(!refused.candidates[0].facts.iter().any(|(label, _)| label.as_ref() == "Release standing"));
+        let wrong_outline = Known::Known(crate::model::browse::PackageApi {
+            package: registry_package.clone(), items: Arc::from([]), complete: true,
+        });
+        let unread = crate::runtime::browse_views::prepare_compare(&[dossier.clone()], &[wrong_outline]);
+        assert!(unread.candidates[0].operations.is_none());
+        assert!(unread.candidates[0].coverage.as_deref().is_some_and(|text| text.contains("Indexed declarations did not match")));
+
+        let comparison = crate::runtime::browse_views::prepare_compare(&[dossier, registry_dossier], &[]);
+        assert_eq!(comparison.candidates[0].name, comparison.candidates[1].name,
+            "matching manifest names must not erase distinct source addresses");
+        assert!(comparison.candidates[0].origin.starts_with("Local source · "));
+        assert!(comparison.candidates[1].origin.starts_with("Registry release · pkg:cargo/backend-present@0.3.0"));
+        assert!(!comparison.candidates[0].facts.iter().any(|(label, _)|
+            matches!(label.as_ref(), "Release standing" | "Package archive" | "Advisories in the configured authority")));
+        assert!(comparison.candidates[1].facts.iter().any(|(label, _)| label.as_ref() == "Release standing"));
+        assert!(comparison.candidates[1].facts.iter().any(|(label, _)| label.as_ref() == "Package archive"));
+        assert!(comparison.candidates[1].facts.iter().any(|(label, value)|
+            label.as_ref() == "Advisory coverage" && value.contains("No advisory feed coverage")));
+        assert!(!comparison.candidates[1].facts.iter().any(|(label, value)|
+            label.as_ref() == "Advisories in the configured authority" && value.starts_with('0')));
     }
 
     #[test]
-    fn an_engine_package_record_wins_over_the_local_manifest() {
+    fn an_engine_registry_record_cannot_replace_the_local_manifest() {
         let package = PackageRef::parse(PRESENT).expect("local package");
         let local = LocalPackage {
             project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
@@ -4051,10 +4083,10 @@ mod tests {
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
         });
-        let head = dossier.record.known().expect("engine record");
-        assert_eq!(head.source, RecordSource::Registry);
-        assert_eq!(head.name.as_ref(), "engine-name");
-        assert_eq!(head.version.known().map(AsRef::as_ref), Some("1.2.3"));
+        let head = dossier.record.known().expect("local manifest");
+        assert_eq!(head.source, RecordSource::LocalManifest);
+        assert_eq!(head.name.as_ref(), "secret-local");
+        assert_eq!(head.version.known().map(AsRef::as_ref), Some("9.9.9"));
         let dependencies = dossier.dependencies.known().expect("engine dependencies");
         assert_eq!(dependencies[0].name.as_ref(), "from-engine");
         assert_eq!(dependencies[0].requirement.as_ref(), "^2");

@@ -28,6 +28,8 @@ pub struct Operation { pub answer: Answer, pub path: Option<SharedString> }
 pub struct Candidate {
     pub key: SharedString,
     pub name: SharedString,
+    /// Exact selected source, kept distinct when two manifests share a name.
+    pub origin: SharedString,
     pub version: Option<SharedString>,
     pub description: Option<SharedString>,
     pub facts: Vec<(SharedString, SharedString)>,
@@ -221,15 +223,18 @@ impl RenderOnce for Compare {
             let package = candidate.key.clone();
             let remove = Rc::clone(&self.actions.remove_package);
             let remove_key = candidate.key.clone();
-            let mut head = div().w(column_m.width()).min_w_0().flex_none().flex().flex_col().gap(m.space(Space::Snug))
+            let mut head = div().id(child(&key, "header")).role(gpui::Role::Group)
+                .aria_label(format!("{}; {}", candidate.name, candidate.origin))
+                .w(column_m.width()).min_w_0().flex_none().flex().flex_col().gap(m.space(Space::Snug))
                 .child(div().flex().items_center().gap(m.space(Space::Snug))
                     .child(crate::paint::gem(Kind::Package).size(18.0 * m.scale()))
                     .child(div().flex_1().min_w_0().child(words_ellipsis(child(&key, "name"), candidate.name.clone(), ty::MONO_ROW, p.ink0, &column_m))))
                 .children(candidate.version.as_ref().map(|version| words(child(&key, "version"), version.clone(), ty::MONO_SMALL, p.ink2, &column_m)))
+                .child(words_ellipsis(child(&key, "origin"), candidate.origin.clone(), ty::CAPTION, p.ink2, &column_m))
                 .child(silhouette(&key, candidate, &self.model.kind_counts[at], &state, &column_m, cx))
                 .child(div().flex().flex_wrap().gap(m.space(Space::Tight))
-                    .child(button(child(&key, "open"), "Explore", &column_m).ghost().size(Control::Small).disabled(!self.actions.active).on_click(move |window, cx| open(package.clone(), window, cx)))
-                    .child(button(child(&key, "remove"), "Remove", &column_m).ghost().size(Control::Small).disabled(!self.actions.active || count <= 2)
+                    .child(button(child(&key, "open"), "Explore", &column_m).aria_label(format!("Explore {}", candidate.origin)).ghost().size(Control::Small).disabled(!self.actions.active).on_click(move |window, cx| open(package.clone(), window, cx)))
+                    .child(button(child(&key, "remove"), "Remove", &column_m).aria_label(format!("Remove {} from comparison", candidate.origin)).ghost().size(Control::Small).disabled(!self.actions.active || count <= 2)
                         .on_click(move |window, cx| remove(remove_key.clone(), window, cx))));
             if let Some(coverage) = &candidate.coverage { head = head.child(words(child(&key, "coverage"), coverage.clone(), ty::CAPTION, p.ink2, &column_m)); }
             heads = heads.child(head);
@@ -325,11 +330,16 @@ impl RenderOnce for Compare {
         if state.read(cx).facts {
             let mut facts = div().flex().flex_wrap().items_start().gap(gap);
             for (at, candidate) in self.model.candidates.iter().enumerate() {
-                let mut column = div().w(column_m.width()).flex().flex_col().gap(m.space(Space::Roomy))
-                    .child(words(child(&self.id, format!("facts-{at}-name")), candidate.name.clone(), ty::HEAD, p.ink0, &column_m));
+                let mut column = div().id(child(&self.id, format!("facts-{at}"))).role(gpui::Role::Group)
+                    .aria_label(format!("Package facts for {}: {}", candidate.name, candidate.origin))
+                    .w(column_m.width()).flex().flex_col().gap(m.space(Space::Roomy))
+                    .child(words(child(&self.id, format!("facts-{at}-name")), candidate.name.clone(), ty::HEAD, p.ink0, &column_m))
+                    .child(words_ellipsis(child(&self.id, format!("facts-{at}-origin")), candidate.origin.clone(), ty::CAPTION, p.ink2, &column_m));
                 if let Some(description) = &candidate.description { column = column.child(words(child(&self.id, format!("facts-{at}-description")), description.clone(), ty::LEDE, p.ink2, &column_m)); }
                 for (fact, (label, value)) in candidate.facts.iter().enumerate() {
-                    column = column.child(div().flex().flex_col().gap(m.space(Space::Tight))
+                    column = column.child(div().id(child(&self.id, format!("facts-{at}-{fact}"))).role(gpui::Role::Group)
+                        .aria_label(format!("{label}: {value}"))
+                        .flex().flex_col().gap(m.space(Space::Tight))
                         .child(words(child(&self.id, format!("facts-{at}-{fact}-label")), label.clone(), ty::CAPTION, p.ink2, &column_m))
                         .child(words(child(&self.id, format!("facts-{at}-{fact}-value")), value.clone(), ty::SMALL, p.ink1, &column_m)));
                 }
@@ -481,7 +491,7 @@ mod tests {
             key: format!("symbol-{at}").into(), name: format!("function_{at:02}").into(), kind: Kind::Function,
             context: None, reason: "indexed".into(), summary: None, pipe: None, signature: None, source_available: false,
         }}).collect::<Vec<_>>();
-        let candidate = |name: &str| Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None, description: None, facts: vec![],
+        let candidate = |name: &str| Candidate { key: name.to_owned().into(), name: name.to_owned().into(), origin: name.to_owned().into(), version: None, description: None, facts: vec![],
             operations: Some(operations.clone()), complete: true, coverage: None };
         let model = Arc::new(Model::new(vec![candidate("one"), candidate("two")]));
         let actions = Actions { active: true, scroll: scroll.clone(), open_package: Rc::new(|_, _, _| {}), open_symbol: Rc::new(|_, _, _| {}),
@@ -535,7 +545,7 @@ mod tests {
     fn mounted_two_package_headers_share_a_row_when_space_allows(cx: &mut TestAppContext) {
         cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); crate::probe::enable(cx); });
         let scroll = ScrollHandle::new();
-        let candidate = |name: &str| Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None,
+        let candidate = |name: &str| Candidate { key: name.to_owned().into(), name: name.to_owned().into(), origin: name.to_owned().into(), version: None,
             description: None, facts: vec![], operations: Some(vec![]), complete: true, coverage: None };
         let model = Arc::new(Model::new(vec![candidate("first-package"), candidate("second-package")]));
         let actions = Actions { active: true, scroll: scroll.clone(), open_package: Rc::new(|_, _, _| {}), open_symbol: Rc::new(|_, _, _| {}),
@@ -550,6 +560,42 @@ mod tests {
         let first = name("first-package");
         let second = name("second-package");
         assert!((first.bounds.y - second.bounds.y).abs() < 1.0, "headers unexpectedly wrapped: {first:?} {second:?}");
+    }
+    #[gpui::test]
+    fn mounted_compare_names_both_source_addresses_and_fact_columns_in_native_tree(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+        let scroll = ScrollHandle::new();
+        let candidate = |key: &str, origin: &str, fact: &str| Candidate {
+            key: key.into(), name: "base16ct".into(), origin: origin.into(), version: Some("1.0.0".into()),
+            description: None, facts: vec![("Source fact".into(), fact.into())],
+            operations: None, complete: false, coverage: None,
+        };
+        let model = Arc::new(Model::new(vec![
+            candidate("/source/base16ct", "Local source · /source/base16ct", "manifest"),
+            candidate("pkg:cargo/base16ct@1.0.0", "Registry release · pkg:cargo/base16ct@1.0.0", "registry"),
+        ]));
+        let actions = Actions { active: true, scroll: scroll.clone(), open_package: Rc::new(|_, _, _| {}), open_symbol: Rc::new(|_, _, _| {}),
+            open_code: Rc::new(|_, _, _| {}), remove_package: Rc::new(|_, _, _| {}) };
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            window.set_a11y_forced(true);
+            let state = cx.new(|cx| State::new(scroll.clone(), cx));
+            state.update(cx, |state, _| state.facts = true);
+            MountedCompare { state, scroll, model, actions }
+        });
+        draw(cx);
+        let json = cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Compare tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let labels = tree["nodes"].as_object().expect("native nodes").values()
+            .filter_map(|node| node["aria"]["label"].as_str()).collect::<Vec<_>>();
+        for expected in [
+            "base16ct; Local source · /source/base16ct",
+            "base16ct; Registry release · pkg:cargo/base16ct@1.0.0",
+            "Package facts for base16ct: Local source · /source/base16ct",
+            "Package facts for base16ct: Registry release · pkg:cargo/base16ct@1.0.0",
+            "Source fact: manifest", "Source fact: registry",
+        ] {
+            assert!(labels.contains(&expected), "native Compare omitted {expected}: {labels:?}");
+        }
     }
     #[test]
     fn every_projected_kind_has_its_recorded_silhouette_family() {
@@ -595,7 +641,7 @@ mod tests {
         assert_eq!(page_span(0, 8), (0, 0));
     }
     fn candidate(name: &str, kinds: &[Kind], complete: bool) -> Candidate {
-        Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None, description: None, facts: vec![],
+        Candidate { key: name.to_owned().into(), name: name.to_owned().into(), origin: name.to_owned().into(), version: None, description: None, facts: vec![],
             operations: Some(kinds.iter().enumerate().map(|(at, kind)| Operation { path: None, answer: Answer {
                 key: format!("{name}::{at}").into(), name: "Value".into(), kind: *kind, reason: "indexed".into(), summary: None, pipe: None, signature: None,
                 context: None, source_available: false,
