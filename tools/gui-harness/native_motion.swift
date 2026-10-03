@@ -117,52 +117,50 @@ final class NativeControl {
         }
         let socketFD = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        fd = socketFD
-        self.receipt = receipt
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
-        var noSignal: Int32 = 1
-        let configured = withUnsafePointer(to: &timeout) { value in
-            Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, value,
-                socklen_t(MemoryLayout<timeval>.size))
-        }
-        guard configured == 0,
-              Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
-                  socklen_t(MemoryLayout<Int32>.size)) == 0 else {
-            let code = errno
-            Darwin.close(fd)
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
-        }
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connected == 0 else {
-            let code = errno
-            Darwin.close(fd)
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
-        }
-        let reply: String
         do {
-            reply = try exchange(["kind": "Hello", "nonce": nonce,
+            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+            var noSignal: Int32 = 1
+            let configured = withUnsafePointer(to: &timeout) { value in
+                Darwin.setsockopt(socketFD, SOL_SOCKET, SO_RCVTIMEO, value,
+                    socklen_t(MemoryLayout<timeval>.size))
+            }
+            guard configured == 0,
+                  Darwin.setsockopt(socketFD, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                      socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            let connected = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(socketFD, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            guard connected == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            let reply = try Self.exchange(fd: socketFD, fields: ["kind": "Hello", "nonce": nonce,
                 "recorder_pid": getpid(), "target_pid": targetPID,
                 "recorder_executable": executable.path,
                 "recorder_executable_sha256": executableSHA256,
                 "recorder_bundle_identifier": Bundle.main.bundleIdentifier ?? "",
                 "consumed_sha256": consumedSHA256])
+            guard reply == "Arm" else {
+                throw NSError(domain: "native-motion", code: 25,
+                    userInfo: [NSLocalizedDescriptionKey: "native controller did not arm exact recorder"])
+            }
         } catch {
-            Darwin.close(fd)
+            Darwin.close(socketFD)
             throw error
         }
-        guard reply == "Arm" else {
-            Darwin.close(fd)
-            throw NSError(domain: "native-motion", code: 25,
-                userInfo: [NSLocalizedDescriptionKey: "native controller did not arm exact recorder"])
-        }
+        fd = socketFD
+        self.receipt = receipt
         deadlineHostNS = DispatchTime.now().uptimeNanoseconds + UInt64(durationMS + 5_000) * 1_000_000
     }
 
     private func exchange(_ fields: [String: Any]) throws -> String {
+        try Self.exchange(fd: fd, fields: fields)
+    }
+
+    private static func exchange(fd: Int32, fields: [String: Any]) throws -> String {
         let raw = jsonLine(["schema": 1].merging(fields) { _, new in new })
         guard raw.count <= 4096 else { throw NSError(domain: "native-motion", code: 25) }
         try raw.withUnsafeBytes { bytes in

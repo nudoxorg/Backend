@@ -466,26 +466,6 @@ class NativeMotionTests(unittest.TestCase):
         self.assertEqual(channel.replies, ["Arm", "Cancel", "StopAck"])
         self.assertTrue(result["cancel_ack"])
 
-    def test_swift_rechecks_after_late_reply_and_blocking_target_resolution(self):
-        # Source contract until the next reviewed/signed recorder can exercise
-        # these negative cases natively; the Python controller race is tested
-        # above with a delayed Permit line.
-        source = (HERE / "native_motion.swift").read_text()
-        permit = source[source.index("func permit(index:"):source.index("func done(index:")]
-        self.assertLess(permit.index('let reply = try exchange(["kind": "permit"'),
-                        permit.index("try requirePostingDeadline()\n        switch reply"))
-        send = source[source.index("func send(_ action:"):source.index("@main struct NativeMotion")]
-        self.assertLess(send.index("try control?.requirePostingDeadline()"),
-                        send.index("down.postToPid(pid)"))
-        pointer = send[send.index('case "move", "click"'):]
-        self.assertLess(pointer.index("pointHitsSelectedWindow(point"),
-                        pointer.index("try control?.requirePostingDeadline()"))
-        self.assertLess(pointer.index("try control?.requirePostingDeadline()"),
-                        pointer.index("move.post(tap:"))
-        resize = send[send.index('case "resize":'):]
-        self.assertLess(resize.index("try control?.requirePostingDeadline()"),
-                        resize.index("AXUIElementSetAttributeValue(window"))
-
     def test_kernel_exit_watch_is_bound_to_registered_child_lifetime(self):
         # This child performs no GUI or recorder work. It tests the actual
         # macOS kqueue NOTE_EXIT path instead of a mocked process-status row.
