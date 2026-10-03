@@ -11,7 +11,9 @@ use backend_library::{
     IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
     PackageReference,
 };
-use backend_local_service::{EmbeddedLocalService, LocalHostVariable, ProcessConfig};
+use backend_local_service::{
+    EmbeddedLocalService, ListenerError, LocalHostVariable, ProcessConfig, ProcessError, RunReport,
+};
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -149,10 +151,24 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
             CompileExecutionIntent::Interactive,
         ),
     )?;
-    let published = with_phase_context(
+    let published = match with_phase_context(
         "poll initial operation until publication",
         wait_for_published(&mut session, operation_key, started),
-    )?;
+    ) {
+        Ok(published) => published,
+        Err(phase) => {
+            let owner_running_before_cleanup = owner.is_running();
+            drop(session);
+            let second_session_health = probe_second_session_health(owner.endpoint());
+            let owner_finish = OwnerFinishDiagnostic::from_result(owner.close());
+            return Err(Box::new(LifecycleFailureDiagnostic {
+                phase,
+                owner_running_before_cleanup,
+                second_session_health,
+                owner_finish,
+            }));
+        }
+    };
     assert_eq!(published.package, package);
     assert_eq!(
         published.execution_intent,
@@ -379,6 +395,109 @@ impl std::fmt::Display for PhaseError {
 impl Error for PhaseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.source.as_deref()
+    }
+}
+
+#[derive(Debug)]
+struct LifecycleFailureDiagnostic {
+    phase: PhaseError,
+    owner_running_before_cleanup: bool,
+    second_session_health: SecondSessionHealth,
+    owner_finish: OwnerFinishDiagnostic,
+}
+
+impl std::fmt::Display for LifecycleFailureDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} [owner-running-before-cleanup={}, second-session-health={:?}, owner-finish={:?}]",
+            self.phase,
+            self.owner_running_before_cleanup,
+            self.second_session_health,
+            self.owner_finish,
+        )
+    }
+}
+
+impl Error for LifecycleFailureDiagnostic {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.phase)
+    }
+}
+
+#[derive(Debug)]
+enum SecondSessionHealth {
+    Healthy,
+    ConnectDisconnected(io::ErrorKind),
+    ConnectOther,
+    ReadDisconnected(io::ErrorKind),
+    ReadOther,
+}
+
+fn probe_second_session_health(endpoint: &Path) -> SecondSessionHealth {
+    let mut session = match Session::connect_with_timeouts(
+        endpoint,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    ) {
+        Ok(session) => session,
+        Err(ClientError::Disconnected(kind)) => {
+            return SecondSessionHealth::ConnectDisconnected(kind);
+        }
+        Err(_) => return SecondSessionHealth::ConnectOther,
+    };
+    match session.health() {
+        Ok(_) => SecondSessionHealth::Healthy,
+        Err(ClientError::Disconnected(kind)) => SecondSessionHealth::ReadDisconnected(kind),
+        Err(_) => SecondSessionHealth::ReadOther,
+    }
+}
+
+#[derive(Debug)]
+enum OwnerFinishDiagnostic {
+    Report {
+        connections: usize,
+        frames: usize,
+        failures: usize,
+    },
+    Listener(ListenerFinishDiagnostic),
+    OwnerThreadFailed,
+    OtherProcessError,
+}
+
+#[derive(Debug)]
+enum ListenerFinishDiagnostic {
+    InvalidConfig,
+    EndpointOccupied,
+    AlreadyRunning,
+    Io(io::ErrorKind),
+    Protocol,
+    ServiceStopped,
+}
+
+impl OwnerFinishDiagnostic {
+    fn from_result(result: Result<RunReport, ProcessError>) -> Self {
+        match result {
+            Ok(RunReport {
+                connections,
+                frames,
+                failures,
+            }) => Self::Report {
+                connections,
+                frames,
+                failures,
+            },
+            Err(ProcessError::Listener(error)) => Self::Listener(match error {
+                ListenerError::InvalidConfig => ListenerFinishDiagnostic::InvalidConfig,
+                ListenerError::EndpointOccupied => ListenerFinishDiagnostic::EndpointOccupied,
+                ListenerError::AlreadyRunning => ListenerFinishDiagnostic::AlreadyRunning,
+                ListenerError::Io(kind) => ListenerFinishDiagnostic::Io(kind),
+                ListenerError::Protocol(_) => ListenerFinishDiagnostic::Protocol,
+                ListenerError::ServiceStopped => ListenerFinishDiagnostic::ServiceStopped,
+            }),
+            Err(ProcessError::Profile(_)) => Self::OwnerThreadFailed,
+            Err(_) => Self::OtherProcessError,
+        }
     }
 }
 
