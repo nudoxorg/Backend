@@ -894,6 +894,12 @@ impl Map {
         }
     }
 
+    /// Neutral native view handle only. The Graph rechecks its current
+    /// scene/owner/paint scope when focusing, outside any mutable Map lease.
+    pub(crate) fn native_graph(&self) -> Option<Entity<GraphView>> {
+        self.visible.then(|| self.graph.clone()).flatten()
+    }
+
     #[cfg(test)]
     pub(crate) fn graph_entity(&self) -> Option<Entity<GraphView>> {
         self.graph.clone()

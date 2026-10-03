@@ -68,10 +68,14 @@ pub enum InteractionPhase { Render, Activate }
 /// Host guard shared by rendering and captured native activation.
 pub type InteractionAdmission = Rc<dyn Fn(InteractionPhase, &App) -> bool>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeControlScope { navigation: u64, declarations: u64, coverage: u64 }
+
 struct PaintedLabels {
     view: View,
     camera: Camera,
     focus: Option<NodeId>,
+    native_scope: NativeControlScope,
     territories: Vec<draw::TerritoryLabel>,
     nodes: Vec<draw::NodeLabel>,
     admission: Option<InteractionAdmission>,
@@ -446,6 +450,74 @@ impl GraphView {
                 graph.admits_native_interaction(cx) && current(graph)
             })
         })
+    }
+
+    fn native_scope(&self) -> NativeControlScope {
+        NativeControlScope { navigation: self.state.generation, declarations: self.declaration_epoch, coverage: self.status_epoch }
+    }
+
+    /// Stable authored handles, restricted to the actually mounted native
+    /// ancestry and the exact current painted control/camera scope. This
+    /// bridges a host's Reader focus walk without inventing another target list.
+    fn native_focus_order(&self, window: &Window, cx: &App) -> Option<Vec<FocusHandle>> {
+        let painted = self.painted_labels.as_ref()?;
+        if !self.admits_native_interaction(cx) || self.view != Some(painted.view)
+            || self.camera() != Some(painted.camera) || self.native_scope() != painted.native_scope
+            || self.state.focus != painted.focus
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) { return None; }
+        let mut handles = vec![self.find.read(cx).focus_handle(cx)];
+        if !self.state.find_open {
+            handles.push(self.declaration_focus[32].clone());
+            if self.declarations_open {
+                let start = self.declaration_page.saturating_mul(32);
+                let end = (start + 32).min(self.world.len());
+                handles.extend(self.declaration_focus[..end.saturating_sub(start)].iter().cloned());
+                if self.declaration_page > 0 { handles.push(self.declaration_focus[33].clone()); }
+                if end < self.world.len() { handles.push(self.declaration_focus[34].clone()); }
+            }
+        }
+        handles.push(self.status_focus.clone());
+        handles.retain(|handle| self.focus_handle.contains(handle, window));
+        Some(handles)
+    }
+
+    /// Whether the graph's current painted native region owns keyboard focus.
+    #[must_use]
+    pub fn owns_native_focus(&self, window: &Window, cx: &App) -> bool {
+        self.native_focus_order(window, cx).is_some_and(|order| self.focus_handle.is_focused(window)
+            || order.iter().any(|handle| handle.is_focused(window)))
+    }
+
+    fn native_entry<'a>(&self, order: &'a [FocusHandle]) -> Option<&'a FocusHandle> {
+        // Find focus opens a different search surface. Enter the declaration
+        // chooser first when mounted; Find keeps its real preceding Tab stop.
+        order.iter().find(|handle| **handle == self.declaration_focus[32]).or_else(|| order.first())
+    }
+
+    /// Focus an existing current native stop, or the graph's mounted entry.
+    pub fn focus_native_current(&self, window: &mut Window, cx: &mut App) -> bool {
+        let Some(order) = self.native_focus_order(window, cx) else { return false; };
+        let next = order.iter().find(|handle| handle.is_focused(window)).or_else(|| self.native_entry(&order));
+        let Some(next) = next else { return false; };
+        next.focus(window, cx); true
+    }
+
+    /// Step only inside this bounded mounted region. A real edge returns to
+    /// the host's existing zone walk; rows reveal through their own scroller.
+    pub fn step_native(&self, forward: bool, window: &mut Window, cx: &mut App) -> bool {
+        let Some(order) = self.native_focus_order(window, cx) else { return false; };
+        let current = order.iter().position(|handle| handle.is_focused(window));
+        let next = match current {
+            Some(at) if forward => at.checked_add(1).and_then(|at| order.get(at)),
+            Some(at) => at.checked_sub(1).and_then(|at| order.get(at)),
+            None if forward => self.native_entry(&order),
+            None => order.last(),
+        };
+        let Some(next) = next else { return false; };
+        if let Some(row) = self.declaration_focus[..32].iter().position(|handle| handle == next) {
+            self.declaration_scroll.scroll_to_item(row);
+        }
+        next.focus(window, cx); true
     }
 
     /// Where ↵ and double-click go.
@@ -2104,7 +2176,7 @@ impl Element for Canvas {
         self.view.update(cx, |view, cx| {
             view.stats = stats.stats;
             view.scene_paint.set(Some(Arc::as_ptr(&p.scene) as usize));
-            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus,
+            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus, native_scope: view.native_scope(),
                 territories: stats.territory_labels, nodes: stats.node_labels, admission: view.interaction_admission.clone() });
             // If newly accepted text covers a parked pointer, let the next
             // committed frame retire its expanded glyph hover exactly once.
