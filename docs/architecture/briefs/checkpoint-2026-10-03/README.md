@@ -4,7 +4,7 @@ This extends the [2 October exhaustive checkpoint](../checkpoint-2026-10-02/READ
 
 ## Current continuation
 
-The [17:20 UTC integration and failure brief](CONTINUATION-1720.md) supersedes the present-tense status below. It records the composed source candidate, observed subscription recovery, recorder permission boundary, exact remote recipe mismatch, and the remaining acceptance gates. The campaign remains active.
+The [19:27 UTC integration and evidence brief](CONTINUATION-1927.md) supersedes the present-tense status below. It records the composed source, actual passing and failing gates, native search/kind findings, cache and transport boundaries, remote policy checks, and remaining acceptance work. The [17:20 brief](CONTINUATION-1720.md) remains historical evidence. The campaign remains active.
 
 ## Earlier checkpoint: 13:40 UTC
 

@@ -1,0 +1,97 @@
+# GUI, index, and compiler continuation — 19:27 UTC
+
+This updates [17:20](CONTINUATION-1720.md) and the [full campaign brief](README.md). It records implementation and executed evidence separately. The production-readiness goal remains active. A passing controlled transport fixture is not a live GUI or distributed compiler acceptance result.
+
+## Composed source and integration
+
+Root's writable integration checkout is `/private/tmp/nudox-gui-flow-refinement-20261003`. Production and test diffs were fully reviewed before their atomic integration. The current source before this documentation commit is `b8469695bb172e6a2e6d36f947bf17bdb445e16d`, tree `9d422c439e57f05755d17c0c1db59e5f61901fd1`, Cargo.lock SHA-256 `2ab762dd5ecef4b5612aae3bab065578d1f4103e4c680acc62da7589043110c0`.
+
+The independent GUI gate is frozen at `cdf319ff79cb663cf6f1586dca4cdbbd05a34417`, tree `f88e7bced2e1ce8509f538ad2a3e0c34f0e9e7b5`, with the same lock. It intentionally predates the three remote-policy integration commits. Its checkout is `/private/tmp/nudox-gui-composed-05a906-20261003`; the directory's historical name is not its current source identity. No source is edited while Cargo runs there. Run19 remains the actual native app; there is no new native candidate acceptance yet.
+
+Since the previous checkpoint, the integrated source adds:
+
+- One private measured-map bundle owning its facts, measure, and layout. Folio shingles consume it instead of accepting independently assembled raw geometry. Immutable shaped labels travel with their layout; foreground recoloring reuses the existing lines. The natural-width padding cancellation is repaired without a geometry epsilon. Native geometry checks distinguish continuous text room from GPUI's authored-length/device-pixel snapping.
+- Local control ownership resolved from the prospective shell frame and actual Settings snapshot before paint. A Shelf or Zen ownership cycle invalidates an old press even when both changes happen before another draw. Unrelated appearance publication does not invalidate a mounted local Settings press.
+- Typed hint target actions that admit and activate at their destination, outside the Shell entity lease. Deferred callbacks recheck frame, root, local structure, and producer. Stale destinations cannot fall through into another action; focused Space/S additionally checks the actual shell zone.
+- Shared resumable control transport, exclusive borrowing of one in-flight exchange, typed publication failures, and a wired desktop observer. Header/body/write offsets survive short readiness ticks. Cancellation retires the exact incomplete socket. A stale observer suspends serving reads while retaining its complete display root; only a complete certified publication reopens a fresh attachment.
+- Owner fairness: at most four productive remote polls precede a forced engine turn. Lease expiry still runs on remote-priority turns. This bounds successive turns, not the duration of a synchronous remote poll.
+- Bounded deferred response registrations, nonwrapping tickets, and exact waiter abandonment. Accepted queued mutations remain admitted; only their response registration is removed. Read-only browse work can be cooperatively cancelled. Completion permits are dropped after unlocking their queue. Shutdown wakes response waiters while preserving the accepted-operation distinction. Full peer-abandonment detection and preemption of a synchronous owner callback remain open.
+- Same-frame Graph projection installation before consuming the ready scene, explicit render/action admission phases, exact painted scene receipts, and caption hit regions derived from the current shaped labels and camera. This removes the source-level need for an incidental second draw and avoids reading a Graph through its own active entity lease. Native runtime acceptance remains pending. Existing Graph Canvas rendering remains; this is not the all-GPUI/no-Canvas cutover.
+- Honest graph coverage states. Unknown relation coverage cannot produce a complete negative reach answer. Shape facts currently distinguish unsupported IR from an actual complete shape result. A separate typed IR-shape read implementation is underway; truthful unsupported output does not complete that capability.
+- Cargo-authoritative dependency acquisition and reuse, described below, plus one typed default Rust metadata policy shared by host, scope inspection, locald, worker import, and worker execution. Explicit Offline remains available and part of the exact recipe.
+
+The remote-policy test repair had a contextual conflict: its SocketAddr annotations belonged to an owner-readdress test absent from the root stack. Root preserved that absence and integrated only the applicable passive-mode fixture rename. The composed tree is not byte-identical to the remote c0 tree. Unreviewed owner-readdress/ACK work still requires its own full review; a conflict resolution must not silently import it.
+
+## Executed tests, including failures
+
+| Frozen source and gate | Actual result | Receipt and qualification |
+| --- | --- | --- |
+| `a0a379ab…` FACET | 6 passed, 9 failed across 15 tests | `/private/tmp/sol-composed-gate-a0/summary.json`. Docs 3/8, button 1/2, field 1/1, menu 1/1, shingles 0/3. Original failures retained. |
+| `67e4313b…` FACET Docs | Compile failure; zero tests | `/private/tmp/sol-composed-gate-67e/`. New test called nonexistent `Window::text_trace`; actual public API is `painted_texts`. This was not a missing GPUI feature. |
+| `cdf319ff…` FACET Docs | 9 passed, 0 failed | `/private/tmp/sol-composed-gate-cdf/facet-docs-result.json`. Native full key gestures and semantic-copy projection fixtures. Not actual desktop modal coverage. |
+| `cdf319ff…` native button | 2 passed, 0 failed | `/private/tmp/sol-composed-gate-cdf/facet-button-result.json`. Original inputs omitted KeyUp; repaired fixtures send the complete native gesture. |
+| `cdf319ff…` shingles | 2 passed, 2 failed | `/private/tmp/sol-composed-gate-cdf/facet-shingles-result.json`. Remaining row-height comparison is 14.099991 px versus 14.1 px. Raw log SHA `a55dbd96fceb28deb5fa2b9dc7be3221c5a1049cd504aa2b7f0f5b0e32e8bd4b`. No relaxed containment or epsilon fix accepted. |
+| `52447811…` replication | 5 exchange tests and 1 aggregate-row budget test passed | `/private/tmp/nudox-observer-publication-tests-20261003/retry/`. Controlled framing fixtures. |
+| `52447811…` client observer | 10 passed, 2 failed | Same retry directory. One fixture corrupted the requested Ack cursor; another tried to encode an invalid empty SnapshotPage. Original failures archived. |
+| `486a5803…` client observer | 12 passed, 0 failed | `/private/tmp/nudox-observer-publication-retry-486-20261003/`. Valid certificate-free page and deliberately bad producer Ack now reach the intended admission checks. Actual compiler delay/GUI recovery remains separate. |
+| `cb2aa681…` public operation lifecycle | 0 passed, 1 failed | `/private/tmp/backend-index-operation-status-reconnect-cb2-gate-20261003/lifecycle/`. Genuine Published receipt reached; qualified Rust declaration labels cannot equal the fixture's bare marker. Failure alone does not prove a hit or miss. Restart/replay was not reached. |
+| `cb2aa681…` MCP | Two focused filters each passed 1/1 | Same gate's `mcp-read-reconnect/` and `mcp-read-classification/`. Exact-key status is repeatable after reconnect; operation Start is not replayed. |
+| Remote `c0c073d6…` CLI/worker | Three filters each passed 1/1 | `/private/tmp/nudox-worker-cargo-policy-parity-c0c073d6f3/test-003-retry-cli-scope-parser/REPORT.md`, `test-004-cli-scope-report/REPORT.md`, and `test-005-worker-policy-parser/REPORT.md`. Includes wrong-environment denial; not remote compile/ACK acceptance. |
+
+The lifecycle assertion-only repair is `090633b5ca4e624c8b384de4a154b1438a1b7f3f`, integrated as `d82904215d`. It checks the canonical terminal suffix and declaration kind and prints returned labels/kinds on a real miss. Its actual cold-restart/exact-key replay/changed-request conflict run is held for two build slots. The composed desktop first-announced Graph test is compiling; no executed result is claimed here.
+
+## Real native findings and concrete shared repairs
+
+The sole native explorer continues on Run19 PID43542, original regular QA executable SHA `34ed2485a86e10d0e7ab29842902cac0652e40f70e3bd958014540bb5d7e20a0`. Its source is `f42191f4ec7f4ed0c2eb63a5048351010a0b5059`; its producing receipt SHA is `dd5ab12f803726f7ff8b02a1c3e5aaa7a5ea2184b18b074582641cccae8327f9`. New source-only repairs cannot inherit Run19's native acceptance.
+
+The actual two-file Rust canary retains operation `2fb1c4d7b1f699fedd56727ae28035f2923c32761f4027fa91b52745d14a4d55`, sequence1, its original complete KnownPublished state, source hashes, and restored preferences/geometry. Repeated saved-state comparisons pass all six checks. The [native ledger](../../../reviews/sol-gui/exploratory-native-audit-2026-10-03.md) has newer frozen deltas in the explorer's source worktree; root reviewed those delta reports through `95ae002ff` and directly viewed the parameter Page and Code images. Later input-helper corrections still require root review before copying their report.
+
+| Native discriminator | Meaning and repair boundary |
+| --- | --- |
+| Graph1237 remains “Reading indexed graph” after 53.732s without input; Settings/Back then reveals 1 package/7 declarations/2 relations | Actual missing visible completion. New same-frame projection source addresses a supported scheduling cause; timing causality still needs replay on the new executable. |
+| Graph reach1260 says nothing depends despite Unknown coverage | Concrete false-completeness presentation. Typed unknown coverage is integrated; runtime replay pending. |
+| Painted label1257 does not select; marker1258 does | Exact caption target gap, independently re-viewed. New measured caption regions are integrated. The later1345 auditor coordinate miss is explicitly separate. |
+| `canary`1325/26 and `real rust canary`1329/30 produce seven local hits including the package root; clicking1327 opens the correct cover. Exact visible `real-rust-canary`1310/11 produces zero | Package catalogue and root route work. Query clauses split whitespace while index admission splits punctuation; fix the common lexical contract, not the GUI. |
+| Authored Cargo name1312 produces zero | Distinct package-name namespace gap. Package search currently receives the physical project label, while Cargo name is display signature metadata. A typed owner-bound alias must reuse admitted SourceObservation and exact package ownership. |
+| Real parameter `signal`1335 and result carrier1346 are labelled CONSTANT | Shared lossy kind mapping, confirmed in production source. A Sol slice will unify Page/Graph/search presentation. Parameter and function-result roles must remain distinct without same-name heuristics. |
+| Parameter Code1336 and result Code1347 report no captured declaration source | Honest current carrier availability. No fake excerpt or guessed physical file should replace it. Executable/re-export/carrier contexts require useful labels and containing-executable navigation. |
+| Full semantic bodies, source reasons, and sibling popup choices are sometimes absent from native AX | Real accessibility debt. Older unintegrated shared Markdown semantics/paging work is being reconciled with current guarded layout and visit ownership. |
+| App-menu Settings/Escape and Tab differ from pointer-Back/CmdK/Escape; native AppKit menu tracking differs from app-bound synthetic Escape | Context-specific focus/discoverability evidence. Do not call every synthetic menu key a product handler failure. |
+
+Positive counterexamples remain: internal carrier rail navigation, Source Go with real Tab/Return, package-root navigation, ordinary licence Space, selected popups, and the original cold re-admission. Important remaining visual failures include narrow reason truncation, ambiguous unqualified siblings, 200%/360-width clipping, and focus/route ownership jumps. No continuous animation or comprehensive new-source flow acceptance is claimed.
+
+## Cargo authority, cache, and storage bounds
+
+The integrated private `browse/cargo_metadata.rs` owns Cargo's bounded resolution session. Exact selected Cargo and CWD remain the graph authority. Two bracketed authoritative metadata observations, host/tool/environment/config/lock witnesses, and registry checksums admit a reusable immutable graph; source-body edits do not require re-deriving that graph. Fallback observations are not cacheable. No manual auto-target resolver or arbitrary source-tree traversal is used as a graph authority.
+
+Missing-lock acquisition requires the actual selected Cargo's private lockfile-path behavior probe. Probe and temporary placement are admitted against a Cargo-declared source-root closure before writes. The closure follows distinct `--no-deps` workspace/path dependency observations; manifest patch/replace/config roots are exclusion candidates only. Config discovery follows actual CWD ancestors, official include forms and target-base rules. Unsupported file registries are refused. TempDir owns cleanup across cancellation.
+
+Root found and repaired an inherited-cap discrepancy: closure output had used the 64MiB full-metadata constant while its design said16MiB. Integrated `9e66ac64f6` now caps the first no-deps capture at16MiB and rejects an oversized initial document before parsing or child queries. Child capture receives the remaining aggregate budget. Full metadata remains64MiB. Limits also bound128 documents, package/root rows and the fixed90s closure duration. These are serialized-byte bounds; serde heap, concurrent filesystem mutation, malicious Cargo, Windows runtime behavior and synchronous callback latency are not thereby bounded or qualified.
+
+The actual composed Cargo authority gate is prepared but held for capacity. Real cache invalidation/private-lock/no-source-write experiments and latency/heap measurements remain necessary; authored fixtures and parsing checks alone do not qualify the entire pipeline.
+
+## Remote deployment and setup
+
+Remote source c0 has exact tree `441a26295147ff15f7eb1449b8ec78c26280da1c`, lock SHA `01167011cb3541f2b29d011c02d05d2577dede45732a571891c6207bcc5e0bef`, archive SHA `89c621c9c84955511977ea94baa6bc8d3685518813d37cb917114b60a8363f5c`. All4912 source blobs and Turso gitlink were checked after the parser run. Its release build is in progress on `h16001mac`; current old services are not yet replaced. Preserve the older688 interrupted and compile-failure receipts.
+
+The accepted policy source aligns Online defaults and explicit Offline across scope/host/owner/worker. The actual CLI invite/report and worker parser checks pass. This does not prove a matching live grant, worker execution, result replay, owner ACK, catalogue ingest or backup. Prior V1/V2/V3 publication was local fallback with a recipe mismatch; that remains a failed dispatch result.
+
+Next deployment acceptance requires exact new binaries, unchanged private identities, verified scoped grants, direct encrypted Iroh execution/result/ACK, same-owner CLI/MCP/native reads, restart recovery, revoke/unauthorized-client denial, pinned real registry ingestion, and a Turso backup taken from running ingest. The [deployment runbook](../../../operations/index-compiler-deployment.md) is source, not evidence its service-manager setup has run. Existing Mac services remain manual; minimum OS26 qualifies the tested host only. Foreign ILO Concourse data remains untouched.
+
+## Recorder, slots, and remaining order
+
+Human approval enabled the old c440 recorder. The corrected frame-callback recorder has a different strict signing identity: `/Users/mileswirht/Applications/NudoxMotionRecorder-e976cee36430be6bb13768617e883193721f4b95.app`. Its concrete grant question is still pending. The earlier passive test had zero frames/actions and both permissions denied; no TCC bypass or borrowed identity is used. When granted, first verify actual passive frames/window intersection/PNG evidence, then serialize bounded real motion, resize, interruption and reduced-motion captures with the sole native input owner.
+
+The cap is four Cargo builds across local and remote, counting unknowns conservatively. A public lifecycle test reserves two slots for its outer Cargo and real nested compiler/metadata work. The GUI worker pauses after its current desktop compile, the metadata worker holds, and the remote release has one stage. Advisory census is not an atomic reservation or whole-interval proof. An earlier observed4-local-plus1-remote breach remains a breach; later good samples do not erase it. Root-owned incremental cleanup receipts and failed builds remain preserved.
+
+Execution order:
+
+1. Complete the current desktop semantic compile/filter; repair actual failures in isolated source. Run the corrected lifecycle through cold restart, replay and conflict; then run the Cargo-authority gate. Recheck observer failures under actual blocked compiler/health/search load before adopting provisional freshness/recovery timings.
+2. Repair the exact shingle oracle or production cause without weakening native containment; finish held-gesture/hint/Graph/Settings/source filters. Build an exact new native app and unique regular QA copy; replay the ten-gate acceptance plan, local-only and failed startup, genuine ingest, persisted restart, every page/menu, live links, resize/text scales, and animation films.
+3. Complete typed semantic-shape batches over existing IR/Turso/CAS admission. Requests and replies bind the exact admitted semantic version, selected workspace root and image, bounded request-local type graphs and budgets; no raw image-local TypeId escapes. Nominal/external references, cycles, unknown/unsupported states and extension-sensitive identities need actual wire/admission tests. Then consume the typed DTO in Graph and qualify real compiler→Turso→Session→GUI shapes.
+4. Implement shared versioned lexical normalization, then owner-bound manifest aliases with the existing SourceObservation revision. Test punctuation, namespaces, path/Unicode/CJK policy, target versus package names, duplicate versions, cold reopen and stale materialization. Preserve existing package RowIds and exact ownership.
+5. Reconcile vendor Markdown native semantics and bounded per-window/per-visit README paging; unify declaration kinds and input/result roles. Root full-review and native replay are required for both source slices. Do not claim old frozen work is already integrated.
+6. Finish live remote worker ACK, catalog/ingest/search/embedding/dependency/yank/security evidence and genuine backup; test GUI against that owner and then remote absence. Continue durable IR-VCS lineage/replay, edit-local producer chunks, bounded content-addressed transfer/storage, SIMD/GPU embedding and storage/RAM/performance work. No apples-to-apples lib.rs win has been measured.
+7. Review outstanding source slices, remove dead paths only after surface cutover, refresh canonical refs preserving external Nix edits, integrate qualified atomic work and push without force. This checkpoint itself claims no canonical push. The final adversarial user-flow review remains after actual gates.
+
+There is meaningful executed progress, but the native, remote, typed-shape, package-alias, resource-bound and benchmark obligations are still material work.
