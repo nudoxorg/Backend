@@ -85,11 +85,17 @@ pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Win
         (false, true) => {
             dialog::close(window, cx);
             let covered = links.snapshot(cx).session().overlay_is_covered(Overlay::AddProject);
-            let (restore, content) = cx.default_global::<PerWindow>().0.get_mut(&id).map_or((None, None), |mounted| {
+            let content = cx.default_global::<PerWindow>().0.get(&id).map(|mounted| mounted.content.clone());
+            let landed = content.as_ref().is_some_and(|content| content.read(cx).landed());
+            let restore = cx.default_global::<PerWindow>().0.get_mut(&id).and_then(|mounted| {
                 mounted.ours = false;
-                (if covered { None } else { mounted.restore.take() }, Some(mounted.content.clone()))
+                // A completed add is a terminal editing session even when
+                // another overlay covered it before the route settled. The
+                // next Add must run Form::opened and clear its old path.
+                if landed { mounted.restore.take(); None }
+                else if covered { None }
+                else { mounted.restore.take() }
             });
-            let landed = content.is_some_and(|content| content.read(cx).landed());
             // Covered forms retain their text and return receipt. A real
             // dismissal returns through the Shell's current-visit gate after
             // the underlay paints, for both Escape and pointer Cancel.

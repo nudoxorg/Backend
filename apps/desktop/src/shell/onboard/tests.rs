@@ -388,9 +388,19 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
         rig.keys("enter");
         assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
         release.set(false);
-        rig.keys("cmd-o"); type_in(&mut rig, &format!("{}/toml_pin", second_parent.display()));
-        assert!(drawn(&mut rig).iter().any(|line| line == "toml_pin · a Rust project (Cargo.toml)"), "actual folder preview painted");
+        rig.keys("cmd-o");
+        assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "the second native shortcut reopens the folder dialog");
         let field = rig.cx.update(|window, cx| super::field(window, cx)).expect("mounted input");
+        assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
+            "the reopened dialog owns native input before typing a second folder");
+        assert!(field.read_with(rig.cx, |input, _| input.value().is_empty()), "the reopened dialog starts with an empty field");
+        let second_path = format!("{}/toml_pin", second_parent.display());
+        type_in(&mut rig, &second_path);
+        assert_eq!(field.read_with(rig.cx, |input, _| input.value().to_string()), second_path,
+            "the second path belongs to the current mounted editor");
+        let words = drawn(&mut rig);
+        assert!(words.iter().any(|line| line == "toml_pin · a Rust project (Cargo.toml)"),
+            "actual folder preview painted for the second path: {words:?}");
         assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)));
         if pointer {
             let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced dialog AX");
@@ -401,7 +411,7 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
             let at = gpui::point(gpui::px((b["x"].as_f64().expect("x") + b["width"].as_f64().expect("width") / 2.0) as f32),
                 gpui::px((b["y"].as_f64().expect("y") + b["height"].as_f64().expect("height") / 2.0) as f32));
             rig.cx.simulate_click(at, gpui::Modifiers::none());
-        } else { rig.cx.simulate_keystrokes("enter"); }
+        } else { rig.native_press("enter"); }
         rig.frame(16);
         assert_eq!(overlay(&mut rig), None);
         assert_eq!(phases(&mut rig), [ProjectPhase::Ready, ProjectPhase::Indexing]);
