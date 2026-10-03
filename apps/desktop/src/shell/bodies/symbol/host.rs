@@ -314,8 +314,12 @@ impl DocLinks {
             return None;
         }
         let identity = candidate.identity();
-        if !matches!(identity.shape(), backend_present::IdentityShape::Opaque)
-            || target.starts_with('#')
+        // The existing display parser classifies bare words as package
+        // spellings too. Neither shape grants declaration authority here.
+        if !matches!(
+            identity.shape(),
+            backend_present::IdentityShape::Package | backend_present::IdentityShape::Opaque
+        ) || target.starts_with('#')
         {
             return None;
         }
