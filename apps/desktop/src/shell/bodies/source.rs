@@ -288,7 +288,7 @@ fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &
 /// same UTF-8 bounded page calculation as current source, and each callback
 /// checks the exact mounted visit and retained projection again.
 pub(super) fn retained_page(
-    display: Arc<crate::model::retained_display::RetainedDisplay>,
+    display: Arc<crate::runtime::snapshot::RetainedDisplay>,
     route: &Route,
     ctx: &mut Ctx<'_>,
     cx: &mut Context<Reader>,
@@ -363,7 +363,7 @@ pub(super) fn retained_page(
 /// Only a bounded page is mounted; the full projection remains background
 /// prepared and every native callback is fenced to its exact visit/display.
 pub(super) fn retained_row_page(
-    display: Arc<crate::model::retained_display::RetainedDisplay>,
+    display: Arc<crate::runtime::snapshot::RetainedDisplay>,
     count: usize,
     route: &Route,
     ctx: &mut Ctx<'_>,

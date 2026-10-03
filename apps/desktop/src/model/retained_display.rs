@@ -14,7 +14,6 @@ pub(crate) const MAX_DISPLAY_ROWS: usize = 2_048;
 pub(crate) const MAX_DISPLAY_WORDS: usize = 1 << 20;
 pub(crate) const MAX_DISPLAY_SOURCE: usize = 2 << 20;
 pub(crate) const MAX_DISPLAY_ROW_WORDS: usize = 4 << 10;
-pub(crate) use crate::runtime::snapshot::RetainedDisplay;
 
 /// A cache claim compared only with an already requested typed destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -7,7 +7,8 @@
 use super::{Ctx, Leaf};
 use crate::model::browse::BrowseKey;
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey};
-use crate::model::retained_display::{CaptureCoverage, DisplayBody, RetainedDisplay};
+use crate::model::retained_display::{CaptureCoverage, DisplayBody};
+use crate::runtime::snapshot::RetainedDisplay;
 use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route};
 use crate::runtime::store::DataStore;
 use crate::shell::kit::{quiet, text as styled_text};

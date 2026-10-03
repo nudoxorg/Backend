@@ -1,8 +1,9 @@
 //! Worker-only reduction of immutable read models into bounded display words.
 use crate::core::{Resource, VersionedRoot};
+use crate::runtime::snapshot::RetainedDisplay;
 use crate::model::browse::{BrowseKey, BrowseValue, CargoReadmeState};
 use crate::model::pages::{PageKey, PageStore, Known, CargoSourcePage, OrbitModel};
-use crate::model::retained_display::{CaptureCoverage, DisplayAddress, DisplayBody, DisplayObservation, DisplayRow, DisplaySource, RetainedDisplayWire, RetainedDisplay, MAX_DISPLAY_ROWS, MAX_DISPLAY_WORDS};
+use crate::model::retained_display::{CaptureCoverage, DisplayAddress, DisplayBody, DisplayObservation, DisplayRow, DisplaySource, RetainedDisplayWire, MAX_DISPLAY_ROWS, MAX_DISPLAY_WORDS};
 use crate::navigation::{BrowseRoute, OrbitRoute, Route};
 use std::sync::Arc;
 

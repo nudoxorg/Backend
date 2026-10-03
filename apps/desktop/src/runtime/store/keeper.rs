@@ -7,7 +7,7 @@ use crate::core::{Resource, VersionedRoot};
 use crate::model::AppSnapshot;
 use crate::model::pages::{PageKey, PageStore, SeedEntry};
 use crate::runtime::snapshot::{DisplayCapture, Keep, SnapRoot, SnapshotFile, kept_keys};
-use crate::model::retained_display::RetainedDisplay;
+use crate::runtime::snapshot::RetainedDisplay;
 use gpui::{AppContext as _, Context, Task};
 use std::sync::Arc;
 use std::time::Duration;

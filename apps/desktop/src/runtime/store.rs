@@ -430,7 +430,7 @@ impl DataStore {
 
     /// Earlier exact-destination display, separate from current resources.
     /// A late/other-route projection cannot attach to this mounted visit.
-    pub(crate) fn retained_display(&self, route: &Route) -> Option<Arc<crate::model::retained_display::RetainedDisplay>> {
+    pub(crate) fn retained_display(&self, route: &Route) -> Option<Arc<crate::runtime::snapshot::RetainedDisplay>> {
         (self.snapshot.route() == route).then(|| self.keeper.retained(route)).flatten()
     }
 
