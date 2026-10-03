@@ -34,7 +34,7 @@ use facet::tokens::{TypeRole, ty};
 use facet::{Measure, Space};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Bounds, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
+    AnyElement, App, Bounds, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
     Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 use std::cell::Cell;
@@ -256,6 +256,10 @@ pub(super) struct Folio {
     /// The module a click left the page from, open again on coming back.
     pub reopen: Option<SharedString>,
     pub active: bool,
+    /// Registered before Reader closes the current frame's mounted targets.
+    pub licence_focus: Option<FocusHandle>,
+    /// Exact mounted Reader visit/input scope for local disclosure actions.
+    pub admit_input: Rc<dyn Fn(&mut App) -> bool>,
     pub package: PackageRef,
 }
 
@@ -403,7 +407,9 @@ impl Folio {
         // is what a click on it does.
         let licence_act: Act = {
             let state = nav.clone();
+            let admit = Rc::clone(&self.admit_input);
             Rc::new(move |_, cx| {
+                if !admit(cx) { return; }
                 state.update(cx, |nav, cx| {
                     nav.licence = DisclosureChoice::explicit(!nav.licence_resolved.get());
                     cx.notify();
@@ -431,19 +437,26 @@ impl Folio {
             act
         });
         let stamp_nav = nav.clone();
-        let stamp = crest::stamp(
+        let stamp_admit = Rc::clone(&self.admit_input);
+        let mut stamp = crest::stamp(
             key(&self.id, "licence"),
             self.facts.licence.clone(),
             stamp_w,
             measure,
         )
         .controlled(licence, licence_resolved, move |open, _, cx| {
+            if !stamp_admit(cx) { return; }
             stamp_nav.update(cx, |nav, cx| {
                 nav.licence = DisclosureChoice::explicit(open);
                 cx.notify();
             });
-        })
-        .into_any_element();
+        });
+        if let Some(focus) = self.licence_focus.clone() {
+            // The Reader registered this mounted target before ending its
+            // frame. GPUI and AccessKit use that same identity on the stamp.
+            stamp = stamp.focus_handle(focus);
+        }
+        let stamp = stamp.into_any_element();
         let cells = [
             cell(
                 "licence",

@@ -1073,6 +1073,90 @@ fn native_licence_expanded(rig: &mut Rig) -> bool {
 }
 
 #[gpui::test]
+fn mounted_package_licence_uses_its_reader_native_focus_for_return_and_space(
+    cx: &mut TestAppContext,
+) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut rig);
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| {
+            gpui_component::Root::new(shell, window, cx).bordered(false)
+        });
+        window.set_a11y_forced(true);
+    });
+    rig.settle();
+
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let mut reached = false;
+    for _ in 0..64 {
+        rig.keys("tab");
+        reached = rig.cx.update(|window, _| {
+            targets.native_focused(window).as_deref() == Some("pkg-licence")
+        });
+        if reached { break; }
+    }
+    assert!(reached, "real Tab reaches the Licence target's mounted GPUI handle");
+    assert_eq!(targets.focused().as_deref(), Some("pkg-licence"));
+    assert!(native_licence_expanded(&mut rig), "native focus reveals the disclosure");
+
+    let tree: serde_json::Value = serde_json::from_str(&rig.cx.update(|window, _|
+        window.debug_a11y_tree_json()).expect("mounted native tree")).expect("native JSON");
+    let (node_id, node) = tree["nodes"].as_object().expect("native nodes").iter()
+        .find(|(_, node)| node["aria"]["label"].as_str() == Some("Toggle licence details"))
+        .expect("mounted Licence button");
+    assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+    assert_eq!(tree["accesskit_focus"].as_str(), Some(node_id.as_str()),
+        "the exact mounted button, not a Shell glow or window fallback, owns focus");
+
+    rig.native_press("enter");
+    assert!(!native_licence_expanded(&mut rig), "Return closes the focused disclosure once");
+    assert!(!has(&painted(&mut rig), "licence-line"),
+        "the closed native state also removes the painted detail");
+    rig.native_press("space");
+    assert!(native_licence_expanded(&mut rig), "Space reopens the same disclosure once");
+    assert!(has(&painted(&mut rig), "licence-line"),
+        "the reopened native state paints the licence detail");
+}
+
+#[gpui::test]
+fn covered_package_licence_cannot_complete_a_native_press_from_the_old_visit(
+    cx: &mut TestAppContext,
+) {
+    use crate::navigation::{Overlay, SettingsPage};
+
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut rig);
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    rig.cx.update(|window, cx| {
+        assert!(targets.focus_native("pkg-licence", window, cx));
+        targets.focus("pkg-licence");
+    });
+    assert!(native_licence_expanded(&mut rig));
+    rig.native_press("enter");
+    assert!(!native_licence_expanded(&mut rig), "the explicit closed choice survives focus loss");
+
+    let keystroke = gpui::Keystroke::parse("enter").expect("native activation key");
+    rig.cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(Overlay::Settings(SettingsPage::Appearance)));
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    rig.go(Intent::DismissOverlay);
+    rig.frame(500);
+    rig.cx.update(|window, cx| {
+        assert!(targets.focus_native("pkg-licence", window, cx));
+        targets.focus("pkg-licence");
+    });
+    assert!(!native_licence_expanded(&mut rig),
+        "a covered key release must not flip the old Licence choice open");
+}
+
+#[gpui::test]
 fn licence_native_shell_native_uses_one_resolved_disclosure(cx: &mut TestAppContext) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     read_and_open(&mut rig);

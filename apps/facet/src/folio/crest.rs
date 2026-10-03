@@ -22,7 +22,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole, Voice, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, Element, ElementId, Entity, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    App, Bounds, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
     ParentElement, Pixels, Refineable, RenderOnce, SharedString, StatefulInteractiveElement, Style, StyleRefinement, Styled, Window, div, px,
 };
 use std::cell::Cell;
@@ -360,12 +360,13 @@ pub struct Stamp {
     measure: Measure,
     width: Pixels,
     mode: StampMode,
+    focus_handle: Option<FocusHandle>,
 }
 
 /// A stamp for `facts`, `width` px wide.
 #[must_use]
 pub fn stamp(id: impl Into<ElementId>, facts: Rc<LicenseFacts>, width: Pixels, measure: &Measure) -> Stamp {
-    Stamp { id: id.into(), facts, measure: *measure, width, mode: StampMode::Owned }
+    Stamp { id: id.into(), facts, measure: *measure, width, mode: StampMode::Owned, focus_handle: None }
 }
 
 /// The empty expression is not itself evidence that a manifest declared no
@@ -381,6 +382,14 @@ fn expression_fallback(facts: &LicenseFacts) -> &'static str {
 }
 
 impl Stamp {
+    /// Use the mounted host target's native focus identity when this stamp
+    /// participates in a larger keyboard walk.
+    #[must_use]
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus_handle = Some(focus);
+        self
+    }
+
     /// The pose the stamp is held in (`Held`: unfolded whatever the pointer does).
     #[must_use]
     pub fn pose(mut self, pose: Pose) -> Self {
@@ -418,7 +427,7 @@ impl RenderOnce for Stamp {
         let scale = measure.scale();
         let verdict = verdict(&self.facts);
         let live = !matches!(&self.mode, StampMode::HeldSnapshot);
-        let touch = Touch::read(&self.id, crate::controls::Look::LIVE, live, window, cx);
+        let touch = Touch::read_with_focus(&self.id, crate::controls::Look::LIVE, live, self.focus_handle, window, cx);
         let motion = touch.motion.clone();
         // Hover and focus can reveal the details; activation pins an explicit
         // choice and can close them while the pointer or focus remains here.

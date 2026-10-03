@@ -495,10 +495,19 @@ fn the_native_licence_stamp_enter_and_space_toggle_focused_details(cx: &mut Test
     cx.simulate_keystrokes("tab");
     frame(cx);
     assert_eq!(native_stamp_state(cx), (true, true), "keyboard focus revealed the native disclosure");
-    cx.simulate_keystrokes("enter");
+    let press = |cx: &mut VisualTestContext, key: &str| {
+        let keystroke = gpui::Keystroke::parse(key).expect("native activation key");
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    };
+    press(cx, "enter");
     frame(cx);
     assert_eq!(native_stamp_state(cx), (false, true), "Enter must close focused details once");
-    cx.simulate_keystrokes("space");
+    press(cx, "space");
     frame(cx);
     assert_eq!(native_stamp_state(cx), (true, true), "Space must reopen focused details once");
 }

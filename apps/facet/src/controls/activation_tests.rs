@@ -26,6 +26,8 @@ struct Fixture {
     kind: Kind,
     disabled: bool,
     busy: bool,
+    covered: bool,
+    retired: bool,
     clicks: Rc<Cell<usize>>,
     background: Rc<Cell<usize>>,
     spare: FocusHandle,
@@ -60,6 +62,12 @@ impl Render for Fixture {
                 )
                 .into_any_element()
             }
+        };
+        let control = if self.retired { div().into_any_element() } else { control };
+        let control = if self.covered {
+            gpui::inert("covered-control", "A modal owns input", control).into_any_element()
+        } else {
+            control
         };
         let raw_parent = Rc::clone(&self.background);
         let background = Rc::clone(&self.background);
@@ -102,6 +110,8 @@ fn fixture(cx: &mut TestAppContext, kind: Kind) -> (Entity<Fixture>, &mut Visual
         kind,
         disabled: false,
         busy: false,
+        covered: false,
+        retired: false,
         clicks: Rc::new(Cell::new(0)),
         background: Rc::new(Cell::new(0)),
         spare: cx.focus_handle(),
@@ -195,4 +205,45 @@ fn interrupted_focus_and_disabled_or_busy_owner_cannot_activate_on_release(
             draw(cx);
         }
     }
+}
+
+#[gpui::test]
+fn a_covered_or_retired_shared_button_cannot_finish_an_old_native_press(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = fixture(cx, Kind::Button);
+    cx.update(|window, cx| window.focus_next(cx));
+    draw(cx);
+    down(cx, "enter", false);
+    view.update(cx, |view, cx| {
+        view.covered = true;
+        cx.notify();
+    });
+    draw(cx);
+    up(cx, "enter");
+    assert_eq!(view.read_with(cx, |view, _| view.clicks.get()), 0,
+        "a modal's inert underlay cannot complete the button press");
+
+    view.update(cx, |view, cx| {
+        view.covered = false;
+        cx.notify();
+    });
+    draw(cx);
+    cx.update(|window, cx| window.focus_next(cx));
+    draw(cx);
+    down(cx, "space", false);
+    view.update(cx, |view, cx| {
+        view.retired = true;
+        cx.notify();
+    });
+    draw(cx);
+    up(cx, "space");
+    view.update(cx, |view, cx| {
+        view.retired = false;
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(view.read_with(cx, |view, _| view.clicks.get()), 0,
+        "a remounted button cannot inherit a retired press");
+    assert_eq!(view.read_with(cx, |view, _| view.background.get()), 0);
 }

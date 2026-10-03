@@ -319,6 +319,8 @@ pub(super) fn body(
         recall: ctx.targets.recall(),
         reopen,
         active: ctx.active,
+        licence_focus: ctx.native_handle(&PageTarget::Licence.id(), cx),
+        admit_input: ctx.native_local_guard(cx),
         package: dossier.package.clone(),
     };
     // Centred on the reading column it overflows.
