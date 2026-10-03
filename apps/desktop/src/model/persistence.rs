@@ -1242,7 +1242,7 @@ impl PersistentState {
                             } else { ProjectPhase::Failed },
                             IndexOperationState::Accepted | IndexOperationState::Active { .. } | IndexOperationState::Unresolved { .. } => ProjectPhase::Unconfirmed,
                         },
-                        None | Some(IndexOperationObservation::Unknown { .. }) => ProjectPhase::Unconfirmed,
+                        None | Some(IndexOperationObservation::OutsideReceiptWindow { .. } | IndexOperationObservation::Unknown { .. }) => ProjectPhase::Unconfirmed,
                     }
                 });
                 let unresolved = operation_phase == Some(ProjectPhase::Unconfirmed)
@@ -1562,6 +1562,12 @@ mod tests {
         value.shelf[0].operation.as_mut().expect("claim").observation = Some(
             backend_library::IndexOperationObservation::Unknown { operation_key: operation.key });
         assert_eq!(store.cold_workspace(&value).projects[0].phase, ProjectPhase::Unconfirmed);
+        value.shelf[0].operation.as_mut().expect("claim").observation = Some(crate::model::index_operation::tests::outside(&operation));
+        store.save(&value).expect("archived exact key persisted");
+        let archived = store.cold_workspace(&store.load().expect("cold tombstone"));
+        assert_eq!(archived.projects[0].phase, ProjectPhase::Unconfirmed, "a consumed key carries no terminal publication proof");
+        assert_eq!(archived.projects[0].index_status_text(), Some("Index receipt is outside the evidence window"));
+        assert!(!archived.projects[0].operation.as_ref().expect("claim").needs_observation());
         fs::remove_dir_all(directory).expect("cleanup");
     }
 

@@ -245,6 +245,7 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             let mut rows = workspace.projects.to_vec();
             let Some(row) = rows.iter_mut().find(|row| row.id == project && row.request == Some(request)
                 && row.operation.as_ref().is_some_and(|saved| saved.same_request(&operation))) else { return Ok(current.clone()); };
+            let Some(observation) = row.operation.as_ref().and_then(|saved| saved.observation_for(observation)) else { return Ok(current.clone()); };
             use backend_library::{IndexOperationFailureReason, IndexOperationObservation, IndexOperationState};
             let (phase, error) = match &observation {
                 IndexOperationObservation::Known(status) => match &status.state {
@@ -257,6 +258,8 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                     ),
                     IndexOperationState::Unresolved { detail, .. } => (ProjectPhase::Unconfirmed, Some(Arc::from(detail.as_str()))),
                 },
+                IndexOperationObservation::OutsideReceiptWindow { .. } => (ProjectPhase::Unconfirmed,
+                    Some(Arc::from("This operation key was consumed, but its terminal receipt is outside the owner's retained evidence window. Its publication outcome is unknown. A new index has not been started."))),
                 IndexOperationObservation::Unknown { .. } => (ProjectPhase::Unconfirmed,
                     Some(Arc::from("The owner has no retained receipt for this saved operation. Its outcome is unknown; another index has not been started."))),
             };
@@ -457,6 +460,29 @@ mod tests {
         assert_eq!(row.files_indexed, None);
         assert_eq!(row.operation.as_ref().and_then(|claim| claim.observation.as_ref()), Some(&observation));
         assert_eq!(received.key(), current_key, "receipt settles work, not current content authority");
+    }
+
+    #[test]
+    fn archived_exact_key_is_unconfirmed_and_cannot_erase_an_owned_publication() {
+        let (current, project, operation, request) = saved_operation();
+        let outside = crate::model::index_operation::tests::outside(&operation);
+        let received = map_event(&current, operation_event(project.clone(), operation.clone(), request, outside.clone())).expect("archived");
+        let row = &received.workspace().projects[0];
+        assert_eq!(row.phase, ProjectPhase::Unconfirmed);
+        assert_eq!(row.request, None);
+        assert_eq!(row.index_status_text(), Some("Index receipt is outside the evidence window"));
+        assert!(!row.operation.as_ref().expect("claim").needs_observation());
+        assert_eq!(received.key(), current.key(), "an archived key never adopts a content root");
+        let mut workspace = current.workspace().clone();
+        let mut rows = workspace.projects.to_vec();
+        let receipt = crate::model::index_operation::tests::published(&operation);
+        rows[0].operation.as_mut().expect("saved claim").observation = Some(receipt.clone());
+        workspace.projects = rows.into();
+        let held = current.with_workspace(workspace);
+        let received = map_event(&held, operation_event(project, operation, request, outside)).expect("held receipt");
+        assert_eq!(received.workspace().projects[0].phase, ProjectPhase::Ready);
+        assert_eq!(received.workspace().projects[0].operation.as_ref().and_then(|claim| claim.observation.as_ref()), Some(&receipt));
+        assert_eq!(received.key(), held.key());
     }
 
     #[test]

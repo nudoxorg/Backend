@@ -63,8 +63,26 @@ impl IndexOperationClaim {
             IndexOperationObservation::Known(status) => status.operation_key == self.key
                 && status.package == self.package && status.execution_intent == self.execution_intent
                 && status.request_digest == backend_library::index_operation_request_digest(&self.package, self.execution_intent),
+            IndexOperationObservation::OutsideReceiptWindow { operation_key, request_digest } => *operation_key == self.key
+                && *request_digest == backend_library::index_operation_request_digest(&self.package, self.execution_intent),
             IndexOperationObservation::Unknown { operation_key } => *operation_key == self.key,
         }
+    }
+
+    /// A compact consumed-key tombstone cannot erase a checked exact receipt
+    /// already owned by this caller. It supplies no new publication proof.
+    #[must_use]
+    pub fn observation_for(&self, incoming: backend_library::IndexOperationObservation) -> Option<backend_library::IndexOperationObservation> {
+        use backend_library::{IndexOperationObservation, IndexOperationState};
+        if !self.admits_observation(&incoming) { return None; }
+        if matches!(incoming, IndexOperationObservation::OutsideReceiptWindow { .. }) {
+            if let Some(retained @ IndexOperationObservation::Known(status)) = &self.observation {
+                if matches!(status.state, IndexOperationState::Published(_)) && self.admits_observation(retained) {
+                    return Some(retained.clone());
+                }
+            }
+        }
+        Some(incoming)
     }
 
     /// Durable request identity excludes the latest changing observation.
@@ -81,7 +99,8 @@ impl IndexOperationClaim {
             None => true,
             Some(backend_library::IndexOperationObservation::Known(status)) => matches!(status.state,
                 backend_library::IndexOperationState::Accepted | backend_library::IndexOperationState::Active { .. }),
-            Some(backend_library::IndexOperationObservation::Unknown { .. }) => false,
+            Some(backend_library::IndexOperationObservation::OutsideReceiptWindow { .. }
+                | backend_library::IndexOperationObservation::Unknown { .. }) => false,
         }
     }
 
@@ -92,6 +111,7 @@ impl IndexOperationClaim {
         use backend_library::{IndexJobStage, IndexOperationObservation, IndexOperationState};
         match self.observation.as_ref() {
             None => "Checking the saved index operation",
+            Some(IndexOperationObservation::OutsideReceiptWindow { .. }) => "Index receipt is outside the evidence window",
             Some(IndexOperationObservation::Unknown { .. }) => "No operation receipt is available",
             Some(IndexOperationObservation::Known(status)) => match &status.state {
                 IndexOperationState::Accepted => "Accepted by the index owner",
@@ -166,6 +186,33 @@ pub(crate) mod tests {
         let mut wrong_digest = published(&operation);
         if let backend_library::IndexOperationObservation::Known(status) = &mut wrong_digest { status.request_digest = [0; 32]; }
         assert!(!operation.admits_observation(&wrong_digest));
+    }
+
+    pub(crate) fn outside(operation: &IndexOperationClaim) -> backend_library::IndexOperationObservation {
+        backend_library::IndexOperationObservation::OutsideReceiptWindow { operation_key: operation.key,
+            request_digest: backend_library::index_operation_request_digest(&operation.package, operation.execution_intent) }
+    }
+
+    #[test]
+    fn outside_window_requires_exact_consumed_key_and_payload_and_never_proves_publication() {
+        let project = LocalProjectId::new("/fixture/archived-operation").expect("project");
+        let mut operation = claim(&project, 0x76);
+        let incoming = outside(&operation);
+        assert!(operation.admits_observation(&incoming));
+        assert!(!operation.admits_observation(&outside(&claim(&project, 0x77))));
+        let mut wrong = incoming.clone();
+        if let backend_library::IndexOperationObservation::OutsideReceiptWindow { request_digest, .. } = &mut wrong { *request_digest = [3; 32]; }
+        assert!(!operation.admits_observation(&wrong));
+        operation.observation = operation.observation_for(incoming.clone());
+        assert_eq!(operation.observation.as_ref(), Some(&incoming));
+        assert!(!operation.needs_observation(), "an archived terminal operation is not active progress");
+        assert_eq!(operation.status_text(), "Index receipt is outside the evidence window");
+        let restored: IndexOperationClaim = serde_json::from_slice(&serde_json::to_vec(&operation).expect("saved tombstone")).expect("cold claim");
+        assert_eq!(restored, operation);
+        let receipt = published(&operation);
+        operation.observation = Some(receipt.clone());
+        assert_eq!(operation.observation_for(incoming), Some(receipt), "an exact owned receipt remains readonly publication evidence");
+        assert!(operation.observation_for(wrong).is_none(), "even an owned receipt does not admit a mismatched tombstone");
     }
 
     #[test]
