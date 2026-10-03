@@ -113,6 +113,32 @@ pub(crate) enum MountedGraph {
     Declaration,
 }
 
+/// Passive test evidence for the earliest render that can see a completed
+/// Memo value. It never schedules a draw, refresh, timer or notification.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct FirstReadyFrameProbe {
+    pub root: VersionedRoot,
+    claimed: Rc<std::cell::Cell<bool>>,
+    pub result: Rc<std::cell::RefCell<Option<FirstReadyFrame>>>,
+}
+#[cfg(test)]
+impl gpui::Global for FirstReadyFrameProbe {}
+#[cfg(test)]
+impl FirstReadyFrameProbe {
+    pub fn new(root: VersionedRoot) -> Self {
+        Self { root, claimed: Rc::new(std::cell::Cell::new(false)), result: Rc::new(std::cell::RefCell::new(None)) }
+    }
+}
+#[cfg(test)]
+pub(crate) struct FirstReadyFrame {
+    pub mounted_at_render: bool,
+    pub painted: bool,
+    pub work_at_paint: Option<MapWorkStatus>,
+    pub a11y_frame: u64,
+    pub controls: Vec<(gpui::accesskit::NodeId, bool)>,
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct TestCanvasLayer {
@@ -1390,6 +1416,11 @@ impl gpui::Element for FocusMark {
 
 impl Render for Map {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        let first_ready = cx.try_global::<FirstReadyFrameProbe>().cloned().filter(|probe| {
+            self.visible && self.world_key.as_ref().is_some_and(|key| key.at_authority(probe.root)
+                && indexed_world::read_completed(key, cx)) && !probe.claimed.replace(true)
+        });
         // Validate the current root/service key and take any landed result
         // before the scene mount. No second frame or render-time notify is
         // needed to turn an announced Memo result into native graph content.
@@ -1530,6 +1561,22 @@ impl Render for Map {
                 .child(crate::shell::kit::text(facet::tokens::ty::MONO_SMALL, &measure, cx.facet().palette().ink2)
                     .keyed("graph-projection-status").role(gpui::Role::Status).aria_label(message.clone()).child(message)))
         };
+        #[cfg(test)]
+        if let Some(probe) = first_ready {
+            let mounted_at_render = self.graph.is_some();
+            let owner = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                let Some(map) = owner.upgrade() else { return; };
+                let map = map.read(cx);
+                let controls = ["Declarations", "Graph coverage"].iter().filter_map(|label| {
+                    window.a11y_tree()?.nodes.iter().find(|(_, node)| node.label() == Some(*label))
+                        .map(|(id, node)| (*id, !node.is_disabled() && node.supports_action(gpui::AccessibleAction::Click)))
+                }).collect();
+                *probe.result.borrow_mut() = Some(FirstReadyFrame { mounted_at_render,
+                    painted: matches!(map.mounted_presentation(cx), Some(MountedGraph::Scene(_))),
+                    work_at_paint: map.work_status(cx), a11y_frame: window.a11y_frame_number(), controls });
+            });
+        }
         #[cfg(test)]
         {
             let layer = cx

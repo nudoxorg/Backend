@@ -545,6 +545,8 @@ fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestA
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
     let gate = Arc::new(TestProjectionGate::default());
     let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let probe = super::bodies::graph::FirstReadyFrameProbe::new(root);
+    rig.cx.update(|_, cx| cx.set_global(probe.clone()));
     rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
     rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
     rig.draw_frame();
@@ -552,25 +554,23 @@ fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestA
     assert!(gate.entered(), "real asynchronous Memo worker is held");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::ProjectionRead));
+    let before = rig.cx.update(|window, _| window.a11y_frame_number());
     gate.release();
     rig.cx.run_until_parked();
-    assert_ne!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::ProjectionRead), "callback has actually landed before drawing");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none(), "completion does not mutate the mounted scene outside render");
-    // Bare native draw: no refresh, input, timer, settle or additional notify.
-    rig.draw_frame();
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(), "the announced completion frame must mount its ready scene immediately");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::Discovery), "the newly spawned discovery worker has not supplied a second wake");
-    // Use the actual first-paint AccessKit controls, without native_bounds()
-    // (that helper intentionally forces a repaint). No discovery completion
-    // or postpaint input has repaired the initial control construction.
-    let controls = rig.cx.update(|window, _| {
-        let tree = window.a11y_tree().expect("first-paint tree");
-        ["Declarations", "Graph coverage"].map(|label| {
-            let (id, node) = tree.nodes.iter().find(|(_, node)| node.label() == Some(label)).expect("first-paint native control");
-            assert!(!node.is_disabled() && node.supports_action(gpui::AccessibleAction::Click), "current control must render operable before paint proves activation");
-            *id
-        })
-    });
+    // test-support flushes Memo's Notify and eagerly paints dirty windows.
+    // The passive probe records that automatic earliest Memo-ready render,
+    // then reads its actual committed AX tree at the end of that effect cycle.
+    // It creates no wake, refresh, timer, explicit draw or synthetic input.
+    let controls = {
+        let observed = probe.result.borrow();
+        let first = observed.as_ref().expect("Memo notification must cause a ready frame without external input");
+        assert!(first.mounted_at_render, "the very first render observing Ready must mount the scene, without a second wake");
+        assert!(first.painted && first.a11y_frame > before, "that same frame really paints the native scene");
+        assert_eq!(first.work_at_paint, Some(MapWorkStatus::Discovery), "discovery has not supplied a later executor wake at this paint boundary");
+        assert_eq!(first.controls.len(), 2, "both first-paint native controls are present");
+        assert!(first.controls.iter().all(|(_, enabled)| *enabled), "current first-paint native controls expose real Click actions");
+        first.controls.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    };
     for target_node in controls {
         rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
             action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,

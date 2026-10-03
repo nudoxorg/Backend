@@ -441,6 +441,11 @@ pub(crate) fn read_in_flight(key: &Key, cx: &App) -> bool {
         .is_some_and(|reads| reads.0.is_reading(key))
 }
 
+#[cfg(test)]
+pub(crate) fn read_completed(key: &Key, cx: &App) -> bool {
+    cx.try_global::<Reads>().is_some_and(|reads| reads.0.peek(key).is_some())
+}
+
 pub(crate) enum State {
     Reading,
     Waiting,
