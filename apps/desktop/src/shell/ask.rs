@@ -115,6 +115,65 @@ struct Choice {
     group: Group,
 }
 
+/// Result identity is distinct from the scroll container's child index:
+/// statuses and group headings occupy child slots but are not choices.
+#[derive(Clone)]
+enum ResultScrollTarget {
+    Page { route: Route, occurrence: usize },
+    Note { index: usize, name: SharedString, group: Group },
+    All,
+}
+impl ResultScrollTarget {
+    fn choice(index: usize, choice: &Choice) -> Self {
+        choice.route.as_ref().map_or_else(
+            || Self::Note { index, name: choice.name.clone(), group: choice.group },
+            |route| Self::Page { route: route.clone(), occurrence: choice.route_occurrence },
+        )
+    }
+    fn matches(&self, index: usize, choice: &Choice) -> bool {
+        match self {
+            Self::Page { route, occurrence } => choice.route.as_ref() == Some(route) && choice.route_occurrence == *occurrence,
+            Self::Note { index: known, name, group } => *known == index && choice.route.is_none() && choice.name == *name && choice.group == *group,
+            Self::All => false,
+        }
+    }
+}
+
+struct ResultScrollRequest {
+    target: ResultScrollTarget,
+    revision: u64,
+    root: VersionedRoot,
+    attachment: Option<crate::runtime::store::OwnerAttachment>,
+}
+
+#[derive(Clone, Copy)]
+struct ScrollChildIndex(usize);
+
+/// The mapping is built from the same admitted choices/statuses that paint
+/// this frame. It has at most sixteen choice entries and one final action.
+struct ResultScrollMap {
+    choices: Vec<ScrollChildIndex>,
+    all: Option<ScrollChildIndex>,
+}
+impl ResultScrollMap {
+    fn new(choices: &[Choice], read_status: bool, semantic_status: bool, all: bool) -> Self {
+        let mut child = usize::from(read_status) + usize::from(semantic_status);
+        let mut group = None;
+        let mut indices = Vec::with_capacity(choices.len());
+        for choice in choices {
+            if group != Some(choice.group) { group = Some(choice.group); child += 1; }
+            indices.push(ScrollChildIndex(child));
+            child += 1;
+        }
+        Self { choices: indices, all: all.then_some(ScrollChildIndex(child)) }
+    }
+    fn resolve(&self, target: &ResultScrollTarget, choices: &[Choice]) -> Option<ScrollChildIndex> {
+        if matches!(target, ResultScrollTarget::All) { return self.all; }
+        choices.iter().enumerate().find(|(index, choice)| target.matches(*index, choice))
+            .and_then(|(index, _)| self.choices.get(index).copied())
+    }
+}
+
 /// A submission refusal belongs to the current draft, not navigation.
 #[derive(Clone)]
 enum SubmitRefusal { NoMatch, Unavailable(SharedString), NoDestination(SharedString) }
@@ -150,6 +209,8 @@ pub(crate) struct Ask {
     renders: u64,
     pending: Option<Task<()>>,
     scroll: ScrollHandle,
+    /// One pending keyboard request; resolved only by the current painted list.
+    scroll_request: Option<ResultScrollRequest>,
     /// Native focus belongs to the typed destination, not its current row.
     row_focus: Vec<(Route, usize, FocusHandle)>,
     all_focus: FocusHandle,
@@ -187,6 +248,7 @@ impl Ask {
             renders: 0,
             pending: None,
             scroll: ScrollHandle::new(),
+            scroll_request: None,
             row_focus: Vec::new(),
             all_focus: cx.focus_handle().tab_stop(true),
             _subscriptions: vec![typed, landed],
@@ -206,6 +268,7 @@ impl Ask {
     pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = 0;
         self.walked = false;
+        self.reset_result_scroll();
         self.refusal = None;
         let previous = self.draft.query().cloned();
         self.draft = QueryDraft::Blank;
@@ -227,6 +290,7 @@ impl Ask {
         if draft == self.draft {
             return;
         }
+        self.reset_result_scroll();
         let plate_changed = matches!(&self.draft, QueryDraft::Blank) != matches!(&draft, QueryDraft::Blank);
         self.selected = 0;
         // A new query shows where you were again until you walk its rows.
@@ -287,7 +351,7 @@ impl Ask {
             self.selected, self.walked, delta);
         self.selected = next;
         self.walked = true;
-        self.scroll.scroll_to_item(self.selected);
+        self.request_result_scroll(ResultScrollTarget::choice(next, &choices[next]), cx);
         if from_link {
             let focus = choices[next].route.as_ref().and_then(|route| {
                 self.row_focus.iter().find(|(known, occurrence, _)| {
@@ -337,12 +401,37 @@ impl Ask {
         if let Some(index) = targets[next].0 {
             self.selected = index;
             self.walked = true;
-            self.scroll.scroll_to_item(index);
+            self.request_result_scroll(ResultScrollTarget::choice(index, &choices[index]), cx);
         } else if next == 0 {
             self.selected = 0;
             self.walked = false;
+            if let Some(choice) = choices.first() { self.request_result_scroll(ResultScrollTarget::choice(0, choice), cx); }
+        } else if all_mounted && targets[next].1 == self.all_focus {
+            self.request_result_scroll(ResultScrollTarget::All, cx);
         }
         cx.notify();
+    }
+
+    fn reset_result_scroll(&mut self) {
+        // A new handle also retires GPUI's deferred active-item request and
+        // old child geometry; setting offset alone cannot retire those.
+        self.scroll = ScrollHandle::new();
+        self.scroll_request = None;
+    }
+
+    fn request_result_scroll(&mut self, target: ResultScrollTarget, cx: &App) {
+        let store = self.links.store.read(cx);
+        self.scroll_request = Some(ResultScrollRequest { target, revision: self.revision.get(),
+            root: store.snapshot().key(), attachment: store.current_owner_attachment() });
+    }
+
+    fn apply_result_scroll(&mut self, choices: &[Choice], map: &ResultScrollMap, cx: &App) {
+        let Some(request) = self.scroll_request.take() else { return; };
+        let store = self.links.store.read(cx);
+        if request.revision != self.revision.get() || request.root != store.snapshot().key()
+            || request.attachment != store.current_owner_attachment()
+            || store.snapshot().overlay() != Some(Overlay::CommandPalette) { return; }
+        if let Some(child) = map.resolve(&request.target, choices) { self.scroll.scroll_to_item(child.0); }
     }
 
     /// Returns true when a focused destination vanished from the mounted plate.
@@ -363,6 +452,7 @@ impl Ask {
         }
         debug_assert!(self.row_focus.len() <= PER_GROUP * 2);
         if lost_focus {
+            self.scroll_request = None;
             let editor = self.input.read(cx).focus_handle(cx);
             editor.focus(window, cx);
             self.selected = 0;
@@ -769,6 +859,8 @@ impl Ask {
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
         let (read_status, semantic_status) = self.read_status(cx);
         let read_status = self.refusal.as_ref().map(SubmitRefusal::words).or(read_status);
+        let scroll_map = ResultScrollMap::new(&choices, read_status.is_some(), semantic_status.is_some(), all_results.is_some());
+        self.apply_result_scroll(&choices, &scroll_map, cx);
         let mut list = div().id("ask-results").role(Role::List).aria_label("Search results")
             .flex().flex_col().pt(measure.space(Space::Tight))
             .size_full().overflow_y_scroll().track_scroll(&self.scroll);
@@ -1534,6 +1626,118 @@ mod tests {
         rig.settle();
         assert_eq!(rig.route(), route);
         assert_refusal(&mut rig, "mystery", "Mystery has no page yet");
+    }
+
+
+    /// Sixteen mounted choices, two package groups, a semantic status, and
+    /// one nonaddressable row that can produce an additional refusal status.
+    struct GroupedSearch;
+    impl PageReader for GroupedSearch {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            if let ReadRequest::Search(query) | ReadRequest::SearchMore { query, .. } = request {
+                let mut rows = Vec::new();
+                let many = query.text.as_ref() != "short";
+                let count = if many { 16 } else { 1 };
+                for index in 0..count {
+                    let package = if index < 8 { crate::shell::tests::PACKAGE } else { "/fixture/elsewhere" };
+                    let name = if many { format!("Choice{index:02}") } else { "FreshFirst".to_owned() };
+                    let nonaddressable = index == 8;
+                    let coordinate = if nonaddressable { "::UnplacedChoice".to_owned() } else { format!("{package}::glyph.rs:138::{name}") };
+                    rows.push(SearchRow {
+                        rank: index,
+                        decl: DeclRef::from_label(&coordinate, None, Some(DeclarationKind::Struct), None).expect("typed result coordinate"),
+                        package: (!nonaddressable).then(|| Arc::from(package)),
+                        score: Known::Unknown(Gap::new(GapReason::NotServed, "")),
+                        signature: Known::Unknown(Gap::new(GapReason::NotServed, "")),
+                        snippet: None, reason: MatchReason::ExactName,
+                    });
+                }
+                return Ok(PageValue::Search(SearchPage {
+                    query: Arc::clone(&query.text), rows: rows.into(),
+                    coverage: backend_present::CoverageLine::new(&[], Some(count as u64)).with_semantic_search_status(
+                        backend_library::SemanticSearchStatus::Unavailable { reason: backend_library::SemanticSearchReason::Unconfigured }),
+                    next: None,
+                }));
+            }
+            Fixture.read(request, context)
+        }
+    }
+
+    /// Visibility is read from the actual native node bounds and actual
+    /// scroll viewport, not from the result-to-child mapping under test.
+    fn assert_native_result_visible(rig: &mut crate::shell::tests::Rig, prefix: &str) {
+        rig.repaint();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let viewport = ask.read_with(rig.cx, |ask, _| ask.scroll.bounds());
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native result tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let node = tree["nodes"].as_object().expect("nodes").values().find(|node|
+            node["aria"]["label"].as_str().is_some_and(|label| label.starts_with(prefix))).expect("selected native result node");
+        let top = node["bounds"]["y"].as_f64().expect("native row top");
+        let height = node["bounds"]["height"].as_f64().expect("native row height");
+        assert!(top >= f64::from(f32::from(viewport.top())) - 0.5
+            && top + height <= f64::from(f32::from(viewport.bottom())) + 0.5,
+            "selected row must fit the painted scroll viewport: top={top}, height={height}, viewport={viewport:?}");
+    }
+
+    #[gpui::test]
+    fn native_arrows_scroll_selected_rows_past_statuses_and_both_group_headers(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 360.0,
+            ReadPool::start(1, |_| GroupedSearch).expect("grouped search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("many");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 16);
+        for _ in 0..9 { rig.keys("down"); }
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 8);
+        rig.keys("enter");
+        assert_refusal(&mut rig, "many", "UnplacedChoice has no page yet");
+        for _ in 0..7 { rig.keys("down"); }
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 15);
+        assert_native_result_visible(&mut rig, "Result 16:");
+        assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)), "actual mounted results overflow and scroll");
+        for _ in 0..15 { rig.keys("up"); }
+        assert_native_result_visible(&mut rig, "Result 1:");
+    }
+
+    #[gpui::test]
+    fn new_native_query_and_fresh_visit_retire_old_scroll_and_pending_item(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 360.0,
+            ReadPool::start(1, |_| GroupedSearch).expect("grouped search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("many"); rig.settle();
+        for _ in 0..16 { rig.keys("down"); }
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
+        let covered_offset = ask.read_with(rig.cx, |ask, _| ask.scroll.offset());
+        rig.keys("cmd-o"); rig.keys("escape");
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset()), covered_offset, "covering and uncovering the same Ask visit preserves its scroll");
+        rig.keys("cmd-a"); rig.cx.simulate_input("short"); rig.settle();
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
+        assert_native_result_visible(&mut rig, "Result 1:");
+        rig.keys("cmd-a"); rig.cx.simulate_input("many"); rig.settle();
+        for _ in 0..16 { rig.keys("down"); }
+        assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
+        rig.keys("escape"); rig.keys("cmd-k");
+        rig.cx.simulate_input("many"); rig.settle();
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
+        assert_native_result_visible(&mut rig, "Result 1:");
+    }
+
+    #[gpui::test]
+    fn native_tab_reveals_the_final_all_results_action(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 360.0,
+            ReadPool::start(1, |_| GroupedSearch).expect("grouped search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("many"); rig.settle();
+        // Fifteen addressable rows; the nonaddressable row is not a stop.
+        for _ in 0..16 { rig.keys("tab"); }
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        assert!(rig.cx.update(|window, cx| ask.read(cx).all_focus.is_focused(window)));
+        assert_native_result_visible(&mut rig, "Open every search result as a page");
+        rig.keys("shift-tab");
+        assert_native_result_visible(&mut rig, "Result 16:");
     }
 
 }
