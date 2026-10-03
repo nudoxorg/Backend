@@ -1276,7 +1276,13 @@ impl Shell {
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.advance_transient_generation();
-        if event.keystroke.key == "tab" {
+        // Add's dismissing key is part of the covered editor session. Once
+        // its snapshot has cleared, any new key is a fresh input choice,
+        // including one delivered before the overlay observer arms the
+        // deferred Find-query return. Tab also changes focus inside Add.
+        if event.keystroke.key == "tab"
+            || self.links.snapshot(cx).overlay() != Some(Overlay::AddProject)
+        {
             self.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
         }
         if self.ask_presentation.blocks_background_input(self.ask_open)

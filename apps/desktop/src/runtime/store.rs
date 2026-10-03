@@ -476,6 +476,16 @@ impl DataStore {
         notice: Option<super::graph_focus::Notice>,
         cx: &mut Context<Self>,
     ) {
+        // The map publishes an empty focus when an overlay covers it. That
+        // publication must not erase the failed owner's current recovery
+        // notice, which belongs to the same route even while covered.
+        let owner_notice = self.notice.as_ref().filter(|current| {
+            current.retry.is_some()
+                && current.visit == *self.snapshot.route()
+                && current.root.same_authority(self.snapshot.key())
+                && matches!(self.owner.phase(), OwnerPhase::Failed(_))
+        }).cloned();
+        let notice = owner_notice.or(notice);
         if self.graph_focus != focus || self.notice != notice {
             self.graph_focus = focus;
             self.notice = notice;
