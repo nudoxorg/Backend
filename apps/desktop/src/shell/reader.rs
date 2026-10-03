@@ -408,6 +408,17 @@ struct FindFocusReturn {
     root: crate::core::VersionedRoot,
     focused: FocusHandle,
     interruption: u64,
+    attachment: Option<OwnerAttachment>,
+    retry: Option<crate::runtime::store::OwnerRetryAttachment>,
+}
+
+/// The actual mounted Find input, reported by its component after paint.
+#[derive(Clone)]
+struct MountedFindQuery {
+    place: u64,
+    route: Route,
+    root: crate::core::VersionedRoot,
+    focus: FocusHandle,
 }
 
 /// The reader region.
@@ -443,8 +454,9 @@ pub(crate) struct Reader {
     /// A Back return belongs to one visit, and waits for its live control to
     /// mount before transferring native focus from the Shell.
     native_return: Option<NativeReturn>,
-    /// The Find query's exact focused handle before Ask took the keyboard.
+    /// The Find query's exact focused handle before Ask or Add took the keyboard.
     find_focus_return: Option<FindFocusReturn>,
+    mounted_find_query: Option<MountedFindQuery>,
     /// Tab/J/overlay interruptions invalidate a deferred component return.
     native_return_interruption: u64,
     /// What the last frame was laid out for: width, height, text scale,
@@ -522,6 +534,7 @@ impl Reader {
             source_focus_applied: Rc::new(Cell::new(None)),
             native_return: None,
             find_focus_return: None,
+            mounted_find_query: None,
             native_return_interruption: 0,
             laid_out: None,
             lens: Lens::Reference,
@@ -812,24 +825,77 @@ impl Reader {
         let Some(place) = self.places.last() else { return; };
         if !matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_))))
             || self.painted != Some(place.key) { return; }
+        let (attachment, retry) = {
+            let store = self.links.store.read(cx);
+            (store.current_owner_attachment(), store.current_owner_retry())
+        };
         self.find_focus_return = Some(FindFocusReturn {
             place: place.key,
             route: place.route.clone(),
             root: self.links.snapshot(cx).key(),
             focused,
             interruption: self.native_return_interruption,
+            attachment,
+            retry,
         });
+    }
+
+    /// An Add cover may return focus only if its captured handle was the
+    /// current Find component's mounted query, not a Shelf or old-page stop.
+    pub(crate) fn begin_mounted_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) -> bool {
+        let Some(focused) = focused else { return false; };
+        let Some(mounted) = self.mounted_find_query.as_ref() else { return false; };
+        let Some(place) = self.places.last() else { return false; };
+        if mounted.focus != focused || mounted.place != place.key || mounted.route != place.route
+            || !mounted.root.same_authority(self.links.snapshot(cx).key())
+            || self.painted != Some(place.key) { return false; }
+        self.begin_find_focus_return(Some(focused), cx);
+        self.find_focus_return.is_some()
     }
 
     pub(crate) fn return_find_query_focus(
         &mut self,
         query: FocusHandle,
+        source_place: u64,
+        source_route: &Route,
+        source_root: crate::core::VersionedRoot,
         window: &mut Window,
         cx: &mut App,
     ) -> facet::browse::library::ReturnDisposition {
         use facet::browse::library::ReturnDisposition;
+        // This callback comes from the active, mounted native query after its
+        // frame. It is the only source of the handle accepted at Add opening.
+        if let Some(place) = self.places.last().filter(|place|
+            place.key == source_place && &place.route == source_route
+                && matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_))))
+                && self.painted == Some(place.key)
+                && self.links.snapshot(cx).overlay().is_none()
+                && self.links.snapshot(cx).key().same_authority(source_root)) {
+            self.mounted_find_query = Some(MountedFindQuery {
+                place: place.key, route: place.route.clone(), root: self.links.snapshot(cx).key(), focus: query.clone(),
+            });
+        }
         let Some(pending) = self.find_focus_return.clone() else { return ReturnDisposition::Invalid; };
-        let result = if pending.focused == query {
+        if pending.place != source_place || &pending.route != source_route
+            || !pending.root.same_authority(source_root) {
+            // A late callback from an old Find frame must not retire the new
+            // visit's pending return.
+            return ReturnDisposition::Invalid;
+        }
+        if pending.interruption != self.native_return_interruption {
+            self.find_focus_return = None;
+            return ReturnDisposition::Invalid;
+        }
+        let store = self.links.store.read(cx);
+        let owner_current = store.current_owner_attachment() == pending.attachment
+            && store.current_owner_retry() == pending.retry;
+        drop(store);
+        if pending.focused == query && owner_current
+            && matches!(self.links.snapshot(cx).overlay(), Some(Overlay::AddProject | Overlay::CommandPalette)) {
+            return ReturnDisposition::Waiting;
+        }
+        let result = if pending.focused == query && owner_current
+            && self.links.snapshot(cx).key().same_authority(pending.root) {
             self.native_return_disposition(
                 pending.place, &pending.route, None, pending.root,
                 &NativeActionLease::LocalUi, pending.interruption, window, cx,

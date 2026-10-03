@@ -387,13 +387,13 @@ impl RenderOnce for Find {
             if state.initial_focus_pending {
                 state.initial_focus_pending = false;
                 state.input.clone().update(cx, |input, cx| input.focus(window, cx));
-            } else {
-                let query = state.input.read(cx).focus_handle(cx);
-                let restore = Rc::clone(&self.actions.return_focus);
-                // A Reader is still rendering this element. Transfer only
-                // after its frame returns; the host rechecks the exact visit.
-                window.defer(cx, move |window, cx| { restore(query, window, cx); });
             }
+            let query = state.input.read(cx).focus_handle(cx);
+            let restore = Rc::clone(&self.actions.return_focus);
+            // Report the actual mounted query even on its first active frame.
+            // A Reader is still rendering this element, so the host checks
+            // the exact visit only after that frame returns.
+            window.defer(cx, move |window, cx| { restore(query, window, cx); });
             state.accept(&self.model, &self.actions, window, cx);
         }); }
         // A query admission keeps the last immutable reading in place. Its

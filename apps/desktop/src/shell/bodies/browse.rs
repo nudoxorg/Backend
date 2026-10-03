@@ -536,9 +536,12 @@ fn find_actions(
         }),
         return_focus: {
             let reader = cx.weak_entity();
+            let visit = source.visit.clone();
             Rc::new(move |focus, window, cx| {
                 reader.upgrade().map_or(facet::browse::library::ReturnDisposition::Invalid, |reader| {
-                    reader.update(cx, |reader, cx| reader.return_find_query_focus(focus, window, cx))
+                    reader.update(cx, |reader, cx| reader.return_find_query_focus(
+                        focus, visit.place, &visit.route, visit.root, window, cx,
+                    ))
                 })
             })
         },

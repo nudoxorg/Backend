@@ -73,6 +73,8 @@ pub(crate) struct TransientFocusReturn {
     attachment: Option<crate::runtime::store::OwnerAttachment>,
     drawer: bool,
     generation: Option<u64>,
+    /// The captured handle is the mounted Find query; its component owns the return.
+    find_query: bool,
 }
 
 /// How many times each region rendered (isolation tests, the harness).
@@ -674,7 +676,12 @@ impl Shell {
                 self.focus.focus(window, cx);
             }
         }
-        let before = self.capture_transient_return(snapshot.session().covered_overlay(), window, cx);
+        let mut before = self.capture_transient_return(snapshot.session().covered_overlay(), window, cx);
+        if snapshot.overlay() == Some(Overlay::AddProject) {
+            let focused = before.focus.clone();
+            before.find_query = self.reader.update(cx, |reader, cx|
+                reader.begin_mounted_find_focus_return(focused, cx));
+        }
         let dialog_return = super::onboard::sync(&self.links, before, window, cx);
         if wants_ask {
             if fresh_ask {
@@ -706,17 +713,30 @@ impl Shell {
         let snapshot = self.links.snapshot(cx);
         TransientFocusReturn { focus: window.focused(cx), zone: self.zone,
             route: snapshot.route().clone(), overlay, root: snapshot.key(),
-            attachment: self.links.store.read(cx).current_owner_attachment(), drawer: self.shelf_over_open, generation: self.transient_generation }
+            attachment: self.links.store.read(cx).current_owner_attachment(), drawer: self.shelf_over_open,
+            generation: self.transient_generation, find_query: false }
     }
 
     pub(crate) fn queue_transient_return(&mut self, mut saved: TransientFocusReturn, window: &mut Window, cx: &mut Context<Self>) {
+        saved.generation = self.transient_generation;
+        if saved.find_query {
+            // The exact native query reports its own mounted handle after the
+            // uncovered frame. A generic target-list return would select a
+            // Shelf row while that child field is still mounting.
+            if self.return_identity_current(&saved, cx) {
+                self.pending_transient_return = None;
+                self.set_zone(Zone::Reader, cx);
+                self.focus.focus(window, cx);
+                cx.notify();
+            }
+            return;
+        }
         // A dismissed native subtree cannot remain the keyboard dispatch
         // owner while its underlay waits for its first uncovered paint.
         if !matches!(saved.overlay, Some(Overlay::CommandPalette | Overlay::AddProject)) {
             if saved.drawer { self.drawer_focus.focus(window, cx); }
             else { self.focus.focus(window, cx); }
         }
-        saved.generation = self.transient_generation;
         self.pending_transient_return = Some(saved);
         cx.notify();
     }
