@@ -136,6 +136,18 @@ pub struct ThemeStyle {
     pub font_weight: Option<FontWeightContent>,
 }
 
+impl ThemeStyle {
+    pub fn with_color(mut self, color: gpui::Hsla) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn with_font_style(mut self, font_style: FontStyle) -> Self {
+        self.font_style = Some(font_style);
+        self
+    }
+}
+
 impl From<ThemeStyle> for HighlightStyle {
     fn from(style: ThemeStyle) -> Self {
         HighlightStyle {

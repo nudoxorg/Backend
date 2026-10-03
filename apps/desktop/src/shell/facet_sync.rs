@@ -134,4 +134,28 @@ mod tests {
             assert_eq!(facet_for(&settings, &around, Reveal::default()).reduced_motion, expected, "{preference:?} with {system:?}");
         }
     }
+
+    #[gpui::test]
+    fn resolved_system_and_user_appearance_share_the_component_projection(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        for (preference, system_dark, appearance) in [
+            (AppearancePreference::System, false, Appearance::Glacier),
+            (AppearancePreference::System, true, Appearance::Abyss),
+            (AppearancePreference::Glacier, true, Appearance::Glacier),
+            (AppearancePreference::Abyss, false, Appearance::Abyss),
+        ] {
+            let settings = SettingsState { appearance: preference, ..Default::default() };
+            let effective = facet_for(&settings, &around(system_dark, 1.0, "wall"), Reveal::default());
+            cx.update(|cx| {
+                facet::set_facet(effective, cx);
+                let component = gpui_component::Theme::global(cx);
+                assert_eq!(effective.appearance, appearance);
+                assert_eq!(component.is_dark(), appearance == Appearance::Abyss);
+                assert_eq!(component.link, effective.palette().peri.base.hsla());
+                assert_eq!(component.accent, effective.palette().plate2.hsla());
+                assert_eq!(component.foreground, effective.palette().ink0.hsla());
+                assert_eq!(component.highlight_theme.style("keyword").and_then(|style| style.color), Some(effective.palette().syntax.keyword.hsla()));
+            });
+        }
+    }
 }

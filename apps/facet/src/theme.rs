@@ -10,6 +10,9 @@ use crate::tokens::{Appearance, Palette, TypeRole};
 use gpui::{App, Global, Pixels, px};
 use std::sync::LazyLock;
 
+mod components;
+pub(crate) use components::sync_components;
+
 /// Contrast treatment layered over an appearance.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Contrast {
@@ -130,7 +133,8 @@ pub fn set_facet(facet: Facet, cx: &mut App) {
         text_scale: facet.text_scale.clamp(0.85, 2.0),
         ..facet
     };
-    if cx.try_global::<Facet>() == Some(&facet) {
+    let components_changed = sync_components(facet, cx);
+    if cx.try_global::<Facet>() == Some(&facet) && !components_changed {
         return;
     }
     cx.set_global(facet);

@@ -34,29 +34,10 @@ use gpui_component::input::{Input, InputState};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Points the text engine's colours at the active palette: the caret mint,
-/// the selection periwinkle, text `ink0`, the placeholder `ink3`. Writes only
-/// when something differs, so it settles after one frame.
+/// Repairs the shared component projection if a component theme was replaced
+/// after the Facet was installed. An unchanged projection performs no writes.
 pub fn sync_text_engine(cx: &mut App) {
-    let palette = cx.palette();
-    let foreground: Hsla = palette.ink0.into();
-    let muted_foreground: Hsla = palette.ink3.into();
-    let caret: Hsla = palette.mint.base.into();
-    let selection: Hsla = with_alpha(palette.peri.base.into(), 0.32);
-    let theme = gpui_component::Theme::global(cx);
-    if theme.foreground == foreground
-        && theme.muted_foreground == muted_foreground
-        && theme.caret == caret
-        && theme.selection == selection
-    {
-        return;
-    }
-    let theme = gpui_component::Theme::global_mut(cx);
-    theme.foreground = foreground;
-    theme.muted_foreground = muted_foreground;
-    theme.caret = caret;
-    theme.selection = selection;
-    gpui_component::Theme::sync_base(cx);
+    crate::theme::sync_components(cx.facet(), cx);
 }
 
 /// A text field over a caller-owned `InputState`.
@@ -138,7 +119,6 @@ impl Field {
 
 impl RenderOnce for Field {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        sync_text_engine(cx);
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled;
