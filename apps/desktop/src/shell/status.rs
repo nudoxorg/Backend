@@ -341,7 +341,8 @@ impl Status {
                             let current = status.links.snapshot(cx);
                             let store = status.links.store.read(cx);
                             let same_message = feedback_message(&current, store.graph_focus(), store.notice()) == message;
-                            if same_message && current.route() == &route && current.key().authority() == authority && current.overlay().is_none() {
+                            let background = status.links.shell.upgrade().is_some_and(|shell| shell.read(cx).transients() == (false, false, false));
+                            if background && same_message && current.route() == &route && current.key().authority() == authority && current.overlay().is_none() {
                                 status.details = Some(message.clone());
                                 open_focus.focus(window, cx);
                                 cx.notify();
@@ -402,6 +403,7 @@ fn retry_button(
             .ghost()
             .disabled(!enabled)
             .on_click(move |_, cx| {
+                if !links.shell.upgrade().is_some_and(|shell| shell.read(cx).transients() == (false, false, false)) { return; }
                 links.store.update(cx, |store, cx| {
                     if !store.notice().is_some_and(|current| current == &captured && current.active(&store.snapshot())) { return; }
                     if let Some(token) = &owner_retry { let _ = store.retry_owner_at(token, key.clone(), cx); }
