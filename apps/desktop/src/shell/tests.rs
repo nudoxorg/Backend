@@ -490,7 +490,7 @@ pub(crate) fn rig_with_engine(
     rig_with_engine_gate(cx, route, width, height, pool, engine, None)
 }
 
-fn rig_with_engine_gate(
+pub(crate) fn rig_with_engine_gate(
     cx: &mut TestAppContext,
     route: Option<Route>,
     width: f32,

@@ -444,6 +444,14 @@ mod tests {
         serde_json::from_str(&json).expect("native tree JSON")
     }
 
+    fn gated_rig(cx: &mut TestAppContext, width: f32) -> (crate::shell::tests::Rig, crate::runtime::owner::OwnerGate) {
+        let root = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+        let gate = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+        let rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 900.0,
+            crate::runtime::reads::ReadPool::start(2, |_| crate::shell::tests::Fixture).expect("pool"), crate::shell::tests::RootOnly, Some(gate.clone()));
+        (rig, gate)
+    }
+
     fn long_notice(rig: &mut crate::shell::tests::Rig) -> String {
         rig.cx.update(|_, cx| facet::probe::enable(cx));
         let message = "The local index could not answer this request. The connection ended before the package read completed; try again after the connection is restored. ".repeat(12);
@@ -461,7 +469,7 @@ mod tests {
     /// output alone. Run on each actual window width and saved text size.
     #[gpui::test]
     fn status_notice_reserves_native_recovery_room_across_width_text_and_theme(cx: &mut TestAppContext) {
-        let mut rig = crate::shell::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+        let (mut rig, _gate) = gated_rig(cx, 1440.0);
         let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
         for appearance in [AppearancePreference::Abyss, AppearancePreference::Glacier] {
             rig.go(Intent::SetAppearance(appearance));
@@ -499,7 +507,7 @@ mod tests {
 
     #[gpui::test]
     fn native_status_details_expand_full_message_and_escape_returns_focus(cx: &mut TestAppContext) {
-        let mut rig = crate::shell::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0);
+        let (mut rig, _gate) = gated_rig(cx, 663.0);
         let message = long_notice(&mut rig);
         native_tree(&mut rig);
         let details = rig.cx.debug_bounds("status-details").expect("native details button");
@@ -516,6 +524,40 @@ mod tests {
         let focus = tree["accesskit_focus"].as_str().expect("return focus id");
         assert_eq!(tree["nodes"][focus]["aria"]["label"].as_str(), Some("Show status details"));
         assert!(rig.cx.debug_bounds("status-details-panel").is_none());
+    }
+
+    #[gpui::test]
+    fn native_retry_cannot_cross_an_identical_later_owner_failure(cx: &mut TestAppContext) {
+        use crate::runtime::owner::OwnerState;
+        let (mut rig, gate) = gated_rig(cx, 663.0);
+        rig.cx.update(|_, cx| facet::probe::enable(cx));
+        gate.publish(OwnerState::Failed("The fixture owner could not answer this read.".into()));
+        rig.settle();
+        native_tree(&mut rig);
+        let retry = rig.cx.debug_bounds("status-retry").expect("native failed-owner retry");
+        rig.cx.simulate_event(gpui::MouseDownEvent { position: retry.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+        // Same words and same producer root are not the same retry capability.
+        // Let the native pointer-up use its previously mounted listener.
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Failed("The fixture owner could not answer this read.".into()));
+        rig.cx.simulate_event(gpui::MouseUpEvent { position: retry.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1 });
+        assert!(matches!(gate.state(), OwnerState::Failed(_)), "an old native listener cannot restart a later failure");
+        rig.settle();
+        native_tree(&mut rig);
+        let retry = rig.cx.debug_bounds("status-retry").expect("fresh native retry");
+        rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
+        rig.draw();
+        assert!(matches!(gate.state(), OwnerState::Starting), "a fresh native click consumes the current retry capability");
+        gate.publish(OwnerState::Failed("No live producer can consume this retry.".into()));
+        gate.disable_restart();
+        rig.settle();
+        let tree = native_tree(&mut rig);
+        let node = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"].as_str() == Some("Try again")).expect("disabled native retry");
+        assert_eq!(node["aria"]["disabled"].as_bool(), Some(true));
+        assert!(!node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
+        let retry = rig.cx.debug_bounds("status-retry").expect("visible disabled retry");
+        rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
+        assert!(matches!(gate.state(), OwnerState::Failed(_)), "disabled native retry cannot invent a start");
     }
 
     /// A whisper has its 2.4 s and no more; whether it is over is decided by
