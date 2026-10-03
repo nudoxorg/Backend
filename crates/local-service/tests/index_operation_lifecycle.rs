@@ -1,4 +1,9 @@
+#![cfg(any(unix, windows))]
 #![allow(clippy::expect_used, clippy::panic)]
+
+// The public service/client lifecycle uses the repository's AF_UNIX transport.
+// Unix and Windows implement it; other targets intentionally do not expose a
+// local listener, so this integration test is not compiled there.
 
 use backend_client::{ClientError, Session};
 use backend_library::{
@@ -18,12 +23,14 @@ const PUBLIC_MARKER: &str = "operation_lifecycle_public_marker";
 
 #[test]
 fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), Box<dyn Error>> {
-    let fixture = tempfile::Builder::new()
-        .prefix("backend-index-op-")
-        .tempdir_in("/tmp")?;
+    let fixture = lifecycle_tempdir()?;
     let service_workspace = fixture.path().join("service-state");
     create_private_directory(&service_workspace)?;
     let endpoint = fixture.path().join("owner.sock");
+    assert!(
+        backend_engine::UnixEndpointRef::new(&endpoint).is_ok(),
+        "the platform temp root leaves no room for the portable AF_UNIX endpoint"
+    );
 
     let package_root = fixture.path().join("real-cargo-package");
     fs::create_dir_all(package_root.join("src"))?;
@@ -227,6 +234,9 @@ fn wait_for_published(
 fn executable_in_path(name: &str) -> Result<PathBuf, Box<dyn Error>> {
     let path = std::env::var_os("PATH").ok_or("the test process has no PATH")?;
     for directory in std::env::split_paths(&path) {
+        #[cfg(windows)]
+        let candidate = directory.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
         let candidate = directory.join(name);
         if candidate.is_file() {
             return Ok(candidate);
@@ -239,11 +249,23 @@ fn cargo_home() -> Result<PathBuf, Box<dyn Error>> {
     let path = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .or_else(|| std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo")))
         .ok_or("the test process has no Cargo home")?;
     if !path.is_dir() {
         return Err(format!("Cargo home is not a directory: {}", path.display()).into());
     }
     Ok(path)
+}
+
+fn lifecycle_tempdir() -> Result<tempfile::TempDir, Box<dyn Error>> {
+    #[cfg(unix)]
+    {
+        Ok(tempfile::Builder::new().prefix("b-").tempdir_in("/tmp")?)
+    }
+    #[cfg(windows)]
+    {
+        Ok(tempfile::Builder::new().prefix("b-").tempdir()?)
+    }
 }
 
 fn create_private_directory(path: &Path) -> Result<(), Box<dyn Error>> {
