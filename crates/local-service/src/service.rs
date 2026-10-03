@@ -10,11 +10,13 @@ use crate::protocol::{CompletionClaim, EngineRequest, EngineStatus, ProtocolErro
 use backend_engine::{
     Cursor, CursorEvent, DaemonReply, LocalSubscriptionId, LocalSubscriptionOperation,
     LocalSubscriptionRequest, LocalSubscriptionResponse, SubscriptionReply, ViewPageCursor,
+    ViewSnapshotPage,
 };
 use std::collections::BTreeMap;
 use std::fmt;
 #[cfg(unix)]
 use std::io::Read;
+use std::num::NonZeroU16;
 use std::time::{Duration, Instant};
 
 #[path = "service/runtime.rs"]
@@ -64,6 +66,77 @@ pub(crate) use runtime::{
     RequestCorrelation, daemon_replicate, error_payload, map_queue_error, wait_for_daemon_reply,
 };
 
+const MAX_CONFIGURED_SUBSCRIPTION_LEASES: usize = 1024;
+const MAX_CONFIGURED_SUBSCRIPTION_LEASE_DURATION: Duration = Duration::from_secs(60 * 60);
+const MAX_CONFIGURED_RESET_PAGES: usize = 4096;
+const MAX_CONFIGURED_RESET_DURATION: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// Owner-local bounds on retained subscription roots and lease lifetimes.
+/// Successful exact snapshot-page progress may renew one lease for its
+/// negotiated duration; an abandoned page stops renewing and expires.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SubscriptionLeaseLimits {
+    max_active: usize,
+    max_duration: Duration,
+    max_reset_pages: usize,
+    max_reset_duration: Duration,
+}
+
+impl Default for SubscriptionLeaseLimits {
+    fn default() -> Self {
+        Self {
+            max_active: 256,
+            max_duration: Duration::from_secs(5 * 60),
+            // The observer's 131_072-row, credit-64 reset takes at most 2048
+            // pages. Its fixed 10s + 2s/page logical budget fits within this
+            // producer-side ceiling; this is a budget, not a timing claim.
+            max_reset_pages: 2048,
+            max_reset_duration: Duration::from_secs(90 * 60),
+        }
+    }
+}
+
+impl SubscriptionLeaseLimits {
+    /// Sets finite owner retention bounds within the protocol's hard ceiling.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::InvalidLimits`] for zero or excessive bounds.
+    pub fn new(
+        max_active: usize,
+        max_duration: Duration,
+        max_reset_pages: usize,
+        max_reset_duration: Duration,
+    ) -> Result<Self, ProtocolError> {
+        if max_active == 0
+            || max_active > MAX_CONFIGURED_SUBSCRIPTION_LEASES
+            || max_duration.is_zero()
+            || max_duration > MAX_CONFIGURED_SUBSCRIPTION_LEASE_DURATION
+            || max_reset_pages == 0
+            || max_reset_pages > MAX_CONFIGURED_RESET_PAGES
+            || max_reset_duration.is_zero()
+            || max_reset_duration > MAX_CONFIGURED_RESET_DURATION
+        {
+            return Err(ProtocolError::InvalidLimits);
+        }
+        Ok(Self {
+            max_active,
+            max_duration,
+            max_reset_pages,
+            max_reset_duration,
+        })
+    }
+
+    fn duration(self, lease_ms: u64) -> Result<Duration, ProtocolError> {
+        let duration = Duration::from_millis(lease_ms);
+        if duration.is_zero() || duration > self.max_duration {
+            return Err(ProtocolError::InvalidControl(
+                "subscription lease duration bounds",
+            ));
+        }
+        Ok(duration)
+    }
+}
+
 /// A typed adapter that wires the existing [`crate::Locald`] owner into the
 /// service. The command closure is supplied by the engine composition root so
 /// this application crate never creates a parallel library state owner.
@@ -85,6 +158,8 @@ pub struct LocaldOwner<
     replication: R,
     semantic_ranges: S,
     leases: BTreeMap<LocalSubscriptionId, DurableLease>,
+    next_lease_expiry: Option<Instant>,
+    lease_limits: SubscriptionLeaseLimits,
     lease_identity: OwnerLeaseIdentity,
     deferred: Option<Box<dyn DeferredCommands<M, V, A> + Send>>,
 }
@@ -98,6 +173,7 @@ pub struct LocaldOwner<
 struct DurableLease {
     cursor: Box<[u8]>,
     credit: usize,
+    duration: Duration,
     expires_at: Instant,
     snapshot: Option<DurableSnapshot>,
 }
@@ -107,8 +183,18 @@ struct DurableSnapshot {
     root: Box<backend_engine::ViewRoot>,
     cursor: Cursor,
     reason: backend_engine::CursorResetReason,
-    next: Option<ViewPageCursor>,
-    next_token: Option<Box<[u8]>>,
+    next: SnapshotContinuation,
+    /// Absolute hydration limit, independent of per-page lease renewal.
+    expires_at: Instant,
+    /// Initial page counts against the total reset-page budget.
+    pages_remaining: NonZeroU16,
+}
+
+/// A live reset always has both an admitted cursor and its exact opaque token.
+#[derive(Clone, Debug)]
+struct SnapshotContinuation {
+    cursor: ViewPageCursor,
+    token: Box<[u8]>,
 }
 
 /// One process-local lease namespace. It is minted from the OS before the
@@ -196,6 +282,288 @@ fn retained_lease(
         .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))
 }
 
+fn pending_page_cursor(
+    state: &DurableLease,
+    page_token: &[u8],
+) -> Result<ViewPageCursor, ProtocolError> {
+    let snapshot = state
+        .snapshot
+        .as_ref()
+        .ok_or(ProtocolError::InvalidControl(
+            "subscription has no pending snapshot",
+        ))?;
+    if snapshot.next.token.as_ref() != page_token {
+        return Err(ProtocolError::InvalidControl(
+            "snapshot page continuation mismatch or replay",
+        ));
+    }
+    Ok(snapshot.next.cursor)
+}
+
+fn page_advances(page: &ViewSnapshotPage, requested: ViewPageCursor) -> bool {
+    page.cursor() == requested && !page.rows().is_empty() && page.next() != Some(requested)
+}
+
+#[derive(Debug)]
+struct PreparedSnapshotPage {
+    cursor: Cursor,
+    continuation: Option<SnapshotContinuation>,
+    pages_remaining: Option<NonZeroU16>,
+    payload: Box<[u8]>,
+    expires_at: Instant,
+    reset_expires_at: Instant,
+}
+
+/// Builds a reset page without mutating its retained lease. The snapshot is
+/// committed only after this function has validated the exact continuation,
+/// proved forward progress, encoded the page, and checked deadlines again.
+fn prepare_snapshot_page<F, C>(
+    lease: &DurableLease,
+    page_token: &[u8],
+    credit: usize,
+    mut now: C,
+    encode: F,
+) -> Result<PreparedSnapshotPage, ProtocolError>
+where
+    F: FnOnce(&backend_engine::SnapshotPageDto) -> Result<Box<[u8]>, ProtocolError>,
+    C: FnMut() -> Instant,
+{
+    if credit == 0 || credit > backend_engine::MAX_SNAPSHOT_PAGE_ROWS {
+        return Err(ProtocolError::InvalidControl("snapshot page credit bounds"));
+    }
+    let opened = now();
+    if lease.expires_at <= opened {
+        return Err(ProtocolError::InvalidControl("subscription lease expired"));
+    }
+    let snapshot = lease
+        .snapshot
+        .as_ref()
+        .ok_or(ProtocolError::InvalidControl(
+            "subscription has no pending snapshot",
+        ))?;
+    if snapshot.expires_at <= opened {
+        return Err(ProtocolError::ResetDeadlineExceeded);
+    }
+    let requested = pending_page_cursor(lease, page_token)?;
+    let page = subscription::snapshot_page(
+        &snapshot.root,
+        snapshot.cursor,
+        snapshot.reason,
+        requested,
+        credit,
+    )?;
+    let next = page.page().next();
+    if !page_advances(page.page(), requested) {
+        return Err(ProtocolError::InvalidControl(
+            "snapshot page made no progress",
+        ));
+    }
+    let next_token = page
+        .next_token()
+        .map_err(|_| ProtocolError::InvalidControl("snapshot page token"))?;
+    let continuation = snapshot_continuation(next, next_token)?;
+    let pages_remaining = continuation
+        .as_ref()
+        .map(|_| {
+            snapshot
+                .pages_remaining
+                .get()
+                .checked_sub(1)
+                .and_then(NonZeroU16::new)
+                .ok_or(ProtocolError::ResetPageBudgetExhausted)
+        })
+        .transpose()?;
+    let payload = encode(&page)?;
+
+    // Encoding can be expensive. A page completed after either finite lease
+    // bound must not revive the retained root or move its deadline.
+    let completed = now();
+    if lease.expires_at <= completed {
+        return Err(ProtocolError::InvalidControl("subscription lease expired"));
+    }
+    if snapshot.expires_at <= completed {
+        return Err(ProtocolError::ResetDeadlineExceeded);
+    }
+    let expires_at = lease_deadline(completed, lease.duration)?;
+    Ok(PreparedSnapshotPage {
+        cursor: snapshot.cursor,
+        continuation,
+        pages_remaining,
+        payload,
+        expires_at,
+        reset_expires_at: snapshot.expires_at,
+    })
+}
+
+fn commit_snapshot_page(
+    state: &mut DurableLease,
+    prepared: PreparedSnapshotPage,
+    credit: usize,
+) -> Result<(Option<Box<[u8]>>, Box<[u8]>, Instant), ProtocolError> {
+    enum CommitContinuation {
+        Finished,
+        Continue(SnapshotContinuation, NonZeroU16),
+    }
+    let continuation = match (prepared.continuation, prepared.pages_remaining) {
+        (Some(continuation), Some(pages_remaining)) => {
+            CommitContinuation::Continue(continuation, pages_remaining)
+        }
+        (None, None) => CommitContinuation::Finished,
+        _ => {
+            return Err(ProtocolError::ResetPageBudgetExhausted);
+        }
+    };
+    let next_token = match &continuation {
+        CommitContinuation::Finished => None,
+        CommitContinuation::Continue(next, _) => Some(next.token.clone()),
+    };
+    let snapshot = state.snapshot.take().ok_or(ProtocolError::InvalidControl(
+        "subscription has no pending snapshot",
+    ))?;
+    state.cursor = prepared.cursor.encode_control();
+    state.credit = credit;
+    state.expires_at = prepared.expires_at;
+    state.snapshot = match continuation {
+        CommitContinuation::Finished => None,
+        CommitContinuation::Continue(next, pages_remaining) => Some(DurableSnapshot {
+            root: snapshot.root,
+            cursor: prepared.cursor,
+            reason: snapshot.reason,
+            next,
+            expires_at: prepared.reset_expires_at,
+            pages_remaining,
+        }),
+    };
+    Ok((next_token, prepared.payload, retention_deadline(state)))
+}
+
+fn increased_subscription_credit(
+    current: usize,
+    additional: usize,
+) -> Result<usize, ProtocolError> {
+    let next = current
+        .checked_add(additional)
+        .ok_or(ProtocolError::InvalidControl(
+            "subscription credit overflow",
+        ))?;
+    if next > backend_engine::MAX_SUBSCRIPTION_EVENTS {
+        return Err(ProtocolError::InvalidControl("subscription credit bounds"));
+    }
+    Ok(next)
+}
+
+fn apply_subscription_credit(
+    state: &mut DurableLease,
+    additional: usize,
+) -> Result<(), ProtocolError> {
+    let credit = increased_subscription_credit(state.credit, additional)?;
+    state.credit = credit;
+    Ok(())
+}
+
+fn lease_deadline(now: Instant, duration: Duration) -> Result<Instant, ProtocolError> {
+    now.checked_add(duration)
+        .ok_or(ProtocolError::LeaseDeadlineUnavailable)
+}
+
+fn retained_reset_snapshot(
+    root: backend_engine::ViewRoot,
+    cursor: Cursor,
+    reason: backend_engine::CursorResetReason,
+    continuation: Option<SnapshotContinuation>,
+    started_at: Instant,
+    now: Instant,
+    limits: SubscriptionLeaseLimits,
+) -> Result<Option<DurableSnapshot>, ProtocolError> {
+    let Some(next) = continuation else {
+        return Ok(None);
+    };
+    let pages_remaining = limits
+        .max_reset_pages
+        .checked_sub(1)
+        .and_then(|remaining| u16::try_from(remaining).ok())
+        .and_then(NonZeroU16::new)
+        .ok_or(ProtocolError::ResetPageBudgetExhausted)?;
+    let expires_at = lease_deadline(started_at, limits.max_reset_duration)?;
+    if expires_at <= now {
+        return Err(ProtocolError::ResetDeadlineExceeded);
+    }
+    Ok(Some(DurableSnapshot {
+        root: Box::new(root),
+        cursor,
+        reason,
+        next,
+        expires_at,
+        pages_remaining,
+    }))
+}
+
+fn snapshot_continuation(
+    cursor: Option<ViewPageCursor>,
+    token: Option<Box<[u8]>>,
+) -> Result<Option<SnapshotContinuation>, ProtocolError> {
+    match (cursor, token) {
+        (Some(cursor), Some(token)) => Ok(Some(SnapshotContinuation { cursor, token })),
+        (None, None) => Ok(None),
+        _ => Err(ProtocolError::InvalidControl(
+            "reset continuation cursor and token disagree",
+        )),
+    }
+}
+
+fn retention_deadline(state: &DurableLease) -> Instant {
+    state
+        .snapshot
+        .as_ref()
+        .map_or(state.expires_at, |snapshot| {
+            state.expires_at.min(snapshot.expires_at)
+        })
+}
+
+fn note_lease_expiry(next: &mut Option<Instant>, expires_at: Instant) {
+    *next = Some(next.map_or(expires_at, |current| current.min(expires_at)));
+}
+
+/// Called from the existing owner poll, even while no client has a request.
+/// The hint makes a normal poll O(1); at a due deadline the active set is
+/// bounded by `SubscriptionLeaseLimits` and is scanned once to drop expired
+/// roots and recompute the next deadline. An old hint after renewal/removal is
+/// safe: it causes one early scan, never premature reclamation.
+fn sweep_expired_leases(
+    leases: &mut BTreeMap<LocalSubscriptionId, DurableLease>,
+    next_expiry: &mut Option<Instant>,
+    now: Instant,
+) -> usize {
+    if next_expiry.is_none_or(|deadline| deadline > now) {
+        return 0;
+    }
+    let before = leases.len();
+    leases.retain(|_, state| retention_deadline(state) > now);
+    *next_expiry = leases.values().map(retention_deadline).min();
+    before - leases.len()
+}
+
+fn admit_subscription_open(
+    leases: &mut BTreeMap<LocalSubscriptionId, DurableLease>,
+    next_expiry: &mut Option<Instant>,
+    limits: SubscriptionLeaseLimits,
+    now: Instant,
+) -> Result<(), ProtocolError> {
+    sweep_expired_leases(leases, next_expiry, now);
+    if leases.len() >= limits.max_active {
+        return Err(ProtocolError::Backpressure);
+    }
+    Ok(())
+}
+
+fn release_all_leases(
+    leases: &mut BTreeMap<LocalSubscriptionId, DurableLease>,
+    next_expiry: &mut Option<Instant>,
+) {
+    leases.clear();
+    *next_expiry = None;
+}
+
 #[path = "service/admission.rs"]
 mod admission;
 pub use admission::{
@@ -222,6 +590,8 @@ where
             .field("replication", &self.replication)
             .field("semantic_ranges", &self.semantic_ranges)
             .field("leases", &self.leases)
+            .field("next_lease_expiry", &self.next_lease_expiry)
+            .field("lease_limits", &self.lease_limits)
             .field(
                 "boot_nonce_initialized",
                 &self.lease_identity.boot_nonce.is_some(),
@@ -249,6 +619,17 @@ where
     ) -> Self {
         self.deferred = Some(deferred);
         self
+    }
+
+    /// Configures the finite owner-side retention budget before serving.
+    #[must_use]
+    pub fn with_subscription_lease_limits(mut self, limits: SubscriptionLeaseLimits) -> Self {
+        self.lease_limits = limits;
+        self
+    }
+
+    fn sweep_leases(&mut self, now: Instant) -> usize {
+        sweep_expired_leases(&mut self.leases, &mut self.next_lease_expiry, now)
     }
 
     fn allocate_lease(
@@ -324,14 +705,20 @@ where
         credit: usize,
         lease_ms: u64,
     ) -> Result<EngineStatus, ProtocolError> {
-        if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS || lease_ms == 0 {
+        if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS {
             return Err(ProtocolError::InvalidControl("subscription lease bounds"));
         }
+        let duration = self.lease_limits.duration(lease_ms)?;
+        admit_subscription_open(
+            &mut self.leases,
+            &mut self.next_lease_expiry,
+            self.lease_limits,
+            Instant::now(),
+        )?;
         let lease = self.allocate_lease(request_id, cursor)?;
         let reply = self.request_subscription(request_id, cursor, credit)?;
-        let expires_at = Instant::now()
-            .checked_add(Duration::from_millis(lease_ms))
-            .unwrap_or_else(Instant::now);
+        let opened_at = Instant::now();
+        let expires_at = lease_deadline(opened_at, duration)?;
         let response = match reply {
             SubscriptionReply::Accepted { credit } => {
                 let current = subscription::owner_cursor(&self.daemon)?;
@@ -341,10 +728,12 @@ where
                     DurableLease {
                         cursor: current_bytes.clone(),
                         credit,
+                        duration,
                         expires_at,
                         snapshot: None,
                     },
                 );
+                note_lease_expiry(&mut self.next_lease_expiry, expires_at);
                 LocalSubscriptionResponse::Opened {
                     request_id,
                     lease,
@@ -376,10 +765,12 @@ where
                     DurableLease {
                         cursor: target.clone(),
                         credit,
+                        duration,
                         expires_at,
                         snapshot: None,
                     },
                 );
+                note_lease_expiry(&mut self.next_lease_expiry, expires_at);
                 LocalSubscriptionResponse::Batch {
                     request_id,
                     lease,
@@ -407,23 +798,27 @@ where
                 let next_token = page
                     .next_token()
                     .map_err(|_| ProtocolError::InvalidControl("snapshot page token"))?;
+                let continuation = snapshot_continuation(next_cursor, next_token.clone())?;
                 let payload = backend_engine::encode_snapshot_page_dto(&page)
                     .map_err(|_| ProtocolError::InvalidControl("snapshot page encoding"))?;
-                self.leases.insert(
-                    lease,
-                    DurableLease {
-                        cursor: target.clone(),
-                        credit,
-                        expires_at,
-                        snapshot: next_cursor.map(|next| DurableSnapshot {
-                            root,
-                            cursor: target_cursor,
-                            reason,
-                            next: Some(next),
-                            next_token: next_token.clone(),
-                        }),
-                    },
-                );
+                let state = DurableLease {
+                    cursor: target.clone(),
+                    credit,
+                    duration,
+                    expires_at,
+                    snapshot: retained_reset_snapshot(
+                        *root,
+                        target_cursor,
+                        reason,
+                        continuation,
+                        opened_at,
+                        Instant::now(),
+                        self.lease_limits,
+                    )?,
+                };
+                let next_deadline = retention_deadline(&state);
+                self.leases.insert(lease, state);
+                note_lease_expiry(&mut self.next_lease_expiry, next_deadline);
                 LocalSubscriptionResponse::SnapshotPage {
                     request_id,
                     lease,
@@ -452,6 +847,7 @@ where
                 "subscription request correlation mismatch",
             ));
         }
+        self.sweep_leases(Instant::now());
         match request.operation {
             LocalSubscriptionOperation::Open {
                 cursor,
@@ -515,13 +911,22 @@ where
                 "subscription resume cursor is not the lease cursor",
             ));
         }
-        if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS || lease_ms == 0 {
+        if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS {
             return Err(ProtocolError::InvalidControl("subscription lease bounds"));
         }
+        let duration = self.lease_limits.duration(lease_ms)?;
         let reply = self.request_subscription(request_id, cursor, credit)?;
-        let expires_at = Instant::now()
-            .checked_add(Duration::from_millis(lease_ms))
-            .unwrap_or_else(Instant::now);
+        let renewed_at = Instant::now();
+        if self
+            .leases
+            .get(&lease)
+            .is_none_or(|state| state.expires_at <= renewed_at)
+        {
+            self.leases.remove(&lease);
+            return Err(ProtocolError::InvalidControl("subscription lease expired"));
+        }
+        let expires_at = lease_deadline(renewed_at, duration)?;
+        let mut next_deadline = expires_at;
         let response = match reply {
             SubscriptionReply::Accepted { credit } => {
                 let current = subscription::owner_cursor(&self.daemon)?;
@@ -532,6 +937,7 @@ where
                     .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
                 state.cursor.clone_from(&current_bytes);
                 state.credit = credit;
+                state.duration = duration;
                 state.expires_at = expires_at;
                 LocalSubscriptionResponse::Resumed {
                     request_id,
@@ -565,6 +971,7 @@ where
                     .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
                 state.cursor.clone_from(&target);
                 state.credit = credit;
+                state.duration = duration;
                 state.expires_at = expires_at;
                 LocalSubscriptionResponse::Batch {
                     request_id,
@@ -593,22 +1000,28 @@ where
                 let next_token = page
                     .next_token()
                     .map_err(|_| ProtocolError::InvalidControl("snapshot page token"))?;
+                let continuation = snapshot_continuation(next_cursor, next_token.clone())?;
                 let payload = backend_engine::encode_snapshot_page_dto(&page)
                     .map_err(|_| ProtocolError::InvalidControl("snapshot page encoding"))?;
+                let retained = retained_reset_snapshot(
+                    *root,
+                    target_cursor,
+                    reason,
+                    continuation,
+                    renewed_at,
+                    Instant::now(),
+                    self.lease_limits,
+                )?;
                 let state = self
                     .leases
                     .get_mut(&lease)
                     .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
                 state.cursor.clone_from(&target);
                 state.credit = credit;
+                state.duration = duration;
                 state.expires_at = expires_at;
-                state.snapshot = next_cursor.map(|next_cursor| DurableSnapshot {
-                    root,
-                    cursor: target_cursor,
-                    reason,
-                    next: Some(next_cursor),
-                    next_token: next_token.clone(),
-                });
+                state.snapshot = retained;
+                next_deadline = retention_deadline(state);
                 LocalSubscriptionResponse::SnapshotPage {
                     request_id,
                     lease,
@@ -624,6 +1037,7 @@ where
                 ));
             }
         };
+        note_lease_expiry(&mut self.next_lease_expiry, next_deadline);
         Ok(EngineStatus::Subscription(response))
     }
 
@@ -648,15 +1062,7 @@ where
             .leases
             .get_mut(&lease)
             .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
-        state.credit = state
-            .credit
-            .checked_add(credit)
-            .ok_or(ProtocolError::InvalidControl(
-                "subscription credit overflow",
-            ))?;
-        if state.credit > backend_engine::MAX_SUBSCRIPTION_EVENTS {
-            return Err(ProtocolError::InvalidControl("subscription credit bounds"));
-        }
+        apply_subscription_credit(state, credit)?;
         Ok(EngineStatus::Subscription(
             LocalSubscriptionResponse::Renewed {
                 request_id,
@@ -709,22 +1115,27 @@ where
         credit: usize,
         lease_ms: u64,
     ) -> Result<EngineStatus, ProtocolError> {
-        if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS || lease_ms == 0 {
+        if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS {
             return Err(ProtocolError::InvalidControl("subscription lease bounds"));
         }
-        let state = self
-            .leases
-            .get_mut(&lease)
-            .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
-        if state.expires_at <= Instant::now() || state.cursor.as_ref() != cursor.as_ref() {
+        let duration = self.lease_limits.duration(lease_ms)?;
+        let now = Instant::now();
+        let state = retained_lease(&self.leases, lease)?;
+        if state.expires_at <= now || state.cursor.as_ref() != cursor.as_ref() {
             return Err(ProtocolError::InvalidControl(
                 "subscription renewal cursor or lease mismatch",
             ));
         }
+        let expires_at = lease_deadline(now, duration)?;
+        let state = self
+            .leases
+            .get_mut(&lease)
+            .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
         state.credit = credit;
-        state.expires_at = Instant::now()
-            .checked_add(Duration::from_millis(lease_ms))
-            .unwrap_or_else(Instant::now);
+        state.duration = duration;
+        state.expires_at = expires_at;
+        let next_deadline = retention_deadline(state);
+        note_lease_expiry(&mut self.next_lease_expiry, next_deadline);
         Ok(EngineStatus::Subscription(
             LocalSubscriptionResponse::Renewed {
                 request_id,
@@ -743,62 +1154,32 @@ where
         page_token: Box<[u8]>,
         credit: usize,
     ) -> Result<EngineStatus, ProtocolError> {
-        if credit == 0 || credit > backend_engine::MAX_SNAPSHOT_PAGE_ROWS {
-            return Err(ProtocolError::InvalidControl("snapshot page credit bounds"));
-        }
-        if self
-            .leases
-            .get(&lease)
-            .is_none_or(|state| state.expires_at <= Instant::now())
-        {
-            self.leases.remove(&lease);
-            return Err(ProtocolError::InvalidControl("subscription lease expired"));
-        }
-        let snapshot = self
-            .leases
-            .get_mut(&lease)
-            .and_then(|state| state.snapshot.take())
-            .ok_or(ProtocolError::InvalidControl(
-                "subscription has no pending snapshot",
-            ))?;
-        if snapshot.next_token.as_deref() != Some(page_token.as_ref()) {
-            self.leases
-                .get_mut(&lease)
-                .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?
-                .snapshot = Some(snapshot);
-            return Err(ProtocolError::InvalidControl(
-                "snapshot page continuation mismatch or replay",
-            ));
-        }
-        let next_cursor = snapshot.next.ok_or(ProtocolError::InvalidControl(
-            "subscription snapshot is complete",
-        ))?;
-        let page = subscription::snapshot_page(
-            &snapshot.root,
-            snapshot.cursor,
-            snapshot.reason,
-            next_cursor,
-            credit,
-        )?;
-        let next_cursor = page.page().next();
-        let next_token = page
-            .next_token()
-            .map_err(|_| ProtocolError::InvalidControl("snapshot page token"))?;
-        let payload = backend_engine::encode_snapshot_page_dto(&page)
-            .map_err(|_| ProtocolError::InvalidControl("snapshot page encoding"))?;
+        let prepared = {
+            let state = retained_lease(&self.leases, lease)?;
+            prepare_snapshot_page(state, page_token.as_ref(), credit, Instant::now, |page| {
+                backend_engine::encode_snapshot_page_dto(page)
+                    .map(Vec::into_boxed_slice)
+                    .map_err(|_| ProtocolError::InvalidControl("snapshot page encoding"))
+            })
+        };
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error @ ProtocolError::ResetDeadlineExceeded)
+            | Err(error @ ProtocolError::ResetPageBudgetExhausted)
+            | Err(error @ ProtocolError::InvalidControl("subscription lease expired")) => {
+                self.leases.remove(&lease);
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let state = self
             .leases
             .get_mut(&lease)
             .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))?;
-        state.cursor = snapshot.cursor.encode_control();
-        state.credit = credit;
-        state.snapshot = next_cursor.map(|next| DurableSnapshot {
-            root: snapshot.root,
-            cursor: snapshot.cursor,
-            reason: snapshot.reason,
-            next: Some(next),
-            next_token: next_token.clone(),
-        });
+        // All fallible work is complete; now atomically consume the old page
+        // continuation and retain only the exact next one, if any.
+        let (next_token, payload, next_deadline) = commit_snapshot_page(state, prepared, credit)?;
+        note_lease_expiry(&mut self.next_lease_expiry, next_deadline);
         Ok(EngineStatus::Subscription(
             LocalSubscriptionResponse::SnapshotPage {
                 request_id,
@@ -806,7 +1187,7 @@ where
                 page: page_token,
                 next: next_token,
                 credit,
-                payload: payload.into_boxed_slice(),
+                payload,
             },
         ))
     }
@@ -851,6 +1232,8 @@ where
             replication: NoReplicationAdmission,
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
+            next_lease_expiry: None,
+            lease_limits: SubscriptionLeaseLimits::default(),
             lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
@@ -874,6 +1257,8 @@ where
             replication: NoReplicationAdmission,
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
+            next_lease_expiry: None,
+            lease_limits: SubscriptionLeaseLimits::default(),
             lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
@@ -895,6 +1280,8 @@ where
             replication,
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
+            next_lease_expiry: None,
+            lease_limits: SubscriptionLeaseLimits::default(),
             lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
@@ -919,6 +1306,8 @@ where
             replication,
             semantic_ranges,
             leases: BTreeMap::new(),
+            next_lease_expiry: None,
+            lease_limits: SubscriptionLeaseLimits::default(),
             lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
@@ -1060,20 +1449,25 @@ where
     }
 
     fn serve_one(&mut self) -> bool {
+        // The listener calls this on every poll even when no client is
+        // connected or sending frames. Expiry therefore releases abandoned
+        // reset roots without waiting for a same-lease request.
+        let expired = self.sweep_leases(Instant::now()) != 0;
         // Remote transports are daemon-owned, but their socket reads must not
         // monopolize the owner while a client waits for its next frame. Poll
         // the composition's bounded inbox first, then run one fair engine
         // lane. A later client request can therefore observe durable output
         // from a completion that arrived out of order.
         let remote_progress = self.replication.poll(&mut self.daemon);
-        remote_progress || self.daemon.serve_one()
+        let engine_progress = !remote_progress && self.daemon.serve_one();
+        expired || remote_progress || engine_progress
     }
 
     fn close(&mut self) {
+        release_all_leases(&mut self.leases, &mut self.next_lease_expiry);
         if let Some(deferred) = self.deferred.as_mut() {
             deferred.close();
         }
-        self.leases.clear();
         self.daemon.close();
     }
 }

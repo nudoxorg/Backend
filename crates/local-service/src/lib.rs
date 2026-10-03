@@ -59,7 +59,7 @@ pub use service::{
     CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LocaldOwner, LocaldService,
     NoCompletionAdmission, NoReplicationAdmission,
     NoSemanticRangeAdmission, OwnerService, ReplicationAdmission, SemanticRangeAdmission,
-    ServiceError,
+    ServiceError, SubscriptionLeaseLimits,
 };
 
 /// Versioned request body sent through the local transport boundary.
