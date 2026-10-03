@@ -581,7 +581,7 @@ fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestA
     rig.cx.update(|window, _| {
         let tree = window.a11y_tree().expect("activated controls");
         for label in ["Hide declarations", "Hide coverage"] {
-            assert!(tree.nodes.values().any(|node| node.label() == Some(label)), "first-paint activation changes each native control exactly once");
+            assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some(label)), "first-paint activation changes each native control exactly once");
         }
     });
 }

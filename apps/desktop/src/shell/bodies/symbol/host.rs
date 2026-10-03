@@ -16,7 +16,7 @@ use facet::anatomy::page::{Door, Doors, Fold};
 use facet::anatomy::symbol::key::{FoldKey, Key, Sec};
 use facet::anatomy::symbol::{Act, Change, Host, Spots, Ui};
 use facet::hover::Subject;
-use gpui::{AnyElement, ScrollHandle, SharedString, WeakEntity};
+use gpui::{AnyElement, IntoElement, ScrollHandle, SharedString, WeakEntity};
 use std::cell::RefCell;
 use std::rc::Rc;
 

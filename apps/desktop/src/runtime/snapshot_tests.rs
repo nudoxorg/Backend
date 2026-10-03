@@ -880,7 +880,7 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved text").expect("local pager");
     assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
-    let stale = target.act.clone();
+    let stale = target.action.callback();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.draw();
     assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "native activation reaches the next bounded source page");
@@ -917,7 +917,7 @@ fn retained_reading_mounts_only_bounded_rows_and_partitions_pager_by_visit(cx: &
     assert!(!rig.said().iter().any(|line| line == "saved row 032"), "a paint mounts at most 32 rows");
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved rows").expect("native rows pager");
-    let stale = target.act.clone();
+    let stale = target.action.callback();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.draw();
     assert!(rig.said().iter().any(|line| line == "saved row 032"));

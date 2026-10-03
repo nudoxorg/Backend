@@ -19,7 +19,7 @@ use crate::model::pages::{
     Standing, SymbolPage, SymbolRef,
 };
 use crate::model::{AppSnapshot, DensityPreference, SessionState};
-use crate::navigation::{Coordinate, Intent, Route, SymbolRoute, View};
+use crate::navigation::{Coordinate, Intent, Overlay, Route, SymbolRoute, View};
 use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
 use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
