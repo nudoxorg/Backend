@@ -15,7 +15,7 @@ use backend_local_service::{EmbeddedLocalService, LocalHostVariable, ProcessConf
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,10 +25,37 @@ const PUBLIC_MARKER: &str = "operation_lifecycle_public_marker";
 fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), Box<dyn Error>> {
     let fixture = lifecycle_tempdir()?;
     let service_workspace = fixture.path().join("service-state");
-    create_private_directory(&service_workspace)?;
     let endpoint = fixture.path().join("owner.sock");
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().to_path_buf()),
+        Some(service_workspace),
+        Some(endpoint),
+    )?;
+    let authority_secret = paths.authority_secret().to_path_buf();
+    assert_eq!(
+        authority_secret.parent(),
+        Some(paths.data()),
+        "the fixture authority credential must stay inside its selected workspace"
+    );
+    paths.initialize()?;
+    let authority_credential = fs::read(&authority_secret)?;
+    assert_eq!(authority_credential.len(), 32);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(paths.data())?.permissions().mode() & 0o777,
+            0o700,
+            "the initialized workspace directory must be owner-only"
+        );
+        assert_eq!(
+            fs::metadata(&authority_secret)?.permissions().mode() & 0o777,
+            0o600,
+            "the initialized authority credential must be owner-only"
+        );
+    }
     assert!(
-        backend_engine::UnixEndpointRef::new(&endpoint).is_ok(),
+        backend_engine::UnixEndpointRef::new(paths.endpoint()).is_ok(),
         "the platform temp root leaves no room for the portable AF_UNIX endpoint"
     );
 
@@ -68,9 +95,9 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
 
     let mut config = ProcessConfig::parse([
         "--endpoint".to_owned(),
-        endpoint.to_string_lossy().into_owned(),
+        paths.endpoint().to_string_lossy().into_owned(),
         "--workspace".to_owned(),
-        service_workspace.to_string_lossy().into_owned(),
+        paths.data().to_string_lossy().into_owned(),
         "--registry-offline".to_owned(),
         "--registry-discovery-offline".to_owned(),
         "--advisory-offline".to_owned(),
@@ -78,7 +105,11 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
     ])?;
     config.profile = "builtin".to_owned();
     config.worker_endpoint = None;
-    config.authority_secret = Some(service_workspace.join("authority.secret"));
+    config.authority_secret = Some(authority_secret.clone());
+    assert_eq!(
+        config.authority_secret.as_deref(),
+        Some(authority_secret.as_path())
+    );
     config.compiler_environment = vec![
         (LocalHostVariable::NudoxRustc, executable_in_path("rustc")?),
         (LocalHostVariable::NudoxCargo, executable_in_path("cargo")?),
@@ -131,6 +162,10 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
     let first_observation = IndexOperationObservation::Known(published);
     drop(session);
     owner.close()?;
+    assert!(
+        fs::read(&authority_secret)? == authority_credential,
+        "closing the owner must preserve the initialized workspace credential"
+    );
 
     let persisted = fs::read_to_string(&key_file)?;
     let restored_key = IndexOperationKey::parse_hex(persisted.trim()).map_err(|error| {
@@ -140,6 +175,10 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
     })?;
     assert_eq!(restored_key, operation_key);
     let restarted_owner = EmbeddedLocalService::start(config)?;
+    assert!(
+        fs::read(&authority_secret)? == authority_credential,
+        "restarting the owner must reuse the same durable workspace credential"
+    );
     let mut restarted_session = Session::connect(restarted_owner.endpoint())?;
 
     let after_restart = restarted_session.index_operation_status(restored_key)?;
@@ -274,18 +313,4 @@ fn lifecycle_tempdir() -> Result<tempfile::TempDir, Box<dyn Error>> {
     {
         Ok(tempfile::Builder::new().prefix("b-").tempdir()?)
     }
-}
-
-fn create_private_directory(path: &Path) -> Result<(), Box<dyn Error>> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        let mut builder = fs::DirBuilder::new();
-        builder.mode(0o700).create(path)?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::create_dir(path)?;
-    }
-    Ok(())
 }
