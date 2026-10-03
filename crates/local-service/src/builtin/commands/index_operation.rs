@@ -203,7 +203,7 @@ impl IndexOperationJournal {
             .map_err(|error| JournalError::Database(error.to_string()))?
             .join(database_name);
         let database_path = database_path.to_str().ok_or(JournalError::NonUtf8Path)?;
-        let (database, connection) = futures_executor::block_on(async {
+        let (database, mut connection) = futures_executor::block_on(async {
             let database = turso::Builder::new_local(database_path)
                 .experimental_multiprocess_wal(true)
                 .build()
@@ -224,16 +224,13 @@ impl IndexOperationJournal {
                 ))
                 .await
                 .map_err(database_error)?;
-            validate_page_count(&connection).await?;
             database_directory
                 .open_private_file_read_write(database_name, false)
                 .map_err(|error| {
                     JournalError::Database(format!("database path changed during open: {error}"))
                 })?;
             verify_sqlite_sidecars(&database_directory, database_name)?;
-            let meta = read_meta(&connection).await?;
-            validate_meta(&meta)?;
-            validate_cold_aggregates(&connection, &meta).await?;
+            validate_cold_snapshot(&mut connection).await?;
             Ok::<_, JournalError>((database, connection))
         })?;
         Ok(Self {
@@ -677,21 +674,34 @@ async fn prune_terminal_receipts(
     Ok(())
 }
 
-async fn read_meta(connection: &turso::Connection) -> Result<JournalMeta, JournalError> {
-    let mut rows = connection
-        .query(
-            "SELECT schema_version, key_count, pending_count, prepared_count, \
-                    next_sequence, next_terminal_sequence \
-             FROM backend_index_operation_meta WHERE singleton=1",
-            (),
-        )
+async fn validate_cold_snapshot(connection: &mut turso::Connection) -> Result<(), JournalError> {
+    let transaction = connection
+        .transaction_with_behavior(turso::transaction::TransactionBehavior::Deferred)
         .await
         .map_err(database_error)?;
-    read_meta_row(&mut rows).await
+    let validation = async {
+        let meta = read_validated_cold_meta(&transaction).await?;
+        validate_cold_aggregates(&transaction, &meta).await
+    }
+    .await;
+    if let Err(error) = validation {
+        let _ = transaction.rollback().await;
+        return Err(error);
+    }
+    transaction.commit().await.map_err(database_error)
 }
 
-async fn validate_page_count(connection: &turso::Connection) -> Result<(), JournalError> {
-    let mut rows = connection
+/// Reads quota, metadata, and aggregate facts from one deferred read snapshot.
+/// The first query establishes the WAL snapshot; later cold checks must use
+/// this transaction so another process cannot make counters look corrupt
+/// between otherwise-valid reads.
+async fn read_validated_cold_meta(
+    transaction: &turso::transaction::Transaction<'_>,
+) -> Result<JournalMeta, JournalError> {
+    // Read the durable metadata row first so the deferred transaction pins its
+    // WAL snapshot before checking the page quota and bounded aggregates.
+    let meta = read_meta_transaction(transaction).await?;
+    let mut rows = transaction
         .query("PRAGMA page_count", ())
         .await
         .map_err(database_error)?;
@@ -706,7 +716,8 @@ async fn validate_page_count(connection: &turso::Connection) -> Result<(), Journ
             "database page count exceeds its configured bound".to_owned(),
         ));
     }
-    Ok(())
+    validate_meta(&meta)?;
+    Ok(meta)
 }
 
 async fn read_meta_transaction(
@@ -778,10 +789,10 @@ fn check_acceptance_capacity(meta: &JournalMeta) -> Result<(), JournalError> {
 /// database itself is capped by `MAX_DATABASE_PAGES`, so this verification has
 /// a fixed maximum scan instead of trusting counters to hide durable rows.
 async fn validate_cold_aggregates(
-    connection: &turso::Connection,
+    transaction: &turso::transaction::Transaction<'_>,
     meta: &JournalMeta,
 ) -> Result<(), JournalError> {
-    let mut rows = connection
+    let mut rows = transaction
         .query(
             "SELECT COUNT(*), \
                     COALESCE(SUM(CASE WHEN state IN (1, 2) THEN 1 ELSE 0 END), 0), \
@@ -1580,22 +1591,50 @@ mod tests {
     }
 
     #[test]
-    fn state_probes_observe_commits_from_an_independent_process() {
+    fn cold_validation_keeps_one_snapshot_across_independent_process_commit() {
         let path = path();
-        let observer = open(&path);
+        let mut observer = open(&path);
         assert!(!observer.has_pending().expect("empty pending probe"));
 
-        let output = Command::new(std::env::current_exe().expect("test executable"))
-            .arg("state_probe_multiprocess_writer_child")
-            .arg("--nocapture")
-            .env(MULTIPROCESS_WRITER_PATH, &path)
-            .output()
-            .expect("spawn independent journal writer");
-        assert!(
-            output.status.success(),
-            "independent journal writer failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        futures_executor::block_on(async {
+            // This is the first cold-validation read and fixes the parent's
+            // deferred WAL snapshot before the independent process commits.
+            let transaction = observer
+                .connection
+                .transaction_with_behavior(turso::transaction::TransactionBehavior::Deferred)
+                .await
+                .expect("begin cold-validation read transaction");
+            let meta = read_validated_cold_meta(&transaction)
+                .await
+                .expect("read metadata in cold snapshot");
+            assert_eq!(meta.key_count, 0);
+
+            // Launch only after metadata has been read, then wait for the
+            // child's durable accept before running the aggregate query. This
+            // makes the cross-process commit land exactly between the two
+            // cold-validation checks without timing-dependent sleeps.
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .arg("state_probe_multiprocess_writer_child")
+                .arg("--nocapture")
+                .env(MULTIPROCESS_WRITER_PATH, &path)
+                .output()
+                .expect("spawn independent journal writer");
+            assert!(
+                output.status.success(),
+                "independent journal writer failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            validate_cold_aggregates(&transaction, &meta)
+                .await
+                .expect("aggregate still matches the metadata snapshot");
+            transaction
+                .commit()
+                .await
+                .expect("release cold-validation snapshot");
+        });
+
+        // The same connection must leave its old read snapshot and observe
+        // the child's accepted row through the live indexed state probes.
         assert!(
             observer
                 .has_pending()
