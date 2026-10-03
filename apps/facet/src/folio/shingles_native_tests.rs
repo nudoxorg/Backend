@@ -96,6 +96,18 @@ fn init(cx: &mut TestAppContext) {
         );
     });
 }
+// These fixture targets author four absolute lengths inside an origin-zero
+// parent. GPUI snaps each metric to device pixels before layout (taffy.rs
+// ToTaffy<AbsoluteLength>); their integer-device edges then survive the
+// post-layout absolute-edge snap unchanged. Text room is NOT snapped.
+fn native_authored_bounds(region: Bounds<Pixels>, device_scale: f32) -> Bounds<Pixels> {
+    let metric = |value: Pixels| {
+        let device = f32::from(value) * device_scale;
+        px((device.abs() - 0.5).ceil().copysign(device) / device_scale)
+    };
+    Bounds::new(region.origin.map(metric), region.size.map(metric))
+}
+
 fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
     cx.update(|window, _| {
         let labels = layout.labels.as_ref().unwrap();
@@ -107,19 +119,29 @@ fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
                 .collect();
             assert!(!runs.is_empty(), "actual native paint omitted {words}");
             let region = layout.region_bounds()[i];
+            let native_region = native_authored_bounds(region, window.scale_factor());
             let label = &labels.entries[i];
-            let label_bottom =
-                region.origin.y + px(PAD * layout.k + labels.role.line * label.line_count() as f32);
+            let painted_rows = px(labels.role.line * label.line_count() as f32);
             for run in runs {
                 assert!(
-                    run.bounds.left() >= region.left()
-                        && run.bounds.right() <= region.right() + px(0.001),
+                    run.bounds.left() >= region.left() && run.bounds.right() <= region.right(),
                     "{words} escapes the shared region horizontally"
                 );
                 assert!(
                     run.bounds.top() >= region.top()
-                        && run.bounds.bottom() <= label_bottom + px(0.001),
-                    "native glyph rows disagree with the measured label band"
+                        && run.bounds.bottom() <= px(layout.regions[i].origin.1),
+                    "native glyph rows must stay in the label band above the shingle grid"
+                );
+                assert_eq!(
+                    run.bounds.size.height, painted_rows,
+                    "actual native paint must contain exactly the measured glyph rows"
+                );
+                assert!(
+                    run.bounds.left() >= native_region.left()
+                        && run.bounds.right() <= native_region.right()
+                        && run.bounds.top() >= native_region.top()
+                        && run.bounds.bottom() <= native_region.bottom(),
+                    "visible native text must remain within the accepted device-snapped target"
                 );
                 assert!(run.alpha > 0.);
             }
@@ -133,8 +155,8 @@ fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
                 .expect("current native region");
             assert_eq!(
                 window.a11y_node_bounds(node).unwrap(),
-                region,
-                "native target and painted region use the same geometry"
+                native_region,
+                "native target must exactly obey GPUI authored-metric/device snapping"
             );
         }
     });
@@ -415,4 +437,66 @@ fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
                 .any(|run| run.text.as_ref() == "lib")
         )
     });
+}
+
+struct NativeMetrics;
+impl Render for NativeMetrics {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().relative().size_full().child(
+            div()
+                .id("native-metric")
+                .absolute()
+                .left(px(0.75))
+                .top(px(0.75))
+                .w(px(34.498))
+                .h(px(43.239998))
+                .role(gpui::Role::Group)
+                .aria_label("native metric"),
+        )
+    }
+}
+#[gpui::test]
+fn native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx: &mut TestAppContext) {
+    let (metrics, cx) = cx.add_window_view(|window, _| {
+        window.set_a11y_forced(true);
+        NativeMetrics
+    });
+    cx.simulate_resize(size(px(100.), px(100.)));
+    // Handwritten expected bounds include half-ties in authored insets:
+    // 0.75 logical at 2x is 1.5 device pixels, which rounds toward zero to 1.
+    for (scale, expected) in [
+        (
+            1.,
+            Bounds::new(gpui::point(px(1.), px(1.)), size(px(34.), px(43.))),
+        ),
+        (
+            2.,
+            Bounds::new(gpui::point(px(0.5), px(0.5)), size(px(34.5), px(43.))),
+        ),
+    ] {
+        cx.update(|window, _| window.set_scale_factor(scale));
+        metrics.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        cx.update(|window, _| {
+            let node = window
+                .a11y_tree()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("native metric"))
+                .map(|(id, _)| *id)
+                .unwrap();
+            assert_eq!(window.a11y_node_bounds(node).unwrap(), expected);
+            assert_eq!(
+                native_authored_bounds(
+                    Bounds::new(
+                        gpui::point(px(0.75), px(0.75)),
+                        size(px(34.498), px(43.239998))
+                    ),
+                    scale
+                ),
+                expected
+            );
+        });
+    }
 }
