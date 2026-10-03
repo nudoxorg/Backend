@@ -115,11 +115,22 @@ struct Choice {
     group: Group,
 }
 
+/// A submission refusal belongs to the current draft, not navigation.
+#[derive(Clone)]
+enum SubmitRefusal { NoMatch, Unavailable(SharedString), NoDestination(SharedString) }
+impl SubmitRefusal {
+    fn words(&self) -> SharedString {
+        match self { Self::NoMatch => "No result matches this query.".into(),
+            Self::Unavailable(words) | Self::NoDestination(words) => words.clone() }
+    }
+}
+
 /// The query surface.
 pub(crate) struct Ask {
     links: Links,
     input: Entity<InputState>,
     draft: QueryDraft,
+    refusal: Option<SubmitRefusal>,
     /// Invalidates callbacks painted for an earlier editor draft, even when
     /// a later draft happens to reuse the same query text.
     revision: Rc<Cell<u64>>,
@@ -160,6 +171,7 @@ impl Ask {
             links,
             input,
             draft: QueryDraft::Blank,
+            refusal: None,
             revision: Rc::new(Cell::new(0)),
             selected: 0,
             walked: false,
@@ -185,6 +197,7 @@ impl Ask {
     pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = 0;
         self.walked = false;
+        self.refusal = None;
         let previous = self.draft.query().cloned();
         self.draft = QueryDraft::Blank;
         self.revision.set(self.revision.get().wrapping_add(1));
@@ -200,6 +213,7 @@ impl Ask {
     }
 
     fn typed(&mut self, text: String, cx: &mut Context<Self>) {
+        self.refusal = None;
         let draft = QueryDraft::parse(&text);
         if draft == self.draft {
             return;
@@ -359,15 +373,16 @@ impl Ask {
         let choices = self.choices(cx);
         let Some(choice) = choices.get(self.selected) else {
             if self.draft.query().is_some() {
-                let message = self.read_status(cx).0.unwrap_or_else(|| "No result matches this query.".into());
-                search_notice(&self.links, message, cx);
+                self.refusal = Some(self.read_status(cx).0.map_or(SubmitRefusal::NoMatch, SubmitRefusal::Unavailable));
+                cx.notify();
             }
             return;
         };
         let previewing = self.links.snapshot(cx).session().preview.is_some();
         match choice.route.clone() {
             Some(route) if !self.draft.query().is_some_and(|query| current_row_route(&self.links, query, &route, cx)) => {
-                stale_search_notice(&self.links, cx);
+                self.refusal = Some(SubmitRefusal::Unavailable("That search result is no longer verified by the current index. Search again.".into()));
+                cx.notify();
             }
             Some(route) if previewing && self.walked && self.links.snapshot(cx).route() == &route => {
                 self.links.dispatch(Intent::CommitPreview, cx);
@@ -375,19 +390,9 @@ impl Ask {
             }
             Some(route) => self.links.dispatch(Intent::Navigate(route), cx),
             None => {
-                // The Notice is a page-foot fixture (never drawn under an
-                // overlay); closing the query, exactly as a real navigation
-                // would, is what makes it visible at all.
-                self.links.dispatch(Intent::DismissOverlay, cx);
-                let snapshot = self.links.snapshot(cx);
                 let words = choice.unavailable.clone().unwrap_or_else(|| format!("{} has no page yet", choice.name).into());
-                let notice = crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
-                    message: std::sync::Arc::<str>::from(words.as_ref()),
-                    retry: None,
-                };
-                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                self.refusal = Some(SubmitRefusal::NoDestination(words));
+                cx.notify();
             }
         }
     }
@@ -615,7 +620,6 @@ fn current_input_query(input: &Entity<InputState>, query: &SearchQuery, cx: &App
 }
 
 fn search_notice(links: &Links, message: SharedString, cx: &mut App) {
-    links.dispatch(Intent::DismissOverlay, cx);
     let snapshot = links.snapshot(cx);
     let notice = crate::runtime::graph_focus::Notice {
         visit: snapshot.route().clone(),
@@ -760,6 +764,7 @@ impl Ask {
         let all_results = self.all_results(cx).filter(|_| !choices.is_empty());
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
         let (read_status, semantic_status) = self.read_status(cx);
+        let read_status = self.refusal.as_ref().map(SubmitRefusal::words).or(read_status);
         let mut list = div().id("ask-results").role(Role::List).aria_label("Search results")
             .flex().flex_col().pt(measure.space(Space::Tight))
             .size_full().overflow_y_scroll().track_scroll(&self.scroll);
@@ -1328,4 +1333,40 @@ mod tests {
         let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
         assert_eq!(message.as_deref(), Some("Mystery has no page yet"));
     }
+
+    struct FailedSearch;
+    impl PageReader for FailedSearch {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            if matches!(request, ReadRequest::Search(_)) {
+                Err(ReadFailure::Fault(crate::core::ErrorValue::new(crate::core::FaultCode::Transport,
+                    "fixture search owner disconnected")))
+            } else { Fixture.read(request, context) }
+        }
+    }
+
+    #[gpui::test]
+    fn real_enter_keeps_failed_search_draft_focus_and_refusal_visible(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
+            ReadPool::start(1, |_| FailedSearch).expect("fixture pool"));
+        rig.cx.update(|_, cx| facet::probe::enable(cx));
+        rig.keys("cmd-k");
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        rig.keys("enter");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(crate::navigation::Overlay::CommandPalette));
+        assert_eq!(rig.route(), route);
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+        assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
+        rig.repaint();
+        let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+        assert!(ledger.texts.iter().any(|text| text.region.as_deref() == Some("ask")
+            && text.content.contains("fixture search owner disconnected")), "the refusal is painted inside Ask");
+        rig.cx.simulate_input("X"); rig.settle();
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()), "editing retires the old submission refusal");
+    }
+
 }
