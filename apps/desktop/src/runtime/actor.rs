@@ -337,7 +337,7 @@ pub enum EngineFault {
     /// Client/transport failure with a typed, bounded diagnostic.
     Failed(ErrorValue),
     /// The compatibility ingest request failed before a committed root was
-    /// admitted.
+    /// admitted. This supplies no terminal evidence for a caller-keyed index.
     IndexFailed {
         /// Project whose attempt failed.
         project: LocalProjectId,
@@ -345,7 +345,8 @@ pub enum EngineFault {
         error: ErrorValue,
     },
     /// The compatibility ingest producer returned after a cancellation
-    /// request; this is terminal owner observation, not a local paint event.
+    /// request. This settles only an unkeyed compatibility request; a keyed
+    /// mutation still requires its canonical exact operation receipt.
     IndexCancelled {
         /// Project whose attempt reached its terminal cancellation boundary.
         project: LocalProjectId,

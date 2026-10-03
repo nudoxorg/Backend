@@ -346,10 +346,18 @@ fn mark_index_cancelled(
         .cloned()
         .map(|mut item| {
             if item.id == *project && item.request == Some(request) {
-                item.phase = ProjectPhase::Cancelled;
+                // A legacy transport result cannot settle a caller-keyed
+                // mutation. Only its checked exact operation receipt can.
+                item.phase = if item.operation.is_some() {
+                    ProjectPhase::Unconfirmed
+                } else {
+                    ProjectPhase::Cancelled
+                };
                 item.progress = None;
                 item.request = None;
-                item.error = None;
+                item.error = item.operation.as_ref().map(|_| Arc::from(
+                    "Cancellation returned without an exact operation receipt. Check the saved index operation before starting another index.",
+                ));
             }
             item
         })
@@ -371,11 +379,19 @@ fn mark_index_failed(
         .cloned()
         .map(|mut item| {
             if item.id == *project && item.request == Some(request) {
-                item.phase = ProjectPhase::Failed;
+                item.phase = if item.operation.is_some() {
+                    ProjectPhase::Unconfirmed
+                } else {
+                    ProjectPhase::Failed
+                };
                 item.progress = None;
                 item.files_indexed = None;
                 item.request = None;
-                item.error = Some(Arc::from(message));
+                item.error = Some(Arc::from(if item.operation.is_some() {
+                    "The index request failed without an exact operation receipt. Check the saved index operation before starting another index."
+                } else {
+                    message
+                }));
             }
             item
         })
@@ -445,6 +461,118 @@ mod tests {
         request: RequestId, observation: backend_library::IndexOperationObservation) -> EngineEvent {
         EngineEvent { basis: root(), request, lane: None, result: Ok(EngineDto::IndexOperation {
             request, basis: root(), project, operation, observation }) }
+    }
+
+    #[test]
+    fn legacy_terminal_faults_keep_exact_claim_unconfirmed_and_refuse_another_mutation() {
+        use crate::navigation::{Effect, Intent};
+
+        let (submitted, project, operation, request) = saved_operation();
+        let faults = [
+            EngineFault::IndexFailed {
+                project: project.clone(),
+                error: crate::core::ErrorValue::new(crate::core::FaultCode::Transport, "reply lost"),
+            },
+            EngineFault::IndexCancelled {
+                project: project.clone(),
+            },
+        ];
+        for fault in faults {
+            let event = EngineEvent {
+                basis: root(),
+                request,
+                lane: None,
+                result: Err(fault.clone()),
+            };
+            let received = map_event(&submitted, event).expect("represented failure");
+            let row = &received.workspace().projects[0];
+            assert_eq!(row.phase, ProjectPhase::Unconfirmed);
+            assert_eq!(row.operation, Some(operation.clone()));
+            assert_eq!(row.request, None);
+            assert!(row.error.is_some());
+
+            let retried = crate::navigation::reduce(&received, Intent::RetryIndex(project.clone()));
+            assert_eq!(retried.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+            assert_eq!(retried.snapshot.workspace().projects[0].operation, Some(operation.clone()));
+            assert!(retried.snapshot.workspace().path_error.is_some());
+            assert!(!retried.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
+
+            let replacement = crate::model::index_operation::tests::claim(&project, 0x62);
+            let direct = crate::navigation::reduce(&retried.snapshot, Intent::IndexProject {
+                project: project.clone(),
+                operation: replacement,
+                basis: root(),
+                request: RequestId::new(71),
+            });
+            assert_eq!(direct.snapshot.workspace().projects[0].operation, Some(operation.clone()));
+            assert!(!direct.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
+
+            let stale = map_event(&submitted, EngineEvent {
+                basis: root(),
+                request: RequestId::new(69),
+                lane: None,
+                result: Err(fault),
+            }).expect("stale fault ignored");
+            assert_eq!(stale, submitted);
+        }
+    }
+
+    #[test]
+    fn checked_terminal_receipt_still_allows_an_explicit_new_attempt() {
+        use crate::navigation::{Effect, EngineCommand, Intent};
+
+        let (submitted, project, operation, request) = saved_operation();
+        let observation = crate::model::index_operation::tests::observation(
+            &operation,
+            backend_library::IndexOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::Cancelled,
+                detail: "owner confirmed cancellation before publication".to_owned(),
+            },
+        );
+        let received = map_event(&submitted, operation_event(
+            project.clone(), operation, request, observation.clone(),
+        )).expect("checked exact cancellation receipt");
+        assert_eq!(received.workspace().projects[0].phase, ProjectPhase::Cancelled);
+        assert_eq!(received.workspace().projects[0].operation.as_ref()
+            .and_then(|claim| claim.observation.as_ref()), Some(&observation));
+
+        let prepared = crate::navigation::reduce(&received, Intent::RetryIndex(project.clone()));
+        let replacement = crate::model::index_operation::tests::claim(&project, 0x62);
+        let started = crate::navigation::reduce(&prepared.snapshot, Intent::IndexProject {
+            project,
+            operation: replacement.clone(),
+            basis: root(),
+            request: RequestId::new(71),
+        });
+        assert_eq!(started.snapshot.workspace().projects[0].operation, Some(replacement));
+        assert!(started.effects.iter().any(|effect| matches!(effect,
+            Effect::Engine(EngineCommand::IndexProject { .. }))));
+    }
+
+    #[test]
+    fn unkeyed_compatibility_faults_preserve_their_terminal_semantics() {
+        let (submitted, project, _, request) = saved_operation();
+        let mut workspace = submitted.workspace().clone();
+        let mut rows = workspace.projects.to_vec();
+        rows[0].operation = None;
+        workspace.projects = rows.into();
+        let unkeyed = submitted.with_workspace(workspace);
+        for (fault, phase, message) in [
+            (EngineFault::IndexFailed {
+                project: project.clone(),
+                error: crate::core::ErrorValue::new(crate::core::FaultCode::Transport, "reply lost"),
+            }, ProjectPhase::Failed, Some("reply lost")),
+            (EngineFault::IndexCancelled { project: project.clone() }, ProjectPhase::Cancelled, None),
+        ] {
+            let received = map_event(&unkeyed, EngineEvent {
+                basis: root(), request, lane: None, result: Err(fault),
+            }).expect("compatibility fault");
+            let row = &received.workspace().projects[0];
+            assert_eq!(row.phase, phase);
+            assert_eq!(row.operation, None);
+            assert_eq!(row.request, None);
+            assert_eq!(row.error.as_deref(), message);
+        }
     }
 
     #[test]
