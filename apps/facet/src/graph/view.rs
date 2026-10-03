@@ -61,12 +61,17 @@ impl ScenePaintReceipt {
     pub fn was_painted(&self) -> bool { self.painted.get() == Some(Arc::as_ptr(&self.scene) as usize) }
 }
 
-/// One host guard distinguishes constructing a current control from acting
-/// through its actual painted projection. Rendering cannot manufacture paint.
+/// One host guard separates render, painted local editing and resource
+/// activation. Local editing requires no owner lease; render creates no paint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InteractionPhase { Render, Activate }
-/// Host guard shared by rendering and captured native activation.
+pub enum InteractionPhase { Render, LocalFocus, Activate }
+/// Host guard shared by rendering, local editing and resource activation.
 pub type InteractionAdmission = Rc<dyn Fn(InteractionPhase, &App) -> bool>;
+
+/// A denied producer cannot fall through to another focus walk. Only an
+/// admitted edge hands focus back to the host's existing native zone order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFocusStep { Moved, Boundary, Denied }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NativeControlScope { navigation: u64, declarations: u64, coverage: u64 }
@@ -452,6 +457,10 @@ impl GraphView {
         })
     }
 
+    fn admits_local_focus(&self, cx: &App) -> bool {
+        self.interaction_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx))
+    }
+
     fn native_scope(&self) -> NativeControlScope {
         NativeControlScope { navigation: self.state.generation, declarations: self.declaration_epoch, coverage: self.status_epoch }
     }
@@ -461,10 +470,10 @@ impl GraphView {
     /// bridges a host's Reader focus walk without inventing another target list.
     fn native_focus_order(&self, window: &Window, cx: &App) -> Option<Vec<FocusHandle>> {
         let painted = self.painted_labels.as_ref()?;
-        if !self.admits_native_interaction(cx) || self.view != Some(painted.view)
+        if !self.admits_local_focus(cx) || self.view != Some(painted.view)
             || self.camera() != Some(painted.camera) || self.native_scope() != painted.native_scope
             || self.state.focus != painted.focus
-            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) { return None; }
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx)) { return None; }
         let mut handles = vec![self.find.read(cx).focus_handle(cx)];
         if !self.state.find_open {
             handles.push(self.declaration_focus[32].clone());
@@ -481,11 +490,17 @@ impl GraphView {
         Some(handles)
     }
 
-    /// Whether the graph's current painted native region owns keyboard focus.
+    /// Physical focus bookkeeping grants no resource capability. The host
+    /// may adopt this real mounted origin even while its owner is unavailable.
     #[must_use]
     pub fn owns_native_focus(&self, window: &Window, cx: &App) -> bool {
-        self.native_focus_order(window, cx).is_some_and(|order| self.focus_handle.is_focused(window)
-            || order.iter().any(|handle| handle.is_focused(window)))
+        self.focus_handle.contains_focused(window, cx)
+    }
+
+    fn admits_native_focus(&self, next: &FocusHandle, cx: &App) -> bool {
+        if *next == self.find.read(cx).focus_handle(cx) { return true; }
+        self.admits_native_interaction(cx) && self.painted_labels.as_ref().is_some_and(|painted|
+            painted.admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)))
     }
 
     fn native_entry<'a>(&self, order: &'a [FocusHandle]) -> Option<&'a FocusHandle> {
@@ -499,13 +514,14 @@ impl GraphView {
         let Some(order) = self.native_focus_order(window, cx) else { return false; };
         let next = order.iter().find(|handle| handle.is_focused(window)).or_else(|| self.native_entry(&order));
         let Some(next) = next else { return false; };
+        if !self.admits_native_focus(next, cx) { return false; }
         next.focus(window, cx); true
     }
 
     /// Step only inside this bounded mounted region. A real edge returns to
     /// the host's existing zone walk; rows reveal through their own scroller.
-    pub fn step_native(&self, forward: bool, window: &mut Window, cx: &mut App) -> bool {
-        let Some(order) = self.native_focus_order(window, cx) else { return false; };
+    pub fn step_native(&self, forward: bool, window: &mut Window, cx: &mut App) -> NativeFocusStep {
+        let Some(order) = self.native_focus_order(window, cx) else { return NativeFocusStep::Denied; };
         let current = order.iter().position(|handle| handle.is_focused(window));
         let next = match current {
             Some(at) if forward => at.checked_add(1).and_then(|at| order.get(at)),
@@ -513,11 +529,18 @@ impl GraphView {
             None if forward => self.native_entry(&order),
             None => order.last(),
         };
-        let Some(next) = next else { return false; };
+        let Some(next) = next else {
+            // An old resource stop cannot escape through the host after its
+            // authority was revoked; Find's local editor remains independent.
+            return if current.is_some_and(|at| !self.admits_native_focus(&order[at], cx)) {
+                NativeFocusStep::Denied
+            } else { NativeFocusStep::Boundary };
+        };
+        if !self.admits_native_focus(next, cx) { return NativeFocusStep::Denied; }
         if let Some(row) = self.declaration_focus[..32].iter().position(|handle| handle == next) {
             self.declaration_scroll.scroll_to_item(row);
         }
-        next.focus(window, cx); true
+        next.focus(window, cx); NativeFocusStep::Moved
     }
 
     /// Where ↵ and double-click go.
@@ -1023,7 +1046,7 @@ impl GraphView {
                 self.reveal_result();
                 cx.notify();
             }
-            "enter" => self.choose_result(window, cx),
+            "enter" => { if self.admits_native_interaction(cx) { self.choose_result(window, cx); } },
             _ => return,
         }
         cx.stop_propagation();
@@ -1039,7 +1062,7 @@ impl GraphView {
         if (key == "/" && !mods.platform && !mods.control && !mods.alt) || (key == "k" && mods.platform && !mods.alt) {
             self.open_find(window, cx); cx.stop_propagation(); return;
         }
-        if mods.platform || mods.control || mods.alt { return; }
+        if !self.admits_native_interaction(cx) || mods.platform || mods.control || mods.alt { return; }
         if key == "escape" { self.escape(window, cx); cx.stop_propagation(); return; }
         if key == "r" {
             if self.state.focus.is_none() {
@@ -2275,10 +2298,28 @@ impl Render for GraphView {
         let root = div().id("graph").role(gpui::Role::Group).aria_label("Graph").key_context("Graph").track_focus(&self.focus_handle)
             .relative().size_full().overflow_hidden().bg(palette.g0.hsla())
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if find_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)) && this.admits_native_interaction(cx) { this.find_key(event, window, cx); }
+                if find_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx)) && this.admits_local_focus(cx) {
+                    if event.keystroke.key == "enter" && find_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) {
+                        cx.stop_propagation(); return;
+                    }
+                    this.find_key(event, window, cx);
+                }
             }))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if key_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)) && this.admits_native_interaction(cx) { this.key(event, window, cx); }
+                let key = event.keystroke.key.as_str();
+                let mods = event.keystroke.modifiers;
+                let local_find = (key == "/" && !mods.platform && !mods.control && !mods.alt)
+                    || (key == "k" && mods.platform && !mods.alt);
+                let phase = if local_find { InteractionPhase::LocalFocus } else { InteractionPhase::Activate };
+                if key_admission.as_ref().is_none_or(|admit| admit(phase, cx)) && this.admits_local_focus(cx) { this.key(event, window, cx); }
+            }))
+            // Input's Tab uses the component Root action, while native
+            // buttons use the host zone action. Both walk these same handles.
+            .on_action(cx.listener(|this, _: &gpui_component::Tab, window, cx| {
+                if this.step_native(true, window, cx) == NativeFocusStep::Boundary { cx.propagate(); }
+            }))
+            .on_action(cx.listener(|this, _: &gpui_component::TabPrev, window, cx| {
+                if this.step_native(false, window, cx) == NativeFocusStep::Boundary { cx.propagate(); }
             }))
             .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
             .child(Canvas { view: cx.entity(), draft: draft.clone() })
@@ -2301,12 +2342,19 @@ impl GraphView {
         // Find: a quiet field at the top left; results under it.
         let find_w = (f32::from(width) - 32.0).min(300.0);
         let find_measure = Measure::new(px(find_w), &facet);
+        let find_admission = self.interaction_admission.clone();
         let mut find_stack = div().absolute().left(px(16.0)).top(px(17.0)).w(px(find_w)).max_w(px((f32::from(measure.width()) - 36.0).max(0.0)))
                 .max_w(px((f32::from(measure.width()) - 36.0).max(0.0)))
                 .flex()
                 .flex_wrap()
                 .flex_wrap().flex_col().gap(px(8.0))
             .child(MeasuredChrome::new("graph-find-bounds", div().relative().w_full()
+                .capture_any_mouse_down(cx.listener(move |this, _, window, cx| {
+                    if find_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx))
+                        || this.native_focus_order(window, cx).is_none() {
+                        window.prevent_default(); cx.stop_propagation();
+                    }
+                }))
                 .child(field("graph-find", &self.find, &find_measure).quiet().opaque().icon(Icon::Search))
                 .children((!self.state.find_open && window.modifiers().platform).then(|| {
                     div().absolute().right(px(10.0)).top_0().bottom_0().flex().items_center().child(kbd("/", &find_measure))

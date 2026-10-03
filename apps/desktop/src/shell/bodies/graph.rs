@@ -1514,7 +1514,8 @@ impl Render for Map {
                         && map.world_key == key
                         && map.world_key.as_ref().is_some_and(|key| key.at_authority(snapshot.key()))
                         && map.callback_current(&basis, cx)
-                        && attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token))
+                        && (phase == facet::graph::view::InteractionPhase::LocalFocus
+                            || attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token)))
                 })
             })));
         }
