@@ -342,6 +342,23 @@ struct Queue {
     closed: bool,
 }
 
+impl Queue {
+    /// Detach replaced jobs while releasing their admissions immediately.
+    /// Cancellation callbacks run only after the queue guard is released.
+    fn remove_queued(&mut self, key: &PageKey) -> Vec<CancellationToken> {
+        let mut tokens = Vec::new();
+        self.jobs.retain(|queued| {
+            if queued.key == *key {
+                tokens.push(queued.cancel.clone());
+                false
+            } else {
+                true
+            }
+        });
+        tokens
+    }
+}
+
 #[derive(Debug)]
 struct Shared {
     queue: Mutex<Queue>,
@@ -451,26 +468,30 @@ impl ReadPool {
         if queue.closed {
             return false;
         }
-        queue.jobs.retain(|queued| {
-            if queued.key == job.key {
-                queued.cancel.cancel();
-                false
-            } else {
+        let mut cancelled = queue.remove_queued(&job.key);
+        cancelled.extend(
+            queue
+                .running
+                .iter()
+                .flatten()
+                .filter(|running| running.key == job.key && running.generation != job.generation)
+                .map(|running| running.cancel.clone()),
+        );
+        let accepted =
+            if let Some(permit) = ReadPermit::acquire(&self.shared.admitted, job.priority) {
+                queue.jobs.push_back(AdmittedRead { job, permit });
                 true
-            }
-        });
-        for running in queue.running.iter().flatten() {
-            if running.key == job.key && running.generation != job.generation {
-                running.cancel.cancel();
-            }
-        }
-        let Some(permit) = ReadPermit::acquire(&self.shared.admitted, job.priority) else {
-            return false;
-        };
-        queue.jobs.push_back(AdmittedRead { job, permit });
+            } else {
+                false
+            };
         drop(queue);
-        self.shared.ready.notify_all();
-        true
+        for token in cancelled {
+            token.cancel();
+        }
+        if accepted {
+            self.shared.ready.notify_all();
+        }
+        accepted
     }
 
     /// Raises a queued job for `key` to normal priority. Returns whether a
@@ -491,21 +512,19 @@ impl ReadPool {
     #[must_use]
     pub fn cancel(&self, key: &PageKey) -> bool {
         let mut queue = self.shared.queue();
-        let before = queue.jobs.len();
-        queue.jobs.retain(|queued| {
-            if queued.key == *key {
-                queued.cancel.cancel();
-                false
-            } else {
-                true
-            }
-        });
-        let mut found = queue.jobs.len() != before;
-        for running in queue.running.iter().flatten() {
-            if running.key == *key {
-                running.cancel.cancel();
-                found = true;
-            }
+        let mut cancelled = queue.remove_queued(key);
+        cancelled.extend(
+            queue
+                .running
+                .iter()
+                .flatten()
+                .filter(|running| running.key == *key)
+                .map(|running| running.cancel.clone()),
+        );
+        drop(queue);
+        let found = !cancelled.is_empty();
+        for token in cancelled {
+            token.cancel();
         }
         found
     }
@@ -559,21 +578,35 @@ impl ReadPool {
     }
 
     fn close_and_join(&mut self) {
-        {
+        let cancelled = {
             let mut queue = self.shared.queue();
             queue.closed = true;
-            for job in queue.jobs.drain(..) {
-                job.cancel.cancel();
-            }
-            for running in queue.running.iter().flatten() {
-                running.cancel.cancel();
-            }
+            let mut cancelled = queue
+                .jobs
+                .drain(..)
+                .map(|job| job.job.cancel)
+                .collect::<Vec<_>>();
+            cancelled.extend(
+                queue
+                    .running
+                    .iter()
+                    .flatten()
+                    .map(|running| running.cancel.clone()),
+            );
+            cancelled
+        };
+        for token in cancelled {
+            token.cancel();
         }
         self.shared.ready.notify_all();
         for handle in self.workers.drain(..) {
             let _ = handle.join();
         }
-        self.shared.results.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.shared
+            .results
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         self.shared.wake.close();
     }
 }
@@ -3168,6 +3201,72 @@ mod tests {
         assert_eq!(batch[0].generation, Generation::new(77));
         assert_eq!(batch[0].priority, Priority::Prefetch);
         assert_eq!(batch[1].key, key("earlier-0"));
+    }
+
+    #[test]
+    fn bounded_read_cancellation_callbacks_reenter_after_queue_changes() {
+        let harness = harness(1);
+        let pool = Arc::new(harness.pool);
+        let (observed, events) = mpsc::channel();
+        let callback = |token: &CancellationToken| {
+            let shared = Arc::downgrade(&pool.shared);
+            let read_pool = Arc::downgrade(&pool);
+            let observed = observed.clone();
+            token.on_cancel(move || {
+                let shared = shared
+                    .upgrade()
+                    .expect("pool state remains during cancellation");
+                let queue = shared
+                    .queue
+                    .try_lock()
+                    .expect("callback must not inherit the queue lock");
+                let state = (queue.jobs.len(), queue.closed);
+                drop(queue);
+                if let Some(pool) = read_pool.upgrade() {
+                    assert_eq!(
+                        pool.queued(),
+                        state.0,
+                        "actual pool query can reenter cancellation"
+                    );
+                }
+                observed.send(state).expect("callback observation");
+            })
+        };
+        let pinned = |generation| {
+            let mut job = job("never-started", generation, Priority::Normal);
+            job.affinity = Some(usize::MAX);
+            job
+        };
+        let first = pinned(1);
+        let first_wake = callback(&first.cancel);
+        assert!(pool.submit(first));
+        let second = pinned(2);
+        let second_wake = callback(&second.cancel);
+        assert!(pool.submit(second));
+        assert_eq!(
+            events
+                .recv_timeout(Duration::from_secs(1))
+                .expect("replacement callback"),
+            (1, false)
+        );
+        assert!(pool.cancel(&key("never-started")));
+        assert_eq!(
+            events
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancel callback"),
+            (0, false)
+        );
+        let third = pinned(3);
+        let third_wake = callback(&third.cancel);
+        assert!(pool.submit(third));
+        drop(pool);
+        assert_eq!(
+            events
+                .recv_timeout(Duration::from_secs(1))
+                .expect("shutdown callback"),
+            (0, true)
+        );
+        drop((first_wake, second_wake, third_wake));
     }
 
     #[test]
