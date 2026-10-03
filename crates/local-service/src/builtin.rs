@@ -2149,6 +2149,7 @@ mod authority_tests {
 #[allow(clippy::expect_used, clippy::panic)]
 mod owner_fairness_tests {
     use super::*;
+    use crate::protocol::EngineRequest;
     use crate::service::{
         LocaldOwner, NoCompletionAdmission, OwnerService, ReplicationAdmission,
         SubscriptionLeaseLimits,
@@ -2213,6 +2214,15 @@ mod owner_fairness_tests {
         &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
         &[u8],
     ) -> Result<Vec<u8>, String>;
+    type TestOwner = LocaldOwner<
+        BuiltinModel,
+        BuiltinValidator,
+        BuiltinAuthorityVerifier,
+        TestCommand,
+        NoCompletionAdmission,
+        SustainedRemoteProgress,
+    >;
+    type TestClient = crate::Client<BuiltinIntent>;
 
     fn test_command(
         _daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
@@ -2224,14 +2234,7 @@ mod owner_fairness_tests {
     fn owner(
         directory: &Path,
         remote_progress: Arc<RemoteProgressState>,
-    ) -> LocaldOwner<
-        BuiltinModel,
-        BuiltinValidator,
-        BuiltinAuthorityVerifier,
-        TestCommand,
-        NoCompletionAdmission,
-        SustainedRemoteProgress,
-    > {
+    ) -> (TestOwner, Box<[u8]>, TestClient) {
         let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
         let dispatcher =
             builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
@@ -2250,11 +2253,19 @@ mod owner_fairness_tests {
             registry,
         )
         .expect("open local daemon");
-        daemon.into_owner_with_admission(
+        let cursor = daemon
+            .engine()
+            .daemon()
+            .library()
+            .cursor()
+            .encode_control();
+        let client = daemon.client();
+        let owner = daemon.into_owner_with_admission(
             test_command as TestCommand,
             NoCompletionAdmission,
             SustainedRemoteProgress(remote_progress),
-        )
+        );
+        (owner, cursor, client)
     }
 
     #[test]
@@ -2265,64 +2276,88 @@ mod owner_fairness_tests {
             pending: AtomicUsize::new(8),
             polled: AtomicUsize::new(0),
         });
-        let mut owner = owner(&directory, Arc::clone(&remote_progress));
+        let (mut owner, cursor, client) = owner(&directory, Arc::clone(&remote_progress));
         owner = owner.with_subscription_lease_limits(
             SubscriptionLeaseLimits::new(
                 4,
-                Duration::from_millis(50),
+                Duration::from_secs(5),
                 1,
-                Duration::from_millis(50),
+                Duration::from_secs(5),
             )
             .expect("small finite lease bounds"),
         );
 
-        let cursor = owner
-            .daemon()
-            .engine()
-            .daemon()
-            .library()
-            .cursor()
-            .encode_control();
         let opened = OwnerService::engine(
             &mut owner,
             401,
             EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
                 request_id: 401,
                 operation: backend_engine::LocalSubscriptionOperation::Open {
-                    cursor,
+                    cursor: cursor.clone(),
                     credit: 1,
-                    lease_ms: 5,
+                    lease_ms: 5_000,
                 },
             }),
         )
-        .expect("open test lease");
+        .expect("open retained test lease");
         let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
             lease,
+            cursor,
             ..
         }) = opened
         else {
             panic!("open operation must return its owner-issued lease");
         };
-        assert!(owner.has_subscription_lease_for_test(lease));
+        let acknowledged = OwnerService::engine(
+            &mut owner,
+            402,
+            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                request_id: 402,
+                operation: backend_engine::LocalSubscriptionOperation::Ack {
+                    lease,
+                    cursor: cursor.clone(),
+                },
+            }),
+        )
+        .expect("active lease acknowledges its exact cursor");
+        assert!(matches!(
+            acknowledged,
+            EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Acked {
+                lease: acknowledged_lease,
+                ..
+            }) if acknowledged_lease == lease
+        ));
+
+        let expired_open = OwnerService::engine(
+            &mut owner,
+            403,
+            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                request_id: 403,
+                operation: backend_engine::LocalSubscriptionOperation::Open {
+                    cursor: cursor.clone(),
+                    credit: 1,
+                    lease_ms: 5,
+                },
+            }),
+        )
+        .expect("open short-lived test lease");
+        let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
+            lease: expired_lease,
+            ..
+        }) = expired_open
+        else {
+            panic!("short lease open must return its owner-issued lease");
+        };
         std::thread::sleep(Duration::from_millis(20));
 
         // This is a real queued daemon request. The owner must continue
         // admitting productive remote work, yet service this request on its
         // bounded fifth owner turn.
-        let query = owner
-            .daemon()
-            .client()
-            .request(402, crate::Request::Query)
+        let query = client
+            .request(404, crate::Request::Query)
             .expect("queue daemon query");
         for turn in 1..=5 {
             assert!(OwnerService::serve_one(&mut owner));
-            if turn == 1 {
-                assert_eq!(remote_progress.polled.load(Ordering::Acquire), 1);
-                assert!(
-                    !owner.has_subscription_lease_for_test(lease),
-                    "the normal owner-turn expiry sweep runs even on a remote-priority turn"
-                );
-            }
             if turn < 5 {
                 assert!(matches!(
                     query.try_recv(),
@@ -2331,10 +2366,79 @@ mod owner_fairness_tests {
             }
         }
         assert_eq!(remote_progress.polled.load(Ordering::Acquire), 4);
-        assert_eq!(remote_progress.pending.load(Ordering::Acquire), 4);
+        assert_eq!(
+            remote_progress.pending.load(Ordering::Acquire),
+            4,
+            "the query ran while productive remote work remained"
+        );
         assert!(matches!(
             query.try_recv().expect("engine-lane query reply"),
             backend_engine::DaemonReply::Query(_)
+        ));
+
+        for _ in 6..=9 {
+            assert!(OwnerService::serve_one(&mut owner));
+        }
+        assert_eq!(remote_progress.polled.load(Ordering::Acquire), 8);
+        assert_eq!(remote_progress.pending.load(Ordering::Acquire), 0);
+        assert!(
+            !OwnerService::serve_one(&mut owner),
+            "the expired lease was already swept on a productive turn, so the next idle turn does no work"
+        );
+        assert!(matches!(
+            OwnerService::engine(
+                &mut owner,
+                405,
+                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                    request_id: 405,
+                    operation: backend_engine::LocalSubscriptionOperation::Cancel {
+                        lease: expired_lease,
+                    },
+                }),
+            ),
+            Err(crate::ProtocolError::InvalidControl("unknown subscription lease"))
+        ));
+
+        let renewed = OwnerService::engine(
+            &mut owner,
+            406,
+            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                request_id: 406,
+                operation: backend_engine::LocalSubscriptionOperation::Renew {
+                    lease,
+                    cursor,
+                    credit: 1,
+                    lease_ms: 100,
+                },
+            }),
+        )
+        .expect("active lease renews after the fair query turn");
+        assert!(matches!(
+            renewed,
+            EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Renewed {
+                lease: renewed_lease,
+                ..
+            }) if renewed_lease == lease
+        ));
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            OwnerService::serve_one(&mut owner),
+            "an otherwise idle owner turn reports the one expired lease"
+        );
+        assert!(
+            !OwnerService::serve_one(&mut owner),
+            "the expired lease is reclaimed only once"
+        );
+        assert!(matches!(
+            OwnerService::engine(
+                &mut owner,
+                407,
+                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                    request_id: 407,
+                    operation: backend_engine::LocalSubscriptionOperation::Cancel { lease },
+                }),
+            ),
+            Err(crate::ProtocolError::InvalidControl("unknown subscription lease"))
         ));
         OwnerService::close(&mut owner);
     }
