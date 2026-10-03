@@ -433,11 +433,10 @@ fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
             facet::fonts::install(cx).expect("fonts");
             facet::probe::enable(cx);
             let settings = SettingsState { appearance: shot_build.appearance, shelf_open: true, ..SettingsState::default() };
-            let snapshot = AppSnapshot::empty(key).with_settings(settings).with_session(SessionState {
-                route: shot_build.route.clone(),
-                back: vec![Route::Orbit(OrbitRoute::Home)].into(),
-                ..SessionState::default()
-            });
+            let mut session = SessionState::default();
+            session.route = shot_build.route.clone();
+            session.back = vec![Route::Orbit(OrbitRoute::Home)].into();
+            let snapshot = AppSnapshot::empty(key).with_settings(settings).with_session(session);
             let mut workspace = snapshot.workspace().clone();
             workspace.host = LocalProjectId::from_path(&repo().join("crates/present")).ok();
             let snapshot = snapshot.with_workspace(workspace);
