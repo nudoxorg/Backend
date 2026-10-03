@@ -633,6 +633,60 @@ fn cold_display_is_exact_address_only_and_cannot_grant_current_authority() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[gpui::test]
+fn private_cold_world_paints_its_exact_saved_words_through_owner_start_failure_and_back(cx: &mut gpui::TestAppContext) {
+    use crate::navigation::{BrowseRoute, Intent, OrbitRoute};
+    use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+    let route = Route::World;
+    let observed = served("mounted-cold-world", 17);
+    let dir = scratch("mounted-cold-world");
+    let file = SnapshotFile::in_data(&dir);
+    file.write_displays(observed, &[], &[Arc::new(display(&route, observed))]).expect("private cold save");
+    let seed = file.read_route(&route).expect("exact cold restore");
+    assert!(seed.pages.is_empty(), "saved words never enter the Orbit Resource");
+    let gate = OwnerGate::starting();
+    let mut rig = crate::shell::tests::rig_with_cold_keep(cx, route.clone(), gate.clone(), Keep { file, seed: Some(seed) });
+    let words = rig.said();
+    assert!(words.iter().any(|word| word == "Earlier reading"), "the real mounted Reader paints the saved World");
+    assert!(words.iter().any(|word| word == "An earlier bounded answer"));
+    assert!(words.iter().any(|word| word.contains("observed root") && word.contains("Read-only")));
+    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "cold words cannot establish current owner admission");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.orbit().loaded_value().is_none()), "cold words cannot populate the Orbit Resource");
+
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    rig.draw();
+    assert!(rig.said().iter().any(|word| word == "Earlier reading"), "the same exact visit survives owner failure");
+    let other = Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome));
+    rig.go(Intent::Navigate(other.clone()));
+    assert_eq!(rig.route(), other);
+    assert!(!rig.said().iter().any(|word| word == "Earlier reading"), "a new route cannot inherit World text");
+    rig.go(Intent::Back);
+    assert_eq!(rig.route(), route);
+    assert!(rig.said().iter().any(|word| word == "Earlier reading"), "Back requests its own saved World visit");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[gpui::test]
+fn saved_find_words_yield_to_local_settings_without_becoming_search_results(cx: &mut gpui::TestAppContext) {
+    use crate::model::pages::SearchQuery;
+    use crate::navigation::{BrowseRoute, Intent, OrbitRoute, SettingsPage};
+    use crate::runtime::owner::OwnerGate;
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(SearchQuery::new("cold query", 50).expect("query"))));
+    let observed = served("mounted-cold-find", 19);
+    let dir = scratch("mounted-cold-find");
+    let file = SnapshotFile::in_data(&dir);
+    file.write_displays(observed, &[], &[Arc::new(display(&route, observed))]).expect("private cold save");
+    let seed = file.read_route(&route).expect("exact cold restore");
+    let mut rig = crate::shell::tests::rig_with_cold_keep(cx, route.clone(), OwnerGate::starting(), Keep { file, seed: Some(seed) });
+    assert!(rig.said().iter().any(|word| word == "Earlier reading"), "saved rows are readable beneath the local Find input");
+    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+    assert!(!rig.said().iter().any(|word| word == "Earlier reading"), "Settings owns its local overlay independently");
+    rig.go(Intent::DismissOverlay);
+    assert_eq!(rig.route(), route);
+    assert!(rig.said().iter().any(|word| word == "Earlier reading"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn a_valid_hashed_display_copied_to_another_workspace_is_unavailable() {
     let root = served("namespace", 3);

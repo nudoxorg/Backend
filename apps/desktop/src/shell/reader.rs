@@ -912,7 +912,7 @@ impl Reader {
                         return false;
                     }
                 }
-                Some(SourceGeneration::Indexed(_)) => return false,
+                Some(SourceGeneration::Indexed(_) | SourceGeneration::Retained(_)) => return false,
             }
         }
         true
@@ -1864,6 +1864,8 @@ mod library_state_memory_tests {
 pub(crate) enum SourceGeneration {
     Indexed(crate::core::VersionedRoot),
     Cargo([u8; 32]),
+    /// Display-only cursor memory, never a present source action lease.
+    Retained([u8; 32]),
 }
 
 #[derive(Default)]
@@ -2163,9 +2165,14 @@ impl Reader {
             }),
             _ => route_symbol(&place.route).and_then(|symbol| pages.source(&symbol).value_root().map(SourceGeneration::Indexed)),
         };
+        // Saved text partitions only the local pager's memory. It never
+        // enters Ctx's current source generation or native action guards.
+        let paging_generation = source_generation.or_else(|| bodies::saved_source_generation(
+            self.links.store.read(cx), &place.route, place.overlay,
+        ).map(SourceGeneration::Retained));
         let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code)
-            || matches!(&place.route, Route::CargoSource(_)) {
-            self.source_paging.for_route(&place.route, source_generation, current)
+            || matches!(&place.route, Route::CargoSource(_) | Route::Package(_)) {
+            self.source_paging.for_route(&place.route, paging_generation, current)
         } else {
             Rc::clone(&self.empty_source_paging)
         };
@@ -2267,7 +2274,8 @@ impl Render for Reader {
         if self.pending_page_focus.as_ref().is_some_and(|focus| focus.place != requested.key || !focus.root.same_authority(snapshot.key())) {
             self.pending_page_focus = None;
         }
-        let on_graph = bodies::graph::is_graph(&current.route) && current.overlay.is_none();
+        let on_graph = bodies::graph::is_graph(&current.route) && current.overlay.is_none()
+            && !bodies::saved_world(self.links.store.read(cx), &current.route, current.overlay);
         let layout = self.layout(&current.route, current.overlay, &measure, &facet);
         let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();

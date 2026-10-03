@@ -515,6 +515,35 @@ fn rig_with_engine_gate_at_root(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
 ) -> Rig {
+    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None)
+}
+
+/// Mounts a real Reader from an already decoded private cold snapshot.
+pub(crate) fn rig_with_cold_keep(
+    cx: &mut TestAppContext,
+    route: Route,
+    gate: OwnerGate,
+    keep: crate::runtime::snapshot::Keep,
+) -> Rig {
+    rig_with_engine_gate_at_root_keep(
+        cx, Some(route), 1440.0, 900.0,
+        ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly,
+        Some(gate), VersionedRoot::unserved(), Some(keep),
+    )
+}
+
+fn rig_with_engine_gate_at_root_keep(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+    gate: Option<OwnerGate>,
+    initial_root: VersionedRoot,
+    keep: Option<crate::runtime::snapshot::Keep>,
+) -> Rig {
+    let cold = keep.is_some();
     let waiting_for_owner = gate.as_ref().is_some_and(|gate| !matches!(gate.state(), OwnerState::Ready { .. }));
     cx.executor().allow_parking();
     cx.update(|cx| {
@@ -528,9 +557,16 @@ fn rig_with_engine_gate_at_root(
     workspace.host = LocalProjectId::from_path(&folder).ok();
     snapshot = snapshot.with_workspace(workspace);
     snapshot = snapshot.with_session(SessionState::default());
+    if cold {
+        if let Some(route) = &route {
+            let mut session = snapshot.session().clone();
+            session.route = route.clone();
+            snapshot = snapshot.with_session(session);
+        }
+    }
     let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
-    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, None, Some(pool), gate, None));
+    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, None, Some(pool), gate, keep));
     let window_graph = UiEntityGraph {
         root: graph.root.clone(),
         store: graph.store.clone(),
@@ -568,7 +604,7 @@ fn rig_with_engine_gate_at_root(
         rig.repaint();
         rig.settle();
     }
-    if let Some(route) = route {
+    if let Some(route) = route.filter(|_| !cold) {
         rig.go(Intent::Navigate(route));
     }
     rig

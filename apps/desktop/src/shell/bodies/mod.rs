@@ -13,6 +13,7 @@ pub(crate) mod graph;
 mod inbox;
 mod orbit;
 mod package;
+mod retained;
 mod settings;
 mod source;
 pub(crate) use source::paging::PagingState;
@@ -458,5 +459,16 @@ pub(crate) fn build(
         let words = ctx.say(format!("The selected Cargo Tree could not be checked: {reason}. Current semantic facts, if present, remain separate from Cargo source links."));
         leaves.push(Leaf::new(super::kit::quiet(words, &ctx.measure, ctx.palette)));
     }
+    retained::append(route, snapshot, ctx, cx, &mut leaves);
     leaves
+}
+
+/// A World route with no readable Orbit value can show its exact saved words
+/// in the Reader rather than an empty graph surface.
+pub(crate) fn saved_world(store: &DataStore, route: &Route, overlay: Option<Overlay>) -> bool {
+    matches!(route, Route::World) && retained::select(store, route, overlay).is_some()
+}
+
+pub(crate) fn saved_source_generation(store: &DataStore, route: &Route, overlay: Option<Overlay>) -> Option<[u8; 32]> {
+    retained::source_generation(store, route, overlay)
 }

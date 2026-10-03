@@ -63,19 +63,40 @@ pub(super) fn body(place: &Route, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
     let current = dependencies.current_cargo_readme(live);
     let Some(current) = current else {
         let mut leaves = Vec::new();
-        if let Some(BrowseValue::CargoReadme(model)) = resource.loaded_value() {
-            let words = ctx.say("Earlier owner README observation retained. Its links are unavailable while the current read is checked.");
-            leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
-            if let CargoReadmeState::Read(document) = &model.state {
-                let snippet = document.source.chars().take(512).collect::<String>();
-                leaves.push(Leaf::new(
-                    div()
-                        .id("cargo-readme-retained-snippet")
-                        .role(gpui::Role::Label)
-                        .aria_label("Earlier README text")
-                        .child(quiet(ctx.say(snippet), &ctx.measure, ctx.palette)),
-                ));
+        if let Some(BrowseValue::CargoReadme(model)) = resource.loaded_value()
+            && model.package == selected.package
+            && model.request_binding == selected.context.request_binding()
+        {
+            match &model.state {
+                CargoReadmeState::Read(document)
+                    if &document.origin.package == selected.package.reference()
+                        && document.origin.request_binding == selected.context.request_binding()
+                        && *blake3::hash(document.source.as_bytes()).as_bytes() == document.origin.content_digest => {
+                    let words = ctx.say("Earlier owner README observation retained. Its links are unavailable while the current read is checked.");
+                    leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
+                    let snippet = document.source.chars().take(512).collect::<String>();
+                    leaves.push(Leaf::new(
+                        div()
+                            .id("cargo-readme-retained-snippet")
+                            .role(gpui::Role::Label)
+                            .aria_label("Earlier README text")
+                            .child(quiet(ctx.say(snippet), &ctx.measure, ctx.palette)),
+                    ));
+                }
+                CargoReadmeState::Absent(_) => leaves.push(Leaf::new(quiet(
+                    "An earlier Cargo observation selected no README; the current selection is still being checked.",
+                    &ctx.measure, ctx.palette,
+                ))),
+                CargoReadmeState::Read(_) => leaves.push(Leaf::new(quiet(
+                    "The retained README source origin does not match this address; its text cannot be shown here.",
+                    &ctx.measure, ctx.palette,
+                ))),
             }
+        } else if resource.loaded_value().is_some() {
+            leaves.push(Leaf::new(quiet(
+                "The retained README belongs to another package, binding or source origin; its text cannot be shown here.",
+                &ctx.measure, ctx.palette,
+            )));
         }
         match admission {
             CargoReadAdmission::Checking => leaves.push(Leaf::new(quiet(

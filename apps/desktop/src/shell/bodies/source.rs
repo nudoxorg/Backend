@@ -284,6 +284,82 @@ fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &
     leaves
 }
 
+/// A saved display has bytes but no owner lease. Its local pager uses the
+/// same UTF-8 bounded page calculation as current source, and each callback
+/// checks the exact mounted visit and retained projection again.
+pub(super) fn retained_page(
+    display: Arc<crate::model::retained_display::RetainedDisplay>,
+    content: Arc<str>,
+    first_line: u32,
+    route: &Route,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> gpui::AnyElement {
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let Ok(source) = SourceText::new(content, first_line, SourceOrigin::Excerpt, true) else {
+        return quiet("The saved text has an invalid line range.", &measure, palette).into_any_element();
+    };
+    let requested = match route {
+        Route::CargoSource(route) => route.line,
+        _ => None,
+    }.filter(|line| source.line_range().is_some_and(|range| (range.first..=range.last).contains(line)))
+        .unwrap_or(first_line);
+    let memory = Rc::clone(&ctx.source_paging);
+    let cursor = {
+        let mut state = memory.borrow_mut();
+        let saved = state.get_or_insert_with(|| PagingState::new(initial_cursor(&source, requested, CONTEXT_BEFORE)));
+        if source.line_span(saved.cursor.line).and_then(|span| source.text().get(span.range()))
+            .is_none_or(|line| saved.cursor.byte > line.len() || !line.is_char_boundary(saved.cursor.byte)) {
+            *saved = PagingState::new(initial_cursor(&source, requested, CONTEXT_BEFORE));
+        }
+        saved.cursor
+    };
+    let page = SourcePage::at(&source, cursor);
+    let visible = page.lines.iter().filter_map(|line| source.text().get(line.span.range())
+        .map(|words| format!("{}  {words}", line.number))).collect::<Vec<_>>().join("\n");
+    let mut column = div().flex().flex_col().gap(measure.space(Space::Base))
+        .child(div().id("saved-display-source-page").role(gpui::Role::Label)
+            .aria_label("Read-only saved source page")
+            .child(text(ty::CODE, &measure, palette.ink1).child(ctx.say(visible))));
+    let last = source.line_range().map_or(first_line, |range| range.last);
+    let first = page.lines.first().map_or(cursor.line, |line| line.number);
+    let shown_last = page.lines.last().map_or(cursor.line, |line| line.number);
+    column = column.child(quiet(ctx.say(format!("Saved text lines {first}–{shown_last} of {last}; links and source actions unavailable.")), &measure, palette));
+    let previous = memory.borrow().as_ref().and_then(|state| state.previous_target(&source, &page));
+    let next = memory.borrow().as_ref().and_then(|state| state.next_target(&source, &page));
+    let mut controls = div().flex().gap(measure.space(Space::Base));
+    for (target, label, forward) in [(previous, "Previous saved text", false), (next, "Next saved text", true)] {
+        let Some(target) = target else { continue; };
+        let state = Rc::clone(&memory);
+        let expected = Arc::clone(&display);
+        let route = route.clone();
+        let links = ctx.links.clone();
+        let reader = cx.weak_entity();
+        let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            let live = links.store.read(app);
+            if !super::retained::select(live, &route, live.snapshot().overlay())
+                .is_some_and(|now| Arc::ptr_eq(&now, &expected)) { return; }
+            if let Some(reader) = reader.upgrade() {
+                reader.update(app, |_, cx| {
+                    if let Some(paging) = state.borrow_mut().as_mut() {
+                        if forward { paging.next(target); } else { paging.previous(target); }
+                        cx.notify();
+                    }
+                });
+            }
+        });
+        let act = ctx.native_local_action(act, cx);
+        let id: SharedString = if forward { "saved-display-next" } else { "saved-display-previous" }.into();
+        ctx.targets.push(Target { id: id.clone(), label: label.into(), act: act.clone(), peek: None, source: None });
+        let mut control = facet::controls::button(id.clone(), label, &measure)
+            .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+        if let Some(focus) = ctx.native_handle(&id, cx) { control = control.focus_handle(focus); }
+        controls = controls.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)));
+    }
+    column.child(controls).into_any_element()
+}
+
 fn code(
     view: &SourceView,
     source: &SourceText,

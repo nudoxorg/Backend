@@ -41,9 +41,18 @@ pub(super) fn body(
         };
         let reading = admit_resource(&resource, ctx.links.snapshot(cx).key(), owner_serving);
         let value = match reading.current_value().or_else(|| reading.retained_value()) {
-            Some(BrowseValue::Find(value)) => Some(value.as_ref()),
+            Some(BrowseValue::Find(value)) if match route {
+                BrowseRoute::FindHome => value.prepared.query.is_empty(),
+                BrowseRoute::Find(query) => value.prepared.query.as_ref() == &*query.text
+                    && match &value.answers {
+                        crate::model::pages::Known::Known(answers) => answers.query == query.text,
+                        crate::model::pages::Known::Unknown(_) => true,
+                    },
+                _ => false,
+            } => Some(value.as_ref()),
             _ => None,
         };
+        let wrong_identity = reading.current_value().or_else(|| reading.retained_value()).is_some() && value.is_none();
         let model = match value {
             Some(value) => Arc::clone(&value.prepared),
             None => Arc::new(facet::browse::find::Model {
@@ -60,7 +69,11 @@ pub(super) fn body(
         };
         // Find's reveal state lives in its native component. Its painted text
         // probes are the authority for what is visible in this frame.
-        let admission = find_admission(&reading);
+        let admission = if wrong_identity {
+            facet::browse::find::ReadAdmission::Failed(
+                "The Find reply belongs to another exact query; its results cannot be shown here.".into(),
+            )
+        } else { find_admission(&reading) };
         let source = FindActionSource::new(route, ctx, cx);
         let mut actions = find_actions(ctx, cx, &source);
         if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
@@ -80,8 +93,8 @@ pub(super) fn body(
         return leaves;
     }
     match shown(&resource) {
-        Shown::Ready(BrowseValue::Tree(_)) => tree_body(route, ctx, cx),
-        Shown::Ready(BrowseValue::Compare(compare)) => {
+        Shown::Ready(BrowseValue::Compare(compare)) if matches!(route, BrowseRoute::Compare(selection)
+            if compare.packages.iter().map(|package| &package.package).eq(selection.packages().iter())) => {
             let model = Arc::clone(&compare.prepared);
             let actions = compare_actions(route, ctx, cx);
             vec![Leaf::new(facet::browse::compare::compare(
@@ -91,6 +104,10 @@ pub(super) fn body(
                 &ctx.measure,
             ))]
         }
+        Shown::Ready(_) => vec![Leaf::new(crate::shell::kit::quiet(
+            "The browse reply belongs to another exact destination; its rows cannot be shown here.",
+            &ctx.measure, ctx.palette,
+        ))],
         other => {
             let (name, _) = route.here();
             not_ready(&other, &PageKey::Browse(key), &name, ctx, cx)
