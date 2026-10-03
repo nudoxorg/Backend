@@ -267,9 +267,16 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             row.error = error;
             row.recent = true;
             if let Some(saved) = row.operation.as_mut() { saved.observation = Some(observation); }
-            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) { workspace.host = Some(project); }
+            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) { workspace.host = Some(project.clone()); }
             workspace.projects = rows.into();
-            Ok(current.with_workspace(workspace))
+            let snapshot = current.with_workspace(workspace);
+            // A new published attempt may have changed local manifest facts.
+            // Re-read those local facts independently of current view hydration.
+            let snapshot = if phase == ProjectPhase::Ready && snapshot.local_package().loaded_value()
+                .is_some_and(|package| package.project == project) {
+                snapshot.with_local_package(Resource::not_yet())
+            } else { snapshot };
+            Ok(snapshot)
         }
         EngineDto::LocalPackage {
             request,
