@@ -811,9 +811,15 @@ async fn load_row_connection(
     let rows = connection
         .query(
             "SELECT operation_key, request_digest, acceptance_sequence, state, \
-                    terminal_sequence, payload \
+                    terminal_sequence, length(payload), typeof(payload), \
+                    CASE WHEN typeof(payload)='blob' \
+                              AND length(payload) <= ?2 \
+                         THEN payload ELSE NULL END \
              FROM backend_index_operations WHERE operation_key=?1",
-            [operation_key.to_bytes().to_vec()],
+            turso::params![
+                operation_key.to_bytes().to_vec(),
+                MAX_OPERATION_PAYLOAD_BYTES as i64
+            ],
         )
         .await
         .map_err(database_error)?;
@@ -827,9 +833,15 @@ async fn load_row_transaction(
     let rows = transaction
         .query(
             "SELECT operation_key, request_digest, acceptance_sequence, state, \
-                    terminal_sequence, payload \
+                    terminal_sequence, length(payload), typeof(payload), \
+                    CASE WHEN typeof(payload)='blob' \
+                              AND length(payload) <= ?2 \
+                         THEN payload ELSE NULL END \
              FROM backend_index_operations WHERE operation_key=?1",
-            [operation_key.to_bytes().to_vec()],
+            turso::params![
+                operation_key.to_bytes().to_vec(),
+                MAX_OPERATION_PAYLOAD_BYTES as i64
+            ],
         )
         .await
         .map_err(database_error)?;
@@ -855,20 +867,59 @@ async fn read_operation_row(mut rows: turso::Rows) -> Result<Option<OperationRow
             ));
         }
     };
-    let payload = match row.get_value(5).map_err(database_error)? {
+    let payload_length = match row.get_value(5).map_err(database_error)? {
         turso::Value::Null => None,
-        turso::Value::Blob(bytes) => Some(bytes),
+        turso::Value::Integer(value) => Some(value),
         _ => {
             return Err(JournalError::Corrupt(
-                "operation payload is not a blob".to_owned(),
+                "operation payload length is not an integer".to_owned(),
             ));
         }
     };
+    let payload_type: String = row.get(6).map_err(database_error)?;
     if acceptance_sequence <= 0 {
         return Err(JournalError::Corrupt(
             "acceptance sequence is reserved".to_owned(),
         ));
     }
+    match state {
+        STATE_ACCEPTED | STATE_PREPARED
+            if terminal_sequence.is_none() && payload_length.is_some() => {}
+        STATE_PUBLISHED | STATE_FAILED
+            if terminal_sequence.is_some_and(|sequence| sequence > 0)
+                && payload_length.is_some() => {}
+        STATE_OUTSIDE_RECEIPT_WINDOW
+            if terminal_sequence.is_some_and(|sequence| sequence > 0)
+                && payload_length.is_none() => {}
+        _ => {
+            return Err(JournalError::Corrupt(
+                "stored operation state, terminal sequence, and payload length disagree".to_owned(),
+            ));
+        }
+    }
+    let payload = match payload_length {
+        None if payload_type == "null" => None,
+        Some(length) if length > MAX_OPERATION_PAYLOAD_BYTES as i64 => {
+            return Err(JournalError::Corrupt(
+                "stored operation payload exceeds its row bound".to_owned(),
+            ));
+        }
+        Some(length) if length > 0 && payload_type == "blob" => {
+            match row.get_value(7).map_err(database_error)? {
+                turso::Value::Blob(bytes) if bytes.len() == length as usize => Some(bytes),
+                _ => {
+                    return Err(JournalError::Corrupt(
+                        "bounded operation payload is unavailable or malformed".to_owned(),
+                    ));
+                }
+            }
+        }
+        _ => {
+            return Err(JournalError::Corrupt(
+                "operation payload is not a bounded blob".to_owned(),
+            ));
+        }
+    };
     Ok(Some(OperationRow {
         operation_key,
         request_digest,
@@ -1196,6 +1247,32 @@ mod tests {
             panic!("published status expected")
         };
         assert_eq!(observed, receipt);
+        drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn oversized_payload_is_rejected_before_the_blob_projection_is_read() {
+        let path = path();
+        let mut journal = open(&path);
+        let operation = key(30);
+        journal
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("accept operation");
+        futures_executor::block_on(journal.connection.execute(
+            "UPDATE backend_index_operations SET payload=zeroblob(?1) WHERE operation_key=?2",
+            turso::params![
+                (MAX_OPERATION_PAYLOAD_BYTES as i64) * 64,
+                operation.to_bytes().to_vec()
+            ],
+        ))
+        .expect("write oversized corruption fixture");
+
+        assert!(matches!(
+            journal.entry(operation),
+            Err(JournalError::Corrupt(message))
+                if message == "stored operation payload exceeds its row bound"
+        ));
         drop(journal);
         cleanup(&path);
     }
