@@ -848,6 +848,11 @@ impl Reader {
         self.find_focus_return = None;
     }
 
+    #[cfg(test)]
+    pub(crate) fn diagnostic_find_return_pending(&self) -> bool {
+        self.find_focus_return.is_some()
+    }
+
     pub(crate) fn begin_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) {
         self.find_focus_return = None;
         let Some(focused) = focused else { return; };

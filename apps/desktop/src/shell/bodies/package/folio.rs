@@ -63,6 +63,32 @@ struct Nav {
     marks: Marks,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct LicenceNavDiagnostic {
+    latest: Option<gpui::WeakEntity<Nav>>,
+}
+
+#[cfg(test)]
+impl gpui::Global for LicenceNavDiagnostic {}
+
+/// Holds the old keyed controller for a test without keeping its painted
+/// control, dispatch registration, or Reader visit alive.
+#[cfg(test)]
+pub(super) struct LicenceChoiceProbe(Entity<Nav>);
+
+#[cfg(test)]
+impl LicenceChoiceProbe {
+    pub(super) fn choice(&self, cx: &App) -> DisclosureChoice {
+        self.0.read(cx).licence
+    }
+}
+
+#[cfg(test)]
+pub(super) fn licence_choice_probe(cx: &mut App) -> Option<LicenceChoiceProbe> {
+    cx.default_global::<LicenceNavDiagnostic>().latest.clone()?.upgrade().map(LicenceChoiceProbe)
+}
+
 /// A module's shingles carried to its cards, and when the carry began.
 #[derive(Clone, Debug)]
 struct Flying {
@@ -290,11 +316,14 @@ impl Folio {
     fn state(&self, window: &mut Window, cx: &mut App) -> Entity<Nav> {
         let reopen = self.reopen.clone();
         let reading_at = self.facts.at.clone();
-        window.use_keyed_state(self.id.clone(), cx, move |_, _| Nav {
+        let nav = window.use_keyed_state(self.id.clone(), cx, move |_, _| Nav {
             open: reopen,
             reading_at,
             ..Nav::default()
-        })
+        });
+        #[cfg(test)]
+        { cx.default_global::<LicenceNavDiagnostic>().latest = Some(nav.downgrade()); }
+        nav
     }
 
     fn map_modules(&self) -> Rc<[ModuleFacts]> {

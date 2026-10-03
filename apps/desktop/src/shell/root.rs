@@ -1420,6 +1420,11 @@ impl Shell {
         self.local_native_input
     }
 
+    #[cfg(test)]
+    pub(crate) fn diagnostic_find_return(&self, cx: &App) -> (Option<u64>, bool) {
+        (self.transient_generation, self.reader.read(cx).diagnostic_find_return_pending())
+    }
+
     pub(crate) fn admits_local_activation_scope(&self, scope: gpui::NativeActivationScope, cx: &App) -> bool {
         self.local_native_input == scope && self.page_input_allowed(cx)
             && matches!(scope, gpui::NativeActivationScope::Active { .. })
