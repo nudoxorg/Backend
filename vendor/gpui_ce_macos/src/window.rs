@@ -677,18 +677,19 @@ impl MacWindowState {
     }
 
     fn start_display_link(&mut self) {
-        self.stop_display_link();
         unsafe {
             if !self
                 .native_window
                 .occlusionState()
                 .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
             {
+                self.stop_display_link();
                 return;
             }
         }
         let Some(display_id) = display_id_for_screen(unsafe { self.native_window.screen() }) else {
             // AppKit can temporarily report no screen while displays are being reconfigured.
+            self.stop_display_link();
             return;
         };
         let data = self.native_view.as_ptr() as *mut c_void;
@@ -2726,7 +2727,6 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
         if lock.activated_least_once {
             if let Some(mut callback) = lock.request_frame_callback.take() {
                 lock.renderer.set_presents_with_transaction(true);
-                lock.stop_display_link();
                 drop(lock);
                 callback(RequestFrameOptions {
                     require_presentation: true,
@@ -2850,7 +2850,6 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     let mut lock = window_state.lock();
     if let Some(mut callback) = lock.request_frame_callback.take() {
         lock.renderer.set_presents_with_transaction(true);
-        lock.stop_display_link();
         drop(lock);
         callback(RequestFrameOptions {
             require_presentation: true,

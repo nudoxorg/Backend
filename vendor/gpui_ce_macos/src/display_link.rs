@@ -256,6 +256,16 @@ impl WindowFrameSource {
     }
 
     pub fn start(&mut self, display_id: CGDirectDisplayID) -> Result<()> {
+        // `CVDisplayLinkStop` does not wait for its I/O thread to finish. A
+        // stop/start pair for the same display can race that retirement and
+        // make `CVDisplayLinkStart` reject an otherwise live frame source.
+        // Retain its existing subscription when the screen did not change.
+        if self
+            .registration
+            .is_some_and(|(registered, _)| registered == display_id)
+        {
+            return Ok(());
+        }
         self.stop();
         let subscriber_id = subscribe(display_id, self.frame_requests.clone())?;
         self.registration = Some((display_id, subscriber_id));
