@@ -34,9 +34,11 @@ Only the sole GUI explorer may establish the live window, initial route, app for
 
 ### Recorder identity and permission preflight
 
-The first Run19 Settings attempt did not capture a frame or post an action. Its verified build receipt admitted the QA executable, but `window.jsonl` recorded `ax_trusted:false` and frontmost PID 10250 instead of the target 14636. `SCStream.startCapture()` returned without delivering a first frame; that fact alone does not prove why. The revised recorder writes `preflight.jsonl` *before* ScreenCaptureKit selection, recording independent `CGPreflightScreenCaptureAccess()`, `AXIsProcessTrusted()`, and target-frontmost results. It rejects any missing admission with typed reasons and no input. If all three pass but ScreenCaptureKit still delivers no frame, `stream-state.jsonl` records a separate `NoFirstFrameAfterStartCapture` outcome and any stream-delegate error. The Python manifest preserves these sidecars and zero frame/action counts on failure; none becomes a motion pass.
+The first Run19 Settings attempt did not capture a frame or post an action. Its verified build receipt admitted the QA executable, but `window.jsonl` recorded `ax_trusted:false` and frontmost PID 10250 instead of the target 14636. `SCStream.startCapture()` returned without delivering a first frame; that fact alone does not prove why. The revised recorder writes `preflight.jsonl` *before* ScreenCaptureKit selection, recording independent `CGPreflightScreenCaptureAccess()`, `AXIsProcessTrusted()`, and target-frontmost results. Screen Recording and Accessibility must pass for this AX-backed evidence tool. Target frontmost is required for any posting action; a passive, zero-input capture or read-only AX probe records foreground state without rejecting a visible background window unless the plan explicitly sets `require_frontmost:true`. If admission passes but ScreenCaptureKit still delivers no frame, `stream-state.jsonl` records a separate `NoFirstFrameAfterStartCapture` outcome and any stream-delegate error. The Python manifest preserves these sidecars and zero frame/action counts on failure; none becomes a motion pass.
 
-Use one dedicated, stable, team-signed recorder app, separate from the product QA app. `security find-identity -v -p codesigning` currently reports **zero valid identities** on the capture host, so the following build/sign steps are preparation only until the owner provisions an Apple Development or Developer ID signing identity for this recorder. Do not reuse another app's identity, use ad-hoc signing, edit TCC databases, or grant privacy permissions programmatically. With a valid identity available, the owner can run:
+Use one dedicated recorder app, separate from the product QA app. A team-signed app keeps its designated requirement across rebuilds. `security find-identity -v -p codesigning` currently reports **zero valid identities** on this host. Apple DTS confirms that a frozen ad-hoc signed app can receive Screen Recording permission, but a rebuild changes its identity and needs a new OS UI grant. The runner therefore admits `TeamSignedStableAcrossBuilds` or `AdHocFrozenContentAddressed`, with the latter requiring a path suffixed by its exact CodeDirectory hash. It verifies the app seal, bundle/Info, binary SHA, CDHash, designated requirement and path before and after capture. Do not borrow another app's identity, edit TCC databases, or grant privacy permissions programmatically.
+
+For a team-signed recorder, with an available Apple Development or Developer ID identity:
 
 ```sh
 QA_RECORDER_APP=/Applications/NudoxMotionRecorder.app
@@ -54,7 +56,30 @@ codesign --display --verbose=4 "$QA_RECORDER_APP"
 codesign --display --requirements - "$QA_RECORDER_APP"
 ```
 
-The recorder's `CFBundleIdentifier` and signing team must stay the same across rebuilds, and its designated requirement must remain compatible. The Python runner now requires `--recorder "$QA_RECORDER_APP/Contents/MacOS/NudoxMotionRecorder"` and verifies the app seal, team, and designated requirement before runtime. Grant **NudoxMotionRecorder** in macOS **System Settings → Privacy & Security → Screen & System Audio Recording** (called **Screen Recording** on some versions) and **Accessibility** using the OS UI. Restart the recorder after the Screen Recording grant. If macOS requests **Input Monitoring** for this signed recorder, grant that through the same Privacy & Security UI. Then the sole GUI explorer brings the exact QA product PID/window to the front and explicitly cedes input ownership before the recorder runs. A previous failed artifact remains untouched; the retry needs a new empty output directory and the root's current exact build/preservation receipt.
+For a single frozen QA recorder without a team identity, use a **new empty staging bundle**, replace `$QA_RECORDER_SOURCE` with the reviewed clean tool checkout, and sign this app with its own ad-hoc signature. Move it once to the CDHash-named final path, then do not rebuild or modify it. The exact final path is what the OS UI must grant:
+
+```sh
+QA_RECORDER_SOURCE=/path/to/clean/committed/tool-checkout
+QA_RECORDER_STAGE=/private/tmp/NudoxMotionRecorder-staging.app
+mkdir -p "$QA_RECORDER_STAGE/Contents/MacOS"
+plutil -create xml1 "$QA_RECORDER_STAGE/Contents/Info.plist"
+plutil -insert CFBundleIdentifier -string dev.nudox.audit.motion-recorder "$QA_RECORDER_STAGE/Contents/Info.plist"
+plutil -insert CFBundleExecutable -string NudoxMotionRecorder "$QA_RECORDER_STAGE/Contents/Info.plist"
+plutil -insert CFBundlePackageType -string APPL "$QA_RECORDER_STAGE/Contents/Info.plist"
+plutil -insert NSScreenCaptureUsageDescription -string 'Capture the explicitly selected QA window for native motion testing.' "$QA_RECORDER_STAGE/Contents/Info.plist"
+xcrun swiftc -parse-as-library -O "$QA_RECORDER_SOURCE/tools/gui-harness/native_motion.swift" -o "$QA_RECORDER_STAGE/Contents/MacOS/NudoxMotionRecorder"
+codesign --force --sign - "$QA_RECORDER_STAGE"
+codesign --verify --strict --verbose=2 "$QA_RECORDER_STAGE"
+QA_RECORDER_CDHASH=$(codesign --display --verbose=4 "$QA_RECORDER_STAGE" 2>&1 | sed -n 's/^CDHash=//p')
+QA_RECORDER_APP="${HOME}/Applications/NudoxMotionRecorder-${QA_RECORDER_CDHASH}.app"
+mkdir -p "${HOME}/Applications"
+test -n "$QA_RECORDER_CDHASH" && test ! -e "$QA_RECORDER_APP" && mv "$QA_RECORDER_STAGE" "$QA_RECORDER_APP"
+codesign --verify --strict --verbose=2 "$QA_RECORDER_APP"
+codesign --display --requirements - "$QA_RECORDER_APP"
+shasum -a 256 "$QA_RECORDER_APP/Contents/MacOS/NudoxMotionRecorder" "$QA_RECORDER_APP/Contents/Info.plist"
+```
+
+Keep the resulting `.app` at that fixed path. A new binary, Info.plist, CDHash, or path is a **new recorder identity** and needs a fresh OS UI grant; the old permission is not a valid receipt for it. The Python runner requires `--recorder "$QA_RECORDER_APP/Contents/MacOS/NudoxMotionRecorder"`. Grant **NudoxMotionRecorder** in macOS **System Settings → Privacy & Security → Screen & System Audio Recording** (called **Screen Recording** on some versions) and **Accessibility** using the OS UI. Restart the recorder after the Screen Recording grant. If macOS requests **Input Monitoring** for this recorder, grant that through the same Privacy & Security UI. Then the sole GUI explorer brings the exact QA product PID/window to the front and explicitly cedes input ownership before any posting plan runs. A previous failed artifact remains untouched; the retry needs a new empty output directory and the root's current exact build/preservation receipt.
 
 ## Planned captures and semantic oracle
 
@@ -75,13 +100,14 @@ For every capture, review first, peak, reversal, and settled frames as individua
 Replace only `<PID>` and `<PRESERVATION_JSON>` after the root verifies them. Run these from the **clean committed tool checkout**; never from a dirty working tree, because tool identity is hash-bound. Use an empty unique output directory for each case.
 
 ```sh
-cd /private/tmp/sol-native-motion-run19-plans-20261003
+cd /path/to/reviewed-clean-recorder-checkout
 python3 tools/gui-harness/native_motion.py \
   --pid <PID> \
   --binary /private/tmp/nudox-gui-user-audit-20261003/current-run19/NudoxAuditRun19.app/Contents/MacOS/Nudox \
   --source /private/tmp/nudox-native-candidate-source-f42191 \
   --compiler-receipt /private/tmp/nudox-native-candidate-f421-run19/build-receipt.json \
   --preservation-receipt <PRESERVATION_JSON> \
+  --recorder "$QA_RECORDER_APP/Contents/MacOS/NudoxMotionRecorder" \
   --plan tools/gui-harness/plans/settings-fast-open-close.json \
   --out /private/tmp/nudox-sol-native-motion-run19/settings-fast-open-close
 ```

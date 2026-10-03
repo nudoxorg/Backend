@@ -31,6 +31,8 @@ struct Plan: Decodable {
     let expected_window_frame_pt: [Double]?
     let capture_fps: Int?
     let capture_scope: String?
+    let require_frontmost: Bool?
+    let foreground_required: Bool
     let actions: [Action]
 }
 
@@ -385,7 +387,9 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         }
         let plan = try JSONDecoder().decode(Plan.self, from: Data(contentsOf: URL(fileURLWithPath: args[2])))
         guard plan.schema == 1, plan.duration_ms > 0, plan.duration_ms <= 30_000,
-              plan.max_frames > 0, plan.max_frames <= 1800 else {
+              plan.max_frames > 0, plan.max_frames <= 1800,
+              plan.foreground_required == ((plan.require_frontmost ?? false) ||
+                  plan.actions.contains(where: { $0.kind != "probe" })) else {
             throw NSError(domain: "native-motion", code: 11, userInfo: [NSLocalizedDescriptionKey: "invalid plan bounds"])
         }
         let out = URL(fileURLWithPath: args[3], isDirectory: true)
@@ -403,10 +407,11 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         }
         if !screenCaptureGranted { preflightFailures.append("ScreenRecordingPreflightDenied") }
         if !axTrusted { preflightFailures.append("AccessibilityTrustDenied") }
-        if frontmostPID != pid { preflightFailures.append("TargetNotFrontmost") }
+        if plan.foreground_required && frontmostPID != pid { preflightFailures.append("TargetNotFrontmost") }
         let preflight: [String: Any] = [
             "schema": 1, "state": preflightFailures.isEmpty ? "Admitted" : "Rejected",
             "failures": preflightFailures, "pid": pid, "frontmost_pid": frontmostPID,
+            "foreground_required": plan.foreground_required,
             "screen_recording_preflight_granted": screenCaptureGranted,
             "ax_trusted": axTrusted,
             "recorder_bundle_identifier": recorderBundleID,

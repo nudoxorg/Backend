@@ -73,7 +73,7 @@ class NativeMotionTests(unittest.TestCase):
             self.assertEqual(evidence["window"]["window_id"], 29995)
             self.assertEqual((evidence["frame_rows"], evidence["action_rows"]), (0, 0))
 
-    def test_recorder_requires_dedicated_stable_signed_app_identity(self):
+    def test_recorder_admits_team_stable_or_one_frozen_adhoc_content_address(self):
         with tempfile.TemporaryDirectory() as root:
             app = Path(root) / "NudoxMotionRecorder.app"
             executable = app / "Contents/MacOS/NudoxMotionRecorder"
@@ -90,19 +90,51 @@ class NativeMotionTests(unittest.TestCase):
                         'designated => identifier "dev.nudox.audit.motion-recorder.run19" and anchor apple generic')
                 return subprocess.CompletedProcess(command, 0,
                     "Identifier=dev.nudox.audit.motion-recorder.run19\nTeamIdentifier=TESTTEAM\n"
-                    "Authority=Apple Development: QA Tester (TESTTEAM)\n")
+                    "Authority=Apple Development: QA Tester (TESTTEAM)\nCDHash=" + "b" * 40 + "\n")
             with patch.object(motion.subprocess, "run", side_effect=codesign):
                 identity = motion.recorder_identity(executable)
+                self.assertEqual(identity["kind"], "TeamSignedStableAcrossBuilds")
                 self.assertEqual(identity["team_identifier"], "TESTTEAM")
                 self.assertEqual(identity["identifier"], "dev.nudox.audit.motion-recorder.run19")
+            digest = "a" * 40
+            frozen_app = Path(root) / f"NudoxMotionRecorder-{digest}.app"
+            shutil.copytree(app, frozen_app)
+            frozen_executable = frozen_app / "Contents/MacOS/NudoxMotionRecorder"
             def adhoc(command, **_kwargs):
-                result = codesign(command)
+                if "--verify" in command:
+                    return subprocess.CompletedProcess(command, 0, "valid")
+                if "--requirements" in command:
+                    return subprocess.CompletedProcess(command, 0, f'# designated => cdhash H"{digest}"')
                 if "--verbose=4" in command:
-                    return subprocess.CompletedProcess(command, 0, "Signature=adhoc\nTeamIdentifier=not set\n")
-                return result
+                    return subprocess.CompletedProcess(command, 0,
+                        f"Signature=adhoc\nTeamIdentifier=not set\nCDHash={digest}\n")
+                raise AssertionError(command)
             with patch.object(motion.subprocess, "run", side_effect=adhoc):
-                with self.assertRaisesRegex(ValueError, "non-ad-hoc"):
+                frozen = motion.recorder_identity(frozen_executable)
+                self.assertEqual(frozen["kind"], "AdHocFrozenContentAddressed")
+                self.assertEqual(frozen["cdhash"], digest)
+                self.assertEqual(frozen["path"], str(frozen_app.resolve()))
+                with self.assertRaisesRegex(ValueError, "CDHash-versioned"):
                     motion.recorder_identity(executable)
+                frozen_executable.write_bytes(b"changed after admission")
+                self.assertNotEqual(motion.recorder_identity(frozen_executable), frozen)
+
+    def test_passive_plan_records_foreground_without_requiring_it(self):
+        passive = motion.require_plan(HERE / "plans/settings-15s-settle.json")
+        self.assertFalse(passive["foreground_required"])
+        active = motion.require_plan(HERE / "plans/settings-fast-open-close.json")
+        self.assertTrue(active["foreground_required"])
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            required = dict(passive, require_frontmost=True, foreground_required=True)
+            self.assertTrue(motion.require_plan(self.plan(directory, **required))["foreground_required"])
+            with self.assertRaisesRegex(ValueError, "foreground_required must match"):
+                motion.require_plan(self.plan(directory, **dict(passive, foreground_required=True)))
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            probe_only = json.loads((HERE / "plans/ask-open-close.json").read_text())
+            probe_only["actions"] = [{"at_ms": 100, "kind": "probe", "label": "read native AX"}]
+            self.assertFalse(motion.require_plan(self.plan(directory, **probe_only))["foreground_required"])
 
     def test_run19_plans_keep_find_drawer_settle_and_retarget_distinct(self):
         names = ["settings-fast-open-close", "ask-interrupted-reopen", "find-fast-open-close",

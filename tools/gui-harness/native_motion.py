@@ -7,7 +7,7 @@ pixels, window geometry and OS accessibility. A paired owner/read receipt is
 still required before claiming that those pixels show a particular live index.
 
 Example (after launching the exact built desktop binary and granting Screen
-Recording and Accessibility to a dedicated signed recorder app):
+Recording and Accessibility to a dedicated team-signed or frozen ad-hoc recorder app):
   python3 tools/gui-harness/native_motion.py \
     --pid "$PID" --binary /path/to/backend-desktop \
     --source /path/to/frozen/candidate-checkout \
@@ -19,9 +19,10 @@ Recording and Accessibility to a dedicated signed recorder app):
   python3 tools/gui-harness/native_motion_matrix.py /private/tmp/sol-native-runs \
     --out /private/tmp/sol-native-runs/MATRIX.json
 
-Build and team-sign the dedicated app once before OS privacy setup; see
-RUN19-NATIVE-MOTION.md. Its executable supports `list PID` when more than one
-window needs an exact ID. Per-output unsigned compilation is not admitted.
+Build/sign the dedicated app before OS privacy setup; see RUN19-NATIVE-MOTION.md.
+Its executable supports `list PID` when more than one window needs an exact ID.
+An ad-hoc rebuild is a new permission identity and must use a new CDHash path.
+Per-output unsigned compilation is not admitted.
 The plan's action times are relative to the first captured native frame. Native
 keycodes are macOS virtual keycodes; click coordinates are global screen points.
 No route, index, owner gate, or component state is injected by this tool.
@@ -42,6 +43,7 @@ import json
 import math
 import os
 import plistlib
+import re
 import shlex
 from pathlib import Path
 import shutil
@@ -124,7 +126,7 @@ def bundle_identity(binary: Path) -> dict[str, str] | None:
 
 
 def recorder_identity(recorder: Path) -> dict[str, str]:
-    """Require a dedicated signed .app so OS privacy grants have a stable DR."""
+    """Admit a team-stable app or one frozen, content-addressed ad-hoc app."""
     if symlink_in_artifact_path(recorder):
         raise ValueError("recorder app executable must not be a symlink")
     bundle = bundle_identity(recorder)
@@ -141,16 +143,33 @@ def recorder_identity(recorder: Path) -> dict[str, str]:
     signing = subprocess.run(["codesign", "--display", "--verbose=4", bundle["path"]],
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     fields = dict(line.split("=", 1) for line in signing.stdout.splitlines() if "=" in line)
+    if signing.returncode:
+        raise ValueError("recorder code-signing identity could not be read")
+    cdhash = fields.get("CDHash", "").lower()
+    if not re.fullmatch(r"[0-9a-f]{40,64}", cdhash):
+        raise ValueError("recorder has no valid CodeDirectory hash")
     team = fields.get("TeamIdentifier", "")
     authority = [line for line in signing.stdout.splitlines()
                  if line.startswith(("Authority=Apple Development:", "Authority=Developer ID Application:"))]
-    if signing.returncode or not team or team == "not set" or fields.get("Signature") == "adhoc" or not authority:
-        raise ValueError("recorder needs a stable non-ad-hoc signing team identity")
     requirement = subprocess.run(["codesign", "--display", "--requirements", "-", bundle["path"]],
                                  text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    if requirement.returncode or "designated =>" not in requirement.stdout or "anchor apple" not in requirement.stdout:
+    if requirement.returncode or "designated =>" not in requirement.stdout:
         raise ValueError("recorder has no verifiable designated requirement")
-    return {**bundle, "team_identifier": team,
+    if fields.get("Signature") == "adhoc":
+        # Apple DTS confirms ad-hoc permission is per build. The app path and
+        # code directory therefore name one immutable version; a new build
+        # needs its own path and a fresh grant through the OS UI.
+        if team not in {"", "not set"} or bundle["path"] != str(
+                Path(bundle["path"]).with_name(f"NudoxMotionRecorder-{cdhash}.app")):
+            raise ValueError("ad-hoc recorder needs its own CDHash-versioned app path")
+        if f'cdhash h"{cdhash}"' not in requirement.stdout.lower():
+            raise ValueError("ad-hoc designated requirement does not bind the recorded CDHash")
+        kind = "AdHocFrozenContentAddressed"
+    else:
+        if not team or team == "not set" or not authority or "anchor apple" not in requirement.stdout:
+            raise ValueError("recorder needs an Apple team signature or frozen ad-hoc content address")
+        kind = "TeamSignedStableAcrossBuilds"
+    return {**bundle, "kind": kind, "team_identifier": team, "cdhash": cdhash,
             "designated_requirement": requirement.stdout.strip(), "executable_sha256": sha256(recorder)}
 
 
@@ -172,7 +191,8 @@ def require_plan(path: Path) -> dict[str, Any]:
     if not isinstance(plan, dict) or plan.get("schema") != 1:
         raise ValueError("plan must have schema 1")
     allowed_plan = {"schema", "name", "duration_ms", "max_frames", "window_id", "expected_window_frame_pt", "capture_fps",
-                    "max_frame_gap_ms", "expected_reduce_motion", "capture_scope", "actions", "crops", "case"}
+                    "max_frame_gap_ms", "expected_reduce_motion", "capture_scope", "require_frontmost", "foreground_required",
+                    "actions", "crops", "case"}
     if set(plan) - allowed_plan:
         raise ValueError(f"unknown plan fields: {sorted(set(plan) - allowed_plan)}")
     case = plan.get("case")
@@ -219,6 +239,8 @@ def require_plan(path: Path) -> dict[str, Any]:
     actions = plan.get("actions")
     if not isinstance(actions, list):
         raise ValueError("actions must be a list")
+    if "require_frontmost" in plan and type(plan["require_frontmost"]) is not bool:
+        raise ValueError("require_frontmost must be boolean")
     allowed = {"key", "move", "click", "mouse_down", "mouse_up", "resize", "click_ax", "probe"}
     previous = -1
     button_down = False
@@ -306,6 +328,12 @@ def require_plan(path: Path) -> dict[str, Any]:
     plan["capture_fps"] = fps
     plan["capture_scope"] = scope
     plan["max_frame_gap_ms"] = coverage
+    # Probes are read-only. The Swift recorder decodes this typed admission
+    # and independently checks it against the action list before any input.
+    foreground_required = plan.get("require_frontmost", False) or any(action["kind"] != "probe" for action in actions)
+    if "foreground_required" in plan and plan["foreground_required"] is not foreground_required:
+        raise ValueError("foreground_required must match posting actions")
+    plan["foreground_required"] = foreground_required
     return plan
 
 
@@ -918,7 +946,7 @@ def run(args: argparse.Namespace) -> Path:
         manifest["owner_receipt"] = {"path": str(receipt), "sha256": sha256(receipt)}
     (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if not args.recorder:
-        raise ValueError("pass --recorder with a stable signed native QA recorder .app executable")
+        raise ValueError("pass --recorder with a dedicated signed native QA recorder .app executable")
     if symlink_in_artifact_path(args.recorder):
         raise ValueError("recorder app executable must not be a symlink")
     recorder = args.recorder.resolve(strict=True)
@@ -931,6 +959,11 @@ def run(args: argparse.Namespace) -> Path:
                             timeout=plan["duration_ms"] / 1000 + 15)
     (out / "recorder.log").write_text(result.stdout)
     manifest["recorder_exit"] = result.returncode
+    try:
+        manifest["recorder_identity_stable"] = recorder_identity(recorder) == manifest["recorder_identity"]
+    except (ValueError, OSError) as exc:
+        manifest["recorder_identity_stable"] = False
+        manifest["recorder_identity_change"] = str(exc)
     if result.returncode:
         manifest["failed_recorder_evidence"] = failed_recorder_evidence(out)
         (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -978,6 +1011,7 @@ def run(args: argparse.Namespace) -> Path:
     manifest["passed_native_checks"] = not manifest["analysis"]["failures"]
     stable = process_executable(args.pid) == expected and sha256(expected) == manifest["binary"]["sha256"]
     stable = stable and source_identity(source_root) == source and tool_identity() == tool
+    stable = stable and manifest["recorder_identity_stable"]
     stable = stable and bundle_identity(expected) == bundle
     stable = stable and sha256(args.plan.resolve()) == manifest["plan"]["sha256"]
     if args.compiler_receipt:
@@ -988,7 +1022,7 @@ def run(args: argparse.Namespace) -> Path:
         stable = stable and sha256(args.owner_receipt.resolve()) == manifest["owner_receipt"]["sha256"]
     manifest["capture_inputs_stable"] = stable
     if not stable:
-        manifest["analysis"]["failures"].append("binary/candidate source/tool/selected input or owner receipt changed during capture")
+        manifest["analysis"]["failures"].append("binary/recorder/candidate source/tool/selected input or owner receipt changed during capture")
         manifest["passed_native_checks"] = False
     manifest["completed_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -1009,7 +1043,7 @@ def main() -> int:
     parser.add_argument("--preservation-receipt", type=Path, help="hash-bound copy/source receipt required when candidate checkout or executable path differs from the original build")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--recorder", type=Path, required=True,
-                        help="dedicated, stable team-signed native QA recorder .app executable")
+                        help="dedicated team-signed or frozen CDHash-addressed ad-hoc recorder .app executable")
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
     args = parser.parse_args()
     try:
