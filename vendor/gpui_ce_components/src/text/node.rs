@@ -1429,7 +1429,7 @@ impl Paragraph {
         let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
         let mut offset = 0;
 
-        let mut ix = 0;
+        let mut ix = 0_usize;
         for inline_node in children {
             let text_len = inline_node.text.len();
             text.push_str(&inline_node.text);

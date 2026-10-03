@@ -60,7 +60,7 @@ fn spans(text: &str, links: &[(Range<usize>, LinkMark)]) -> Vec<Span> {
         }
     }
     edges.sort_unstable();
-    let mut active = BTreeSet::new();
+    let mut active = BTreeSet::<usize>::new();
     let mut result: Vec<Span> = Vec::new();
     let mut previous = 0;
     let mut at = 0;
