@@ -11,7 +11,18 @@ use crate::runtime::store::{Branch, DataStore};
 use facet::tokens::{TypeRole, ty};
 use facet::{ActiveFacet as _, Measure, Space, Typeset as _};
 use std::time::{Duration, Instant};
-use gpui::{App, Context, ElementId, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Window, div, px};
+use gpui::{App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px};
+
+/// The foot keeps a readable sample; its native status and disclosure retain
+/// the exact full message. This bound also owns the shell's height calculation.
+const NOTICE_LINES: usize = 3;
+
+struct Feedback {
+    message: String,
+    lines: Vec<String>,
+    role: TypeRole,
+    clipped: bool,
+}
 
 /// The address for a status bar `width` wide, in the lines it is set in and
 /// the role it is set in. Whole when it fits; otherwise its path gives way
@@ -36,13 +47,49 @@ pub(crate) fn display_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtim
 }
 
 pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
-    if let Some(notice) = notice.filter(|notice| notice.active(snapshot)) {
-        let measure = Measure::new(width, &cx.facet());
-        let role = measure.role(ty::MONO_SMALL);
-        let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
-        return (wrap_identifier(&notice.message, &role, room, cx), role);
+    let feedback = feedback(snapshot, focus, notice, width, cx);
+    (feedback.lines, feedback.role)
+}
+
+fn feedback(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> Feedback {
+    let notice = notice.filter(|notice| notice.active(snapshot));
+    let message = feedback_message(snapshot, focus, notice);
+    let measure = Measure::new(width, &cx.facet());
+    let role = measure.role(ty::MONO_SMALL);
+    let gap = measure.space(Space::Roomy);
+    let retry = notice.is_some_and(|notice| notice.retry.is_some());
+    let retry_room = if retry { button_room("Try again", &measure, cx) + gap } else { px(0.0) };
+    let room = (width - gap * 2.0 - retry_room).max(px(1.0));
+    let mut lines = wrap_identifier(&message, &role, room, cx);
+    let clipped = lines.len() > NOTICE_LINES;
+    if clipped {
+        let room = (room - button_room("Details", &measure, cx) - gap).max(px(1.0));
+        lines = wrap_identifier(&message, &role, room, cx);
+        lines.truncate(NOTICE_LINES);
+        if let Some(last) = lines.last_mut() {
+            while !last.is_empty() && text_width(&format!("{last}…"), &role, cx) > room * 0.98 { last.pop(); }
+            last.push('…');
+        }
     }
-    display_lines(snapshot, focus, width, cx)
+    Feedback { message, lines, role, clipped }
+}
+
+fn feedback_message(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>) -> String {
+    notice.filter(|notice| notice.active(snapshot)).map_or_else(
+        || focus.filter(|focus| focus.active(snapshot)).map_or_else(|| jump::address_parts(snapshot).full(), |focus| focus.status()),
+        |notice| notice.message.to_string(),
+    )
+}
+
+fn button_room(label: &str, measure: &Measure, cx: &App) -> Pixels {
+    facet::controls::button::label_width(label, facet::Control::Small, measure, cx)
+}
+
+/// The shell and rendered foot consume this same bounded presentation. Held
+/// marks get a separate line, preserving recovery controls at narrow widths.
+pub(crate) fn feedback_height(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cards: usize, one_line: f32, cx: &App) -> f32 {
+    let (lines, role) = feedback_lines(snapshot, focus, notice, width, cx);
+    height(lines.len(), &role, one_line) + if cards == 0 { 0.0 } else { one_line }
 }
 
 fn fit(address: &Address, role: &TypeRole, room: Pixels, cx: &App) -> Vec<String> {
@@ -76,16 +123,9 @@ pub(crate) fn marks_left(width: Pixels, reader_left: Pixels, scale: f32) -> Pixe
     (reader_left + px(20.0 * scale)).min(width / 3.0)
 }
 
-/// The width the graph's line is set in: the whole bar with an empty hand;
-/// beside the marks (the chevron and up to five stones) otherwise, so the
-/// hand stays in the foot while the graph speaks.
-pub(crate) fn line_room(width: Pixels, reader_left: Pixels, cards: usize, scale: f32) -> Pixels {
-    if cards == 0 {
-        return width;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let marks = px((14.0 + 23.0 * cards as f32 + 16.0) * scale);
-    (width - marks_left(width, reader_left, scale) - marks).max(px(160.0 * scale))
+/// Feedback owns its own row; the held marks never reduce its readable room.
+pub(crate) fn line_room(width: Pixels, _reader_left: Pixels, _cards: usize, _scale: f32) -> Pixels {
+    width
 }
 
 /// How tall the status bar is for `lines` of address in `role`, given its
@@ -105,6 +145,8 @@ pub(crate) struct Status {
     /// The hand at rest.
     marks: super::hand::Marks,
     opening: Option<SharedString>,
+    /// A disclosure is scoped to the current full message and visible visit.
+    details: Option<String>,
 }
 
 /// How long the first-card whisper stays.
@@ -150,6 +192,7 @@ impl Status {
             whisper: None,
             marks: super::hand::Marks::default(),
             opening: None,
+            details: None,
         }
     }
 
@@ -185,6 +228,12 @@ impl Region for Status {
     fn core(&mut self) -> &mut RegionCore {
         &mut self.core
     }
+
+    fn observe(&mut self, event: &crate::runtime::store::StoreEvent, _store: &DataStore) {
+        if event.is_branch(Branch::Route) || event.is_branch(Branch::Root) || event.is_branch(Branch::Overlay) {
+            self.details = None;
+        }
+    }
 }
 
 impl Render for Status {
@@ -194,18 +243,18 @@ impl Render for Status {
         let palette = cx.facet().palette();
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
-        let foot = div().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
+        let foot = div().relative().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
         if let Some(opening) = &self.opening {
             return foot.pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
-                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(opening.clone()));
+                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).role(gpui::Role::Status).aria_label(opening.clone()).child(opening.clone()));
         }
         let (focus, notice) = (store.graph_focus().cloned(), store.notice().cloned());
         let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
-        let retry = retry_button(notice.as_ref(), &snapshot, &self.links, &measure);
         let hand = snapshot.session().hand.clone();
         if !speaks || !hand.is_empty() {
             let view = crate::runtime::hand::hand_view_for(&hand, &snapshot, cx);
-            let left = marks_left(self.core.width(), self.reader_left, measure.scale());
+            let left = marks_left(self.core.width(), self.reader_left, measure.scale())
+                .min((self.core.width() - px((14.0 + 23.0 * view.cards.len() as f32 + 16.0) * measure.scale()) - measure.space(Space::Roomy)).max(px(0.0)));
             // The first card ever held: "Value *in hand*", once per install.
             // Timed on the motion clock (virtual under the harness), from
             // the frame that first drew it.
@@ -241,42 +290,92 @@ impl Render for Status {
                     .map_or_else(|| SharedString::default(), |card| card.name.clone());
                 div()
                     .flex()
+                    .min_w_0()
                     .items_baseline()
                     .gap(px(5.0 * measure.scale()))
-                    .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(name))
+                    .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).min_w_0().truncate().role(gpui::Role::Label).aria_label(name.clone()).child(name))
                     .child(super::kit::text(ty::CAPTION, &measure, palette.ink3).child("in hand"))
-            });
-            // The graph's line sits to the right of the marks, on their row.
-            let said = speaks.then(|| {
-                let room = line_room(self.core.width(), self.reader_left, hand.held().len(), measure.scale());
-                let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), room, cx);
-                div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla()))
             });
             let mut row = div()
                     .flex()
+                    .min_w_0()
                     .items_center()
                     .gap(measure.space(Space::Roomy))
                     .children(self.marks.render(&view, &self.links, &measure, palette, window, cx))
-                    .children(words)
-                    .children(said)
-                    .children(retry);
+                    .children(words);
             if let Some(status) = &view.status {
-                row = row.child(super::kit::text(ty::CAPTION, &measure, palette.ink2).child(status.to_string()));
+                row = row.child(super::kit::text(ty::CAPTION, &measure, palette.ink2).min_w_0().flex_1().truncate().role(gpui::Role::Status).aria_label(status.to_string()).child(status.to_string()));
             }
-            return foot.pl(left).child(row);
+            let foot = foot.child(row.pl(left));
+            if !speaks { return foot; }
+            return foot.child(self.render_feedback(&snapshot, focus.as_ref(), notice.as_ref(), &measure, window, cx));
         }
-        let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), self.core.width(), cx);
-        if retry.is_some() {
-            return foot.px(measure.space(Space::Roomy)).child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(measure.space(Space::Roomy))
-                    .child(div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla())))
-                    .children(retry),
-            );
+        foot.child(self.render_feedback(&snapshot, focus.as_ref(), notice.as_ref(), &measure, window, cx))
+    }
+}
+
+impl Status {
+    fn render_feedback(&mut self, snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, measure: &Measure, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let feedback = feedback(snapshot, focus, notice, self.core.width(), cx);
+        let palette = cx.facet().palette();
+        if self.details.as_deref() != Some(&feedback.message) { self.details = None; }
+        let details_focus = window.use_keyed_state("status-details-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        let close_focus = window.use_keyed_state("status-details-close-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        let retry = retry_button(notice, snapshot, &self.links, measure, cx);
+        let mut row = div().flex().items_center().gap(measure.space(Space::Roomy)).px(measure.space(Space::Roomy))
+            .child(div().id("status-message").role(gpui::Role::Status).aria_label(feedback.message.clone())
+                .min_w_0().flex_1().flex().flex_col().overflow_hidden()
+                .children(said_lines(feedback.lines, feedback.role, palette.ink3.hsla())))
+            .children(retry);
+        if feedback.clipped {
+            let message = feedback.message.clone();
+            let route = snapshot.route().clone();
+            let authority = snapshot.key().authority();
+            let owner = cx.entity().downgrade();
+            let open_focus = close_focus.clone();
+            row = row.child(facet::controls::button("status-details", "Details", measure)
+                .aria_label("Show status details").focus_handle(details_focus.clone())
+                .size(facet::Control::Small).ghost().on_click(move |window, cx| {
+                    if let Some(status) = owner.upgrade() {
+                        status.update(cx, |status, cx| {
+                            let current = status.links.snapshot(cx);
+                            let store = status.links.store.read(cx);
+                            let same_message = feedback_message(&current, store.graph_focus(), store.notice()) == message;
+                            if same_message && current.route() == &route && current.key().authority() == authority && current.overlay().is_none() {
+                                status.details = Some(message.clone());
+                                open_focus.focus(window, cx);
+                                cx.notify();
+                            }
+                        });
+                    }
+                }));
         }
-        foot.px(measure.space(Space::Roomy)).children(said_lines(lines, role, palette.ink3.hsla()))
+        if self.details.is_some() {
+            let owner = cx.entity().downgrade();
+            let return_focus = details_focus.clone();
+            let close = facet::controls::button("status-details-close", "Close details", measure)
+                .focus_handle(close_focus).size(facet::Control::Small).ghost()
+                .on_click(move |window, cx| {
+                    if let Some(status) = owner.upgrade() { status.update(cx, |status, cx| {
+                        status.details = None;
+                        return_focus.focus(window, cx);
+                        cx.notify();
+                    }); }
+                });
+            let return_focus = details_focus.clone();
+            row = row.child(div().id("status-details-panel").role(gpui::Role::Dialog).aria_label("Status details")
+                .absolute().bottom(gpui::relative(1.0)).left(measure.space(Space::Roomy)).right(measure.space(Space::Roomy))
+                .flex().flex_col().gap(measure.space(Space::Base)).p(measure.space(Space::Roomy))
+                .bg(palette.plate2).border_1().border_color(palette.line2.hsla())
+                .on_action(cx.listener(move |status, _: &super::keys::Escape, window, cx| {
+                    status.details = None; return_focus.focus(window, cx); cx.notify(); cx.stop_propagation();
+                }))
+                .child(div().id("status-details-scroll").max_h(window.viewport_size().height * 0.4).overflow_y_scroll()
+                    .child(super::kit::text(ty::SMALL, measure, palette.ink1)
+                        .role(gpui::Role::Label).aria_label(feedback.message.clone()).keyed("status-full-message").child(feedback.message)))
+                .child(close));
+        }
+        row.into_any_element()
     }
 }
 
@@ -287,15 +386,28 @@ fn retry_button(
     snapshot: &AppSnapshot,
     links: &Links,
     measure: &Measure,
+    cx: &App,
 ) -> Option<gpui::AnyElement> {
     let notice = notice.filter(|notice| notice.active(snapshot))?;
     let key = notice.retry.clone()?;
+    let captured = notice.clone();
+    let store = links.store.read(cx);
+    let owner_retry = store.current_owner_retry();
+    let serving = store.current_owner_attachment();
+    let enabled = owner_retry.is_some() || serving.is_some();
     let links = links.clone();
     Some(
         facet::controls::button("status-retry", "Try again", measure)
             .size(facet::Control::Small)
             .ghost()
-            .on_click(move |_, cx| links.retry(key.clone(), cx))
+            .disabled(!enabled)
+            .on_click(move |_, cx| {
+                links.store.update(cx, |store, cx| {
+                    if !store.notice().is_some_and(|current| current == &captured && current.active(&store.snapshot())) { return; }
+                    if let Some(token) = &owner_retry { let _ = store.retry_owner_at(token, key.clone(), cx); }
+                    else if serving.as_ref().is_some_and(|attachment| store.admits_owner_attachment(attachment)) { store.retry(key.clone(), cx); }
+                });
+            })
             .into_any_element(),
     )
 }
@@ -319,6 +431,89 @@ fn said_lines(lines: Vec<String>, role: facet::tokens::TypeRole, color: gpui::Hs
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::navigation::{Intent, OrbitRoute, Route};
+    use crate::model::AppearancePreference;
+    use gpui::TestAppContext;
+
+    fn native_tree(rig: &mut crate::shell::tests::Rig) -> serde_json::Value {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native status tree");
+        serde_json::from_str(&json).expect("native tree JSON")
+    }
+
+    fn long_notice(rig: &mut crate::shell::tests::Rig) -> String {
+        let message = "The local index could not answer this request. The connection ended before the package read completed; try again after the connection is restored. ".repeat(12);
+        rig.graph.store.update(rig.cx, |store, cx| {
+            let snapshot = store.snapshot();
+            store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                visit: snapshot.route().clone(), root: snapshot.key(), message: message.clone().into(), retry: Some(crate::model::pages::PageKey::Orbit),
+            }), cx);
+        });
+        rig.settle();
+        message
+    }
+
+    /// Real paint bounds plus the committed AccessKit tree, not the fitter's
+    /// output alone. Run on each actual window width and saved text size.
+    #[gpui::test]
+    fn status_notice_reserves_native_recovery_room_across_width_text_and_theme(cx: &mut TestAppContext) {
+        let mut rig = crate::shell::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        for appearance in [AppearancePreference::Abyss, AppearancePreference::Glacier] {
+            rig.go(Intent::SetAppearance(appearance));
+            for percent in [100_u16, 150, 200] {
+                rig.go(Intent::ZoomTo { display: display.clone(), percent });
+                for width in [360.0, 480.0, 663.0, 1440.0] {
+                    rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+                    rig.settle();
+                    let message = long_notice(&mut rig);
+                    let tree = native_tree(&mut rig);
+                    let nodes = tree["nodes"].as_object().expect("native nodes");
+                    assert!(nodes.values().any(|node| node["aria"]["role"].as_str() == Some("Status") && node["aria"]["label"].as_str() == Some(message.as_str())), "the full message must survive painted truncation");
+                    for label in ["Try again", "Show status details"] {
+                        let node = nodes.values().find(|node| node["aria"]["label"].as_str() == Some(label)).expect("native recovery/disclosure control");
+                        assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+                        assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
+                    }
+                    let retry = rig.cx.debug_bounds("status-retry").expect("painted retry");
+                    let details = rig.cx.debug_bounds("status-details").expect("painted disclosure");
+                    assert!(retry.right() <= details.left() + px(0.5), "recovery controls overlap at {width}px/{percent}%");
+                    assert!(details.right() <= px(width) && retry.left() >= px(0.0));
+                    rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
+                    let ledger = crate::shell::anatomy_tests::painted(&mut rig);
+                    let lines: Vec<_> = ledger.texts.iter().filter(|text| text.key.starts_with("address:")).collect();
+                    assert_eq!(lines.len(), NOTICE_LINES);
+                    for line in lines {
+                        assert!(!line.clipped_without_ellipsis() && !line.clipped_vertically(), "{width}px/{percent}%: {line:?}");
+                        assert!(line.bounds.x + line.bounds.width <= f32::from(retry.left()) + 0.5, "message overlaps retry at {width}px/{percent}%");
+                        assert!(line.bounds.y + line.bounds.height <= 900.5, "message leaves the native window");
+                    }
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn native_status_details_expand_full_message_and_escape_returns_focus(cx: &mut TestAppContext) {
+        let mut rig = crate::shell::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0);
+        let message = long_notice(&mut rig);
+        native_tree(&mut rig);
+        let details = rig.cx.debug_bounds("status-details").expect("native details button");
+        rig.cx.simulate_click(details.center(), gpui::Modifiers::default());
+        rig.settle();
+        let tree = native_tree(&mut rig);
+        let focus = tree["accesskit_focus"].as_str().expect("focus id");
+        assert_eq!(tree["nodes"][focus]["aria"]["label"].as_str(), Some("Close details"));
+        assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["role"].as_str() == Some("Label") && node["aria"]["label"].as_str() == Some(message.as_str())));
+        let panel = rig.cx.debug_bounds("status-details-panel").expect("painted expansion");
+        assert!(panel.left() >= px(0.0) && panel.right() <= px(663.0) && panel.top() >= px(0.0));
+        rig.keys("escape");
+        let tree = native_tree(&mut rig);
+        let focus = tree["accesskit_focus"].as_str().expect("return focus id");
+        assert_eq!(tree["nodes"][focus]["aria"]["label"].as_str(), Some("Show status details"));
+        assert!(rig.cx.debug_bounds("status-details-panel").is_none());
+    }
 
     /// A whisper has its 2.4 s and no more; whether it is over is decided by
     /// its own time and its timer, never by a clock asked again and again.
