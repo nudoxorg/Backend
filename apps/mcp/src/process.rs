@@ -401,8 +401,15 @@ mod tests {
         // admission that prevented the reported process from starting. That
         // failure now occurs only after initialize, initialized, and a
         // complete status request have reached the normal JSON-RPC processor.
-        // The root keeps the platform's default access: mode `0755` on Unix,
-        // an inherited (unprotected) DACL on Windows.
+        // The root stays shared: mode `0755` on Unix, set explicitly because a
+        // strict umask would otherwise make it private and hide the refusal,
+        // and an inherited (unprotected) DACL on Windows.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o755))
+                .expect("set deliberately invalid parent mode");
+        }
         restrict_to_owner(&fixture.data);
         plant_authority_secret(&fixture.data);
 
