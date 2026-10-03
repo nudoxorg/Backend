@@ -2313,6 +2313,7 @@ impl Interactivity {
             && !window.is_inert_subtree()
         {
             if let Some(global_id) = global_id {
+                window.a11y.note_native_focus(window.focus);
                 window
                     .a11y
                     .set_active_descendant(global_id.accesskit_node_id());

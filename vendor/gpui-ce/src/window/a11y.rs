@@ -245,6 +245,7 @@ impl A11y {
     /// ancestry chain; its innermost owner represents the control. Sibling
     /// claims are ambiguous and reported without choosing an arbitrary node.
     pub(crate) fn publish_native_focus(&mut self, focus: Option<FocusId>) {
+        self.nodes.focus_context.native_focus = focus;
         let mut candidates: Vec<_> = self.focus_ids.iter().filter_map(|(node, id)|
             (Some(*id) == focus && self.nodes.has_node(*node)
                 && !self.nodes.is_node_inert(*node)).then_some(*node)).collect();
@@ -332,6 +333,16 @@ impl A11y {
         if self.nodes.has_node(node_id) && self.nodes.focus_is_ancestor_of_current() {
             self.nodes.set_active_descendant(node_id);
         }
+    }
+
+    pub(crate) fn set_focus_frame_context(&mut self, window: WindowId, native_focus: Option<FocusId>) {
+        self.nodes.focus_context = NativeFocusFrameContext {
+            window: Some(window), frame: self.debug.frame_number().saturating_add(1), native_focus,
+        };
+    }
+
+    pub(crate) fn note_native_focus(&mut self, native_focus: Option<FocusId>) {
+        self.nodes.focus_context.native_focus = native_focus;
     }
 
     /// Clear per-frame state and push the root node to start a new frame.
@@ -455,6 +466,13 @@ impl<'a> A11ySubtreeBuilder<'a> {
     }
 }
 
+#[derive(Debug, Default)]
+struct NativeFocusFrameContext {
+    window: Option<WindowId>,
+    frame: u64,
+    native_focus: Option<FocusId>,
+}
+
 #[derive(Debug)]
 enum NativeFocusResolution {
     Semantic(NodeId),
@@ -482,6 +500,7 @@ pub(crate) struct A11yNodeBuilder {
     inert_nodes: FxHashSet<NodeId>,
     parents: FxHashMap<NodeId, NodeId>,
     pending_active_descendants: Vec<NodeId>,
+    focus_context: NativeFocusFrameContext,
     #[cfg(debug_assertions)]
     node_info: FxHashMap<NodeId, debug::NodeDebugInfo>,
 }
@@ -498,9 +517,40 @@ impl A11yNodeBuilder {
             inert_nodes: FxHashSet::default(),
             parents: FxHashMap::default(),
             pending_active_descendants: Vec::new(),
+            focus_context: NativeFocusFrameContext::default(),
             #[cfg(debug_assertions)]
             node_info: FxHashMap::default(),
         }
+    }
+
+    /// Failure-only formatting uses the current tree and existing provenance,
+    /// never a second retained node registry or a borrowed runtime callback.
+    fn describe_focus_claim(&self, id: NodeId) -> String {
+        let describe = |id: NodeId| {
+            let node = self.all_nodes.iter().find(|(node, _)| *node == id).map(|(_, node)| node)
+                .or_else(|| self.ids_stack.iter().position(|node| *node == id).and_then(|at| self.nodes_stack.get(at)));
+            let semantic = node.map(|node| format!("role={:?}, label={:?}", node.role(), node.label()));
+            #[cfg(debug_assertions)]
+            let provenance = self.node_info.get(&id).map(|info|
+                format!("view={:?}, element={:?}, source={:?}, synthetic={}", info.view, info.element_id, info.source_location, info.synthetic));
+            #[cfg(not(debug_assertions))]
+            let provenance: Option<String> = None;
+            format!("{id:?}({semantic:?}, {provenance:?})")
+        };
+        let mut ancestors = Vec::new();
+        let mut node = id;
+        for _ in 0..self.parents.len() {
+            let Some(parent) = self.parents.get(&node).copied() else { break; };
+            ancestors.push(describe(parent)); node = parent;
+        }
+        format!("{}; ancestors={ancestors:?}", describe(id))
+    }
+
+    fn focus_collision(&self, kind: &str, existing: Option<NodeId>, incoming: NodeId) -> String {
+        format!("{kind}; window={:?}, frame={}, native_focus={:?}, semantic_focus={:?}; existing={:?}; incoming={}",
+            self.focus_context.window, self.focus_context.frame, self.focus_context.native_focus,
+            self.focus.map(|id| self.describe_focus_claim(id)), existing.map(|id| self.describe_focus_claim(id)),
+            self.describe_focus_claim(incoming))
     }
 
     fn descends_from(&self, mut node: NodeId, ancestor: NodeId) -> bool {
@@ -671,7 +721,7 @@ impl A11yNodeBuilder {
             .is_some_and(|existing| existing != id)
         {
             if cfg!(debug_assertions) {
-                panic!("active descendant claimed by multiple nodes in one frame");
+                panic!("{}", self.focus_collision("active descendant claimed by multiple nodes in one frame", self.active_descendant, id));
             } else {
                 log::warn!(
                     "a11y: multiple nodes claimed the active descendant this frame; \
@@ -685,7 +735,7 @@ impl A11yNodeBuilder {
     pub(crate) fn set_focus(&mut self, id: NodeId) {
         if self.focus.is_some() {
             if cfg!(debug_assertions) {
-                panic!("set_focus called more than once in a single frame");
+                panic!("{}", self.focus_collision("set_focus called more than once in a single frame", self.focus, id));
             } else {
                 log::warn!(
                     "a11y: set_focus called more than once in a single frame; \
@@ -1198,6 +1248,36 @@ mod tests {
         a11y.publish_native_focus(Some(FocusId::default()));
         let update = a11y.end_frame(Default::default());
         assert_eq!(update.focus, node);
+    }
+
+    #[test]
+    fn collision_diagnostic_names_both_claimants_and_the_native_container_context() {
+        let mut builder = new_builder();
+        builder.focus_context = NativeFocusFrameContext {
+            window: Some(WindowId::default()), frame: 42, native_focus: Some(FocusId::default()),
+        };
+        let container = NodeId(1); let first = NodeId(2); let second = NodeId(3);
+        let mut app = accesskit::Node::new(accesskit::Role::Application); app.set_label("Native application");
+        assert!(builder.push(container, app)); builder.set_focus(container);
+        let mut radio = accesskit::Node::new(accesskit::Role::RadioButton); radio.set_label("First group selection");
+        assert!(builder.push(first, radio)); builder.set_active_descendant(first); builder.pop();
+        let mut radio = accesskit::Node::new(accesskit::Role::RadioButton); radio.set_label("Second group selection");
+        assert!(builder.push(second, radio));
+        #[cfg(debug_assertions)]
+        builder.record_node_info(second, debug::NodeDebugInfo { view: Some("facet::controls::seg::Seg"),
+            element_id: Some("second-radio".into()), ..Default::default() });
+        // This formats the same context used by the still-strict assertion;
+        // the existing two_siblings_claiming_active_descendant test continues
+        // to require its actual panic rather than accepting this diagnostic.
+        let message = builder.focus_collision("active descendant claimed by multiple nodes in one frame", Some(first), second);
+        for expected in ["NodeId(2)", "NodeId(3)", "RadioButton", "First group selection", "Second group selection",
+            "Native application", "ancestors=", "native_focus=Some(", "frame=42", "window=Some("] {
+            assert!(message.contains(expected), "missing {expected:?} from {message}");
+        }
+        #[cfg(debug_assertions)]
+        assert!(message.contains("facet::controls::seg::Seg") && message.contains("second-radio"));
+        let focus_message = builder.focus_collision("set_focus called more than once in a single frame", Some(container), second);
+        assert!(focus_message.contains("Native application") && focus_message.contains("Second group selection"));
     }
 
 }

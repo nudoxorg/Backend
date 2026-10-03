@@ -4233,6 +4233,7 @@ impl Window {
 
         self.a11y.sync_active_flag();
         if self.a11y.is_active() {
+            self.a11y.set_focus_frame_context(self.handle.window_id(), self.focus);
             self.a11y.begin_frame();
         }
 
