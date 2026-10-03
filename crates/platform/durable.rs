@@ -64,7 +64,9 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// current-user-only DACL on that handle. Unix opens and holds the private
 /// parent directory, opens the final component relative to that handle without
 /// following links, then checks the file's owner, type, permissions, and link
-/// count on the opened handle.
+/// count on the opened handle. A file that a replacing rename unlinked after
+/// the open is kept on both platforms: the reader holds the complete
+/// generation that was published under the name when it opened it.
 ///
 /// # Errors
 /// Returns an I/O error if the file is missing, is not a regular private file,
