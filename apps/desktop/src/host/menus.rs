@@ -1,6 +1,8 @@
 //! Native application menus and their typed GPUI actions.
 
 use gpui::{App, AppContext as _, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, actions};
+use crate::navigation::{Intent, SettingsPage};
+use crate::runtime::UiEntityGraph;
 
 actions!(
     nudox_menu,
@@ -91,4 +93,96 @@ pub(crate) fn install(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// App-menu commands are local application actions. They must validate and
+/// dispatch before a shell focus handle has entered the rendered dispatch
+/// tree, and after owner failure has replaced the Reader's content. The
+/// shell's handlers still own focused-window shortcuts; these App handlers
+/// are the menu/focus-independent fallback over the same typed intents.
+pub(crate) fn install_local_actions(graph: &UiEntityGraph, cx: &mut App) {
+    let about = graph.root.downgrade();
+    cx.on_action(move |_: &About, cx| {
+        if let Some(root) = about.upgrade() {
+            root.update(cx, |root, cx| root.queue(Intent::OpenSettings(SettingsPage::About), cx));
+        }
+    });
+    let settings = graph.root.downgrade();
+    cx.on_action(move |_: &crate::shell::OpenSettingsAction, cx| {
+        if let Some(root) = settings.upgrade() {
+            root.update(cx, |root, cx| root.queue(Intent::OpenSettings(SettingsPage::Appearance), cx));
+        }
+    });
+    let add = graph.root.downgrade();
+    cx.on_action(move |_: &crate::shell::AddFolderAction, cx| {
+        if let Some(root) = add.upgrade() {
+            root.update(cx, |root, cx| root.queue(Intent::OpenAddProject, cx));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ServiceMode;
+    use crate::navigation::{OrbitRoute, Overlay, Route};
+    use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+    use crate::runtime::reads::ReadPool;
+    use crate::shell::tests::{Fixture, Rig, RootOnly, native_bounds_id, rig_with_engine_gate};
+    use gpui::{AppContext as _, TestAppContext};
+    use std::sync::Arc;
+
+    fn menu_available(rig: &mut Rig) -> (bool, bool, bool) {
+        rig.cx.cx.update(|cx| (
+            cx.is_action_available(&About),
+            cx.is_action_available(&crate::shell::OpenSettingsAction),
+            cx.is_action_available(&crate::shell::AddFolderAction),
+        ))
+    }
+
+    #[gpui::test]
+    fn cold_and_recovered_home_keep_local_native_menu_actions_available(cx: &mut TestAppContext) {
+        let gate = OwnerGate::starting();
+        let mut rig = rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0,
+            ReadPool::start(2, |_| Fixture).expect("reader"), RootOnly, Some(gate.clone()));
+        rig.cx.cx.update(|cx| install_local_actions(&rig.graph, cx));
+        // macOS validates against App::is_action_available before any field
+        // click. The app menu must not depend on Shell's focus node having
+        // entered the latest rendered dispatch tree.
+        rig.cx.update(|window, _| window.blur());
+        assert_eq!(menu_available(&mut rig), (true, true, true));
+        gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
+        rig.settle();
+        assert_eq!(menu_available(&mut rig), (true, true, true));
+
+        rig.cx.cx.update(|cx| cx.dispatch_action(&About));
+        rig.settle();
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::Settings(SettingsPage::About)));
+        assert!(rig.said().iter().any(|line| line == "About Nudox"));
+        rig.keys("escape");
+
+        rig.cx.cx.update(|cx| cx.dispatch_action(&crate::shell::OpenSettingsAction));
+        rig.settle();
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::Settings(SettingsPage::Appearance)));
+        rig.keys("escape");
+
+        rig.cx.cx.update(|cx| cx.dispatch_action(&crate::shell::AddFolderAction));
+        rig.settle();
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::AddProject));
+        rig.keys("escape");
+
+        let retry = native_bounds_id(&mut rig, "status-retry", "Button", "Try again", true)
+            .expect("failed owner's native retry");
+        rig.cx.simulate_click(retry.center(), gpui::Modifiers::none());
+        rig.draw();
+        assert!(matches!(gate.state(), OwnerState::Starting));
+        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        rig.settle();
+        rig.cx.update(|window, _| window.blur());
+        assert_eq!(menu_available(&mut rig), (true, true, true), "recovered Home still validates local App commands before a click");
+    }
 }

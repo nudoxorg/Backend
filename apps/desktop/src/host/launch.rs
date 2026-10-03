@@ -382,6 +382,7 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     let keep = reading.map(SnapshotRead::joined);
     let installing_graph = Instant::now();
     let graph = UiEntityGraph::install_with_bootstrap(cx, runtime, persistence, reads, Some(gate), keep, binding);
+    super::menus::install_local_actions(&graph, cx);
     // Quitting saves the route's pages for the next launch.
     let saved = graph.store.clone();
     cx.on_app_quit(move |cx| {
