@@ -379,7 +379,13 @@ impl DocLinks {
         // A displayed href contains the coordinate spelling, while the
         // producer value may also carry an alternate-release origin receipt.
         // Return that original value rather than reparsing away its receipt.
-        if let Some(symbol) = self.0.iter().find(|symbol| symbol.as_str() == target) {
+        let mut bindings = self.0.iter().filter(|symbol| symbol.as_str() == target);
+        if let Some(symbol) = bindings.next() {
+            // A rendered href carries no release-origin receipt. Conflicting
+            // producer bindings cannot be disambiguated by their shared text.
+            if bindings.any(|other| other != symbol) {
+                return None;
+            }
             return Some(DocDestination::Declaration(symbol.clone()));
         }
         if let Some(uri) = ExternalUri::parse(target) {
@@ -492,6 +498,43 @@ mod doc_link_tests {
         };
         assert_eq!(actual, target);
         assert_eq!(actual.release_origin(), Some(pinned.as_str()));
+    }
+
+    #[test]
+    fn identical_display_coordinates_with_conflicting_release_receipts_are_inert() {
+        let package = crate::model::pages::PackageRef::parse("pkg:cargo/demo@2.0.0").unwrap();
+        let first_pin = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.0.0").unwrap();
+        let second_pin = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.1.0").unwrap();
+        let coordinate =
+            SymbolRef::new("pkg:cargo/demo@2.0.0::semantic::00ff::advance_signal").unwrap();
+        let first = coordinate
+            .rebased(&package, &package.clone().with_release_origin(&first_pin))
+            .unwrap();
+        let second = coordinate
+            .rebased(&package, &package.clone().with_release_origin(&second_pin))
+            .unwrap();
+        assert_eq!(first.as_str(), second.as_str());
+        assert_ne!(
+            first, second,
+            "the producer receipts carry different authority"
+        );
+        let mut links = DocLinks::default();
+        links.fragments(&[link(&first), link(&first)]);
+        let Some(DocDestination::Declaration(actual)) = links.resolve(first.as_str()) else {
+            panic!("repeated equal receipt remains navigable")
+        };
+        assert_eq!(actual, first);
+        links.fragments(&[link(&second)]);
+        assert!(
+            links.resolve(first.as_str()).is_none(),
+            "no arbitrary first receipt and no text-query fallback"
+        );
+        let mut reversed = DocLinks::default();
+        reversed.fragments(&[link(&second), link(&first)]);
+        assert!(
+            reversed.resolve(first.as_str()).is_none(),
+            "producer order cannot choose authority"
+        );
     }
 
     #[gpui::test]
