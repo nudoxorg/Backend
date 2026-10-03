@@ -31,8 +31,8 @@ use crate::tokens::fluid::{BEADS, Beads};
 use crate::tokens::motion::{GLIDE, STD};
 use crate::tokens::{Face, Palette, TypeRole, geo};
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
+    AnyElement, App, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
     Styled, Window, div, layer, px, svg,
 };
 use std::rc::Rc;
@@ -400,35 +400,7 @@ fn keyboard_button<E>(
 where
     E: StatefulInteractiveElement + InteractiveElement + Styled,
 {
-    element
-        .track_focus(focus)
-        .tab_index(0)
-        .on_key_down({
-            let activate = activate.clone();
-            move |event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.as_str();
-                if !event.keystroke.modifiers.modified() && key == "enter" && !event.is_held {
-                    activate(window, cx);
-                    cx.stop_propagation();
-                } else if !event.keystroke.modifiers.modified() && key == "space" {
-                    cx.stop_propagation();
-                }
-            }
-        })
-        .on_key_up({
-            let activate = activate.clone();
-            move |event: &KeyUpEvent, window, cx| {
-                if !event.keystroke.modifiers.modified() && event.keystroke.key == "space" {
-                    activate(window, cx);
-                    cx.stop_propagation();
-                }
-            }
-        })
-        .on_click(move |_, window, cx| {
-            if !window.last_input_was_keyboard() {
-                activate(window, cx);
-            }
-        })
+    crate::controls::button::native_button(element, focus, move |window, cx| activate(window, cx))
 }
 
 /// A strand: a short line, solid or dashed.

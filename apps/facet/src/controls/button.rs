@@ -31,7 +31,7 @@ use crate::motion::EASE;
 use crate::tokens::motion::EMPH;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    App, ClickEvent, ColorExt, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    App, ColorExt, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
     MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
     Window, div, layer, px,
 };
@@ -317,17 +317,34 @@ pub(crate) fn sunk(edge: Edge) -> Edge {
 }
 
 
-/// Wires pointer, keyboard and focus onto a control's plate: press on
-/// pointer down, release on up anywhere, activate on click and on
-/// Enter (down) / Space (up), flashing the press while the key is held.
+/// Keyboard context shared by native controls and their host's shortcut table.
+/// Enter/Space belong to the focused control, not a background shell target.
+pub const NATIVE_CONTROL: &str = "NativeControl";
+
+/// The same native click path used by CE's unstyled Button: GPUI admits
+/// Enter/Space release only for an uninterrupted focus generation, and emits
+/// one ClickEvent for either keyboard or pointer. The caller owns admission
+/// of its current resource/visit and all visual styling.
+pub fn native_button<E>(element: E, focus: &FocusHandle, activate: impl Fn(&mut Window, &mut App) + 'static) -> E
+where
+    E: StatefulInteractiveElement + InteractiveElement + Styled,
+{
+    element.track_focus(focus).tab_index(0).key_context(NATIVE_CONTROL)
+        .on_click(move |_, window, cx| activate(window, cx))
+}
+
+/// Pointer and keyboard press presentation over GPUI's native activation.
+/// Visual listeners never activate or consume the key: GPUI owns the clean
+/// down/up and focus-generation check, including interrupted presses.
 pub(crate) fn wire<E>(element: E, touch: &Touch, activate: Option<Handler>) -> E
 where
     E: StatefulInteractiveElement + InteractiveElement + Styled,
 {
     let entity = touch.entity.clone();
-    let mut element = element
+    let element = element
         .track_focus(&touch.focus)
         .tab_index(0)
+        .key_context(NATIVE_CONTROL)
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, {
             let entity = entity.clone();
@@ -343,46 +360,23 @@ where
         })
         .on_key_up({
             let entity = entity.clone();
-            let activate = activate.clone();
-            move |event: &KeyUpEvent, window: &mut Window, cx: &mut App| {
-                let key = event.keystroke.key.as_str();
-                if key == "space" || key == "enter" {
-                    let was = entity.read(cx).key_pressed;
+            move |event: &KeyUpEvent, _window: &mut Window, cx: &mut App| {
+                if matches!(event.keystroke.key.as_str(), "space" | "enter") {
                     set_key_pressed(&entity, false, cx);
-                    if was
-                        && key == "space"
-                        && let Some(activate) = &activate
-                    {
-                        activate(window, cx);
-                    }
                 }
             }
-        });
-    element = element.on_key_down({
-        let activate = activate.clone();
-        move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
-            let key = event.keystroke.key.as_str();
-            if (key == "space" || key == "enter") && !event.keystroke.modifiers.modified() {
+        })
+        .on_key_down(move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
+            if matches!(event.keystroke.key.as_str(), "space" | "enter")
+                && !event.keystroke.modifiers.modified() && !event.is_held {
                 key_press(&entity, window, cx);
-                if key == "enter"
-                    && !event.is_held
-                    && let Some(activate) = &activate
-                {
-                    activate(window, cx);
-                }
-                cx.stop_propagation();
-            }
-        }
-    });
-    if let Some(activate) = activate {
-        element = element.on_click(move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
-            // A keyboard "click" is handled by the key listeners above.
-            if !matches!(event, ClickEvent::Keyboard(_)) {
-                activate(window, cx);
             }
         });
+    if let Some(activate) = activate {
+        native_button(element, &touch.focus, move |window, cx| activate(window, cx))
+    } else {
+        element
     }
-    element
 }
 
 impl RenderOnce for Button {

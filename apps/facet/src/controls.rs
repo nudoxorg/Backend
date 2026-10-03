@@ -18,6 +18,8 @@ pub(crate) mod native;
 pub(crate) mod state;
 mod sweep;
 mod text;
+#[cfg(test)]
+mod activation_tests;
 
 pub mod button;
 pub mod comb;

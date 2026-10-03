@@ -16,7 +16,7 @@ use facet::paint::{Bevel, CutPaint, Edge, paint_cut};
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
-    ClickEvent, FocusHandle, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId,
+    ClickEvent, FocusHandle, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
     MouseExitEvent, MouseMoveEvent, Pixels, SharedString, StatefulInteractiveElement, Style, Window, div, point, px, size,
 };
 use std::cell::{Cell, RefCell};
@@ -55,24 +55,16 @@ pub(crate) fn native_control(
     handle: Option<FocusHandle>,
     act: Act,
 ) -> gpui::Stateful<gpui::Div> {
-    let key_act = Rc::clone(&act);
-    let mut control = div()
+    let control = div()
         .id(id)
         .role(role)
         .aria_label(label.into())
-        .key_context(crate::shell::keys::NATIVE_CONTROL)
-        .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if !event.keystroke.modifiers.modified()
-                && matches!(event.keystroke.key.as_str(), "enter" | "space")
-            {
-                if !event.is_held { key_act(window, cx); }
-                cx.stop_propagation();
-            }
-        });
-    if let Some(handle) = handle {
-        control = control.focusable().track_focus(&handle).tab_index(0);
-    }
+        .key_context(crate::shell::keys::NATIVE_CONTROL);
+    let control = if let Some(handle) = handle {
+        facet::controls::button::native_button(control, &handle, move |window, cx| act(window, cx))
+    } else {
+        control.on_click(move |_: &ClickEvent, window, cx| act(window, cx))
+    };
     control
 }
 

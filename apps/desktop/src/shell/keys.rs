@@ -93,7 +93,7 @@ actions!(
 
 /// The key context of the shell root.
 pub(crate) const CONTEXT: &str = "NudoxShell";
-pub(crate) const NATIVE_CONTROL: &str = "NativeControl";
+pub(crate) const NATIVE_CONTROL: &str = facet::controls::button::NATIVE_CONTROL;
 
 /// A command the table binds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
