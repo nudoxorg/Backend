@@ -362,6 +362,16 @@ impl WorkspaceHead {
         self.state.transition.request()
     }
 
+    /// Returns the canonical request identity selected by this checked head.
+    ///
+    /// Durable operation-receipt owners use this read-only witness to match
+    /// a precommitted request against the exact currently selected commit
+    /// after restart.
+    #[must_use]
+    pub fn request_identity(&self) -> [u8; 32] {
+        self.state.transition.request()
+    }
+
     pub(super) fn transition_shared(&self) -> Arc<PreparedTransition> {
         Arc::clone(&self.state.transition)
     }

@@ -17,6 +17,10 @@ use super::index::{
     index_project_intent_at, index_project_intent_with_cluster_and_intent, remove_project_intent,
     run_deferred_compile, run_index_scan, semantic_version_record, semantic_versions,
 };
+use super::index_operation::{
+    Acceptance as IndexOperationAcceptance, IndexOperationJournal,
+    JournalError as IndexOperationJournalError, StoredOperationState,
+};
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
 };
@@ -72,6 +76,55 @@ fn bounded_index_detail(value: impl std::fmt::Display) -> backend_library::Produ
         .unwrap_or_else(|_| backend_library::ProductText::from_static("index job failed"))
 }
 
+fn index_operation_failure(
+    outcome: Option<&backend_library::IndexJobOutcome>,
+) -> (
+    backend_library::IndexOperationFailureReason,
+    backend_library::ProductText,
+) {
+    match outcome {
+        Some(backend_library::IndexJobOutcome::Cancelled) => (
+            backend_library::IndexOperationFailureReason::Cancelled,
+            backend_library::ProductText::from_static(
+                "index operation was cancelled before commit",
+            ),
+        ),
+        Some(backend_library::IndexJobOutcome::Refused(detail)) => (
+            backend_library::IndexOperationFailureReason::Refused,
+            detail.clone(),
+        ),
+        Some(backend_library::IndexJobOutcome::Failed(detail)) => (
+            backend_library::IndexOperationFailureReason::WorkerFailed,
+            detail.clone(),
+        ),
+        Some(backend_library::IndexJobOutcome::Published) | None => (
+            backend_library::IndexOperationFailureReason::WorkerFailed,
+            backend_library::ProductText::from_static(
+                "owner restarted or stopped before the exact commit was selected",
+            ),
+        ),
+    }
+}
+
+fn index_operation_published_observation(
+    journal: &IndexOperationJournal,
+    operation_key: backend_library::IndexOperationKey,
+    receipt: backend_library::IndexOperationPublicationReceipt,
+) -> backend_library::IndexOperationObservation {
+    if let Some(observation) = journal.observation(operation_key, None) {
+        return observation;
+    }
+    let Some(entry) = journal.entry(operation_key) else {
+        return backend_library::IndexOperationObservation::Unknown { operation_key };
+    };
+    backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus::new(
+        operation_key,
+        entry.package.clone(),
+        entry.execution_intent,
+        backend_library::IndexOperationState::Published(receipt),
+    ))
+}
+
 fn index_attempt_retirement_reason(
     outcome: &backend_library::IndexJobOutcome,
 ) -> Option<backend_extension_turso::CandidateAttemptRetirementReason> {
@@ -114,6 +167,7 @@ pub(in crate::builtin) struct CommandAdapter {
     forge: ForgeGateway,
     discovery: Option<crate::discovery::DiscoveryGateway>,
     product_state: super::super::ProductState,
+    index_operations: IndexOperationJournal,
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     remote_semantic: super::super::query::RemoteSemantic,
@@ -149,6 +203,8 @@ pub(in crate::builtin) struct CommandAdapter {
 /// An `Add` of a local folder whose compile runs off the owner loop.
 struct IndexJob {
     owner_ticket: backend_library::IndexJobTicket,
+    /// Caller-owned durable operation key; legacy starts leave this absent.
+    operation_key: Option<backend_library::IndexOperationKey>,
     /// Legacy Add request waiting for its committed Added reply.
     legacy_add: Option<(u64, u64)>,
     /// Owner-issued IndexAwait request listeners waiting for this terminal.
@@ -228,6 +284,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::CargoPackageSourceFile { .. }
                 | S::CargoPackageSourceInventory { .. }
                 | S::CargoPackageReadme { .. }
+                | S::IndexOperationStatus { .. }
                 | S::CargoPackageReadmeLink { .. }
                 | S::IndexAwait { .. }
                 | S::IndexProgress { .. }
@@ -289,12 +346,22 @@ impl CommandAdapter {
         >,
     ) -> Result<Self, BuiltinModelError> {
         let browse_lane = BrowseLane::start().map_err(BuiltinModelError)?;
+        let index_operations = IndexOperationJournal::open(
+            product_state
+                .workspace_path()
+                .map_err(BuiltinModelError)?
+                .join("index-operations-v1.json"),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("open durable index-operation journal: {error}"))
+        })?;
         Ok(Self {
             sql_projection,
             registry,
             forge,
             discovery,
             product_state,
+            index_operations,
             compiler,
             search_snapshots,
             remote_semantic,
@@ -360,6 +427,38 @@ impl CommandAdapter {
         {
             return self.cancel_index_job(daemon, ticket.clone(), request.request_id);
         }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStatus {
+            operation_key,
+        }) = request.command
+        {
+            return self.read_index_operation_status(daemon, operation_key, request.request_id);
+        }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+            operation_key,
+            package,
+            execution_intent,
+        }) = &request.command
+            && self
+                .indexing
+                .as_ref()
+                .is_some_and(|indexing| indexing.operation_key == Some(*operation_key))
+        {
+            let exact = self
+                .index_operations
+                .entry(*operation_key)
+                .is_some_and(|entry| {
+                    entry.package == *package && entry.execution_intent == *execution_intent
+                });
+            if exact {
+                let observation = self.resolve_index_operation(daemon, *operation_key, None);
+                return Self::encode_index_operation(daemon, request.request_id, observation, true);
+            }
+            return Self::encode_index_operation_start_failure(
+                daemon,
+                request.request_id,
+                IndexOperationJournalError::KeyConflict,
+            );
+        }
         if self.indexing.is_some() && !answers_while_indexing(&request.command) {
             self.waiting.push_back((transport_ticket, body.to_vec()));
             return Ok(Executed::Deferred);
@@ -371,6 +470,20 @@ impl CommandAdapter {
         {
             return self.start_owner_index_job(
                 daemon,
+                package,
+                execution_intent,
+                request.request_id,
+            );
+        }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+            operation_key,
+            package,
+            execution_intent,
+        }) = request.command
+        {
+            return self.start_index_operation(
+                daemon,
+                operation_key,
                 package,
                 execution_intent,
                 request.request_id,
@@ -395,6 +508,7 @@ impl CommandAdapter {
                 request.request_id,
                 owner_ticket,
                 Some(transport_ticket),
+                None,
             )? {
                 return Self::encode(daemon, request.request_id, started, None)
                     .map(Executed::Reply);
@@ -429,6 +543,354 @@ impl CommandAdapter {
         self.execute(daemon, body).map(Executed::Reply)
     }
 
+    fn start_index_operation(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        package: backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        match self
+            .index_operations
+            .accept(operation_key, package.clone(), execution_intent)
+        {
+            Ok(IndexOperationAcceptance::Existing) => {
+                let observation = self.resolve_index_operation(daemon, operation_key, None);
+                return Self::encode_index_operation(daemon, request_id, observation, true);
+            }
+            Ok(IndexOperationAcceptance::New) => {}
+            Err(error) => {
+                return self.encode_index_operation_start_failure(daemon, request_id, error);
+            }
+        }
+
+        let owner_ticket = match self.issue_index_ticket(package.clone()) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                return self.fail_accepted_index_operation(
+                    daemon,
+                    operation_key,
+                    request_id,
+                    bounded_index_detail(error),
+                );
+            }
+        };
+        let package_key = backend_engine::package_key(package.as_str());
+        let certificate = WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Package,
+            id: backend_engine::encode_id(package_key.as_bytes()),
+            value: package.as_str().to_owned(),
+        });
+        match self.start_index_job(
+            daemon,
+            package_key,
+            execution_intent,
+            Some(&certificate),
+            request_id,
+            owner_ticket,
+            None,
+            Some(operation_key),
+        ) {
+            Ok(None) => {
+                let observation = self.resolve_index_operation(daemon, operation_key, None);
+                Self::encode_index_operation(daemon, request_id, observation, true)
+            }
+            Ok(Some(_)) => {
+                let observation = self.resolve_index_operation(daemon, operation_key, None);
+                Self::encode_index_operation(daemon, request_id, observation, true)
+            }
+            Err(error) => self.fail_accepted_index_operation(
+                daemon,
+                operation_key,
+                request_id,
+                bounded_index_detail(error),
+            ),
+        }
+    }
+
+    fn fail_accepted_index_operation(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        request_id: u64,
+        detail: backend_library::ProductText,
+    ) -> Result<Executed, BuiltinModelError> {
+        let observation = if self
+            .index_operations
+            .failed(
+                operation_key,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                detail,
+            )
+            .is_ok()
+        {
+            self.resolve_index_operation(daemon, operation_key, None)
+        } else {
+            self.unresolved_index_operation(
+                operation_key,
+                backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                "the owner could not durably record why accepted work did not start",
+            )
+        };
+        Self::encode_index_operation(daemon, request_id, observation, true)
+    }
+
+    fn encode_index_operation_start_failure(
+        daemon: &ProductDaemon,
+        request_id: u64,
+        error: IndexOperationJournalError,
+    ) -> Result<Executed, BuiltinModelError> {
+        let detail = backend_library::ProductText::new(error.to_string()).unwrap_or_else(|_| {
+            backend_library::ProductText::from_static("index operation refused")
+        });
+        Self::encode(
+            daemon,
+            request_id,
+            (
+                CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                    detail.as_str().to_owned(),
+                )),
+                None,
+            ),
+            None,
+        )
+        .map(Executed::Reply)
+    }
+
+    fn read_index_operation_status(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        let observation = self.resolve_index_operation(daemon, operation_key, None);
+        Self::encode_index_operation(daemon, request_id, observation, false)
+    }
+
+    fn encode_index_operation(
+        daemon: &ProductDaemon,
+        request_id: u64,
+        observation: backend_library::IndexOperationObservation,
+        started: bool,
+    ) -> Result<Executed, BuiltinModelError> {
+        let reply = if started {
+            backend_library::SurfaceReply::IndexOperationStarted(observation)
+        } else {
+            backend_library::SurfaceReply::IndexOperationStatus(observation)
+        };
+        Self::encode(
+            daemon,
+            request_id,
+            (CommandReply::Surface(reply), None),
+            None,
+        )
+        .map(Executed::Reply)
+    }
+
+    fn resolve_index_operation(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        terminal_outcome: Option<&backend_library::IndexJobOutcome>,
+    ) -> backend_library::IndexOperationObservation {
+        let Some(entry) = self.index_operations.entry(operation_key).cloned() else {
+            return backend_library::IndexOperationObservation::Unknown { operation_key };
+        };
+        let active = self
+            .indexing
+            .as_ref()
+            .filter(|indexing| indexing.operation_key == Some(operation_key))
+            .map(|indexing| {
+                (
+                    indexing.owner_ticket.clone(),
+                    indexing
+                        .progress_stage
+                        .unwrap_or(backend_library::IndexJobStage::Scanning),
+                )
+            });
+        match entry.state {
+            StoredOperationState::Accepted if active.is_some() => self
+                .index_operations
+                .observation(operation_key, active)
+                .expect("accepted operation remains in the journal"),
+            StoredOperationState::Accepted => {
+                let (reason, detail) = index_operation_failure(terminal_outcome);
+                if self
+                    .index_operations
+                    .failed(operation_key, reason, detail)
+                    .is_ok()
+                {
+                    self.index_operations
+                        .observation(operation_key, None)
+                        .expect("failed operation remains in the journal")
+                } else {
+                    self.unresolved_index_operation(
+                        operation_key,
+                        backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                        "the owner restarted or lost the job before it could persist a terminal failure",
+                    )
+                }
+            }
+            StoredOperationState::Prepared {
+                request_identity,
+                base_workspace_root,
+                base_workspace_sequence,
+            } => {
+                let (selected_exactly, base_still_selected) = {
+                    let head = daemon.engine().daemon().owner().head();
+                    let selected_exactly = match request_identity {
+                        Some(expected) => {
+                            head.request_identity() == expected
+                                && head.sequence() > base_workspace_sequence
+                        }
+                        None => {
+                            head.root().as_bytes() == &base_workspace_root
+                                && head.sequence() == base_workspace_sequence
+                        }
+                    };
+                    let base_still_selected = head.root().as_bytes() == &base_workspace_root
+                        && head.sequence() == base_workspace_sequence;
+                    (selected_exactly, base_still_selected)
+                };
+                if selected_exactly {
+                    let receipt = self
+                        .current_index_operation_receipt(
+                            daemon,
+                            request_identity,
+                            base_workspace_root,
+                            base_workspace_sequence,
+                        )
+                        .or_else(|| {
+                            terminal_outcome.and_then(|_| {
+                                self.publish_view(daemon, None).ok()?;
+                                self.current_index_operation_receipt(
+                                    daemon,
+                                    request_identity,
+                                    base_workspace_root,
+                                    base_workspace_sequence,
+                                )
+                            })
+                        });
+                    if let Some(receipt) = receipt {
+                        // If the receipt file cannot be replaced after a fully
+                        // checked workspace/view proof, keep Prepared on disk;
+                        // a future status read or restart can reconstruct it.
+                        let _ = self
+                            .index_operations
+                            .published(operation_key, receipt.clone());
+                        return index_operation_published_observation(
+                            &self.index_operations,
+                            operation_key,
+                            receipt,
+                        );
+                    }
+                    self.unresolved_index_operation(
+                        operation_key,
+                        backend_library::IndexOperationUnresolvedReason::ViewEvidenceMismatch,
+                        "the exact workspace commit is selected but its product view receipt is not available",
+                    )
+                } else if base_still_selected {
+                    let (reason, detail) = index_operation_failure(terminal_outcome);
+                    if self
+                        .index_operations
+                        .failed(operation_key, reason, detail)
+                        .is_ok()
+                    {
+                        self.index_operations
+                            .observation(operation_key, None)
+                            .expect("failed operation remains in the journal")
+                    } else {
+                        self.unresolved_index_operation(
+                            operation_key,
+                            backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                            "the owner could not durably record that the prepared commit was not selected",
+                        )
+                    }
+                } else {
+                    self.unresolved_index_operation(
+                        operation_key,
+                        backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                        "the selected workspace is neither the recorded base nor the exact prepared request",
+                    )
+                }
+            }
+            StoredOperationState::Published { .. }
+            | StoredOperationState::Failed { .. }
+            | StoredOperationState::Unresolved { .. } => self
+                .index_operations
+                .observation(operation_key, active)
+                .expect("terminal operation remains in the journal"),
+        }
+    }
+
+    fn current_index_operation_receipt(
+        &self,
+        daemon: &ProductDaemon,
+        request_identity: Option<[u8; 32]>,
+        base_workspace_root: [u8; 32],
+        base_workspace_sequence: u64,
+    ) -> Option<backend_library::IndexOperationPublicationReceipt> {
+        let owner = daemon.engine().daemon().owner();
+        let head = owner.head();
+        if match request_identity {
+            Some(expected) => {
+                head.request_identity() != expected || head.sequence() <= base_workspace_sequence
+            }
+            None => {
+                head.root().as_bytes() != &base_workspace_root
+                    || head.sequence() != base_workspace_sequence
+            }
+        } {
+            return None;
+        }
+        let snapshot = owner.snapshot();
+        let source = super::super::view_publish::source_root(&snapshot).ok()?;
+        let semantic = super::super::view_publish::semantic_root(&snapshot).ok()?;
+        let published = self.published.as_ref()?;
+        if published.source != source || published.semantic != semantic {
+            return None;
+        }
+        let library = daemon.engine().daemon().library();
+        backend_library::IndexOperationPublicationReceipt::from_published_view(
+            request_identity,
+            *head.commit().id().as_bytes(),
+            *head.root().as_bytes(),
+            head.sequence(),
+            library.view(),
+            library.cursor(),
+        )
+        .ok()
+    }
+
+    fn unresolved_index_operation(
+        &self,
+        operation_key: backend_library::IndexOperationKey,
+        reason: backend_library::IndexOperationUnresolvedReason,
+        detail: &str,
+    ) -> backend_library::IndexOperationObservation {
+        let Some(entry) = self.index_operations.entry(operation_key) else {
+            return backend_library::IndexOperationObservation::Unknown { operation_key };
+        };
+        backend_library::IndexOperationObservation::Known(
+            backend_library::IndexOperationStatus::new(
+                operation_key,
+                entry.package.clone(),
+                entry.execution_intent,
+                backend_library::IndexOperationState::Unresolved {
+                    reason,
+                    detail: backend_library::ProductText::new(detail.to_owned()).unwrap_or_else(
+                        |_| {
+                            backend_library::ProductText::from_static(
+                                "operation outcome unresolved",
+                            )
+                        },
+                    ),
+                },
+            ),
+        )
+    }
+
     pub(in crate::builtin) fn close(&mut self) {
         self.browse_lane.close();
     }
@@ -455,6 +917,7 @@ impl CommandAdapter {
                 Some(&certificate),
                 request_id,
                 owner_ticket.clone(),
+                None,
                 None,
             )
             .map(|reply| reply.map(|_| ()));
@@ -731,11 +1194,14 @@ impl CommandAdapter {
 
     fn complete_index_job(
         &mut self,
-        daemon: &ProductDaemon,
+        daemon: &mut ProductDaemon,
         indexing: IndexJob,
         outcome: backend_library::IndexJobOutcome,
         legacy_reply: Option<Result<Vec<u8>, BuiltinModelError>>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        if let Some(operation_key) = indexing.operation_key {
+            let _ = self.resolve_index_operation(daemon, operation_key, Some(&outcome));
+        }
         let mut ready = Vec::new();
         let terminal = backend_library::IndexJobTerminal {
             ticket: indexing.owner_ticket,
@@ -833,6 +1299,7 @@ impl CommandAdapter {
             prepared,
             indexing.request_id,
             indexing.requested_package,
+            indexing.operation_key,
         ) {
             Ok(reply) => {
                 if indexing.legacy_add.is_some() {
@@ -887,6 +1354,11 @@ impl CommandAdapter {
         // index publication; selected-marker reconciliation retries it later.
         let _ = self.semantic_authority.drain_native_history_completions();
         let mut ready = Vec::new();
+        if self.indexing.is_none()
+            && let Some(operation_key) = self.index_operations.first_prepared_key()
+        {
+            let _ = self.resolve_index_operation(daemon, operation_key, None);
+        }
         if let Some(mut indexing) = self.indexing.take() {
             let mut terminal = None;
             let mut legacy_reply = None;
@@ -1170,6 +1642,7 @@ impl CommandAdapter {
             }
         }
         while self.indexing.is_none()
+            && !self.index_operations.has_prepared()
             && let Some((ticket, body)) = self.waiting.pop_front()
         {
             match self.execute_or_defer(daemon, &body, ticket) {
@@ -1243,6 +1716,7 @@ impl CommandAdapter {
         request_id: u64,
         owner_ticket: backend_library::IndexJobTicket,
         legacy_add: Option<u64>,
+        operation_key: Option<backend_library::IndexOperationKey>,
     ) -> Result<Option<AdmittedReply>, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
@@ -1250,6 +1724,7 @@ impl CommandAdapter {
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut indexing = IndexJob {
             owner_ticket,
+            operation_key,
             legacy_add: legacy_add.map(|ticket| (ticket, request_id)),
             awaiters: Vec::new(),
             cancelled: Arc::clone(&cancelled),
@@ -1377,27 +1852,56 @@ impl CommandAdapter {
         prepared: PreparedProductSelection,
         request_id: u64,
         requested_package: backend_engine::PackageKey,
+        operation_key: Option<backend_library::IndexOperationKey>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let PreparedProductSelection {
-            intent,
+            intent: prepared_intent,
             selected,
             revision_fence,
         } = prepared;
+        let intent = match (prepared_intent, operation_key) {
+            (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
+            (intent, _) => intent,
+        };
+        let request_identity = intent
+            .as_ref()
+            .map(|intent| BuiltinModel.request_id(intent));
+        let (base_workspace_root, base_workspace_sequence) = {
+            let head = daemon.engine().daemon().owner().head();
+            (*head.root().as_bytes(), head.sequence())
+        };
         let removals = intent
             .as_ref()
             .map(selected_semantic_removals)
             .unwrap_or_default();
-        let committed =
-            self.semantic_authority
-                .commit_product_selection_changes(selected, removals, || {
+        let index_operations = &mut self.index_operations;
+        let semantic_authority = &mut self.semantic_authority;
+        let committed = semantic_authority.commit_product_selection_changes(
+            selected,
+            removals,
+            || {
                     if let Some(revision_fence) = revision_fence.as_ref()
                         && !super::super::ingest::compiler_revision_is_current(revision_fence)
                             .map_err(BuiltinModelError)?
                     {
                         return Err(BuiltinModelError(
-                            "compiler source or configuration revision changed before product selection; retry indexing"
-                                .to_owned(),
-                        ));
+                                "compiler source or configuration revision changed before product selection; retry indexing"
+                                    .to_owned(),
+                            ));
+                    }
+                    if let Some(operation_key) = operation_key {
+                        index_operations
+                            .prepare(
+                                operation_key,
+                                request_identity,
+                                base_workspace_root,
+                                base_workspace_sequence,
+                            )
+                            .map_err(|error| {
+                                BuiltinModelError(format!(
+                                    "prepare durable index-operation receipt: {error}"
+                                ))
+                            })?;
                     }
                     intent
                         .map(|intent| {
@@ -1411,8 +1915,28 @@ impl CommandAdapter {
                             Ok(intent)
                         })
                         .transpose()
-                })?;
+                },
+        )?;
         self.publish_view(daemon, committed.as_ref())?;
+        if let Some(operation_key) = operation_key {
+            let receipt = self
+                .current_index_operation_receipt(
+                    daemon,
+                    request_identity,
+                    base_workspace_root,
+                    base_workspace_sequence,
+                )
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "published workspace and product view do not establish one exact index-operation receipt"
+                            .to_owned(),
+                    )
+                })?;
+            // The workspace commit and view are already authoritative. If
+            // this terminal replacement fails, leave the prepared record in
+            // place so status can reconstruct the same checked receipt.
+            let _ = self.index_operations.published(operation_key, receipt);
+        }
         Ok(added_reply(requested_package))
     }
 

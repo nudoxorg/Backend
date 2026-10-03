@@ -82,6 +82,7 @@ pub struct BuiltinIntent {
     changes: Box<[BuiltinSourceChange]>,
     semantic_changes: Box<[BuiltinSemanticChange]>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
+    operation_key: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +121,7 @@ pub(super) enum BuiltinIntentOperation {
 
 impl BuiltinIntent {
     const VERSION: u8 = 4;
+    const KEYED_VERSION: u8 = 5;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -280,6 +282,7 @@ impl BuiltinIntent {
             changes,
             semantic_changes,
             semantic_selection,
+            None,
         )
     }
 
@@ -291,11 +294,15 @@ impl BuiltinIntent {
         mut changes: Vec<BuiltinSourceChange>,
         mut semantic_changes: Vec<BuiltinSemanticChange>,
         semantic_selection: Option<BuiltinSemanticSelectionIntent>,
+        operation_key: Option<[u8; 32]>,
     ) -> Result<Self, BuiltinModelError> {
-        if !matches!(encoding_version, 3 | Self::VERSION)
+        if !matches!(encoding_version, 3 | Self::VERSION | Self::KEYED_VERSION)
             || (encoding_version < Self::VERSION
                 && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                     || semantic_selection.is_some()))
+            || (encoding_version == Self::KEYED_VERSION
+                && operation_key.is_none_or(|key| key.iter().all(|byte| *byte == 0)))
+            || (encoding_version != Self::KEYED_VERSION && operation_key.is_some())
         {
             return Err(BuiltinModelError(
                 "unsupported builtin intent encoding version".to_owned(),
@@ -369,7 +376,27 @@ impl BuiltinIntent {
             changes: changes.into_boxed_slice(),
             semantic_changes: semantic_changes.into_boxed_slice(),
             semantic_selection,
+            operation_key,
         })
+    }
+
+    /// Binds the caller-owned durable operation key into the exact committed
+    /// intent identity. Legacy unkeyed intents keep their existing encoding.
+    pub(super) fn with_operation_key(
+        mut self,
+        operation_key: backend_library::IndexOperationKey,
+    ) -> Result<Self, BuiltinModelError> {
+        self.encoding_version = Self::KEYED_VERSION;
+        self.operation_key = Some(operation_key.to_bytes());
+        if self
+            .operation_key
+            .is_none_or(|key| key.iter().all(|byte| *byte == 0))
+        {
+            return Err(BuiltinModelError(
+                "keyed builtin intent has invalid operation identity".to_owned(),
+            ));
+        }
+        Ok(self)
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
@@ -379,10 +406,10 @@ impl BuiltinIntent {
     fn encode_canonical(&self) -> Vec<u8> {
         let label = self.label.as_bytes();
         let mut bytes = Vec::with_capacity(46 + label.len());
-        bytes.extend_from_slice(if self.encoding_version == 3 {
-            b"BPI3"
-        } else {
-            b"BPI4"
+        bytes.extend_from_slice(match self.encoding_version {
+            3 => b"BPI3",
+            4 => b"BPI4",
+            _ => b"BPI5",
         });
         bytes.push(self.encoding_version);
         bytes.push(match self.operation {
@@ -443,6 +470,14 @@ impl BuiltinIntent {
                 }
             }
         }
+        if self.encoding_version == Self::KEYED_VERSION {
+            bytes.push(1);
+            bytes.extend_from_slice(
+                &self
+                    .operation_key
+                    .expect("keyed intents are validated at construction"),
+            );
+        }
         bytes
     }
 
@@ -458,6 +493,7 @@ impl BuiltinIntent {
         let changes = decoder.source_changes()?;
         let semantic_changes = decoder.semantic_changes()?;
         let semantic_selection = decoder.semantic_selection()?;
+        let operation_key = decoder.operation_key()?;
         decoder.finish()?;
         Self::new_with_version(
             encoding_version,
@@ -467,6 +503,7 @@ impl BuiltinIntent {
             changes,
             semantic_changes,
             semantic_selection,
+            operation_key,
         )
     }
 
@@ -678,7 +715,7 @@ impl<'a> IntentDecoder<'a> {
         if bytes.len() < 50
             || !matches!(
                 (bytes.get(..4), version),
-                (Some(b"BPI3"), 3) | (Some(b"BPI4"), 4)
+                (Some(b"BPI3"), 3) | (Some(b"BPI4"), 4) | (Some(b"BPI5"), 5)
             )
         {
             return Err(BuiltinModelError(
@@ -818,6 +855,29 @@ impl<'a> IntentDecoder<'a> {
             }
             _ => Err(BuiltinModelError(
                 "malformed semantic selection evidence tag".to_owned(),
+            )),
+        }
+    }
+
+    fn operation_key(&mut self) -> Result<Option<[u8; 32]>, BuiltinModelError> {
+        if self.version < BuiltinIntent::KEYED_VERSION {
+            return Ok(None);
+        }
+        match self.take(1)?.first().copied() {
+            Some(1) => {
+                let key: [u8; 32] = self
+                    .take(32)?
+                    .try_into()
+                    .map_err(|_| BuiltinModelError("malformed index operation key".to_owned()))?;
+                if key.iter().all(|byte| *byte == 0) {
+                    return Err(BuiltinModelError(
+                        "malformed index operation key".to_owned(),
+                    ));
+                }
+                Ok(Some(key))
+            }
+            _ => Err(BuiltinModelError(
+                "malformed index operation key marker".to_owned(),
             )),
         }
     }
@@ -1541,6 +1601,34 @@ mod persisted_intent_tests {
             Vec::new(),
         )
         .expect("file intent")
+    }
+
+    #[test]
+    fn keyed_index_intents_round_trip_and_have_distinct_workspace_request_identities() {
+        let intent = file_intent(vec![declaration(backend_compile::Container::Module)]);
+        assert!(intent.encode().starts_with(b"BPI4"));
+        let first = intent
+            .clone()
+            .with_operation_key(
+                backend_library::IndexOperationKey::from_bytes([1; 32]).expect("first key"),
+            )
+            .expect("bind first operation key");
+        let second = intent
+            .with_operation_key(
+                backend_library::IndexOperationKey::from_bytes([2; 32]).expect("second key"),
+            )
+            .expect("bind second operation key");
+        let encoded = first.encode();
+        assert!(encoded.starts_with(b"BPI5"));
+        assert_eq!(
+            BuiltinIntent::decode(&encoded).expect("decode keyed intent"),
+            first
+        );
+        assert_ne!(
+            BuiltinModel.request_id(&first),
+            BuiltinModel.request_id(&second),
+            "caller key must be bound into the exact workspace request identity",
+        );
     }
 
     fn declaration(container: backend_compile::Container) -> backend_compile::SourceDeclaration {

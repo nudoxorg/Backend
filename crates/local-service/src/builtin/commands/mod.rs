@@ -5,6 +5,7 @@ mod browse_lane;
 mod diff;
 mod graph;
 mod index;
+mod index_operation;
 mod semantic_query;
 mod snapshot;
 

@@ -705,9 +705,10 @@ impl FromStr for IndexOperationKey {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexOperationPublicationReceipt {
-    /// Content identity of the admitted workspace intent.
-    #[serde(with = "hex_32")]
-    request_identity: [u8; 32],
+    /// Content identity of the workspace intent published for this operation.
+    /// It is absent when indexing found no workspace mutation to commit.
+    #[serde(with = "option_hex_32")]
+    request_identity: Option<[u8; 32]>,
     /// Identity of the checked workspace commit that selected the intent.
     #[serde(with = "hex_32")]
     commit_identity: [u8; 32],
@@ -738,7 +739,7 @@ impl IndexOperationPublicationReceipt {
     /// is reserved, the workspace revision is invalid, or the cursor does not
     /// encode this exact published view.
     pub fn from_published_view(
-        request_identity: [u8; 32],
+        request_identity: Option<[u8; 32]>,
         commit_identity: [u8; 32],
         workspace_root: [u8; 32],
         workspace_sequence: u64,
@@ -763,7 +764,7 @@ impl IndexOperationPublicationReceipt {
 
     #[allow(clippy::too_many_arguments)]
     fn from_checked_parts(
-        request_identity: [u8; 32],
+        request_identity: Option<[u8; 32]>,
         commit_identity: [u8; 32],
         workspace_root: [u8; 32],
         workspace_sequence: u64,
@@ -777,17 +778,16 @@ impl IndexOperationPublicationReceipt {
                 .get(offset..offset.saturating_add(32))
                 .is_some_and(|value| value == expected)
         };
-        if [
-            request_identity,
-            commit_identity,
-            workspace_root,
-            view_root,
-            view_version,
-            view_recipe,
-        ]
-        .iter()
-        .any(|identity| identity.iter().all(|byte| *byte == 0))
-            || workspace_sequence == 0
+        if request_identity.is_some_and(|identity| identity.iter().all(|byte| *byte == 0))
+            || [
+                commit_identity,
+                workspace_root,
+                view_root,
+                view_version,
+                view_recipe,
+            ]
+            .iter()
+            .any(|identity| identity.iter().all(|byte| *byte == 0))
             || revision_cursor.len() != crate::cursor::CURSOR_CONTROL_BYTES
             || revision_cursor.get(..2)
                 != Some(crate::cursor::CURSOR_SCHEMA.to_be_bytes().as_slice())
@@ -811,8 +811,8 @@ impl IndexOperationPublicationReceipt {
 
     /// Returns the committed workspace request identity.
     #[must_use]
-    pub const fn request_identity(&self) -> &[u8; 32] {
-        &self.request_identity
+    pub const fn request_identity(&self) -> Option<&[u8; 32]> {
+        self.request_identity.as_ref()
     }
 
     /// Returns the exact checked commit identity.
@@ -936,6 +936,26 @@ pub struct IndexOperationStatus {
     pub state: IndexOperationState,
 }
 
+impl IndexOperationStatus {
+    /// Creates a status whose request digest is derived from its exact
+    /// package and execution intent.
+    #[must_use]
+    pub fn new(
+        operation_key: IndexOperationKey,
+        package: PackageReference,
+        execution_intent: crate::CompileExecutionIntent,
+        state: IndexOperationState,
+    ) -> Self {
+        Self {
+            operation_key,
+            request_digest: index_operation_request_digest(&package, execution_intent),
+            package,
+            execution_intent,
+            state,
+        }
+    }
+}
+
 /// Keyed lookup result; absence is explicitly not success.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
@@ -962,7 +982,7 @@ impl IndexOperationObservation {
                     }
                     IndexOperationState::Published(receipt)
                         if IndexOperationPublicationReceipt::from_checked_parts(
-                            *receipt.request_identity(),
+                            receipt.request_identity().copied(),
                             *receipt.commit_identity(),
                             *receipt.workspace_root(),
                             receipt.workspace_sequence(),
@@ -1030,18 +1050,20 @@ mod hex_32 {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
+        parse(&value).ok_or_else(|| de::Error::custom("invalid hex identity"))
+    }
+
+    pub(super) fn parse(value: &str) -> Option<[u8; 32]> {
         if value.len() != 64 || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
-            return Err(de::Error::custom(
-                "identity must be 64 lowercase hex characters",
-            ));
+            return None;
         }
         let mut bytes = [0_u8; 32];
         for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-            let high = nibble(pair[0]).ok_or_else(|| de::Error::custom("invalid hex identity"))?;
-            let low = nibble(pair[1]).ok_or_else(|| de::Error::custom("invalid hex identity"))?;
+            let high = nibble(pair[0])?;
+            let low = nibble(pair[1])?;
             bytes[index] = (high << 4) | low;
         }
-        Ok(bytes)
+        Some(bytes)
     }
 
     fn nibble(byte: u8) -> Option<u8> {
@@ -1050,6 +1072,39 @@ mod hex_32 {
             b'a'..=b'f' => Some(byte - b'a' + 10),
             _ => None,
         }
+    }
+}
+
+mod option_hex_32 {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub(super) fn serialize<S>(value: &Option<[u8; 32]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            None => serializer.serialize_none(),
+            Some(bytes) => {
+                let mut hex = String::with_capacity(64);
+                for byte in bytes {
+                    use core::fmt::Write as _;
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                serializer.serialize_some(&hex)
+            }
+        }
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<[u8; 32]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| {
+                super::hex_32::parse(&value)
+                    .ok_or_else(|| de::Error::custom("invalid optional hex identity"))
+            })
+            .transpose()
     }
 }
 
@@ -3647,9 +3702,19 @@ mod tests {
         let view = operation_receipt_view();
         let cursor = crate::Cursor::for_view_root(&view);
         let receipt = IndexOperationPublicationReceipt::from_published_view(
-            [1; 32], [2; 32], [3; 32], 1, &view, cursor,
+            Some([1; 32]),
+            [2; 32],
+            [3; 32],
+            1,
+            &view,
+            cursor,
         )
         .expect("checked publication receipt");
+        let genesis_no_op = IndexOperationPublicationReceipt::from_published_view(
+            None, [2; 32], [3; 32], 0, &view, cursor,
+        )
+        .expect("genesis no-op still names a valid selected revision");
+        assert!(genesis_no_op.request_identity().is_none());
         let status = IndexOperationStatus {
             operation_key: key,
             request_digest: index_operation_request_digest(
@@ -3699,7 +3764,7 @@ mod tests {
         let cursor = crate::Cursor::for_view_root(&view);
         assert!(
             IndexOperationPublicationReceipt::from_published_view(
-                [1; 32],
+                Some([1; 32]),
                 [2; 32],
                 [3; 32],
                 1,
@@ -3710,7 +3775,12 @@ mod tests {
         );
         assert!(
             IndexOperationPublicationReceipt::from_published_view(
-                [0; 32], [2; 32], [3; 32], 1, &view, cursor,
+                Some([0; 32]),
+                [2; 32],
+                [3; 32],
+                1,
+                &view,
+                cursor,
             )
             .is_err()
         );
