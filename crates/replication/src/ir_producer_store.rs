@@ -3364,8 +3364,12 @@ mod tests {
             )
             .expect_err("Types plan exceeds the one aggregate row left after prior families");
         assert!(
-            error.contains("RowBudgetExceeded"),
-            "unexpected error: {error}"
+            matches!(
+                &error,
+                SelectedTypedPlaneProductionError::ResourceLimit(detail)
+                    if detail.contains("canonical family row count exceeds the aggregate limit")
+            ),
+            "unexpected error: {error:?}"
         );
         drop(pass);
         drop(jumbo_sink);

@@ -385,7 +385,8 @@ const fn classify_io(kind: ErrorKind) -> LocalControlExchangeFailure {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod exchange_tests {
-    use super::super::{LocalControlLimits, LocalControlRequest, encode_request, frame};
+    use super::super::super::frame;
+    use super::super::{LocalControlLimits, LocalControlRequest, encode_request};
     use super::*;
     use std::io::{self, Cursor};
     use std::time::Duration;
