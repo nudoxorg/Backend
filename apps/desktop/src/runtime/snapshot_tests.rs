@@ -21,7 +21,7 @@ fn scratch(tag: &str) -> PathBuf {
         .unwrap_or_default()
         .as_nanos();
     let dir = std::env::temp_dir().join(format!("nx-snap-{tag}-{}-{nonce}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch");
+    crate::host::private_dir(&dir).expect("private scratch");
     dir
 }
 
@@ -271,9 +271,9 @@ fn a_corrupt_snapshot_is_ignored_whole_and_kept_as_bad() {
     for (what, corrupt) in corruptions {
         let dir = scratch("corrupt");
         let file = SnapshotFile::in_data(&dir);
-        let mut bytes = clean.clone();
+        let mut bytes = encode_full(served("corrupt", 1), &saved, Writer::this_build(), file.namespace, &[]).expect("private namespace bytes");
         corrupt(&mut bytes);
-        std::fs::write(file.path(), &bytes).expect("write corrupt");
+        backend_platform::durable::write_private_atomic(file.path(), &bytes).expect("write corrupt");
         assert!(
             file.read(&wanted).is_none(),
             "{what}: a corrupt snapshot is never used"
@@ -293,7 +293,7 @@ fn a_corrupt_snapshot_is_ignored_whole_and_kept_as_bad() {
     // The clean bytes read back: the corruptions, not the file, failed.
     let dir = scratch("clean-again");
     let file = SnapshotFile::in_data(&dir);
-    std::fs::write(file.path(), &clean).expect("write clean");
+    file.write(served("corrupt", 1), &saved).expect("write clean");
     assert_eq!(
         file.read(&wanted).map(|seed| seed.pages.len()),
         Some(saved.len())
@@ -439,10 +439,10 @@ fn snapshot_file_does_not_fast_path_a_same_size_replacement_image() {
     let writer_b = Writer {
         executable: Some(Digest::of(image_b)),
     };
-    let bytes = encode_with_writer(root, &saved, writer_a).expect("snapshot file");
     let dir = scratch("same-size-executable");
     let file = SnapshotFile::in_data(&dir);
-    std::fs::write(file.path(), bytes).expect("write snapshot bytes");
+    let bytes = encode_full(root, &saved, writer_a, file.namespace, &[]).expect("snapshot file");
+    backend_platform::durable::write_private_atomic(file.path(), &bytes).expect("write snapshot bytes");
     let restored = file.read(&keys(&saved)).expect("snapshot file read");
     assert_eq!(
         restored.pages, saved,
@@ -524,6 +524,7 @@ fn oversized_file_and_table_are_refused_before_parsing() {
 fn section_count_duplicate_keys_and_noncanonical_ranges_are_refused() {
     let root = served("sections", 1);
     let mut table = Table {
+        namespace: None,
         root: SnapRoot::of(root),
         sections: (0..=SECTION_CAP)
             .map(|index| Section {
@@ -581,8 +582,8 @@ fn refusal_never_overwrites_existing_diagnostic_bytes() {
     let dir = scratch("diagnostic");
     let file = SnapshotFile::in_data(&dir);
     let bad = file.path().with_extension("bad");
-    std::fs::write(&bad, b"older diagnostic").expect("existing diagnostic");
-    std::fs::write(file.path(), b"broken cache").expect("corrupt cache");
+    backend_platform::durable::write_private_atomic(&bad, b"older diagnostic").expect("existing private diagnostic");
+    backend_platform::durable::write_private_atomic(file.path(), b"broken cache").expect("private corrupt cache");
     assert!(file.read(&[]).is_none());
     assert_eq!(
         std::fs::read(&bad).expect("diagnostic"),
@@ -592,5 +593,155 @@ fn refusal_never_overwrites_existing_diagnostic_bytes() {
         std::fs::read(file.path()).expect("canonical path"),
         b"broken cache"
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn display(route: &Route, root: VersionedRoot) -> RetainedDisplay {
+    use crate::model::retained_display::*;
+    RetainedDisplay {
+        address: DisplayAddress::for_route(route).expect("exact display address"),
+        observation: DisplayObservation::at(root).expect("served observation"),
+        coverage: CaptureCoverage::Complete,
+        source: DisplaySource::Indexed,
+        body: DisplayBody::Reading { title: Arc::from("Earlier reading"), rows: vec![DisplayRow {
+            label: Arc::from("Recorded fact"), detail: Arc::from("An earlier bounded answer"),
+        }] },
+    }
+}
+
+#[test]
+fn cold_display_is_exact_address_only_and_cannot_grant_current_authority() {
+    use crate::model::pages::SearchQuery;
+    use crate::navigation::{BrowseRoute, OrbitRoute};
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(SearchQuery::new("a & λ", 50).expect("query"))));
+    let root = served("retained-reading", 7);
+    let projection = Arc::new(display(&route, root));
+    let dir = scratch("display");
+    let file = SnapshotFile::in_data(&dir);
+    file.write_displays(root, &[], std::slice::from_ref(&projection)).expect("private write");
+    let restored = file.read_route(&route).expect("cold display");
+    assert!(restored.pages.is_empty(), "display words never become resource pages");
+    assert_eq!(restored.displays, [projection]);
+    assert!(!restored.displays[0].served(), "a cache cannot report Live");
+    for other in [
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(SearchQuery::new("a & λ", 51).expect("limit")))),
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(SearchQuery::new("other", 50).expect("text")))),
+        Route::World,
+    ] {
+        assert!(file.read_route(&other).expect("other destination").displays.is_empty());
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_valid_hashed_display_copied_to_another_workspace_is_unavailable() {
+    let root = served("namespace", 3);
+    let a = scratch("namespace-a");
+    let b = scratch("namespace-b");
+    let first = SnapshotFile::in_data(&a);
+    let second = SnapshotFile::in_data(&b);
+    first.write_displays(root, &[], &[Arc::new(display(&Route::World, root))]).expect("source");
+    let bytes = std::fs::read(first.path()).expect("hashed bytes");
+    backend_platform::durable::write_private_atomic(second.path(), &bytes).expect("copy into private second namespace");
+    assert!(first.read_route(&Route::World).is_some());
+    assert!(second.read_route(&Route::World).is_none(), "workspace binding precedes display decode");
+    let _ = std::fs::remove_dir_all(a);
+    let _ = std::fs::remove_dir_all(b);
+}
+
+#[test]
+fn valid_hashes_cannot_admit_mismatched_observation_or_unknown_projection_fields() {
+    let root = served("bound-observation", 4);
+    let projection = display(&Route::World, root);
+    let mut invalid = projection.clone();
+    invalid.observation = crate::model::retained_display::DisplayObservation::at(served("other", 5)).expect("observation");
+    // Craft a structurally valid table with recomputed hashes, bypassing the
+    // writer's safeguards. The reader still checks observation/address scope.
+    let payload = serde_json::to_vec(&invalid).expect("payload");
+    let table = Table { namespace: None, root: SnapRoot::of(root), sections: vec![Section {
+        key: SectionKey::Display(projection.address.clone()), offset: 0, len: payload.len(), hash: Digest::of(&payload),
+    }] };
+    assert!(decode_selected(&encoded_table(&table, &payload), &[], None, Some(&Route::World)).is_err());
+    let mut json = serde_json::to_value(projection).expect("projection JSON");
+    json["current_authority"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<RetainedDisplay>(json).is_err(), "unrecognized capabilities never deserialize");
+}
+
+#[test]
+fn retained_display_decode_and_capture_have_closed_word_and_row_budgets() {
+    use crate::model::retained_display::*;
+    let root = served("display-bounds", 1);
+    let mut projection = display(&Route::World, root);
+    projection.body = DisplayBody::Reading { title: Arc::from("bounded"), rows: vec![DisplayRow {
+        label: Arc::from(""), detail: Arc::from(""),
+    }; MAX_DISPLAY_ROWS + 1] };
+    assert!(!projection.has_shape());
+    let encoded = serde_json::to_vec(&projection).expect("too many rows");
+    assert!(serde_json::from_slice::<RetainedDisplay>(&encoded).is_err(), "decoder stops at the row budget");
+    projection.body = DisplayBody::Markdown { source: Arc::from("x".repeat(MAX_DISPLAY_SOURCE + 1)) };
+    assert!(!projection.has_shape());
+    projection.body = DisplayBody::Reading { title: Arc::from("x".repeat(MAX_DISPLAY_WORDS + 1)), rows: vec![] };
+    assert!(!projection.has_shape());
+    projection.observation.cursor.truncate(3);
+    assert!(!projection.observation.has_shape(), "a truncated cursor cannot be indexed as a root");
+    assert!(DisplayObservation::at(VersionedRoot::unserved()).is_none());
+}
+
+#[test]
+fn cargo_display_checks_project_binding_target_revision_and_exact_content() {
+    use crate::core::{LocalProjectId, PackageId};
+    use crate::model::retained_display::*;
+    use crate::navigation::{CargoSourcePath, CargoSourceRoute};
+    let project = LocalProjectId::new("/workspace/cache-member").expect("project");
+    let (_, package, context) = crate::runtime::store::cargo_context_tests::fixture(&project);
+    let source = CargoSourceRoute::new(context.clone(), PackageId::new(package.as_str()).expect("package"),
+        CargoSourcePath::new("src/lib.rs").expect("path"), Some(5)).expect("source");
+    let route = Route::CargoSource(source.clone());
+    let text: Arc<str> = Arc::from("pub fn earlier() {}\n");
+    let projection = RetainedDisplay {
+        address: DisplayAddress::for_route(&route).expect("address"),
+        observation: DisplayObservation::at(served("cargo-display", 2)).expect("root"),
+        coverage: CaptureCoverage::Complete,
+        source: DisplaySource::Cargo { binding: context.request_binding(), source_revision: [9; 32],
+            content_digest: *blake3::hash(text.as_bytes()).as_bytes(), readme_origin: None },
+        body: DisplayBody::Source { path: Arc::from("src/lib.rs"), text, first_line: 1 },
+    };
+    assert!(projection.source_matches_route(&route));
+    let mut other = source.clone(); other.line = Some(6);
+    assert!(!projection.source_matches_route(&Route::CargoSource(other)));
+    let mut other = source; other.target = crate::navigation::CargoSourceTarget::PackageFile(CargoSourcePath::new("src/other.rs").expect("path"));
+    assert!(!projection.source_matches_route(&Route::CargoSource(other)));
+    for change in 0..3 {
+        let mut broken = projection.clone();
+        if let DisplaySource::Cargo { binding, source_revision, content_digest, .. } = &mut broken.source {
+            match change { 0 => binding.requested_root_digest = [3; 32], 1 => *source_revision = [0; 32], _ => *content_digest = [2; 32] }
+        }
+        assert!(!broken.source_matches_route(&route), "scope/content negative {change}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cold_display_refuses_nonprivate_and_linked_files_without_reading_them_as_cache() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = scratch("private-cache");
+    let file = SnapshotFile::in_data(&dir);
+    let root = served("private-cache", 2);
+    let projection = Arc::new(display(&Route::World, root));
+    file.write_displays(root, &[], std::slice::from_ref(&projection)).expect("private cache");
+    assert!(file.read_route(&Route::World).is_some());
+    assert_eq!(std::fs::metadata(file.path()).expect("mode").permissions().mode() & 0o777, 0o600);
+    std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).expect("make public");
+    assert!(file.read_route(&Route::World).is_none());
+    assert!(!file.path().with_extension("bad").exists(), "private admission refuses before observing bytes");
+    std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600)).expect("restore fixture mode");
+    let alias = dir.join("alias");
+    std::fs::hard_link(file.path(), &alias).expect("hardlink");
+    assert!(file.read_route(&Route::World).is_none());
+    std::fs::remove_file(alias).expect("remove link");
+    let target = dir.join("target");
+    std::fs::rename(file.path(), &target).expect("target");
+    symlink(&target, file.path()).expect("symlink");
+    assert!(file.read_route(&Route::World).is_none());
     let _ = std::fs::remove_dir_all(dir);
 }

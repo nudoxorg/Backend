@@ -16,12 +16,13 @@
 //! payloads (JSON page models, one per section)
 //! ```
 //!
-//! Its values land at the unserved root. When the owner answers, a
-//! snapshot read at the root the owner serves (by the same build) can confirm
-//! index-only pages. Source observations and alternate-release claims always
-//! need a worker read; other values are revalidated when their root or build
-//! differs. Only a different value redraws (`PageStore::seed`,
-//! `Landing::Unchanged`).
+//! All restored values remain unserved. Matching root, build and hashes
+//! prove historical integrity, never current read authority. Only a fresh
+//! owner reply may promote a page; an equal reply preserves its content
+//! stamp (`Landing::Unchanged`). Closed display projections contain bounded
+//! words, exact destination/scope claims and historical observation bytes,
+//! without callbacks, selected IR heads or source/editor capabilities.
+//! Private platform IO protects both the cache and preserved diagnostics.
 //!
 //! A page is one [`SeedEntry`]: its key and its value are one value, so a
 //! search cannot be decoded as Orbit and a symbol cannot be saved under a
@@ -32,10 +33,13 @@
 use crate::core::VersionedRoot;
 use crate::model::pages::{PackageRef, PageKey, SeedEntry, SymbolRef};
 use crate::navigation::Route;
+use crate::model::retained_display::{DisplayAddress, RetainedDisplay};
+mod capture;
+pub(super) use capture::DisplayCapture;
 use backend_platform::durable::BoundedWriter;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -47,7 +51,7 @@ pub const FILE_NAME: &str = "desktop-snapshot.nxs";
 const MAGIC: [u8; 8] = *b"NXSNAP\0\x01";
 /// Bump when a saved page model changes meaning without changing its shape
 /// (a shape change already fails the decode, which ignores the file).
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 const HEADER: usize = 8 + 4 + 4 + 32;
 /// Saved pages beyond this many bytes are left out (the route's pages are
 /// a few hundred kilobytes; this bounds a pathological page, not a normal
@@ -55,6 +59,7 @@ const HEADER: usize = 8 + 4 + 4 + 32;
 const CAP: usize = 8 << 20;
 const TABLE_CAP: usize = 256 << 10;
 const SECTION_CAP: usize = 64;
+const DISPLAY_SECTION_CAP: usize = 3 << 20;
 const FILE_CAP: usize = HEADER + TABLE_CAP + CAP;
 
 /// A SHA-256 digest, spelled as 64 hex digits in the file.
@@ -236,7 +241,7 @@ impl SnapRoot {
     }
 
     /// Whether `root`, served now by this build, is the root these pages
-    /// were read at: then they are current as they are.
+    /// were read at. This is diagnostic equality, never current read authority.
     #[must_use]
     pub fn serves(&self, root: VersionedRoot) -> bool {
         self.serves_with_writer(root, Writer::this_build())
@@ -257,6 +262,8 @@ pub struct Seed {
     pub root: SnapRoot,
     /// The route's pages, in the order asked.
     pub pages: Vec<SeedEntry>,
+    /// Display-only projections never enter a current page slot.
+    pub(crate) displays: Vec<Arc<RetainedDisplay>>,
 }
 
 /// What a window keeps across launches: where its pages are saved, and the
@@ -292,6 +299,7 @@ pub fn kept_keys(route: &Route) -> Vec<PageKey> {
 #[derive(Clone, Debug)]
 pub struct SnapshotFile {
     path: PathBuf,
+    namespace: Option<Digest>,
 }
 
 /// Why a file was ignored.
@@ -306,6 +314,7 @@ enum Refusal {
     TableHash,
     Table(String),
     Sections,
+    Namespace,
     Section {
         key: SectionKey,
         fault: SectionFault,
@@ -333,6 +342,7 @@ impl fmt::Display for Refusal {
             Self::TableHash => formatter.write_str("table hash"),
             Self::Table(error) => write!(formatter, "table: {error}"),
             Self::Sections => formatter.write_str("too many sections or duplicate section keys"),
+            Self::Namespace => formatter.write_str("another private workspace"),
             Self::Section { key, fault } => match fault {
                 SectionFault::PastTheEnd => write!(formatter, "{key}: past the end"),
                 SectionFault::Hash => write!(formatter, "{key}: section hash"),
@@ -349,6 +359,8 @@ impl SnapshotFile {
     pub fn in_data(data: &Path) -> Self {
         Self {
             path: data.join(FILE_NAME),
+            namespace: data.is_absolute().then(|| backend_platform::NativePath::from_path(data).ok())
+                .flatten().map(|path| Digest::of(path.key().as_bytes())),
         }
     }
 
@@ -362,10 +374,18 @@ impl SnapshotFile {
     /// did not check out; keys the file does not
     /// hold are simply absent from the seed.
     #[must_use]
-    pub fn read(&self, wanted: &[PageKey]) -> Option<Seed> {
+    pub fn read(&self, wanted: &[PageKey]) -> Option<Seed> { self.read_selected(wanted, None) }
+
+    /// Select only the restored exact destination; table bytes never create a route.
+    pub(crate) fn read_route(&self, route: &Route) -> Option<Seed> {
+        self.read_selected(&kept_keys(route), Some(route))
+    }
+
+    fn read_selected(&self, wanted: &[PageKey], route: Option<&Route>) -> Option<Seed> {
+        let namespace = self.namespace?;
         Writer::prepare_this_build();
         let reading = Instant::now();
-        let bytes = match backend_platform::durable::read_regular_bounded(&self.path, FILE_CAP) {
+        let bytes = match read_private_bounded(&self.path, FILE_CAP) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 super::trace::span("boot.snapshot", reading, "no snapshot");
@@ -376,7 +396,7 @@ impl SnapshotFile {
                 return None;
             }
         };
-        match decode(&bytes, wanted) {
+        match decode_selected(&bytes, wanted, Some(namespace), route) {
             Ok(seed) => {
                 super::trace::span(
                     "boot.snapshot",
@@ -397,14 +417,10 @@ impl SnapshotFile {
                     self.path.display(),
                     bad.display()
                 );
-                // Preserve only what this read observed. Renaming the pathname
-                // here could move a newly published, valid snapshot instead.
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&bad)
-                {
-                    let _ = file.write_all(&bytes);
+                // Keep the observed bytes privately, without renaming a
+                // pathname that another writer may already have replaced.
+                if !bad.exists() {
+                    let _ = backend_platform::durable::write_private_atomic(&bad, &bytes);
                 }
                 super::trace::span("boot.snapshot", reading, format_args!("ignored: {why}"));
                 None
@@ -421,10 +437,27 @@ impl SnapshotFile {
         if root.is_unserved() {
             return Ok(0);
         }
-        let bytes = encode(root, pages)?;
-        backend_platform::durable::write_atomic(&self.path, &bytes)?;
+        self.write_displays(root, pages, &[])
+    }
+
+    pub(super) fn write_displays(&self, root: VersionedRoot, pages: &[SeedEntry], displays: &[Arc<RetainedDisplay>]) -> io::Result<usize> {
+        if root.is_unserved() { return Ok(0); }
+        let namespace = self.namespace.ok_or_else(|| io::Error::other("snapshot has no exact workspace namespace"))?;
+        let bytes = encode_full(root, pages, Writer::this_build(), Some(namespace), displays)?;
+        backend_platform::durable::write_private_atomic(&self.path, &bytes)?;
         Ok(bytes.len())
     }
+}
+
+fn read_private_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+    let file = backend_platform::durable::open_private_read(path)?;
+    let length = usize::try_from(file.metadata()?.len()).map_err(|_| io::Error::other("snapshot size overflow"))?;
+    if length > maximum { return Err(io::Error::other("snapshot exceeds byte budget")); }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(io::Error::other)?;
+    file.take((maximum + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > maximum { return Err(io::Error::other("snapshot grew beyond byte budget")); }
+    Ok(bytes)
 }
 
 /// Which page a section holds. Search, health and browsing pages are asked
@@ -435,6 +468,7 @@ enum SectionKey {
     Source(AddressClaim),
     Package(AddressClaim),
     Orbit,
+    Display(DisplayAddress),
 }
 
 /// Cache-table bytes, never an admitted read address. The original release
@@ -483,6 +517,7 @@ impl fmt::Display for SectionKey {
             Self::Source(symbol) => write!(formatter, "source {}", symbol.coordinate),
             Self::Package(package) => write!(formatter, "package {}", package.coordinate),
             Self::Orbit => formatter.write_str("orbit"),
+            Self::Display(_) => formatter.write_str("retained display"),
         }
     }
 }
@@ -500,6 +535,7 @@ impl From<&SeedEntry> for SectionKey {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Table {
+    namespace: Option<Digest>,
     root: SnapRoot,
     #[serde(deserialize_with = "bounded_sections")]
     sections: Vec<Section>,
@@ -552,6 +588,10 @@ fn encode_with_writer(
     pages: &[SeedEntry],
     writer: Writer,
 ) -> io::Result<Vec<u8>> {
+    encode_full(root, pages, writer, None, &[])
+}
+
+fn encode_full(root: VersionedRoot, pages: &[SeedEntry], writer: Writer, namespace: Option<Digest>, displays: &[Arc<RetainedDisplay>]) -> io::Result<Vec<u8>> {
     let mut payload = Vec::new();
     let mut sections = Vec::new();
     for entry in pages {
@@ -583,10 +623,21 @@ fn encode_with_writer(
             hash: Digest::of(&payload[offset..]),
         });
     }
+    for display in displays.iter().take(SECTION_CAP.saturating_sub(sections.len())) {
+        if !display.has_shape() || display.observation.cursor.as_slice() != root.revision().encode_control().as_ref()
+            || display.observation.producer_epoch != root.producer_epoch() { continue; }
+        let key = SectionKey::Display(display.address.clone());
+        if sections.iter().any(|section| section.key == key) { continue; }
+        let offset = payload.len();
+        if serde_json::to_writer(BoundedWriter::new(&mut payload, CAP)?, display.as_ref()).is_err() { payload.truncate(offset); continue; }
+        if payload.len() - offset > DISPLAY_SECTION_CAP { payload.truncate(offset); continue; }
+        sections.push(Section { key, offset, len: payload.len() - offset, hash: Digest::of(&payload[offset..]) });
+    }
     let mut table = Vec::new();
     serde_json::to_writer(
         BoundedWriter::new(&mut table, TABLE_CAP)?,
         &Table {
+            namespace,
             root: SnapRoot::with_writer(root, writer),
             sections,
         },
@@ -602,7 +653,9 @@ fn encode_with_writer(
     Ok(bytes)
 }
 
-fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
+fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> { decode_selected(bytes, wanted, None, None) }
+
+fn decode_selected(bytes: &[u8], wanted: &[PageKey], namespace: Option<Digest>, route: Option<&Route>) -> Result<Seed, Refusal> {
     if bytes.len() > FILE_CAP {
         return Err(Refusal::TooLarge);
     }
@@ -628,6 +681,7 @@ fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
     }
     let table: Table =
         serde_json::from_slice(table).map_err(|error| Refusal::Table(error.to_string()))?;
+    if namespace.is_some() && table.namespace != namespace { return Err(Refusal::Namespace); }
     let payload = &bytes[payload_at..];
     if payload.len() > CAP {
         return Err(Refusal::TooLarge);
@@ -681,10 +735,23 @@ fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
             entry(key, body).map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
         pages.push(entry);
     }
-    Ok(Seed {
-        root: table.root,
-        pages,
-    })
+    let mut displays = Vec::new();
+    if let Some(route) = route {
+        if let Some(address) = DisplayAddress::for_route(route) {
+            if let Some(section) = table.sections.iter().find(|section| section.key == SectionKey::Display(address.clone())) {
+                let fault = |why| Refusal::Section { key: section.key.clone(), fault: why };
+                if section.len > DISPLAY_SECTION_CAP { return Err(fault(SectionFault::Decode("retained display exceeds section budget".into()))); }
+                let body = &payload[section.offset..section.offset + section.len];
+                let display: RetainedDisplay = serde_json::from_slice(body).map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
+                if !display.source_matches_route(route) || display.observation.cursor != table.root.cursor.0
+                    || display.observation.producer_epoch != table.root.epoch {
+                    return Err(fault(SectionFault::Decode("display address, observation or source scope mismatch".into())));
+                }
+                displays.push(Arc::new(display));
+            }
+        }
+    }
+    Ok(Seed { root: table.root, pages, displays })
 }
 
 /// The page a section's payload holds.

@@ -427,7 +427,7 @@ mod launch_snapshot {
     /// Saves `symbol_page`, the fixture dossier and Orbit as read at `root`.
     fn saved(tag: &str, root: VersionedRoot, symbol_page: SymbolPage) -> SnapshotFile {
         let data = scratch(tag);
-        std::fs::create_dir_all(&data).expect("data");
+        crate::host::private_dir(&data).expect("private data");
         let file = SnapshotFile::in_data(&data);
         file.write(
             root,
@@ -634,53 +634,54 @@ mod launch_snapshot {
     }
 
     #[gpui::test]
-    fn the_first_frame_is_the_page_the_window_was_left_on_and_its_owner_confirms_it(cx: &mut TestAppContext) {
+    fn a_same_root_snapshot_remains_retained_until_the_fresh_reply(cx: &mut TestAppContext) {
         let root = served("confirmed");
         let file = saved("first-frame", root, page(NAME));
         let gate = OwnerGate::starting();
-        let mut opened = open(cx, &gate, &file, false);
-
-        // The first frame: the page itself, not a skeleton, with no owner.
+        let mut opened = open(cx, &gate, &file, true);
         draw(opened.cx);
-        let first = opened.painted();
-        assert!(
-            first.iter().any(|text| text.contains("names one relation group"))
-                && !opened.says("on its way"),
-            "the first frame is the page the window was left on: {first:?}"
-        );
-        assert_eq!(opened.submitted(), 0, "painted from the snapshot, not from a read");
+        assert!(opened.painted().iter().any(|text| text.contains("names one relation group")));
+        assert_eq!(opened.submitted(), 0, "first paint uses retained words");
         let before = opened.stamps();
-
-        // The owner serves the root the pages were read at: they are current
-        // as they are, and nothing is fetched or redrawn.
-        gate.publish(OwnerState::Ready {
-            key: root,
-            mode: ServiceMode::Attached,
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        wait::until("the identical owner root was adopted", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| store.snapshot().key().same_authority(root))
         });
-        draw(opened.cx);
-        let adopted = opened.graph.store.read_with(opened.cx, |store, _| {
-            (
-                store.snapshot().key(),
-                store.symbol(&symbol(NAME)).value_root(),
-                store.package(&package()).value_root(),
-            )
+        for _ in 0..20 {
+            paint(opened.cx);
+            opened.cx.executor().advance_clock(Duration::from_millis(50));
+        }
+        assert!(opened.submitted() > 0, "fresh reads were dispatched behind the latch");
+        opened.graph.store.read_with(opened.cx, |store, _| {
+            assert!(store.symbol(&symbol(NAME)).value_root().is_some_and(VersionedRoot::is_unserved));
+            assert!(store.package(&package()).value_root().is_some_and(VersionedRoot::is_unserved));
+            let snapshot = store.snapshot();
+            let plan = crate::runtime::store::RouteDependencies::new(snapshot.route(), snapshot.overlay());
+            assert!(!plan.content_loaded(store), "root equality grants no current content");
+            let dependency = (symbol_key(), store.stamp(&symbol_key()));
+            assert!(!plan.admits_native_stamp(store, root, &dependency), "cached semantic actions cannot run");
+            assert!(crate::runtime::store::RouteReadLease::capture(store, dependency).is_none());
         });
-        assert!(adopted.0.same_authority(root), "the window adopted the owner's root");
-        assert!(
-            adopted.1.is_some_and(|at| at.same_authority(root)) && adopted.2.is_some_and(|at| at.same_authority(root)),
-            "the snapshot's pages are current at the root they were read at: {adopted:?}"
-        );
-        let asked = opened.latch.asked();
-        assert!(
-            !asked.contains(&symbol_key()) && !asked.contains(&package_key()),
-            "a confirmed snapshot is never fetched again: {asked:?}"
-        );
-        assert_eq!(opened.stamps(), before, "and nothing it drew moved");
-        assert_eq!(
-            (opened.events_for(&symbol_key()), opened.events_for(&package_key())),
-            (0, 0),
-            "and nothing woke for it"
-        );
+        assert_eq!(opened.stamps(), before);
+        assert!(opened.latch.asked().is_empty(), "no latched answer has landed");
+        assert!(!opened.says("on its way"), "retained words stay visible while revalidating");
+        opened.latch.open();
+        wait::until("equal fresh answers landed", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                store.symbol(&symbol(NAME)).value_root().is_some_and(|at| at.same_authority(root))
+                    && store.package(&package()).value_root().is_some_and(|at| at.same_authority(root))
+            }) && !inflight(&mut opened)
+        });
+        assert_eq!(opened.stamps(), before, "equal fresh answers preserve content stamps");
+        let lease = opened.graph.store.read_with(opened.cx, |store, _| {
+            crate::runtime::store::RouteReadLease::capture(store, (symbol_key(), store.stamp(&symbol_key())))
+                .expect("only a fresh landing enables this semantic action")
+        });
+        opened.graph.store.update(opened.cx, |store, cx| store.owner_starting(cx));
+        assert!(!opened.graph.store.read_with(opened.cx, |store, _| lease.admits(store)),
+            "an old captured action is denied immediately when its read authority is revoked");
     }
 
     /// Answers the owner at `now` and lets its root, project and mode be

@@ -67,6 +67,7 @@ impl DisplayObservation {
 
 /// Explicit projection completeness; omitted content never means absence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum CaptureCoverage {
     Complete,
     VisibleExcerpt { first_line: u32, last_line: u32 },
@@ -81,6 +82,7 @@ pub(crate) struct DisplayRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum DisplayBody {
     Reading { title: Arc<str>, #[serde(deserialize_with = "bounded_rows")] rows: Vec<DisplayRow> },
     Source { path: Arc<str>, text: Arc<str>, first_line: u32 },
@@ -89,8 +91,10 @@ pub(crate) enum DisplayBody {
 
 /// Source signatures are historical scope claims, not current file leases.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum DisplaySource {
     Indexed,
+    Tree { binding: backend_library::browse::ProjectTreeRequestBindingV1 },
     Cargo { binding: backend_library::browse::ProjectTreeRequestBindingV1,
         source_revision: [u8; 32], content_digest: [u8; 32],
         readme_origin: Option<backend_library::CargoPackageReadmeOriginV1> },
@@ -134,6 +138,9 @@ impl RetainedDisplay {
         }
         match &self.source {
             DisplaySource::Indexed => true,
+            DisplaySource::Tree { binding } => self.address.requested_project().is_some_and(|project|
+                binding.has_admissible_shape() && binding.matches_requested_root(&project.path()))
+                && matches!(self.body, DisplayBody::Reading { .. }),
             DisplaySource::Cargo { binding, source_revision, content_digest, readme_origin } => {
                 let Some(project) = self.address.requested_project() else { return false; };
                 let Some(text) = text else { return false; };
@@ -162,8 +169,10 @@ impl RetainedDisplay {
             (DisplaySource::Cargo { binding, readme_origin, .. }, Route::Package(package)) => package.cargo.as_ref()
                 .is_some_and(|context| context.request_binding() == *binding)
                 && readme_origin.as_ref().is_some_and(|origin| origin.package.as_str() == package.package.as_str()),
-            (DisplaySource::Indexed, Route::CargoSource(_)) => false,
-            (DisplaySource::Indexed, _) => true,
+            (DisplaySource::Tree { .. }, Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(_)))) => true,
+            (DisplaySource::Tree { .. }, _) => false,
+            (DisplaySource::Indexed, Route::World | Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_) | BrowseRoute::Compare(_)))) => matches!(self.body, DisplayBody::Reading { .. }),
+            (DisplaySource::Indexed, _) => false,
             (DisplaySource::Cargo { .. }, _) => false,
         }
     }

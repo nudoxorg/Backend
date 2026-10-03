@@ -428,6 +428,12 @@ impl DataStore {
             .filter(|notice| notice.active(&self.snapshot))
     }
 
+    /// Earlier exact-destination display, separate from current resources.
+    /// A late/other-route projection cannot attach to this mounted visit.
+    pub(crate) fn retained_display(&self, route: &Route) -> Option<Arc<crate::model::retained_display::RetainedDisplay>> {
+        (self.snapshot.route() == route).then(|| self.keeper.retained(route)).flatten()
+    }
+
     /// Posts (or clears) the one visit-scoped notice on its own, for a
     /// caller with no graph focus of its own to admit alongside it (an
     /// anatomy link, Ask, an unindexed hold). A newer notice replaces an

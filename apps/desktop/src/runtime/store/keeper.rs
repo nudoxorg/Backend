@@ -1,12 +1,13 @@
 //! The launch snapshot's keeper (W-Open I2): seeds the pages the last launch
-//! left, settles them against the first served root, and saves the route's
+//! left, retains them until fresh reads, and saves the route's
 //! pages for the next launch, at rest and on quit.
 
 use super::DataStore;
 use crate::core::{Resource, VersionedRoot};
 use crate::model::AppSnapshot;
 use crate::model::pages::{PageKey, PageStore, SeedEntry};
-use crate::runtime::snapshot::{Keep, SnapRoot, SnapshotFile, kept_keys};
+use crate::runtime::snapshot::{DisplayCapture, Keep, SnapRoot, SnapshotFile, kept_keys};
+use crate::model::retained_display::RetainedDisplay;
 use gpui::{AppContext as _, Context, Task};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,13 +20,18 @@ pub(super) struct PendingSave {
     file: SnapshotFile,
     root: VersionedRoot,
     pages: Vec<SeedEntry>,
+    capture: Option<DisplayCapture>,
+    prepared: Option<Arc<RetainedDisplay>>,
 }
 
 impl PendingSave {
     /// Writes them, and says how long it took.
     fn write(&self, when: &str) -> std::io::Result<usize> {
         let saving = std::time::Instant::now();
-        let written = self.file.write(self.root, &self.pages)?;
+        let display = self.capture.as_ref().and_then(DisplayCapture::prepare).map(Arc::new)
+            .or_else(|| self.prepared.clone());
+        let displays = display.into_iter().collect::<Vec<_>>();
+        let written = self.file.write_displays(self.root, &self.pages, &displays)?;
         crate::runtime::trace::span(
             "snapshot.write",
             saving,
@@ -40,10 +46,12 @@ impl PendingSave {
 #[derive(Default)]
 pub(super) struct SnapshotKeeper {
     /// The root the launch snapshot's pages were read at, until the first
-    /// served root settles them (confirmed as they are, or revalidated).
+    /// served root schedules their fresh revalidation.
     seed_root: Option<SnapRoot>,
     file: Option<SnapshotFile>,
     saving: Option<Task<()>>,
+    retained: Vec<Arc<RetainedDisplay>>,
+    prepared: Option<Arc<RetainedDisplay>>,
 }
 
 impl SnapshotKeeper {
@@ -51,6 +59,7 @@ impl SnapshotKeeper {
     /// launch) and remembers where to save them.
     pub(super) fn keep(&mut self, pages: &mut PageStore, root: VersionedRoot, keep: Keep) {
         if let Some(seed) = keep.seed {
+            if root.is_unserved() { self.retained = seed.displays; }
             let mut seeded = 0_usize;
             for entry in seed.pages {
                 let key = crate::runtime::trace::enabled().then(|| entry.key());
@@ -68,25 +77,24 @@ impl SnapshotKeeper {
         self.file = Some(keep.file);
     }
 
-    /// The first served root settles the seeded pages: at the root they were
-    /// read at they are current as they are; otherwise their next fetch
-    /// revalidates them quietly.
-    pub(super) fn settle(&mut self, pages: &mut PageStore, root: VersionedRoot) {
+    /// The first served root schedules quiet fresh revalidation. Root/build
+    /// equality alone never grants a cached page present read authority.
+    pub(super) fn settle(&mut self, _pages: &mut PageStore, root: VersionedRoot) {
         if root.is_unserved() {
             return;
         }
         let Some(seed) = self.seed_root.take() else {
             return;
         };
-        if seed.serves(root) {
-            let confirmed = confirm_index_pages(pages, root);
-            crate::runtime::trace::mark(
-                "snapshot.confirm",
-                format_args!("{confirmed} pages at the served root"),
-            );
-        } else {
-            crate::runtime::trace::mark("snapshot.revalidate", "the owner serves a newer root");
-        }
+        // Root/build equality is diagnostic only. Cached payload hashes do
+        // not prove a present read; every family gets a fresh worker landing.
+        crate::runtime::trace::mark("snapshot.revalidate",
+            format_args!("retained reading; same observed root/build: {}", seed.serves(root)));
+    }
+
+    pub(super) fn retained(&self, route: &crate::navigation::Route) -> Option<Arc<RetainedDisplay>> {
+        self.prepared.iter().chain(self.retained.iter())
+            .find(|display| display.source_matches_route(route)).cloned()
     }
 
     /// The route's pages as they are now, when all are current at a served
@@ -132,10 +140,12 @@ impl SnapshotKeeper {
             .iter()
             .filter_map(current)
             .collect::<Vec<_>>();
-        (!kept.is_empty()).then_some(PendingSave {
-            file,
-            root,
-            pages: kept,
+        let capture = DisplayCapture::select(pages, snapshot.route(), root);
+        let prepared = self.prepared.as_ref().filter(|display| display.source_matches_route(snapshot.route())
+            && display.observation.cursor.as_slice() == root.revision().encode_control().as_ref()
+            && display.observation.producer_epoch == root.producer_epoch()).cloned();
+        (!kept.is_empty() || capture.is_some() || prepared.is_some()).then_some(PendingSave {
+            file, root, pages: kept, capture, prepared,
         })
     }
 
@@ -150,7 +160,12 @@ impl SnapshotKeeper {
         owner_serving: bool,
     ) -> std::io::Result<usize> {
         self.to_save(pages, snapshot, owner_serving)
-            .map_or(Ok(0), |save| save.write("on quit"))
+            .map_or(Ok(0), |mut save| {
+                // New projection traversal is never performed on the UI
+                // thread, including quit. Reuse only worker-prepared bytes.
+                save.capture = None;
+                save.write("on quit")
+            })
     }
 
     /// Saves the launch snapshot once the pages have rested (a newer landing
@@ -166,37 +181,31 @@ impl SnapshotKeeper {
             }) else {
                 return;
             };
-            cx.background_spawn(async move {
+            let prepared = cx.background_spawn(async move {
+                let display = save.capture.as_ref().and_then(DisplayCapture::prepare).map(Arc::new)
+                    .or_else(|| save.prepared.clone());
+                let mut save = save;
+                save.capture = None;
+                save.prepared = display.clone();
                 if let Err(error) = save.write("at rest") {
-                    eprintln!(
-                        "backend-desktop: save {}: {error}",
-                        save.file.path().display()
-                    );
+                    eprintln!("backend-desktop: save {}: {error}", save.file.path().display());
+                    return None;
                 }
-            })
-            .await;
+                display
+            }).await;
+            if let Some(prepared) = prepared {
+                let _ = this.update(cx, |store, _| {
+                    // A late worker cannot select a different destination or
+                    // attach its old observation to newer current bytes.
+                    let root = store.snapshot.key();
+                    if store.owner_serving() && prepared.source_matches_route(store.snapshot.route())
+                        && prepared.observation.cursor.as_slice() == root.revision().encode_control().as_ref()
+                        && prepared.observation.producer_epoch == root.producer_epoch() {
+                        store.keeper.prepared = Some(prepared);
+                    }
+                });
+            }
         }));
-    }
-}
-
-/// Called only after the saved root and running build identity were admitted.
-/// Source pages also observe local bytes, which can change without an index
-/// revision. Their worker must renew those observations on every launch.
-fn confirm_index_pages(pages: &mut PageStore, root: VersionedRoot) -> usize {
-    pages
-        .keys()
-        .into_iter()
-        .filter(|key| !requires_worker_verification(key))
-        .filter(|key| pages.confirm(key, root))
-        .count()
-}
-
-fn requires_worker_verification(key: &PageKey) -> bool {
-    match key {
-        PageKey::Source(_) | PageKey::CargoSource(_) => true,
-        PageKey::Symbol(symbol) => symbol.release_origin().is_some(),
-        PageKey::Package(package) => package.release_origin().is_some(),
-        PageKey::Orbit | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => false,
     }
 }
 
@@ -239,7 +248,7 @@ mod tests {
     fn saved_release_claims_remain_seeded_until_the_worker_verifies_them() {
         use crate::model::pages::PackageRef;
         let dir = std::env::temp_dir().join(format!("nx-keeper-origin-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch");
+        crate::host::private_dir(&dir).expect("private scratch");
         let file = SnapshotFile::in_data(&dir);
         let root = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("keeper".into(), "origin".into())]),
@@ -268,10 +277,6 @@ mod tests {
             },
         );
         keeper.settle(&mut pages, root);
-        // Exercise the admitted-root branch even when this test executable
-        // exceeds the bounded fingerprint limit. This does not supply a
-        // production identity or bypass the launch reader's admission.
-        assert_eq!(confirm_index_pages(&mut pages, root), 0);
         assert!(
             pages.is_seeded(&key),
             "matching root does not verify the saved original release tree"
@@ -284,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn an_admitted_index_root_confirms_docs_but_not_local_source_observations() {
+    fn an_admitted_index_root_cannot_confirm_cached_docs_or_local_source_observations() {
         let root = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("keeper".into(), "local-source".into())]),
             1,
@@ -317,8 +322,10 @@ mod tests {
             SeedEntry::Source(symbol.clone(), Arc::new(source)),
             VersionedRoot::unserved()
         ));
-        assert_eq!(confirm_index_pages(&mut pages, root), 1);
-        assert!(!pages.is_seeded(&PageKey::Symbol(symbol.clone())));
+        let mut keeper = SnapshotKeeper::default();
+        keeper.settle(&mut pages, root);
+        assert!(pages.is_seeded(&PageKey::Symbol(symbol.clone())));
+        assert!(pages.begin(&PageKey::Symbol(symbol.clone()), root).is_some(), "docs require a fresh owner read too");
         let source_key = PageKey::Source(symbol);
         assert!(
             pages.is_seeded(&source_key),

@@ -86,9 +86,9 @@ pub(crate) struct SnapshotRead {
 /// Starts reading the restored route's pages beside the platform's start.
 fn read_snapshot(data: &std::path::Path, route: &crate::navigation::Route) -> Option<SnapshotRead> {
     let file = SnapshotFile::in_data(data);
-    let wanted = crate::runtime::snapshot::kept_keys(route);
+    let route = route.clone();
     let reader = file.clone();
-    spawn_reading(move || reader.read(&wanted)).map(|seed| SnapshotRead { file, seed })
+    spawn_reading(move || reader.read_route(&route)).map(|seed| SnapshotRead { file, seed })
 }
 
 /// Runs `read` on the snapshot thread and returns where its answer will
