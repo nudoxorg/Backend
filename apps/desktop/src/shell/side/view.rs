@@ -21,6 +21,7 @@ use gpui::{
     ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div, px,
     radians, uniform_list,
 };
+use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::ops::Range;
 use std::rc::Rc;
@@ -560,11 +561,11 @@ impl Shelf {
     ) -> Vec<AnyElement> {
         let palette = cx.facet().palette();
         let rows = Rc::clone(&self.rows);
-        self.targets.retain_native_handles(|key| {
-            rows.get(range.clone()).unwrap_or(&[]).iter().filter_map(Row::item).any(|item| item.key.as_ref() == key)
-                || rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
-                    .take(24).any(|item| key == format!("spine-{}", item.key))
-        });
+        let visible: HashSet<SharedString> = rows.get(range.clone()).unwrap_or(&[]).iter()
+            .filter_map(Row::item).map(|item| item.key.clone())
+            .chain(rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
+                .take(24).map(|item| SharedString::from(format!("spine-{}", item.key)))).collect();
+        self.targets.retain_native_handles(|key| visible.contains(key));
         range
             .filter_map(|index| rows.get(index).map(|row| (index, row)))
             .map(|(index, row)| self.line(index, row, measure, palette, window, cx))
@@ -666,7 +667,7 @@ impl Shelf {
             .child(mark(item.mark, measure, palette))
             .child(self.name(item, ink, measure, palette));
         let handle = self.targets.native_handle(&item.key, cx);
-        if FocusRepresentative::for_leaf(self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
+        if FocusRepresentative::for_leaf(item.does != Do::Nothing && self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
             element = element.aria_active_descendant();
         }
         if item.does != Do::Nothing { element = element.track_focus(&handle); }
@@ -833,9 +834,10 @@ impl Shelf {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.targets.retain_native_handles(|key| !key.starts_with("spine-")
-            || self.rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
-                .take(24).any(|item| key == format!("spine-{}", item.key)));
+        let visible_spine: HashSet<SharedString> = self.rows.iter().filter_map(Row::item)
+            .filter(|item| item.depth == 0 || item.current).take(24)
+            .map(|item| SharedString::from(format!("spine-{}", item.key))).collect();
+        self.targets.retain_native_handles(|key| !key.starts_with("spine-") || visible_spine.contains(key));
         let side = px(28.0 * measure.scale());
         let gap = measure.space(Space::Snug);
         let mut column = div()
@@ -868,7 +870,7 @@ impl Shelf {
                 .child(mark(item.mark, measure, palette));
             let spine_key = SharedString::from(format!("spine-{}", item.key));
             let handle = self.targets.native_handle(&spine_key, cx);
-            if FocusRepresentative::for_leaf(self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
+            if FocusRepresentative::for_leaf(item.does != Do::Nothing && self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
                 cell = cell.aria_active_descendant();
             }
             if item.current {
