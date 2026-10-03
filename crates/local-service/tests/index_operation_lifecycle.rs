@@ -412,7 +412,7 @@ fn wait_for_published(
     session: &mut Session,
     operation_key: IndexOperationKey,
     mut observation: IndexOperationObservation,
-) -> Result<backend_library::IndexOperationStatus, Box<dyn Error>> {
+) -> Result<backend_library::IndexOperationStatus, PhaseError> {
     let deadline = Instant::now() + Duration::from_secs(660);
     loop {
         let IndexOperationObservation::Known(status) = observation else {
