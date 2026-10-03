@@ -93,6 +93,35 @@ class NativeMotionTests(unittest.TestCase):
         self.assertFalse(motion.ax_uniquely_unselected(
             [{"title": "Full", "selected": False}, {"description": "Full", "selected": False}], "Full"))
 
+    def test_native_probe_admission_requires_explicit_unselected_radio(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            (out / "frames").mkdir()
+            frames = []
+            for index, at in enumerate([0, 40, 80, 120]):
+                file = f"frames/frame-{index:06d}.png"
+                Image.new("RGB", (12, 12), "black").save(out / file)
+                host = 1_000_000_000 + at * 1_000_000
+                frames.append({"index": index, "time_ms": at, "pts_seconds": 1 + at / 1000,
+                               "host_capture_ns": host, "width_px": 12, "height_px": 12,
+                               "file": file, "ax": {"sample_start_host_ns": host - 2_000_000,
+                                                     "sample_end_host_ns": host - 1_000_000}})
+            plan = {"duration_ms": 120, "max_frame_gap_ms": 50, "actions": [
+                {"kind": "probe", "label": "retired radio", "at_ms": 40,
+                 "expect_ax_unselected_title": "Full"}]}
+            def assessed(nodes):
+                event = {"phase": "action", "kind": "probe", "label": "retired radio", "actual_ms": 40,
+                         "dispatch_host_ns": 1_040_000_000, "posted_host_ns": 1_040_500_000,
+                         "posted": {"disposition": "ReadOnlyProbe", "ax": {"tree": nodes,
+                             "sample_start_host_ns": 1_040_100_000,
+                             "sample_end_host_ns": 1_040_200_000}}}
+                return motion.analyze_frames(out, frames, [event], plan)
+            self.assertEqual(assessed([{"title": "Full", "selected": False}])["failures"], [])
+            for nodes in [[], [{"title": "Full", "selected": True}],
+                          [{"title": "Full", "selected": False}, {"title": "Full", "selected": False}]]:
+                result = assessed(nodes)
+                self.assertIn("did not uniquely leave 'Full' unselected", "; ".join(result["failures"]))
+
     def test_drawer_gesture_uses_unique_measured_native_bounds(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
