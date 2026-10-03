@@ -49,6 +49,8 @@ pub mod unfurl;
 mod storm;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod native_reading_tests;
 
 pub use model::{AIM_IDLE, Card, DEEPEN, MAX_DEPTH, Model, Pending, Pin, Presence, WARM};
 pub use unfurl::Bands;
@@ -1152,14 +1154,27 @@ impl Element for LayerElement {
                 (Some(previous), true) => {
                     let mut old = card.clone();
                     old.content = previous.clone();
-                    let mut element = self.build_card(&old, width, cap, surface, crumbs.clone(), window, cx);
-                    ids.push(element.request_layout(window, cx));
+                    let mut element = window.with_a11y_suppressed(|window| {
+                        self.build_card(&old, width, cap, surface, crumbs.clone(), window, cx)
+                    });
+                    ids.push(window.with_a11y_suppressed(|window| {
+                        element.request_layout(window, cx)
+                    }));
                     Some(element)
                 }
                 _ => None,
             };
-            let mut element = self.build_card(card, width, cap, surface, crumbs, window, cx);
-            let layout = element.request_layout(window, cx);
+            let (element, layout) = if hidden || !card.is_open() {
+                window.with_a11y_suppressed(|window| {
+                    let mut element = self.build_card(card, width, cap, surface, crumbs, window, cx);
+                    let layout = element.request_layout(window, cx);
+                    (element, layout)
+                })
+            } else {
+                let mut element = self.build_card(card, width, cap, surface, crumbs, window, cx);
+                let layout = element.request_layout(window, cx);
+                (element, layout)
+            };
             ids.push(layout);
             let presence = card.presence.value(now);
             let focus_target = if card.is_open()
@@ -1435,8 +1450,10 @@ impl Element for LayerElement {
                 // under the new content).
                 let away = point(px(12.0 * wipe), px(0.0));
                 let inert = Bounds::new(painted.origin, size(px(0.0), px(0.0)));
-                window.with_content_mask(Some(ContentMask { bounds: inert }), |window| {
-                    window.with_element_offset(shift + away, |window| old.prepaint(window, cx));
+                window.with_a11y_suppressed(|window| {
+                    window.with_content_mask(Some(ContentMask { bounds: inert }), |window| {
+                        window.with_element_offset(shift + away, |window| old.prepaint(window, cx));
+                    });
                 });
             }
             // While a wipe runs, only the new content left of its boundary
@@ -1450,7 +1467,13 @@ impl Element for LayerElement {
             let shift = shift + arrive;
             let element = &mut self.cards[index].element;
             window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                window.with_element_offset(shift, |window| element.prepaint(window, cx));
+                if hidden || !open {
+                    window.with_a11y_suppressed(|window| {
+                        window.with_element_offset(shift, |window| element.prepaint(window, cx));
+                    });
+                } else {
+                    window.with_element_offset(shift, |window| element.prepaint(window, cx));
+                }
             });
         }
         for element in &mut self.extras {
@@ -2056,12 +2079,20 @@ fn paint_unfurl(draw: &mut CardDraw, palette: &Palette, window: &mut Window, cx:
                     point(painted.origin.x + seam, painted.origin.y),
                     size(painted.size.width - seam, painted.size.height),
                 );
-                window.with_content_mask(Some(ContentMask { bounds: rest }), |window| old.paint(window, cx));
+                window.with_a11y_suppressed(|window| {
+                    window.with_content_mask(Some(ContentMask { bounds: rest }), |window| {
+                        old.paint(window, cx);
+                    });
+                });
             }
             let content = Bounds::new(painted.origin, size(boundary, painted.size.height));
             let element = &mut draw.element;
             window.with_content_mask(Some(ContentMask { bounds: content }), |window| {
-                element.paint(window, cx);
+                if draw.open {
+                    element.paint(window, cx);
+                } else {
+                    window.with_a11y_suppressed(|window| element.paint(window, cx));
+                }
             });
         });
     }
