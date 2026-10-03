@@ -1777,7 +1777,11 @@ fn retain_text_selection_state(
 fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Window, cx: &mut App) {
     if state.update(cx, |state, _| state.schedule_finish_frame()) {
         let state = state.downgrade();
-        window.on_next_frame(move |_, cx| {
+        // Registrations are complete when this draw's effect cycle ends. A
+        // next-frame callback asks for another frame even when no selection
+        // changed, so a mounted selection layer would keep an idle window
+        // animating forever. Defer the sweep until after paint instead.
+        window.defer(cx, move |_, cx| {
             let Some(state) = state.upgrade() else {
                 return;
             };
@@ -1914,6 +1918,11 @@ mod tests {
         selection: TextSelectionHandle,
     }
 
+    struct ToggleRegisteredSelectionView {
+        enabled: bool,
+        selection: TextSelectionHandle,
+    }
+
     struct DoubleSelectionElementView {
         selection: TextSelectionHandle,
     }
@@ -1967,6 +1976,26 @@ mod tests {
                         );
                     }))
             })
+        }
+    }
+
+    impl Render for ToggleRegisteredSelectionView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let selection = self.selection.clone();
+            div()
+                .size_full()
+                .child(TextSelectionLayer)
+                .when(self.enabled, |this| {
+                    this.child(div().size_full().on_prepaint(move |bounds, window, cx| {
+                        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                        selection.register(
+                            TextSelectionRegistration::new(hitbox, bounds)
+                                .with_text_bounds(vec![bounds]),
+                            window,
+                            cx,
+                        );
+                    }))
+                })
         }
     }
 
@@ -3203,14 +3232,55 @@ mod tests {
     }
 
     #[gpui::test]
-    fn mounted_selection_element_does_not_keep_an_idle_frame_queue_alive(cx: &mut TestAppContext) {
+    fn mounted_selection_element_does_not_request_a_housekeeping_frame(cx: &mut TestAppContext) {
         let (_, cx) = cx.add_window_view(|_, _| SelectionElementOnlyView);
         cx.update(|window, cx| {
             let _ = window.draw(cx);
-            assert!(window.simulate_next_frame(cx) > 0);
-            assert_eq!(window.simulate_next_frame(cx), 0);
             assert_eq!(window.simulate_next_frame(cx), 0);
             assert!(live_text_selection_state(window, cx).is_some());
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(window.simulate_next_frame(cx), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn post_paint_sweep_retires_a_removed_participant_without_another_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|_, cx| ToggleRegisteredSelectionView {
+            enabled: true,
+            selection: TextSelectionHandle::new("local", cx),
+        });
+        let selection = cx.update(|_, cx| view.read(cx).selection.clone());
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(window.simulate_next_frame(cx), 0);
+        });
+        cx.update(|window, cx| {
+            selection.set_local_selection(true, cx);
+            assert!(TextSelection::has_selection(window, cx));
+        });
+
+        view.update(cx, |view, cx| {
+            view.enabled = false;
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(window.simulate_next_frame(cx), 0);
+        });
+        cx.update(|window, cx| {
+            let state = WindowSelectionState::existing(window, cx).unwrap();
+            assert!(
+                !state
+                    .read(cx)
+                    .participants
+                    .contains_key(&selection.entity_id())
+            );
+            assert!(!selection.has_local_selection(cx));
+            assert!(!TextSelection::has_selection(window, cx));
         });
     }
 
@@ -3264,12 +3334,13 @@ mod tests {
     }
 
     #[gpui::test]
-    fn two_selection_elements_schedule_only_one_post_frame_sweep(cx: &mut TestAppContext) {
+    fn two_selection_elements_defer_only_one_post_paint_sweep(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|_, cx| DoubleSelectionElementView {
             selection: TextSelectionHandle::new("once", cx),
         });
-        cx.update(|window, cx| {
+        let (selection_state, before) = cx.update(|window, cx| {
             let selection_state = WindowSelectionState::ensure(window, cx);
+            let before = selection_state.read(cx).frame_generation;
             let selection = view.read(cx).selection.clone();
             selection_state.update(cx, |selection_state, cx| {
                 FakeParticipant { selection }.register(
@@ -3285,8 +3356,11 @@ mod tests {
             });
 
             let _ = window.draw(cx);
-            window.simulate_next_frame(cx);
-
+            assert_eq!(window.simulate_next_frame(cx), 0);
+            (selection_state, before)
+        });
+        cx.update(|_, cx| {
+            assert_eq!(selection_state.read(cx).frame_generation, before + 1);
             let items = selection_state.read(cx).copy_items(cx);
             assert_eq!(resolve_copy_items(items, cx), "once");
         });
