@@ -5,15 +5,15 @@
 //! browse.rs.
 
 use super::{
-    CargoToolSelection, CargoToolWitnessReuse, CoherentMetadata, InputObservation,
-    MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_DEPTH, MAX_CARGO_CONFIG_INPUTS,
+    CargoMetadataLockState, CargoToolSelection, CargoToolWitnessReuse, CoherentMetadata,
+    InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_DEPTH, MAX_CARGO_CONFIG_INPUTS,
     MAX_CARGO_METADATA_PACKAGES, MAX_CARGO_METADATA_TARGETS_PER_PACKAGE,
     MAX_CARGO_OBSERVATION_FILE_BYTES, MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES,
     RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_config_relative_path_base,
     cargo_environment_witness, cargo_tool_selection, metadata_tool_witness, observation_budget,
-    observation_path_key, read_observation_file, requested_cargo_manifest, run_with_default_rustc,
-    run_with_default_rustc_and_overrides, rustup_selection_paths, sccache_configuration_paths,
-    selected_cargo_program, strict_observation_witness,
+    observation_path_key, read_observation_file, requested_cargo_manifest, run,
+    run_with_default_rustc, run_with_default_rustc_and_overrides, rustup_selection_paths,
+    sccache_configuration_paths, selected_cargo_program, strict_observation_witness,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
