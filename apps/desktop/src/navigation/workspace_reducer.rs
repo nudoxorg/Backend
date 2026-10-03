@@ -173,7 +173,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .workspace()
                 .projects
                 .iter()
-                .any(|item| item.id == *project && item.phase == ProjectPhase::Indexing)
+                .any(|item| item.id == *project && item.phase == ProjectPhase::Indexing && item.request.is_none())
             {
                 next =
                     set_project_phase(&next, project, ProjectPhase::Indexing, None, Some(*request));
@@ -448,7 +448,10 @@ fn admit_project_identity(
     workspace.active = Some(project.clone());
     let mut projects = workspace.projects.to_vec();
     if let Some(existing) = projects.iter_mut().find(|item| item.id == project) {
-        if existing.phase != ProjectPhase::Unconfirmed {
+        // Re-selecting a folder coalesces its existing admission. In-flight
+        // and uncertain mutations retain their exact request; a ready folder
+        // does not need another compile merely because it was picked again.
+        if matches!(existing.phase, ProjectPhase::Failed | ProjectPhase::Cancelled | ProjectPhase::Missing) {
             existing.phase = ProjectPhase::Indexing;
             existing.progress = None;
             existing.files_indexed = None;
@@ -603,6 +606,25 @@ mod tests {
                 .map(LocalProjectId::as_str),
             Some("/tmp/nudox-reducer-project")
         );
+    }
+
+    #[test]
+    fn repeated_folder_admission_preserves_ready_and_in_flight_owner_state() {
+        let project = LocalProjectId::new("/fixture/coalesced-folder").expect("project");
+        let admitted = reduce(&snapshot(), &Intent::AddProject { project: project.clone() }).expect("admission").snapshot;
+        for (phase, request) in [(ProjectPhase::Ready, None),
+            (ProjectPhase::Indexing, Some(RequestId::new(71))),
+            (ProjectPhase::Cancelling, Some(RequestId::new(72))),
+            (ProjectPhase::Unconfirmed, None)] {
+            let existing = set_project_phase(&admitted, &project, phase, None, request);
+            let added = reduce(&existing, &Intent::AddProject { project: project.clone() }).expect("repeat admission").snapshot;
+            assert_eq!((added.workspace().projects[0].phase, added.workspace().projects[0].request), (phase, request));
+            if request.is_some() {
+                let duplicate = reduce(&added, &Intent::IndexProject { project: project.clone(), basis: added.key(), request: RequestId::new(99) }).expect("duplicate request");
+                assert!(!duplicate.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))), "a held request cannot authorize a second mutation");
+                assert_eq!(duplicate.snapshot.workspace().projects[0].request, request);
+            }
+        }
     }
 
     #[test]
