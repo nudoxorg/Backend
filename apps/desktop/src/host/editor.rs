@@ -81,27 +81,32 @@ pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<C
 /// may still refuse the file after that point, so success is a request, not
 /// an assertion that an editor window opened.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LaunchAttempt {
-    pub command: Command,
-    pub failure: Option<std::io::ErrorKind>,
+pub(crate) struct LaunchFailure {
+    command: Command,
+    reason: std::io::ErrorKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LaunchOutcome {
-    pub attempts: Vec<LaunchAttempt>,
+pub(crate) enum LaunchOutcome {
+    Requested { command: Command, failures: Vec<LaunchFailure> },
+    Failed { failures: Vec<LaunchFailure> },
 }
 
 impl LaunchOutcome {
     pub fn requested(&self) -> Option<&Command> {
-        self.attempts.iter().find(|attempt| attempt.failure.is_none()).map(|attempt| &attempt.command)
+        match self { Self::Requested { command, .. } => Some(command), Self::Failed { .. } => None }
+    }
+
+    fn failures(&self) -> &[LaunchFailure] {
+        match self { Self::Requested { failures, .. } | Self::Failed { failures } => failures }
     }
 
     pub fn message(&self, path: &str, line: u32) -> String {
         if let Some(command) = self.requested() {
-            format!("Requested {} to open {path}:{line}. Check the external editor for the result.", command.program)
+            format!("Requested {} to open {path}. Check the external editor for line {line} and the result.", command.program)
         } else {
-            let reasons = self.attempts.iter().filter_map(|attempt| attempt.failure.map(|failure|
-                format!("{}: {failure}", attempt.command.program))).collect::<Vec<_>>().join("; ");
+            let reasons = self.failures().iter().map(|failure|
+                format!("{}: {}", failure.command.program, failure.reason)).collect::<Vec<_>>().join("; ");
             format!("Could not start an editor for {path}:{line}. {reasons}")
         }
     }
@@ -110,16 +115,14 @@ impl LaunchOutcome {
 /// Opens `path` at `line`: the first process that starts wins. Every failed
 /// start remains visible in the outcome for the visit-scoped product notice.
 pub(crate) fn open(launch: &dyn Launch, configured: Option<&str>, path: &str, line: u32) -> LaunchOutcome {
-    let mut attempts = Vec::new();
+    let mut failures = Vec::new();
     for command in commands(configured, path, line) {
-        let failure = launch.run(&command).err().map(|error| error.kind());
-        let started = failure.is_none();
-        attempts.push(LaunchAttempt { command, failure });
-        if started {
-            break;
+        match launch.run(&command) {
+            Ok(()) => return LaunchOutcome::Requested { command, failures },
+            Err(error) => failures.push(LaunchFailure { command, reason: error.kind() }),
         }
     }
-    LaunchOutcome { attempts }
+    LaunchOutcome::Failed { failures }
 }
 
 #[cfg(test)]
@@ -152,14 +155,21 @@ mod tests {
     fn then_zed_then_the_platform() {
         let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["zed"] };
         let outcome = open(&recorder, None, "/w/a.rs", 7);
-        assert_eq!(outcome.attempts.iter().map(|attempt| attempt.command.program.as_str()).collect::<Vec<_>>(), ["code", "zed"]);
-        assert_eq!(outcome.attempts[1].command.args, ["/w/a.rs:7"]);
+        assert_eq!(outcome.failures().iter().map(|attempt| attempt.command.program.as_str()).collect::<Vec<_>>(), ["code"]);
+        assert_eq!(outcome.requested().expect("zed started").args.as_slice(), ["/w/a.rs:7"]);
         let none = Recorder { ran: RefCell::new(Vec::new()), works: vec![] };
         let outcome = open(&none, None, "/w/a.rs", 7);
-        assert_eq!(outcome.attempts.len(), 3, "code, zed, the platform's opener: all tried");
-        assert_eq!(outcome.attempts[2].command.args, ["/w/a.rs"]);
+        assert_eq!(outcome.failures().len(), 3, "code, zed, the platform's opener: all tried");
+        assert_eq!(outcome.failures()[2].command.args, ["/w/a.rs"]);
         assert!(outcome.requested().is_none());
         assert!(outcome.message("/w/a.rs", 7).starts_with("Could not start an editor"));
+        let platform = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let fallback = Recorder { ran: RefCell::new(Vec::new()), works: vec![platform] };
+        let outcome = open(&fallback, None, "/w/a.rs", 7);
+        assert!(matches!(&outcome, LaunchOutcome::Requested { command, failures }
+            if command.program == platform && command.args == ["/w/a.rs"] && failures.len() == 2));
+        assert!(!outcome.message("/w/a.rs", 7).contains("/w/a.rs:7"),
+            "the platform opener never received a line argument");
     }
 
     #[test]

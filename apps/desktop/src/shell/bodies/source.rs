@@ -37,6 +37,14 @@ use std::sync::Arc;
 const CONTEXT_BEFORE: u32 = 24;
 const MAX_PAGE_REFERENCES: usize = 32;
 
+/// One native reading of exactly the source bytes this visual row paints.
+/// Hanging indentation is presentation, and a long physical line is never
+/// repeated wholesale for each bounded continuation.
+fn source_piece_label(number: u32, source_line: &str, piece: &crate::shell::text_fit::CodeLine) -> Option<String> {
+    let words = source_line.get(piece.source_range.clone())?;
+    Some(format!("Line {number}{}: {words}", if piece.continued { " continued" } else { "" }))
+}
+
 struct Pager {
     state: Rc<RefCell<Option<PagingState>>>,
     first: u32,
@@ -651,6 +659,7 @@ fn code(
 
         let mut visual_lines = div().flex().flex_col();
         for (piece_index, line) in pieces.into_iter().enumerate() {
+            let native_line = source_piece_label(number, raw_lines[source_index], &line);
             let mut link_ranges = Vec::new();
             let mut link_routes = Vec::new();
             let mut link_ids = Vec::new();
@@ -774,10 +783,7 @@ fn code(
                 })
                 .into_any_element()
             };
-            visual_lines = visual_lines.child(
-                div()
-                    .role(gpui::Role::Label)
-                    .aria_label(format!("Line {number}: {}", line.text))
+            let mut visual_row = div()
                     .flex()
                     .items_start()
                     .gap(gap)
@@ -789,8 +795,11 @@ fn code(
                             .min_w(px(0.0))
                             .whitespace_nowrap()
                             .child(body),
-                    ),
-            );
+                    );
+            if let Some(native_line) = native_line {
+                visual_row = visual_row.role(gpui::Role::Label).aria_label(native_line);
+            }
+            visual_lines = visual_lines.child(visual_row);
         }
         let requested = requested_line == Some(number);
         let source_row = div()
@@ -1283,6 +1292,24 @@ mod tests {
             cursor = page.next.expect("long line continuation");
         }
         assert_eq!(SourceText::line_scan_probe(), 0, "bounded paint takes prepared offsets instead of scanning line bytes");
+    }
+
+    #[test]
+    fn native_unicode_source_rows_name_only_the_bytes_in_each_bounded_visual_piece() {
+        let source = SourceText::new(format!("{}\ntail", "λ".repeat(80_000)).into(), 1,
+            SourceOrigin::Excerpt, true).expect("long Unicode source");
+        let page = SourcePage::at(&source, SourceCursor { line: 1, byte: 0 });
+        assert!(page.next.is_some(), "the physical line has later source pages");
+        let visible = source.text().get(page.lines[0].span.range()).expect("UTF-8 bounded page");
+        assert!(visible.len() <= MAX_SOURCE_LINE_BYTES);
+        let pieces = crate::shell::text_fit::wrap_code(visible, &[], 8);
+        assert!(pieces.len() > 1, "the bounded page has several visual rows");
+        let reconstructed = pieces.iter().map(|piece| {
+            let label = source_piece_label(1, visible, piece).expect("exact source boundary");
+            assert!(label.len() <= MAX_SOURCE_LINE_BYTES + 32, "no AX row repeats the whole physical line");
+            visible.get(piece.source_range.clone()).expect("piece is in source")
+        }).collect::<String>();
+        assert_eq!(reconstructed, visible, "every mounted source byte is named once in AX");
     }
 
 
