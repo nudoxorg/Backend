@@ -3569,30 +3569,48 @@ fn cargo_config_paths_with(
     if !cargo_home.is_absolute() {
         return Err("relative CARGO_HOME cannot be safely observed".to_owned());
     }
-    let mut pending = Vec::<(PathBuf, usize)>::new();
+    // These are candidate config locations, so absence is normal. Included
+    // locations carry their own optional bit from Cargo's config schema.
+    let mut pending = Vec::<(PathBuf, usize, bool)>::new();
     let ancestors = request_context.ancestors().take(128).collect::<Vec<_>>();
     if ancestors.len() == 128 && ancestors.last().is_some_and(|path| path.parent().is_some()) {
         return Err("Cargo config ancestor chain exceeds its limit".to_owned());
     }
     for ancestor in ancestors {
-        pending.push((ancestor.join(".cargo/config"), 0));
-        pending.push((ancestor.join(".cargo/config.toml"), 0));
+        pending.push((ancestor.join(".cargo/config"), 0, true));
+        pending.push((ancestor.join(".cargo/config.toml"), 0, true));
     }
-    pending.push((cargo_home.join("config"), 0));
-    pending.push((cargo_home.join("config.toml"), 0));
+    pending.push((cargo_home.join("config"), 0, true));
+    pending.push((cargo_home.join("config.toml"), 0, true));
 
     let mut paths = BTreeSet::new();
-    while let Some((path, depth)) = pending.pop() {
+    let mut presence = BTreeMap::<PathBuf, bool>::new();
+    while let Some((path, depth, missing_is_allowed)) = pending.pop() {
         observation_budget()?;
-        if !paths.insert(path.clone()) {
+        if paths.contains(&path) {
+            if !missing_is_allowed && presence.get(&path) == Some(&false) {
+                return Err(format!(
+                    "required Cargo config include is missing: {}",
+                    path.display()
+                ));
+            }
             continue;
         }
+        paths.insert(path.clone());
         if paths.len() > MAX_CARGO_CONFIG_INPUTS {
             return Err("Cargo configuration input set exceeds its limit".to_owned());
         }
         let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
+            presence.insert(path.clone(), false);
+            if !missing_is_allowed {
+                return Err(format!(
+                    "required Cargo config include is missing: {}",
+                    path.display()
+                ));
+            }
             continue;
         };
+        presence.insert(path.clone(), true);
         let document: toml::Value = std::str::from_utf8(&bytes)
             .map_err(|_| "Cargo config is not UTF-8".to_owned())?
             .parse()
@@ -3601,34 +3619,21 @@ fn cargo_config_paths_with(
             if depth >= MAX_CARGO_CONFIG_DEPTH {
                 return Err("Cargo config include depth exceeds its limit".to_owned());
             }
-            let values = if let Some(value) = include.as_str() {
-                vec![value]
-            } else if let Some(values) = include.as_array() {
-                if values.len() > 64 {
-                    return Err("Cargo config has too many included files".to_owned());
-                }
-                values
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .ok_or_else(|| "Cargo config include has a non-string path".to_owned())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            } else {
-                return Err("Cargo config include has an unsupported shape".to_owned());
-            };
-            if values.len() > 64 {
+            let entries = cargo_config_include_entries(include)?;
+            if entries.len() > 64 {
                 return Err("Cargo config has too many included files".to_owned());
             }
             let parent = path
                 .parent()
                 .ok_or_else(|| "Cargo config has no parent".to_owned())?;
-            for value in values {
+            for (value, optional) in entries {
                 if value.len() > 4 * 1024 || value.contains('\0') {
                     return Err("Cargo config include path is out of bounds".to_owned());
                 }
                 let included = PathBuf::from(value);
+                if included.extension() != Some(std::ffi::OsStr::new("toml")) {
+                    return Err("Cargo config include must end in .toml".to_owned());
+                }
                 if pending.len() >= MAX_CARGO_CONFIG_INPUTS {
                     return Err("Cargo config include queue exceeds its limit".to_owned());
                 }
@@ -3639,6 +3644,7 @@ fn cargo_config_paths_with(
                         parent.join(included)
                     },
                     depth + 1,
+                    optional,
                 ));
             }
         }
@@ -3680,6 +3686,46 @@ fn cargo_config_paths_with(
         observe_custom_target_path(request_context, target, &mut paths)?;
     }
     Ok(paths.into_iter().collect())
+}
+
+/// Reads Cargo's supported `include` array forms without silently accepting
+/// keys that Cargo may interpret differently: each item is either a path
+/// string or a `{ path, optional }` table.
+fn cargo_config_include_entries(include: &toml::Value) -> Result<Vec<(String, bool)>, String> {
+    let values = include
+        .as_array()
+        .ok_or_else(|| "Cargo config include must be an array".to_owned())?;
+    if values.len() > 64 {
+        return Err("Cargo config has too many included files".to_owned());
+    }
+    values
+        .iter()
+        .map(|value| {
+            if let Some(path) = value.as_str() {
+                return Ok((path.to_owned(), false));
+            }
+            let table = value
+                .as_table()
+                .ok_or_else(|| "Cargo config include entry must be a string or table".to_owned())?;
+            if table.keys().any(|key| key != "path" && key != "optional") {
+                return Err("Cargo config include table has an unsupported field".to_owned());
+            }
+            let path = table
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| "Cargo config include table requires a string path".to_owned())?;
+            let optional = table
+                .get("optional")
+                .map(|value| {
+                    value.as_bool().ok_or_else(|| {
+                        "Cargo config include optional field must be a boolean".to_owned()
+                    })
+                })
+                .transpose()?
+                .unwrap_or(false);
+            Ok((path.to_owned(), optional))
+        })
+        .collect()
 }
 
 /// Captures the bounded sccache configuration locations that can affect the
@@ -5905,6 +5951,82 @@ mod tests {
         );
         assert!(!observed.contains(&workspace_decoy));
         assert!(!observed.contains(&member_decoy));
+    }
+
+    #[test]
+    fn cargo_config_include_supports_required_and_optional_table_forms() {
+        let scratch = scratch("backend-cargo-config-include-forms");
+        let project = scratch.0.join("project");
+        let cargo_home = scratch.0.join("cargo-home");
+        let config = project.join(".cargo/config.toml");
+        let required = project.join(".cargo/required.toml");
+        let optional_present = project.join(".cargo/optional-present.toml");
+        std::fs::create_dir_all(config.parent().expect("config parent"))
+            .expect("project config directory");
+        std::fs::create_dir_all(&cargo_home).expect("isolated Cargo home");
+        std::fs::write(
+            &config,
+            "include = [\n  \"required.toml\",\n  { path = \"optional-present.toml\", optional = false },\n  { path = \"optional-missing.toml\", optional = true },\n]\n",
+        )
+        .expect("Cargo config with both include forms");
+        std::fs::write(&required, "[net]\noffline = true\n").expect("required include");
+        std::fs::write(&optional_present, "[build]\njobs = 1\n").expect("present optional include");
+
+        let project = project.canonicalize().expect("canonical project");
+        let config = project.join(".cargo/config.toml");
+        let required = project.join(".cargo/required.toml");
+        let optional_present = project.join(".cargo/optional-present.toml");
+        let optional_missing = project.join(".cargo/optional-missing.toml");
+        let observed = cargo_config_paths_with(&project, &cargo_home, None)
+            .expect("valid required and optional include forms");
+        assert!(observed.contains(&config));
+        assert!(observed.contains(&required));
+        assert!(observed.contains(&optional_present));
+        assert!(
+            observed.contains(&optional_missing),
+            "a missing optional include remains an observed absence"
+        );
+        let absent_witness =
+            observation_witness_with_context(&project, &observed, [1; 32], [2; 32])
+                .expect("optional absence observation");
+        std::fs::write(&optional_missing, "[net]\nretry = 1\n").expect("optional include appears");
+        let present_witness =
+            observation_witness_with_context(&project, &observed, [1; 32], [2; 32])
+                .expect("optional include appearance observation");
+        assert_ne!(
+            absent_witness.digest, present_witness.digest,
+            "appearance of a missing optional include invalidates its saved absence witness"
+        );
+
+        std::fs::write(
+            &config,
+            "include = [{ path = \"required-missing.toml\" }]\n",
+        )
+        .expect("required missing include config");
+        assert!(
+            cargo_config_paths_with(&project, &cargo_home, None)
+                .is_err_and(|error| error.contains("required Cargo config include is missing")),
+            "a missing required include makes the configuration observation fail"
+        );
+
+        std::fs::write(
+            &config,
+            "include = [{ path = \"required.toml\", optional = true, ignored = false }]\n",
+        )
+        .expect("unknown include field config");
+        assert!(
+            cargo_config_paths_with(&project, &cargo_home, None)
+                .is_err_and(|error| error.contains("unsupported field")),
+            "unknown include table fields must not be guessed"
+        );
+
+        std::fs::write(&config, "include = [\"required.txt\"]\n")
+            .expect("unsupported include suffix config");
+        assert!(
+            cargo_config_paths_with(&project, &cargo_home, None)
+                .is_err_and(|error| error.contains("must end in .toml")),
+            "Cargo includes are limited to TOML files"
+        );
     }
 
     #[cfg(unix)]
