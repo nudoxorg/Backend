@@ -13,6 +13,7 @@ use super::facet_sync::{Surroundings, facet_for};
 use super::system;
 use facet::overlay::float;
 use gpui_component::FocusTrapElement as _;
+use gpui_component::WindowExt as _;
 use super::focus::{Target, Zone};
 use super::frame::{Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Hinted, Step};
@@ -657,6 +658,10 @@ impl Shell {
             StoreEvent::Snapshot(Branch::Overlay) => {
                 self.advance_transient_generation();
                 self.advance_page_input_generation(InputOwnerChange::Structure, cx);
+                // A hint walk belongs to the uncovered page. A pointer can
+                // open Ask while hints are active; its editor then owns the
+                // next character, not the old hint session.
+                self.hints = None;
                 if self.links.snapshot(cx).overlay().is_some() {
                     self.reader
                         .update(cx, |reader, _| reader.cancel_native_return());
@@ -1529,6 +1534,16 @@ impl Shell {
             cx.stop_propagation();
             return;
         }
+        // Focus can move into a mounted editor without changing the route or
+        // overlay (Find, for example). Retire that old hint owner before it
+        // can consume the editor's first text event.
+        if self.hints.as_ref().is_some_and(|session| !self.hint_scope_current(&session.scope, cx))
+            || (self.hints.is_some() && window.root::<gpui_component::Root>().flatten().is_some()
+                && window.has_focused_input(cx)) {
+            self.hints = None;
+            cx.notify();
+            return;
+        }
         let Some(session) = self.hints.as_mut() else {
             return;
         };
@@ -2301,6 +2316,9 @@ impl Render for Shell {
             .capture_any_mouse_down(cx.listener(|shell, _, _, cx| {
                 shell.advance_transient_generation();
                 shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
+                // Hint letters are a keyboard session. A pointer takes a new
+                // owner, including a text field whose next key must edit it.
+                if shell.hints.take().is_some() { cx.notify(); }
             }))
             .child(ground())
             .child(

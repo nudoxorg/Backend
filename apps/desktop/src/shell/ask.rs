@@ -1068,9 +1068,9 @@ mod tests {
     use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
     use crate::runtime::{DesktopRuntime, UiEntityGraph};
     use crate::shell::root::Shell;
-    use crate::shell::tests::{Fixture, RootOnly, page_route, rig_with_reads};
+    use crate::shell::tests::{Fixture, Rig, RootOnly, page_route, rig_with_reads};
     use backend_library::DeclarationKind;
-    use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
+    use gpui::{AppContext as _, Focusable as _, Modifiers, TestAppContext, VisualTestContext, point, px};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -1343,6 +1343,72 @@ mod tests {
             assert_eq!(graph.store.read_with(visual, |store, _| store.snapshot().overlay()),
                 Some(crate::navigation::Overlay::CommandPalette));
         }
+    }
+
+    /// The jump-bar button is the real pointer entry, unlike the ⌘K tests.
+    /// Verify the editor owns the mounted text handler before asking the
+    /// platform to dispatch a character, including when the owner is absent.
+    #[gpui::test]
+    fn native_ask_button_gives_the_first_character_to_its_editor(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+            facet::probe::enable(cx);
+        });
+        rig.settle();
+
+        let open_from_button = |rig: &mut Rig| {
+            let ledger = crate::shell::anatomy_tests::painted(rig);
+            let button = ledger.targets.iter().find(|target| target.key == "here")
+                .expect("painted titlebar Ask button");
+            assert!(button.state.clickable && button.paint_clip.is_some());
+            let at = point(px(button.bounds.x + button.bounds.width / 2.0),
+                px(button.bounds.y + button.bounds.height / 2.0));
+            rig.cx.simulate_mouse_move(at, None, Modifiers::none());
+            rig.draw();
+            rig.cx.simulate_click(at, Modifiers::none());
+            rig.settle();
+            let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+            let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+                Some(crate::navigation::Overlay::CommandPalette));
+            assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
+                "the mounted Ask editor owns native focus after the button click");
+            let tree: serde_json::Value = rig.cx.update(|window, _| serde_json::from_str(
+                &window.debug_a11y_tree_json().expect("forced Ask native tree"))
+                .expect("native tree JSON"));
+            let focused = tree["gpui_focus"].as_str().expect("focused native Ask node");
+            assert_eq!(tree["nodes"][focused]["aria"]["role"].as_str(), Some("TextInput"));
+            assert_eq!(tree["nodes"][focused]["aria"]["label"].as_str(),
+                Some("Ask anything, or find a package"));
+            (ask, input)
+        };
+
+        let (ask, input) = open_from_button(&mut rig);
+        rig.keys("f");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "f",
+            "one platform key reaches the editor without a second click");
+        assert!(matches!(ask.read_with(rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
+        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
+            "plain f inside Ask cannot start body hints");
+
+        rig.keys("escape");
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+            &crate::runtime::owner::OwnerFault::Lost("fixture owner unavailable".into()), cx));
+        rig.settle();
+        rig.keys("f");
+        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
+            "an uncovered page first owns its hint session");
+        let (ask, input) = open_from_button(&mut rig);
+        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
+            "opening Ask retires the previous page's hints");
+        rig.keys("r");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "r",
+            "owner loss cannot prevent local Ask typing or let old hints eat it");
+        assert!(matches!(ask.read_with(rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
     }
 
     #[test]
