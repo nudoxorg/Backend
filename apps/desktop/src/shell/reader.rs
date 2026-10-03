@@ -2302,6 +2302,7 @@ impl Reader {
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
+                reader: cx.weak_entity(),
                 active: current,
                 native_input_active: current && self.native_input_allowed(),
                 measure: layout.folio_measure,

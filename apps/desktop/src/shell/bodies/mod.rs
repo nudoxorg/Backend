@@ -38,7 +38,7 @@ use crate::model::pages::{
 };
 use crate::runtime::store::{DataStore, RouteDependencies};
 use facet::{Measure, Palette, Reveal};
-use gpui::{AnyElement, Context, FocusHandle, SharedString};
+use gpui::{AnyElement, App, Context, FocusHandle, SharedString, WeakEntity};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -77,6 +77,9 @@ impl Leaf {
 
 /// Everything a body builds with.
 pub(crate) struct Ctx<'a> {
+    /// The Reader that painted this body. Guard factories capture this weak
+    /// owner once; read-only page helpers need only App to bind an action.
+    pub reader: WeakEntity<Reader>,
     /// Only the current page publishes shared motion endpoints.
     pub active: bool,
     /// The current page may claim native input only after its own transition
@@ -150,55 +153,55 @@ enum NativeActionKind { LocalUi, OwnerSnapshot, Resource }
 impl Ctx<'_> {
     /// Bind a mounted keyboard target to the same producer receipt as its
     /// native control. The binding checks before hint focus and before act.
-    pub(crate) fn target_action(&self, action: Act, cx: &mut Context<Reader>) -> TargetAction {
+    pub(crate) fn target_action(&self, action: Act, cx: &App) -> TargetAction {
         TargetAction::new(self.native_guard_with_inventory(None, None, NativeActionKind::Resource, cx), action)
     }
 
-    pub(crate) fn target_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> TargetAction {
+    pub(crate) fn target_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &App) -> TargetAction {
         TargetAction::new(self.native_dependency_guard(dependency, cx), action)
     }
 
-    pub(crate) fn target_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> TargetAction {
+    pub(crate) fn target_snapshot_action(&self, action: Act, cx: &App) -> TargetAction {
         TargetAction::new(self.native_guard_with_inventory(None, None, NativeActionKind::OwnerSnapshot, cx), action)
     }
 
-    pub(crate) fn target_local_action(&self, action: Act, cx: &mut Context<Reader>) -> TargetAction {
+    pub(crate) fn target_local_action(&self, action: Act, cx: &App) -> TargetAction {
         TargetAction::new(self.native_local_guard(cx), action)
     }
 
-    pub(crate) fn target_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> TargetAction {
+    pub(crate) fn target_inventory_action(&self, action: Act, revision: [u8; 32], cx: &App) -> TargetAction {
         TargetAction::new(self.native_guard_with_inventory(Some(revision), None, NativeActionKind::Resource, cx), action)
     }
 
     /// An action from a drawn control belongs to one Reader visit and one
     /// owner revision. Retained transition bodies and stale pointer events
     /// cannot navigate after that visit has been replaced.
-    pub(crate) fn native_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+    pub(crate) fn native_action(&self, action: Act, cx: &App) -> Act {
         self.native_action_with_inventory(action, None, None, NativeActionKind::Resource, cx)
     }
 
     /// A current factory selected a read independent of an optional dossier.
-    pub(crate) fn native_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> Act {
+    pub(crate) fn native_dependency_action(&self, action: Act, dependency: (PageKey, crate::model::pages::Stamp), cx: &App) -> Act {
         self.native_action_with_inventory(action, None, Some(dependency), NativeActionKind::Resource, cx)
     }
 
     /// A local project or recent route is in the snapshot rather than Orbit
     /// bytes, but entering it still requires the current owner attachment.
-    pub(crate) fn native_snapshot_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+    pub(crate) fn native_snapshot_action(&self, action: Act, cx: &App) -> Act {
         self.native_action_with_inventory(action, None, None, NativeActionKind::OwnerSnapshot, cx)
     }
 
     /// Local setup, recovery and disclosure remain available while the
     /// indexing owner starts or fails. They still belong to one Reader visit.
-    pub(crate) fn native_local_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+    pub(crate) fn native_local_action(&self, action: Act, cx: &App) -> Act {
         self.native_action_with_inventory(action, None, None, NativeActionKind::LocalUi, cx)
     }
 
-    pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> Act {
+    pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &App) -> Act {
         self.native_action_with_inventory(action, Some(revision), None, NativeActionKind::Resource, cx)
     }
 
-    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &mut Context<Reader>) -> Act {
+    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &App) -> Act {
         let guard = self.native_guard_with_inventory(inventory_revision, selected, kind, cx);
         std::rc::Rc::new(move |window, app| { if guard(app) { action(window, app); } })
     }
@@ -207,18 +210,18 @@ impl Ctx<'_> {
     /// producer readiness. Native activation scopes retain the down owner's
     /// visit and retire covered presses before release; this predicate also
     /// checks current input admission before taking focus or changing settings.
-    pub(crate) fn native_local_activation_scope(&self, cx: &Context<Reader>) -> gpui::NativeActivationScope {
+    pub(crate) fn native_local_activation_scope(&self, cx: &App) -> gpui::NativeActivationScope {
         self.links.shell.upgrade().map(|shell| shell.read(cx).local_activation_scope())
-            .unwrap_or_else(|| gpui::NativeActivationScope::new(cx.entity_id(), None))
+            .unwrap_or_else(|| gpui::NativeActivationScope::new(self.reader.entity_id(), None))
     }
 
     pub(crate) fn native_local_guard(
         &self,
-        cx: &mut Context<Reader>,
+        cx: &App,
     ) -> Rc<dyn Fn(&mut gpui::App) -> bool> {
         let shell = self.links.shell.clone();
         let scope = self.native_local_activation_scope(cx);
-        let reader = cx.weak_entity();
+        let reader = self.reader.clone();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route().clone();
@@ -243,12 +246,12 @@ impl Ctx<'_> {
         })
     }
 
-    pub(crate) fn native_dependency_guard(&self, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
+    pub(crate) fn native_dependency_guard(&self, dependency: (PageKey, crate::model::pages::Stamp), cx: &App) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
         self.native_guard_with_inventory(None, Some(dependency), NativeActionKind::Resource, cx)
     }
 
-    fn native_guard_with_inventory(&self, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
-        let reader = cx.weak_entity();
+    fn native_guard_with_inventory(&self, inventory_revision: Option<[u8; 32]>, selected: Option<(PageKey, crate::model::pages::Stamp)>, kind: NativeActionKind, cx: &App) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
+        let reader = self.reader.clone();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route().clone();
@@ -272,7 +275,7 @@ impl Ctx<'_> {
         inventory: bool,
         selected: Option<(PageKey, crate::model::pages::Stamp)>,
         kind: NativeActionKind,
-        cx: &Context<Reader>,
+        cx: &App,
     ) -> super::reader::NativeActionLease {
         let store = self.links.store.read(cx);
         match kind {
@@ -287,7 +290,7 @@ impl Ctx<'_> {
         }
     }
 
-    pub(crate) fn native_resource_lease(&self, cx: &Context<Reader>) -> super::reader::NativeActionLease {
+    pub(crate) fn native_resource_lease(&self, cx: &App) -> super::reader::NativeActionLease {
         let snapshot = self.links.snapshot(cx);
         self.native_lease(snapshot.route(), snapshot.overlay(), false, None, NativeActionKind::Resource, cx)
     }
@@ -296,7 +299,7 @@ impl Ctx<'_> {
     /// deferred transfer is still the settled, current keyboard visit.
     pub(crate) fn native_return_focus(
         &self,
-        cx: &mut Context<Reader>,
+        cx: &App,
     ) -> Rc<
         dyn Fn(
             FocusHandle,
@@ -304,7 +307,7 @@ impl Ctx<'_> {
             &mut gpui::App,
         ) -> facet::browse::library::ReturnDisposition,
     > {
-        let reader = cx.weak_entity();
+        let reader = self.reader.clone();
         let place = self.place_key;
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route().clone();

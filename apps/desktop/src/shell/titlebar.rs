@@ -152,7 +152,7 @@ fn jump_act(action: JumpAction, links: &Links, targets: &Targets) -> super::focu
     Rc::new(move |window, cx| action.run(&links, &targets, window, cx))
 }
 
-fn local_target_admission(links: &Links, cx: &Context<Titlebar>) -> Rc<dyn Fn(&mut App) -> bool> {
+fn local_target_admission(links: &Links, cx: &App) -> Rc<dyn Fn(&mut App) -> bool> {
     let shell = links.shell.clone();
     let scope = shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
     Rc::new(move |app| {
@@ -160,11 +160,11 @@ fn local_target_admission(links: &Links, cx: &Context<Titlebar>) -> Rc<dyn Fn(&m
     })
 }
 
-fn local_target_action(links: &Links, act: super::focus::Act, cx: &Context<Titlebar>) -> TargetAction {
+fn local_target_action(links: &Links, act: super::focus::Act, cx: &App) -> TargetAction {
     TargetAction::new(local_target_admission(links, cx), act)
 }
 
-fn jump_target_action(action: JumpAction, links: &Links, targets: &Targets, cx: &Context<Titlebar>) -> TargetAction {
+fn jump_target_action(action: JumpAction, links: &Links, targets: &Targets, cx: &App) -> TargetAction {
     let admit: Rc<dyn Fn(&mut App) -> bool> = match &action {
         JumpAction::Ask => local_target_admission(links, cx),
         JumpAction::Back { visit }
