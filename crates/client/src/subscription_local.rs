@@ -40,6 +40,10 @@ const CONNECTION_FRAME_BUDGET: usize = 240;
 pub enum LocalSubscriptionExchangeError {
     /// Connection setup or request admission failed before the exchange began.
     Setup(ClientError),
+    /// A complete, correlated response rejected the requested operation.
+    Rejected { request_id: u64, message: String },
+    /// The frame was complete but was not a valid response for this operation.
+    Invalid(ClientError),
     /// One in-flight request reached a typed terminal condition.
     Exchange(LocalControlExchangeError),
 }
@@ -49,6 +53,16 @@ impl std::fmt::Display for LocalSubscriptionExchangeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Setup(error) => write!(formatter, "local subscription setup: {error}"),
+            Self::Rejected {
+                request_id,
+                message,
+            } => {
+                write!(
+                    formatter,
+                    "local subscription request {request_id} rejected: {message}"
+                )
+            }
+            Self::Invalid(error) => write!(formatter, "local subscription response: {error}"),
             Self::Exchange(error) => error.fmt(formatter),
         }
     }
@@ -58,7 +72,8 @@ impl std::fmt::Display for LocalSubscriptionExchangeError {
 impl std::error::Error for LocalSubscriptionExchangeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Setup(error) => Some(error),
+            Self::Setup(error) | Self::Invalid(error) => Some(error),
+            Self::Rejected { .. } => None,
             Self::Exchange(error) => Some(error),
         }
     }
@@ -485,7 +500,7 @@ impl LocalSubscriptionTransport {
         })
     }
 
-    fn lease_request(
+    pub(crate) fn lease_request(
         &mut self,
         operation: LocalSubscriptionOperation,
     ) -> Result<LocalSubscriptionResponse, ClientError> {
@@ -538,6 +553,72 @@ impl LocalSubscriptionTransport {
             | LocalControlResponse::AcceptedPayload { .. }
             | LocalControlResponse::Queued { .. } => Err(ClientError::Protocol(
                 "locald leased subscription response omitted its lease state".to_owned(),
+            )),
+        }
+    }
+
+    /// Performs one typed subscription operation using the resumable bounded
+    /// exchange path. The decoded producer rejection remains distinct from a
+    /// local frame, correlation, or response-validation failure.
+    pub(crate) fn lease_request_with_tick(
+        &mut self,
+        operation: LocalSubscriptionOperation,
+        deadline: Instant,
+        tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
+    ) -> Result<LocalSubscriptionResponse, LocalSubscriptionExchangeError> {
+        let expected_lease = match &operation {
+            LocalSubscriptionOperation::Open { .. } => None,
+            LocalSubscriptionOperation::Resume { lease, .. }
+            | LocalSubscriptionOperation::Credit { lease, .. }
+            | LocalSubscriptionOperation::Ack { lease, .. }
+            | LocalSubscriptionOperation::Renew { lease, .. }
+            | LocalSubscriptionOperation::Cancel { lease }
+            | LocalSubscriptionOperation::Page { lease, .. } => Some(*lease),
+        };
+        let request_id = self.next_request_id;
+        self.next_request_id = request_id.checked_add(1).ok_or_else(|| {
+            LocalSubscriptionExchangeError::Setup(ClientError::Protocol(
+                "subscription request id exhausted".to_owned(),
+            ))
+        })?;
+        let raw = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+            request_id,
+            operation,
+        });
+        match self.request_with_tick(&raw, deadline, tick)? {
+            LocalControlResponse::Subscription(response) => {
+                if expected_lease.is_some_and(|expected| response.lease() != expected) {
+                    return Err(LocalSubscriptionExchangeError::Invalid(
+                        ClientError::Protocol(
+                            "locald subscription response lease mismatch".to_owned(),
+                        ),
+                    ));
+                }
+                if response.request_id() != request_id {
+                    return Err(LocalSubscriptionExchangeError::Invalid(
+                        ClientError::Protocol(
+                            "subscription response correlation mismatch".to_owned(),
+                        ),
+                    ));
+                }
+                Ok(response)
+            }
+            LocalControlResponse::Rejected {
+                request_id: observed,
+                message,
+            } if observed == request_id => Err(LocalSubscriptionExchangeError::Rejected {
+                request_id,
+                message,
+            }),
+            LocalControlResponse::SemanticStaleSelection {
+                request_id: observed,
+            } if observed == request_id => Err(LocalSubscriptionExchangeError::Invalid(
+                ClientError::StaleSelection,
+            )),
+            _ => Err(LocalSubscriptionExchangeError::Invalid(
+                ClientError::Protocol(
+                    "locald returned an invalid response to a subscription operation".to_owned(),
+                ),
             )),
         }
     }
