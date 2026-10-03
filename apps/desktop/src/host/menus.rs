@@ -153,6 +153,7 @@ mod tests {
         assert_eq!(menu_available(&mut rig), (true, true, true));
         gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
         rig.settle();
+        rig.cx.update(|window, _| window.blur());
         assert_eq!(menu_available(&mut rig), (true, true, true));
 
         rig.cx.cx.update(|cx| cx.dispatch_action(&About));
