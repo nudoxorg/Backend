@@ -2646,7 +2646,17 @@ fn acquisition_service_reuses_cached_archive_when_restarted_offline() {
         0,
     )
     .expect("offline request");
-    let reused = service.acquire(&request, &mut NoNetwork);
+    assert!(
+        matches!(
+            service.acquire(&request, &mut NoNetwork),
+            crate::acquisition::AcquisitionOutcome::Offline(_)
+        ),
+        "default freshness revalidates each demand and must not reuse cached metadata offline"
+    );
+
+    let warm_request =
+        request.with_fact_freshness(crate::acquisition::FactFreshness::max_age_millis(60_000));
+    let reused = service.acquire(&warm_request, &mut NoNetwork);
     let crate::acquisition::AcquisitionOutcome::Hit(reused) = reused else {
         panic!("offline acquisition must reuse the durable archive: {reused:?}");
     };
