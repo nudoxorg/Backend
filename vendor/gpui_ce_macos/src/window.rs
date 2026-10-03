@@ -1676,7 +1676,14 @@ impl PlatformWindow for MacWindow {
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
-        self.0.as_ref().lock().request_frame_callback = Some(callback);
+        let mut state = self.0.as_ref().lock();
+        state.request_frame_callback = Some(callback);
+        // The NSWindow is ordered before GPUI installs this callback. Its
+        // first visibility/screen notification may already have tried to
+        // start the link while AppKit still reported it occluded or without
+        // a screen; that attempt has no retry until another native window
+        // event. Once the callback exists, arm the visible window here too.
+        state.start_display_link();
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
