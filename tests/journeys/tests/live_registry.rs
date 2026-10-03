@@ -641,7 +641,8 @@ fn assert_process_success(output: &Output, label: &str) {
 }
 
 fn absent_release_coordinate(case: LiveCase) -> String {
-    let base = purl_with_version(case)
+    let purl = purl_with_version(case);
+    let base = purl
         .rsplit_once('@')
         .map(|(base, _)| base)
         .expect("purl contains exact version");
