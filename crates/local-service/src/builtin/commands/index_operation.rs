@@ -213,15 +213,16 @@ impl IndexOperationJournal {
             connection
                 .busy_timeout(BUSY_TIMEOUT)
                 .map_err(database_error)?;
+            // These two setter PRAGMAs do not produce result rows in the
+            // pinned Turso API. max_page_count is handled below via query
+            // because it does return a row.
             connection
-                .execute_batch(SCHEMA)
+                .execute_batch("PRAGMA synchronous=FULL; PRAGMA cache_size=256;")
                 .await
                 .map_err(database_error)?;
+            set_and_verify_database_page_limit(&connection, MAX_DATABASE_PAGES).await?;
             connection
-                .execute_batch(&format!(
-                    "PRAGMA synchronous=FULL; PRAGMA cache_size=256; \
-                     PRAGMA wal_autocheckpoint=64; PRAGMA max_page_count={MAX_DATABASE_PAGES};"
-                ))
+                .execute_batch(SCHEMA)
                 .await
                 .map_err(database_error)?;
             database_directory
@@ -784,6 +785,50 @@ fn check_acceptance_capacity(meta: &JournalMeta) -> Result<(), JournalError> {
     Ok(())
 }
 
+/// Installs the bounded database size and verifies the value Turso actually
+/// accepted. `max_page_count` is a row-producing PRAGMA, so it must be queried
+/// rather than sent through `execute_batch` (which rejects result rows).
+async fn set_and_verify_database_page_limit(
+    connection: &turso::Connection,
+    max_pages: i64,
+) -> Result<(), JournalError> {
+    if !(1..=MAX_DATABASE_PAGES).contains(&max_pages) {
+        return Err(JournalError::Corrupt(
+            "configured database page bound is outside its allowed range".to_owned(),
+        ));
+    }
+
+    let mut rows = connection
+        .query(format!("PRAGMA max_page_count={max_pages}"), ())
+        .await
+        .map_err(database_error)?;
+    let row = rows.next().await.map_err(database_error)?.ok_or_else(|| {
+        JournalError::Corrupt("database maximum page count is missing".to_owned())
+    })?;
+    let actual_max_pages: i64 = row.get(0).map_err(database_error)?;
+    if rows.next().await.map_err(database_error)?.is_some() {
+        return Err(JournalError::Corrupt(
+            "database maximum page count returned multiple rows".to_owned(),
+        ));
+    }
+    if actual_max_pages > max_pages {
+        return Err(JournalError::Corrupt(
+            "database page count exceeds its configured bound".to_owned(),
+        ));
+    }
+    if !(1..=MAX_DATABASE_PAGES).contains(&actual_max_pages) {
+        return Err(JournalError::Corrupt(
+            "database maximum page count is outside its configured bounds".to_owned(),
+        ));
+    }
+    if actual_max_pages != max_pages {
+        return Err(JournalError::Corrupt(
+            "database maximum page count does not match its configured bound".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Cross-checks persisted high-water counters against bounded table aggregates
 /// once at cold open. The table is capped by `MAX_OPERATION_KEYS` and the
 /// database itself is capped by `MAX_DATABASE_PAGES`, so this verification has
@@ -1171,6 +1216,24 @@ mod tests {
         IndexOperationJournal::open(path).expect("open index-operation database")
     }
 
+    fn read_single_integer_pragma(journal: &IndexOperationJournal, sql: &str) -> i64 {
+        futures_executor::block_on(async {
+            let mut rows = journal
+                .connection
+                .query(sql, ())
+                .await
+                .expect("query pragma");
+            let row = rows
+                .next()
+                .await
+                .expect("read pragma row")
+                .expect("pragma row exists");
+            let value: i64 = row.get(0).expect("pragma returns an integer");
+            assert!(rows.next().await.expect("check pragma row count").is_none());
+            value
+        })
+    }
+
     fn operation_receipt_view() -> ViewRoot {
         let root = backend_library::view_state_root(&[]);
         let basis = backend_library::Basis::new(
@@ -1211,6 +1274,45 @@ mod tests {
         {
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn cold_open_installs_the_exact_database_page_limit() {
+        let path = path();
+        let journal = open(&path);
+        assert_eq!(
+            read_single_integer_pragma(&journal, "PRAGMA max_page_count"),
+            MAX_DATABASE_PAGES
+        );
+        drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn database_page_limit_rejects_a_database_above_the_cap() {
+        let path = path();
+        let journal = open(&path);
+        let page_count = read_single_integer_pragma(&journal, "PRAGMA page_count");
+        assert!(
+            page_count > 2,
+            "fixture must exceed the requested page limit"
+        );
+
+        let result =
+            futures_executor::block_on(set_and_verify_database_page_limit(&journal.connection, 2));
+        assert_eq!(
+            result,
+            Err(JournalError::Corrupt(
+                "database page count exceeds its configured bound".to_owned()
+            ))
+        );
+        assert_eq!(
+            read_single_integer_pragma(&journal, "PRAGMA max_page_count"),
+            page_count,
+            "Turso must report the actual clamped maximum, not the requested value"
+        );
+        drop(journal);
+        cleanup(&path);
     }
 
     #[test]
