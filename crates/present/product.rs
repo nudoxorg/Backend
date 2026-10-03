@@ -542,6 +542,18 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
 fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {
     use backend_library::IndexOperationObservation as O;
     match observation {
+        O::OutsideReceiptWindow { operation_key, request_digest } => ProductView::rows(
+            "index-operation",
+            vec![ProductRecord::new(
+                "index operation receipt is outside the evidence window".to_owned(),
+                Some(operation_key.to_hex()),
+                vec![
+                    "this key was consumed and cannot be accepted again".to_owned(),
+                    "publication outcome is not established by this observation".to_owned(),
+                    format!("request digest {}", full_digest(request_digest)),
+                ],
+            )],
+        ),
         O::Unknown { operation_key } => ProductView::rows(
             "index-operation",
             vec![ProductRecord::new(
@@ -2110,6 +2122,36 @@ mod tests {
         RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind,
         SemanticGenerationId, SemanticLanguageProfile, SemanticVersionFreshness,
     };
+
+    #[test]
+    fn aged_operation_receipt_keeps_consumed_identity_without_claiming_publication() {
+        let operation_key = backend_library::IndexOperationKey::from_bytes([0x31; 32])
+            .expect("nonzero caller-owned key");
+        let observation = backend_library::IndexOperationObservation::OutsideReceiptWindow {
+            operation_key,
+            request_digest: [0x72; 32],
+        };
+        for reply in [
+            SurfaceReply::IndexOperationStarted(observation.clone()),
+            SurfaceReply::IndexOperationStatus(observation.clone()),
+        ] {
+            let view = product_view(&reply);
+            assert!(view.index_job().is_none(), "a tombstone cannot create a live job or terminal receipt");
+            assert_eq!(view.records()[0].operand(), Some(operation_key.to_hex().as_str()));
+            for rendered in [
+                crate::markdown::product(&view),
+                crate::text::product(&view, crate::Theme::plain()),
+            ] {
+                assert!(rendered.contains("outside the evidence window"));
+                assert!(rendered.contains("cannot be accepted again"));
+                assert!(rendered.contains("publication outcome is not established"));
+                assert!(rendered.contains(&full_digest(&[0x72; 32])));
+                assert!(!rendered.contains("is unknown"));
+            }
+            let dto = crate::dto::ProductDto::new(&view);
+            assert_eq!(dto.records.len(), 1);
+        }
+    }
 
     #[test]
     fn partial_registry_metadata_keeps_coverage_in_cli_and_mcp_without_hiding_rows() {
