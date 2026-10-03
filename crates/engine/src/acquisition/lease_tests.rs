@@ -174,10 +174,10 @@ fn expired_guard_cannot_delete_successor_or_publish_with_its_fence() {
     let store = LeaseStore::open(&root).expect("store");
     let reopened = LeaseStore::open(&root).expect("reopened store");
     let mut expired = store
-        .acquire(test_key(), Duration::from_millis(20))
+        .acquire(test_key(), Duration::from_secs(30))
         .expect("first acquire")
         .expect("first lease");
-    thread::sleep(Duration::from_millis(35));
+    expired.expire_for_test().expect("expire first lease");
 
     let mut successor = reopened
         .acquire(test_key(), Duration::from_secs(30))
@@ -215,10 +215,10 @@ fn expired_long_effect_fails_closed_before_publication() {
     let root = fresh_root("expired-publication");
     let store = LeaseStore::open(&root).expect("store");
     let mut lease = store
-        .acquire(test_key(), Duration::from_millis(20))
+        .acquire(test_key(), Duration::from_secs(30))
         .expect("acquire")
         .expect("lease");
-    thread::sleep(Duration::from_millis(35));
+    lease.expire_for_test().expect("expire long-running effect lease");
 
     let mut committed = false;
     assert!(
@@ -474,10 +474,12 @@ fn valid_endpoint_cannot_publish_with_expired_stolen_product_fence() {
         .expect("endpoint acquire")
         .expect("endpoint lease");
     let mut stale_product = store
-        .acquire(product_key, Duration::from_millis(20))
+        .acquire(product_key, Duration::from_secs(30))
         .expect("product acquire")
         .expect("product lease");
-    thread::sleep(Duration::from_millis(35));
+    stale_product
+        .expire_for_test()
+        .expect("expire stale product lease");
     let successor = store
         .acquire(product_key, Duration::from_secs(30))
         .expect("product takeover")
