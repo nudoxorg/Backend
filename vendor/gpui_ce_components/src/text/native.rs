@@ -212,11 +212,12 @@ fn activate(
     availability: &Option<Arc<LinkAvailabilityFn>>,
     handler: &Option<Arc<LinkClickHandlerFn>>,
     state: &Option<Entity<TextViewState>>,
+    admission: &Option<super::text_view::LinkAdmission>,
     event: ClickEvent,
     window: &mut Window,
     cx: &mut App,
 ) {
-    if !admitted(state, cx)
+    if !admitted(admission, cx)
         || !link_available(availability, &url)
         || state
             .as_ref()
@@ -235,11 +236,8 @@ pub(super) fn current_admission(cx: &App) -> Option<super::text_view::LinkAdmiss
         .and_then(|state| state.read(cx).link_admission.clone())
 }
 
-pub(super) fn admitted(state: &Option<Entity<TextViewState>>, cx: &mut App) -> bool {
-    let predicate = state
-        .as_ref()
-        .and_then(|state| state.read(cx).link_admission.clone());
-    predicate.is_none_or(|predicate| predicate(cx))
+pub(super) fn admitted(predicate: &Option<super::text_view::LinkAdmission>, cx: &mut App) -> bool {
+    predicate.as_ref().is_none_or(|predicate| predicate(cx))
 }
 
 fn clamped(cx: &App) -> bool {
@@ -272,10 +270,12 @@ pub(super) fn link_element(
     let key_availability = availability.clone();
     let key_handler = handler.clone();
     let key_state = state.clone();
-    let traversal_state = state.clone();
-    let focus_state = state.clone();
-    let accessible_focus = focus.clone();
     let admission = current_admission(cx);
+    let traversal_admission = admission.clone();
+    let focus_admission = admission.clone();
+    let key_admission = admission.clone();
+    let ax_admission = admission.clone();
+    let accessible_focus = focus.clone();
     div()
         .id(id)
         .role(gpui::Role::Link)
@@ -295,13 +295,14 @@ pub(super) fn link_element(
                 &availability,
                 &handler,
                 &state,
+                &ax_admission,
                 ClickEvent::default(),
                 window,
                 cx,
             );
         })
         .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
-            if admitted(&focus_state, cx) {
+            if admitted(&focus_admission, cx) {
                 window.focus(&accessible_focus, cx);
             }
         })
@@ -320,6 +321,7 @@ pub(super) fn link_element(
                     &key_availability,
                     &key_handler,
                     &key_state,
+                    &key_admission,
                     event.clone(),
                     window,
                     cx,
@@ -327,7 +329,7 @@ pub(super) fn link_element(
             }
         })
         .on_key_down(move |event, window, cx| {
-            if !admitted(&traversal_state, cx) {
+            if !admitted(&traversal_admission, cx) {
                 cx.stop_propagation();
                 return;
             }

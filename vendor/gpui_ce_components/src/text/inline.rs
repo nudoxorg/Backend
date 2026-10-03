@@ -575,6 +575,7 @@ impl Element for Inline {
                 let text_view_state = UiGlobalState::global(cx).text_view_state().cloned();
                 let link_click_handler = self.link_click_handler.clone();
                 let link_availability = self.link_availability.clone();
+                let link_admission = super::native::current_admission(cx);
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
@@ -590,7 +591,7 @@ impl Element for Inline {
                     if let Some(link) =
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
-                        if !super::native::admitted(&text_view_state, cx)
+                        if !super::native::admitted(&link_admission, cx)
                             || !link_available(&link_availability, &link.url)
                         {
                             return;
