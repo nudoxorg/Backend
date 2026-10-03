@@ -793,13 +793,37 @@ mod tests {
     fn document_native_keyboard_uses_the_existing_callback_and_late_guard(cx: &mut TestAppContext) {
         let (opened, live, cx) =
             mounted("[Documentation](https://docs.rs/example)", None, None, cx);
-        cx.update(|window, cx| {
-            window.focus_next(cx);
-            let _ = window.draw(cx);
+        let node = cx.update(|window, _| {
+            window
+                .a11y_tree()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == gpui::Role::Link && node.label() == Some("Documentation")
+                })
+                .map(|(id, _)| *id)
+                .expect("actual native Documentation link")
         });
-        native_press(cx, "enter");
+        action(cx, node, AccessibleAction::Focus);
+        let keystroke = gpui::Keystroke {
+            key: "enter".into(),
+            modifiers: Default::default(),
+            key_char: None,
+        };
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        assert!(
+            opened.lock().unwrap().is_empty(),
+            "key down alone cannot navigate"
+        );
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
         native_press(cx, "space");
         cx.simulate_keystrokes("tab");
+        action(cx, node, AccessibleAction::Focus);
         native_press(cx, "enter");
         assert_eq!(*opened.lock().unwrap(), vec!["https://docs.rs/example"; 3]);
         live.store(false, Ordering::SeqCst);
