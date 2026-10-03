@@ -67,7 +67,10 @@ fn ms(sink: &Sink, at: Instant) -> f64 {
 }
 
 fn write(sink: &Sink, line: &str) {
-    let mut out = sink.out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut out = sink
+        .out
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _ = out.write_all(line.as_bytes());
     let _ = out.write_all(b"\n");
     let _ = out.flush();
@@ -128,15 +131,67 @@ fn frame_line(sink: &Sink, frame: &gpui::profiler::FrameTiming) -> String {
         ms(sink, frame.draw_end),
         ms(sink, frame.draw_start),
         frame.draw_duration().as_secs_f64() * 1e3,
-        frame
-            .dirty_at
-            .map_or_else(|| "null".to_owned(), |dirty| format!("{:.3}", ms(sink, dirty))),
+        frame.dirty_at.map_or_else(
+            || "null".to_owned(),
+            |dirty| format!("{:.3}", ms(sink, dirty))
+        ),
         frame.invalidations,
     )
 }
 
+fn lifecycle_line(sink: &Sink, event: &gpui::profiler::FrameLifecycleEvent) -> String {
+    use gpui::profiler::FrameLifecycleKind;
+    let (name, detail) = match event.kind {
+        FrameLifecycleKind::Drawn { a11y_frame } => {
+            ("drawn", format!("\"a11y_frame\":{a11y_frame}"))
+        }
+        FrameLifecycleKind::Presentation { result } => {
+            ("submission", format!("\"result\":\"{result:?}\""))
+        }
+        FrameLifecycleKind::LinkStarted { display_id } => {
+            ("link_started", format!("\"display_id\":{display_id}"))
+        }
+        FrameLifecycleKind::LinkStopped { display_id } => {
+            ("link_stopped", format!("\"display_id\":{display_id}"))
+        }
+        FrameLifecycleKind::LinkStartFailed { display_id } => {
+            ("link_start_failed", format!("\"display_id\":{display_id}"))
+        }
+        FrameLifecycleKind::FrameTick { count } => ("frame_tick", format!("\"count\":{count}")),
+    };
+    let native_window = event
+        .native_window_number
+        .map_or_else(|| "null".to_owned(), |id| id.to_string());
+    format!(
+        "{{\"t_ms\":{:.3},\"name\":\"frame_lifecycle\",\"pid\":{},\"window_id\":{},\"native_window\":{},\"frame_id\":{},\"kind\":\"{}\",{}}}",
+        ms(sink, event.at),
+        std::process::id(),
+        event.window_id.as_u64(),
+        native_window,
+        event.frame_id,
+        name,
+        detail,
+    )
+}
+
+fn write_lifecycle_batch(sink: &Sink, batch: gpui::profiler::FrameLifecycleBatch) {
+    if batch.dropped > 0 {
+        write(
+            sink,
+            &format!(
+                "{{\"t_ms\":{:.3},\"name\":\"frame_lifecycle_dropped\",\"count\":{}}}",
+                ms(sink, Instant::now()),
+                batch.dropped
+            ),
+        );
+    }
+    for event in batch.events {
+        write(sink, &lifecycle_line(sink, &event));
+    }
+}
+
 thread_local! {
-    static NOW: std::cell::RefCell<Option<gpui::profiler::FrameTimingCollector>> =
+    static NOW: std::cell::RefCell<Option<(gpui::profiler::FrameTimingCollector, gpui::profiler::FrameLifecycleCollector)>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -150,11 +205,15 @@ pub fn frames_now() {
         let mut slot = slot.borrow_mut();
         let collector = slot.get_or_insert_with(|| {
             gpui::set_frame_trace_enabled(true);
-            gpui::profiler::FrameTimingCollector::new()
+            (
+                gpui::profiler::FrameTimingCollector::new(),
+                gpui::profiler::FrameLifecycleCollector::new(),
+            )
         });
-        for frame in collector.collect_unseen() {
+        for frame in collector.0.collect_unseen() {
             write(sink, &frame_line(sink, &frame));
         }
+        write_lifecycle_batch(sink, collector.1.collect_unseen());
     });
 }
 
@@ -164,11 +223,13 @@ pub fn frames(cx: &mut gpui::App) {
     let Some(sink) = sink() else { return };
     gpui::set_frame_trace_enabled(true);
     let mut collector = gpui::profiler::FrameTimingCollector::new();
+    let mut lifecycle = gpui::profiler::FrameLifecycleCollector::new();
     cx.spawn(async move |cx| {
         loop {
             for frame in collector.collect_unseen() {
                 write(sink, &frame_line(sink, &frame));
             }
+            write_lifecycle_batch(sink, lifecycle.collect_unseen());
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(100))
                 .await;

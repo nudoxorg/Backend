@@ -2050,6 +2050,8 @@ pub struct Window {
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
+    /// Correlates an accessibility draw with later submission attempts.
+    frame_sequence: u64,
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
@@ -2861,6 +2863,7 @@ impl Window {
                 DispatchTree::new(cx.keymap.clone(), cx.actions.clone()),
                 element_owner_path_operations.clone(),
             ),
+            frame_sequence: 0,
             next_frame_callbacks,
             grouped_animation_frame_requests: GroupedAnimationFrameRequests::default(),
             next_hitbox_id: HitboxId(0),
@@ -3983,6 +3986,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        self.frame_sequence = self.frame_sequence.saturating_add(1);
         self.painted_texts.clear();
         self.next_frame.owner_path_arena.reset_operation_work();
         // Drain unconditionally so a stale first-invalidation timestamp can't
@@ -4113,6 +4117,15 @@ impl Window {
                 draw_start,
                 draw_end: Instant::now(),
             });
+            profiler::record_frame_lifecycle(profiler::FrameLifecycleEvent {
+                window_id: self.handle.window_id(),
+                native_window_number: None,
+                frame_id: self.frame_sequence,
+                at: Instant::now(),
+                kind: profiler::FrameLifecycleKind::Drawn {
+                    a11y_frame: self.a11y.frame_number(),
+                },
+            });
         }
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
@@ -4199,6 +4212,15 @@ impl Window {
     #[profiling::function]
     fn present(&mut self) {
         let result = self.platform_window.draw_result(&self.rendered_frame.scene);
+        if profiler::frame_trace_enabled() {
+            profiler::record_frame_lifecycle(profiler::FrameLifecycleEvent {
+                window_id: self.handle.window_id(),
+                native_window_number: None,
+                frame_id: self.frame_sequence,
+                at: Instant::now(),
+                kind: profiler::FrameLifecycleKind::Presentation { result },
+            });
+        }
         self.presentation_retry
             .set(self.presentation_retry.get().after(result, Instant::now()));
         self.needs_present.set(result != DrawResult::Presented);
@@ -4233,7 +4255,8 @@ impl Window {
 
         self.a11y.sync_active_flag();
         if self.a11y.is_active() {
-            self.a11y.set_focus_frame_context(self.handle.window_id(), self.focus);
+            self.a11y
+                .set_focus_frame_context(self.handle.window_id(), self.focus);
             self.a11y.begin_frame();
         }
 

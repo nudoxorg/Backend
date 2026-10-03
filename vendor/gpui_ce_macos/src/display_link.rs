@@ -234,6 +234,10 @@ pub struct WindowFrameSource {
 }
 
 impl WindowFrameSource {
+    pub fn registered_display_id(&self) -> Option<CGDirectDisplayID> {
+        self.registration.map(|(display_id, _)| display_id)
+    }
+
     pub fn new(data: *mut c_void, callback: extern "C" fn(*mut c_void)) -> Self {
         let frame_requests = unsafe {
             let frame_requests = DispatchSource::new(

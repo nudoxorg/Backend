@@ -513,6 +513,7 @@ struct MacWindowState {
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
+    frame_ticks: u64,
     renderer: renderer::Renderer,
     request_presentation_on_next_frame: bool,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
@@ -558,6 +559,18 @@ struct MacWindowState {
 }
 
 impl MacWindowState {
+    fn record_frame_event(&self, kind: gpui::profiler::FrameLifecycleKind) {
+        if gpui::profiler::frame_trace_enabled() {
+            gpui::profiler::record_frame_lifecycle(gpui::profiler::FrameLifecycleEvent {
+                window_id: self.handle.window_id(),
+                native_window_number: Some(self.native_window().windowNumber() as i64),
+                frame_id: 0,
+                at: std::time::Instant::now(),
+                kind,
+            });
+        }
+    }
+
     fn move_traffic_light(&mut self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
             if self.is_fullscreen() {
@@ -693,15 +706,33 @@ impl MacWindowState {
             return;
         };
         let data = self.native_view.as_ptr() as *mut c_void;
-        self.frame_source
-            .get_or_insert_with(|| WindowFrameSource::new(data, step))
-            .start(display_id)
-            .log_err();
+        let frame_source = self
+            .frame_source
+            .get_or_insert_with(|| WindowFrameSource::new(data, step));
+        if frame_source.registered_display_id() == Some(display_id) {
+            return;
+        }
+        match frame_source.start(display_id) {
+            Ok(()) => self
+                .record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStarted { display_id }),
+            Err(error) => {
+                self.record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStartFailed {
+                    display_id,
+                });
+                Err::<(), _>(error).log_err();
+            }
+        }
     }
 
     fn stop_display_link(&mut self) {
         if let Some(frame_source) = self.frame_source.as_mut() {
+            let registered = frame_source.registered_display_id();
             frame_source.stop();
+            if let Some(display_id) = registered {
+                self.record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStopped {
+                    display_id,
+                });
+            }
         }
     }
 
@@ -914,6 +945,7 @@ impl MacWindow {
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
+                frame_ticks: 0,
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -2867,6 +2899,14 @@ extern "C" fn step(view: *mut c_void) {
     let view = view as id;
     let window_state = unsafe { get_window_state(&*view) };
     let mut lock = window_state.lock();
+    if gpui::profiler::frame_trace_enabled() {
+        lock.frame_ticks = lock.frame_ticks.saturating_add(1);
+        if lock.frame_ticks == 1 || lock.frame_ticks % 64 == 0 {
+            lock.record_frame_event(gpui::profiler::FrameLifecycleKind::FrameTick {
+                count: lock.frame_ticks,
+            });
+        }
+    }
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
         let options = RequestFrameOptions {

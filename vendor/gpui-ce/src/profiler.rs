@@ -772,6 +772,9 @@ pub fn set_frame_trace_enabled(enabled: bool) -> bool {
         frames.timings.clear();
         frames.timings.shrink_to_fit();
         frames.total_pushed = 0;
+        let mut lifecycle = FRAME_LIFECYCLE_EVENTS.lock();
+        lifecycle.events.clear();
+        lifecycle.events.shrink_to_fit();
     }
     true
 }
@@ -802,6 +805,117 @@ pub fn record_frame_timing(timing: FrameTiming) {
 /// cursor so each call to [`Self::collect_unseen`] returns only new entries.
 pub struct FrameTimingCollector {
     cursor: u64,
+}
+
+/// One stage of a native window's frame lifecycle. `Presented` means the
+/// platform submitted a drawable; only an OS pixel capture can prove that
+/// the compositor displayed it.
+#[derive(Debug, Copy, Clone)]
+pub enum FrameLifecycleKind {
+    /// GPUI completed drawing and published this accessibility frame.
+    Drawn { a11y_frame: u64 },
+    /// The platform answered an attempt to submit the retained scene.
+    Presentation { result: crate::DrawResult },
+    /// A visible window registered its display-link subscriber.
+    LinkStarted { display_id: u32 },
+    /// A window removed its display-link subscriber.
+    LinkStopped { display_id: u32 },
+    /// CoreVideo refused a display-link registration or start.
+    LinkStartFailed { display_id: u32 },
+    /// A sampled count of frame-source ticks delivered to this window.
+    FrameTick { count: u64 },
+}
+
+/// A route- and text-free record joining native frame delivery to GPUI draw,
+/// accessibility publication, and Metal submission by window and frame ID.
+#[derive(Debug, Copy, Clone)]
+pub struct FrameLifecycleEvent {
+    /// The GPUI window that owns the event.
+    pub window_id: WindowId,
+    /// AppKit's native window number when recorded by the macOS frame source.
+    pub native_window_number: Option<i64>,
+    /// GPUI draw generation, or zero for platform events between draws.
+    pub frame_id: u64,
+    /// Monotonic time of the event.
+    pub at: Instant,
+    /// The lifecycle transition.
+    pub kind: FrameLifecycleKind,
+}
+
+const MAX_FRAME_LIFECYCLE_EVENTS: usize = 2048;
+
+struct FrameLifecycleEvents {
+    events: VecDeque<FrameLifecycleEvent>,
+    total_pushed: u64,
+}
+
+static FRAME_LIFECYCLE_EVENTS: spin::Mutex<FrameLifecycleEvents> =
+    spin::Mutex::new(FrameLifecycleEvents {
+        events: VecDeque::new(),
+        total_pushed: 0,
+    });
+
+/// Records an opt-in native frame event in a fixed-capacity process ring.
+/// At most 2048 recent events are retained; recording is one atomic load
+/// when frame tracing is off.
+pub fn record_frame_lifecycle(event: FrameLifecycleEvent) {
+    if !frame_trace_enabled() {
+        return;
+    }
+    cold_path();
+    let mut events = FRAME_LIFECYCLE_EVENTS.lock();
+    if events.events.len() >= MAX_FRAME_LIFECYCLE_EVENTS {
+        events.events.pop_front();
+    }
+    events.events.push_back(event);
+    events.total_pushed = events.total_pushed.saturating_add(1);
+}
+
+/// Cursor over the bounded native frame lifecycle ring.
+pub struct FrameLifecycleCollector {
+    cursor: u64,
+}
+
+/// Unseen frame events and the number overwritten before this poll.
+pub struct FrameLifecycleBatch {
+    pub events: Vec<FrameLifecycleEvent>,
+    pub dropped: u64,
+}
+
+impl Default for FrameLifecycleCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameLifecycleCollector {
+    /// Starts after the latest event already in the ring.
+    pub fn new() -> Self {
+        Self {
+            cursor: FRAME_LIFECYCLE_EVENTS.lock().total_pushed,
+        }
+    }
+
+    /// Returns only unseen events and accounts for overwritten events.
+    pub fn collect_unseen(&mut self) -> FrameLifecycleBatch {
+        let events = FRAME_LIFECYCLE_EVENTS.lock();
+        let start = events
+            .total_pushed
+            .saturating_sub(events.events.len() as u64);
+        let dropped = start.saturating_sub(self.cursor);
+        let skip = self.cursor.saturating_sub(start) as usize;
+        let unseen = events
+            .events
+            .iter()
+            .skip(skip.min(events.events.len()))
+            .copied()
+            .collect();
+        self.cursor = events.total_pushed;
+        FrameLifecycleBatch {
+            events: unseen,
+            dropped,
+        }
+    }
 }
 
 impl Default for FrameTimingCollector {
