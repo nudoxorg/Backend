@@ -255,7 +255,7 @@ pub(super) fn link_element(
     cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let focus = window.use_keyed_state((id.clone(), 0), cx, |_, cx| LinkFocus {
-        handle: cx.focus_handle(),
+        handle: cx.focus_handle().tab_stop(true),
     });
     let focus = focus.read(cx).handle.clone();
     let state = UiGlobalState::global(cx).text_view_state().cloned();
@@ -879,10 +879,13 @@ mod tests {
                 .1
                 .bounds()
                 .unwrap();
+            // AccessKit bounds are physical pixels; simulate_click takes
+            // logical window pixels, including on this test window's 2x scale.
+            let scale = window.scale_factor() as f64;
             let center = |rect: gpui::accesskit::Rect| {
                 point(
-                    px(((rect.x0 + rect.x1) / 2.) as f32),
-                    px(((rect.y0 + rect.y1) / 2.) as f32),
+                    px(((rect.x0 + rect.x1) / (2. * scale)) as f32),
+                    px(((rect.y0 + rect.y1) / (2. * scale)) as f32),
                 )
             };
             (*id, center(bounds), center(plain))
@@ -912,6 +915,37 @@ mod tests {
         cx.simulate_click(link_point, gpui::Modifiers::default());
         native_press(cx, "space");
         assert_eq!(opened.lock().unwrap().len(), 3);
+    }
+
+    #[gpui::test]
+    fn native_tab_traversal_reaches_authored_links_in_reading_order(cx: &mut TestAppContext) {
+        let (opened, _, cx) = mounted(
+            "[First](https://first)\n\n[Second](https://second)",
+            None,
+            None,
+            cx,
+        );
+        cx.update(|window, cx| {
+            window.focus_next(cx);
+            assert!(
+                window.focused(cx).is_some(),
+                "an actual link handle participates in Tab order"
+            );
+            window.draw(cx).clear(cx);
+        });
+        native_press(cx, "enter");
+        assert_eq!(*opened.lock().unwrap(), vec!["https://first"]);
+        // This goes through the focused native link's raw Tab event, not a
+        // direct endpoint focus/action callback.
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        native_press(cx, "space");
+        assert_eq!(
+            *opened.lock().unwrap(),
+            vec!["https://first", "https://second"]
+        );
     }
 
     #[gpui::test]
