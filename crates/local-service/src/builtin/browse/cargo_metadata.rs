@@ -756,18 +756,21 @@ impl CargoMetadataResolutionSession {
                             return Err("Cargo reported a missing lockfile that was present before metadata".to_owned());
                         }
                     }
+                    let mut source_roots =
+                        BTreeSet::from([requested.root.clone(), no_deps_workspace.clone()]);
+                    source_roots.extend(metadata_package_roots(&no_deps)?);
+                    let source_roots = source_roots.into_iter().collect::<Vec<_>>();
                     verify_private_cargo_lockfile_redirect(
                         &cargo,
                         &selection_before,
                         &host,
+                        &source_roots,
                     )
                     .map_err(|probe| {
                         format!(
                             "{error}; selected Cargo did not prove safe private lockfile redirection: {probe}"
                         )
                     })?;
-                    let mut source_roots = vec![requested.root.clone(), no_deps_workspace.clone()];
-                    source_roots.extend(metadata_package_roots(&no_deps)?);
                     let (directory, private_directory) =
                         create_private_cargo_lock_directory(&source_roots)?;
                     let private_path = private_directory.join("Cargo.lock");
@@ -1046,6 +1049,13 @@ fn cargo_lockfile_path_config(lockfile: &Path) -> Result<String, String> {
 fn create_private_cargo_lock_directory(
     source_roots: &[PathBuf],
 ) -> Result<(tempfile::TempDir, PathBuf), String> {
+    create_private_cargo_lock_directory_in(source_roots, &std::env::temp_dir())
+}
+
+fn create_private_cargo_lock_directory_in(
+    source_roots: &[PathBuf],
+    temporary_root: &Path,
+) -> Result<(tempfile::TempDir, PathBuf), String> {
     if source_roots.len() > MAX_CARGO_METADATA_PACKAGES {
         return Err("Cargo source-root set exceeds the private-lock limit".to_owned());
     }
@@ -1070,7 +1080,7 @@ fn create_private_cargo_lock_directory(
         canonical_roots.push(canonical);
     }
 
-    let temporary_root = std::env::temp_dir()
+    let temporary_root = temporary_root
         .canonicalize()
         .map_err(|error| format!("cannot resolve system temporary directory: {error}"))?;
     if canonical_roots
@@ -1147,8 +1157,9 @@ fn verify_private_cargo_lockfile_redirect(
     cargo: &Path,
     selection: &CargoToolSelection,
     host: &str,
+    source_roots: &[PathBuf],
 ) -> Result<(), String> {
-    let (directory, private_root) = create_private_cargo_lock_directory(&[])?;
+    let (directory, private_root) = create_private_cargo_lock_directory(source_roots)?;
     let temporary_root = directory.path().to_path_buf();
     let workspace = temporary_root.join("probe-workspace");
     let config_dir = workspace.join(".cargo");
@@ -1729,12 +1740,67 @@ mod tests {
 
     #[test]
     fn private_lock_directory_refuses_a_temporary_root_inside_source() {
-        let temporary_root = std::env::temp_dir()
+        fn source_tree_hash(root: &Path) -> [u8; 32] {
+            fn visit(root: &Path, directory: &Path, hasher: &mut blake3::Hasher) {
+                let mut entries = std::fs::read_dir(directory)
+                    .expect("read source fixture directory")
+                    .map(|entry| entry.expect("source fixture entry"))
+                    .collect::<Vec<_>>();
+                entries.sort_by_key(std::fs::DirEntry::file_name);
+                for entry in entries {
+                    let path = entry.path();
+                    let relative = path.strip_prefix(root).expect("relative source path");
+                    hasher.update(relative.as_os_str().as_encoded_bytes());
+                    let kind = entry.file_type().expect("source fixture file type");
+                    if kind.is_dir() {
+                        hasher.update(&[0]);
+                        visit(root, &path, hasher);
+                    } else {
+                        assert!(kind.is_file(), "test fixture contains only regular files");
+                        let bytes = std::fs::read(&path).expect("source fixture file");
+                        hasher.update(&[1]);
+                        hasher.update(&(bytes.len() as u64).to_le_bytes());
+                        hasher.update(&bytes);
+                    }
+                }
+            }
+
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"backend.private-lock-source-fixture.v1\0");
+            visit(root, root, &mut hasher);
+            *hasher.finalize().as_bytes()
+        }
+
+        let scratch = scratch("backend-cargo-private-lock-source-overlap");
+        let source_root = scratch.0.join("project");
+        let temporary_root = source_root.join(".tmp");
+        std::fs::create_dir_all(temporary_root.join("existing")).expect("nested temp root");
+        std::fs::write(
+            source_root.join("Cargo.toml"),
+            "[package]\nname = \"source\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("source manifest");
+        std::fs::write(temporary_root.join("existing/marker"), b"stable")
+            .expect("existing temp-root marker");
+        let source_root = source_root.canonicalize().expect("canonical source root");
+        let temporary_root = temporary_root
             .canonicalize()
-            .expect("canonical system temporary directory");
+            .expect("canonical nested temporary root");
+        let before = source_tree_hash(&source_root);
         assert!(
-            create_private_cargo_lock_directory(std::slice::from_ref(&temporary_root)).is_err(),
-            "the lock resolver must refuse before creating a temporary directory in source"
+            create_private_cargo_lock_directory_in(
+                std::slice::from_ref(&source_root),
+                &temporary_root,
+            )
+            .is_err(),
+            "the lock resolver must reject an injected temp root before writing inside source"
+        );
+        assert_eq!(source_tree_hash(&source_root), before);
+        assert!(
+            std::fs::read_dir(&temporary_root)
+                .expect("temporary root remains readable")
+                .all(|entry| entry.expect("temp entry").file_name() == "existing"),
+            "refusal must not create a child beside the pre-existing marker"
         );
     }
 
