@@ -3,7 +3,7 @@
 //! register an alternate text layout, or revive a retained/inert subtree.
 
 use gpui::{
-    Div, ElementId, ParentElement as _, Role, SharedString, Stateful,
+    Div, ElementId, InteractiveElement as _, ParentElement as _, Role, SharedString, Stateful,
     StatefulInteractiveElement as _,
 };
 

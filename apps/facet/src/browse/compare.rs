@@ -271,7 +271,7 @@ impl RenderOnce for Compare {
                     .child(button(child(&key, "remove"), "Remove", &column_m).aria_label(format!("Remove {} from comparison", candidate.origin)).ghost().size(Control::Small).disabled(!self.actions.active || count <= 2)
                         .on_click(move |window, cx| remove(remove_key.clone(), window, cx))));
             if let Some(coverage) = &candidate.coverage {
-                head = head.child(div().id(child(&key, "coverage-native")).role(gpui::Role::StaticText).aria_label(coverage.clone())
+                head = head.child(div().id(child(&key, "coverage-native")).role(gpui::Role::Label).aria_label(coverage.clone())
                     .child(words(child(&key, "coverage"), coverage.clone(), ty::CAPTION, p.ink2, &column_m)));
             }
             heads = heads.child(head);
@@ -373,7 +373,7 @@ impl RenderOnce for Compare {
                     .child(words(child(&self.id, format!("facts-{at}-name")), candidate.name.clone(), ty::HEAD, p.ink0, &column_m))
                     .child(words_ellipsis(child(&self.id, format!("facts-{at}-origin")), candidate.origin.clone(), ty::CAPTION, p.ink2, &column_m));
                 if let Some(coverage) = &candidate.coverage {
-                    column = column.child(div().id(child(&self.id, format!("facts-{at}-coverage-native"))).role(gpui::Role::StaticText).aria_label(coverage.clone())
+                    column = column.child(div().id(child(&self.id, format!("facts-{at}-coverage-native"))).role(gpui::Role::Label).aria_label(coverage.clone())
                         .child(words(child(&self.id, format!("facts-{at}-coverage")), coverage.clone(), ty::CAPTION, p.ink2, &column_m)));
                 }
                 if let Some(description) = &candidate.description { column = column.child(words(child(&self.id, format!("facts-{at}-description")), description.clone(), ty::LEDE, p.ink2, &column_m)); }

@@ -7,7 +7,7 @@ use super::view::{ImportsListed, Listed, TestsListed, Verb};
 use crate::anatomy::page::{Door, Doors, Fold};
 use crate::motion::Flow;
 use crate::motion::presence::Presence;
-use gpui::{AnyElement, App, Bounds, Div, IntoElement as _, InteractiveElement as _, Pixels, SharedString, Stateful, Window};
+use gpui::{AnyElement, App, Bounds, Div, IntoElement as _, InteractiveElement as _, Pixels, SharedString, Stateful, StatefulInteractiveElement as _, Window};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
