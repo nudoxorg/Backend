@@ -1241,20 +1241,34 @@ impl Shell {
         let Some(target) = self.current(cx) else {
             return;
         };
-        if !target.action.admits(cx) { return; }
         let Some(key) = target.peek.clone() else {
             return;
         };
-        let Some(anchor) = self.with_zone(cx, |targets| targets.focused_bounds()) else {
-            return;
-        };
-        self.links.store.update(cx, |store, cx| {
-            store.ensure(key.clone(), cx);
+        let zone = self.zone;
+        let frame = self.hinted_targets(zone, cx).hint_frame();
+        let scope = self.target_scope(cx);
+        let shell = cx.weak_entity();
+        window.defer(cx, move |window, app| {
+            let Some(shell) = shell.upgrade() else { return; };
+            if !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app)
+                || !target.action.admits(app) { return; }
+            let Some(anchor) = ({
+                let shell = shell.read(app);
+                shell.target_claim_current(zone, frame, &target.id, &scope, true, app)
+                    .then(|| shell.hinted_targets(zone, app).focused_bounds()).flatten()
+            }) else { return; };
+            let store = shell.read(app).links.store.clone();
+            store.update(app, |store, cx| store.ensure(key.clone(), cx));
+            let armed = shell.update(app, |shell, cx| {
+                if !shell.target_claim_current(zone, frame, &target.id, &scope, true, cx) { return false; }
+                shell.peeking = Some(key.clone());
+                cx.notify();
+                true
+            });
+            if !armed { return; }
+            let request = peeks::request(key.clone(), target.label, anchor, store);
+            float::open(request, window, app);
         });
-        let request = peeks::request(key.clone(), target.label, anchor, self.links.store.clone());
-        float::open(request, window, cx);
-        self.peeking = Some(key);
-        cx.notify();
     }
 
     /// Re-reads the pins from the float layer (the pins column exists only
@@ -1273,34 +1287,36 @@ impl Shell {
     fn peel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.mode_input_allowed(cx) { return; }
         if self.open_graph_view(OpenView::Code, window, cx) { return; }
-        let snapshot = self.links.snapshot(cx);
-        let own = route_symbol(snapshot.route());
-        let symbol = self.current(cx)
-            .and_then(|target| target.action.admits(cx).then_some(target.source).flatten())
-            .or_else(|| own.clone());
-        let Some(symbol) = symbol else {
+        let Some(target) = self.current(cx) else {
+            let Some(input) = self.page_input_scope(cx) else { return; };
+            let Some(symbol) = route_symbol(self.links.snapshot(cx).route()) else { return; };
+            let shell = cx.weak_entity();
+            let links = self.links.clone();
+            window.defer(cx, move |_, app| {
+                let Some(shell) = shell.upgrade() else { return; };
+                if shell.read(app).admits_page_input_scope(&input, app)
+                    && shell.read(app).mode_input_allowed(app)
+                    && route_symbol(links.snapshot(app).route()).as_ref() == Some(&symbol) {
+                    dispatch_symbol_code(&links, symbol, app);
+                }
+            });
             return;
         };
-        if Some(&symbol) == own.as_ref() {
-            self.links.dispatch(Intent::SetView(View::Code), cx);
-            return;
-        }
-        let line = self
-            .links
-            .store
-            .read(cx)
-            .symbol(&symbol)
-            .loaded_value()
-            .and_then(|page| page.identity.line);
-        let package = kit::package_of(&symbol).or_else(|| match snapshot.route() {
-            Route::Symbol(route) => Some(route.package.as_str().to_owned()),
-            Route::Package(route) => Some(route.package.as_str().to_owned()),
-            Route::CargoSource(route) => Some(route.package.as_str().to_owned()),
-            Route::Orbit(_) | Route::World => None,
+        let zone = self.zone;
+        let frame = self.hinted_targets(zone, cx).hint_frame();
+        let scope = self.target_scope(cx);
+        let shell = cx.weak_entity();
+        let links = self.links.clone();
+        window.defer(cx, move |_, app| {
+            let Some(shell) = shell.upgrade() else { return; };
+            if !shell.read(app).mode_input_allowed(app)
+                || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app)
+                || !target.action.admits(app) { return; }
+            if !shell.read(app).mode_input_allowed(app)
+                || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app) { return; }
+            let symbol = target.source.or_else(|| route_symbol(links.snapshot(app).route()));
+            if let Some(symbol) = symbol { dispatch_symbol_code(&links, symbol, app); }
         });
-        if let Some(route) = package.and_then(|package| kit::symbol_view_route(&package, &symbol, View::Code, line)) {
-            self.links.dispatch(Intent::Navigate(route), cx);
-        }
     }
 
     /// All graph-to-declaration commands use the visible graph selection.
@@ -1378,13 +1394,7 @@ impl Shell {
             return;
         }
         if !self.page_input_allowed(cx) { return; }
-        let snapshot = self.links.snapshot(cx);
-        let scope = HintScope {
-            route: snapshot.route().clone(),
-            overlay: snapshot.overlay(),
-            visit: snapshot.session().reading.current.id,
-            local_input: self.local_activation_scope(),
-        };
+        let scope = self.target_scope(cx);
         let mut placed = Vec::new();
         let mut add = |zone: Zone, targets: &super::focus::Targets| {
             let frame = targets.hint_frame();
@@ -1405,10 +1415,23 @@ impl Shell {
         cx.notify();
     }
 
-    fn hint_scope_current(&self, scope: &HintScope, cx: &App) -> bool {
+    fn target_scope(&self, cx: &App) -> HintScope {
         let snapshot = self.links.snapshot(cx);
-        self.page_input_allowed(cx)
-            && self.local_activation_scope() == scope.local_input
+        HintScope {
+            route: snapshot.route().clone(),
+            overlay: snapshot.overlay(),
+            visit: snapshot.session().reading.current.id,
+            local_input: self.local_activation_scope(),
+        }
+    }
+
+    fn hint_scope_current(&self, scope: &HintScope, cx: &App) -> bool {
+        self.page_input_allowed(cx) && self.target_structure_current(scope, cx)
+    }
+
+    fn target_structure_current(&self, scope: &HintScope, cx: &App) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        self.local_activation_scope() == scope.local_input
             && snapshot.route() == &scope.route
             && snapshot.overlay() == scope.overlay
             && snapshot.session().reading.current.id == scope.visit
@@ -1424,19 +1447,38 @@ impl Shell {
         }
     }
 
+    fn target_claim_current(&self, zone: Zone, frame: u64, id: &str, scope: &HintScope, must_be_focused: bool, cx: &App) -> bool {
+        if !self.target_structure_current(scope, cx) { return false; }
+        let targets = self.hinted_targets(zone, cx);
+        targets.admits_hint(id, frame)
+            && (!must_be_focused || targets.focused().as_deref() == Some(id))
+    }
+
     fn activate_hint(&mut self, choice: Hinted, scope: &HintScope, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.hint_scope_current(scope, cx) { return; }
-        let targets = self.hinted_targets(choice.zone, cx);
-        if !targets.admits_hint(&choice.target.id, choice.frame)
-            || !choice.target.action.admits(cx) { return; }
-        self.set_zone(choice.zone, cx);
-        targets.focus(choice.target.id.clone());
-        if !targets.focus_native(&choice.target.id, window, cx) {
-            // Raw targets use the Shell's real keyboard owner; native controls
-            // use their own mounted handle. A popup may replace either below.
-            self.focus.focus(window, cx);
-        }
-        run(choice.target.action.callback(), window, cx);
+        let shell = cx.weak_entity();
+        let scope = scope.clone();
+        window.defer(cx, move |window, app| {
+            let Some(shell) = shell.upgrade() else { return; };
+            if !shell.read(app).hint_scope_current(&scope, app)
+                || !shell.read(app).target_claim_current(choice.zone, choice.frame, &choice.target.id, &scope, false, app)
+                || !choice.target.action.admits(app) { return; }
+            // Admission may itself update Reader state. Recheck the exact
+            // structural visit and mounted target frame before native focus.
+            let focused = shell.update(app, |shell, cx| {
+                if !shell.hint_scope_current(&scope, cx)
+                    || !shell.target_claim_current(choice.zone, choice.frame, &choice.target.id, &scope, false, cx) { return false; }
+                let targets = shell.hinted_targets(choice.zone, cx);
+                shell.set_zone(choice.zone, cx);
+                targets.focus(choice.target.id.clone());
+                if !targets.focus_native(&choice.target.id, window, cx) {
+                    // A raw target keeps the Shell's native keyboard owner.
+                    // Popups opened below may replace it with their own.
+                    shell.focus.focus(window, cx);
+                }
+                true
+            });
+            if focused { choice.target.action.run(window, app); }
+        });
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1934,6 +1976,25 @@ impl Shell {
 /// into the shell (open Ask, toggle the shelf), which must not re-enter it.
 fn run(act: super::focus::Act, window: &mut Window, cx: &mut App) {
     window.defer(cx, move |window, cx| act(window, cx));
+}
+
+fn dispatch_symbol_code(links: &Links, symbol: crate::model::pages::SymbolRef, cx: &mut App) {
+    let snapshot = links.snapshot(cx);
+    if route_symbol(snapshot.route()).as_ref() == Some(&symbol) {
+        links.dispatch(Intent::SetView(View::Code), cx);
+        return;
+    }
+    let line = links.store.read(cx).symbol(&symbol).loaded_value()
+        .and_then(|page| page.identity.line);
+    let package = kit::package_of(&symbol).or_else(|| match snapshot.route() {
+        Route::Symbol(route) => Some(route.package.as_str().to_owned()),
+        Route::Package(route) => Some(route.package.as_str().to_owned()),
+        Route::CargoSource(route) => Some(route.package.as_str().to_owned()),
+        Route::Orbit(_) | Route::World => None,
+    });
+    if let Some(route) = package.and_then(|package| kit::symbol_view_route(&package, &symbol, View::Code, line)) {
+        links.dispatch(Intent::Navigate(route), cx);
+    }
 }
 
 impl Shell {
@@ -2443,6 +2504,83 @@ mod transient_return_admission_tests {
         assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&exhausted_generation, cx)));
         shell.update(rig.cx, |shell, _| shell.advance_transient_generation());
         assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)), "a subsequent native input generation retires the old return");
+    }
+}
+
+#[cfg(test)]
+mod deferred_target_admission_tests {
+    use super::*;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    use crate::runtime::reads::ReadPool;
+    use gpui::AppContext as _;
+
+    fn serving_gate() -> (crate::core::VersionedRoot, OwnerGate) {
+        let root = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+        );
+        (root, OwnerGate::ready(root, crate::model::ServiceMode::Attached))
+    }
+
+    #[gpui::test]
+    fn revoked_reader_space_and_source_key_cannot_act_or_reenter_shell(cx: &mut gpui::TestAppContext) {
+        let (root, gate) = serving_gate();
+        let route = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
+            project: None,
+            at: None,
+            package: crate::core::PackageId::new(super::super::tests::PACKAGE).expect("package"),
+            lane: crate::navigation::PackageLane::Overview,
+            selected: None,
+        });
+        let mut rig = super::super::tests::rig_with_engine_gate(
+            cx, Some(route.clone()), 1440.0, 900.0,
+            ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"),
+            super::super::tests::RootOnly, Some(gate.clone()),
+        );
+        rig.settle();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
+        let selected = targets.placed().into_iter()
+            .find(|(target, _)| target.peek.is_some() && target.source.is_some())
+            .map(|(target, _)| target.id)
+            .expect("mounted declaration supports both Space and S");
+        targets.focus(selected.clone());
+        let before_focus = rig.cx.update(|window, cx| window.focused(cx));
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+        rig.cx.simulate_keystrokes("space");
+        rig.cx.simulate_keystrokes("s");
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before_focus,
+            "revoked Space and S cannot move native focus");
+        rig.settle();
+        assert_eq!(rig.route(), route, "revoked S cannot navigate through a stale declaration");
+        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1,
+            "revoked Space cannot open a peek");
+    }
+
+    #[gpui::test]
+    fn revoked_shelf_hint_cannot_move_focus_or_activate_a_stale_row(cx: &mut gpui::TestAppContext) {
+        let (root, gate) = serving_gate();
+        let mut rig = super::super::tests::rig_with_engine_gate(
+            cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"),
+            super::super::tests::RootOnly, Some(gate.clone()),
+        );
+        rig.settle();
+        let id = rig.shell.read_with(rig.cx, |shell, cx| {
+            shell.shelf.read(cx).targets.placed().into_iter().next().map(|(target, _)| target.id)
+        }).expect("mounted shelf row");
+        rig.keys("f");
+        let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for(&id))
+            .expect("shelf row has a hint");
+        let route = rig.route();
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+        rig.cx.simulate_keystrokes(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused,
+            "a stale shelf hint cannot take native focus");
+        rig.settle();
+        assert_eq!(rig.route(), route, "the stale shelf row cannot navigate");
     }
 }
 
