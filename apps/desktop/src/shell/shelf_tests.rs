@@ -728,12 +728,19 @@ fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut 
             for width in [360.0, 480.0, 663.0, 1440.0] {
                 rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
                 rig.settle();
-                into_the_sidebar(&mut rig);
-                for (keys, expected) in [
-                    ("g r", "Library dependency relationships are not indexed. Choose a package to read its dependencies."),
-                    ("g u", "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages."),
+                let (overlays, drawer_open) = rig.shell.read_with(rig.cx, |shell, cx| (
+                    shell.frame().expect("responsive frame").shelf_overlays,
+                    shell.chrome_words(cx).iter().any(|(key, value)| *key == "drawer" && value == "open"),
+                ));
+                if overlays && !drawer_open { rig.keys("cmd-\\"); }
+                for (lens, expected) in [
+                    ("shelf-lens-rests-on", "Library dependency relationships are not indexed. Choose a package to read its dependencies."),
+                    ("shelf-lens-used-by", "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages."),
                 ] {
-                    rig.keys(keys);
+                    rig.repaint();
+                    let lens = rig.cx.debug_bounds(lens).expect("visible native lens control");
+                    rig.cx.simulate_click(lens.center(), Modifiers::default());
+                    rig.settle();
                     let labels = shelf_native_labels(&mut rig);
                     assert!(labels.iter().any(|label| label == expected), "{width}px/{percent}%: {labels:?}");
                     assert!(!labels.iter().any(|label| label == "The library rests on nothing." || label == "No project of yours uses the library yet."));
