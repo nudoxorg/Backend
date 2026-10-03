@@ -3633,9 +3633,9 @@ mod tests {
             // Library::new() is intentionally unbound and cannot authorize a
             // reset transition to the product view.
             let snapshot = daemon.engine().daemon().owner().snapshot();
-            let (baseline, cursor) = super::super::initial_view_for_workspace(&snapshot)
+            let (baseline, cursor) = crate::builtin::initial_view_for_workspace(&snapshot)
                 .expect("checked current product baseline");
-            let admission = super::super::BuiltinViewAdmission {
+            let admission = crate::builtin::BuiltinViewAdmission {
                 workspace_root: snapshot.root(),
                 source_root: baseline.basis().root,
             };
