@@ -3570,7 +3570,7 @@ mod lane_failure_boundary_tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
-    fn panicking_job_is_terminal_skips_publication_and_leaves_lane_usable() {
+    fn attempt_helper_terminalizes_panic_and_success_gate_skips_publication() {
         let failure = run_lane_attempt(
             || -> Result<(), CompilerTerminal> {
                 std::panic::panic_any("synthetic Rustdoc mapping failure")
@@ -3600,7 +3600,7 @@ mod lane_failure_boundary_tests {
         );
         assert!(
             !published.load(Ordering::Acquire),
-            "a panicking job must never publish a partial head"
+            "a terminalized attempt must not reach the success-only publish helper"
         );
 
         let next = run_lane_attempt(
@@ -3611,7 +3611,7 @@ mod lane_failure_boundary_tests {
             published.store(true, Ordering::Release);
             Ok::<_, CompilerTerminal>(output)
         });
-        assert_eq!(completed, Ok(41));
+        assert_eq!(completed, Ok(41), "the helper accepts a later attempt");
         assert!(published.load(Ordering::Acquire));
     }
 

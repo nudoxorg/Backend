@@ -6,17 +6,18 @@ use std::{
 };
 
 use backend_engine::application::{
-    CompilerPackageTargetV2, DocumentationSession, LocalCompiler, LocalCompilerClient,
-    LocalCompilerConfig, LocalCompilerControl, LocalCompilerRuntimeConfiguration,
-    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout,
-    LocalRuntimePackageAuthority, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
-    LocalToolchainSet, OwnedPackageSource, OwnedPackageSourceSet, PackageSource, PackageSourceSet,
-    StagedEmbeddingStatus,
+    CompilerPackageTargetV2, DocumentationFragment, DocumentationSession, LocalCompiler,
+    LocalCompilerClient, LocalCompilerConfig, LocalCompilerControl,
+    LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths, LocalCompilerScratch,
+    LocalCompilerTimeout, LocalRuntimePackageAuthority, LocalRuntimeRustAuthority,
+    LocalRuntimeToolchain, LocalToolchainSet, OwnedPackageSource, OwnedPackageSourceSet,
+    PackageSemanticError, PackageSource, PackageSourceSet, StagedEmbeddingStatus,
 };
 use backend_engine::driver::{ResolvedToolchain, ToolchainSelection};
 use backend_frontend_rust::legacy::{RustCargoMetadataPolicy, RustToolchain, SourceByteLimit};
 use backend_library::interface::{
-    CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
+    CompilerCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompilePhase,
+    PackageCompileRequest, PackageUrl,
 };
 use backend_semantic::ir::{
     CanonicalPlaneStreamError, CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink,
@@ -24,7 +25,9 @@ use backend_semantic::ir::{
     SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneRecordError, SemanticSegmentId,
     reset_semantic_image_validations, semantic_image_validations, stream_canonical_plane_family,
 };
-use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{
+    AuthorityDiagnosticClass, AuthorityPhase, CStandard, LanguageProfile, NativeTool, Stage,
+};
 use backend_store::journal::PublicationLimits;
 
 #[derive(Default)]
@@ -340,6 +343,149 @@ fn rust_package_staging_keeps_detached_sources_out_of_artifact_and_coverage_acco
 }
 
 #[test]
+fn runtime_returns_one_failed_package_terminal_then_reuses_the_same_lane_without_partial_publish()
+-> Result<(), Box<dyn std::error::Error>> {
+    let rustc = std::env::var_os("RUSTC").map_or_else(|| PathBuf::from("rustc"), PathBuf::from);
+    let rust_toolchain = RustToolchain::discover(rustc)?;
+    let version = Command::new(&rust_toolchain.tool)
+        .arg("--version")
+        .output()?;
+    if !version.status.success() {
+        return Err("rustc version probe failed".into());
+    }
+
+    let root = unique_directory()?;
+    let package_root = root.join("package");
+    let artifacts = root.join("artifacts");
+    let journal = root.join("journal");
+    let native_work = root.join("native-work");
+    fs::create_dir_all(package_root.join("src"))?;
+    fs::create_dir(&native_work)?;
+    fs::write(
+        package_root.join("Cargo.toml"),
+        "[package]\nname = \"runtime_lane_recovery\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+
+    let package_url = PackageUrl::try_from("pkg:cargo/runtime-lane-recovery@0.1.0".to_owned())
+        .map_err(|error| fixture_error(format!("package URL rejected: {error:?}")))?;
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(35),
+            profile: LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2021),
+            stage: Stage::LowerIr,
+        },
+        package_url,
+    )
+    .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
+
+    let authority = LocalRuntimeRustAuthority {
+        toolchain: rust_toolchain.clone(),
+        maximum_source_bytes: SourceByteLimit::from(8 * 1024),
+        all_features: false,
+        no_default_features: false,
+        features: Box::new([]),
+        metadata_policy: RustCargoMetadataPolicy::Offline,
+    };
+    let configuration = LocalCompilerRuntimeConfiguration::new(
+        LocalCompilerRuntimePaths::new(artifacts.clone(), journal, native_work)?,
+        vec![LocalRuntimeToolchain::resolved(
+            NativeTool::Rustc,
+            rust_toolchain.tool.clone(),
+            &version.stdout,
+        )?]
+        .into_boxed_slice(),
+        Box::new([]),
+        LocalRuntimePackageAuthority {
+            rust: Some(authority),
+            ..LocalRuntimePackageAuthority::default()
+        },
+        LocalCompilerTimeout::new(Duration::from_secs(180))?,
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
+        LocalCompilerScratch::with_fragment_capacity(
+            NonZeroUsize::new(16 * 1024 * 1024).ok_or("fragment capacity is zero")?,
+        )?,
+    )?;
+    let client = LocalCompilerClient::start(configuration)?;
+
+    // This exact package lane returns a real worker-side Rust authority terminal before
+    // publication. The next request keeps the package target and profile unchanged, so the
+    // runtime routes it through the same lane after delivering the first request's terminal.
+    let oversized = format!(
+        "// {}\npub fn rejected() -> u32 {{ 0 }}\n",
+        "x".repeat(8 * 1024)
+    );
+    fs::write(package_root.join("src/lib.rs"), &oversized)?;
+    let failure = client
+        .compile_package_sources(OwnedPackageSourceSet::new(
+            request.clone(),
+            package_root.clone(),
+            vec![OwnedPackageSource::new("src/lib.rs", &oversized)?].into_boxed_slice(),
+        )?)
+        .expect_err("the admitted Rust source exceeds its configured authority bound");
+    assert!(matches!(
+        failure,
+        backend_engine::application::PackageSemanticRuntimeError::Package(
+            PackageSemanticError::Compile { ref path, ref terminal }
+        ) if path.as_ref() == "src/lib.rs"
+            && matches!(terminal.as_ref(), CompilerTerminal::Compile {
+                attempted,
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::Open,
+                    class: AuthorityDiagnosticClass::Authority,
+                    ..
+                },
+            } if attempted.source.byte_len as usize == oversized.len())
+    ));
+    assert!(
+        !artifacts.exists(),
+        "a failed worker attempt must not create or publish a package artifact"
+    );
+
+    // Exercise Rustdoc extraction on the same lane following the failure. The macro-generated
+    // documentation has owned text rather than a source span and must survive as such.
+    let recovered = concat!(
+        "#[doc = concat!(\"generated docs remain owned\", \" across expansion\")]\n",
+        "pub struct Recovered;\n",
+        "pub fn answer() -> u32 { 42 }\n",
+    );
+    fs::write(package_root.join("src/lib.rs"), recovered)?;
+    let published = client.compile_package_sources(OwnedPackageSourceSet::new(
+        request,
+        package_root,
+        vec![OwnedPackageSource::new("src/lib.rs", recovered)?].into_boxed_slice(),
+    )?)?;
+    assert_eq!(published.images.len(), 1);
+    let image = SemanticImageView::reopen(published.images[0].as_ref())?;
+    let session = DocumentationSession::new(&image);
+    let mut retained_macro_docs = false;
+    for entity in session.canonical_entities() {
+        let entity = entity?;
+        if entity.name == b"Recovered" {
+            let fragments = entity.documentation()?.collect::<Result<Vec<_>, _>>()?;
+            retained_macro_docs = fragments.iter().any(|fragment| {
+                matches!(
+                    fragment,
+                    DocumentationFragment::Text(text)
+                        if text.contains("generated docs remain owned across expansion")
+                )
+            });
+        }
+    }
+    assert!(
+        retained_macro_docs,
+        "the macro-expanded Rustdoc text remains present as owned documentation"
+    );
+    assert!(
+        artifacts.exists(),
+        "the later successful request is published"
+    );
+
+    drop(client);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn owned_runtime_frontier_reaches_the_package_publication_owner()
 -> Result<(), Box<dyn std::error::Error>> {
     let clang = find_clang().ok_or("clang is required for the package runtime journey")?;
@@ -429,9 +575,7 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
                 MAX_SEMANTIC_SEGMENT_BYTES,
                 &mut sink,
             )?;
-            Ok::<_, CanonicalPlaneStreamError<SemanticPlaneRecordError>>((
-                streamed, sink, metrics,
-            ))
+            Ok::<_, CanonicalPlaneStreamError<SemanticPlaneRecordError>>((streamed, sink, metrics))
         })?;
     assert_eq!(reader_metrics.image_validation_count(), 1);
     assert_eq!(
