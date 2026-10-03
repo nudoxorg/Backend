@@ -16,6 +16,7 @@ use backend_library::{
     SurfaceReply, index_operation_request_digest,
 };
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
@@ -178,6 +179,8 @@ struct JournalMeta {
 
 pub(super) struct IndexOperationJournal {
     _database: turso::Database,
+    _database_directory: backend_platform::DirectoryCapability,
+    _database_file: File,
     connection: turso::Connection,
     pending_count: i64,
     prepared_count: i64,
@@ -190,12 +193,22 @@ impl IndexOperationJournal {
         let parent = path
             .parent()
             .ok_or_else(|| JournalError::Database("database path has no parent".to_owned()))?;
-        backend_platform::durable::ensure_private_directory(parent)
-            .map_err(|error| JournalError::Database(error.to_string()))?;
-        let path = path.to_str().ok_or(JournalError::NonUtf8Path)?;
+        let database_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(JournalError::NonUtf8Path)?;
+        let database_directory =
+            backend_platform::DirectoryCapability::open_or_create_private(parent)
+                .map_err(|error| JournalError::Database(error.to_string()))?;
+        let database_file = preflight_sqlite_files(&database_directory, database_name)?;
+        let database_path = parent
+            .canonicalize()
+            .map_err(|error| JournalError::Database(error.to_string()))?
+            .join(database_name);
+        let database_path = database_path.to_str().ok_or(JournalError::NonUtf8Path)?;
         let (database, connection, pending_count, prepared_count) =
             futures_executor::block_on(async {
-                let database = turso::Builder::new_local(path)
+                let database = turso::Builder::new_local(database_path)
                     .experimental_multiprocess_wal(true)
                     .build()
                     .await
@@ -215,6 +228,14 @@ impl IndexOperationJournal {
                     ))
                     .await
                     .map_err(database_error)?;
+                database_directory
+                    .open_private_file_read_write(database_name, false)
+                    .map_err(|error| {
+                        JournalError::Database(format!(
+                            "database path changed during open: {error}"
+                        ))
+                    })?;
+                verify_sqlite_sidecars(&database_directory, database_name)?;
                 let meta = read_meta(&connection).await?;
                 validate_meta(&meta)?;
                 Ok::<_, JournalError>((
@@ -226,6 +247,8 @@ impl IndexOperationJournal {
             })?;
         Ok(Self {
             _database: database,
+            _database_directory: database_directory,
+            _database_file: database_file,
             connection,
             pending_count,
             prepared_count,
@@ -650,6 +673,46 @@ impl IndexOperationJournal {
         }
         Ok(())
     }
+}
+
+/// Validates the Turso database namespace through the already-held private
+/// directory capability before Turso opens the pathname. The database itself
+/// is owner-only; SQLite sidecars are opened without following links and stay
+/// inside the owner-only directory. Turso's current Builder accepts a path,
+/// not an already-open file handle, so keeping the directory and database
+/// handles alive also pins the checked namespace for this journal's lifetime.
+fn preflight_sqlite_files(
+    directory: &backend_platform::DirectoryCapability,
+    database_name: &str,
+) -> Result<File, JournalError> {
+    verify_sqlite_sidecars(directory, database_name)?;
+    directory
+        .open_private_file_read_write(database_name, true)
+        .map_err(|error| JournalError::Database(format!("unsafe database file: {error}")))
+}
+
+fn verify_sqlite_sidecars(
+    directory: &backend_platform::DirectoryCapability,
+    database_name: &str,
+) -> Result<(), JournalError> {
+    for suffix in ["-wal", "-shm", "-tshm", "-journal"] {
+        let sidecar_name = format!("{database_name}{suffix}");
+        match directory.open_file_read_write(&sidecar_name, false) {
+            Ok(file) if file.metadata().is_ok_and(|metadata| metadata.is_file()) => {}
+            Ok(_) => {
+                return Err(JournalError::Database(format!(
+                    "unsafe non-regular SQLite sidecar {sidecar_name}"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(JournalError::Database(format!(
+                    "unsafe SQLite sidecar {sidecar_name}: {error}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn prune_terminal_receipts(
@@ -1316,6 +1379,31 @@ mod tests {
             true
         );
         drop(journal);
+        cleanup(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_and_wal_symlinks_are_rejected_before_turso_open() {
+        use std::os::unix::fs::symlink;
+
+        let path = path();
+        let parent = path.parent().expect("database parent");
+        let directory = backend_platform::DirectoryCapability::open_or_create_private(parent)
+            .expect("create protected database directory");
+        drop(directory);
+        let target = parent.join("outside-state");
+        fs::write(&target, b"outside bytes").expect("write sentinel");
+        symlink(&target, &path).expect("link database path");
+        assert!(IndexOperationJournal::open(&path).is_err());
+        assert_eq!(fs::read(&target).expect("read sentinel"), b"outside bytes");
+        fs::remove_file(&path).expect("remove database symlink");
+
+        let sidecar = parent.join("operations.turso-wal");
+        symlink(&target, &sidecar).expect("link WAL path");
+        assert!(IndexOperationJournal::open(&path).is_err());
+        assert!(!path.exists(), "sidecar refusal precedes database creation");
+        assert_eq!(fs::read(&target).expect("read sentinel"), b"outside bytes");
         cleanup(&path);
     }
 }
