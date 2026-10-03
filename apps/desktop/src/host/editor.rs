@@ -16,6 +16,8 @@ pub(crate) struct Command {
     pub program: String,
     /// Its arguments.
     pub args: Vec<String>,
+    /// Whether these arguments ask the external program for a line.
+    line_requested: bool,
 }
 
 /// Runs commands.
@@ -68,12 +70,13 @@ pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<C
             if !template.contains("{path}") {
                 args.push(format!("{path}:{line}"));
             }
-            out.push(Command { program: program.to_owned(), args });
+            out.push(Command { program: program.to_owned(), args,
+                line_requested: template.contains("{line}") || !template.contains("{path}") });
         }
     }
-    out.push(Command { program: "code".to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")] });
-    out.push(Command { program: "zed".to_owned(), args: vec![format!("{path}:{line}")] });
-    out.push(Command { program: if cfg!(target_os = "macos") { "open" } else { "xdg-open" }.to_owned(), args: vec![path.to_owned()] });
+    out.push(Command { program: "code".to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")], line_requested: true });
+    out.push(Command { program: "zed".to_owned(), args: vec![format!("{path}:{line}")], line_requested: true });
+    out.push(Command { program: if cfg!(target_os = "macos") { "open" } else { "xdg-open" }.to_owned(), args: vec![path.to_owned()], line_requested: false });
     out
 }
 
@@ -103,7 +106,11 @@ impl LaunchOutcome {
 
     pub fn message(&self, path: &str, line: u32) -> String {
         if let Some(command) = self.requested() {
-            format!("Requested {} to open {path}. Check the external editor for line {line} and the result.", command.program)
+            if command.line_requested {
+                format!("Requested {} to open {path} at line {line}. Check the external editor for the result.", command.program)
+            } else {
+                format!("Requested {} to open {path}. The request did not include a line; check the external editor for the result.", command.program)
+            }
         } else {
             let reasons = self.failures().iter().map(|failure|
                 format!("{}: {}", failure.command.program, failure.reason)).collect::<Vec<_>>().join("; ");
@@ -147,7 +154,7 @@ mod tests {
     fn code_first_at_the_line() {
         let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["code"] };
         let outcome = open(&recorder, None, "/w/crates/engine/src/lib.rs", 40);
-        assert_eq!(outcome.requested(), Some(&Command { program: "code".into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()] }));
+        assert_eq!(outcome.requested(), Some(&Command { program: "code".into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()], line_requested: true }));
         assert!(outcome.message("/w/crates/engine/src/lib.rs", 40).starts_with("Requested code"));
     }
 
@@ -168,7 +175,7 @@ mod tests {
         let outcome = open(&fallback, None, "/w/a.rs", 7);
         assert!(matches!(&outcome, LaunchOutcome::Requested { command, failures }
             if command.program == platform && command.args == ["/w/a.rs"] && failures.len() == 2));
-        assert!(!outcome.message("/w/a.rs", 7).contains("/w/a.rs:7"),
+        assert!(outcome.message("/w/a.rs", 7).contains("did not include a line"),
             "the platform opener never received a line argument");
     }
 
@@ -176,10 +183,14 @@ mod tests {
     fn a_configured_editor_goes_first_with_its_own_template() {
         let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["subl"] };
         let outcome = open(&recorder, Some("subl {path}:{line}"), "/w/a.rs", 12);
-        assert_eq!(outcome.requested(), Some(&Command { program: "subl".into(), args: vec!["/w/a.rs:12".into()] }));
+        assert_eq!(outcome.requested(), Some(&Command { program: "subl".into(), args: vec!["/w/a.rs:12".into()], line_requested: true }));
         let bare = commands(Some("vim"), "/w/a.rs", 3);
-        assert_eq!(bare[0], Command { program: "vim".into(), args: vec!["/w/a.rs:3".into()] });
+        assert_eq!(bare[0], Command { program: "vim".into(), args: vec!["/w/a.rs:3".into()], line_requested: true });
         let spaced = commands(Some("subl {path}:{line}"), "/w/my project/a.rs", 3);
         assert_eq!(spaced[0].args, ["/w/my project/a.rs:3"], "a path with a space is one argument");
+        let path_only = Recorder { ran: RefCell::new(Vec::new()), works: vec!["subl"] };
+        let outcome = open(&path_only, Some("subl {path}"), "/w/a.rs", 3);
+        assert!(outcome.message("/w/a.rs", 3).contains("did not include a line"),
+            "a configured path-only template has the same honest result wording");
     }
 }
