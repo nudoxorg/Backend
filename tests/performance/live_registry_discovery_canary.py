@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import http.client
 import json
+import math
 import os
 import platform
 import re
@@ -50,10 +52,38 @@ MAX_CLI_BYTES = 64 * 1024 * 1024
 MAX_DB_DUMP_BYTES = 128 * 1024 * 1024
 MAX_BACKUP_BYTES = 8 * 1024 * 1024 * 1024
 MAX_DATABASE_COUNT = 32
+MAX_WORKSPACE_ENTRIES = 200_000
 MAX_TOTAL_DATABASE_DUMP_BYTES = 1024 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 128 * 1024 * 1024
 MAX_SOURCE_REQUESTS = 160
-MAX_SEARCH_PAGES = 256
+MAX_SEARCH_PAGES = 64
+MAX_CLI_OPERATIONS = 4096
+MAX_OWNER_BATCH_FACTS = 4096
+MAX_SOURCE_HASH_OPERATIONS = 4096 + 4096 + 2 * 256
+MAX_B3_INPUT_BYTES = 32 * 1024 * 1024 + 128
+MAX_B3_TOTAL_SOURCE_BYTES = 256 * 1024 * 1024
+MAX_JOURNAL_TRANSACTIONS = 4096
+MAX_B3_TIMEOUT_SECONDS = 10.0
+MAX_STDERR_BYTES = 4 * 1024 * 1024
+MAX_OWNER_LOG_BYTES = 64 * 1024 * 1024
+MAX_PROCESS_DRAIN_SECONDS = 3.0
+MAX_PROCESS_TIMEOUT_SECONDS = 3600.0
+PROCESS_READ_CHUNK_BYTES = 64 * 1024
+MAX_PROCESS_CENSUS_BYTES = 16 * 1024 * 1024
+MAX_PROCESS_CENSUS_ROWS = 32768
+BUILD_PROCESS_NAMES = (
+    "cargo", "rustc", "rustdoc", "cc", "gcc", "g++", "clang", "clang++",
+    "cc1", "cc1plus", "ld", "lld", "link", "cmake", "make", "ninja",
+    "sccache", "meson", "bazel", "buck2",
+)
+MAX_OWNER_RUNTIME_SECONDS = 3600.0
+MAX_CLI_TIMEOUT_SECONDS = 120.0
+MAX_SOURCE_TIMEOUT_SECONDS = 30.0
+MAX_SOURCE_BUDGET_SECONDS = 300.0
+MAX_INGEST_WAIT_SECONDS = 180.0
+MAX_INGEST_POLL_SECONDS = 10.0
+MAX_CANARY_REPETITIONS = 8
+MAX_NPM_VERSIONS_PER_PACKAGE = 4096
 DISCOVERY_MAGIC = b"DISCOV01"
 DISCOVERY_DOMAIN = b"backend.registry.discovery.transaction.v1\0"
 DEFAULT_FORGE_REPOSITORY = "json-c/json-c"
@@ -123,6 +153,284 @@ def write_json_new(path: Path, value: Any) -> None:
     write_new(path, payload)
 
 
+class BoundedProcessError(RuntimeError):
+    def __init__(self, message: str, receipt: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+
+class BoundedProcess:
+    """Drain a process's two pipes to bounded files inside an owned session."""
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        stdout_path: Path,
+        stderr_path: Path,
+        receipt_path: Path,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
+        timeout_seconds: float,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        input_data: bytes | None = None,
+    ) -> None:
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= MAX_PROCESS_TIMEOUT_SECONDS:
+            raise ValueError("bounded process timeout is outside its finite limit")
+        if max_stdout_bytes < 0 or max_stderr_bytes < 0:
+            raise ValueError("bounded process output limits must be non-negative")
+        self.command = command
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+        self.receipt_path = receipt_path
+        self.maxima = {"stdout": max_stdout_bytes, "stderr": max_stderr_bytes}
+        self.timeout_seconds = timeout_seconds
+        self.started_at_utc = utc_now()
+        self.started_ns = time.perf_counter_ns()
+        self.input_bytes = len(input_data) if input_data is not None else 0
+        self.output_bytes = {"stdout": 0, "stderr": 0}
+        self.stored_bytes = {"stdout": 0, "stderr": 0}
+        self.failure_reason: str | None = None
+        self._lock = threading.Lock()
+        self._finalizing = False
+        self._finished = False
+        self._receipt: dict[str, Any] | None = None
+        for path in (stdout_path, stderr_path, receipt_path):
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.path.lexists(path):
+                raise ValueError(f"bounded process evidence path already exists: {path}")
+        write_new(stdout_path, b"")
+        write_new(stderr_path, b"")
+        try:
+            self.process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except BaseException as error:
+            receipt = {
+                "argv": command,
+                "started_at_utc": self.started_at_utc,
+                "elapsed_ns": time.perf_counter_ns() - self.started_ns,
+                "exit_code": None,
+                "start_error": f"{type(error).__name__}: {error}",
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+            }
+            write_json_new(receipt_path, receipt)
+            raise BoundedProcessError(f"could not start owned process; receipt: {receipt_path}", receipt) from error
+
+        self.pid = self.process.pid
+        self._reader_threads = [
+            threading.Thread(target=self._drain, args=("stdout", self.process.stdout), daemon=True),
+            threading.Thread(target=self._drain, args=("stderr", self.process.stderr), daemon=True),
+        ]
+        for thread in self._reader_threads:
+            thread.start()
+        self._writer_thread: threading.Thread | None = None
+        if input_data is not None:
+            self._writer_thread = threading.Thread(
+                target=self._write_input, args=(input_data,), daemon=True
+            )
+            self._writer_thread.start()
+        self._timer = threading.Timer(timeout_seconds, self._on_timeout)
+        self._timer.daemon = True
+        self._timer.start()
+
+    @property
+    def returncode(self) -> int | None:
+        return self.process.poll()
+
+    def poll(self) -> int | None:
+        return self.process.poll()
+
+    def send_signal(self, signum: int) -> None:
+        if self.process.poll() is not None:
+            return
+        self.process.send_signal(signum)
+
+    def terminate_owned_group(self) -> None:
+        try:
+            os.killpg(self.pid, signal.SIGKILL)
+        except (AttributeError, ProcessLookupError, PermissionError):
+            if self.process.poll() is None:
+                self.process.kill()
+
+    def _fail_and_kill(self, reason: str) -> None:
+        with self._lock:
+            if self._finalizing:
+                return
+            if self.failure_reason is None:
+                self.failure_reason = reason
+        self.terminate_owned_group()
+
+    def _on_timeout(self) -> None:
+        self._fail_and_kill(f"wall-time limit exceeded ({self.timeout_seconds:g}s)")
+
+    def _drain(self, name: str, pipe: Any) -> None:
+        path = self.stdout_path if name == "stdout" else self.stderr_path
+        try:
+            with path.open("ab", buffering=0) as output:
+                while True:
+                    block = pipe.read(PROCESS_READ_CHUNK_BYTES)
+                    if not block:
+                        break
+                    with self._lock:
+                        if self._finalizing:
+                            continue
+                        self.output_bytes[name] += len(block)
+                        remaining = max(0, self.maxima[name] - self.stored_bytes[name])
+                        kept = block[:remaining]
+                        if kept:
+                            output.write(kept)
+                            self.stored_bytes[name] += len(kept)
+                        exceeded = self.output_bytes[name] > self.maxima[name]
+                    if exceeded:
+                        self._fail_and_kill(f"{name} byte limit exceeded ({self.maxima[name]} bytes)")
+        except (OSError, ValueError) as error:
+            self._fail_and_kill(f"failed draining {name}: {error}")
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def _write_input(self, input_data: bytes) -> None:
+        assert self.process.stdin is not None
+        try:
+            view = memoryview(input_data)
+            for offset in range(0, len(view), PROCESS_READ_CHUNK_BYTES):
+                self.process.stdin.write(view[offset : offset + PROCESS_READ_CHUNK_BYTES])
+            self.process.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+
+    def wait(
+        self, timeout: float | None = None, *, force_on_timeout: bool = False
+    ) -> dict[str, Any]:
+        if self._finished:
+            assert self._receipt is not None
+            if self.failure_reason is not None:
+                raise BoundedProcessError(
+                    f"{self.failure_reason}; receipt: {self.receipt_path}", self._receipt
+                )
+            return self._receipt
+        wait_limit = timeout if timeout is not None else self.timeout_seconds + MAX_PROCESS_DRAIN_SECONDS
+        try:
+            self.process.wait(timeout=wait_limit)
+        except subprocess.TimeoutExpired:
+            if timeout is not None and not force_on_timeout:
+                raise
+            self._fail_and_kill("owned process did not exit by its wall-time deadline")
+            try:
+                self.process.wait(timeout=MAX_PROCESS_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                with self._lock:
+                    if self.failure_reason is None:
+                        self.failure_reason = "owned process remained alive after group kill"
+        for thread in self._reader_threads:
+            thread.join(MAX_PROCESS_DRAIN_SECONDS)
+        if self._writer_thread is not None:
+            self._writer_thread.join(MAX_PROCESS_DRAIN_SECONDS)
+        if any(thread.is_alive() for thread in self._reader_threads):
+            self._fail_and_kill("owned child kept an output pipe open after its parent exited")
+            for thread in self._reader_threads:
+                thread.join(MAX_PROCESS_DRAIN_SECONDS)
+        drain_threads_incomplete = any(thread.is_alive() for thread in self._reader_threads)
+        if drain_threads_incomplete:
+            with self._lock:
+                self._finalizing = True
+                if self.failure_reason is None:
+                    self.failure_reason = "output drain did not close before the evidence deadline"
+            for pipe in (self.process.stdout, self.process.stderr):
+                try:
+                    pipe.close()
+                except (AttributeError, OSError):
+                    pass
+            for thread in self._reader_threads:
+                thread.join(0.1)
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            self._fail_and_kill("owned child did not close stdin before the drain deadline")
+            self._writer_thread.join(MAX_PROCESS_DRAIN_SECONDS)
+        self._timer.cancel()
+        with self._lock:
+            receipt = {
+                "argv": self.command,
+                "pid": self.pid,
+                "process_group": self.pid,
+                "isolated_process_group": True,
+                "started_at_utc": self.started_at_utc,
+                "elapsed_ns": time.perf_counter_ns() - self.started_ns,
+                "exit_code": self.process.poll(),
+                "failure_reason": self.failure_reason,
+                "input_bytes": self.input_bytes,
+                "stdout_path": str(self.stdout_path),
+                "stderr_path": str(self.stderr_path),
+                "stdout_bytes_observed": self.output_bytes["stdout"],
+                "stdout_bytes_stored": self.stored_bytes["stdout"],
+                "stdout_limit_bytes": self.maxima["stdout"],
+                "stderr_bytes_observed": self.output_bytes["stderr"],
+                "stderr_bytes_stored": self.stored_bytes["stderr"],
+                "stderr_limit_bytes": self.maxima["stderr"],
+                "drain_threads_stopped": not drain_threads_incomplete,
+                "stdout_sha256": sha256_file(self.stdout_path),
+                "stderr_sha256": sha256_file(self.stderr_path),
+                "receipt_path": str(self.receipt_path),
+            }
+            write_json_new(self.receipt_path, receipt)
+        self._receipt = receipt
+        self._finished = True
+        if self.failure_reason is not None:
+            raise BoundedProcessError(
+                f"{self.failure_reason}; partial output and receipt: {self.receipt_path}", receipt
+            )
+        return receipt
+
+
+def run_bounded_process(
+    command: list[str],
+    *,
+    stdout_path: Path,
+    stderr_path: Path,
+    receipt_path: Path,
+    max_stdout_bytes: int,
+    max_stderr_bytes: int,
+    timeout_seconds: float,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    input_data: bytes | None = None,
+    check: bool = True,
+) -> dict[str, Any]:
+    process = BoundedProcess(
+        command,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        receipt_path=receipt_path,
+        max_stdout_bytes=max_stdout_bytes,
+        max_stderr_bytes=max_stderr_bytes,
+        timeout_seconds=timeout_seconds,
+        cwd=cwd,
+        env=env,
+        input_data=input_data,
+    )
+    receipt = process.wait()
+    if check and receipt["exit_code"] != 0:
+        raise BoundedProcessError(
+            f"process exited {receipt['exit_code']}; receipt: {receipt_path}", receipt
+        )
+    return receipt
+
+
 def executable_snapshot(path: Path) -> dict[str, Any]:
     resolved = path.resolve(strict=True)
     before = resolved.lstat()
@@ -187,16 +495,114 @@ def unsigned_source_sequence(value: Any, label: str) -> int:
     raise ValueError(f"{label} is not a non-negative integer sequence")
 
 
-def b3sum(tool: Path, payload: bytes) -> str:
-    result = subprocess.run(
-        [str(tool), "--no-names", "-"],
-        input=payload,
-        capture_output=True,
-        check=False,
+def parse_osv_query_page(value: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Admit OSV's optional empty `vulns` page and explicit pagination shape."""
+    if not isinstance(value, dict):
+        raise ValueError("OSV response must be an object")
+    if "vulns" in value:
+        vulnerabilities = value["vulns"]
+        if not isinstance(vulnerabilities, list) or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("id"), str)
+            or not row["id"].strip()
+            for row in vulnerabilities
+        ):
+            raise ValueError("OSV vulns field must be a list of records with non-empty IDs")
+    else:
+        vulnerabilities = []
+    token = value.get("next_page_token")
+    if "next_page_token" in value and (not isinstance(token, str) or not token):
+        raise ValueError("OSV next_page_token must be a non-empty string when present")
+    return vulnerabilities, token
+
+
+def discovery_journal_content_signature(summary: dict[str, Any]) -> dict[str, Any]:
+    """Compare journal content while excluding only its workspace-specific path."""
+    return {key: value for key, value in summary.items() if key != "path"}
+
+
+def download_zero_was_not_manufactured(target: dict[str, Any], projected: Any) -> bool:
+    projected_zero = (
+        isinstance(projected, dict)
+        and projected.get("state") == "known"
+        and type(projected.get("value")) is int
+        and projected.get("value") == 0
     )
-    if result.returncode:
-        raise RuntimeError(f"b3sum failed: {result.stderr[-2000:].decode(errors='replace')}")
-    digest = result.stdout.strip().decode("ascii", errors="strict")
+    source_exact_zero = (
+        target.get("downloads_source_state") == "known-count"
+        and target.get("downloads_source_scope") == "per-release"
+        and type(target.get("downloads_source_raw")) is int
+        and target.get("downloads_source_raw") == 0
+    )
+    return not projected_zero or source_exact_zero
+
+
+class HashBudget:
+    def __init__(self, max_operations: int, max_bytes: int) -> None:
+        self.max_operations = max_operations
+        self.max_bytes = max_bytes
+        self.operations = 0
+        self.bytes = 0
+
+    def admit(self, payload: bytes) -> None:
+        if len(payload) > MAX_B3_INPUT_BYTES:
+            raise ValueError(f"one BLAKE3 input exceeds {MAX_B3_INPUT_BYTES} bytes")
+        if self.operations + 1 > self.max_operations or self.bytes + len(payload) > self.max_bytes:
+            raise ValueError("BLAKE3 operation or byte budget exceeded")
+        self.operations += 1
+        self.bytes += len(payload)
+
+
+class CliOperationBudget:
+    """One shared cap for all live and restore CLI subprocesses."""
+
+    def __init__(self, maximum: int) -> None:
+        if type(maximum) is not int or not 1 <= maximum <= MAX_CLI_OPERATIONS:
+            raise ValueError(f"CLI operation budget must be in 1..{MAX_CLI_OPERATIONS}")
+        self.maximum = maximum
+        self.used = 0
+
+    def admit(self, stage: str) -> int:
+        if self.used >= self.maximum:
+            raise ValueError(
+                f"CLI operation budget exhausted before {stage!r}: "
+                f"{self.used}/{self.maximum} commands already started"
+            )
+        self.used += 1
+        return self.used
+
+
+def evidence_stem(label: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "-", label).strip(".-")
+    if not cleaned:
+        raise ValueError("process evidence label must contain a safe filename character")
+    return cleaned[:100]
+
+
+def b3sum(
+    tool: Path,
+    payload: bytes,
+    *,
+    evidence_dir: Path,
+    label: str,
+    budget: HashBudget,
+) -> str:
+    budget.admit(payload)
+    stem = evidence_stem(f"b3-{label}")
+    stdout_path = evidence_dir / f"{stem}.stdout"
+    stderr_path = evidence_dir / f"{stem}.stderr"
+    receipt_path = evidence_dir / f"{stem}.receipt.json"
+    receipt = run_bounded_process(
+        [str(tool), "--no-names", "-"],
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        receipt_path=receipt_path,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=4096,
+        timeout_seconds=MAX_B3_TIMEOUT_SECONDS,
+        input_data=payload,
+    )
+    digest = stdout_path.read_bytes().strip().decode("ascii", errors="strict")
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError(f"b3sum returned an invalid digest: {digest!r}")
     return digest
@@ -210,6 +616,7 @@ class HttpEvidence:
         self.rows: list[dict[str, Any]] = []
         self.total_bytes = 0
         self.request_count = 0
+        self.hash_budget = HashBudget(MAX_SOURCE_HASH_OPERATIONS, MAX_B3_TOTAL_SOURCE_BYTES)
 
     def request(
         self,
@@ -226,6 +633,8 @@ class HttpEvidence:
             raise ValueError("HTTP evidence name must be a short filename-safe token")
         if self.request_count >= MAX_SOURCE_REQUESTS:
             raise ValueError(f"direct source evidence exceeded {MAX_SOURCE_REQUESTS} requests")
+        if type(maximum_bytes) is not int or not 1 <= maximum_bytes <= MAX_TOTAL_SOURCE_BYTES:
+            raise ValueError("HTTP response byte bound must be a positive admitted integer")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("direct public-source evidence exceeded its total time budget")
@@ -249,7 +658,26 @@ class HttpEvidence:
             with urllib.request.urlopen(request, timeout=min(self.timeout_seconds, remaining)) as response:
                 final_url = response.geturl()
                 status = int(response.status)
-                payload = response.read(maximum_bytes + 1)
+                payload_parts = []
+                payload_length = 0
+                while payload_length <= maximum_bytes:
+                    remaining = self.deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("direct public-source evidence exceeded its total time budget")
+                    stream = getattr(response, "fp", None)
+                    raw = getattr(stream, "raw", None)
+                    sock = getattr(raw, "_sock", None)
+                    if sock is not None:
+                        sock.settimeout(min(self.timeout_seconds, remaining))
+                    read_chunk = getattr(response, "read1", response.read)
+                    block = read_chunk(min(PROCESS_READ_CHUNK_BYTES, maximum_bytes + 1 - payload_length))
+                    if not block:
+                        break
+                    payload_parts.append(block)
+                    payload_length += len(block)
+                if time.monotonic() > self.deadline:
+                    raise TimeoutError("direct public-source evidence exceeded its total time budget")
+                payload = b"".join(payload_parts)
                 selected_headers = {
                     key.lower(): response.headers.get(key)
                     for key in (
@@ -258,7 +686,7 @@ class HttpEvidence:
                     )
                     if response.headers.get(key) is not None
                 }
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as error:
             self.rows.append(
                 {
                     "name": name,
@@ -339,6 +767,8 @@ def cargo_input(http: HttpEvidence, b3_tool: Path) -> dict[str, Any]:
         raise ValueError("crates.io recent-updates payload did not match the 16-row source bound")
     packages: dict[str, Any] = {}
     releases: list[dict[str, Any]] = []
+    sparse_pages = []
+    total_release_count = 0
     for ordinal, crate in enumerate(crates):
         if not isinstance(crate, dict) or not isinstance(crate.get("name"), str):
             raise ValueError(f"malformed crates.io recent row {ordinal}")
@@ -347,6 +777,42 @@ def cargo_input(http: HttpEvidence, b3_tool: Path) -> dict[str, Any]:
         sparse = http.request(
             f"cargo-sparse-{ordinal:02d}", index_url, maximum_bytes=MAX_SPARSE_BYTES
         )
+        row_count = sum(1 for line in sparse.splitlines() if line)
+        if row_count == 0:
+            raise ValueError(f"crates.io sparse file contained no release records for {name}")
+        total_release_count += row_count
+        sparse_pages.append((ordinal, crate, name, index_url, sparse, row_count))
+
+    if total_release_count > MAX_OWNER_BATCH_FACTS:
+        packages = {
+            name: {
+                "sparse_url": index_url,
+                "recent_row_sha256": sha256_bytes(canonical_json_bytes(crate)),
+                "source_release_count": row_count,
+                "release_records_decoded": False,
+                "crate_level_downloads_value": crate.get("downloads"),
+                "crate_level_recent_downloads_value": crate.get("recent_downloads"),
+            }
+            for _, crate, name, index_url, _, row_count in sparse_pages
+        }
+        return {
+            "status": "captured",
+            "endpoint": "https://crates.io",
+            "source_request": page_url,
+            "source_window": "first 16 crates ordered by recent-updates; 1 sparse file per name",
+            "completeness": "windowed; mutable recent-updates page, not a global catch-up proof",
+            "package_count": len(packages),
+            "release_count": total_release_count,
+            "owner_batch_fact_count": total_release_count,
+            "owner_batch_fact_limit": MAX_OWNER_BATCH_FACTS,
+            "owner_batch_fact_limit_exceeded": True,
+            "proof_computation_skipped_due_to_owner_batch_limit": True,
+            "packages": packages,
+            "normal_target": None,
+            "yanked_target": None,
+        }
+
+    for ordinal, crate, name, index_url, sparse, _ in sparse_pages:
         package_releases = []
         for raw_line in sparse.splitlines():
             if not raw_line:
@@ -363,7 +829,13 @@ def cargo_input(http: HttpEvidence, b3_tool: Path) -> dict[str, Any]:
                 "name": name,
                 "version": version,
                 "coordinate": package_purl("cargo", name, version),
-                "proof_blake3": b3sum(b3_tool, raw_line),
+                "proof_blake3": b3sum(
+                    b3_tool,
+                    raw_line,
+                    evidence_dir=http.root / "b3-evidence",
+                    label=f"cargo-{ordinal:02d}-release-{len(package_releases):04d}",
+                    budget=http.hash_budget,
+                ),
                 "yanked": yanked,
                 "downloads_source": "not-reported-per-release",
                 "downloads_source_state": "unknown-at-release-granularity",
@@ -398,8 +870,9 @@ def cargo_input(http: HttpEvidence, b3_tool: Path) -> dict[str, Any]:
         "completeness": "windowed; mutable recent-updates page, not a global catch-up proof",
         "package_count": len(packages),
         "release_count": len(releases),
-        "owner_batch_fact_limit": 4096,
-        "owner_batch_fact_limit_exceeded": len(releases) > 4096,
+        "owner_batch_fact_count": len(releases),
+        "owner_batch_fact_limit": MAX_OWNER_BATCH_FACTS,
+        "owner_batch_fact_limit_exceeded": False,
         "packages": packages,
         "normal_target": normal,
         "yanked_target": yanked,
@@ -441,7 +914,7 @@ def npm_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, An
             raise ValueError("npm changes response contained a malformed package row")
         latest[row["id"]] = row
     packages: dict[str, Any] = {}
-    all_releases: list[dict[str, Any]] = []
+    packument_rows: list[tuple[int, str, dict[str, Any], dict[str, Any], list[str]]] = []
     owner_fact_count = 0
     for ordinal, (name, change) in enumerate(sorted(latest.items())):
         if change.get("deleted") is True:
@@ -456,9 +929,52 @@ def npm_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, An
         versions = packument.get("versions") if isinstance(packument, dict) else None
         if not isinstance(versions, dict):
             raise ValueError(f"npm packument omitted versions for {name}")
+        selected_versions = sorted(versions)[:MAX_NPM_VERSIONS_PER_PACKAGE]
+        owner_fact_count += len(selected_versions)
+        change_list = change.get("changes")
+        revision = (
+            change_list[0].get("rev")
+            if isinstance(change_list, list) and change_list and isinstance(change_list[0], dict)
+            else None
+        )
+        packages[name] = {
+            "deleted": False,
+            "sequence": change.get("seq"),
+            "change_revision": revision,
+            "packument_revision": packument.get("_rev"),
+            "release_count": len(selected_versions),
+            "source_release_count": len(versions),
+            "version_window_truncated": len(versions) > MAX_NPM_VERSIONS_PER_PACKAGE,
+        }
+        packument_rows.append((ordinal, name, packument, selected_versions))
+    if owner_fact_count > MAX_OWNER_BATCH_FACTS:
+        return {
+            "status": "captured",
+            "endpoint": "https://replicate.npmjs.com/registry",
+            "packument_endpoint": "https://registry.npmjs.org",
+            "source_request": changes_url,
+            "source_high_watermark": source_high,
+            "page_last_sequence": response_sequence,
+            "pending": pending,
+            "caught_up_through_source_high_watermark": caught_up,
+            "change_row_count": len(rows),
+            "package_count": len(packages),
+            "release_count": owner_fact_count,
+            "owner_batch_fact_limit": MAX_OWNER_BATCH_FACTS,
+            "owner_batch_fact_count": owner_fact_count,
+            "owner_batch_fact_limit_exceeded": True,
+            "proof_computation_skipped_due_to_owner_batch_limit": True,
+            "completeness": "source metadata captured; owner batch refused before release proof computation",
+            "packages": packages,
+            "deprecated_target": None,
+            "version_target": None,
+        }
+
+    all_releases: list[dict[str, Any]] = []
+    for ordinal, name, packument, selected_versions in packument_rows:
+        versions = packument["versions"]
         package_releases = []
-        selected_versions = sorted(versions)[:4096]
-        for version in selected_versions:
+        for version_index, version in enumerate(selected_versions):
             metadata = versions[version]
             if not isinstance(metadata, dict):
                 raise ValueError(f"npm version body is not an object: {name}@{version}")
@@ -468,7 +984,13 @@ def npm_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, An
                 "name": name,
                 "version": version,
                 "coordinate": package_purl("npm", name, version),
-                "proof_blake3": b3sum(b3_tool, canonical_json_bytes(metadata)),
+                "proof_blake3": b3sum(
+                    b3_tool,
+                    canonical_json_bytes(metadata),
+                    evidence_dir=http.root / "b3-evidence",
+                    label=f"npm-{ordinal:03d}-release-{version_index:04d}",
+                    budget=http.hash_budget,
+                ),
                 "deprecated": deprecated if isinstance(deprecated, str) else None,
                 "deprecated_source_state": (
                     "known" if isinstance(deprecated, str)
@@ -481,23 +1003,9 @@ def npm_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, An
             }
             package_releases.append(row)
             all_releases.append(row)
-        change_list = change.get("changes")
-        revision = (
-            change_list[0].get("rev")
-            if isinstance(change_list, list) and change_list and isinstance(change_list[0], dict)
-            else None
+        packages[name]["deprecated_release_count"] = sum(
+            row["deprecated"] is not None for row in package_releases
         )
-        packages[name] = {
-            "deleted": False,
-            "sequence": change.get("seq"),
-            "change_revision": revision,
-            "packument_revision": packument.get("_rev"),
-            "release_count": len(package_releases),
-            "source_release_count": len(versions),
-            "version_window_truncated": len(versions) > 4096,
-            "deprecated_release_count": sum(row["deprecated"] is not None for row in package_releases),
-        }
-        owner_fact_count += len(package_releases)
     return {
         "status": "captured",
         "endpoint": "https://replicate.npmjs.com/registry",
@@ -510,9 +1018,9 @@ def npm_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, An
         "change_row_count": len(rows),
         "package_count": len(packages),
         "release_count": len(all_releases),
-        "owner_batch_fact_limit": 4096,
+        "owner_batch_fact_limit": MAX_OWNER_BATCH_FACTS,
         "owner_batch_fact_count": owner_fact_count,
-        "owner_batch_fact_limit_exceeded": owner_fact_count > 4096,
+        "owner_batch_fact_limit_exceeded": False,
         "completeness": "complete only through the returned cursor; a nonzero pending count or lower cursor means not caught up",
         "packages": packages,
         "deprecated_target": next(
@@ -594,7 +1102,13 @@ def pypi_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, A
                 "source_name": source_name,
                 "version": version,
                 "coordinate": package_purl("pypi", canonical, version),
-                "proof_blake3": b3sum(b3_tool, canonical_json_bytes(files)),
+                "proof_blake3": b3sum(
+                    b3_tool,
+                    canonical_json_bytes(files),
+                    evidence_dir=http.root / "b3-evidence",
+                    label=f"pypi-{ordinal:02d}-release-{len(release_rows):04d}",
+                    budget=http.hash_budget,
+                ),
                 "yanked": pypi_yanked(files),
                 "file_count": len(files),
                 "downloads_source_state": (
@@ -639,9 +1153,9 @@ def pypi_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, A
         "project_count": len(packages),
         "release_count": len(all_releases),
         "source_version_rows_per_project_capped_at": 256,
-        "owner_batch_fact_limit": 4096,
-        "owner_batch_fact_count_within_owner_version_limit": owner_batch_fact_count,
-        "owner_batch_fact_limit_exceeded": owner_batch_fact_count > 4096,
+        "owner_batch_fact_limit": MAX_OWNER_BATCH_FACTS,
+        "owner_batch_fact_count": owner_batch_fact_count,
+        "owner_batch_fact_limit_exceeded": owner_batch_fact_count > MAX_OWNER_BATCH_FACTS,
         "completeness": "windowed; first normalized project names; no global event cursor",
         "packages": packages,
         "normal_target": next((row for row in all_releases if row["yanked"] is False), None),
@@ -670,7 +1184,15 @@ def capture_registry_sources(
     ):
         try:
             sources[ecosystem] = capture()
-        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
             sources[ecosystem] = {
                 "status": "unavailable-or-malformed",
                 "error": str(error),
@@ -729,19 +1251,12 @@ def capture_osv(http: HttpEvidence, targets: list[dict[str, Any]]) -> list[dict[
                     maximum_bytes=MAX_OSV_BYTES,
                 )
                 response = json.loads(payload)
-                page_vulnerabilities = response.get("vulns") if isinstance(response, dict) else None
-                if not isinstance(page_vulnerabilities, list) or any(
-                    not isinstance(row, dict) or not isinstance(row.get("id"), str)
-                    for row in page_vulnerabilities
-                ):
-                    raise ValueError("OSV response omitted a well-formed vulns list")
+                page_vulnerabilities, next_page_token = parse_osv_query_page(response)
                 vulnerabilities.extend(page_vulnerabilities)
                 page_count += 1
-                page_token = response.get("next_page_token")
+                page_token = next_page_token
                 if page_token is None:
                     break
-                if not isinstance(page_token, str) or not page_token:
-                    raise ValueError("OSV response returned a malformed page token")
             output.append(
                 {
                     "coordinate": coordinate,
@@ -757,7 +1272,15 @@ def capture_osv(http: HttpEvidence, targets: list[dict[str, Any]]) -> list[dict[
                     "scope": "independent point query; not the local feed's coverage or freshness",
                 }
             )
-        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
             output.append(
                 {
                     "coordinate": coordinate,
@@ -824,35 +1347,30 @@ def github_tag_pin(
 def bounded_stdout(
     command: list[str], output: Path, stderr_path: Path, maximum: int, timeout: float
 ) -> dict[str, Any]:
-    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    stderr_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    timer_fired = threading.Event()
-    with output.open("xb") as stdout, stderr_path.open("xb") as stderr:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr)
-        timer = threading.Timer(timeout, lambda: (timer_fired.set(), process.kill()))
-        timer.daemon = True
-        timer.start()
-        written = 0
-        try:
-            assert process.stdout is not None
-            for block in iter(lambda: process.stdout.read(1024 * 1024), b""):
-                written += len(block)
-                if written > maximum:
-                    process.kill()
-                    raise ValueError(f"command output exceeded its {maximum}-byte limit")
-                stdout.write(block)
-            status = process.wait()
-        finally:
-            timer.cancel()
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-    if timer_fired.is_set():
-        raise TimeoutError(f"command exceeded {timeout} seconds: {command[0]}")
-    if status:
-        detail = stderr_path.read_bytes()[-4000:].decode(errors="replace")
-        raise RuntimeError(f"command exited {status}: {command[0]}: {detail}")
-    return {"bytes": written, "sha256": sha256_file(output), "exit_code": status}
+    receipt_path = output.with_name(output.name + ".process.json")
+    receipt = run_bounded_process(
+        command,
+        stdout_path=output,
+        stderr_path=stderr_path,
+        receipt_path=receipt_path,
+        max_stdout_bytes=maximum,
+        max_stderr_bytes=MAX_STDERR_BYTES,
+        timeout_seconds=timeout,
+        check=False,
+    )
+    if receipt["exit_code"]:
+        detail = read_regular_file(stderr_path, MAX_STDERR_BYTES, "bounded command stderr")[-4000:]
+        raise RuntimeError(
+            f"command exited {receipt['exit_code']}: {command[0]}: {detail.decode(errors='replace')}; "
+            f"receipt: {receipt_path}"
+        )
+    return {
+        "bytes": receipt["stdout_bytes_stored"],
+        "sha256": receipt["stdout_sha256"],
+        "exit_code": receipt["exit_code"],
+        "stderr_path": str(stderr_path),
+        "process_receipt_path": str(receipt_path),
+    }
 
 
 def turso_command(
@@ -860,26 +1378,41 @@ def turso_command(
     database: Path,
     arguments: list[str],
     *,
+    evidence_dir: Path,
+    label: str,
     timeout_seconds: float,
     maximum_bytes: int = 64 * 1024 * 1024,
 ) -> bytes:
     command = [str(tool), "-m", "list", "--experimental-multiprocess-wal", str(database)] + arguments
-    result = subprocess.run(command, capture_output=True, timeout=timeout_seconds, check=False)
-    if result.returncode:
+    stem = evidence_stem(f"turso-{label}")
+    stdout_path = evidence_dir / f"{stem}.stdout"
+    stderr_path = evidence_dir / f"{stem}.stderr"
+    receipt_path = evidence_dir / f"{stem}.process.json"
+    receipt = run_bounded_process(
+        command,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        receipt_path=receipt_path,
+        max_stdout_bytes=maximum_bytes,
+        max_stderr_bytes=MAX_STDERR_BYTES,
+        timeout_seconds=timeout_seconds,
+        check=False,
+    )
+    if receipt["exit_code"]:
         raise RuntimeError(
-            f"tursodb failed ({result.returncode}) for {database}: "
-            f"{result.stderr[-3000:].decode(errors='replace')}"
+            f"tursodb failed ({receipt['exit_code']}) for {database}: "
+            f"{read_regular_file(stderr_path, MAX_STDERR_BYTES, 'tursodb stderr')[-3000:].decode(errors='replace')}; "
+            f"receipt: {receipt_path}"
         )
-    if len(result.stdout) > maximum_bytes:
-        raise ValueError(f"tursodb output exceeded {maximum_bytes} bytes for {database}")
-    return result.stdout
+    return read_regular_file(stdout_path, maximum_bytes, "tursodb stdout")
 
 
 def database_signature(
     tool: Path, database: Path, evidence_dir: Path, label: str, timeout_seconds: float
 ) -> dict[str, Any]:
     integrity = turso_command(
-        tool, database, ["PRAGMA integrity_check;"], timeout_seconds=timeout_seconds
+        tool, database, ["PRAGMA integrity_check;"], evidence_dir=evidence_dir,
+        label=f"{label}-integrity", timeout_seconds=timeout_seconds
     ).decode(errors="replace").strip()
     if integrity != "ok":
         raise ValueError(f"PRAGMA integrity_check failed for {database}: {integrity[:1000]}")
@@ -890,6 +1423,8 @@ def database_signature(
             "SELECT type||'|'||name||'|'||tbl_name FROM sqlite_master "
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name;"
         ],
+        evidence_dir=evidence_dir,
+        label=f"{label}-schema",
         timeout_seconds=timeout_seconds,
     )
     dump_path = evidence_dir / f"{label}.dump.sql"
@@ -936,7 +1471,13 @@ def is_turso_sidecar(relative: Path, database_paths: set[Path]) -> bool:
 def workspace_inventory(root: Path, database_paths: set[Path]) -> dict[str, Any]:
     rows = []
     total = 0
-    for path in sorted(root.rglob("*")):
+    visited = 0
+    for path in root.rglob("*"):
+        visited += 1
+        if visited > MAX_WORKSPACE_ENTRIES:
+            raise ValueError(
+                f"workspace closure exceeded {MAX_WORKSPACE_ENTRIES} files and directories"
+            )
         relative = path.relative_to(root)
         metadata = path.lstat()
         if stat.S_ISLNK(metadata.st_mode):
@@ -948,6 +1489,8 @@ def workspace_inventory(root: Path, database_paths: set[Path]) -> dict[str, Any]
             raise ValueError(f"workspace backup closure has a non-regular or linked file: {relative}")
         if relative in database_paths or is_turso_sidecar(relative, database_paths):
             continue
+        if total + metadata.st_size > MAX_BACKUP_BYTES:
+            raise ValueError(f"non-Turso workspace files exceeded the {MAX_BACKUP_BYTES}-byte bound")
         digest = sha256_file(path)
         after = path.lstat()
         if (metadata.st_dev, metadata.st_ino, metadata.st_size) != (
@@ -957,8 +1500,6 @@ def workspace_inventory(root: Path, database_paths: set[Path]) -> dict[str, Any]
         ):
             raise ValueError(f"workspace file changed while inventorying: {relative}")
         total += after.st_size
-        if total > MAX_BACKUP_BYTES:
-            raise ValueError(f"non-Turso workspace files exceeded the {MAX_BACKUP_BYTES}-byte bound")
         rows.append(
             {
                 "path": relative.as_posix(),
@@ -968,6 +1509,7 @@ def workspace_inventory(root: Path, database_paths: set[Path]) -> dict[str, Any]
                 "sha256": digest,
             }
         )
+    rows.sort(key=lambda row: row["path"])
     return {"entries": rows, "file_bytes": total, "entry_count": len(rows)}
 
 
@@ -1032,16 +1574,16 @@ def copy_non_database_tree(source: Path, target: Path, database_paths: set[Path]
 
 def database_paths(root: Path) -> list[Path]:
     result = []
-    for path in sorted(root.rglob("*.turso")):
+    for path in root.rglob("*.turso"):
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ValueError(f"Turso database is not a single-link regular file: {path}")
         result.append(path.relative_to(root))
+        if len(result) > MAX_DATABASE_COUNT:
+            raise ValueError(f"owner workspace exceeded the {MAX_DATABASE_COUNT}-database backup bound")
     if not result:
         raise ValueError("fresh owner workspace has no Turso database to back up")
-    if len(result) > MAX_DATABASE_COUNT:
-        raise ValueError(f"owner workspace exceeded the {MAX_DATABASE_COUNT}-database backup bound")
-    return result
+    return sorted(result)
 
 
 def file_set_digest(inventory: dict[str, Any]) -> str:
@@ -1071,7 +1613,9 @@ def inventory_breakdown(inventory: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def parse_discovery_journal(path: Path, b3_tool: Path) -> dict[str, Any]:
+def parse_discovery_journal(
+    path: Path, b3_tool: Path, *, evidence_dir: Path, label: str
+) -> dict[str, Any]:
     if not path.exists():
         return {"path": str(path), "exists": False, "bytes": 0, "transaction_count": 0, "facts": 0}
     metadata = path.lstat()
@@ -1081,8 +1625,16 @@ def parse_discovery_journal(path: Path, b3_tool: Path) -> dict[str, Any]:
         raise ValueError("discovery journal exceeded its 1 GiB scan bound")
     transactions = []
     offset = 0
+    hash_budget = HashBudget(
+        MAX_JOURNAL_TRANSACTIONS,
+        MAX_JOURNAL_BYTES + MAX_JOURNAL_TRANSACTIONS * len(DISCOVERY_DOMAIN),
+    )
     with path.open("rb") as stream:
         while offset < metadata.st_size:
+            if len(transactions) >= MAX_JOURNAL_TRANSACTIONS:
+                raise ValueError(
+                    f"discovery journal exceeded the {MAX_JOURNAL_TRANSACTIONS}-transaction bound"
+                )
             header = stream.read(14)
             if len(header) != 14 or header[:8] != DISCOVERY_MAGIC:
                 raise ValueError(f"invalid or truncated discovery journal header at byte {offset}")
@@ -1094,7 +1646,13 @@ def parse_discovery_journal(path: Path, b3_tool: Path) -> dict[str, Any]:
             checksum = stream.read(32)
             if len(payload) != length or len(checksum) != 32:
                 raise ValueError(f"truncated discovery journal transaction at byte {offset}")
-            if b3sum(b3_tool, DISCOVERY_DOMAIN + payload) != checksum.hex():
+            if b3sum(
+                b3_tool,
+                DISCOVERY_DOMAIN + payload,
+                evidence_dir=evidence_dir,
+                label=f"{label}-offset-{offset:012d}",
+                budget=hash_budget,
+            ) != checksum.hex():
                 raise ValueError(f"discovery journal checksum mismatch at byte {offset}")
             transaction = json.loads(payload)
             batch = transaction.get("batch") if isinstance(transaction, dict) else None
@@ -1115,6 +1673,13 @@ def parse_discovery_journal(path: Path, b3_tool: Path) -> dict[str, Any]:
                 }
             )
             offset += 14 + length + 32
+    after = path.lstat()
+    if (metadata.st_dev, metadata.st_ino, metadata.st_size) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+    ) or not stat.S_ISREG(after.st_mode) or after.st_nlink != 1:
+        raise ValueError(f"discovery journal changed during its bounded scan: {path}")
     return {
         "path": str(path),
         "exists": True,
@@ -1126,8 +1691,8 @@ def parse_discovery_journal(path: Path, b3_tool: Path) -> dict[str, Any]:
     }
 
 
-def process_tree(pid: int) -> list[dict[str, Any]]:
-    rows: dict[int, tuple[int, str]] = {}
+def process_tree(pid: int, *, evidence_dir: Path, label: str) -> list[dict[str, Any]]:
+    rows: dict[int, dict[str, Any]] = {}
     proc = Path("/proc")
     if proc.is_dir():
         for path in proc.glob("[0-9]*/stat"):
@@ -1136,71 +1701,204 @@ def process_tree(pid: int) -> list[dict[str, Any]]:
                 close = content.rfind(")")
                 child_pid = int(content[: content.index(" ")])
                 fields = content[close + 2 :].split()
-                rows[child_pid] = (int(fields[1]), content[content.index("(") + 1 : close])
+                process_dir = path.parent
+                try:
+                    executable = os.readlink(process_dir / "exe")
+                except OSError:
+                    executable = None
+                try:
+                    with (process_dir / "cmdline").open("rb") as stream:
+                        raw_argv = stream.read(4097)
+                    argv = [
+                        part.decode("utf-8", errors="replace")
+                        for part in raw_argv.split(b"\0")
+                        if part
+                    ]
+                    argv_truncated = len(raw_argv) > 4096
+                    argv = argv[:128]
+                except OSError:
+                    argv, argv_truncated = [], False
+                if len(rows) >= MAX_PROCESS_CENSUS_ROWS:
+                    raise RuntimeError(
+                        f"host process table exceeded {MAX_PROCESS_CENSUS_ROWS} census rows"
+                    )
+                rows[child_pid] = {
+                    "ppid": int(fields[1]),
+                    "command": content[content.index("(") + 1 : close],
+                    "executable": executable,
+                    "argv0": argv[0] if argv else None,
+                    "argv": argv,
+                    "argv_truncated": argv_truncated,
+                }
             except (OSError, ValueError, IndexError):
                 continue
     else:
         command = "/bin/ps" if Path("/bin/ps").exists() else "ps"
-        result = subprocess.run(
+        stem = evidence_stem(f"process-tree-{label}")
+        stdout_path = evidence_dir / f"{stem}.stdout"
+        stderr_path = evidence_dir / f"{stem}.stderr"
+        receipt_path = evidence_dir / f"{stem}.process.json"
+        receipt = run_bounded_process(
             [command, "-axo", "pid=,ppid=,command="],
-            text=True,
-            capture_output=True,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            receipt_path=receipt_path,
+            max_stdout_bytes=MAX_PROCESS_CENSUS_BYTES,
+            max_stderr_bytes=MAX_STDERR_BYTES,
+            timeout_seconds=MAX_PROCESS_DRAIN_SECONDS,
             check=False,
         )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
+        if receipt["exit_code"] == 0:
+            stdout = read_regular_file(stdout_path, MAX_PROCESS_CENSUS_BYTES, "process census stdout")
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
                 pieces = line.strip().split(None, 2)
                 if len(pieces) == 3:
                     try:
-                        rows[int(pieces[0])] = (int(pieces[1]), pieces[2])
+                        command_text = pieces[2]
+                        argv0 = command_text.split(None, 1)[0] if command_text else ""
+                        if len(rows) >= MAX_PROCESS_CENSUS_ROWS:
+                            raise RuntimeError(
+                                f"host process table exceeded {MAX_PROCESS_CENSUS_ROWS} census rows"
+                            )
+                        rows[int(pieces[0])] = {
+                            "ppid": int(pieces[1]),
+                            "command": command_text,
+                            "executable": argv0,
+                            "argv0": argv0,
+                            "argv": [],
+                            "argv_truncated": True,
+                        }
                     except ValueError:
                         pass
+        else:
+            raise RuntimeError(f"bounded process census failed; receipt: {receipt_path}")
     descendants = {pid}
     changed = True
     while changed:
         changed = False
-        for child, (parent, _) in rows.items():
-            if parent in descendants and child not in descendants:
+        for child, row in rows.items():
+            if row["ppid"] in descendants and child not in descendants:
                 descendants.add(child)
                 changed = True
     return [
         {
             "pid": child,
-            "ppid": rows.get(child, (None, ""))[0],
-            "command": rows.get(child, (None, "unknown"))[1],
+            **rows.get(
+                child,
+                {
+                    "ppid": None,
+                    "command": "unknown",
+                    "executable": None,
+                    "argv0": None,
+                    "argv": [],
+                    "argv_truncated": False,
+                },
+            ),
         }
         for child in sorted(descendants)
     ]
 
 
-def assert_no_build_children(pid: int, stage: str) -> list[dict[str, Any]]:
-    rows = process_tree(pid)
+def assert_no_build_children(pid: int, stage: str, evidence_dir: Path) -> dict[str, Any]:
+    rows = process_tree(pid, evidence_dir=evidence_dir, label=stage)
+    expected_names = set(BUILD_PROCESS_NAMES)
+    def process_name(row: dict[str, Any], field: str) -> str | None:
+        value = row.get(field)
+        if not isinstance(value, str) or not value:
+            return None
+        return Path(value.split(None, 1)[0]).name.lower()
+
     offenders = [
         row for row in rows
-        if re.search(r"(^|[/ ])(cargo|rustc)([ /]|$)", row["command"], re.IGNORECASE)
+        if any(
+            process_name(row, field) in expected_names
+            for field in ("executable", "argv0", "command")
+        )
     ]
     if offenders:
-        raise RuntimeError(f"Cargo/rustc process observed during {stage}: {offenders!r}")
-    return rows
+        raise RuntimeError(f"build-tool process observed during {stage}: {offenders!r}")
+    return {
+        "stage": stage,
+        "observed_at_utc": utc_now(),
+        "root_pid": pid,
+        "processes": rows,
+        "recognized_build_process_names": sorted(expected_names),
+        "build_processes_observed": [],
+        "scope": "one point-in-time descendant snapshot; not continuous monitoring and not a historical job census",
+    }
 
 
 def process_rss_bytes(pid: int) -> int | None:
+    if platform.system() == "Linux":
+        status = Path(f"/proc/{pid}/status")
+        try:
+            with status.open("rb") as stream:
+                payload = stream.read(65537)
+        except OSError:
+            return None
+        if len(payload) > 65536:
+            return None
+        for line in payload.splitlines():
+            if line.startswith(b"VmRSS:"):
+                pieces = line.split()
+                if len(pieces) >= 2 and pieces[1].isdigit():
+                    return int(pieces[1]) * 1024
+        return None
     commands = (
         [["/bin/ps", "-o", "rss=", "-p", str(pid)], ["ps", "-o", "rss=", "-p", str(pid)]]
         if platform.system() == "Darwin"
         else [["ps", "-o", "rss=", "-p", str(pid)]]
     )
     for command in commands:
+        process: subprocess.Popen[bytes] | None = None
+        timer: threading.Timer | None = None
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
-        except OSError:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            timer = threading.Timer(1.0, kill_process_if_running, args=(process,))
+            timer.daemon = True
+            timer.start()
+            assert process.stdout is not None
+            raw = process.stdout.read(65)
+            if len(raw) > 64:
+                kill_process_group_if_present(process.pid)
+            status = process.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired, ProcessLookupError):
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=1.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             continue
-        if result.returncode == 0 and result.stdout.strip():
+        finally:
+            if timer is not None:
+                timer.cancel()
+            if process is not None and process.stdout is not None:
+                process.stdout.close()
+        if status == 0 and len(raw) <= 64 and raw.strip():
             try:
-                return int(result.stdout.strip().splitlines()[-1]) * 1024
+                return int(raw.decode("ascii").strip().splitlines()[-1]) * 1024
             except ValueError:
                 continue
     return None
+
+
+def kill_process_group_if_present(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (AttributeError, ProcessLookupError, PermissionError):
+        pass
+
+
+def kill_process_if_running(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        kill_process_group_if_present(process.pid)
 
 
 class RssSampler:
@@ -1293,6 +1991,7 @@ class CliRunner:
         home: Path,
         output: Path,
         timeout_seconds: float,
+        operation_budget: CliOperationBudget,
     ) -> None:
         self.cli = cli
         self.project = project
@@ -1301,12 +2000,14 @@ class CliRunner:
         self.home = home
         self.output = output
         self.timeout_seconds = timeout_seconds
+        self.operation_budget = operation_budget
         self.ordinal = 0
         self.owner_pid: int | None = None
 
     def run(self, words: list[str], stage: str, limit: int | None = None) -> tuple[dict[str, Any], int, Path]:
         self.ordinal += 1
         stem = f"{self.ordinal:05d}-{re.sub(r'[^a-zA-Z0-9_.-]', '-', stage)[:48]}"
+        operation_number = self.operation_budget.admit(stage)
         argv = [
             str(self.cli), "--json", "--detail", "full",
             "--project", str(self.project), "--workspace", str(self.workspace),
@@ -1317,37 +2018,46 @@ class CliRunner:
         argv.extend(words)
         before_io = process_io(self.owner_pid) if self.owner_pid is not None else None
         started = time.perf_counter_ns()
-        completed = subprocess.run(
+        stdout_path = self.output / f"{stem}.stdout"
+        stderr_path = self.output / f"{stem}.stderr"
+        process_receipt_path = self.output / f"{stem}.process.json"
+        completed = run_bounded_process(
             argv,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            receipt_path=process_receipt_path,
+            max_stdout_bytes=MAX_CLI_BYTES,
+            max_stderr_bytes=MAX_STDERR_BYTES,
+            timeout_seconds=self.timeout_seconds,
             cwd=self.project,
             env=minimal_environment(self.home, self.endpoint),
-            capture_output=True,
-            timeout=self.timeout_seconds,
             check=False,
         )
         elapsed = time.perf_counter_ns() - started
-        if len(completed.stdout) > MAX_CLI_BYTES or len(completed.stderr) > 4 * 1024 * 1024:
-            raise ValueError(f"CLI response exceeded its evidence bound at {stage}")
-        stdout_path = self.output / f"{stem}.stdout"
-        write_new(stdout_path, completed.stdout)
-        if completed.stderr:
-            write_new(self.output / f"{stem}.stderr", completed.stderr)
-        if completed.returncode:
+        stdout_bytes = read_regular_file(stdout_path, MAX_CLI_BYTES, f"CLI stdout at {stage}")
+        stderr_bytes = read_regular_file(stderr_path, MAX_STDERR_BYTES, f"CLI stderr at {stage}")
+        if completed["exit_code"]:
             raise RuntimeError(
-                f"CLI {words[0]} failed ({completed.returncode}); output: {stdout_path}; "
-                f"stderr={completed.stderr[-2000:].decode(errors='replace')}"
+                f"CLI {words[0]} failed ({completed['exit_code']}); output: {stdout_path}; "
+                f"receipt: {process_receipt_path}; "
+                f"stderr={stderr_bytes[-2000:].decode(errors='replace')}"
             )
-        response = json.loads(completed.stdout)
+        response = json.loads(stdout_bytes)
         if not isinstance(response, dict):
             raise ValueError(f"CLI returned a non-object JSON response at {stage}")
         write_json_new(
             self.output / f"{stem}.result.json",
             {
                 "argv": argv,
+                "operation_number": operation_number,
+                "operation_limit": self.operation_budget.maximum,
                 "elapsed_ns": elapsed,
                 "stdout_path": str(stdout_path),
-                "stdout_bytes": len(completed.stdout),
-                "stdout_sha256": sha256_bytes(completed.stdout),
+                "stdout_bytes": len(stdout_bytes),
+                "stdout_sha256": sha256_bytes(stdout_bytes),
+                "stderr_path": str(stderr_path),
+                "stderr_bytes": len(stderr_bytes),
+                "process_receipt_path": str(process_receipt_path),
                 "owner_process_io_delta": (
                     io_delta(before_io, process_io(self.owner_pid))
                     if self.owner_pid is not None else None
@@ -1525,16 +2235,6 @@ def match_target(target: dict[str, Any], result: dict[str, Any]) -> dict[str, An
         expected_standing = "yanked"
     elif target.get("ecosystem") == "npm" or target.get("yanked") is False:
         expected_standing = "published"
-    projected_zero = (
-        isinstance(downloads, dict)
-        and downloads.get("state") == "known"
-        and downloads.get("value") == 0
-    )
-    source_exact_zero = (
-        target.get("downloads_source_state") == "known-count"
-        and target.get("downloads_source_scope") == "per-release"
-        and target.get("downloads_source_raw") == 0
-    )
     return {
         "coordinate": coordinate,
         "ecosystem": target["ecosystem"],
@@ -1560,7 +2260,7 @@ def match_target(target: dict[str, Any], result: dict[str, Any]) -> dict[str, An
         ),
         "projected_downloads_state": facet_state(downloads),
         "projected_downloads_value": downloads.get("value") if isinstance(downloads, dict) else None,
-        "download_zero_was_not_manufactured": not projected_zero or source_exact_zero,
+        "download_zero_was_not_manufactured": download_zero_was_not_manufactured(target, downloads),
         "projected_advisories_state": facet_state(advisories),
         "source_advisories_state": target.get("advisories_source_state"),
         "source_advisories_count": target.get("advisories_source_count"),
@@ -1618,7 +2318,7 @@ def normalize_search_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def wait_ready(locald: subprocess.Popen[bytes], cli: CliRunner, timeout_seconds: float) -> tuple[int, dict[str, Any]]:
+def wait_ready(locald: BoundedProcess, cli: CliRunner, timeout_seconds: float) -> tuple[int, dict[str, Any]]:
     started = time.perf_counter_ns()
     deadline = time.monotonic() + timeout_seconds
     last_error = ""
@@ -1636,14 +2336,20 @@ def wait_ready(locald: subprocess.Popen[bytes], cli: CliRunner, timeout_seconds:
     raise TimeoutError(f"backend-locald was not ready before deadline: {last_error}")
 
 
-def stop_owner(locald: subprocess.Popen[bytes]) -> int:
+def stop_owner(locald: BoundedProcess) -> int:
     if locald.poll() is None:
         locald.send_signal(signal.SIGTERM)
         try:
-            return locald.wait(timeout=60)
+            receipt = locald.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            locald.kill()
-    return locald.wait(timeout=10)
+            locald._fail_and_kill("owner did not stop after SIGTERM within the 60-second grace")
+            receipt = locald.wait(timeout=10, force_on_timeout=True)
+    else:
+        receipt = locald.wait(timeout=10)
+    exit_code = receipt["exit_code"]
+    if type(exit_code) is not int:
+        raise RuntimeError(f"owned backend process has no final exit code; receipt: {locald.receipt_path}")
+    return exit_code
 
 
 def owner_command(
@@ -1673,20 +2379,34 @@ def owner_command(
 
 
 def start_owner(
-    command: list[str], project: Path, home: Path, endpoint: Path, log_path: Path
-) -> tuple[subprocess.Popen[bytes], RssSampler, Any]:
-    log = log_path.open("xb")
-    process = subprocess.Popen(
+    command: list[str],
+    project: Path,
+    home: Path,
+    endpoint: Path,
+    log_path: Path,
+    runtime_seconds: float,
+) -> tuple[BoundedProcess, RssSampler, dict[str, Path]]:
+    stdout_path = log_path.with_name(log_path.stem + ".stdout.log")
+    stderr_path = log_path.with_name(log_path.stem + ".stderr.log")
+    receipt_path = log_path.with_name(log_path.stem + ".process.json")
+    process = BoundedProcess(
         command,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        receipt_path=receipt_path,
+        max_stdout_bytes=MAX_OWNER_LOG_BYTES // 2,
+        max_stderr_bytes=MAX_OWNER_LOG_BYTES // 2,
+        timeout_seconds=runtime_seconds,
         cwd=project,
         env=minimal_environment(home, endpoint),
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
     )
     sampler = RssSampler(process.pid)
     sampler.start()
-    return process, sampler, log
+    return process, sampler, {
+        "stdout": stdout_path,
+        "stderr": stderr_path,
+        "receipt": receipt_path,
+    }
 
 
 def pick_queries(targets: list[dict[str, Any]]) -> list[str]:
@@ -1762,7 +2482,7 @@ def create_consistent_backup(
     backup_root: Path,
     tursodb: Path,
     b3_tool: Path,
-    locald: subprocess.Popen[bytes],
+    locald: BoundedProcess,
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """Copy immutable non-DB state and VACUUM every Turso DB before stopping owner.
@@ -1801,7 +2521,14 @@ def create_consistent_backup(
         quoted = str(snapshot).replace("'", "''")
         write_new(sql_path, f"VACUUM INTO '{quoted}';\n".encode())
         sql = f"VACUUM INTO '{quoted}';"
-        turso_command(tursodb, source_db, [sql], timeout_seconds=timeout_seconds)
+        turso_command(
+            tursodb,
+            source_db,
+            [sql],
+            evidence_dir=backup_root / "turso-process-evidence",
+            label=f"vacuum-{ordinal:03d}",
+            timeout_seconds=timeout_seconds,
+        )
         if not snapshot.is_file() or snapshot.is_symlink():
             raise ValueError(f"VACUUM INTO did not create a regular snapshot for {relative}")
         shutil.copy2(snapshot, tree / relative)
@@ -1860,12 +2587,22 @@ def create_consistent_backup(
     if copied_after != copied_inventory:
         raise ValueError("Turso validation changed or added a copied non-DB file")
     source_discovery = parse_discovery_journal(
-        workspace / "registry-discovery" / "catalog.journal", b3_tool
+        workspace / "registry-discovery" / "catalog.journal",
+        b3_tool,
+        evidence_dir=backup_root / "journal-hash-evidence",
+        label="source-after-stop",
     )
     backup_discovery = parse_discovery_journal(
-        tree / "registry-discovery" / "catalog.journal", b3_tool
+        tree / "registry-discovery" / "catalog.journal",
+        b3_tool,
+        evidence_dir=backup_root / "journal-hash-evidence",
+        label="backup-copy",
     )
-    if source_discovery != backup_discovery:
+    journal_content_parity = (
+        discovery_journal_content_signature(source_discovery)
+        == discovery_journal_content_signature(backup_discovery)
+    )
+    if not journal_content_parity:
         raise ValueError("discovery journal differs between stopped owner and backup copy")
     copied_main_bytes = sum((tree / relative).stat().st_size for relative in relative_databases)
     snapshot_bytes = sum(row["vacuum_snapshot_bytes"] for row in database_results)
@@ -1891,6 +2628,7 @@ def create_consistent_backup(
         "backup_logical_signatures": backup_signatures,
         "discovery_journal_source": source_discovery,
         "discovery_journal_backup": backup_discovery,
+        "discovery_journal_content_parity_ignoring_location_only": journal_content_parity,
         "registry_and_cas_closure": "all regular non-Turso files under the private workspace copied and SHA-256 verified",
         "closure_valid": True,
     }
@@ -1915,6 +2653,31 @@ def validate_workspace_copy(source_tree: Path, restore_tree: Path, db_paths: set
             raise ValueError(f"restore workspace Turso file differs from backup: {relative}")
 
 
+def bounded_git_output(repository: Path, evidence_dir: Path, label: str, words: list[str]) -> bytes:
+    stem = evidence_stem(f"git-{label}")
+    stdout_path = evidence_dir / f"{stem}.stdout"
+    stderr_path = evidence_dir / f"{stem}.stderr"
+    receipt_path = evidence_dir / f"{stem}.process.json"
+    receipt = run_bounded_process(
+        ["git", *words],
+        cwd=repository,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        receipt_path=receipt_path,
+        max_stdout_bytes=MAX_PROCESS_CENSUS_BYTES,
+        max_stderr_bytes=MAX_STDERR_BYTES,
+        timeout_seconds=30.0,
+        check=False,
+    )
+    if receipt["exit_code"] != 0:
+        detail = read_regular_file(stderr_path, MAX_STDERR_BYTES, "git stderr")[-3000:]
+        raise RuntimeError(
+            f"bounded git command failed ({receipt['exit_code']}): {words!r}: "
+            f"{detail.decode(errors='replace')}; receipt: {receipt_path}"
+        )
+    return read_regular_file(stdout_path, MAX_PROCESS_CENSUS_BYTES, "git stdout")
+
+
 def source_availability(sources: dict[str, Any]) -> dict[str, Any]:
     return {
         ecosystem: {
@@ -1931,6 +2694,7 @@ def source_availability(sources: dict[str, Any]) -> dict[str, Any]:
 def verify_frozen_inputs(
     *,
     repository: Path,
+    evidence_dir: Path,
     paths: dict[str, tuple[Path, bytes, int]],
     executables: dict[str, tuple[Path, dict[str, Any]]],
     stage: str,
@@ -1942,23 +2706,21 @@ def verify_frozen_inputs(
     for label, (path, expected) in executables.items():
         if executable_snapshot(path) != expected:
             raise ValueError(f"{label} binary changed {stage}: {path}")
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repository, text=True, capture_output=True, check=False
+    suffix = re.sub(r"[^A-Za-z0-9_.-]", "-", stage)[:48]
+    revision = bounded_git_output(repository, evidence_dir, f"revision-{suffix}", ["rev-parse", "HEAD"])
+    status = bounded_git_output(
+        repository,
+        evidence_dir,
+        f"status-{suffix}",
+        ["status", "--porcelain", "--untracked-files=all"],
     )
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=repository,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if revision.returncode or revision.stdout.strip() != source_commit:
+    if revision.decode("ascii", errors="replace").strip() != source_commit:
         raise ValueError(f"source revision changed {stage}")
-    if status.returncode or status.stdout.strip():
+    if status.strip():
         raise ValueError(f"source tree is not clean {stage}")
 
 
-def prepare_frozen_inputs(args: argparse.Namespace) -> dict[str, Any]:
+def prepare_frozen_inputs(args: argparse.Namespace, evidence_dir: Path) -> dict[str, Any]:
     script = Path(__file__).resolve(strict=True)
     repository = script.parents[2]
     locald = args.locald.resolve(strict=True)
@@ -1985,16 +2747,15 @@ def prepare_frozen_inputs(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("build manifest must identify a clean source commit")
     if not isinstance(executables_manifest, dict):
         raise ValueError("build manifest has no executable map")
-    git_revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repository, text=True, capture_output=True, check=True
-    ).stdout.strip()
-    git_status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=repository,
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
+    git_revision = bounded_git_output(
+        repository, evidence_dir, "prepare-revision", ["rev-parse", "HEAD"]
+    ).decode("ascii", errors="replace").strip()
+    git_status = bounded_git_output(
+        repository,
+        evidence_dir,
+        "prepare-status",
+        ["status", "--porcelain", "--untracked-files=all"],
+    ).decode("utf-8", errors="replace").strip()
     if git_revision != source["commit"] or git_status:
         raise ValueError("source tree must be clean and match the build manifest commit")
     executables = {
@@ -2023,6 +2784,35 @@ def prepare_frozen_inputs(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def validate_canary_parameters(args: argparse.Namespace) -> None:
+    integer_bounds = (
+        ("max_pages", args.max_pages, 1, 2),
+        ("search_limit", args.search_limit, 1, 200),
+        ("repetitions", args.repetitions, 2, MAX_CANARY_REPETITIONS),
+        ("max_operations", args.max_operations, 1, MAX_CLI_OPERATIONS),
+    )
+    for name, value, minimum, maximum in integer_bounds:
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"--{name.replace('_', '-')} must be in {minimum}..{maximum}")
+    duration_bounds = (
+        ("ingest_wait_seconds", args.ingest_wait_seconds, MAX_INGEST_WAIT_SECONDS),
+        ("ingest_poll_seconds", args.ingest_poll_seconds, MAX_INGEST_POLL_SECONDS),
+        ("timeout_seconds", args.timeout_seconds, MAX_CLI_TIMEOUT_SECONDS),
+        ("source_timeout_seconds", args.source_timeout_seconds, MAX_SOURCE_TIMEOUT_SECONDS),
+        ("source_budget_seconds", args.source_budget_seconds, MAX_SOURCE_BUDGET_SECONDS),
+        ("owner_runtime_seconds", args.owner_runtime_seconds, MAX_OWNER_RUNTIME_SECONDS),
+    )
+    for name, value, maximum in duration_bounds:
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= maximum:
+            raise ValueError(f"--{name.replace('_', '-')} must be finite and in (0, {maximum:g}]")
+    if args.ingest_poll_seconds > args.ingest_wait_seconds:
+        raise ValueError("--ingest-poll-seconds cannot exceed --ingest-wait-seconds")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.forge_repository):
+        raise ValueError("--forge-repository must be an owner/repository pair")
+    if not args.forge_tag or len(args.forge_tag) > 256 or any(ord(char) < 0x20 for char in args.forge_tag):
+        raise ValueError("--forge-tag must contain 1..256 characters and no control bytes")
+
+
 def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Path) -> dict[str, Any]:
     locald = args.locald.resolve(strict=True)
     cli_path = args.cli.resolve(strict=True)
@@ -2039,7 +2829,17 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         raise ValueError("private socket path is too long for a local Unix-domain endpoint")
     cli_output = output / "cli-evidence"
     cli_output.mkdir(mode=0o700)
-    cli = CliRunner(cli_path, project, workspace, endpoint, home, cli_output, args.timeout_seconds)
+    cli_operation_budget = CliOperationBudget(args.max_operations)
+    cli = CliRunner(
+        cli_path,
+        project,
+        workspace,
+        endpoint,
+        home,
+        cli_output,
+        args.timeout_seconds,
+        cli_operation_budget,
+    )
     report: dict[str, Any] = {
         "schema": "nudox.live-registry-discovery-canary.v1",
         "started_at_utc": utc_now(),
@@ -2064,6 +2864,8 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
                 label: snapshot for label, (_, snapshot) in frozen["executables"].items()
             },
             "frozen_inputs_rechecked_before_each_owner_and_after_stop": True,
+            "cli_operation_limit": args.max_operations,
+            "owner_runtime_seconds_limit": args.owner_runtime_seconds,
             "backend_environment": "all inherited BACKEND_* variables are removed; only explicit owner flags set source policy",
             "advisory_policy": "owner advisory acquisition is disabled; standalone OSV point queries are reference evidence only and are not owner input",
             "preserved_environment_names": sorted(
@@ -2079,7 +2881,10 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         },
     }
     verify_frozen_inputs(
-        repository=frozen["repository"], paths=frozen["paths"], executables=frozen["executables"],
+        repository=frozen["repository"],
+        evidence_dir=output / "provenance-command-evidence",
+        paths=frozen["paths"],
+        executables=frozen["executables"],
         stage="before independent source requests", source_commit=frozen["source_commit"],
     )
     http, sources = capture_registry_sources(
@@ -2115,7 +2920,7 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
                 value.get("owner_batch_fact_count", value.get("release_count"))
                 if value.get("status") == "captured" else None
             ),
-            "limit": value.get("owner_batch_fact_limit", 4096),
+            "limit": value.get("owner_batch_fact_limit", MAX_OWNER_BATCH_FACTS),
             "exceeded": (
                 value.get("owner_batch_fact_limit_exceeded")
                 if value.get("status") == "captured" else None
@@ -2140,7 +2945,10 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         )
 
     verify_frozen_inputs(
-        repository=frozen["repository"], paths=frozen["paths"], executables=frozen["executables"],
+        repository=frozen["repository"],
+        evidence_dir=output / "provenance-command-evidence",
+        paths=frozen["paths"],
+        executables=frozen["executables"],
         stage="before creating the owner workspace", source_commit=frozen["source_commit"],
     )
     search_root = workspace / "registry-discovery" / "catalog-search-v1"
@@ -2151,9 +2959,9 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
 
     live_cmd = owner_command(locald, workspace, endpoint, live=True, max_pages=args.max_pages)
     live_log = output / "owner-live.log"
-    process = None
-    sampler = None
-    log = None
+    process: BoundedProcess | None = None
+    sampler: RssSampler | None = None
+    log_paths: dict[str, Path] | None = None
     all_searches: dict[str, dict[str, Any]] = {}
     target_results: list[dict[str, Any]] = []
     live_diagnostics: dict[str, Any] = {}
@@ -2165,13 +2973,27 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
     poll_rows = []
     try:
         verify_frozen_inputs(
-            repository=frozen["repository"], paths=frozen["paths"], executables=frozen["executables"],
+            repository=frozen["repository"],
+            evidence_dir=output / "provenance-command-evidence",
+            paths=frozen["paths"],
+            executables=frozen["executables"],
             stage="before live owner start", source_commit=frozen["source_commit"],
         )
-        process, sampler, log = start_owner(live_cmd, project, home, endpoint, live_log)
+        process, sampler, log_paths = start_owner(
+            live_cmd,
+            project,
+            home,
+            endpoint,
+            live_log,
+            args.owner_runtime_seconds,
+        )
         cli.owner_pid = process.pid
         live_startup_ns, live_health = wait_ready(process, cli, args.timeout_seconds)
-        no_build_tree = assert_no_build_children(process.pid, "live owner initialization")
+        no_build_tree = [
+            assert_no_build_children(
+                process.pid, "live-owner-initialization", output / "process-census-evidence"
+            )
+        ]
         deadline = time.monotonic() + args.ingest_wait_seconds
         poll = 0
         while time.monotonic() < deadline:
@@ -2215,43 +3037,55 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
             )
             if forge_pin["resolved_commit"] not in forge_stdout.read_text(encoding="utf-8", errors="replace"):
                 raise ValueError("forge-add reply did not bind the resolved GitHub commit")
-            forge_search = run_index_search(cli, "json-c", "live-forge-index-search", args.search_limit)
-            all_searches["json-c"] = forge_search
+            forge_search_query = forge_pin["repository"]
+            forge_search = run_index_search(
+                cli, forge_search_query, "live-forge-index-search", args.search_limit
+            )
+            all_searches[forge_search_query] = forge_search
             poll_rows.append({"forge_search": normalize_search_result(forge_search)})
-        no_build_tree += assert_no_build_children(process.pid, "live registry/forge search")
+        no_build_tree.append(
+            assert_no_build_children(
+                process.pid, "live-registry-forge-search", output / "process-census-evidence"
+            )
+        )
         live_rss = sampler.stop()
         sampler = None
-        if log is not None:
-            log.flush()
-            log.close()
-            log = None
         report["owner_runs"].append(
             {
                 "mode": "live-discovery-and-one-pinned-forge-source",
                 "argv": live_cmd,
                 "pid": process.pid,
+                "process_output_files": (
+                    {key: str(path) for key, path in log_paths.items()}
+                    if log_paths is not None else None
+                ),
                 "ready_latency_ns": live_startup_ns,
                 "health": live_health,
                 "polls": poll_rows,
                 "warm_search_rounds": live_warm_rounds,
                 "package_version_dependency_advisory_diagnostics": live_diagnostics,
                 "forge_add": forge_add_response,
-                "forge_search": all_searches.get("json-c"),
+                "forge_search_query": forge_pin["repository"] if forge_pin else None,
+                "forge_search": all_searches.get(forge_pin["repository"]) if forge_pin else None,
                 "rss": live_rss,
                 "process_tree_census": no_build_tree,
                 "process_job_census": {
-                    "cargo_or_rustc_children_observed": False,
-                    "index_jobs_started_by_runner": 0,
+                    "build_processes_observed_in_sampled_snapshots": any(
+                        row["build_processes_observed"] for row in no_build_tree
+                    ),
+                    "sampled_snapshots": len(no_build_tree),
+                    "index_build_commands_started_by_runner": 0,
                     "historical_or_other_jobs_enumerated": False,
-                    "limitation": "no CLI job-list endpoint; index_progress/index_await are ticket-scoped",
+                    "limitation": "compiler names are checked at listed point-in-time descendant snapshots only; no continuous monitoring or CLI-wide job list exists",
                 },
                 "no_package_add_or_index_build": True,
             }
         )
 
         queries_with_forge = list(queries)
-        if forge_pin is not None and "json-c" not in queries_with_forge:
-            queries_with_forge.append("json-c")
+        forge_search_query = forge_pin["repository"] if forge_pin is not None else None
+        if forge_search_query is not None and forge_search_query not in queries_with_forge:
+            queries_with_forge.append(forge_search_query)
         backup_root = output / "consistent-backup"
         backup_root.mkdir(mode=0o700)
         all_searches = search_set(cli, queries_with_forge, "pre-backup-final", args.search_limit)
@@ -2263,8 +3097,13 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
             f"round_{index + 1}": search_latency_summary(rows)
             for index, rows in enumerate(live_warm_rounds)
         }
-        no_build_tree += assert_no_build_children(process.pid, "pre-backup final search")
+        no_build_tree.append(
+            assert_no_build_children(
+                process.pid, "pre-backup-final-search", output / "process-census-evidence"
+            )
+        )
         report["owner_runs"][0]["process_tree_census"] = no_build_tree
+        report["owner_runs"][0]["process_job_census"]["sampled_snapshots"] = len(no_build_tree)
         baseline_searches = {
             query: normalize_search_result(result)
             for query, result in all_searches.items()
@@ -2278,7 +3117,10 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         report["live_generation_root"] = {
             "search_snapshots": {query: result["snapshot"] for query, result in all_searches.items()},
             "discovery_journal": parse_discovery_journal(
-                workspace / "registry-discovery" / "catalog.journal", b3_tool
+                workspace / "registry-discovery" / "catalog.journal",
+                b3_tool,
+                evidence_dir=output / "journal-hash-evidence",
+                label="live-pre-backup",
             ),
             "workspace_inventory_before_backup": workspace_inventory(
                 workspace, set(database_paths(workspace))
@@ -2313,25 +3155,39 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         restore_cli_output.mkdir(mode=0o700)
         restore_cli = CliRunner(
             cli_path, project, restore_workspace, restore_endpoint, home,
-            restore_cli_output, args.timeout_seconds,
+            restore_cli_output, args.timeout_seconds, cli_operation_budget,
         )
         restore_cmd = owner_command(
             locald, restore_workspace, restore_endpoint, live=False, max_pages=args.max_pages
         )
         verify_frozen_inputs(
-            repository=frozen["repository"], paths=frozen["paths"], executables=frozen["executables"],
+            repository=frozen["repository"],
+            evidence_dir=output / "provenance-command-evidence",
+            paths=frozen["paths"],
+            executables=frozen["executables"],
             stage="before offline restored owner start", source_commit=frozen["source_commit"],
         )
         restore_log = output / "owner-restore-offline.log"
-        restore_process, restore_sampler, restore_log_stream = start_owner(
-            restore_cmd, project, home, restore_endpoint, restore_log
+        restore_process, restore_sampler, restore_log_paths = start_owner(
+            restore_cmd,
+            project,
+            home,
+            restore_endpoint,
+            restore_log,
+            args.owner_runtime_seconds,
         )
         restore_cli.owner_pid = restore_process.pid
         try:
             restore_startup_ns, restore_health = wait_ready(
                 restore_process, restore_cli, args.timeout_seconds
             )
-            restore_tree = assert_no_build_children(restore_process.pid, "offline restore startup")
+            restore_tree = [
+                assert_no_build_children(
+                    restore_process.pid,
+                    "offline-restore-startup",
+                    output / "process-census-evidence",
+                )
+            ]
             cold_searches = search_set(
                 restore_cli, queries_with_forge, "restore-process-cold", args.search_limit
             )
@@ -2349,12 +3205,15 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
                         f"restore-warm-{repetition + 1:02d}", args.search_limit,
                     )
                 )
-            restore_tree += assert_no_build_children(restore_process.pid, "offline restored retrieval")
+            restore_tree.append(
+                assert_no_build_children(
+                    restore_process.pid,
+                    "offline-restored-retrieval",
+                    output / "process-census-evidence",
+                )
+            )
             restore_rss = restore_sampler.stop()
             restore_sampler = None
-            restore_log_stream.flush()
-            restore_log_stream.close()
-            restore_log_stream = None
             parity = {
                 query: normalize_search_result(cold_searches[query]) == baseline_searches.get(query)
                 for query in queries_with_forge
@@ -2369,6 +3228,9 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
             report["restore"] = {
                 "argv": restore_cmd,
                 "pid": restore_process.pid,
+                "process_output_files": {
+                    key: str(path) for key, path in restore_log_paths.items()
+                },
                 "owner_startup_ns": restore_startup_ns,
                 "health": restore_health,
                 "cold_process_first_touch": True,
@@ -2387,7 +3249,10 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
                 "rss": restore_rss,
                 "process_tree_census": restore_tree,
                 "restored_discovery_journal": parse_discovery_journal(
-                    restore_workspace / "registry-discovery" / "catalog.journal", b3_tool
+                    restore_workspace / "registry-discovery" / "catalog.journal",
+                    b3_tool,
+                    evidence_dir=output / "journal-hash-evidence",
+                    label="restore-cold-after-search",
                 ),
                 "sidecars_copied": False,
                 "sidecars_removed_before_cold_open": restore_sidecars_removed,
@@ -2398,27 +3263,29 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
             report.setdefault("restore", {})["owner_sigterm_exit_code"] = restore_exit_code
             if restore_sampler is not None:
                 restore_sampler.stop()
-            if restore_log_stream is not None:
-                restore_log_stream.close()
             if restore_exit_code != 0:
                 raise RuntimeError(
                     "offline restore owner did not exit cleanly after SIGTERM "
                     f"(exit code {restore_exit_code})"
                 )
         verify_frozen_inputs(
-            repository=frozen["repository"], paths=frozen["paths"], executables=frozen["executables"],
+            repository=frozen["repository"],
+            evidence_dir=output / "provenance-command-evidence",
+            paths=frozen["paths"],
+            executables=frozen["executables"],
             stage="after live and restore owners stopped", source_commit=frozen["source_commit"],
         )
     finally:
-        if process is not None and process.poll() is None:
+        if process is not None:
             stop_owner(process)
         if sampler is not None:
             sampler.stop()
-        if log is not None:
-            log.close()
 
     journal = parse_discovery_journal(
-        workspace / "registry-discovery" / "catalog.journal", b3_tool
+        workspace / "registry-discovery" / "catalog.journal",
+        b3_tool,
+        evidence_dir=output / "journal-hash-evidence",
+        label="live-report-final",
     )
     source_capture_ok = all(
         report["input_sources"]["registry"].get(ecosystem, {}).get("status") == "captured"
@@ -2433,6 +3300,7 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
             row["verified"]
             and row["standing_matches_source"]
             and row["advisory_ids_match_source"] is not False
+            and row["download_zero_was_not_manufactured"]
             for row in target_results
         )
     )
@@ -2473,7 +3341,7 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         "latency": "one new backend-cli process plus one Unix-socket command per search page; p50/p95/p99 are emitted for saved samples",
         "warm": "repeat CLI query chains after the owner, source worker result set, and search projection have been opened",
         "cold": "first request after a new owner process opens the restored workspace; OS file/page cache remains warm",
-        "rss": "50 ms ps sampling of each owner process; peak bytes, null if host process metrics unavailable",
+        "rss": "50 ms owner-process RSS sampling from /proc on Linux and bounded one-PID ps output on macOS; peak bytes, null if unavailable",
         "io": "Linux /proc parent-process counters when available; null on hosts without /proc",
         "cache_policy": "fresh private owner workspace and empty HOME; package-manager caches are not used; host filesystem and OS page caches are not reset",
         "allocations": "not instrumented",
@@ -2493,6 +3361,11 @@ def run_experiment(args: argparse.Namespace, frozen: dict[str, Any], output: Pat
         "backup_artifact_payload_bytes": report["backup"]["backup_artifact_payload_bytes"],
     }
     report["completed_at_utc"] = utc_now()
+    report["cli_operations"] = {
+        "used": cli_operation_budget.used,
+        "limit": cli_operation_budget.maximum,
+        "shared_across_live_and_restore": True,
+    }
     return report
 
 
@@ -2512,6 +3385,8 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
     parser.add_argument("--source-timeout-seconds", type=float, default=10.0)
     parser.add_argument("--source-budget-seconds", type=float, default=180.0)
+    parser.add_argument("--owner-runtime-seconds", type=float, default=1200.0)
+    parser.add_argument("--max-operations", type=int, default=2048)
     parser.add_argument("--forge-repository", default=DEFAULT_FORGE_REPOSITORY)
     parser.add_argument("--forge-tag", default=DEFAULT_FORGE_TAG)
     parser.add_argument(
@@ -2519,15 +3394,12 @@ def main() -> int:
         help="required before public-source requests and any local owner process are started",
     )
     args = parser.parse_args()
+    try:
+        validate_canary_parameters(args)
+    except ValueError as error:
+        parser.error(str(error))
     if not args.slot_granted:
         parser.error("refusing public-source access or owner startup until the root grants the canary slot")
-    if args.max_pages not in (1, 2):
-        parser.error("--max-pages is limited to 1..2 for this canary")
-    if not 1 <= args.search_limit <= 200 or args.repetitions < 2:
-        parser.error("--search-limit must be 1..200 and --repetitions must be at least 2")
-    if args.ingest_wait_seconds <= 0 or args.ingest_poll_seconds <= 0:
-        parser.error("ingest wait and poll durations must be positive")
-    frozen = prepare_frozen_inputs(args)
     output_arg = args.output.expanduser()
     if not output_arg.name or output_arg.name in {".", ".."}:
         parser.error("--output must name a fresh directory")
@@ -2536,6 +3408,7 @@ def main() -> int:
         parser.error(f"output already exists; choose a new private run path: {output}")
     output.mkdir(mode=0o700)
     try:
+        frozen = prepare_frozen_inputs(args, output / "provenance-command-evidence")
         report = run_experiment(args, frozen, output)
         write_json_new(output / "report.json", report)
         checks = report["correctness"]
@@ -2561,8 +3434,12 @@ def main() -> int:
                 "error": str(error),
                 "traceback": traceback.format_exc(),
                 "output_directory": str(output),
-                "owner_log": str(output / "owner-live.log"),
-                "restore_log": str(output / "owner-restore-offline.log"),
+                "owner_log_stdout": str(output / "owner-live.stdout.log"),
+                "owner_log_stderr": str(output / "owner-live.stderr.log"),
+                "owner_process_receipt": str(output / "owner-live.process.json"),
+                "restore_log_stdout": str(output / "owner-restore-offline.stdout.log"),
+                "restore_log_stderr": str(output / "owner-restore-offline.stderr.log"),
+                "restore_process_receipt": str(output / "owner-restore-offline.process.json"),
             },
         )
         raise

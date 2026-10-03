@@ -7,6 +7,9 @@ bounded live owner experiment. It uses the existing `backend-locald`,
 Cargo, run a package `add`, or start a compiler job. The runner refuses to
 start unless `--slot-granted` is explicitly supplied; keep that flag absent
 until the measurement owner approves the reviewed source and allocates a slot.
+The synthetic safety-boundary tests can be run without network access, Cargo,
+or a backend owner with `python3 tests/performance/test_live_registry_discovery_canary.py`;
+they are harness tests, not ingestion or throughput evidence.
 
 ## What one run exercises
 
@@ -90,12 +93,25 @@ backend-locald --workspace <owner-workspace> --endpoint <endpoint/locald.sock> \
 The environment is reduced to runtime, proxy, and TLS variables; every
 inherited `BACKEND_*` variable is removed. A nonexistent `BACKEND_LOCALD_BIN`
 prevents the CLI from silently starting another daemon. No advisory network
-feed is configured. No Cargo/Rust compiler child is allowed in the owner
-process tree. Captured command JSON, stdout/stderr, exact argument vectors,
+feed is configured. Sampled owner descendants are checked for Cargo, Rust,
+native compiler, and common build-tool processes. These are point-in-time
+snapshots, not continuous process monitoring or a historical ticket census.
+Captured command JSON, stdout/stderr, exact argument vectors,
 owner logs, source inputs, tool identities, source revision, `Cargo.lock`, and
 build-manifest bytes are retained as local evidence. The manifest's source
 commit must equal the clean worktree commit and its locald/CLI path, size, and
 SHA-256 must match the executed files before and after each owner.
+
+Owner, CLI, Turso, BLAKE3, Git provenance, and full process-census subprocesses
+run in their own process groups with wall-time bounds. CLI output is capped at
+64 MiB stdout plus 4 MiB stderr; owner output is capped at 32 MiB per stream;
+Turso dumps, BLAKE3 hashing, Git checks, and process census output each have
+separate byte limits. Partial stdout/stderr and a receipt with exit status,
+elapsed time, observed/stored bytes, hashes, and failure reason are retained on
+a limit or timeout. The runner admits at most
+4,096 CLI operations total across live and restore phases and at most eight
+search repetitions; owner lifetime is capped at one hour. Direct HTTPS reads
+check both the per-read inactivity timeout and a total request-set deadline.
 
 No CLI calls run while the backup is assembled. The owner applies completed
 discovery batches on the command thread; background fetches that have not been
@@ -148,6 +164,11 @@ run emits `failure-report.json` and retains captured command/source artifacts
 for diagnosis. A result can be incomplete if a bounded live window does not
 contain the requested yanked/deprecation cases or if an upstream source is
 unavailable; the status and exact source window are part of the evidence.
+`--max-operations` defaults to 2,048 and caps all CLI commands, including health
+probes and every cursor page. `--owner-runtime-seconds` defaults to 1,200 and
+can be set up to 3,600 seconds. Time-valued arguments must be finite, positive,
+and within their configured limits; invalid values are refused before source
+requests or owner startup.
 
 ## Current production boundary and follow-up seam
 
@@ -192,5 +213,6 @@ allocated scale run.
 - [npm replication API](https://github.com/npm/registry/blob/main/docs/REPLICATE-API.md) and [public registry API](https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md): bounded change feed and current package metadata endpoints.
 - [PyPI Index API](https://docs.pypi.org/api/index-api/) and [PyPI JSON API](https://docs.pypi.org/api/json/): release file/yanked metadata; the deprecated project `downloads` key is always `-1`, and the project vulnerabilities list describes the latest release.
 - [OSV query API](https://github.com/google/osv.dev/blob/master/docs/api/post-v1-query.md): independent point query by package/version with explicit page-token closure; it does not establish local feed coverage or freshness.
+- [OSV query response schema](https://osv.dev/docs/osv_service_v1.swagger.json): successful `v1VulnerabilityList` responses define both `vulns` and `next_page_token` as optional fields, so `{}` and a token-only page are valid empty-page shapes; malformed present fields are rejected.
 - [GitHub REST Git References](https://docs.github.com/en/rest/git/refs) and [Git tags](https://docs.github.com/en/rest/git/tags): resolve a tag reference and peel annotated tags to their commit object.
 - [SQLite `VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html#vacuum_with_an_into_clause): produces a consistent logical database snapshot. The canary adds stopped-owner checks across all databases, journals, and workspace files because `VACUUM INTO` covers only one database at a time.
