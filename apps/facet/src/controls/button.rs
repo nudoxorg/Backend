@@ -341,11 +341,26 @@ pub fn native_button<E>(element: E, focus: &FocusHandle, activate: impl Fn(&mut 
 where
     E: StatefulInteractiveElement + InteractiveElement + Styled,
 {
+    native_button_with_event(element, focus, move |_, window, cx| activate(window, cx))
+}
+
+/// The same native activation pipeline while preserving pointer/keyboard
+/// event kind. AccessKit Click is normalized to keyboard activation through
+/// this callback, before GPUI's fallback can synthesize a pointer press.
+/// Callers must admit their current owner before mutating focus or state.
+pub fn native_button_with_event<E>(element: E, focus: &FocusHandle, activate: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static) -> E
+where
+    E: StatefulInteractiveElement + InteractiveElement + Styled,
+{
+    let activate = Rc::new(activate);
+    let accessible = activate.clone();
     element.track_focus(focus).tab_index(0).key_context(NATIVE_CONTROL)
-        .on_click(move |_, window, cx| activate(window, cx))
+        .on_click(move |event, window, cx| activate(event, window, cx))
+        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| {
+            accessible(&gpui::ClickEvent::default(), window, cx);
+        })
         .on_key_down(|event: &KeyDownEvent, _, cx| {
-            // GPUI registers native down/up before these application key
-            // listeners. Keep parent modal Enter handlers from also firing.
+            // GPUI owns clean key down/up and focus generation checks.
             if !event.keystroke.modifiers.modified()
                 && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                 cx.stop_propagation();
