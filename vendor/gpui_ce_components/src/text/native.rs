@@ -853,7 +853,7 @@ mod tests {
             None,
             cx,
         );
-        let node = cx.update(|window, _| {
+        let (node, link_point, plain_point) = cx.update(|window, _| {
             let tree = window.a11y_tree().expect("committed native document");
             let (id, link) = tree
                 .nodes
@@ -875,12 +875,37 @@ mod tests {
                     .iter()
                     .any(|(_, node)| node.label() == Some(" now."))
             );
-            *id
+            let plain = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Use "))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let center = |rect: gpui::accesskit::Rect| {
+                point(
+                    px(((rect.x0 + rect.x1) / 2.) as f32),
+                    px(((rect.y0 + rect.y1) / 2.) as f32),
+                )
+            };
+            (*id, center(bounds), center(plain))
         });
+        cx.simulate_click(plain_point, gpui::Modifiers::default());
+        assert!(
+            opened.lock().unwrap().is_empty(),
+            "native words do not create a broad click region"
+        );
+        cx.simulate_click(link_point, gpui::Modifiers::default());
+        assert_eq!(
+            opened.lock().unwrap().len(),
+            1,
+            "native endpoint and glyph handler deliver a pointer click once"
+        );
         action(cx, node, AccessibleAction::Focus);
         native_press(cx, "enter");
         action(cx, node, AccessibleAction::Click);
-        assert_eq!(opened.lock().unwrap().len(), 2);
+        assert_eq!(opened.lock().unwrap().len(), 3);
         // This synthetic admission change is deliberately not repainted: old
         // AX receipts and a clean key release must consult current admission.
         live.store(false, Ordering::SeqCst);
@@ -888,8 +913,9 @@ mod tests {
         action(cx, node, AccessibleAction::Focus);
         cx.update(|window, cx| assert!(window.focused(cx).is_none()));
         action(cx, node, AccessibleAction::Click);
+        cx.simulate_click(link_point, gpui::Modifiers::default());
         native_press(cx, "space");
-        assert_eq!(opened.lock().unwrap().len(), 2);
+        assert_eq!(opened.lock().unwrap().len(), 3);
     }
 
     #[gpui::test]
