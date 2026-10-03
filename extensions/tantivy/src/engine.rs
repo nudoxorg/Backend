@@ -2041,7 +2041,7 @@ pub fn normalize_query_terms(text: &str, limits: Limits) -> Result<Vec<String>, 
     if text.len() > limits.max_field_bytes {
         return Err(Error::SizeLimit);
     }
-    let mut terms = Vec::new();
+    let mut terms = Vec::<String>::new();
     for raw in text.split_whitespace() {
         for component in component_tokens(raw) {
             let position = match terms
