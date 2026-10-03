@@ -228,6 +228,7 @@ impl IndexOperationJournal {
                     ))
                     .await
                     .map_err(database_error)?;
+                validate_page_count(&connection).await?;
                 database_directory
                     .open_private_file_read_write(database_name, false)
                     .map_err(|error| {
@@ -238,6 +239,7 @@ impl IndexOperationJournal {
                 verify_sqlite_sidecars(&database_directory, database_name)?;
                 let meta = read_meta(&connection).await?;
                 validate_meta(&meta)?;
+                validate_cold_aggregates(&connection, &meta).await?;
                 Ok::<_, JournalError>((
                     database,
                     connection,
@@ -287,12 +289,7 @@ impl IndexOperationJournal {
                 } else {
                     let meta = read_meta_transaction(&transaction).await?;
                     validate_meta(&meta)?;
-                    if meta.key_count >= MAX_OPERATION_KEYS {
-                        return Err(JournalError::KeyspaceFull);
-                    }
-                    if meta.pending_count >= MAX_PENDING_OPERATIONS {
-                        return Err(JournalError::PendingLimit);
-                    }
+                    check_acceptance_capacity(&meta)?;
                     let entry = StoredOperation {
                         operation_key,
                         request_digest,
@@ -750,6 +747,25 @@ async fn read_meta(connection: &turso::Connection) -> Result<JournalMeta, Journa
     read_meta_row(&mut rows).await
 }
 
+async fn validate_page_count(connection: &turso::Connection) -> Result<(), JournalError> {
+    let mut rows = connection
+        .query("PRAGMA page_count", ())
+        .await
+        .map_err(database_error)?;
+    let row = rows
+        .next()
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| JournalError::Corrupt("database page count is missing".to_owned()))?;
+    let page_count: i64 = row.get(0).map_err(database_error)?;
+    if !(0..=MAX_DATABASE_PAGES).contains(&page_count) {
+        return Err(JournalError::Corrupt(
+            "database page count exceeds its configured bound".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 async fn read_meta_transaction(
     transaction: &turso::transaction::Transaction<'_>,
 ) -> Result<JournalMeta, JournalError> {
@@ -799,6 +815,91 @@ fn validate_meta(meta: &JournalMeta) -> Result<(), JournalError> {
     {
         return Err(JournalError::Corrupt(
             "metadata counters are outside the configured bounds".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_acceptance_capacity(meta: &JournalMeta) -> Result<(), JournalError> {
+    if meta.key_count >= MAX_OPERATION_KEYS {
+        return Err(JournalError::KeyspaceFull);
+    }
+    if meta.pending_count >= MAX_PENDING_OPERATIONS {
+        return Err(JournalError::PendingLimit);
+    }
+    Ok(())
+}
+
+/// Cross-checks persisted high-water counters against bounded table aggregates
+/// once at cold open. The table is capped by `MAX_OPERATION_KEYS` and the
+/// database itself is capped by `MAX_DATABASE_PAGES`, so this verification has
+/// a fixed maximum scan instead of trusting counters to hide durable rows.
+async fn validate_cold_aggregates(
+    connection: &turso::Connection,
+    meta: &JournalMeta,
+) -> Result<(), JournalError> {
+    let mut rows = connection
+        .query(
+            "SELECT COUNT(*), \
+                    COALESCE(SUM(CASE WHEN state IN (1, 2) THEN 1 ELSE 0 END), 0), \
+                    COALESCE(SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END), 0), \
+                    COALESCE(MIN(acceptance_sequence), 0), \
+                    COALESCE(MAX(acceptance_sequence), 0), \
+                    COALESCE(SUM(CASE WHEN terminal_sequence IS NOT NULL THEN 1 ELSE 0 END), 0), \
+                    COALESCE(MIN(terminal_sequence), 0), \
+                    COALESCE(MAX(terminal_sequence), 0), \
+                    COUNT(DISTINCT acceptance_sequence), \
+                    COUNT(DISTINCT terminal_sequence), \
+                    COALESCE(SUM(CASE WHEN \
+                        typeof(operation_key) != 'blob' OR length(operation_key) != 32 OR \
+                        operation_key = zeroblob(32) OR \
+                        typeof(request_digest) != 'blob' OR length(request_digest) != 32 OR \
+                        acceptance_sequence <= 0 OR state NOT BETWEEN 1 AND 5 OR \
+                        (state IN (1, 2) AND (terminal_sequence IS NOT NULL OR \
+                            typeof(payload) != 'blob' OR \
+                            length(payload) NOT BETWEEN 1 AND ?1)) OR \
+                        (state IN (3, 4) AND (terminal_sequence IS NULL OR terminal_sequence <= 0 OR \
+                            typeof(payload) != 'blob' OR \
+                            length(payload) NOT BETWEEN 1 AND ?1)) OR \
+                        (state = 5 AND (terminal_sequence IS NULL OR terminal_sequence <= 0 OR \
+                            payload IS NOT NULL)) \
+                    THEN 1 ELSE 0 END), 0) \
+             FROM backend_index_operations",
+            [MAX_OPERATION_PAYLOAD_BYTES as i64],
+        )
+        .await
+        .map_err(database_error)?;
+    let row =
+        rows.next().await.map_err(database_error)?.ok_or_else(|| {
+            JournalError::Corrupt("operation aggregate row is missing".to_owned())
+        })?;
+    let key_count: i64 = row.get(0).map_err(database_error)?;
+    let pending_count: i64 = row.get(1).map_err(database_error)?;
+    let prepared_count: i64 = row.get(2).map_err(database_error)?;
+    let min_sequence: i64 = row.get(3).map_err(database_error)?;
+    let max_sequence: i64 = row.get(4).map_err(database_error)?;
+    let terminal_count: i64 = row.get(5).map_err(database_error)?;
+    let min_terminal_sequence: i64 = row.get(6).map_err(database_error)?;
+    let max_terminal_sequence: i64 = row.get(7).map_err(database_error)?;
+    let unique_sequences: i64 = row.get(8).map_err(database_error)?;
+    let unique_terminal_sequences: i64 = row.get(9).map_err(database_error)?;
+    let malformed_rows: i64 = row.get(10).map_err(database_error)?;
+    if malformed_rows != 0
+        || key_count != meta.key_count
+        || pending_count != meta.pending_count
+        || prepared_count != meta.prepared_count
+        || max_sequence != meta.key_count
+        || unique_sequences != key_count
+        || (key_count == 0 && min_sequence != 0)
+        || (key_count > 0 && min_sequence != 1)
+        || max_terminal_sequence.saturating_add(1) != meta.next_terminal_sequence
+        || terminal_count != max_terminal_sequence
+        || unique_terminal_sequences != terminal_count
+        || (terminal_count == 0 && min_terminal_sequence != 0)
+        || (terminal_count > 0 && min_terminal_sequence != 1)
+    {
+        return Err(JournalError::Corrupt(
+            "metadata counters or indexed row shapes disagree with durable aggregates".to_owned(),
         ));
     }
     Ok(())
@@ -1394,6 +1495,55 @@ mod tests {
     }
 
     #[test]
+    fn cold_open_rejects_key_pending_and_terminal_counter_mismatches() {
+        let path = path();
+        let mut journal = open(&path);
+        journal
+            .accept(key(60), package(), CompileExecutionIntent::Interactive)
+            .expect("accept operation");
+        futures_executor::block_on(journal.connection.execute(
+            "UPDATE backend_index_operation_meta \
+             SET key_count=0, pending_count=0, next_sequence=1 WHERE singleton=1",
+            (),
+        ))
+        .expect("corrupt key and pending counters");
+        drop(journal);
+        assert!(matches!(
+            IndexOperationJournal::open(&path),
+            Err(JournalError::Corrupt(message))
+                if message == "metadata counters or indexed row shapes disagree with durable aggregates"
+        ));
+        cleanup(&path);
+
+        let path = path();
+        let mut journal = open(&path);
+        let operation = key(61);
+        journal
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("accept operation");
+        journal
+            .failed(
+                operation,
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("failed before publication"),
+            )
+            .expect("persist terminal receipt");
+        futures_executor::block_on(journal.connection.execute(
+            "UPDATE backend_index_operation_meta \
+             SET next_terminal_sequence=1 WHERE singleton=1",
+            (),
+        ))
+        .expect("corrupt terminal counter");
+        drop(journal);
+        assert!(matches!(
+            IndexOperationJournal::open(&path),
+            Err(JournalError::Corrupt(message))
+                if message == "metadata counters or indexed row shapes disagree with durable aggregates"
+        ));
+        cleanup(&path);
+    }
+
+    #[test]
     fn pending_rows_are_pinned_while_terminal_receipts_roll_over() {
         let path = path();
         let mut journal = open(&path);
@@ -1439,24 +1589,32 @@ mod tests {
     }
 
     #[test]
-    fn hard_keyspace_capacity_refuses_before_acceptance() {
-        let path = path();
-        let mut journal = open(&path);
-        futures_executor::block_on(journal.connection.execute(
-            "UPDATE backend_index_operation_meta SET key_count=?1, next_sequence=?2 WHERE singleton=1",
-            turso::params![MAX_OPERATION_KEYS, MAX_OPERATION_KEYS + 1],
-        ))
-        .expect("simulate reached high-water mark");
+    fn capacity_policy_refuses_at_hard_limits_without_fabricating_database_metadata() {
+        let keyspace_full = JournalMeta {
+            key_count: MAX_OPERATION_KEYS,
+            pending_count: 0,
+            prepared_count: 0,
+            next_sequence: MAX_OPERATION_KEYS + 1,
+            next_terminal_sequence: 1,
+        };
+        validate_meta(&keyspace_full).expect("valid keyspace high-water mark");
         assert_eq!(
-            journal.accept(key(9), package(), CompileExecutionIntent::Interactive),
+            check_acceptance_capacity(&keyspace_full),
             Err(JournalError::KeyspaceFull)
         );
+
+        let pending_full = JournalMeta {
+            key_count: 0,
+            pending_count: MAX_PENDING_OPERATIONS,
+            prepared_count: 0,
+            next_sequence: 1,
+            next_terminal_sequence: 1,
+        };
+        validate_meta(&pending_full).expect("valid pending high-water mark");
         assert_eq!(
-            journal.entry(key(9)).expect("lookup refused key").is_none(),
-            true
+            check_acceptance_capacity(&pending_full),
+            Err(JournalError::PendingLimit)
         );
-        drop(journal);
-        cleanup(&path);
     }
 
     #[cfg(unix)]
