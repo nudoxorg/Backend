@@ -765,8 +765,7 @@ fn http_publication_and_restart_advance_one_atomic_cursor() {
     let (mut owner, _) =
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
             .expect("open owner");
-    let mut transport =
-        HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
+    let mut transport = HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     let AcquisitionOutcome::Published(receipt) =
         poll_owner(&mut owner, &mut transport).expect("poll")
     else {
@@ -924,8 +923,7 @@ fn crash_after_object_write_recovers_the_same_pending_intent() {
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
             .expect("owner");
     let mut owner = owner.with_faults(faults);
-    let mut transport =
-        HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
+    let mut transport = HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     assert!(matches!(
         poll_owner(&mut owner, &mut transport),
         Err(AcquisitionError::Injected(_))
@@ -2071,6 +2069,7 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
     struct MutableAdvisory {
         page: u8,
         archive: Vec<u8>,
+        archive_calls: usize,
     }
 
     impl RegistryTransport for MutableAdvisory {
@@ -2118,9 +2117,33 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
             &mut self,
             _: &RemotePackage,
         ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archive_calls += 1;
             Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
                 self.archive.clone(),
             )))
+        }
+    }
+
+    struct NoNetwork {
+        page_calls: usize,
+        archive_calls: usize,
+    }
+
+    impl RegistryTransport for NoNetwork {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.page_calls += 1;
+            Err(TransportFailure::Configuration)
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archive_calls += 1;
+            Err(TransportFailure::Configuration)
         }
     }
 
@@ -2128,15 +2151,14 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
         .expect("endpoint");
     let root = temporary("service-advisory-fact-refresh");
     let (owner, _) =
-        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
     let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
         offline: backend_advisory::OfflinePolicy::Warn,
     });
-    let service = crate::acquisition::AcquisitionService::from_owner(
-        owner,
-        root.join("coordination"),
-    )
-    .expect("service");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("service");
     let request = crate::acquisition::AcquisitionRequest::for_coordinate(
         service.source_id(),
         "pkg:cargo/security-refresh@1.0.0",
@@ -2147,6 +2169,7 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
     let mut transport = MutableAdvisory {
         page: 0,
         archive: b"security advisory fact transition".to_vec(),
+        archive_calls: 0,
     };
     let crate::acquisition::AcquisitionOutcome::Hit(first) =
         service.acquire(&request, &mut transport)
@@ -2154,11 +2177,16 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
         panic!("initial clean advisory observation must publish");
     };
     let first_epoch = first.receipt.policy_epoch;
+    let archive_object = crate::acquisition::RawArchiveObjectId::from_bytes(&transport.archive);
+    assert_eq!(first.receipt.raw_object, archive_object);
+    assert_eq!(transport.archive_calls, 1);
     let first_facts_frontier = service.facts_frontier();
-    assert!(service
-        .recover_product_record(&request)
-        .expect("recover initial product receipt")
-        .is_some());
+    assert!(
+        service
+            .recover_product_record(&request)
+            .expect("recover initial product receipt")
+            .is_some()
+    );
 
     assert!(matches!(
         service.acquire(&request, &mut transport),
@@ -2168,6 +2196,10 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
         })
     ));
     assert_eq!(service.policy_epoch(), first_epoch);
+    assert_eq!(
+        transport.archive_calls, 1,
+        "refresh must not refetch the archive"
+    );
     let updated_facts_frontier = service.facts_frontier();
     assert_ne!(updated_facts_frontier, first_facts_frontier);
     let updated = service
@@ -2175,6 +2207,18 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
         .expect("recover advisory-denial product receipt")
         .expect("advisory denial must be durably recorded");
     assert_eq!(updated.facts_frontier, updated_facts_frontier);
+    assert_eq!(updated.policy_epoch, first_epoch);
+    assert_eq!(updated.raw_object, Some(archive_object));
+    let coordinate =
+        PackageCoordinate::parse("pkg:cargo/security-refresh@1.0.0").expect("coordinate");
+    let refreshed_package = service
+        .published_package(&coordinate)
+        .expect("metadata-only refresh remains published");
+    assert_eq!(refreshed_package.raw_object, archive_object);
+    assert_eq!(
+        updated.metadata_digest,
+        Some(refreshed_package.metadata_evidence_digest())
+    );
     assert!(matches!(
         updated.terminal,
         crate::acquisition::AcquisitionProductTerminal::NegativeFact(
@@ -2184,6 +2228,234 @@ fn advisory_security_fact_update_advances_facts_without_changing_policy_epoch() 
             }
         )
     ));
+
+    drop(service);
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("reopen owner");
+    let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::Warn,
+    });
+    let reopened =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("reopen acquisition service");
+    assert_eq!(reopened.policy_epoch(), first_epoch);
+    assert_eq!(reopened.facts_frontier(), updated_facts_frontier);
+    assert_eq!(
+        reopened
+            .published_package(&coordinate)
+            .expect("reopened refreshed package")
+            .raw_object,
+        archive_object
+    );
+    let reopened_record = reopened
+        .recover_product_record(&request)
+        .expect("recover cold advisory receipt")
+        .expect("cold advisory receipt remains durable");
+    assert_eq!(reopened_record.facts_frontier, updated_facts_frontier);
+    assert_eq!(reopened_record.policy_epoch, first_epoch);
+    assert_eq!(reopened_record.raw_object, Some(archive_object));
+    assert!(matches!(
+        reopened_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::NegativeFact(
+            crate::acquisition::NegativeFact {
+                kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+                ..
+            }
+        )
+    ));
+    let mut no_network = NoNetwork {
+        page_calls: 0,
+        archive_calls: 0,
+    };
+    assert!(matches!(
+        reopened.acquire(&request, &mut no_network),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            ..
+        })
+    ));
+    assert_eq!(no_network.page_calls, 0);
+    assert_eq!(no_network.archive_calls, 0);
+    drop(reopened);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn advisory_denial_cannot_reuse_changed_integrity_or_publish_a_new_archive() {
+    struct StaticTransport {
+        package: RemotePackage,
+        archive: Vec<u8>,
+        archive_calls: usize,
+    }
+
+    impl RegistryTransport for StaticTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [7; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archive_calls += 1;
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let package = |coordinate: &str,
+                   archive: &[u8],
+                   advisory: Option<backend_advisory::AdvisoryObservation>| {
+        RemotePackage {
+            coordinate: PackageCoordinate::parse(coordinate).expect("coordinate"),
+            integrity: transport::ArchiveIntegrity::Canonical(
+                *CapabilityArtifactId::from_value(archive).as_bytes(),
+            ),
+            provenance: ProvenanceDigest::from_authenticated_feed([7; 32]),
+            facts: test_facts(),
+            native_metadata: test_native_metadata(),
+            advisory,
+            dependency_facts: unavailable_dependency_facts(),
+            archive_url: Arc::from("https://registry.example.test/security-refresh.crate"),
+        }
+    };
+    let denied_advisory = |name: &str| {
+        let bytes = format!(
+            r#"{{"schema_version":"1.3.1","id":"OSV-SECURITY-DENY","modified":"2026-09-29T00:00:00Z","affected":[{{"package":{{"ecosystem":"Cargo","name":"{name}"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+        );
+        let advisory = backend_advisory::parse_osv(bytes.as_bytes(), 2).expect("valid advisory");
+        backend_advisory::AdvisoryObservation {
+            advisories: Box::new([advisory]),
+            coverage: backend_advisory::AdvisoryCoverage::Complete,
+            freshness: backend_advisory::FreshnessState::Fresh,
+            offline: false,
+            yanked: false,
+            unlisted: false,
+            malware: backend_advisory::MalwareCoverage::NotCovered,
+        }
+    };
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("service-advisory-deny-integrity");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::Warn,
+    });
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("service");
+    let coordinate =
+        PackageCoordinate::parse("pkg:cargo/security-refresh@1.0.0").expect("coordinate");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        coordinate.to_string(),
+        1,
+        0,
+    )
+    .expect("request");
+    let original_archive = b"original admitted security-refresh bytes".to_vec();
+    let mut original_transport = StaticTransport {
+        package: package(coordinate.as_str(), &original_archive, None),
+        archive: original_archive.clone(),
+        archive_calls: 0,
+    };
+    let crate::acquisition::AcquisitionOutcome::Hit(original) =
+        service.acquire(&request, &mut original_transport)
+    else {
+        panic!("initial package must be admitted");
+    };
+    assert_eq!(original_transport.archive_calls, 1);
+    let original_frontier = service.facts_frontier();
+    let original_epoch = service.policy_epoch();
+    let original_record = service
+        .recover_product_record(&request)
+        .expect("recover original publication")
+        .expect("original publication record");
+    assert!(matches!(
+        original_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::Published
+    ));
+
+    let changed_archive = b"different bytes for the same coordinate".to_vec();
+    let mut changed_transport = StaticTransport {
+        package: package(
+            coordinate.as_str(),
+            &changed_archive,
+            Some(denied_advisory("security-refresh")),
+        ),
+        archive: changed_archive,
+        archive_calls: 0,
+    };
+    assert!(matches!(
+        service.acquire(&request, &mut changed_transport),
+        crate::acquisition::AcquisitionOutcome::Rejected(crate::acquisition::RejectReason::Policy)
+    ));
+    assert_eq!(changed_transport.archive_calls, 0);
+    assert_eq!(service.facts_frontier(), original_frontier);
+    assert_eq!(service.policy_epoch(), original_epoch);
+    let still_published = service
+        .published_package(&coordinate)
+        .expect("old exact integrity remains published");
+    assert_eq!(still_published.raw_object, original.receipt.raw_object);
+    let unchanged_record = service
+        .recover_product_record(&request)
+        .expect("recover unchanged publication")
+        .expect("original publication remains selected");
+    assert_eq!(unchanged_record.owner_cursor, original_record.owner_cursor);
+    assert_eq!(unchanged_record.facts_frontier, original_frontier);
+    assert_eq!(
+        unchanged_record.raw_object,
+        Some(original.receipt.raw_object)
+    );
+    assert!(matches!(
+        unchanged_record.terminal,
+        crate::acquisition::AcquisitionProductTerminal::Published
+    ));
+
+    let unseen_coordinate =
+        PackageCoordinate::parse("pkg:cargo/unseen-security@1.0.0").expect("unseen coordinate");
+    let unseen_request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        unseen_coordinate.to_string(),
+        1,
+        0,
+    )
+    .expect("unseen request");
+    let unseen_archive = b"unseen denied archive".to_vec();
+    let mut unseen_transport = StaticTransport {
+        package: package(
+            unseen_coordinate.as_str(),
+            &unseen_archive,
+            Some(denied_advisory("unseen-security")),
+        ),
+        archive: unseen_archive,
+        archive_calls: 0,
+    };
+    assert!(matches!(
+        service.acquire(&unseen_request, &mut unseen_transport),
+        crate::acquisition::AcquisitionOutcome::Rejected(crate::acquisition::RejectReason::Policy)
+    ));
+    assert_eq!(unseen_transport.archive_calls, 0);
+    assert!(!service.contains(&unseen_coordinate));
+    assert!(
+        service
+            .recover_product_record(&unseen_request)
+            .expect("unseen denied request has no product receipt")
+            .is_none()
+    );
+    assert_eq!(service.facts_frontier(), original_frontier);
+    assert_eq!(service.policy_epoch(), original_epoch);
+    drop(service);
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -2637,7 +2909,8 @@ fn metadata_404_becomes_a_durable_not_found_fact() {
         0,
     )
     .expect("request");
-    let mut transport = HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     assert!(matches!(
         service.acquire(&request, &mut transport),
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {

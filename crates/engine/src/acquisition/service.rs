@@ -1050,12 +1050,6 @@ impl AcquisitionService {
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         for package in &page.packages {
                             let advisory = owner_guard.advisory_for(package);
-                            if matches!(
-                                advisory.decision,
-                                backend_advisory::AcquisitionDecision::Deny(_)
-                            ) {
-                                return AcquisitionOutcome::Rejected(RejectReason::Policy);
-                            }
                             if let Some(existing) = owner_guard.published(&package.coordinate) {
                                 if existing.upstream_integrity == package.integrity_version() {
                                     publications.push(crate::registry::PublishedPackage {
@@ -1074,6 +1068,16 @@ impl AcquisitionService {
                                     });
                                     continue;
                                 }
+                            }
+                            // A previously admitted exact integrity identity can
+                            // refresh its typed metadata and policy facts without
+                            // reopening or restaging archive bytes. All other rows
+                            // remain fail-closed before transfer or publication.
+                            if matches!(
+                                advisory.decision,
+                                backend_advisory::AcquisitionDecision::Deny(_)
+                            ) {
+                                return AcquisitionOutcome::Rejected(RejectReason::Policy);
                             }
                             downloads.push((package.clone(), advisory));
                         }
