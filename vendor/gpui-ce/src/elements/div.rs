@@ -4390,10 +4390,15 @@ mod tests {
                     assert_eq!(bounds.len(), 1);
                     parent.borrow_mut().push("parent after child");
                 })
-                .child(canvas(
-                    move |_, _, _| child.borrow_mut().push("child prepaint"),
-                    |_, _, _, _| {},
-                ).size(px(24.0)))
+                .child(
+                    div()
+                        .id("stateful-child-prepaint")
+                        .size(px(24.0))
+                        .on_children_prepainted(move |bounds, _, _| {
+                            assert!(bounds.is_empty());
+                            child.borrow_mut().push("child prepaint");
+                        }),
+                )
         }
     }
 
