@@ -47,6 +47,7 @@ struct Job {
 }
 
 struct Running {
+    ticket: u64,
     command: SurfaceCommand,
     control: Arc<ObservationControl>,
 }
@@ -304,6 +305,51 @@ impl BrowseLane {
         Ok(())
     }
 
+    /// Releases one response registration and cooperatively cancels only its
+    /// read-only observation. A late worker completion is discarded by its
+    /// ticket and releases any reserved payload permit when drained.
+    pub(super) fn abandon_reply(&mut self, ticket: u64) {
+        if let Some(outstanding) = self.outstanding.remove(&ticket) {
+            outstanding.control.cancel();
+        }
+        for shard in &self.shards {
+            let mut queue = shard.queue.lock().unwrap_or_else(PoisonError::into_inner);
+            queue.pending.retain(|job| {
+                if job.ticket == ticket {
+                    job.control.cancel();
+                    false
+                } else {
+                    true
+                }
+            });
+            if let Some(running) = &queue.running
+                && running.ticket == ticket
+            {
+                running.control.cancel();
+            }
+        }
+        let mut completions = self
+            .completions
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut retained = VecDeque::with_capacity(completions.ready.len());
+        let mut abandoned = Vec::new();
+        for completion in std::mem::take(&mut completions.ready) {
+            if completion.ticket == ticket {
+                abandoned.push(completion);
+            } else {
+                retained.push_back(completion);
+            }
+        }
+        completions.ready = retained;
+        drop(completions);
+        // A completed Reply may own a payload permit whose destructor locks
+        // the completion queue. Drop removed entries only after unlocking it.
+        drop(abandoned);
+        self.completions.capacity.notify_all();
+    }
+
     /// Returns terminals once; a cancelled or late completion cannot publish.
     pub(super) fn drain(
         &mut self,
@@ -466,6 +512,7 @@ fn run_worker(
                 }
                 if let Some(job) = queue.pending.pop_front() {
                     queue.running = Some(Running {
+                        ticket: job.ticket,
                         command: job.command.clone(),
                         control: Arc::clone(&job.control),
                     });

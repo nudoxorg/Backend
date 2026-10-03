@@ -51,6 +51,10 @@ where
     /// returns the reply bodies by ticket.
     fn poll(&mut self, daemon: &mut crate::Locald<M, V, A>) -> Vec<(u64, Result<Vec<u8>, String>)>;
 
+    /// Releases one response registration without cancelling the accepted
+    /// owner operation that produced it.
+    fn abandon_reply(&mut self, _ticket: u64) {}
+
     /// Cancels and joins any process-local deferred work before the owner
     /// releases its daemon state. Implementations without workers need not
     /// override this hook.
@@ -1415,6 +1419,12 @@ where
             .into_iter()
             .map(|(ticket, reply)| (ticket, reply.map_err(ProtocolError::CommandExecution)))
             .collect()
+    }
+
+    fn abandon_deferred_reply(&mut self, ticket: u64) {
+        if let Some(deferred) = self.deferred.as_mut() {
+            deferred.abandon_reply(ticket);
+        }
     }
 
     fn engine(

@@ -28,6 +28,7 @@ use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationKey, ProductSemanticPublicationRecord};
 use backend_library::CompileExecutionIntent;
 use backend_library::interface::PackageUrl;
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +37,7 @@ use std::sync::{Arc, Mutex};
 const MAX_RETAINED_INDEX_TERMINALS: usize = 64;
 const MAX_RETAINED_INDEX_PROGRESS_EVENTS: usize = 256;
 const MAX_RETAINED_INDEX_PROGRESS_TICKETS: usize = MAX_RETAINED_INDEX_TERMINALS + 1;
+const MAX_WAITING_COMMANDS: usize = 64;
 
 fn new_index_owner_epoch() -> [u8; 16] {
     let nanos = std::time::SystemTime::now()
@@ -192,6 +194,10 @@ pub(in crate::builtin) struct CommandAdapter {
     /// Commands that change state, waiting for that job: one writer at a
     /// time, in arrival order. Reads never wait here.
     waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
+    /// Tickets in `waiting` whose clients stopped waiting. Their commands
+    /// remain admitted and will still run, but their eventual response is
+    /// discarded without registering another waiter.
+    abandoned_replies: BTreeSet<u64>,
 }
 
 /// An `Add` of a local folder whose compile runs off the owner loop.
@@ -378,6 +384,7 @@ impl CommandAdapter {
             next_index_ticket: 1,
             index_owner_epoch: new_index_owner_epoch(),
             waiting: std::collections::VecDeque::new(),
+            abandoned_replies: BTreeSet::new(),
         })
     }
 
@@ -463,6 +470,11 @@ impl CommandAdapter {
             );
         }
         if self.indexing.is_some() && !answers_while_indexing(&request.command) {
+            if self.waiting.len() >= MAX_WAITING_COMMANDS {
+                return Err(BuiltinModelError(
+                    "owner mutation queue is full; retry after current work completes".to_owned(),
+                ));
+            }
             self.waiting.push_back((transport_ticket, body.to_vec()));
             return Ok(Executed::Deferred);
         }
@@ -1702,13 +1714,41 @@ impl CommandAdapter {
             && !self.index_operations.has_prepared().unwrap_or(true)
             && let Some((ticket, body)) = self.waiting.pop_front()
         {
+            let abandoned = self.abandoned_replies.remove(&ticket);
             match self.execute_or_defer(daemon, &body, ticket) {
-                Ok(Executed::Reply(reply)) => ready.push((ticket, Ok(reply))),
-                Ok(Executed::Deferred) => {}
-                Err(error) => ready.push((ticket, Err(error))),
+                Ok(Executed::Reply(reply)) if !abandoned => ready.push((ticket, Ok(reply))),
+                Ok(Executed::Deferred) if abandoned => self.abandon_active_reply(ticket),
+                Ok(Executed::Reply(_)) | Ok(Executed::Deferred) => {}
+                Err(error) if !abandoned => ready.push((ticket, Err(error))),
+                Err(_) => {}
             }
         }
         self.with_browse_completions(daemon, ready)
+    }
+
+    /// Releases a transport response registration only. Commands already in
+    /// the writer queue remain queued and accepted index work keeps running.
+    pub(in crate::builtin) fn abandon_reply(&mut self, ticket: u64) {
+        if self.waiting.iter().any(|(queued, _)| *queued == ticket) {
+            self.abandoned_replies.insert(ticket);
+            return;
+        }
+        self.abandon_active_reply(ticket);
+    }
+
+    fn abandon_active_reply(&mut self, ticket: u64) {
+        if let Some(indexing) = &mut self.indexing {
+            if indexing
+                .legacy_add
+                .is_some_and(|(transport_ticket, _)| transport_ticket == ticket)
+            {
+                indexing.legacy_add = None;
+            }
+            indexing
+                .awaiters
+                .retain(|(transport_ticket, _)| *transport_ticket != ticket);
+        }
+        self.browse_lane.abandon_reply(ticket);
     }
 
     /// Checks the current owner after index publication and queued writers,

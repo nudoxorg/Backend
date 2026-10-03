@@ -1753,6 +1753,13 @@ impl crate::DeferredCommands<BuiltinModel, BuiltinValidator, BuiltinAuthorityVer
             .collect()
     }
 
+    fn abandon_reply(&mut self, ticket: u64) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .abandon_reply(ticket);
+    }
+
     fn close(&mut self) {
         self.0
             .lock()

@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const RESPONSE_WAIT_TICK: Duration = Duration::from_millis(25);
+const STOP_RESPONSE_DRAIN_GRACE: Duration = Duration::from_millis(100);
+
 pub(super) struct ConnectionContext {
     pub(super) sender: SyncSender<Inbound>,
     pub(super) stop: Arc<AtomicBool>,
@@ -60,6 +63,7 @@ pub(super) fn connection_worker(
             &mut stream,
             payload,
             &sender,
+            &stop,
             ServeWindows {
                 handoff: timeout,
                 owner_reply,
@@ -101,14 +105,17 @@ fn serve_one_frame(
     stream: &mut backend_engine::LocalStream,
     payload: Vec<u8>,
     sender: &SyncSender<Inbound>,
+    stop: &AtomicBool,
     windows: ServeWindows,
     limits: FrameLimits,
 ) -> Option<Vec<u8>> {
     let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
     let correlation = crate::service::RequestCorrelation::from_payload(&payload);
+    let response_waiter = super::ResponseWaiter::default();
     let inbound = Inbound {
         payload,
         reply: reply_sender,
+        response_waiter: response_waiter.clone(),
     };
     let refuse = |stream: &mut backend_engine::LocalStream, error: &ProtocolError| {
         let _ = write_frame(
@@ -122,11 +129,11 @@ fn serve_one_frame(
         return None;
     }
     // The owner has the request now. Waiting for it to finish indexing a
-    // project is not an I/O deadline, so it gets its own window: the
-    // per-frame one is far shorter than a real index and made the surface
-    // report a timeout for work the owner then completed anyway.
-    match reply_receiver.recv_timeout(windows.owner_reply) {
-        Ok(Ok(response)) => Some(response),
+    // project is not an I/O deadline, so it gets its own fixed window. Short
+    // receive ticks let listener shutdown release this response waiter
+    // promptly without cancelling the accepted owner operation.
+    match wait_for_owner_reply(&reply_receiver, stop, &response_waiter, windows.owner_reply) {
+        OwnerReplyWait::Reply(Ok(response)) => Some(response),
         // The owner loop has already validated the request and framed a
         // correlated reply for it. Whether that reply carries `Ok` or a
         // typed failure (for example a `related` probe that legitimately
@@ -137,13 +144,79 @@ fn serve_one_frame(
         // used to send an unrelated *next* request to a freshly reopened
         // connection, which could observe different state than the one the
         // caller was already talking to.
-        Ok(Err(error)) if error.closes_connection() => refuse(stream, &error),
+        OwnerReplyWait::Reply(Err(error)) if error.closes_connection() => refuse(stream, &error),
         // A recoverable typed failure is framed exactly like a success reply
         // and handed to the caller's normal write path so the connection
         // keeps serving this client's next frame.
-        Ok(Err(error)) => Some(crate::service::error_payload(correlation, &error, limits)),
-        Err(mpsc::RecvTimeoutError::Timeout) => refuse(stream, &ProtocolError::Timeout),
-        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        OwnerReplyWait::Reply(Err(error)) => {
+            Some(crate::service::error_payload(correlation, &error, limits))
+        }
+        OwnerReplyWait::TimedOut => refuse(stream, &ProtocolError::Timeout),
+        OwnerReplyWait::Stopped | OwnerReplyWait::Disconnected => None,
+    }
+}
+
+enum OwnerReplyWait {
+    Reply(Result<Vec<u8>, ProtocolError>),
+    TimedOut,
+    Stopped,
+    Disconnected,
+}
+
+/// Waits for the one response without extending its deadline on each poll.
+/// Read-side EOF is intentionally not consulted: a client may half-close its
+/// write side after sending a request and still be waiting for the reply.
+/// Prompt full-peer-abandonment detection is deferred until a portable,
+/// nonblocking, sole-reader-safe probe is available.
+fn wait_for_owner_reply(
+    receiver: &mpsc::Receiver<Result<Vec<u8>, ProtocolError>>,
+    stop: &AtomicBool,
+    waiter: &super::ResponseWaiter,
+    timeout: Duration,
+) -> OwnerReplyWait {
+    let started = Instant::now();
+    loop {
+        match receiver.try_recv() {
+            Ok(reply) => return OwnerReplyWait::Reply(reply),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                waiter.abandon();
+                return OwnerReplyWait::Disconnected;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        if stop.load(Ordering::Acquire) {
+            // The wire Shutdown request sets stop immediately before its
+            // correlated acknowledgement is sent. Drain that narrow race,
+            // then let the worker exit rather than joining it for the full
+            // owner-reply window.
+            match receiver.recv_timeout(STOP_RESPONSE_DRAIN_GRACE) {
+                Ok(reply) => return OwnerReplyWait::Reply(reply),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    waiter.abandon();
+                    return OwnerReplyWait::Disconnected;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    waiter.abandon();
+                    return OwnerReplyWait::Stopped;
+                }
+            }
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            waiter.abandon();
+            return OwnerReplyWait::TimedOut;
+        }
+        let remaining = timeout.saturating_sub(elapsed);
+        match receiver.recv_timeout(remaining.min(RESPONSE_WAIT_TICK)) {
+            Ok(reply) => return OwnerReplyWait::Reply(reply),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                waiter.abandon();
+                return OwnerReplyWait::Disconnected;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 }
 

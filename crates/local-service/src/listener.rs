@@ -30,6 +30,7 @@ use crate::protocol::{FrameLimits, ProtocolError};
 use crate::service::{LocaldService, OwnerService};
 use std::fmt;
 use std::io;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
@@ -259,6 +260,27 @@ impl std::error::Error for PeerPolicyError {}
 struct Inbound {
     payload: Vec<u8>,
     reply: SyncSender<Result<Vec<u8>, ProtocolError>>,
+    response_waiter: ResponseWaiter,
+}
+
+/// Cancellation of the one-shot response wait only. This token is separate
+/// from request correlation and from any durable owner-operation identity.
+#[derive(Clone, Debug, Default)]
+struct ResponseWaiter(Arc<AtomicBool>);
+
+impl ResponseWaiter {
+    fn abandon(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn is_abandoned(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+struct DeferredReply {
+    sender: SyncSender<Result<Vec<u8>, ProtocolError>>,
+    response_waiter: ResponseWaiter,
 }
 
 /// A single-owner bounded Unix listener.
@@ -278,8 +300,10 @@ pub struct UnixListenerService<O> {
     inbound: Receiver<Inbound>,
     inbound_sender: SyncSender<Inbound>,
     /// Replies owed to requests the owner took and answers later, by ticket.
-    deferred: std::collections::BTreeMap<u64, SyncSender<Result<Vec<u8>, ProtocolError>>>,
-    next_ticket: u64,
+    deferred: std::collections::BTreeMap<u64, DeferredReply>,
+    /// Exhaustion refuses further admission instead of wrapping and reusing a
+    /// deferred-response identity still retained by an owner.
+    next_ticket: Option<NonZeroU64>,
     peer_policy: Arc<dyn PeerPolicy>,
     streams: Arc<Mutex<std::collections::BTreeMap<usize, backend_engine::LocalStream>>>,
     next_connection_id: AtomicUsize,
@@ -360,7 +384,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             inbound,
             inbound_sender,
             deferred: std::collections::BTreeMap::new(),
-            next_ticket: 1,
+            next_ticket: NonZeroU64::new(1),
             peer_policy,
             streams: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             next_connection_id: AtomicUsize::new(1),
@@ -558,10 +582,33 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         self.workers.push(worker);
     }
 
+    fn issue_deferred_ticket(&mut self) -> Option<u64> {
+        let ticket = self.next_ticket?;
+        self.next_ticket = ticket.get().checked_add(1).and_then(NonZeroU64::new);
+        Some(ticket.get())
+    }
+
+    fn prune_abandoned_replies(&mut self) {
+        let abandoned = self
+            .deferred
+            .iter()
+            .filter_map(|(ticket, reply)| reply.response_waiter.is_abandoned().then_some(*ticket))
+            .collect::<Vec<_>>();
+        for ticket in abandoned {
+            self.deferred.remove(&ticket);
+            self.service.abandon_deferred_reply(ticket);
+        }
+    }
+
     fn drain_owner_once(&mut self) -> bool {
         // Keep owner progress independent of whether clients are currently
         // producing requests.
+        self.prune_abandoned_replies();
         let owner_progress = self.service.owner_mut().serve_one();
+        // A client can abandon while a synchronous owner poll is running.
+        // Prune again before polling deferred completions so abandoned reply
+        // registrations do not survive an otherwise completed owner turn.
+        self.prune_abandoned_replies();
         // Replies the owner owed and can now give: a deferred command's long
         // part (an index job's compile) ran off this loop while it answered
         // other requests.
@@ -571,7 +618,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 if result.is_err() {
                     self.report.failures = self.report.failures.saturating_add(1);
                 }
-                let _ = reply.send(result);
+                let _ = reply.sender.send(result);
                 self.report.frames = self.report.frames.saturating_add(1);
                 deferred_progress = true;
             }
@@ -579,11 +626,29 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         match self.inbound.try_recv() {
             Ok(inbound) => {
                 let started = Instant::now();
-                let ticket = self.next_ticket;
-                self.next_ticket = self.next_ticket.wrapping_add(1);
-                let result = match self.service.handle_payload_or_defer(&inbound.payload, ticket) {
+                let Some(ticket) = self.issue_deferred_ticket() else {
+                    let result = Err(ProtocolError::Backpressure);
+                    let _ = inbound.reply.send(result);
+                    self.report.failures = self.report.failures.saturating_add(1);
+                    self.report.frames = self.report.frames.saturating_add(1);
+                    return true;
+                };
+                let result = match self
+                    .service
+                    .handle_payload_or_defer(&inbound.payload, ticket)
+                {
                     Ok(crate::service::Handled::Deferred) => {
-                        self.deferred.insert(ticket, inbound.reply);
+                        if inbound.response_waiter.is_abandoned() {
+                            self.service.abandon_deferred_reply(ticket);
+                        } else {
+                            self.deferred.insert(
+                                ticket,
+                                DeferredReply {
+                                    sender: inbound.reply,
+                                    response_waiter: inbound.response_waiter,
+                                },
+                            );
+                        }
                         return true;
                     }
                     Ok(crate::service::Handled::Reply(reply)) => Ok(reply),
@@ -615,15 +680,20 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         }
     }
 
+    fn close_deferred_replies(&mut self) {
+        for (ticket, reply) in std::mem::take(&mut self.deferred) {
+            reply.response_waiter.abandon();
+            self.service.abandon_deferred_reply(ticket);
+            let _ = reply.sender.send(Err(ProtocolError::Closed));
+        }
+    }
+
     fn finish_workers(&mut self) {
         self.shutdown();
-        // A deferred command's long part is abandoned, as a crash would leave
-        // it: its durable steps before the hand-off stand, and nothing after
-        // it is published. Its client hears that the owner closed now rather
-        // than when the compile would have ended.
-        for (_, reply) in std::mem::take(&mut self.deferred) {
-            let _ = reply.send(Err(ProtocolError::Closed));
-        }
+        // Close the response registration without replaying or cancelling
+        // the accepted owner operation. Its client hears that the owner
+        // closed rather than waiting for the operation's normal completion.
+        self.close_deferred_replies();
         // A wire shutdown request sets the stop flag while its worker is still
         // waiting to write the acknowledgement.  Drain admitted requests
         // until those workers have handed their replies to the socket; only
@@ -634,6 +704,11 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             let _ = self.drain_owner_once();
             thread::sleep(self.config.poll_interval);
         }
+        // A command already inside synchronous owner handling can become
+        // deferred after the first close pass. Its stopped waiter has now
+        // either returned or reached the bounded drain deadline, so release
+        // any response registration created during that interval as well.
+        self.close_deferred_replies();
         // A worker may be parked in its bounded read deadline while holding a
         // long-lived subscription connection. Closing the listener-owned
         // clones wakes those readers immediately so shutdown can join every
@@ -754,7 +829,61 @@ mod tests {
     use crate::service::OwnerService;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicBool;
     use std::time::Instant;
+
+    fn command_body(request_id: u64) -> Vec<u8> {
+        serde_json::to_vec(&backend_engine::CommandDto::new(
+            request_id,
+            backend_engine::Command::Revision,
+        ))
+        .unwrap_or_else(|error| panic!("encode command: {error}"))
+    }
+
+    fn error_reply(request_id: u64, message: &str) -> Vec<u8> {
+        backend_engine::encode_reply_dto(&backend_engine::ReplyDto::error(request_id, message))
+            .unwrap_or_else(|error| panic!("encode reply: {error}"))
+    }
+
+    fn client_reply(stream: &mut std::os::unix::net::UnixStream) -> backend_engine::ReplyDto {
+        let payload =
+            read_frame(stream, limits()).unwrap_or_else(|error| panic!("read reply: {error}"));
+        backend_engine::decode_reply_dto(&payload)
+            .unwrap_or_else(|error| panic!("decode reply DTO: {error}"))
+    }
+
+    struct RunningListener {
+        shutdown: ListenerShutdown,
+        worker: Option<JoinHandle<Result<RunReport, ListenerError>>>,
+    }
+
+    impl RunningListener {
+        fn spawn(mut listener: UnixListenerService<impl OwnerService + 'static>) -> Self {
+            let shutdown = listener.shutdown_handle();
+            let worker = thread::spawn(move || listener.run());
+            Self {
+                shutdown,
+                worker: Some(worker),
+            }
+        }
+
+        fn join(&mut self) -> Result<RunReport, ListenerError> {
+            self.worker
+                .take()
+                .expect("listener worker is present")
+                .join()
+                .unwrap_or_else(|_| panic!("listener thread panicked"))
+        }
+    }
+
+    impl Drop for RunningListener {
+        fn drop(&mut self) {
+            self.shutdown.request();
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
 
     #[derive(Debug, Default)]
     struct FakeOwner;
@@ -834,6 +963,113 @@ mod tests {
     struct DeferringOwner {
         long: Duration,
         pending: Option<(u64, Instant)>,
+    }
+
+    #[derive(Debug, Default)]
+    struct DeferredState {
+        accepted: AtomicUsize,
+        committed: AtomicUsize,
+        released: AtomicBool,
+        pending: Mutex<Vec<(u64, u64)>>,
+        abandoned: Mutex<Vec<u64>>,
+    }
+
+    #[derive(Debug)]
+    struct GatedOwner(Arc<DeferredState>);
+
+    impl OwnerService for GatedOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            let request_id = backend_engine::command_request_id(body)
+                .ok_or_else(|| ProtocolError::InvalidCommand("missing request ID".to_owned()))?;
+            Ok(error_reply(request_id, "immediate"))
+        }
+
+        fn command_or_defer(
+            &mut self,
+            body: &[u8],
+            ticket: u64,
+        ) -> Result<crate::service::CommandOutcome, ProtocolError> {
+            let request_id = backend_engine::command_request_id(body)
+                .ok_or_else(|| ProtocolError::InvalidCommand("missing request ID".to_owned()))?;
+            if request_id == 7 {
+                self.0
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((ticket, request_id));
+                self.0.accepted.fetch_add(1, Ordering::AcqRel);
+                Ok(crate::service::CommandOutcome::Deferred)
+            } else {
+                Ok(crate::service::CommandOutcome::Reply(error_reply(
+                    request_id,
+                    "immediate",
+                )))
+            }
+        }
+
+        fn poll_deferred(&mut self) -> Vec<(u64, Result<Vec<u8>, ProtocolError>)> {
+            if !self.0.released.load(Ordering::Acquire) {
+                return Vec::new();
+            }
+            let pending = std::mem::take(
+                &mut *self
+                    .0
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            self.0.committed.fetch_add(pending.len(), Ordering::AcqRel);
+            pending
+                .into_iter()
+                .map(|(ticket, request_id)| (ticket, Ok(error_reply(request_id, "completed"))))
+                .collect()
+        }
+
+        fn abandon_deferred_reply(&mut self, ticket: u64) {
+            self.0
+                .abandoned
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(ticket);
+        }
+
+        fn engine(
+            &mut self,
+            _request_id: u64,
+            _request: EngineRequest,
+        ) -> Result<EngineStatus, ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn serve_one(&mut self) -> bool {
+            false
+        }
+
+        fn close(&mut self) {}
+    }
+
+    #[derive(Debug)]
+    struct CommandCountingOwner(Arc<AtomicUsize>);
+
+    impl OwnerService for CommandCountingOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Ok(body.to_vec())
+        }
+
+        fn engine(
+            &mut self,
+            _request_id: u64,
+            _request: EngineRequest,
+        ) -> Result<EngineStatus, ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn serve_one(&mut self) -> bool {
+            false
+        }
+
+        fn close(&mut self) {}
     }
 
     impl OwnerService for DeferringOwner {
@@ -937,6 +1173,339 @@ mod tests {
         let (indexed, indexed_at) = indexing.join().unwrap_or_else(|_| panic!("index thread"));
         assert_eq!(indexed.unwrap_or_else(|error| panic!("index: {error}")), b"indexed");
         assert!(indexed_at.duration_since(started) >= long, "the deferred reply came when its work was done");
+        listener.shutdown();
+        drop(listener);
+    }
+
+    #[test]
+    fn a_timed_out_response_releases_its_waiter_but_the_accepted_owner_work_completes_once() {
+        let path = socket_path("deferred-waiter-timeout");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.io_timeout = Duration::from_secs(3);
+        config.request_idle_timeout = Duration::from_secs(3);
+        config.owner_reply_timeout = Duration::from_millis(180);
+        config.max_clients = 4;
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let state = Arc::new(DeferredState::default());
+        let service = LocaldService::new(GatedOwner(Arc::clone(&state)), config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+
+        let request_path = path.clone();
+        let abandoned_client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(request_path)
+                .unwrap_or_else(|error| panic!("connect deferred client: {error}"));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap_or_else(|error| panic!("set client read timeout: {error}"));
+            let request = crate::protocol::frame(&command_body(7), limits())
+                .unwrap_or_else(|error| panic!("frame deferred command: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write deferred command: {error}"));
+            client_reply(&mut stream)
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && !abandoned_client.is_finished() {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        let timeout_reply = abandoned_client
+            .join()
+            .unwrap_or_else(|_| panic!("deferred client panicked"));
+        assert_eq!(timeout_reply.request_id, 7);
+        assert!(matches!(
+            timeout_reply.reply,
+            backend_engine::CommandReply::Error(_)
+        ));
+
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < cleanup_deadline
+            && (listener.deferred.len() != 0
+                || state
+                    .abandoned
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty())
+        {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once during cleanup: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            listener.deferred.is_empty(),
+            "the timed-out sender is pruned"
+        );
+        assert_eq!(state.accepted.load(Ordering::Acquire), 1);
+        assert_eq!(state.committed.load(Ordering::Acquire), 0);
+        let pending = state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            pending.len(),
+            1,
+            "abandoning a response leaves the accepted operation pending"
+        );
+        let accepted_ticket = pending[0].0;
+        drop(pending);
+        let abandoned = state
+            .abandoned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            abandoned.as_slice(),
+            &[accepted_ticket],
+            "only the exact abandoned request loses its reply registration"
+        );
+
+        // A second correlation remains healthy while the first operation has
+        // no response waiter.
+        let request_path = path.clone();
+        let health_client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(request_path)
+                .unwrap_or_else(|error| panic!("connect immediate client: {error}"));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap_or_else(|error| panic!("set client read timeout: {error}"));
+            let request = crate::protocol::frame(&command_body(8), limits())
+                .unwrap_or_else(|error| panic!("frame immediate command: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write immediate command: {error}"));
+            client_reply(&mut stream)
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !health_client.is_finished() {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once for immediate command: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        let health_reply = health_client
+            .join()
+            .unwrap_or_else(|_| panic!("immediate client panicked"));
+        assert_eq!(health_reply.request_id, 8);
+        assert_eq!(
+            health_reply.reply,
+            backend_engine::CommandReply::Error("immediate".to_owned())
+        );
+
+        state.released.store(true, Ordering::Release);
+        let completion_deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < completion_deadline && state.committed.load(Ordering::Acquire) == 0 {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once for completion: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.committed.load(Ordering::Acquire), 1);
+        assert!(
+            state
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        listener.shutdown();
+        drop(listener);
+    }
+
+    #[test]
+    fn listener_stop_wakes_a_deferred_response_waiter_with_its_correlated_reply() {
+        let path = socket_path("deferred-waiter-stop");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.io_timeout = Duration::from_secs(5);
+        config.request_idle_timeout = Duration::from_secs(5);
+        config.owner_reply_timeout = Duration::from_secs(15);
+        config.max_clients = 2;
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let state = Arc::new(DeferredState::default());
+        let service = LocaldService::new(GatedOwner(Arc::clone(&state)), config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let mut runner = RunningListener::spawn(listener);
+
+        let request_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(request_path)
+                .unwrap_or_else(|error| panic!("connect deferred client: {error}"));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap_or_else(|error| panic!("set client read timeout: {error}"));
+            let request = crate::protocol::frame(&command_body(7), limits())
+                .unwrap_or_else(|error| panic!("frame deferred command: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write deferred command: {error}"));
+            client_reply(&mut stream)
+        });
+
+        let acceptance_deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < acceptance_deadline && state.accepted.load(Ordering::Acquire) == 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.accepted.load(Ordering::Acquire), 1);
+        let stopped_at = Instant::now();
+        runner.shutdown.request();
+        let reply = client
+            .join()
+            .unwrap_or_else(|_| panic!("deferred client panicked"));
+        assert_eq!(reply.request_id, 7);
+        assert!(matches!(
+            reply.reply,
+            backend_engine::CommandReply::Error(_)
+        ));
+        runner
+            .join()
+            .unwrap_or_else(|error| panic!("listener run: {error}"));
+        assert!(
+            stopped_at.elapsed() < Duration::from_secs(2),
+            "listener stop must not wait for the fifteen-second owner deadline"
+        );
+        assert_eq!(state.accepted.load(Ordering::Acquire), 1);
+        assert_eq!(state.committed.load(Ordering::Acquire), 0);
+        assert_eq!(
+            state
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1,
+            "listener stop releases the waiter but leaves accepted work pending"
+        );
+        assert_eq!(
+            state
+                .abandoned
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn half_closing_after_a_complete_request_still_receives_its_exact_reply() {
+        let path = socket_path("half-close-response");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.io_timeout = Duration::from_secs(2);
+        config.request_idle_timeout = Duration::from_secs(2);
+        config.owner_reply_timeout = Duration::from_secs(2);
+        config.max_clients = 2;
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let service = LocaldService::new(FakeOwner, config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let expected = command_body(19);
+        let client_path = path.clone();
+        let request_body = expected.clone();
+        let client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+                .unwrap_or_else(|error| panic!("connect: {error}"));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap_or_else(|error| panic!("set read timeout: {error}"));
+            let request = crate::protocol::frame(&request_body, limits())
+                .unwrap_or_else(|error| panic!("frame: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write: {error}"));
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .unwrap_or_else(|error| panic!("half-close request side: {error}"));
+            read_frame(&mut stream, limits())
+                .unwrap_or_else(|error| panic!("read half-close response: {error}"))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !client.is_finished() {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        let reply = client
+            .join()
+            .unwrap_or_else(|_| panic!("half-close client panicked"));
+        assert_eq!(reply, expected);
+        listener.shutdown();
+        drop(listener);
+    }
+
+    #[test]
+    fn an_incomplete_frame_never_reaches_the_owner_and_does_not_block_another_client() {
+        let path = socket_path("mid-frame-admission");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.io_timeout = Duration::from_millis(300);
+        config.request_idle_timeout = Duration::from_secs(2);
+        config.owner_reply_timeout = Duration::from_secs(2);
+        config.max_clients = 3;
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let commands = Arc::new(AtomicUsize::new(0));
+        let service =
+            LocaldService::new(CommandCountingOwner(Arc::clone(&commands)), config.limits)
+                .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+
+        let mut partial = std::os::unix::net::UnixStream::connect(&path)
+            .unwrap_or_else(|error| panic!("connect partial client: {error}"));
+        partial
+            .write_all(&[0, 0])
+            .unwrap_or_else(|error| panic!("write partial frame prefix: {error}"));
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < deadline {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once for partial frame: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(commands.load(Ordering::Acquire), 0);
+
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+                .unwrap_or_else(|error| panic!("connect complete client: {error}"));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap_or_else(|error| panic!("set read timeout: {error}"));
+            let body = command_body(23);
+            let request = crate::protocol::frame(&body, limits())
+                .unwrap_or_else(|error| panic!("frame complete request: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write complete request: {error}"));
+            read_frame(&mut stream, limits())
+                .unwrap_or_else(|error| panic!("read complete response: {error}"))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !client.is_finished() {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once for complete frame: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            client
+                .join()
+                .unwrap_or_else(|_| panic!("complete client panicked")),
+            command_body(23)
+        );
+        assert_eq!(commands.load(Ordering::Acquire), 1);
+        drop(partial);
         listener.shutdown();
         drop(listener);
     }

@@ -78,6 +78,11 @@ pub trait OwnerService {
         Vec::new()
     }
 
+    /// Releases only a deferred response registration after its transport
+    /// waiter timed out or the listener shut down. Implementations must leave
+    /// any accepted owner mutation running.
+    fn abandon_deferred_reply(&mut self, _ticket: u64) {}
+
     /// Closes request lanes and releases external transport references.
     fn close(&mut self);
 }
@@ -255,6 +260,14 @@ impl<O: OwnerService> LocaldService<O> {
                 (ticket, response)
             })
             .collect()
+    }
+
+    /// Drops owner-side state retained solely to deliver one deferred reply.
+    /// The owner operation itself remains admitted and continues normally.
+    pub(crate) fn abandon_deferred_reply(&mut self, ticket: u64) {
+        if !self.closed {
+            self.owner.abandon_deferred_reply(ticket);
+        }
     }
 
     /// Handles one already-connected byte stream until EOF, protocol error,
