@@ -36,7 +36,18 @@ use std::sync::Arc;
 
 /// What the license mark knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LicenseKnowledge {
+    /// A manifest or producer answered, including an explicitly absent field.
+    Observed,
+    /// No declaration was established; these are the source's readable words.
+    Unknown(SharedString),
+}
+
+/// What the license mark knows.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LicenseFacts {
+    /// Whether `spdx`/`file` were observed, rather than discarded from a gap.
+    pub knowledge: LicenseKnowledge,
     /// The package's SPDX expression; `None` when the manifest has no
     /// license field.
     pub spdx: Option<SharedString>,
@@ -65,6 +76,7 @@ impl LicenseFacts {
     #[must_use]
     pub fn new(spdx: Option<&str>, yours: Option<&str>, project: &str) -> Self {
         Self {
+            knowledge: LicenseKnowledge::Observed,
             spdx: spdx.map(|s| SharedString::from(s.to_owned())),
             file: None,
             yours: yours.map(|y| SharedString::from(y.to_owned())),
@@ -73,6 +85,12 @@ impl LicenseFacts {
             tree: None,
             own: false,
         }
+    }
+
+    /// An unanswered license read. It cannot become an absence verdict or a fit.
+    #[must_use]
+    pub fn unknown(note: impl Into<SharedString>, yours: Option<&str>, project: &str) -> Self {
+        Self { knowledge: LicenseKnowledge::Unknown(note.into()), ..Self::new(None, yours, project) }
     }
 
     /// The expression the card reads (a license file reads as its own id).
@@ -88,9 +106,13 @@ impl LicenseFacts {
     /// The mark's one word.
     #[must_use]
     pub fn word(&self) -> String {
+        if matches!(self.knowledge, LicenseKnowledge::Unknown(_)) {
+            return "unknown".to_owned();
+        }
         match (&self.spdx, &self.file, self.expr()) {
             (Some(_), _, Some(expr)) => spdx::rest_word(&expr),
             (None, Some(_), _) => "custom".to_owned(),
+            (Some(_), _, None) => "unrecognised".to_owned(),
             _ => "none".to_owned(),
         }
     }
@@ -99,6 +121,16 @@ impl LicenseFacts {
     /// through the rendered card; the hedge is always last).
     #[must_use]
     pub fn reading(&self) -> Reading {
+        if let LicenseKnowledge::Unknown(note) = &self.knowledge {
+            return Reading {
+                title: "Licence unknown".to_owned(),
+                place: note.to_string(),
+                ids: Vec::new(),
+                fit: None,
+                assumed: None,
+                tree: None,
+            };
+        }
         let expr = self.expr();
         let ids = expr.as_ref().map(spdx::ids).unwrap_or_default();
         let (title, place) = match (&self.spdx, &self.file) {

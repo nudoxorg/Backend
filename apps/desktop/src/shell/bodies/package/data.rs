@@ -531,12 +531,45 @@ pub(super) fn licence(
     project: &str,
     subject: Subject,
 ) -> Rc<LicenseFacts> {
-    let spdx = record
-        .and_then(|record| record.license.known())
-        .map(ToString::to_string);
-    let mut facts = LicenseFacts::new(spdx.as_deref(), active_license, project);
+    use crate::model::pages::{Known, LicenseDeclaration};
+    let mut facts = match record.map(|record| &record.license) {
+        Some(Known::Known(LicenseDeclaration::Expression(value))) => LicenseFacts::new(Some(value), active_license, project),
+        Some(Known::Known(LicenseDeclaration::File(value))) => {
+            let mut facts = LicenseFacts::new(None, active_license, project);
+            facts.file = Some(value.to_string().into());
+            facts
+        }
+        Some(Known::Known(LicenseDeclaration::DeclaredAbsent)) => LicenseFacts::new(None, active_license, project),
+        Some(Known::Unknown(gap)) => LicenseFacts::unknown(crate::shell::kit::gap_words(gap), active_license, project),
+        None => LicenseFacts::unknown("The package record has not been read.", active_license, project),
+    };
     facts.own = subject == Subject::Project;
     Rc::new(facts)
+}
+
+#[cfg(test)]
+mod licence_tests {
+    use super::*;
+    use crate::model::pages::LicenseDeclaration;
+    use facet::folio::crest::verdict;
+
+    #[test]
+    fn package_licence_preserves_read_failure_absence_and_declared_file() {
+        let mut dossier = crate::shell::tests::dossier();
+        let record = match &mut dossier.record { Known::Known(record) => record, Known::Unknown(_) => panic!("fixture record") };
+        record.license = Known::unknown(GapReason::ReadFailed, "permission denied");
+        let unknown = licence(Some(record), Some("MIT"), "reader", Subject::Dependency);
+        assert_eq!(verdict(&unknown).word, "Licence unknown");
+        assert!(verdict(&unknown).line.contains("permission denied"));
+        assert!(unknown.reading().fit.is_none());
+        record.license = Known::Known(LicenseDeclaration::DeclaredAbsent);
+        assert_eq!(verdict(&licence(Some(record), None, "reader", Subject::Dependency)).word, "No licence");
+        record.license = Known::Known(LicenseDeclaration::File(Arc::from("COPYING")));
+        let file = licence(Some(record), None, "reader", Subject::Dependency);
+        assert_eq!(file.file.as_deref(), Some("COPYING"));
+        assert_ne!(verdict(&file).word, "No licence");
+        assert_eq!(verdict(&licence(None, None, "reader", Subject::Dependency)).word, "Licence unknown");
+    }
 }
 
 /// What the advisory feeds say, in the crest's three states.

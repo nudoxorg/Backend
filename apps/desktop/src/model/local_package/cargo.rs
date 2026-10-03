@@ -9,6 +9,7 @@ use super::{
     readme,
 };
 use crate::core::LocalProjectId;
+use crate::model::pages::{GapReason, Known, LicenseDeclaration};
 use backend_platform::child_output;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -31,6 +32,8 @@ pub(super) struct CargoPackage {
     pub(super) version: String,
     pub(super) description: Option<String>,
     pub(super) license: Option<String>,
+    #[serde(default)]
+    pub(super) license_file: Option<String>,
     pub(super) repository: Option<String>,
     pub(super) homepage: Option<String>,
     pub(super) documentation: Option<String>,
@@ -236,7 +239,18 @@ pub(super) fn project(
         name: selected.map(|package| package.name.clone()),
         version: selected.map(|package| package.version.clone()),
         description: selected.and_then(|package| package.description.clone()),
-        license: selected.and_then(|package| package.license.clone()),
+        license: selected.map_or_else(
+            || Known::unknown(GapReason::NotRecorded, "Cargo did not select a root package."),
+            |package| {
+                if let Some(value) = &package.license {
+                    Known::Known(LicenseDeclaration::Expression(Arc::from(value.as_str())))
+                } else if let Some(value) = &package.license_file {
+                    Known::Known(LicenseDeclaration::File(Arc::from(value.as_str())))
+                } else {
+                    Known::Known(LicenseDeclaration::DeclaredAbsent)
+                }
+            },
+        ),
         rust_version: selected.and_then(|package| package.rust_version.clone()),
         repository: selected.and_then(|package| package.repository.clone()),
         homepage: selected.and_then(|package| package.homepage.clone()),

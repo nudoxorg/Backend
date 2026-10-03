@@ -24,6 +24,7 @@ mod tests;
 pub(crate) const MAX_README_LINK_DESTINATION_BYTES: usize = 4 * 1024;
 
 use crate::core::LocalProjectId;
+use crate::model::pages::{GapReason, Known, LicenseDeclaration};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,8 +54,8 @@ pub struct LocalPackage {
     pub version: Option<Arc<str>>,
     /// Manifest description, else the README's first paragraph.
     pub description: Option<Arc<str>>,
-    /// SPDX license expression.
-    pub license: Option<Arc<str>>,
+    /// Observed expression, licence file or absence; never infer absence from a failed read.
+    pub license: Known<LicenseDeclaration>,
     /// Minimum supported Rust version.
     pub rust_version: Option<Arc<str>>,
     /// Manifest repository, else the `origin` remote from `.git/config`.
@@ -256,14 +257,17 @@ impl LocalPackageLoader {
         let facts = manifest::read_manifest(&root.join("Cargo.toml"))
             .map(|manifest| manifest::package_facts(&root, &manifest));
         let description = facts.as_ref().and_then(|facts| present(facts.description.clone()));
-        let license = facts.as_ref().and_then(|facts| present(facts.license.clone()));
+        let license = facts.as_ref().map_or_else(
+            || Known::unknown(GapReason::ReadFailed, "The package manifest could not be read."),
+            |facts| facts.license.clone(),
+        );
         // A project with neither a README to project nor manifest facts to
         // recover has nothing for this reader to contribute; `None` lets the
         // caller fall through to its own gap. But a missing README must not
         // discard manifest facts that were actually read (this was crate
         // `present`'s bug: no `README.md`, yet its `Cargo.toml` states a
         // workspace-inherited license that a bare emptiness check threw away).
-        if readme.is_empty() && description.is_none() && license.is_none() {
+        if readme.is_empty() && description.is_none() && license.known().is_none() {
             return None;
         }
         Some(LocalPackage {
@@ -272,7 +276,7 @@ impl LocalPackageLoader {
             name: Arc::from(folder_name(&root)),
             version: None,
             description: description.map(Arc::from),
-            license: license.map(Arc::from),
+            license,
             rust_version: None,
             repository: None,
             homepage: None,
@@ -362,7 +366,7 @@ pub fn active_project(root: &Path) -> ActiveProject {
     let facts = manifest::package_facts(root, &manifest);
     ActiveProject {
         name: present(facts.name).map(Arc::from),
-        license: present(facts.license).map(Arc::from),
+        license: facts.license.known().and_then(LicenseDeclaration::expression).map(Arc::from),
         members: manifest::workspace_member_names(root, &manifest).into_iter().map(Arc::from).collect(),
     }
 }
@@ -372,7 +376,7 @@ struct Facts {
     name: Option<String>,
     version: Option<String>,
     description: Option<String>,
-    license: Option<String>,
+    license: Known<LicenseDeclaration>,
     rust_version: Option<String>,
     repository: Option<String>,
     homepage: Option<String>,
@@ -410,7 +414,7 @@ impl Facts {
             name: Arc::from(name),
             version: present(self.version).map(Arc::from),
             description: description.map(Arc::from),
-            license: present(self.license).map(Arc::from),
+            license: self.license,
             rust_version: present(self.rust_version).map(Arc::from),
             repository: present(self.repository)
                 .or_else(|| discover_repository(&root))

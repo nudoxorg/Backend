@@ -205,8 +205,37 @@ pub struct PackageRecord {
     pub advisory: Known<AdvisorySummary>,
     /// One-line description.
     pub description: Known<Arc<str>>,
-    /// License label.
-    pub license: Known<Arc<str>>,
+    /// The declaration observed by the source, or a gap when it could not answer.
+    pub license: Known<LicenseDeclaration>,
+}
+
+/// A licence declaration whose absence was actually established by a read.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum LicenseDeclaration {
+    /// SPDX expression, exactly as declared.
+    Expression(Arc<str>),
+    /// The manifest declares a file containing its terms.
+    File(Arc<str>),
+    /// The source was read and declares neither expression nor licence file.
+    DeclaredAbsent,
+}
+
+impl LicenseDeclaration {
+    /// Only expressions can be used in an SPDX comparison.
+    #[must_use]
+    pub fn expression(&self) -> Option<&str> {
+        match self { Self::Expression(value) => Some(value), Self::File(_) | Self::DeclaredAbsent => None }
+    }
+}
+
+impl std::fmt::Display for LicenseDeclaration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expression(value) => formatter.write_str(value),
+            Self::File(value) => write!(formatter, "terms in {value}"),
+            Self::DeclaredAbsent => formatter.write_str("no licence declaration"),
+        }
+    }
 }
 
 /// One tick on the release comb.

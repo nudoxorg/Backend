@@ -239,7 +239,7 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
             bytes: Known::Unknown(unknown(GapReason::NotRecorded)),
             advisory: Known::Unknown(unknown(if local { GapReason::LocalProject } else { GapReason::Unconfigured })),
             description: manifest.description.as_deref().map_or_else(|| Known::Unknown(unknown(GapReason::NotCaptured)), |d| Known::Known(Arc::from(d))),
-            license: manifest.license.as_deref().map_or_else(|| Known::Unknown(unknown(GapReason::NotCaptured)), |l| Known::Known(Arc::from(l))),
+            license: manifest.license.as_deref().map_or_else(|| Known::Unknown(unknown(GapReason::NotCaptured)), |l| Known::Known(backend_desktop::model::pages::LicenseDeclaration::Expression(Arc::from(l)))),
         }),
         versions: if local { Known::Unknown(unknown(GapReason::LocalProject)) } else { Known::Known(versions.into()) },
         dependencies: Known::Known(dependencies.into()),

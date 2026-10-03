@@ -171,7 +171,7 @@ fn assert_fixture_features(package: &LocalPackage) -> Outcome {
 fn assert_fixture_identity(package: &LocalPackage) {
     assert_eq!(package.name.as_ref(), "fixture-root");
     assert_eq!(package.version.as_deref(), Some("0.4.2"));
-    assert_eq!(package.license.as_deref(), Some("MIT OR Apache-2.0"));
+    assert_eq!(package.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT OR Apache-2.0"));
     assert_eq!(
         package.description.as_deref(),
         Some("A fixture workspace root.")
@@ -344,7 +344,7 @@ fn a_folder_without_a_manifest_is_named_by_its_readme_or_folder() -> Outcome {
     );
     assert_eq!(package.members, 0);
     assert!(package.dependencies.is_empty());
-    assert!(package.version.is_none() && package.license.is_none());
+    assert!(package.version.is_none() && package.license.gap().is_some());
 
     let bare = Scratch::new("no-manifest-bare")?;
     let package = LocalPackageLoader::default().load(&bare.project()?);
@@ -609,7 +609,7 @@ fn readme_projection_still_recovers_description_and_license() -> Outcome {
         package.description.as_deref(),
         Some("A native Rust encoder and decoder of TOML-formatted files and streams.")
     );
-    assert_eq!(package.license.as_deref(), Some("MIT OR Apache-2.0"));
+    assert_eq!(package.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT OR Apache-2.0"));
     Ok(())
 }
 
@@ -634,19 +634,18 @@ fn readme_projection_survives_a_missing_readme_file() -> Outcome {
         .readme(&project)
         .expect("a manifest license is still a fact to report, even with no README file");
     assert!(package.readme.is_empty());
-    assert_eq!(package.license.as_deref(), Some("MIT OR Apache-2.0"));
+    assert_eq!(package.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT OR Apache-2.0"));
     Ok(())
 }
 
-/// The genuine empty case is unchanged: no README, and a manifest with
-/// neither description nor license, leaves nothing for this reader to
-/// contribute, and it still says so with `None` rather than a hollow value.
+/// A complete manifest read with no licence declaration establishes absence.
 #[test]
 fn readme_projection_still_reports_nothing_when_there_is_nothing() -> Outcome {
     let scratch = Scratch::new("readme-truly-empty")?;
     scratch.write("Cargo.toml", "[package]\nname = \"bare\"\nversion = \"0.1.0\"\n")?;
     let project = scratch.project()?;
-    assert!(LocalPackageLoader::without_cargo().readme(&project).is_none());
+    let package = LocalPackageLoader::without_cargo().readme(&project).expect("observed manifest absence");
+    assert_eq!(package.license.known(), Some(&crate::model::pages::LicenseDeclaration::DeclaredAbsent));
     Ok(())
 }
 
@@ -693,14 +692,14 @@ fn the_real_present_crate_readme_and_load_both_resolve_the_inherited_license() {
     let loader = LocalPackageLoader::without_cargo();
     let via_readme = loader.readme(&project).expect("readme");
     assert_eq!(
-        via_readme.license.as_deref(),
+        via_readme.license.known().and_then(crate::model::pages::LicenseDeclaration::expression),
         Some("MIT OR Apache-2.0"),
         "readme() source={:?}",
         via_readme.source
     );
     let via_load = loader.load(&project);
     assert_eq!(
-        via_load.license.as_deref(),
+        via_load.license.known().and_then(crate::model::pages::LicenseDeclaration::expression),
         Some("MIT OR Apache-2.0"),
         "load() source={:?}",
         via_load.source
@@ -760,6 +759,7 @@ fn cargo_projection_uses_only_workspace_members() -> Outcome {
             version: "1.2.3".to_owned(),
             description: Some(format!("{id} description")),
             license: Some("MIT".to_owned()),
+            license_file: None,
             repository: None,
             homepage: None,
             documentation: None,
@@ -797,7 +797,7 @@ fn cargo_projection_uses_only_workspace_members() -> Outcome {
     let folder = scratch.0.file_name().and_then(|name| name.to_str());
     assert_eq!(Some(projected.name.as_ref()), folder);
     assert_eq!(projected.version, None);
-    assert_eq!(projected.license, None);
+    assert!(projected.license.gap().is_some());
     assert_eq!(projected.members, 2);
     let names = projected
         .features
@@ -987,4 +987,37 @@ fn member_patterns_match_like_cargo_globs() {
     assert!(!member_pattern_matches("crates/*", "crates"));
     assert!(member_pattern_matches("nested/**", "nested/a/b"));
     assert!(!member_pattern_matches("nested/**", "nestedness/a"));
+}
+
+#[test]
+fn licence_evidence_distinguishes_absence_file_and_failed_or_unresolved_reads() -> Outcome {
+    use crate::model::pages::{GapReason, Known, LicenseDeclaration};
+    let scratch = Scratch::new("licence-evidence")?;
+    let project = scratch.project()?;
+    let loader = LocalPackageLoader::without_cargo();
+    scratch.write("README.md", "# Evidence\n")?;
+    for malformed in ["", "[package\n"] {
+        scratch.write("Cargo.toml", malformed)?;
+        let value = loader.readme(&project).expect("README survives an unanswered manifest");
+        assert!(value.license.gap().is_some(), "unreadable or virtual manifest is unknown");
+    }
+    scratch.write("Cargo.toml", "[package]\nname = 'evidence'\nversion = '0.1.0'\n")?;
+    let value = loader.readme(&project).expect("observed absence");
+    assert_eq!(value.license, Known::Known(LicenseDeclaration::DeclaredAbsent));
+    scratch.write("Cargo.toml", "[package]\nname = 'evidence'\nversion = '0.1.0'\nlicense-file = 'COPYING'\n")?;
+    let value = loader.readme(&project).expect("declared licence file");
+    assert_eq!(value.license, Known::Known(LicenseDeclaration::File(Arc::from("COPYING"))));
+    scratch.write("Cargo.toml", "[package]\nname = 'evidence'\nversion = '0.1.0'\nlicense.workspace = true\n")?;
+    let value = loader.readme(&project).expect("unresolved inheritance survives with README");
+    assert_eq!(value.license.gap().map(|gap| gap.reason), Some(GapReason::Unavailable));
+    scratch.write("Cargo.toml", "[workspace.package]\nlicense = 'MIT'\n")?;
+    scratch.write("member/README.md", "# Member\n")?;
+    scratch.write("member/Cargo.toml", "[package]\nname = 'member'\nversion = '0.1.0'\n")?;
+    let member = LocalProjectId::from_path(&scratch.0.join("member")).map_err(text)?;
+    let value = loader.readme(&member).expect("member manifest");
+    assert_eq!(value.license, Known::Known(LicenseDeclaration::DeclaredAbsent), "omission does not opt into workspace inheritance");
+    scratch.write("member/Cargo.toml", "[package]\nname = 'member'\nversion = '0.1.0'\nlicense.workspace = true\n")?;
+    let value = loader.readme(&member).expect("resolved explicit inheritance");
+    assert_eq!(value.license.known().and_then(LicenseDeclaration::expression), Some("MIT"));
+    Ok(())
 }

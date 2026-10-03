@@ -35,7 +35,7 @@ pub use orbit::{
 };
 pub use package::{
     AdvisorySummary, Dependency, DependencyScope, Downloads, OutlineNode, OutlineTree,
-    PackageDossier, PackageRecord, ReadmeExactKind, ReadmeExactTarget, ReadmeExactTargets, RecordSource, Standing, VersionEntry,
+    LicenseDeclaration, PackageDossier, PackageRecord, ReadmeExactKind, ReadmeExactTarget, ReadmeExactTargets, RecordSource, Standing, VersionEntry,
 };
 pub use search::{MatchReason, SearchContinuation, SearchPage, SearchRow};
 pub use source::{IdentifierSpan, SourceCoverage, SourceOrigin, SourceText, SourceTextError, SourceView};

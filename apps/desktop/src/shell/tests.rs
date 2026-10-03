@@ -150,7 +150,7 @@ pub(crate) fn dossier() -> PackageDossier {
             bytes: Known::Unknown(unknown(GapReason::LocalProject)),
             advisory: Known::Unknown(unknown(GapReason::LocalProject)),
             description: Known::Known(Arc::from("How one symbol page reads.")),
-            license: Known::Known(Arc::from("MIT")),
+            license: Known::Known(crate::model::pages::LicenseDeclaration::Expression(Arc::from("MIT"))),
         }),
         versions: Known::Unknown(unknown(GapReason::LocalProject)),
         dependencies: Known::Known(Arc::from([])),

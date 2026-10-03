@@ -1850,10 +1850,8 @@ fn with_local_facts(mut record: PackageRecord, local: Option<&LocalPackage>) -> 
     {
         record.description = Known::Known(Arc::clone(description));
     }
-    if record.license.known().is_none()
-        && let Some(license) = &local.license
-    {
-        record.license = Known::Known(Arc::clone(license));
+    if record.license.known().is_none() {
+        record.license = local.license.clone();
     }
     record
 }
@@ -1901,10 +1899,7 @@ fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
             || Known::unknown(GapReason::NotRecorded, "the manifest states no description"),
             Known::Known,
         ),
-        license: local.license.clone().map_or_else(
-            || Known::unknown(GapReason::NotRecorded, "the manifest states no license"),
-            Known::Known,
-        ),
+        license: local.license.clone(),
     }
 }
 
@@ -2957,7 +2952,7 @@ mod tests {
             name: Arc::from("backend-present"),
             version: None,
             description: None,
-            license: None,
+            license: Known::unknown(GapReason::NotCaptured, "fixture has no licence evidence"),
             rust_version: None,
             repository: None,
             homepage: None,
@@ -3837,7 +3832,7 @@ mod tests {
             name: Arc::from("beta"),
             version: None,
             description: Some(Arc::from("A native Rust encoder and decoder.")),
-            license: Some(Arc::from("MIT OR Apache-2.0")),
+            license: Known::Known(crate::model::pages::LicenseDeclaration::Expression(Arc::from("MIT OR Apache-2.0"))),
             rust_version: None,
             repository: None,
             homepage: None,
@@ -3872,7 +3867,7 @@ mod tests {
             head.description.known().map(AsRef::as_ref),
             Some("A native Rust encoder and decoder.")
         );
-        assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT OR Apache-2.0"));
+        assert_eq!(head.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT OR Apache-2.0"));
 
         // A mixed root can also have another ecosystem's manifest. Cargo
         // description and licence do not become that package's facts.
@@ -3896,7 +3891,7 @@ mod tests {
             name: Arc::from("backend-present"),
             version: Some(Arc::from("0.3.0")),
             description: None,
-            license: Some(Arc::from("MIT")),
+            license: Known::Known(crate::model::pages::LicenseDeclaration::Expression(Arc::from("MIT"))),
             rust_version: None,
             repository: None,
             homepage: None,
@@ -3945,7 +3940,7 @@ mod tests {
         assert_eq!(head.source, RecordSource::LocalManifest);
         assert_eq!(head.name.as_ref(), "backend-present");
         assert_eq!(head.version.known().map(AsRef::as_ref), Some("0.3.0"));
-        assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT"));
+        assert_eq!(head.license.known().and_then(crate::model::pages::LicenseDeclaration::expression), Some("MIT"));
         assert_eq!(
             head.downloads.gap().map(|gap| gap.reason),
             Some(GapReason::LocalProject)
@@ -4001,7 +3996,7 @@ mod tests {
             name: Arc::from("secret-local"),
             version: Some(Arc::from("9.9.9")),
             description: None,
-            license: None,
+            license: Known::unknown(GapReason::NotCaptured, "fixture has no licence evidence"),
             rust_version: None,
             repository: None,
             homepage: None,
@@ -4078,7 +4073,7 @@ mod tests {
             name: Arc::from("present"),
             version: None,
             description: None,
-            license: None,
+            license: Known::unknown(GapReason::NotCaptured, "fixture has no licence evidence"),
             rust_version: None,
             repository: None,
             homepage: None,

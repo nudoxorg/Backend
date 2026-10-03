@@ -14,6 +14,8 @@ use super::{
     readme,
 };
 use crate::core::LocalProjectId;
+use crate::model::pages::{GapReason, Known, LicenseDeclaration};
+use std::sync::Arc;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -45,6 +47,8 @@ struct ManifestPackage {
     version: Option<toml::Value>,
     description: Option<toml::Value>,
     license: Option<toml::Value>,
+    #[serde(rename = "license-file")]
+    license_file: Option<toml::Value>,
     #[serde(rename = "rust-version")]
     rust_version: Option<toml::Value>,
     repository: Option<toml::Value>,
@@ -143,7 +147,7 @@ pub(super) fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
         name: package.and_then(|package| package.name.clone()),
         version: field(|package| package.version.as_ref()),
         description: field(|package| package.description.as_ref()),
-        license: field(|package| package.license.as_ref()),
+        license: license_fact(package, inherited),
         rust_version: field(|package| package.rust_version.as_ref()),
         repository: field(|package| package.repository.as_ref()),
         homepage: field(|package| package.homepage.as_ref()),
@@ -181,7 +185,7 @@ impl Facts {
             name: None,
             version: None,
             description: None,
-            license: None,
+            license: Known::unknown(GapReason::ReadFailed, "The package manifest could not be read."),
             rust_version: None,
             repository: None,
             homepage: None,
@@ -197,9 +201,10 @@ impl Facts {
 pub(super) fn read_manifest(path: &Path) -> Option<Manifest> {
     let file = fs::File::open(path).ok()?;
     let mut source = String::new();
-    file.take(MAX_MANIFEST_BYTES)
+    file.take(MAX_MANIFEST_BYTES + 1)
         .read_to_string(&mut source)
         .ok()?;
+    if source.len() as u64 > MAX_MANIFEST_BYTES { return None; }
     toml::from_str(&source).ok()
 }
 
@@ -432,6 +437,30 @@ fn inherited_string(
         None => inherited
             .and_then(toml::Value::as_str)
             .map(ToOwned::to_owned),
+    }
+}
+
+/// Unlike the older string projector, omitted fields do not inherit. Cargo
+/// requires an explicit `workspace = true`; an unresolved one stays unknown.
+fn license_fact(package: Option<&ManifestPackage>, inherited: Option<&ManifestPackage>) -> Known<LicenseDeclaration> {
+    let Some(package) = package else {
+        return Known::unknown(GapReason::NotRecorded, "This manifest has no package declaration.");
+    };
+    let resolve = |value: Option<&toml::Value>, inherited: Option<&toml::Value>| -> Result<Option<Arc<str>>, ()> {
+        let value = match value {
+            None => return Ok(None),
+            Some(value) if inherits(value) => inherited.ok_or(())?,
+            Some(value) => value,
+        };
+        value.as_str().filter(|value| !value.trim().is_empty()).map(|value| Some(Arc::from(value))).ok_or(())
+    };
+    let expression = resolve(package.license.as_ref(), inherited.and_then(|package| package.license.as_ref()));
+    let file = resolve(package.license_file.as_ref(), inherited.and_then(|package| package.license_file.as_ref()));
+    match (expression, file) {
+        (Ok(Some(value)), _) => Known::Known(LicenseDeclaration::Expression(value)),
+        (Ok(None), Ok(Some(value))) => Known::Known(LicenseDeclaration::File(value)),
+        (Ok(None), Ok(None)) => Known::Known(LicenseDeclaration::DeclaredAbsent),
+        _ => Known::unknown(GapReason::Unavailable, "The manifest's licence declaration could not be resolved."),
     }
 }
 

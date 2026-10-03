@@ -215,7 +215,29 @@ fn rank(family: Family) -> u8 {
 #[must_use]
 pub fn verdict(facts: &LicenseFacts) -> Verdict {
     let reading = facts.reading();
+    if let crate::marks::license::LicenseKnowledge::Unknown(note) = &facts.knowledge {
+        return Verdict {
+            word: "Licence unknown",
+            tone: Voice::Amber,
+            line: note.to_string(),
+            expression: Vec::new(),
+            permits: Vec::new(),
+            asks: Vec::new(),
+            limits: Vec::new(),
+        };
+    }
     let Some(expr) = facts.expr() else {
+        if facts.spdx.is_some() {
+            return Verdict {
+                word: "Unrecognised",
+                tone: Voice::Amber,
+                line: "The declared expression could not be interpreted. Read the package's licence terms.".to_owned(),
+                expression: Vec::new(),
+                permits: Vec::new(),
+                asks: Vec::new(),
+                limits: Vec::new(),
+            };
+        }
         return Verdict {
             word: "No licence",
             tone: Voice::Coral,
@@ -547,7 +569,8 @@ impl RenderOnce for Stamp {
             crate::controls::button::wire(
                 plate.role(gpui::Role::Button)
                     .aria_label("Toggle licence details")
-                    .aria_expanded(requested),
+                    .aria_expanded(requested)
+                    .aria_description(format!("{}: {}", verdict.word, verdict.line)),
                 &touch,
                 Some(toggle),
             )
@@ -789,5 +812,20 @@ mod tests {
         let v = verdict(&LicenseFacts::new(Some("LicenseRef-Custom"), None, "backend"));
         assert_eq!(v.word, "Unrecognised");
         assert_eq!(v.tone, Voice::Amber);
+    }
+
+    #[test]
+    fn an_unanswered_licence_never_claims_absence_or_permissions() {
+        let facts = LicenseFacts::unknown("The manifest read failed: permission denied.", Some("MIT"), "backend");
+        let v = verdict(&facts);
+        assert_eq!(facts.word(), "unknown");
+        assert!(facts.reading().fit.is_none());
+        assert_eq!(v.word, "Licence unknown");
+        assert!(v.line.contains("permission denied"));
+        assert!(v.permits.is_empty() && v.asks.is_empty() && v.limits.is_empty());
+        assert!(!v.line.contains("reserves every right"));
+        let mut file = LicenseFacts::new(None, None, "backend");
+        file.file = Some("COPYING".into());
+        assert_ne!(verdict(&file).word, "No licence");
     }
 }
