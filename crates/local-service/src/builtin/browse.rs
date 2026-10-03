@@ -3547,9 +3547,9 @@ fn basic_input_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
 /// Captures inherited Cargo config candidates, recursive `include` inputs,
 /// and configured custom target JSONs. Unresolvable includes/target files
 /// fail closed instead of leaving an unobserved input outside the witness.
-fn cargo_config_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
+fn cargo_config_paths(request_context: &Path) -> Result<Vec<PathBuf>, String> {
     let mut pending = Vec::<(PathBuf, usize)>::new();
-    let ancestors = workspace.ancestors().take(128).collect::<Vec<_>>();
+    let ancestors = request_context.ancestors().take(128).collect::<Vec<_>>();
     if ancestors.len() == 128 && ancestors.last().is_some_and(|path| path.parent().is_some()) {
         return Err("Cargo config ancestor chain exceeds its limit".to_owned());
     }
@@ -3660,8 +3660,7 @@ fn cargo_config_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
             };
             for target in targets {
                 observe_custom_target_path(
-                    workspace,
-                    path.parent().unwrap_or(workspace),
+                    &cargo_config_relative_path_base(&path)?,
                     target,
                     &mut paths,
                 )?;
@@ -3672,7 +3671,7 @@ fn cargo_config_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
         let target = target
             .to_str()
             .ok_or_else(|| "CARGO_BUILD_TARGET is not UTF-8".to_owned())?;
-        observe_custom_target_path(workspace, workspace, target, &mut paths)?;
+        observe_custom_target_path(request_context, target, &mut paths)?;
     }
     Ok(paths.into_iter().collect())
 }
@@ -3761,8 +3760,7 @@ fn rustup_selection_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn observe_custom_target_path(
-    workspace: &Path,
-    config_directory: &Path,
+    relative_base: &Path,
     target: &str,
     observed_paths: &mut BTreeSet<PathBuf>,
 ) -> Result<(), String> {
@@ -3773,29 +3771,31 @@ fn observe_custom_target_path(
         return Ok(());
     }
     let target = PathBuf::from(target);
-    let candidates = if target.is_absolute() {
-        vec![target]
+    let resolved = if target.is_absolute() {
+        target
     } else {
-        vec![config_directory.join(&target), workspace.join(&target)]
+        relative_base.join(&target)
     };
-    let mut found = false;
-    for candidate in &candidates {
-        match read_observation_file(candidate, MAX_CARGO_OBSERVATION_FILE_BYTES) {
-            Ok(Some(_)) => found = true,
-            Ok(None) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    if !found {
+    if read_observation_file(&resolved, MAX_CARGO_OBSERVATION_FILE_BYTES)?.is_none() {
         return Err(
             "Cargo custom target JSON could not be located for source observation".to_owned(),
         );
     }
-    observed_paths.extend(candidates);
+    observed_paths.insert(resolved);
     if observed_paths.len() > MAX_CARGO_CONFIG_INPUTS {
         return Err("Cargo configuration input set exceeds its limit".to_owned());
     }
     Ok(())
+}
+
+/// Cargo anchors paths from a config file two levels above that file, matching
+/// the directory above the `.cargo` directory for hierarchical configs.
+fn cargo_config_relative_path_base(config_path: &Path) -> Result<PathBuf, String> {
+    config_path
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Cargo config path has no relative-path base".to_owned())
 }
 
 fn patched_names_bytes(manifest: &[u8]) -> BTreeSet<String> {
@@ -5830,6 +5830,70 @@ mod tests {
         assert_eq!(cache.counters.tree_input_allocations, 4);
         assert!(!workspace.join("Cargo.lock").exists());
         assert!(patch.join("Cargo.toml").is_file());
+    }
+
+    #[test]
+    fn custom_target_paths_use_the_parent_of_each_cargo_config_directory() {
+        let scratch = scratch("backend-cargo-custom-target-config-base");
+        let workspace = scratch.0.join("workspace");
+        let member = workspace.join("crates/member");
+        let workspace_config = workspace.join(".cargo/config.toml");
+        let member_config = member.join(".cargo/config.toml");
+        let workspace_target = workspace.join("targets/workspace.json");
+        let member_target = member.join("targets/member.json");
+        let workspace_decoy = workspace.join(".cargo/targets/workspace.json");
+        let member_decoy = member.join(".cargo/targets/member.json");
+
+        for path in [
+            workspace_config
+                .parent()
+                .expect("workspace config directory"),
+            member_config.parent().expect("member config directory"),
+            workspace_target
+                .parent()
+                .expect("workspace target directory"),
+            member_target.parent().expect("member target directory"),
+            workspace_decoy.parent().expect("workspace decoy directory"),
+            member_decoy.parent().expect("member decoy directory"),
+        ] {
+            std::fs::create_dir_all(path).expect("fixture directory");
+        }
+        std::fs::write(
+            &workspace_config,
+            "[build]\ntarget = \"targets/workspace.json\"\n",
+        )
+        .expect("workspace Cargo config");
+        std::fs::write(
+            &member_config,
+            "[build]\ntarget = \"targets/member.json\"\n",
+        )
+        .expect("member Cargo config");
+        for path in [
+            &workspace_target,
+            &member_target,
+            &workspace_decoy,
+            &member_decoy,
+        ] {
+            std::fs::write(path, b"{}\n").expect("target JSON");
+        }
+
+        let mut observed = BTreeSet::new();
+        for (config, value) in [
+            (&workspace_config, "targets/workspace.json"),
+            (&member_config, "targets/member.json"),
+        ] {
+            let base = cargo_config_relative_path_base(config).expect("Cargo config path base");
+            observe_custom_target_path(&base, value, &mut observed)
+                .expect("Cargo target from config-relative base");
+        }
+
+        assert_eq!(
+            observed,
+            BTreeSet::from([workspace_target, member_target]),
+            "Cargo resolves each hierarchical config target from the directory above its .cargo directory"
+        );
+        assert!(!observed.contains(&workspace_decoy));
+        assert!(!observed.contains(&member_decoy));
     }
 
     #[cfg(unix)]
