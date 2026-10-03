@@ -1690,7 +1690,8 @@ mod tests {
         assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 16);
         for _ in 0..9 { rig.keys("down"); }
         assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 8);
-        rig.keys("enter");
+        rig.native_press("enter");
+        rig.settle();
         assert_refusal(&mut rig, "many", "UnplacedChoice has no page yet");
         for _ in 0..7 { rig.keys("down"); }
         assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 15);
