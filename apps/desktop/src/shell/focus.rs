@@ -1018,4 +1018,40 @@ mod tests {
             "the glow's weak list cannot retain a dead region"
         );
     }
+
+    #[gpui::test]
+    fn mounted_reader_target_geometry_does_not_survive_target_retirement(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut rig = crate::shell::tests::rig(cx, None, 1440.0, 900.0);
+        rig.settle();
+        rig.repaint();
+        let mut targets = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let (target, painted) = targets
+            .placed()
+            .into_iter()
+            .find(|(target, bounds)| {
+                target.id.starts_with("orbit-package-")
+                    && bounds.size.width > px(0.0)
+                    && bounds.size.height > px(0.0)
+            })
+            .expect("real mounted Library package target");
+        targets.set_active(true);
+        targets.focus(target.id.clone());
+        let measure = Measure::new(px(1440.0), &facet::Facet::default());
+        let cached = targets.glow(&measure);
+        assert_eq!(targets.focused_bounds(), Some(painted));
+        assert_eq!(
+            cached.shown_bounds(),
+            Some(painted),
+            "glow uses the actual translated prepaint rectangle"
+        );
+        targets.begin();
+        assert!(
+            cached.shown_bounds().is_none(),
+            "cached geometry cannot admit a retired painted target"
+        );
+    }
 }
