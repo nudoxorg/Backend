@@ -16,6 +16,8 @@ pub struct Link {
     pub range: Range<usize>,
     pub destination: SharedString,
     pub activate: Act,
+    /// The same current-page guard used for pointer focus and every action.
+    pub admission: Option<crate::controls::button::ActivationAdmission>,
 }
 
 /// A paragraph with one shaping/layout authority and scoped native endpoints.
@@ -76,15 +78,20 @@ pub fn rich_text(
     let (ranges, acts): (Vec<_>, Vec<_>) = spans
         .iter()
         .filter_map(|span| {
-            span.link
-                .as_ref()
-                .map(|link| (link.range.clone(), Rc::clone(&link.activate)))
+            span.link.as_ref().map(|link| {
+                (
+                    link.range.clone(),
+                    (Rc::clone(&link.activate), link.admission.clone()),
+                )
+            })
         })
         .unzip();
     let glyphs =
         InteractiveText::new("doc-glyphs", glyphs).on_click(ranges, move |which, window, cx| {
-            if let Some(act) = acts.get(which) {
-                act(window, cx);
+            if let Some((act, admission)) = acts.get(which) {
+                if admission.as_ref().is_none_or(|admit| admit(cx)) {
+                    act(window, cx);
+                }
             }
         });
     RichText {
@@ -142,8 +149,10 @@ fn rows(layout: &TextLayout, mask: Bounds<Pixels>) -> Vec<Row> {
         let count = line.wrap_boundaries.len() + 1;
         let bottom = y + height * count;
         if bottom > mask.top() && y < mask.bottom() {
-            let first = ((mask.top() - y) / height).ceil().max(0.) as usize;
-            let after = ((mask.bottom() - y) / height).floor().max(0.) as usize;
+            // Retain partially visible native rows. Exact glyph fragments
+            // are intersected with this mask before publishing an endpoint.
+            let first = ((mask.top() - y) / height).floor().max(0.) as usize;
+            let after = ((mask.bottom() - y) / height).ceil().max(0.) as usize;
             let boundary = |row: usize| {
                 line.wrap_boundaries
                     .get(row)
@@ -151,7 +160,7 @@ fn rows(layout: &TextLayout, mask: Bounds<Pixels>) -> Vec<Row> {
                         line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
                     })
             };
-            for row in first..after.min(count) {
+            for row in first.min(count)..after.min(count) {
                 let start = if row == 0 { 0 } else { boundary(row - 1) };
                 rows.push(Row {
                     range: source_start + start..source_start + boundary(row),
@@ -220,9 +229,9 @@ impl Element for RichText {
             };
             let Some(bounds) = rows
                 .iter()
-                .find_map(|row| row.fragment(&span.range, self.layout.line_height()))
+                .filter_map(|row| row.fragment(&span.range, self.layout.line_height()))
                 .map(|bounds| bounds.intersect(&mask))
-                .filter(|bounds| bounds.size.width > px(0.) && bounds.size.height > px(0.))
+                .find(|bounds| bounds.size.width > px(0.) && bounds.size.height > px(0.))
             else {
                 continue;
             };
@@ -247,6 +256,13 @@ impl Element for RichText {
                 let focus = window.use_keyed_state((endpoint, 0), cx, |_, cx| cx.focus_handle());
                 let focus: FocusHandle = focus.read(cx).clone();
                 let activate = Rc::clone(&link.activate);
+                let admission = link.admission.clone();
+                if let Some(admit) = &admission {
+                    native = crate::controls::button::capture_activation_admission(
+                        native,
+                        admit.clone(),
+                    );
+                }
                 let destination = link.destination.clone();
                 native = crate::controls::button::native_button_with_event(
                     native
@@ -259,7 +275,9 @@ impl Element for RichText {
                         // InteractiveText owns exact pointer glyph admission
                         // across every wrapped line. This endpoint owns the
                         // native keyboard and normalized accessibility Click.
-                        if matches!(event, ClickEvent::Keyboard(_)) {
+                        if matches!(event, ClickEvent::Keyboard(_))
+                            && admission.as_ref().is_none_or(|admit| admit(cx))
+                        {
                             activate(window, cx);
                         }
                     },
@@ -310,6 +328,7 @@ mod tests {
                 range,
                 destination: "crate::Tick".into(),
                 activate: Rc::new(|_, _| {}),
+                admission: None,
             })
             .collect();
         let body = rich_text("unicode", words.clone(), vec![], links);

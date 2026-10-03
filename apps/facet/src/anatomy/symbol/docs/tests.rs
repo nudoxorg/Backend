@@ -163,68 +163,69 @@ fn compiled_symbol_kinds_and_languages_expose_the_painted_words_at_large_text(
                 cx,
             )
         });
-        for (n, lang) in languages.into_iter().enumerate() {
-            let kind = kinds[n % kinds.len()];
-            let mut facts = Facts::new(&title, kind, lang, "current-package");
-            facts.docs = vec![
-                Block::Para(prose.into()),
-                Block::Head("Example".into()),
-                Block::Code(code.into()),
-            ];
-            facts.site = Some(Site {
-                file: "src/cadence.rs".into(),
-                line: 9,
-                open: Some("/current/src/cadence.rs".into()),
-            });
-            document.update(cx, |document, cx| {
-                document.view = symbol::compile(&facts);
-                cx.notify();
-            });
-            let native = tree(cx);
-            assert!(
-                has(&native, "Heading", &title),
-                "{kind:?}/{lang:?}/{scale}: current title"
-            );
-            assert!(
-                has(&native, "Label", prose),
-                "{kind:?}/{lang:?}/{scale}: authored lede"
-            );
-            assert!(
-                has(&native, "Label", "Nothing in your workspace names it."),
-                "zero items are said honestly"
-            );
-            assert!(has(&native, "Heading", "IN YOUR WORKSPACE"));
-            assert!(
-                has(&native, "Link", "src/cadence.rs:9"),
-                "actual source endpoint"
-            );
-            assert!(has(&native, "Button", "Example"), "actual disclosure label");
-            assert!(
-                has(&native, "Label", code),
-                "the open example paints its code"
-            );
-            assert!(
-                !has(&native, "Heading", "initial"),
-                "a prior page cannot remain in the native tree"
-            );
-            document.update(cx, |document, cx| {
-                document.covered = true;
-                cx.notify();
-            });
-            let native = tree(cx);
-            assert!(
-                !has(&native, "Heading", &title),
-                "covered pages have no semantic copy"
-            );
-            assert!(!has(&native, "Label", prose));
-            document.update(cx, |document, cx| {
-                document.covered = false;
-                cx.notify();
-            });
-            assert!(
-                has(&tree(cx), "Heading", &title),
-                "release restores the actual document"
-            );
+        for lang in languages {
+            for kind in kinds {
+                let mut facts = Facts::new(&title, kind, lang, "current-package");
+                facts.docs = vec![
+                    Block::Para(prose.into()),
+                    Block::Head("Example".into()),
+                    Block::Code(code.into()),
+                ];
+                facts.site = Some(Site {
+                    file: "src/cadence.rs".into(),
+                    line: 9,
+                    open: Some("/current/src/cadence.rs".into()),
+                });
+                document.update(cx, |document, cx| {
+                    document.view = symbol::compile(&facts);
+                    cx.notify();
+                });
+                let native = tree(cx);
+                assert!(
+                    has(&native, "Heading", &title),
+                    "{kind:?}/{lang:?}/{scale}: current title"
+                );
+                assert!(
+                    has(&native, "Label", prose),
+                    "{kind:?}/{lang:?}/{scale}: authored lede"
+                );
+                assert!(
+                    has(&native, "Label", "Nothing in your workspace names it."),
+                    "zero items are said honestly"
+                );
+                assert!(has(&native, "Heading", "IN YOUR WORKSPACE"));
+                assert!(
+                    has(&native, "Link", "src/cadence.rs:9"),
+                    "actual source endpoint"
+                );
+                assert!(has(&native, "Button", "Example"), "actual disclosure label");
+                assert!(
+                    has(&native, "Label", code),
+                    "the open example paints its code"
+                );
+                assert!(
+                    !has(&native, "Heading", "initial"),
+                    "a prior page cannot remain in the native tree"
+                );
+                document.update(cx, |document, cx| {
+                    document.covered = true;
+                    cx.notify();
+                });
+                let native = tree(cx);
+                assert!(
+                    !has(&native, "Heading", &title),
+                    "covered pages have no semantic copy"
+                );
+                assert!(!has(&native, "Label", prose));
+                document.update(cx, |document, cx| {
+                    document.covered = false;
+                    cx.notify();
+                });
+                assert!(
+                    has(&tree(cx), "Heading", &title),
+                    "release restores the actual document"
+                );
+            }
         }
     }
 }
@@ -353,6 +354,7 @@ impl Render for Paragraph {
                 range: 0..self.words.len(),
                 destination: self.destination.clone(),
                 activate: std::rc::Rc::new(move |_, _| calls.set(calls.get() + 1)),
+                admission: None,
             }],
         );
         let body = div().w(px(260.)).text_size(px(24.)).child(body);

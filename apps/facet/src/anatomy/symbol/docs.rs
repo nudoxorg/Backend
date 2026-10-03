@@ -95,3 +95,6 @@ pub use rich::{Link, RichText, rich_text};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod link_admission_tests;

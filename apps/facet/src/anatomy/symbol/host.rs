@@ -136,6 +136,9 @@ pub trait Host: Doors {
     fn unfold(&self, key: &FoldKey) -> Option<Fold>;
     /// A doc reference's action (`[Value]`, `[crate::x]`).
     fn lookup(&self, target: &str) -> Option<Act>;
+    /// Existing current page/root/owner admission for prose endpoints. A
+    /// production host clones its dependency guard; still hosts need none.
+    fn link_admission(&self) -> Option<crate::controls::button::ActivationAdmission> { None }
     /// `element` as a keyboard target labelled `label` that runs `act`.
     fn target(&self, key: &Key, label: SharedString, act: Act, element: AnyElement) -> AnyElement;
     /// Attach native focus to the actual semantic control that was painted.

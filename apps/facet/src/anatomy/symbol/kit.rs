@@ -464,7 +464,7 @@ pub(super) fn prose(env: &Env<'_>, key: &Key, markup: &str, role: TypeRole, colo
     let (text, highlights, links) = runs(markup, &i, i.plate2);
     let shared = SharedString::from(text);
     let links = links.into_iter().filter_map(|(range, target)| env.host.lookup(&target)
-        .map(|activate| docs::Link { range, destination: target.into(), activate })).collect();
+        .map(|activate| docs::Link { range, destination: target.into(), activate, admission: env.host.link_admission() })).collect();
     let body = docs::rich_text(key.field(Slot::Run).id(), shared.clone(), highlights, links);
     probe::text(key.id(), shared, env.m.role(role), 1.0, TextOverflow::Wrap,
         div().set(role, &env.m).text_color(color).min_w_0().child(body)).into_any_element()
