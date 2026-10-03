@@ -38,9 +38,16 @@ struct PerWindow(HashMap<WindowId, Mounted>);
 
 impl Global for PerWindow {}
 
+/// Focus to claim after the dialog has retired from the native float layer.
+pub(crate) enum FocusHandoff {
+    None,
+    Restore(TransientFocusReturn),
+    Landed,
+}
+
 /// Makes the dialog agree with the snapshot's overlay. Called by the shell
 /// whenever the overlay changes.
-pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Window, cx: &mut App) -> Option<TransientFocusReturn> {
+pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Window, cx: &mut App) -> FocusHandoff {
     let wants = links.snapshot(cx).overlay() == Some(Overlay::AddProject);
     let id = window.window_handle().window_id();
     let open = dialog::is_open(window, cx);
@@ -99,7 +106,13 @@ pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Win
             // Covered forms retain their text and return receipt. A real
             // dismissal returns through the Shell's current-visit gate after
             // the underlay paints, for both Escape and pointer Cancel.
-            if landed { window.blur(); } else if !covered { return restore; }
+            if landed {
+                window.blur();
+                return FocusHandoff::Landed;
+            }
+            if !covered {
+                if let Some(restore) = restore { return FocusHandoff::Restore(restore); }
+            }
         }
         (false, false) => {
             if !links.snapshot(cx).session().overlay_is_covered(Overlay::AddProject) {
@@ -108,7 +121,7 @@ pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Win
         }
         (true, true) => {}
     }
-    None
+    FocusHandoff::None
 }
 
 /// Focus only the currently mounted Add owner, never a retained covered form.

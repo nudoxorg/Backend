@@ -199,7 +199,7 @@ impl Ctx<'_> {
         let overlay = snapshot.overlay();
         let root = snapshot.key();
         Rc::new(move |app| {
-            let Some(scope) = scope else { return false };
+            let Some(scope) = scope.as_ref() else { return false };
             shell
                 .upgrade()
                 .is_some_and(|shell| shell.read(app).admits_page_input_scope(scope, app))

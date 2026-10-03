@@ -482,6 +482,40 @@ fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(c
     assert_eq!(overlay(&mut rig), None);
 }
 
+#[gpui::test]
+fn native_settings_press_from_before_a_cover_cannot_select_after_its_return(cx: &mut TestAppContext) {
+    let mut rig = first_run(cx, 1440.0);
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance));
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Settings tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native Settings JSON");
+    let high = tree["nodes"].as_object().expect("nodes").values().find(|node|
+        node["aria"]["role"].as_str() == Some("RadioButton") && node["aria"]["label"].as_str() == Some("High"))
+        .expect("mounted High radio");
+    let b = &high["bounds"];
+    let at = gpui::point(gpui::px((b["x"].as_f64().expect("x") + b["width"].as_f64().expect("width") / 2.0) as f32),
+        gpui::px((b["y"].as_f64().expect("y") + b["height"].as_f64().expect("height") / 2.0) as f32));
+    rig.cx.simulate_event(gpui::MouseDownEvent { position: at, modifiers: gpui::Modifiers::none(),
+        button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+    rig.go(Intent::OpenAddProject);
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    rig.keys("escape");
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))));
+    rig.cx.simulate_event(gpui::MouseUpEvent { position: at, modifiers: gpui::Modifiers::none(),
+        button: gpui::MouseButton::Left, click_count: 1 });
+    rig.settle();
+    assert_eq!(snapshot(&mut rig).settings().contrast, crate::model::ContrastPreference::Normal,
+        "the old radio's pointer-up cannot select through a cover and return");
+    rig.cx.simulate_click(at, gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(snapshot(&mut rig).settings().contrast, crate::model::ContrastPreference::High,
+        "a new native press in the returned Settings visit still selects");
+}
+
 /// A fixture owner keeps the saved operation unknown until the explicit read.
 /// It never reports success from a catalog, a timeout or a second start.
 struct Reconciles { starts: Arc<AtomicUsize>, checks: Arc<AtomicUsize> }

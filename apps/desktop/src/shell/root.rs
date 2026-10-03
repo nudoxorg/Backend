@@ -30,7 +30,7 @@ use crate::model::pages::PageKey;
 use crate::model::ZoomStep;
 use crate::navigation::{Intent, Overlay, Route, RouteDepth, SettingsPage, View};
 use std::sync::Arc;
-use crate::runtime::store::{Branch, StoreEvent};
+use crate::runtime::store::{Branch, OwnerAttachment, OwnerRetryAttachment, StoreEvent};
 use crate::runtime::UiEntityGraph;
 use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
@@ -50,11 +50,16 @@ use gpui::{
 /// 1000), so a card opened over the drawer still shows above it.
 const DRAWER_PRIORITY: usize = 100;
 
-/// A page control's lease on the Shell's current transient input owner.
-/// Cover and dismissal both advance the existing generation: an old listener
-/// cannot become live again just because its page reappears.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PageInputScope(u64);
+/// A page control's lease on the current painted visit and owner. Ordinary
+/// input interrupts a deferred focus return, but must not revoke the very
+/// gesture being delivered to a native page control.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PageInputScope {
+    generation: u64,
+    authority: crate::core::ProducerAuthority,
+    attachment: Option<OwnerAttachment>,
+    retry: Option<OwnerRetryAttachment>,
+}
 
 /// Exact return claim for a covered native input owner. The model's top
 /// overlay remains the authority; this stores only native focus and its visit.
@@ -118,6 +123,9 @@ pub struct Shell {
     drawer_departing: bool,
     ask_return: Option<TransientFocusReturn>,
     pending_transient_return: Option<TransientFocusReturn>,
+    /// Changes when the page's input owner changes, never mid-gesture.
+    page_input_generation: Option<u64>,
+    /// Changes on every user input to cancel a deferred focus return.
     transient_generation: Option<u64>,
     /// The shelf's width the person has dragged it to, at 100 % text.
     shelf_width: Pixels,
@@ -260,6 +268,7 @@ impl Shell {
             drawer_departing: false,
             ask_return: None,
             pending_transient_return: None,
+            page_input_generation: Some(0),
             transient_generation: Some(0),
             shelf_width: geo::SHELF,
             modes: Modes::new(),
@@ -575,6 +584,7 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => {
                 self.advance_transient_generation();
+                self.advance_page_input_generation();
                 if self.links.snapshot(cx).overlay().is_some() {
                     self.reader
                         .update(cx, |reader, _| reader.cancel_native_return());
@@ -583,6 +593,7 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::Route) => {
                 self.advance_transient_generation();
+                self.advance_page_input_generation();
                 self.pending_transient_return = None;
                 let snapshot = self.links.snapshot(cx);
                 let route = snapshot.route().clone();
@@ -677,7 +688,17 @@ impl Shell {
                 if saved.overlay == snapshot.overlay() { self.queue_transient_return(saved, window, cx); }
             }
         }
-        if let Some(saved) = dialog_return { self.queue_transient_return(saved, window, cx); }
+        match dialog_return {
+            super::onboard::FocusHandoff::None => {}
+            super::onboard::FocusHandoff::Restore(saved) => self.queue_transient_return(saved, window, cx),
+            super::onboard::FocusHandoff::Landed => {
+                // The submitted field is gone. Give the live window a key
+                // receiver before another local shortcut can arrive.
+                if self.links.snapshot(cx).overlay().is_none() && self.background_input_allowed() {
+                    self.focus.focus(window, cx);
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -703,6 +724,10 @@ impl Shell {
     fn advance_transient_generation(&mut self) {
         self.transient_generation = self.transient_generation.and_then(|generation| generation.checked_add(1));
         self.pending_transient_return = None;
+    }
+
+    fn advance_page_input_generation(&mut self) {
+        self.page_input_generation = self.page_input_generation.and_then(|generation| generation.checked_add(1));
     }
 
     fn return_identity_current(&self, saved: &TransientFocusReturn, cx: &App) -> bool {
@@ -879,6 +904,7 @@ impl Shell {
     pub(crate) fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.advance_transient_generation();
         if self.frame.is_some_and(|frame| frame.shelf_overlays) {
+            self.advance_page_input_generation();
             self.shelf_over_open = !self.shelf_over_open;
             cx.notify();
         } else {
@@ -1287,15 +1313,18 @@ impl Shell {
     }
 
     pub(crate) fn page_input_scope(&self, cx: &App) -> Option<PageInputScope> {
-        if self.page_input_allowed(cx) {
-            self.transient_generation.map(PageInputScope)
-        } else {
-            None
-        }
+        if !self.page_input_allowed(cx) { return None; }
+        let store = self.links.store.read(cx);
+        Some(PageInputScope {
+            generation: self.page_input_generation?,
+            authority: store.snapshot().key().authority(),
+            attachment: store.current_owner_attachment(),
+            retry: store.current_owner_retry(),
+        })
     }
 
-    pub(crate) fn admits_page_input_scope(&self, scope: PageInputScope, cx: &App) -> bool {
-        self.page_input_scope(cx) == Some(scope)
+    pub(crate) fn admits_page_input_scope(&self, scope: &PageInputScope, cx: &App) -> bool {
+        self.page_input_scope(cx).as_ref() == Some(scope)
     }
 
     fn page_input_allowed(&self, cx: &App) -> bool {
@@ -1379,6 +1408,7 @@ impl Shell {
         }
         if self.shelf_over_open {
             self.advance_transient_generation();
+            self.advance_page_input_generation();
             self.shelf_over_open = false;
             cx.notify();
             return;
@@ -2019,6 +2049,7 @@ impl Render for Shell {
                                     // another activation from this same MouseUp.
                                     cx.stop_propagation();
                                     shell.advance_transient_generation();
+                                    shell.advance_page_input_generation();
                                     shell.shelf_over_open = false;
                                     cx.notify();
                                 })),
