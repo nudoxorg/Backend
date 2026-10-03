@@ -101,24 +101,27 @@ fn native_hand_exposes_saved_card_controls_and_visible_road_explanations(cx: &mu
     let mut rig = two_held(cx);
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
     rig.keys("h");
-    for percent in [100_u16, 150, 200] {
-        rig.go(Intent::ZoomTo { display: display.clone(), percent });
-        for width in [360.0, 480.0, 663.0, 1440.0] {
-            rig.cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.0)));
-            rig.settle();
-            let tree = native_tree(&mut rig);
-            let nodes = tree["nodes"].as_object().expect("native nodes");
-            for label in ["Open hand", "Open relation_label from hand", "Open RelationLabel from hand"] {
-                let node = nodes.values().find(|node| node["aria"]["label"].as_str() == Some(label)).expect("native hand button");
-                assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
-                assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
-            }
-            assert!(nodes.values().any(|node| node["aria"]["label"].as_str() == Some("from Link to RelationLabel, in one step")), "native Hand must say the sentence it paints");
-            rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
-            let ledger = painted(&mut rig);
-            for text in ledger.texts.iter().filter(|text| text.key.starts_with("hand-row:")) {
-                assert!(!text.clipped_without_ellipsis() && !text.clipped_vertically(), "{width}px/{percent}%: {text:?}");
-                assert!(text.bounds.x >= -0.5 && text.bounds.x + text.bounds.width <= width + 0.5, "Hand text leaves window: {text:?}");
+    for appearance in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
+        rig.go(Intent::SetAppearance(appearance));
+        for percent in [100_u16, 150, 200] {
+            rig.go(Intent::ZoomTo { display: display.clone(), percent });
+            for width in [360.0, 480.0, 663.0, 1440.0] {
+                rig.cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.0)));
+                rig.settle();
+                let tree = native_tree(&mut rig);
+                let nodes = tree["nodes"].as_object().expect("native nodes");
+                for label in ["Open hand", "Open relation_label from hand", "Open RelationLabel from hand"] {
+                    let node = nodes.values().find(|node| node["aria"]["label"].as_str() == Some(label)).expect("native hand button");
+                    assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+                    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
+                }
+                assert!(nodes.values().any(|node| node["aria"]["label"].as_str() == Some("from Link to RelationLabel, in one step")), "native Hand must say the sentence it paints");
+                rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
+                let ledger = painted(&mut rig);
+                for text in ledger.texts.iter().filter(|text| text.key.starts_with("hand-row:")) {
+                    assert!(!text.clipped_without_ellipsis() && !text.clipped_vertically(), "{width}px/{percent}%: {text:?}");
+                    assert!(text.bounds.x >= -0.5 && text.bounds.x + text.bounds.width <= width + 0.5, "Hand text leaves window: {text:?}");
+                }
             }
         }
     }
