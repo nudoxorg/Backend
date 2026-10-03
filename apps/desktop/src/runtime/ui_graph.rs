@@ -580,7 +580,15 @@ impl UiRootEntity {
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
             Intent::OpenSource { path, line } => {
                 let launch = crate::host::editor::launcher(cx);
-                crate::host::editor::open(launch.as_ref(), None, &path, line);
+                let visit = self.snapshot().route().clone();
+                let root = self.snapshot().key();
+                let outcome = crate::host::editor::open(launch.as_ref(), None, &path, line);
+                if let Some(store) = &self.store {
+                    let message = outcome.message(&path, line);
+                    store.update(cx, |store, cx| store.set_notice(Some(super::graph_focus::Notice {
+                        visit, root, message: message.into(), retry: None,
+                    }), cx));
+                }
             }
             Intent::TestConnection => {
                 if !self.connection_probe.is_active() {
