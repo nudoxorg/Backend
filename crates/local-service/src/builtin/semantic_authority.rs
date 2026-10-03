@@ -29,6 +29,8 @@ use backend_extension_turso::{
     VersionedPlaneMember, VersionedPlaneMetadata, reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
+use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
+use backend_semantic::vocabulary::CompileRecipeFact;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_semantic::vocabulary::Stage;
 use backend_store::{
@@ -913,24 +915,25 @@ struct AdmittedCompilation {
     claim: SemanticPublicationClaim,
 }
 
+/// Runtime facts for the exact compiler invocation. `SemanticBuildIdentity::recipe`
+/// is instead the source-bound recipe of one image and must be admitted from
+/// that image's validated provenance below.
 #[derive(Clone, Copy)]
-struct CompilerBuildAdmission {
+struct CompilerRuntimeAdmission {
     target: [u8; 32],
     profile: LanguageProfile,
     stage: Stage,
-    recipe: [u8; 32],
     toolchain: [u8; 32],
     environment: [u8; 32],
     target_platform: [u8; 32],
 }
 
-impl CompilerBuildAdmission {
+impl CompilerRuntimeAdmission {
     fn from_local(identity: backend_engine::application::LocalCompilerExecutionIdentity) -> Self {
         Self {
             target: *identity.target().as_ref(),
             profile: identity.profile(),
             stage: identity.stage(),
-            recipe: *identity.recipe_identity().as_ref(),
             toolchain: identity.toolchain_identity(),
             environment: identity.environment_identity(),
             target_platform: identity.target_platform_identity(),
@@ -944,7 +947,6 @@ impl CompilerBuildAdmission {
             target: *identity.target().as_ref(),
             profile: identity.profile(),
             stage: identity.stage(),
-            recipe: identity.recipe_identity().as_bytes(),
             toolchain: identity.toolchain_identity(),
             environment: identity.environment_identity(),
             target_platform: identity.target_platform_identity(),
@@ -955,11 +957,81 @@ impl CompilerBuildAdmission {
         self.target == *build.target()
             && self.profile == build.profile()
             && self.stage == build.stage()
-            && self.recipe == *build.recipe()
             && self.toolchain == *build.toolchain()
             && self.environment == *build.environment()
             && self.target_platform == *build.target_platform()
     }
+}
+
+/// Source recipe taken only from a fully reopened compiler image.
+///
+/// The wrapper keeps the source-specific identity separate from the invocation
+/// recipe and host-local execution digest, even though all are 32-byte values.
+#[derive(Clone, Copy)]
+struct CompilerImageAdmission {
+    source: backend_semantic::ir::SourceIdentity,
+    recipe: CompileRecipeFact,
+}
+
+impl CompilerImageAdmission {
+    fn from_reopened(bytes: &[u8]) -> Result<Self, BuiltinModelError> {
+        let reopened = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
+            BuiltinModelError(format!("reopen admitted semantic image: {error:?}"))
+        })?;
+        let ImageProvenance::Captured { source, recipe, .. } = reopened.image_facts().provenance
+        else {
+            return Err(BuiltinModelError(
+                "admitted semantic image has no captured compiler provenance".to_owned(),
+            ));
+        };
+        Ok(Self { source, recipe })
+    }
+
+    fn matches(self, build: &backend_semantic::ir::SemanticBuildIdentity) -> bool {
+        // Reopening the image verifies that its recipe is canonically derived
+        // from this exact source identity, profile, stage, tool, and toolchain.
+        let derived = CompileRecipeFact::derive(
+            self.recipe.profile,
+            self.recipe.stage,
+            self.recipe.tool,
+            self.source.identity,
+            self.recipe.toolchain,
+        );
+        self.recipe == derived
+            && self.recipe.identity.as_ref() == build.recipe()
+            && self.recipe.profile == build.profile()
+            && self.recipe.stage == build.stage()
+            && self.recipe.toolchain.as_ref() == build.toolchain()
+    }
+}
+
+fn admit_compiler_image_provenance(
+    store: &FileStore,
+    object_id: ObjectId,
+    image: &CompilerImageMember,
+) -> Result<CompilerImageAdmission, BuiltinModelError> {
+    store
+        .with_verified_object(object_id, |object| {
+            if object.schema() != COMPILER_SEMANTIC_IMAGE_SCHEMA
+                || u32::try_from(object.bytes().len()).ok() != Some(image.byte_length())
+            {
+                return Err(backend_store::StoreError::Corrupt);
+            }
+            let identity =
+                ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
+                    object.bytes(),
+                );
+            if identity.as_ref() != image.semantic_image_identity() {
+                return Err(backend_store::StoreError::Corrupt);
+            }
+            CompilerImageAdmission::from_reopened(object.bytes())
+                .map_err(|_| backend_store::StoreError::Corrupt)
+        })
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "verify admitted compiler image provenance: {error:?}"
+            ))
+        })
 }
 
 impl AdmittedCompilation {
@@ -972,7 +1044,7 @@ impl AdmittedCompilation {
         evidence_pin: Option<PinnedStoredClosureReceipt>,
         remote_scope: Option<backend_engine::cluster_transport::AssignmentScope>,
         claim: SemanticPublicationClaim,
-        build_admission: CompilerBuildAdmission,
+        runtime_admission: CompilerRuntimeAdmission,
         store: &FileStore,
     ) -> Result<Self, BuiltinModelError> {
         let namespace =
@@ -1010,6 +1082,7 @@ impl AdmittedCompilation {
                 BuiltinModelError(format!("read admitted compiler output closure: {error:?}"))
             })?;
         let mut image_ids = BTreeMap::new();
+        let mut image_admissions = BTreeMap::new();
         let mut expected_members = BTreeSet::new();
         for image in metadata.images() {
             let ordinal = image.artifact_ordinal();
@@ -1032,6 +1105,8 @@ impl AdmittedCompilation {
                         .to_owned(),
                 ));
             }
+            let image_admission = admit_compiler_image_provenance(store, object_id, image)?;
+            image_admissions.insert(ordinal, image_admission);
         }
         for artifact in planes.artifacts() {
             let image_key = artifact.image_key();
@@ -1057,11 +1132,17 @@ impl AdmittedCompilation {
                     "semantic-plane artifact has no corresponding compiler image".to_owned(),
                 )
             })?;
+            let image_admission = image_admissions.get(&ordinal).ok_or_else(|| {
+                BuiltinModelError(
+                    "semantic-plane artifact has no reopened compiler image provenance".to_owned(),
+                )
+            })?;
             if manifest.root() != image_key.manifest_root()
                 || manifest.semantic_generation() != image_key.semantic_generation()
                 || manifest.input().input_root() != attempt.input_digest()
                 || manifest.build().profile() != key.profile()
-                || !build_admission.matches(&manifest.build())
+                || !runtime_admission.matches(&manifest.build())
+                || !image_admission.matches(&manifest.build())
                 || !payload_index
                     .contains_object_id(*image_id)
                     .map_err(|error| {
@@ -2382,7 +2463,7 @@ impl SemanticAuthority {
             ));
         }
         let staged_input = staged.input_witness();
-        let build_admission = if let Some(execution_identity) = staged.execution_identity() {
+        let runtime_admission = if let Some(execution_identity) = staged.execution_identity() {
             if execution_identity.profile() != key.profile()
                 || execution_identity.stage() != Stage::LowerIr
             {
@@ -2391,7 +2472,7 @@ impl SemanticAuthority {
                         .to_owned(),
                 ));
             }
-            CompilerBuildAdmission::from_local(execution_identity)
+            CompilerRuntimeAdmission::from_local(execution_identity)
         } else if let Some(plane_identity) = staged.plane_execution_identity() {
             if plane_identity.profile() != key.profile() || plane_identity.stage() != Stage::LowerIr
             {
@@ -2399,7 +2480,13 @@ impl SemanticAuthority {
                     "staged semantic output differs from its host-local plane identity".to_owned(),
                 ));
             }
-            CompilerBuildAdmission::from_host_local(plane_identity)
+            if plane_identity.input_witness() != staged_input {
+                return Err(BuiltinModelError(
+                    "staged semantic input differs from its exact host-local plane identity"
+                        .to_owned(),
+                ));
+            }
+            CompilerRuntimeAdmission::from_host_local(plane_identity)
         } else {
             return Err(BuiltinModelError(
                 "staged semantic output has no admitted runtime identity".to_owned(),
@@ -2572,7 +2659,7 @@ impl SemanticAuthority {
             None,
             None,
             claim,
-            build_admission,
+            runtime_admission,
             &self.store,
         )?;
         self.select_verified_closure(key, admitted, admit_before_select)
@@ -2893,11 +2980,10 @@ impl SemanticAuthority {
             &self.store,
             ArtifactClosureClaim::from_id(input_admission.evidence().capture().closure()),
         )?;
-        let build_admission = CompilerBuildAdmission {
+        let runtime_admission = CompilerRuntimeAdmission {
             target: *input_manifest.package_target().target().as_ref(),
             profile: input_manifest.profile(),
             stage: input_manifest.stage(),
-            recipe: input_manifest.recipe(),
             toolchain: input_manifest.toolchain(),
             environment: input_manifest.environment(),
             target_platform: input_manifest.target_platform(),
@@ -2911,7 +2997,7 @@ impl SemanticAuthority {
             Some(evidence_pin),
             Some(remote_scope),
             claim,
-            build_admission,
+            runtime_admission,
             &self.store,
         )?;
         let policy_path = self.compiler_trust_policy.clone();
@@ -3926,6 +4012,248 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn real_multifile_rust_publication_joins_each_image_recipe_to_its_own_source() {
+        use backend_engine::application::{
+            LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
+            LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
+            LocalRuntimeRustAuthority, LocalRuntimeToolchain, OwnedPackageSource,
+            OwnedPackageSourceSet,
+        };
+        use backend_frontend_rust::legacy::{
+            RustCargoMetadataPolicy, RustToolchain, SourceByteLimit,
+        };
+        use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
+        use backend_semantic::ir::{ImageProvenance, SemanticPlaneManifest};
+        use backend_semantic::vocabulary::{NativeTool, RustEdition, Stage};
+        use backend_store::journal::PublicationLimits;
+        use std::num::NonZeroUsize;
+        use std::process::Command;
+        use std::time::Duration;
+
+        const LIB: &str = "pub mod child;\npub fn answer() -> u32 { child::answer() }\n";
+        const CHILD: &str = "pub fn answer() -> u32 { 42 }\n";
+
+        let workspace = ScratchWorkspace::new();
+        let compiler_root = workspace.0.join("compiler");
+        let package_root = compiler_root.join("package");
+        let native_work = compiler_root.join("native-work");
+        std::fs::create_dir_all(package_root.join("src")).expect("create Rust package source");
+        std::fs::create_dir_all(&native_work).expect("create Rust compiler work directory");
+        std::fs::write(
+            package_root.join("Cargo.toml"),
+            "[package]\nname = \"semantic_recipe_join_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("write minimal Rust package manifest");
+
+        let rustc = std::env::var_os("RUSTC").map_or_else(
+            || std::path::PathBuf::from("rustc"),
+            std::path::PathBuf::from,
+        );
+        let rust_toolchain = RustToolchain::discover(rustc).expect("discover Rust toolchain");
+        let version = Command::new(&rust_toolchain.tool)
+            .arg("--version")
+            .output()
+            .expect("probe Rust compiler version");
+        assert!(
+            version.status.success(),
+            "Rust compiler version probe succeeds"
+        );
+
+        let package_url =
+            PackageUrl::parse("pkg:cargo/semantic-recipe-join-fixture@0.1.0".to_owned())
+                .expect("admit Rust package coordinate");
+        let profile = LanguageProfile::Rust(RustEdition::Rust2021);
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(73),
+                profile,
+                stage: Stage::LowerIr,
+            },
+            package_url.clone(),
+        )
+        .expect("build Rust package compiler request");
+        let runtime_authority = LocalRuntimeRustAuthority {
+            toolchain: rust_toolchain.clone(),
+            maximum_source_bytes: SourceByteLimit::from(16 * 1024),
+            all_features: false,
+            no_default_features: false,
+            features: Box::new([]),
+            metadata_policy: RustCargoMetadataPolicy::Offline,
+        };
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                compiler_root.join("artifacts"),
+                compiler_root.join("journal"),
+                native_work,
+            )
+            .expect("configure Rust compiler paths"),
+            vec![
+                LocalRuntimeToolchain::resolved(
+                    NativeTool::Rustc,
+                    rust_toolchain.tool.clone(),
+                    &version.stdout,
+                )
+                .expect("admit resolved Rust toolchain"),
+            ]
+            .into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority {
+                rust: Some(runtime_authority),
+                ..LocalRuntimePackageAuthority::default()
+            },
+            LocalCompilerTimeout::new(Duration::from_secs(180))
+                .expect("configure Rust compiler timeout"),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+                .expect("configure Rust publication bounds"),
+            LocalCompilerScratch::with_fragment_capacity(
+                NonZeroUsize::new(16 * 1024 * 1024).expect("nonzero compiler fragment capacity"),
+            )
+            .expect("configure Rust compiler scratch"),
+        )
+        .expect("construct Rust compiler configuration");
+        let client = LocalCompilerClient::start(configuration).expect("start Rust compiler");
+        let staged = client
+            .compile_package_sources_staged(
+                OwnedPackageSourceSet::new(
+                    request,
+                    package_root,
+                    vec![
+                        OwnedPackageSource::new("src/child.rs", CHILD)
+                            .expect("admit child Rust source"),
+                        OwnedPackageSource::new("src/lib.rs", LIB).expect("admit Rust crate root"),
+                    ]
+                    .into_boxed_slice(),
+                )
+                .expect("admit complete Rust source set"),
+            )
+            .expect("compile real multifile Rust package");
+        assert_eq!(staged.artifacts().len(), 2, "both crate sources compile");
+        let planes = staged
+            .versioned_planes()
+            .expect("extract production typed semantic planes");
+        assert_eq!(planes.artifacts().len(), 2);
+
+        let mut image_admissions = Vec::with_capacity(2);
+        let mut manifests = Vec::with_capacity(2);
+        for ordinal in 0..2 {
+            let output = staged
+                .semantic_output_object(ordinal)
+                .expect("compiler retained the exact semantic image bytes");
+            let image_admission = CompilerImageAdmission::from_reopened(output.bytes())
+                .expect("reopen compiler-produced image and admit captured provenance");
+            let manifest =
+                SemanticPlaneManifest::decode(planes.artifacts()[ordinal].manifest_bytes())
+                    .expect("decode production typed semantic plane");
+            assert!(
+                image_admission.matches(&manifest.build()),
+                "each production plane must use the recipe of its own reopened image"
+            );
+            let ImageProvenance::Captured { recipe, .. } =
+                backend_semantic::ir::SemanticImageView::reopen(output.bytes())
+                    .expect("reopen full Rust semantic image")
+                    .image_facts()
+                    .provenance
+            else {
+                panic!("production Rust semantic image retains captured provenance");
+            };
+            assert_eq!(manifest.build().recipe(), recipe.identity.as_ref());
+            image_admissions.push(image_admission);
+            manifests.push(manifest);
+        }
+        assert_ne!(
+            manifests[0].build().recipe(),
+            manifests[1].build().recipe(),
+            "different source files require different source-bound recipe identities"
+        );
+        assert!(
+            !image_admissions[0].matches(&manifests[1].build()),
+            "an otherwise valid image recipe cannot be joined to another source image"
+        );
+
+        let package = backend_engine::PackageReference::parse(
+            "pkg:cargo/semantic-recipe-join-fixture@0.1.0".to_owned(),
+        )
+        .expect("admit product package reference");
+        let key = ProductSemanticPublicationKey::new(package.clone(), package_url.clone(), profile)
+            .expect("build exact Rust semantic publication key");
+        let wrong_profile_key = ProductSemanticPublicationKey::new(
+            package,
+            package_url,
+            LanguageProfile::Rust(RustEdition::Rust2024),
+        )
+        .expect("build deliberately wrong-profile semantic key");
+
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("open semantic authority");
+        let first_output = staged
+            .semantic_output_object(0)
+            .expect("first Rust semantic image is present");
+        let mut image_builder = authority
+            .store
+            .begin_streaming_closure(streaming_budget())
+            .expect("begin wrong-image admission fixture closure");
+        let first_object_id =
+            stream_payload::<CompilerImagePayloadSchema>(&mut image_builder, first_output.bytes())
+                .expect("store authentic Rust semantic image");
+        let _image_pin = image_builder
+            .seal_pinned()
+            .expect("retain authentic Rust semantic image closure");
+        let verified_first_object = authority
+            .store
+            .verify_object_claim(UntrustedObjectId::from_bytes(*first_object_id.as_bytes()))
+            .expect("verify authentic Rust semantic image object");
+        let second_identity = *staged.artifacts()[1].semantic_image().identity.as_ref();
+        let foreign_member =
+            CompilerImageMember::from_verified_object(0, verified_first_object, second_identity)
+                .expect("construct typed metadata with a foreign image identity");
+        assert!(
+            admit_compiler_image_provenance(&authority.store, first_object_id, &foreign_member)
+                .is_err(),
+            "a valid CAS object cannot be admitted under another image's identity"
+        );
+
+        let wrong_profile_observation = authority
+            .observe(&wrong_profile_key, *staged.input_witness().input_root(), 2)
+            .expect("observe input in wrong-profile namespace");
+        let wrong_profile_attempt = authority
+            .begin_candidate_attempt(&wrong_profile_key, &wrong_profile_observation)
+            .expect("begin wrong-profile compiler attempt");
+        assert!(
+            authority
+                .publish_staged(&wrong_profile_key, wrong_profile_attempt, &staged, |_| Ok(
+                    ()
+                ),)
+                .is_err(),
+            "a correct source recipe must not authorize the wrong runtime profile"
+        );
+
+        let observation = authority
+            .observe(&key, *staged.input_witness().input_root(), 2)
+            .expect("observe exact Rust compiler input");
+        let attempt = authority
+            .begin_candidate_attempt(&key, &observation)
+            .expect("begin exact Rust compiler attempt");
+        authority
+            .publish_staged(&key, attempt, &staged, |_| Ok(()))
+            .expect("publish actual multifile Rust output through semantic authority");
+
+        let changed_input = [0xa7; 32];
+        assert_ne!(changed_input, *staged.input_witness().input_root());
+        let wrong_attempt_observation = authority
+            .observe(&key, changed_input, 2)
+            .expect("observe replacement source input");
+        let wrong_attempt = authority
+            .begin_candidate_attempt(&key, &wrong_attempt_observation)
+            .expect("begin replacement compiler attempt");
+        assert!(
+            authority
+                .publish_staged(&key, wrong_attempt, &staged, |_| Ok(()))
+                .is_err(),
+            "a real staged candidate cannot be rebound to a later compiler attempt"
+        );
+        drop(client);
+    }
 
     #[test]
     fn recovered_coverage_uses_the_selected_source_scope_and_fails_closed() {
