@@ -14,7 +14,7 @@ use backend_library::{
 use backend_local_service::{EmbeddedLocalService, LocalHostVariable, ProcessConfig};
 use std::error::Error;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,9 +50,13 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
     assert!(!package_lock.exists(), "the Cargo input starts lockless");
 
     let package =
-        PackageReference::parse(package_root.canonicalize()?.to_string_lossy().into_owned())?;
+        PackageReference::parse(package_root.canonicalize()?.to_string_lossy().into_owned())
+            .map_err(|error| {
+                io::Error::other(format!("invalid real fixture package reference: {error}"))
+            })?;
     let key_file = fixture.path().join("caller-operation-key.txt");
-    let operation_key = IndexOperationKey::from_bytes([0x6d; 32])?;
+    let operation_key = IndexOperationKey::from_bytes([0x6d; 32])
+        .map_err(|error| io::Error::other(format!("invalid fixture operation key: {error}")))?;
     {
         let mut key_file = OpenOptions::new()
             .create_new(true)
@@ -129,7 +133,11 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
     owner.close()?;
 
     let persisted = fs::read_to_string(&key_file)?;
-    let restored_key = IndexOperationKey::parse_hex(persisted.trim())?;
+    let restored_key = IndexOperationKey::parse_hex(persisted.trim()).map_err(|error| {
+        io::Error::other(format!(
+            "persisted caller operation key is invalid: {error}"
+        ))
+    })?;
     assert_eq!(restored_key, operation_key);
     let restarted_owner = EmbeddedLocalService::start(config)?;
     let mut restarted_session = Session::connect(restarted_owner.endpoint())?;
