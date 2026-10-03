@@ -7,14 +7,16 @@
 //! network for a missing download, a stale lockfile under `--locked`), the
 //! tree is read from `Cargo.lock` alone and says so.
 //!
-//! The Cargo half is cached against the bytes of `Cargo.lock` and every
-//! member manifest, so a tree read costs one Cargo run per change to the
-//! project, not one per read. Advisories are observed on every read, so a
-//! refresh shows at once.
+//! The Cargo half is cached against the effective lock, exact package
+//! manifests, Cargo configuration and tools, registry checksums, and bounded
+//! auto-target membership. A warm read reuses that graph only after the same
+//! inputs are rechecked. Advisories are observed on every read, so a refresh
+//! shows at once.
 
 use backend_library::browse::{
     LockedInactiveCoverage, LockfileGraphCoverage, ProjectTree, TreeInput, TreeInputPackage,
-    TreeSource, build_tree, lockfile_input, metadata_input_with_stable_source_witness,
+    TreeSource, build_tree, lockfile_input, metadata_input,
+    metadata_input_with_stable_source_witness,
 };
 use backend_library::{
     CargoPackageReadmeAbsenceV1, CargoPackageReadmeFailureV1, CargoPackageReadmeLinkFailureV1,
@@ -46,9 +48,12 @@ use std::time::{Duration, Instant};
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum time for one Cargo run and one deferred browse observation.
 const CARGO_DEADLINE: Duration = Duration::from_secs(90);
-const MAX_CARGO_OBSERVATION_PATHS: usize = 21_024;
+const MAX_CARGO_OBSERVATION_PATHS: usize = 42_048;
 const MAX_CARGO_OBSERVATION_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CARGO_OBSERVATION_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const MAX_CARGO_TARGET_MEMBERSHIP_ROOTS: usize = 20_000;
+const MAX_CARGO_TARGET_MEMBERSHIP_ENTRIES: usize = 65_536;
+const MAX_CARGO_TARGET_MEMBERSHIP_DEPTH: usize = 16;
 const MAX_CARGO_TOOL_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CARGO_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_CARGO_CONFIG_INPUTS: usize = 256;
@@ -216,6 +221,8 @@ impl Default for BrowseCache {
 
 struct CacheEntry {
     witness: [u8; 32],
+    lock_origin_witness: [u8; 32],
+    target_roots: Vec<PathBuf>,
     watched: Vec<PathBuf>,
     input: Arc<TreeInput>,
     /// Directory from which the exact-manifest metadata command was run.
@@ -1058,15 +1065,7 @@ impl BrowseCache {
         read: impl FnOnce(
             &RequestedCargoManifest,
             Option<&CargoToolWitnessReuse>,
-        ) -> Result<
-            (
-                TreeInput,
-                Vec<PathBuf>,
-                [u8; 32],
-                Option<CargoToolWitnessReuse>,
-            ),
-            String,
-        >,
+        ) -> Result<ProjectInputRead, String>,
     ) -> Result<Arc<TreeInput>, String> {
         let requested = requested_cargo_manifest(root)?.ok_or_else(|| {
             format!(
@@ -1109,6 +1108,14 @@ impl BrowseCache {
                     &entry.watched,
                     entry.tool_witness_reuse.as_ref(),
                 )
+                .and_then(|observed| {
+                    let target_witness = cargo_auto_target_membership_witness(&entry.target_roots)?;
+                    Ok(compose_cargo_input_witness(
+                        observed.digest,
+                        target_witness,
+                        entry.lock_origin_witness,
+                    ))
+                })
             };
             // A cancelled witness read says nothing about freshness. Keep the
             // prior admitted observation and bindings for a later request.
@@ -1116,7 +1123,7 @@ impl BrowseCache {
             if observed.is_ok_and(|observed| {
                 self.entries
                     .get(&workspace)
-                    .is_some_and(|entry| observed.digest == entry.witness)
+                    .is_some_and(|entry| observed == entry.witness)
             }) {
                 self.touch_entry(&workspace);
                 let entry = self
@@ -1139,13 +1146,14 @@ impl BrowseCache {
         }
 
         let metadata_context = requested.root.clone();
-        let (input, watched, witness, tool_witness_reuse) = read(&requested, None)?;
-        if !tree_input_proves_requested_manifest(&input, &requested, &watched) {
+        let read = read(&requested, None)?;
+        let witness = read.witness();
+        if !tree_input_proves_requested_manifest(&read.input, &requested, &read.watched) {
             return Err(
                 "Cargo metadata did not admit the exact requested package manifest in its resolved workspace".to_owned(),
             );
         }
-        let workspace = PathBuf::from(&input.root);
+        let workspace = PathBuf::from(&read.input.root);
         let canonical_workspace = workspace
             .canonicalize()
             .map_err(|_| "Cargo metadata returned a missing workspace root".to_owned())?;
@@ -1155,16 +1163,17 @@ impl BrowseCache {
         // Replacing an entry at the same effective root must also revoke its
         // old request bindings, even if it did not prove this request.
         self.remove_workspace(&workspace);
-        let input = Arc::new(input);
+        let target_roots = read.target_roots;
+        let input = Arc::new(read.input);
         let package_rows = source_package_row_index(&input);
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
             &metadata_context,
-            &watched,
-            watched.capacity(),
+            &read.watched,
+            read.watched.capacity(),
             &input,
             &package_rows,
-            tool_witness_reuse.as_ref(),
+            read.tool_witness_reuse.as_ref(),
         );
         #[cfg(test)]
         {
@@ -1198,13 +1207,15 @@ impl BrowseCache {
                     workspace.clone(),
                     CacheEntry {
                         witness,
-                        watched,
+                        lock_origin_witness: read.lock_origin_witness,
+                        target_roots,
+                        watched: read.watched,
                         input: Arc::clone(&input),
                         metadata_context,
                         retained_bytes,
                         package_rows,
                         request_bindings: HashMap::new(),
-                        tool_witness_reuse,
+                        tool_witness_reuse: read.tool_witness_reuse,
                         last_used,
                     },
                 );
@@ -2067,6 +2078,68 @@ struct InputObservation {
     manifest: Option<Vec<u8>>,
 }
 
+/// Describes where the Cargo.lock bytes used for one metadata answer came
+/// from. This is an internal data distinction, not a cryptographic proof or
+/// a capability that untrusted callers can use to authenticate a lockfile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CargoMetadataLockOrigin {
+    /// Cargo used an existing lockfile selected by its ordinary configuration.
+    Observed,
+    /// Cargo generated the lockfile only at a private CLI-selected path.
+    EphemeralGeneratedCargoLockV1,
+}
+
+/// Lockfile facts retained while the exact Cargo metadata query is coherent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CargoMetadataRun {
+    metadata: Vec<u8>,
+    host: String,
+    tool_witness: [u8; 32],
+    no_deps_witness: Option<[u8; 32]>,
+    lockfile: Option<String>,
+    lockfile_digest: Option<[u8; 32]>,
+    lock_origin: Option<CargoMetadataLockOrigin>,
+    /// Existing selected lock path, or the Cargo-reported missing source path
+    /// whose absence authorized the private lockfile branch.
+    lock_path_witness: Option<PathBuf>,
+}
+
+impl From<(Vec<u8>, String, [u8; 32])> for CargoMetadataRun {
+    fn from((metadata, host, tool_witness): (Vec<u8>, String, [u8; 32])) -> Self {
+        Self {
+            metadata,
+            host,
+            tool_witness,
+            no_deps_witness: None,
+            lockfile: None,
+            lockfile_digest: None,
+            lock_origin: None,
+            lock_path_witness: None,
+        }
+    }
+}
+
+/// The exact owner-side components that guard a cached Cargo tree input.
+struct ProjectInputRead {
+    input: TreeInput,
+    watched: Vec<PathBuf>,
+    target_roots: Vec<PathBuf>,
+    file_witness: [u8; 32],
+    target_witness: [u8; 32],
+    lock_origin_witness: [u8; 32],
+    tool_witness_reuse: Option<CargoToolWitnessReuse>,
+}
+
+impl ProjectInputRead {
+    fn witness(&self) -> [u8; 32] {
+        compose_cargo_input_witness(
+            self.file_witness,
+            self.target_witness,
+            self.lock_origin_witness,
+        )
+    }
+}
+
 /// Reusable byte digests for tools rooted in Nix's immutable store. Each
 /// entry is usable only after the same canonical path and immutable file/tree
 /// identity have been revalidated through a no-follow file handle.
@@ -2112,8 +2185,12 @@ struct CoherentMetadata {
     metadata: Vec<u8>,
     host: String,
     input_witness: [u8; 32],
+    file_witness: [u8; 32],
+    target_witness: [u8; 32],
+    lock_origin_witness: [u8; 32],
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
     lockfile: Option<String>,
+    target_roots: Vec<PathBuf>,
     watched: Vec<PathBuf>,
 }
 
@@ -3334,23 +3411,15 @@ fn find_executable_on_path(name: &std::ffi::OsStr, workspace: &Path) -> Option<P
 /// The tree input and its observed paths. The first metadata call discovers
 /// the exact package-manifest set. A second call is bracketed by a bounded
 /// no-follow read-set witness, and its output must equal the discovery pass.
+/// The selected Cargo still opens source paths itself: these checks detect
+/// ordinary concurrent edits but are not an atomic snapshot or a sandbox
+/// against a hostile writer or Cargo executable that mutates and restores a
+/// path between samples.
 fn read_project(
     requested: &RequestedCargoManifest,
     cached_tool: Option<&CargoToolWitnessReuse>,
-) -> Result<
-    (
-        TreeInput,
-        Vec<PathBuf>,
-        [u8; 32],
-        Option<CargoToolWitnessReuse>,
-    ),
-    String,
-> {
-    match coherent_metadata(
-        requested,
-        |manifest| cargo_metadata(manifest, cached_tool),
-        cached_tool,
-    ) {
+) -> Result<ProjectInputRead, String> {
+    match coherent_metadata(requested, cached_tool) {
         Ok(observed) => {
             let input = metadata_input_with_stable_source_witness(
                 &observed.metadata,
@@ -3364,12 +3433,15 @@ fn read_project(
                     "Cargo metadata did not admit the exact requested package manifest in its resolved workspace".to_owned(),
                 );
             }
-            Ok((
+            Ok(ProjectInputRead {
                 input,
-                observed.watched,
-                observed.input_witness,
-                observed.tool_witness_reuse,
-            ))
+                watched: observed.watched,
+                target_roots: observed.target_roots,
+                file_witness: observed.file_witness,
+                target_witness: observed.target_witness,
+                lock_origin_witness: observed.lock_origin_witness,
+                tool_witness_reuse: observed.tool_witness_reuse,
+            })
         }
         Err(reason) => {
             // A package path may be a member, excluded standalone package, or
@@ -3382,6 +3454,18 @@ fn read_project(
             }
             observation_budget()?;
             let workspace = &requested.root;
+            let default_lockfile = workspace.join("Cargo.lock");
+            let selected_lockfile =
+                cargo_selected_lockfile_path(workspace, workspace).map_err(|error| {
+                    format!("{reason}; cannot safely identify the selected lockfile: {error}")
+                })?;
+            if selected_lockfile != default_lockfile {
+                return Err(format!(
+                    "{reason}; refusing lockfile-only fallback because Cargo selects {} instead of {}",
+                    selected_lockfile.display(),
+                    default_lockfile.display()
+                ));
+            }
             let mut watched = basic_input_paths(workspace)?;
             watched.extend(cargo_config_paths(workspace)?);
             watched.extend(sccache_configuration_paths(workspace)?);
@@ -3405,72 +3489,130 @@ fn read_project(
             if !tree_input_proves_requested_manifest(&input, requested, &watched) {
                 return Err(reason);
             }
-            Ok((input, watched, observed.digest, observed.tool_witness_reuse))
+            let lock_origin_witness = cargo_lock_origin_witness(
+                CargoMetadataLockOrigin::Observed,
+                &workspace.join("Cargo.lock"),
+                *blake3::hash(lockfile.as_bytes()).as_bytes(),
+            );
+            Ok(ProjectInputRead {
+                input,
+                watched,
+                target_roots: Vec::new(),
+                file_witness: observed.digest,
+                target_witness: [0; 32],
+                lock_origin_witness,
+                tool_witness_reuse: observed.tool_witness_reuse,
+            })
         }
     }
 }
 
 fn coherent_metadata(
     requested: &RequestedCargoManifest,
-    run_metadata: impl FnMut(&Path) -> Result<(Vec<u8>, String, [u8; 32]), String>,
     cached_tool: Option<&CargoToolWitnessReuse>,
 ) -> Result<CoherentMetadata, String> {
+    let mut session = CargoMetadataResolutionSession::default();
     let mut tool_reuse = cached_tool.cloned();
-    coherent_metadata_with(requested, run_metadata, |workspace, files| {
-        let observation =
-            strict_observation_witness(workspace, &requested.root, files, tool_reuse.as_ref())?;
-        tool_reuse = observation.tool_witness_reuse.clone();
-        Ok(observation)
-    })
+    coherent_metadata_with(
+        requested,
+        |manifest| {
+            if manifest != requested.manifest {
+                return Err("Cargo metadata changed the exact requested manifest".to_owned());
+            }
+            session.run(requested, cached_tool)
+        },
+        |workspace, files| {
+            let observation =
+                strict_observation_witness(workspace, &requested.root, files, tool_reuse.as_ref())?;
+            tool_reuse = observation.tool_witness_reuse.clone();
+            Ok(observation)
+        },
+    )
 }
 
-fn coherent_metadata_with(
+fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     requested: &RequestedCargoManifest,
-    mut run_metadata: impl FnMut(&Path) -> Result<(Vec<u8>, String, [u8; 32]), String>,
+    mut run_metadata: impl FnMut(&Path) -> Result<R, String>,
     mut observe: impl FnMut(&Path, &[PathBuf]) -> Result<InputObservation, String>,
 ) -> Result<CoherentMetadata, String> {
     observation_budget()?;
-    let (discovery_metadata, discovery_host, discovery_tool) = run_metadata(&requested.manifest)?;
+    let discovery = run_metadata(&requested.manifest)?.into();
     observation_budget()?;
-    let discovery_workspace = metadata_proves_requested_manifest(&discovery_metadata, requested)?;
-    let discovery_paths =
-        metadata_observation_paths(&requested.root, &discovery_workspace, &discovery_metadata)?;
+    let discovery_workspace = metadata_proves_requested_manifest(&discovery.metadata, requested)?;
+    let mut discovery_paths =
+        metadata_observation_paths(&requested.root, &discovery_workspace, &discovery.metadata)?;
+    if let Some(lock_path) = &discovery.lock_path_witness {
+        add_observed_path(&mut discovery_paths, lock_path)?;
+    }
     let required_manifests = metadata_required_manifests(
-        &discovery_metadata,
+        &discovery.metadata,
         &requested.manifest,
         &discovery_workspace,
     )?;
+    let required_registry_checksums = metadata_required_registry_checksums(&discovery.metadata)?;
+    let target_roots = metadata_target_roots(&discovery.metadata)?;
+    let discovery_target_witness = cargo_auto_target_membership_witness(&target_roots)?;
     let before = observe(&discovery_workspace, &discovery_paths)?;
     observation_budget()?;
     require_required_manifests_present(&before, &required_manifests)?;
+    require_required_manifests_present(&before, &required_registry_checksums)?;
+    require_lock_path_state(&before, &discovery)?;
 
-    let (metadata, host, tool_witness) = run_metadata(&requested.manifest)?;
+    let observed = run_metadata(&requested.manifest)?.into();
     observation_budget()?;
-    if metadata != discovery_metadata || host != discovery_host || tool_witness != discovery_tool {
+    if observed.metadata != discovery.metadata
+        || observed.host != discovery.host
+        || observed.tool_witness != discovery.tool_witness
+        || observed.no_deps_witness != discovery.no_deps_witness
+        || observed.lockfile != discovery.lockfile
+        || observed.lockfile_digest != discovery.lockfile_digest
+        || observed.lock_origin != discovery.lock_origin
+        || observed.lock_path_witness != discovery.lock_path_witness
+    {
         return Err("Cargo metadata inputs or tool changed between observation passes".to_owned());
     }
-    let effective_workspace = metadata_proves_requested_manifest(&metadata, requested)?;
+    let effective_workspace = metadata_proves_requested_manifest(&observed.metadata, requested)?;
     if effective_workspace != discovery_workspace {
         return Err("Cargo effective workspace changed between observation passes".to_owned());
     }
-    let watched = metadata_observation_paths(&requested.root, &effective_workspace, &metadata)?;
+    let mut watched =
+        metadata_observation_paths(&requested.root, &effective_workspace, &observed.metadata)?;
+    if let Some(lock_path) = &observed.lock_path_witness {
+        add_observed_path(&mut watched, lock_path)?;
+    }
+    watched.sort();
+    watched.dedup();
     if watched != discovery_paths {
         return Err("Cargo metadata input set changed during observation".to_owned());
     }
     let after = observe(&effective_workspace, &watched)?;
     observation_budget()?;
     require_required_manifests_present(&after, &required_manifests)?;
+    require_required_manifests_present(&after, &required_registry_checksums)?;
+    require_lock_path_state(&after, &observed)?;
     if before.digest != after.digest {
         return Err(
             "Cargo manifests, lockfile, configuration, or tools changed during metadata".to_owned(),
         );
     }
+    let target_witness =
+        cargo_auto_target_membership_witness(&metadata_target_roots(&observed.metadata)?)?;
+    if discovery_target_witness != target_witness {
+        return Err("Cargo automatic target directories changed during metadata".to_owned());
+    }
+    let lock_origin_witness = lock_origin_witness_for_run(&observed)?;
+    let input_witness =
+        compose_cargo_input_witness(after.digest, target_witness, lock_origin_witness);
     Ok(CoherentMetadata {
-        metadata,
-        host,
-        input_witness: after.digest,
+        metadata: observed.metadata,
+        host: observed.host,
+        input_witness,
+        file_witness: after.digest,
+        target_witness,
+        lock_origin_witness,
         tool_witness_reuse: after.tool_witness_reuse,
-        lockfile: after.lockfile,
+        lockfile: observed.lockfile.or(after.lockfile),
+        target_roots,
         watched,
     })
 }
@@ -3520,6 +3662,15 @@ fn metadata_observation_paths(
             return Err("Cargo metadata returned a noncanonical manifest path".to_owned());
         }
         paths.push(path);
+        let source = package.get("source").and_then(serde_json::Value::as_str);
+        if source
+            .is_some_and(|source| source.starts_with("registry+") || source.starts_with("sparse+"))
+        {
+            let package_root = path
+                .parent()
+                .ok_or_else(|| "Cargo registry manifest has no package root".to_owned())?;
+            paths.push(package_root.join(".cargo-checksum.json"));
+        }
     }
     // Cargo was invoked from the exact requested manifest's directory. Keep
     // its config search path, and the effective workspace's lock/manifest,
@@ -3536,6 +3687,301 @@ fn metadata_observation_paths(
         return Err("Cargo metadata input set exceeds the observation limit".to_owned());
     }
     Ok(paths)
+}
+
+fn metadata_required_registry_checksums(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
+    if metadata.len() > MAX_METADATA_BYTES {
+        return Err("Cargo metadata exceeded its bounded response size".to_owned());
+    }
+    let value: serde_json::Value = serde_json::from_slice(metadata)
+        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
+    let packages = value
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
+    if packages.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
+        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
+    }
+    let mut checksums = BTreeSet::new();
+    for package in packages {
+        let Some(source) = package.get("source").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !source.starts_with("registry+") && !source.starts_with("sparse+") {
+            continue;
+        }
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Cargo registry package omitted manifest_path".to_owned())?;
+        let manifest = PathBuf::from(manifest);
+        if !manifest.is_absolute()
+            || manifest.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.toml")
+            || manifest.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err("Cargo registry package returned a noncanonical manifest path".to_owned());
+        }
+        let package_root = manifest
+            .parent()
+            .ok_or_else(|| "Cargo registry manifest has no package root".to_owned())?;
+        checksums.insert(package_root.join(".cargo-checksum.json"));
+    }
+    Ok(checksums.into_iter().collect())
+}
+
+fn metadata_target_roots(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
+    if metadata.len() > MAX_METADATA_BYTES {
+        return Err("Cargo metadata exceeded its bounded response size".to_owned());
+    }
+    let value: serde_json::Value = serde_json::from_slice(metadata)
+        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
+    let packages = value
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
+    if packages.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
+        return Err("Cargo metadata package set exceeds the target-root limit".to_owned());
+    }
+    let mut roots = BTreeSet::new();
+    for package in packages {
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Cargo metadata package omitted manifest_path".to_owned())?;
+        let manifest = PathBuf::from(manifest);
+        if !manifest.is_absolute()
+            || manifest.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.toml")
+            || manifest.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err("Cargo metadata returned a noncanonical target manifest".to_owned());
+        }
+        let root = manifest
+            .parent()
+            .ok_or_else(|| "Cargo metadata package manifest has no parent".to_owned())?;
+        roots.insert(root.to_path_buf());
+    }
+    Ok(roots.into_iter().collect())
+}
+
+/// Captures only Cargo auto-target candidate directories. The bounded
+/// no-follow membership snapshot catches a newly added `src/bin`, example,
+/// test, or benchmark target without reimplementing Cargo's target rules.
+fn cargo_auto_target_membership_witness(roots: &[PathBuf]) -> Result<[u8; 32], String> {
+    if roots.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
+        return Err("Cargo automatic target root set exceeds its limit".to_owned());
+    }
+    if roots.is_empty() {
+        return Ok([0; 32]);
+    }
+    let mut roots = roots.to_vec();
+    roots.sort();
+    roots.dedup();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-auto-target-directory-membership.v1\0");
+    let mut total_entries = 0_usize;
+    for root in roots {
+        observation_budget()?;
+        if !root.is_absolute()
+            || root.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err("Cargo automatic target root is not a canonical absolute path".to_owned());
+        }
+        let path = root.as_os_str().as_encoded_bytes();
+        hasher.update(&(path.len() as u64).to_le_bytes());
+        hasher.update(path);
+        let directory = match DirectoryCapability::open_read_only_source(&root) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                hasher.update(&[0]);
+                continue;
+            }
+            Err(error) => return Err(format!("cannot hold Cargo target package root: {error}")),
+        };
+        hasher.update(&[1]);
+        let entries = directory
+            .entries(MAX_SOURCE_DIRECTORY_ENTRIES)
+            .map_err(|error| format!("cannot enumerate Cargo target package root: {error}"))?;
+        account_target_entries(&mut total_entries, entries.len())?;
+        for entry in &entries {
+            hash_target_entry(&mut hasher, b".", entry);
+            let name = entry.name.as_encoded_bytes();
+            if name == b"build.rs" && entry.kind != EntryKind::File {
+                return Err("Cargo build.rs is linked or is not a regular file".to_owned());
+            }
+            if name == b"src" {
+                match entry.kind {
+                    EntryKind::Directory => {
+                        let name = entry.name.to_str().ok_or_else(|| {
+                            "Cargo automatic target directory name is not UTF-8".to_owned()
+                        })?;
+                        let src = directory.open_dir(name).map_err(|error| {
+                            format!("cannot open Cargo src target directory safely: {error}")
+                        })?;
+                        scan_src_target_directory(
+                            &src,
+                            b"src",
+                            &mut hasher,
+                            &mut total_entries,
+                            1,
+                        )?;
+                    }
+                    EntryKind::Link | EntryKind::Special => {
+                        return Err("Cargo src target directory is linked or special".to_owned());
+                    }
+                    EntryKind::File => {}
+                }
+            } else if name == b"examples" || name == b"tests" || name == b"benches" {
+                match entry.kind {
+                    EntryKind::Directory => {
+                        let name = entry.name.to_str().ok_or_else(|| {
+                            "Cargo automatic target directory name is not UTF-8".to_owned()
+                        })?;
+                        let child = directory.open_dir(name).map_err(|error| {
+                            format!("cannot open Cargo automatic target directory safely: {error}")
+                        })?;
+                        scan_target_directory(
+                            &child,
+                            name.as_bytes(),
+                            &mut hasher,
+                            &mut total_entries,
+                            1,
+                        )?;
+                    }
+                    EntryKind::Link | EntryKind::Special => {
+                        return Err(
+                            "Cargo automatic target directory is linked or special".to_owned()
+                        );
+                    }
+                    EntryKind::File => {}
+                }
+            }
+        }
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn account_target_entries(total: &mut usize, count: usize) -> Result<(), String> {
+    *total = total.saturating_add(count);
+    if *total > MAX_CARGO_TARGET_MEMBERSHIP_ENTRIES {
+        return Err("Cargo automatic target directory scan exceeded its entry limit".to_owned());
+    }
+    observation_budget()
+}
+
+fn hash_target_entry(
+    hasher: &mut blake3::Hasher,
+    parent: &[u8],
+    entry: &backend_platform::directory::DirectoryEntry,
+) {
+    let name = entry.name.as_encoded_bytes();
+    hasher.update(&(parent.len() as u64).to_le_bytes());
+    hasher.update(parent);
+    hasher.update(&(name.len() as u64).to_le_bytes());
+    hasher.update(name);
+    hasher.update(&[match entry.kind {
+        EntryKind::File => 1,
+        EntryKind::Directory => 2,
+        EntryKind::Link => 3,
+        EntryKind::Special => 4,
+    }]);
+}
+
+fn scan_src_target_directory(
+    directory: &DirectoryCapability,
+    prefix: &[u8],
+    hasher: &mut blake3::Hasher,
+    total_entries: &mut usize,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_CARGO_TARGET_MEMBERSHIP_DEPTH {
+        return Err("Cargo src/bin target scan exceeded its depth limit".to_owned());
+    }
+    let entries = directory
+        .entries(MAX_SOURCE_DIRECTORY_ENTRIES)
+        .map_err(|error| format!("cannot enumerate Cargo src target directory: {error}"))?;
+    account_target_entries(total_entries, entries.len())?;
+    for entry in &entries {
+        hash_target_entry(hasher, prefix, entry);
+        let name = entry.name.as_encoded_bytes();
+        if (name == b"main.rs" || name == b"lib.rs") && entry.kind != EntryKind::File {
+            return Err("Cargo src target file is linked or is not regular".to_owned());
+        }
+        if name == b"bin" {
+            match entry.kind {
+                EntryKind::Directory => {
+                    let name = entry.name.to_str().ok_or_else(|| {
+                        "Cargo src/bin target directory name is not UTF-8".to_owned()
+                    })?;
+                    let child = directory.open_dir(name).map_err(|error| {
+                        format!("cannot open Cargo src/bin directory safely: {error}")
+                    })?;
+                    let mut child_prefix = prefix.to_vec();
+                    child_prefix.extend_from_slice(b"/bin");
+                    scan_target_directory(&child, &child_prefix, hasher, total_entries, depth + 1)?;
+                }
+                EntryKind::Link | EntryKind::Special => {
+                    return Err("Cargo src/bin directory is linked or special".to_owned());
+                }
+                EntryKind::File => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn scan_target_directory(
+    directory: &DirectoryCapability,
+    prefix: &[u8],
+    hasher: &mut blake3::Hasher,
+    total_entries: &mut usize,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_CARGO_TARGET_MEMBERSHIP_DEPTH {
+        return Err("Cargo automatic target scan exceeded its depth limit".to_owned());
+    }
+    let entries = directory
+        .entries(MAX_SOURCE_DIRECTORY_ENTRIES)
+        .map_err(|error| format!("cannot enumerate Cargo automatic target directory: {error}"))?;
+    account_target_entries(total_entries, entries.len())?;
+    for entry in &entries {
+        hash_target_entry(hasher, prefix, entry);
+        match entry.kind {
+            EntryKind::Directory => {
+                let name = entry.name.to_str().ok_or_else(|| {
+                    "Cargo automatic target subdirectory name is not UTF-8".to_owned()
+                })?;
+                let child = directory.open_dir(name).map_err(|error| {
+                    format!("cannot open Cargo automatic target subdirectory safely: {error}")
+                })?;
+                let mut child_prefix = prefix.to_vec();
+                child_prefix.push(b'/');
+                child_prefix.extend_from_slice(entry.name.as_encoded_bytes());
+                scan_target_directory(&child, &child_prefix, hasher, total_entries, depth + 1)?;
+            }
+            EntryKind::Link | EntryKind::Special => {
+                return Err(
+                    "Cargo automatic target tree contains a link or special file".to_owned(),
+                );
+            }
+            EntryKind::File => {}
+        }
+    }
+    Ok(())
 }
 
 fn metadata_required_manifests(
@@ -3587,6 +4033,106 @@ fn require_required_manifests_present(
         );
     }
     Ok(())
+}
+
+fn add_observed_path(paths: &mut Vec<PathBuf>, path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || path.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.lock")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err("Cargo selected a noncanonical lockfile path".to_owned());
+    }
+    paths.push(path.to_path_buf());
+    paths.sort();
+    paths.dedup();
+    if paths.len() > MAX_CARGO_OBSERVATION_PATHS {
+        return Err("Cargo metadata input set exceeds the observation limit".to_owned());
+    }
+    Ok(())
+}
+
+fn require_lock_path_state(
+    observation: &InputObservation,
+    run: &CargoMetadataRun,
+) -> Result<(), String> {
+    let Some(origin) = run.lock_origin else {
+        return Ok(());
+    };
+    let path = run
+        .lock_path_witness
+        .as_ref()
+        .ok_or_else(|| "Cargo lockfile provenance omitted its selected path".to_owned())?;
+    let missing = observation
+        .missing_path_keys
+        .contains(&observation_path_key(path));
+    let digest = run
+        .lockfile
+        .as_ref()
+        .map(|lockfile| *blake3::hash(lockfile.as_bytes()).as_bytes())
+        .ok_or_else(|| "Cargo lockfile provenance omitted its bytes".to_owned())?;
+    if Some(digest) != run.lockfile_digest {
+        return Err("Cargo lockfile provenance digest does not match its bytes".to_owned());
+    }
+    match origin {
+        CargoMetadataLockOrigin::Observed if missing => {
+            Err("Cargo's selected observed lockfile disappeared during metadata".to_owned())
+        }
+        CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1 if !missing => {
+            Err("the Cargo-selected source lockfile appeared during private resolution".to_owned())
+        }
+        CargoMetadataLockOrigin::Observed
+        | CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1 => Ok(()),
+    }
+}
+
+fn lock_origin_witness_for_run(run: &CargoMetadataRun) -> Result<[u8; 32], String> {
+    let Some(origin) = run.lock_origin else {
+        return Ok([0; 32]);
+    };
+    let path = run
+        .lock_path_witness
+        .as_ref()
+        .ok_or_else(|| "Cargo lockfile provenance omitted its selected path".to_owned())?;
+    let digest = run
+        .lockfile_digest
+        .ok_or_else(|| "Cargo lockfile provenance omitted its digest".to_owned())?;
+    Ok(cargo_lock_origin_witness(origin, path, digest))
+}
+
+fn cargo_lock_origin_witness(
+    origin: CargoMetadataLockOrigin,
+    path: &Path,
+    content_digest: [u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-lock-origin.v1\0");
+    hasher.update(&[match origin {
+        CargoMetadataLockOrigin::Observed => 1,
+        CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1 => 2,
+    }]);
+    let path = path.as_os_str().as_encoded_bytes();
+    hasher.update(&(path.len() as u64).to_le_bytes());
+    hasher.update(path);
+    hasher.update(&content_digest);
+    *hasher.finalize().as_bytes()
+}
+
+fn compose_cargo_input_witness(
+    file_witness: [u8; 32],
+    target_witness: [u8; 32],
+    lock_origin_witness: [u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-source-input-composition.v1\0");
+    hasher.update(&file_witness);
+    hasher.update(&target_witness);
+    hasher.update(&lock_origin_witness);
+    *hasher.finalize().as_bytes()
 }
 
 fn observation_path_key(path: &Path) -> [u8; 32] {
@@ -4032,63 +4578,641 @@ fn cargo_manifest_has_workspace(document: &toml::Value) -> bool {
         .is_some()
 }
 
-/// Runs `cargo metadata` for this host; returns the document, host, and exact
-/// Cargo/Rust compiler tool stamp used for both resolution and cache checks.
-fn cargo_metadata(
-    requested_manifest: &Path,
-    cached: Option<&CargoToolWitnessReuse>,
-) -> Result<(Vec<u8>, String, [u8; 32]), String> {
-    let request_context = requested_manifest
-        .parent()
-        .ok_or_else(|| "requested Cargo manifest has no parent directory".to_owned())?;
-    let environment_before = cargo_environment_witness()?;
-    let cargo = selected_cargo_program(request_context)?;
-    let version = run(&cargo, request_context, &["-vV"], 64 * 1024)?;
-    if cargo_environment_witness()? != environment_before {
-        return Err(
-            "Cargo tool-selection environment changed during metadata admission".to_owned(),
-        );
-    }
-    let host = String::from_utf8_lossy(&version)
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("host: ")
-                .map(str::trim)
-                .map(ToOwned::to_owned)
+enum CargoMetadataLockState {
+    Observed {
+        path: PathBuf,
+        lockfile: String,
+        digest: [u8; 32],
+    },
+    Ephemeral {
+        _directory: tempfile::TempDir,
+        private_path: PathBuf,
+        missing_source_path: PathBuf,
+        lockfile: String,
+        digest: [u8; 32],
+    },
+}
+
+#[derive(Default)]
+struct CargoMetadataResolutionSession {
+    no_deps_witness: Option<[u8; 32]>,
+    lock_state: Option<CargoMetadataLockState>,
+}
+
+impl CargoMetadataResolutionSession {
+    /// Runs Cargo for the exact requested manifest. A missing source lock is
+    /// recognized only from Cargo's own `--locked` diagnostic; the only
+    /// unlocked full metadata pass is redirected by CLI config to a private
+    /// RAII directory, whose lock is then proved with `--locked`. The stable
+    /// CLI-config behavior is supported only for Cargo 1.97 or newer and was
+    /// exercised against the pinned 1.97.1 binary. Cargo remains a trusted
+    /// executable in this design; path checks are not a process sandbox.
+    fn run(
+        &mut self,
+        requested: &RequestedCargoManifest,
+        cached: Option<&CargoToolWitnessReuse>,
+    ) -> Result<CargoMetadataRun, String> {
+        let requested_manifest = &requested.manifest;
+        let request_context = requested_manifest
+            .parent()
+            .ok_or_else(|| "requested Cargo manifest has no parent directory".to_owned())?;
+        let environment_before = cargo_environment_witness()?;
+        let cargo = selected_cargo_program(request_context)?;
+        let version = run(&cargo, request_context, &["-vV"], 64 * 1024)?;
+        if cargo_environment_witness()? != environment_before {
+            return Err(
+                "Cargo tool-selection environment changed during metadata admission".to_owned(),
+            );
+        }
+        let host = String::from_utf8_lossy(&version)
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("host: ")
+                    .map(str::trim)
+                    .map(ToOwned::to_owned)
+            })
+            .ok_or_else(|| "cargo -vV named no host".to_owned())?;
+        let selection_before = cargo_tool_selection(&cargo, request_context, &version)?;
+        let tool_before =
+            metadata_tool_witness(request_context, &version, &selection_before, cached)?;
+
+        let no_deps = run_cargo_metadata_query(
+            &cargo,
+            request_context,
+            &selection_before,
+            &host,
+            requested_manifest,
+            true,
+            false,
+            None,
+        )?;
+        let no_deps_workspace = metadata_proves_requested_manifest(&no_deps, requested)?;
+        let no_deps_witness = *blake3::hash(&no_deps).as_bytes();
+        if self
+            .no_deps_witness
+            .is_some_and(|previous| previous != no_deps_witness)
+        {
+            return Err("Cargo no-deps workspace membership changed between passes".to_owned());
+        }
+        self.no_deps_witness = Some(no_deps_witness);
+
+        // Resolve the existing lock path before the full query when Cargo's
+        // ordinary inputs are unambiguous. This lets the successful --locked
+        // path prove the same lock bytes were present on both sides of Cargo.
+        // If the effective configuration is ambiguous, an exact missing-lock
+        // diagnostic can still authorize the private-lock path below; a
+        // successful query will be refused because its lock cannot be safely
+        // bound to an observed path.
+        let selected_lock_before =
+            match cargo_selected_lockfile_path(request_context, &no_deps_workspace) {
+                Ok(path) => Some((
+                    path.clone(),
+                    read_observation_file(&path, MAX_CARGO_OBSERVATION_FILE_BYTES)?,
+                )),
+                Err(_) => None,
+            };
+
+        let metadata = if self.lock_state.is_none() {
+            match run_cargo_metadata_query(
+                &cargo,
+                request_context,
+                &selection_before,
+                &host,
+                requested_manifest,
+                false,
+                true,
+                None,
+            ) {
+                Ok(metadata) => {
+                    let workspace = metadata_proves_requested_manifest(&metadata, requested)?;
+                    if workspace != no_deps_workspace {
+                        return Err(
+                            "Cargo effective workspace changed between no-deps and full metadata"
+                                .to_owned(),
+                        );
+                    }
+                    let (path_before, bytes_before) = selected_lock_before
+                        .as_ref()
+                        .ok_or_else(|| "Cargo used an existing lockfile whose configured path could not be proven".to_owned())?;
+                    let path = cargo_selected_lockfile_path(request_context, &workspace)?;
+                    if &path != path_before {
+                        return Err(
+                            "Cargo selected lockfile path changed during metadata".to_owned()
+                        );
+                    }
+                    let bytes_before = bytes_before.as_ref().ok_or_else(|| {
+                        "Cargo succeeded with --locked although its selected lockfile was absent before metadata".to_owned()
+                    })?;
+                    let (lockfile, digest) = read_required_cargo_lockfile(&path)?;
+                    if lockfile.as_bytes() != bytes_before.as_slice() {
+                        return Err("Cargo's selected lockfile changed during metadata".to_owned());
+                    }
+                    self.lock_state = Some(CargoMetadataLockState::Observed {
+                        path,
+                        lockfile,
+                        digest,
+                    });
+                    metadata
+                }
+                Err(error) => {
+                    let Some(missing_source_path) = missing_cargo_lockfile_path(&error) else {
+                        return Err(error);
+                    };
+                    if read_observation_file(
+                        &missing_source_path,
+                        MAX_CARGO_OBSERVATION_FILE_BYTES,
+                    )?
+                    .is_some()
+                    {
+                        return Err(format!(
+                            "Cargo reported a missing lockfile that is present: {}",
+                            missing_source_path.display()
+                        ));
+                    }
+                    if let Some((selected_path, selected_bytes)) = &selected_lock_before {
+                        if selected_path != &missing_source_path {
+                            return Err("Cargo's missing-lock diagnostic disagreed with the observed lock path".to_owned());
+                        }
+                        if selected_bytes.is_some() {
+                            return Err("Cargo reported a missing lockfile that was present before metadata".to_owned());
+                        }
+                    }
+                    if !cargo_supports_resolver_lockfile_path(&version)? {
+                        return Err(format!(
+                            "{error}; selected Cargo does not support stable private lockfile redirection"
+                        ));
+                    }
+                    let mut source_roots = vec![requested.root.clone(), no_deps_workspace.clone()];
+                    source_roots.extend(metadata_target_roots(&no_deps)?);
+                    let (directory, private_directory) =
+                        create_private_cargo_lock_directory(&source_roots)?;
+                    let private_path = private_directory.join("Cargo.lock");
+                    validate_cargo_lockfile_path(&private_path)?;
+                    let generated = run_cargo_metadata_query(
+                        &cargo,
+                        request_context,
+                        &selection_before,
+                        &host,
+                        requested_manifest,
+                        false,
+                        false,
+                        Some(&private_path),
+                    )?;
+                    if metadata_proves_requested_manifest(&generated, requested)?
+                        != metadata_proves_requested_manifest(&no_deps, requested)?
+                    {
+                        return Err(
+                            "Cargo workspace changed during private lockfile generation".to_owned()
+                        );
+                    }
+                    let (lockfile, digest) = read_required_cargo_lockfile(&private_path)?;
+                    if read_observation_file(
+                        &missing_source_path,
+                        MAX_CARGO_OBSERVATION_FILE_BYTES,
+                    )?
+                    .is_some()
+                    {
+                        return Err(
+                            "the Cargo-selected source lock appeared during private resolution"
+                                .to_owned(),
+                        );
+                    }
+                    let locked = run_cargo_metadata_query(
+                        &cargo,
+                        request_context,
+                        &selection_before,
+                        &host,
+                        requested_manifest,
+                        false,
+                        true,
+                        Some(&private_path),
+                    )?;
+                    if metadata_proves_requested_manifest(&locked, requested)? != no_deps_workspace
+                    {
+                        return Err(
+                            "Cargo workspace changed during private locked metadata".to_owned()
+                        );
+                    }
+                    let (locked_file, locked_digest) = read_required_cargo_lockfile(&private_path)?;
+                    if generated != locked || lockfile != locked_file || digest != locked_digest {
+                        return Err(
+                            "private Cargo lockfile did not reproduce locked metadata".to_owned()
+                        );
+                    }
+                    if read_observation_file(
+                        &missing_source_path,
+                        MAX_CARGO_OBSERVATION_FILE_BYTES,
+                    )?
+                    .is_some()
+                    {
+                        return Err(
+                            "the Cargo-selected source lock appeared during private resolution"
+                                .to_owned(),
+                        );
+                    }
+                    self.lock_state = Some(CargoMetadataLockState::Ephemeral {
+                        _directory: directory,
+                        private_path,
+                        missing_source_path,
+                        lockfile,
+                        digest,
+                    });
+                    locked
+                }
+            }
+        } else {
+            match self.lock_state.as_ref().expect("lock state was checked") {
+                CargoMetadataLockState::Observed {
+                    path,
+                    lockfile,
+                    digest,
+                } => {
+                    let selected_path =
+                        cargo_selected_lockfile_path(request_context, &no_deps_workspace)?;
+                    if &selected_path != path {
+                        return Err(
+                            "Cargo selected lockfile path changed between metadata passes"
+                                .to_owned(),
+                        );
+                    }
+                    let (current, current_digest) = read_required_cargo_lockfile(path)?;
+                    if &current != lockfile || &current_digest != digest {
+                        return Err(
+                            "Cargo's selected lockfile changed between metadata passes".to_owned()
+                        );
+                    }
+                    let metadata = run_cargo_metadata_query(
+                        &cargo,
+                        request_context,
+                        &selection_before,
+                        &host,
+                        requested_manifest,
+                        false,
+                        true,
+                        None,
+                    )?;
+                    if metadata_proves_requested_manifest(&metadata, requested)?
+                        != no_deps_workspace
+                    {
+                        return Err(
+                            "Cargo effective workspace changed during locked metadata".to_owned()
+                        );
+                    }
+                    let (after, after_digest) = read_required_cargo_lockfile(path)?;
+                    if &after != lockfile || &after_digest != digest {
+                        return Err("Cargo's selected lockfile changed during metadata".to_owned());
+                    }
+                    metadata
+                }
+                CargoMetadataLockState::Ephemeral {
+                    private_path,
+                    missing_source_path,
+                    lockfile,
+                    digest,
+                    ..
+                } => {
+                    if read_observation_file(missing_source_path, MAX_CARGO_OBSERVATION_FILE_BYTES)?
+                        .is_some()
+                    {
+                        return Err(
+                            "the Cargo-selected source lock appeared during private resolution"
+                                .to_owned(),
+                        );
+                    }
+                    let (current, current_digest) = read_required_cargo_lockfile(private_path)?;
+                    if &current != lockfile || &current_digest != digest {
+                        return Err(
+                            "private Cargo lockfile changed between metadata passes".to_owned()
+                        );
+                    }
+                    let metadata = run_cargo_metadata_query(
+                        &cargo,
+                        request_context,
+                        &selection_before,
+                        &host,
+                        requested_manifest,
+                        false,
+                        true,
+                        Some(private_path),
+                    )?;
+                    if metadata_proves_requested_manifest(&metadata, requested)?
+                        != no_deps_workspace
+                    {
+                        return Err(
+                            "Cargo workspace changed during private locked metadata".to_owned()
+                        );
+                    }
+                    let (after, after_digest) = read_required_cargo_lockfile(private_path)?;
+                    if &after != lockfile || &after_digest != digest {
+                        return Err("private Cargo lockfile changed during metadata".to_owned());
+                    }
+                    if read_observation_file(missing_source_path, MAX_CARGO_OBSERVATION_FILE_BYTES)?
+                        .is_some()
+                    {
+                        return Err(
+                            "the Cargo-selected source lock appeared during private resolution"
+                                .to_owned(),
+                        );
+                    }
+                    metadata
+                }
+            }
+        };
+
+        let (lockfile, lockfile_digest, lock_origin, lock_path_witness) = match self
+            .lock_state
+            .as_ref()
+            .expect("metadata resolution established a lock state")
+        {
+            CargoMetadataLockState::Observed {
+                path,
+                lockfile,
+                digest,
+            } => (
+                Some(lockfile.clone()),
+                Some(*digest),
+                Some(CargoMetadataLockOrigin::Observed),
+                Some(path.clone()),
+            ),
+            CargoMetadataLockState::Ephemeral {
+                missing_source_path,
+                lockfile,
+                digest,
+                ..
+            } => (
+                Some(lockfile.clone()),
+                Some(*digest),
+                Some(CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1),
+                Some(missing_source_path.clone()),
+            ),
+        };
+        let selection_after = cargo_tool_selection(&cargo, request_context, &version)?;
+        let tool_after =
+            metadata_tool_witness(request_context, &version, &selection_after, cached)?;
+        let environment_after = cargo_environment_witness()?;
+        if tool_before.digest != tool_after.digest || environment_before != environment_after {
+            return Err("Cargo tools or selection environment changed during metadata".to_owned());
+        }
+        Ok(CargoMetadataRun {
+            metadata,
+            host,
+            tool_witness: tool_after.digest,
+            no_deps_witness: Some(no_deps_witness),
+            lockfile,
+            lockfile_digest,
+            lock_origin,
+            lock_path_witness,
         })
-        .ok_or_else(|| "cargo -vV named no host".to_owned())?;
-    let selection_before = cargo_tool_selection(&cargo, request_context, &version)?;
-    let tool_before = metadata_tool_witness(request_context, &version, &selection_before, cached)?;
-    let requested_manifest_text = requested_manifest
+    }
+}
+
+fn run_cargo_metadata_query(
+    cargo: &Path,
+    request_context: &Path,
+    selection: &CargoToolSelection,
+    host: &str,
+    requested_manifest: &Path,
+    no_deps: bool,
+    locked: bool,
+    private_lockfile: Option<&Path>,
+) -> Result<Vec<u8>, String> {
+    let manifest = requested_manifest
         .to_str()
         .ok_or_else(|| "requested Cargo manifest path is not UTF-8".to_owned())?;
-    let metadata = run_with_default_rustc(
-        &cargo,
-        request_context,
-        &[
-            "metadata",
-            "--offline",
-            "--locked",
-            "--format-version",
-            "1",
-            "--filter-platform",
-            &host,
-            "--manifest-path",
-            requested_manifest_text,
-        ],
-        MAX_METADATA_BYTES,
-        selection_before
-            .inject_default_rustc
-            .then_some(selection_before.rustc.as_path()),
-    )?;
-    let selection_after = cargo_tool_selection(&cargo, request_context, &version)?;
-    let tool_after = metadata_tool_witness(request_context, &version, &selection_after, cached)?;
-    let environment_after = cargo_environment_witness()?;
-    if tool_before.digest != tool_after.digest || environment_before != environment_after {
-        return Err("Cargo tools or selection environment changed during metadata".to_owned());
+    let mut arguments = Vec::<String>::new();
+    if let Some(lockfile) = private_lockfile {
+        validate_cargo_lockfile_path(lockfile)?;
+        arguments.push("--config".to_owned());
+        arguments.push(cargo_lockfile_path_config(lockfile)?);
     }
-    let tool_witness = tool_after.digest;
-    Ok((metadata, host, tool_witness))
+    arguments.push("metadata".to_owned());
+    arguments.push("--offline".to_owned());
+    if no_deps {
+        arguments.push("--no-deps".to_owned());
+    } else if locked {
+        arguments.push("--locked".to_owned());
+    }
+    arguments.extend(["--format-version".to_owned(), "1".to_owned()]);
+    if !no_deps {
+        arguments.extend(["--filter-platform".to_owned(), host.to_owned()]);
+    }
+    arguments.extend(["--manifest-path".to_owned(), manifest.to_owned()]);
+    let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    run_with_default_rustc(
+        cargo,
+        request_context,
+        &arguments,
+        MAX_METADATA_BYTES,
+        selection
+            .inject_default_rustc
+            .then_some(selection.rustc.as_path()),
+    )
+}
+
+fn cargo_lockfile_path_config(lockfile: &Path) -> Result<String, String> {
+    validate_cargo_lockfile_path(lockfile)?;
+    let value = lockfile
+        .to_str()
+        .ok_or_else(|| "private Cargo lockfile path is not UTF-8".to_owned())?;
+    let quoted = serde_json::to_string(value)
+        .map_err(|error| format!("cannot encode private Cargo lockfile path: {error}"))?;
+    Ok(format!("resolver.lockfile-path={quoted}"))
+}
+
+fn create_private_cargo_lock_directory(
+    source_roots: &[PathBuf],
+) -> Result<(tempfile::TempDir, PathBuf), String> {
+    if source_roots.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
+        return Err("Cargo source-root set exceeds the private-lock limit".to_owned());
+    }
+    let mut canonical_roots = Vec::with_capacity(source_roots.len());
+    for root in source_roots {
+        if !root.is_absolute()
+            || root.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err("Cargo source root is not a canonical absolute path".to_owned());
+        }
+        let canonical = root
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve Cargo source root: {error}"))?;
+        if &canonical != root {
+            return Err("Cargo source root changed through a path alias".to_owned());
+        }
+        canonical_roots.push(canonical);
+    }
+
+    let temporary_root = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve system temporary directory: {error}"))?;
+    if canonical_roots
+        .iter()
+        .any(|source_root| temporary_root.starts_with(source_root))
+    {
+        return Err("system temporary directory is inside the Cargo source tree".to_owned());
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("backend-cargo-metadata-")
+        .tempdir_in(&temporary_root)
+        .map_err(|source| format!("cannot create private Cargo lock directory: {source}"))?;
+    let private_directory = directory
+        .path()
+        .canonicalize()
+        .map_err(|source| format!("cannot resolve private Cargo lock directory: {source}"))?;
+    if canonical_roots
+        .iter()
+        .any(|source_root| private_directory.starts_with(source_root))
+    {
+        return Err("private Cargo lock directory was created inside a source root".to_owned());
+    }
+    Ok((directory, private_directory))
+}
+
+fn validate_cargo_lockfile_path(path: &Path) -> Result<(), String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| "Cargo lockfile path is not UTF-8".to_owned())?;
+    if text.is_empty()
+        || text.len() > 4 * 1024
+        || text.chars().any(char::is_control)
+        || !path.is_absolute()
+        || path.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.lock")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(
+            "Cargo lockfile path is not a bounded canonical absolute Cargo.lock".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn read_required_cargo_lockfile(path: &Path) -> Result<(String, [u8; 32]), String> {
+    validate_cargo_lockfile_path(path)?;
+    let bytes = read_observation_file(path, MAX_CARGO_OBSERVATION_FILE_BYTES)?
+        .ok_or_else(|| format!("Cargo selected a missing lockfile: {}", path.display()))?;
+    let lockfile = String::from_utf8(bytes)
+        .map_err(|_| "Cargo selected lockfile is not valid UTF-8".to_owned())?;
+    let digest = *blake3::hash(lockfile.as_bytes()).as_bytes();
+    Ok((lockfile, digest))
+}
+
+fn missing_cargo_lockfile_path(error: &str) -> Option<PathBuf> {
+    let path = error
+        .strip_prefix("cargo metadata failed: error: cannot create the lock file ")?
+        .strip_suffix(" because --locked was passed to prevent this")?;
+    let path = PathBuf::from(path);
+    validate_cargo_lockfile_path(&path).ok()?;
+    Some(path)
+}
+
+fn cargo_supports_resolver_lockfile_path(version_output: &[u8]) -> Result<bool, String> {
+    let version = String::from_utf8_lossy(version_output);
+    let release = version
+        .lines()
+        .find_map(|line| line.strip_prefix("cargo "))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| "selected Cargo returned no parseable release version".to_owned())?;
+    let mut components = release.split('.');
+    let major = components
+        .next()
+        .and_then(|component| component.parse::<u64>().ok())
+        .ok_or_else(|| "selected Cargo returned an invalid major version".to_owned())?;
+    let minor = components
+        .next()
+        .and_then(|component| component.parse::<u64>().ok())
+        .ok_or_else(|| "selected Cargo returned an invalid minor version".to_owned())?;
+    let _patch = components
+        .next()
+        .and_then(|component| component.split(['-', '+']).next())
+        .and_then(|component| component.parse::<u64>().ok())
+        .ok_or_else(|| "selected Cargo returned an invalid patch version".to_owned())?;
+    if components.next().is_some() {
+        return Err("selected Cargo returned an invalid release version".to_owned());
+    }
+    Ok(major > 1 || (major == 1 && minor >= 97))
+}
+
+/// Resolves only the lockfile override that Cargo successfully used. An
+/// environment override is unambiguous; file configuration is admitted only
+/// when every observed `resolver.lockfile-path` agrees on one absolute path.
+/// Conflicting or relative config semantics are refused instead of guessed.
+fn cargo_selected_lockfile_path(
+    request_context: &Path,
+    workspace: &Path,
+) -> Result<PathBuf, String> {
+    let environment = std::env::var_os("CARGO_RESOLVER_LOCKFILE_PATH");
+    cargo_selected_lockfile_path_with_override(request_context, workspace, environment.as_deref())
+}
+
+fn cargo_selected_lockfile_path_with_override(
+    request_context: &Path,
+    workspace: &Path,
+    environment: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, String> {
+    if let Some(value) = environment {
+        let value = value
+            .to_str()
+            .map_err(|_| "CARGO_RESOLVER_LOCKFILE_PATH is not UTF-8".to_owned())?;
+        let path = PathBuf::from(value);
+        validate_cargo_lockfile_path(&path)?;
+        return Ok(path);
+    }
+    let config_paths = cargo_config_paths(request_context)?;
+    cargo_selected_lockfile_path_from_config_files(workspace, &config_paths)
+}
+
+fn cargo_selected_lockfile_path_from_config_files(
+    workspace: &Path,
+    config_paths: &[PathBuf],
+) -> Result<PathBuf, String> {
+    if config_paths.len() > MAX_CARGO_CONFIG_INPUTS {
+        return Err("Cargo configuration input set exceeds its limit".to_owned());
+    }
+    let mut configured = BTreeSet::new();
+    for config_path in config_paths {
+        let Some(bytes) = read_observation_file(&config_path, MAX_CARGO_CONFIG_BYTES)? else {
+            continue;
+        };
+        let document: toml::Value = std::str::from_utf8(&bytes)
+            .map_err(|_| "Cargo config is not UTF-8".to_owned())?
+            .parse()
+            .map_err(|error: toml::de::Error| format!("Cargo config is malformed: {error}"))?;
+        let Some(value) = document
+            .get("resolver")
+            .and_then(toml::Value::as_table)
+            .and_then(|resolver| resolver.get("lockfile-path"))
+        else {
+            continue;
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| "Cargo resolver.lockfile-path config is not a string".to_owned())?;
+        let path = PathBuf::from(value);
+        validate_cargo_lockfile_path(&path)?;
+        configured.insert(path);
+        if configured.len() > 1 {
+            return Err(
+                "Cargo resolver.lockfile-path differs across config inputs; refusing to guess Cargo precedence".to_owned(),
+            );
+        }
+    }
+    match configured.into_iter().next() {
+        Some(path) => Ok(path),
+        None => {
+            let path = workspace.join("Cargo.lock");
+            validate_cargo_lockfile_path(&path)?;
+            Ok(path)
+        }
+    }
 }
 
 /// `NUDOX_CARGO`, else `cargo` beside `NUDOX_RUSTC`, else the first `cargo`
@@ -4343,6 +5467,32 @@ mod tests {
         }
     }
 
+    fn project_input_read_for_test(
+        input: TreeInput,
+        watched: Vec<PathBuf>,
+        file_witness: [u8; 32],
+        tool_witness_reuse: Option<CargoToolWitnessReuse>,
+    ) -> ProjectInputRead {
+        let target_roots = input
+            .packages
+            .iter()
+            .filter_map(|package| package.source_root.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let target_witness = cargo_auto_target_membership_witness(&target_roots)
+            .expect("test target membership witness");
+        ProjectInputRead {
+            input,
+            watched,
+            target_roots,
+            file_witness,
+            target_witness,
+            lock_origin_witness: [0; 32],
+            tool_witness_reuse,
+        }
+    }
+
     fn plant_fixture_cache_entry(
         cache: &mut BrowseCache,
         input: TreeInput,
@@ -4350,11 +5500,24 @@ mod tests {
         metadata_context: &Path,
     ) {
         let workspace = PathBuf::from(&input.root);
+        let target_roots = input
+            .packages
+            .iter()
+            .filter_map(|package| package.source_root.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let target_witness = cargo_auto_target_membership_witness(&target_roots)
+            .expect("fixture target membership witness");
+        let lock_origin_witness = [0; 32];
         let input = Arc::new(input);
         let package_rows = source_package_row_index(&input);
-        let witness = observation_witness_for_context(&workspace, metadata_context, &watched, None)
-            .expect("fixture observation witness")
-            .digest;
+        let file_witness =
+            observation_witness_for_context(&workspace, metadata_context, &watched, None)
+                .expect("fixture observation witness")
+                .digest;
+        let witness =
+            compose_cargo_input_witness(file_witness, target_witness, lock_origin_witness);
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
             &metadata_context.to_path_buf(),
@@ -4370,6 +5533,8 @@ mod tests {
             workspace,
             CacheEntry {
                 witness,
+                lock_origin_witness,
+                target_roots,
                 watched,
                 input,
                 metadata_context: metadata_context.to_path_buf(),
@@ -4494,7 +5659,7 @@ mod tests {
                     observation_witness_for_context(&excluded, &requested.root, &watched, None)
                         .expect("standalone observation")
                         .digest;
-                Ok((input, watched, witness, None))
+                Ok(project_input_read_for_test(input, watched, witness, None))
             })
             .expect("standalone package is resolved from its own exact manifest");
 
@@ -4552,7 +5717,12 @@ mod tests {
                 let witness = observation_witness_for_context(&workspace, &member, &watched, None)
                     .expect("member-context observation")
                     .digest;
-                Ok((input, watched.clone(), witness, None))
+                Ok(project_input_read_for_test(
+                    input,
+                    watched.clone(),
+                    witness,
+                    None,
+                ))
             })
             .expect("member context must be resolved independently");
 
@@ -4639,7 +5809,7 @@ mod tests {
                     observation_witness_for_context(&external, &requested.root, &watched, None)
                         .expect("new workspace witness")
                         .digest;
-                Ok((input, watched, witness, None))
+                Ok(project_input_read_for_test(input, watched, witness, None))
             })
             .expect("replacement manifest resolves through Cargo metadata");
 
@@ -4787,6 +5957,379 @@ mod tests {
             metadata_proves_requested_manifest(&excluded_metadata, &requested)
                 .is_err_and(|error| error.contains("workspace member")),
             "a package row without workspace_members membership is not admitted"
+        );
+    }
+
+    #[test]
+    fn cargo_lockfile_path_encoding_and_missing_diagnostic_are_narrow() {
+        let scratch = scratch("backend-cargo-lock-path-policy");
+        let lockfile = scratch.0.join("private lock directory/Cargo.lock");
+        let override_value = cargo_lockfile_path_config(&lockfile).expect("TOML override");
+        let parsed: toml::Value = override_value.parse().expect("valid Cargo --config value");
+        assert_eq!(
+            parsed
+                .get("resolver")
+                .and_then(toml::Value::as_table)
+                .and_then(|resolver| resolver.get("lockfile-path"))
+                .and_then(toml::Value::as_str),
+            lockfile.to_str(),
+            "the private absolute path must survive TOML quoting"
+        );
+        assert!(validate_cargo_lockfile_path(Path::new("Cargo.lock")).is_err());
+        assert!(validate_cargo_lockfile_path(Path::new("/tmp/a/../Cargo.lock")).is_err());
+
+        let missing = format!(
+            "cargo metadata failed: error: cannot create the lock file {} because --locked was passed to prevent this",
+            lockfile.display()
+        );
+        assert_eq!(missing_cargo_lockfile_path(&missing), Some(lockfile));
+        assert!(
+            missing_cargo_lockfile_path("cargo metadata failed: error: registry unavailable")
+                .is_none()
+        );
+        assert!(missing_cargo_lockfile_path(
+            "cargo metadata failed: error: cannot create the lock file relative/Cargo.lock because --locked was passed to prevent this"
+        )
+        .is_none());
+
+        assert!(
+            cargo_supports_resolver_lockfile_path(b"cargo 1.97.1 (hash)\n")
+                .expect("current release parses")
+        );
+        assert!(
+            cargo_supports_resolver_lockfile_path(b"cargo 1.97.0-nightly (hash)\n")
+                .expect("nightly release parses")
+        );
+        assert!(
+            !cargo_supports_resolver_lockfile_path(b"cargo 1.96.9 (hash)\n")
+                .expect("older release parses")
+        );
+        assert!(cargo_supports_resolver_lockfile_path(b"cargo 1.97.invalid (hash)\n").is_err());
+    }
+
+    #[test]
+    fn configured_lock_path_selection_accepts_only_absolute_unambiguous_inputs() {
+        let scratch = scratch("backend-cargo-lock-config-policy");
+        std::fs::create_dir_all(&scratch.0).expect("config policy root");
+        let workspace = scratch.0.canonicalize().expect("canonical workspace");
+        let selected = workspace.join("observed/Cargo.lock");
+        let conflicting = workspace.join("other/Cargo.lock");
+        let config_a = workspace.join("config-a.toml");
+        let config_b = workspace.join("config-b.toml");
+        let write_config = |path: &Path, lockfile: &Path| {
+            let encoded = serde_json::to_string(lockfile.to_str().expect("UTF-8 path"))
+                .expect("TOML string encoding");
+            std::fs::write(path, format!("[resolver]\nlockfile-path = {encoded}\n"))
+                .expect("Cargo config");
+        };
+        write_config(&config_a, &selected);
+        write_config(&config_b, &selected);
+
+        assert_eq!(
+            cargo_selected_lockfile_path_from_config_files(
+                &workspace,
+                &[config_a.clone(), config_b.clone()]
+            )
+            .expect("identical absolute config values are unambiguous"),
+            selected
+        );
+        assert_eq!(
+            cargo_selected_lockfile_path_from_config_files(&workspace, &[])
+                .expect("default workspace lock path"),
+            workspace.join("Cargo.lock")
+        );
+
+        write_config(&config_b, &conflicting);
+        assert!(
+            cargo_selected_lockfile_path_from_config_files(
+                &workspace,
+                &[config_a.clone(), config_b.clone()]
+            )
+            .is_err()
+        );
+        std::fs::write(
+            &config_b,
+            "[resolver]\nlockfile-path = \"relative/Cargo.lock\"\n",
+        )
+        .expect("relative path config");
+        assert!(
+            cargo_selected_lockfile_path_from_config_files(&workspace, &[config_b.clone()])
+                .is_err()
+        );
+
+        let environment_path = workspace.join("environment/Cargo.lock");
+        assert_eq!(
+            cargo_selected_lockfile_path_with_override(
+                &workspace,
+                &workspace,
+                Some(environment_path.as_os_str())
+            )
+            .expect("environment override is unambiguous"),
+            environment_path,
+            "the Cargo environment override takes precedence over file values"
+        );
+    }
+
+    #[test]
+    fn selected_registry_checksum_and_target_membership_are_witnessed() {
+        let scratch = scratch("backend-cargo-metadata-input-membership");
+        let registry_manifest = scratch.0.join("registry/serde/Cargo.toml");
+        let local_manifest = scratch.0.join("workspace/local/Cargo.toml");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "packages": [
+                {
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": registry_manifest,
+                },
+                {"source": null, "manifest_path": local_manifest}
+            ]
+        }))
+        .expect("metadata package rows");
+        assert_eq!(
+            metadata_required_registry_checksums(&metadata).expect("registry checksum set"),
+            [scratch.0.join("registry/serde/.cargo-checksum.json")]
+        );
+
+        let package = scratch.0.join("workspace/local");
+        std::fs::create_dir_all(package.join("src")).expect("package src");
+        std::fs::write(package.join("Cargo.toml"), "[package]\n").expect("package manifest");
+        std::fs::write(package.join("src/lib.rs"), "pub fn local() {}\n").expect("lib source");
+        let package = package.canonicalize().expect("canonical package root");
+        let before = cargo_auto_target_membership_witness(std::slice::from_ref(&package))
+            .expect("initial automatic target membership");
+        std::fs::create_dir_all(package.join("src/bin")).expect("src/bin");
+        std::fs::write(package.join("src/bin/tool.rs"), "fn main() {}\n").expect("new target");
+        let after = cargo_auto_target_membership_witness(std::slice::from_ref(&package))
+            .expect("updated automatic target membership");
+        assert_ne!(
+            before, after,
+            "new auto-target names invalidate warm membership"
+        );
+
+        let lock_bytes = b"version = 4\n";
+        let digest = *blake3::hash(lock_bytes).as_bytes();
+        let path = package.join("Cargo.lock");
+        let observed = cargo_lock_origin_witness(CargoMetadataLockOrigin::Observed, &path, digest);
+        let ephemeral = cargo_lock_origin_witness(
+            CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1,
+            &path,
+            digest,
+        );
+        assert_ne!(
+            observed, ephemeral,
+            "generated and observed lock bytes have distinct origins"
+        );
+        assert_ne!(
+            compose_cargo_input_witness([1; 32], [2; 32], observed),
+            compose_cargo_input_witness([1; 32], [2; 32], ephemeral)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automatic_target_membership_refuses_linked_candidate_directories() {
+        let scratch = scratch("backend-cargo-target-link-refusal");
+        let package = scratch.0.join("package");
+        let outside = scratch.0.join("outside");
+        std::fs::create_dir_all(&package).expect("package root");
+        std::fs::create_dir_all(&outside).expect("outside directory");
+        std::os::unix::fs::symlink(&outside, package.join("examples"))
+            .expect("linked Cargo auto-target directory");
+        let package = package.canonicalize().expect("canonical package");
+        assert!(cargo_auto_target_membership_witness(&[package]).is_err());
+    }
+
+    #[test]
+    fn private_lock_directory_refuses_a_temporary_root_inside_source() {
+        let temporary_root = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical system temporary directory");
+        assert!(
+            create_private_cargo_lock_directory(std::slice::from_ref(&temporary_root)).is_err(),
+            "the lock resolver must refuse before creating a temporary directory in source"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_lockfile_observation_does_not_follow_a_link() {
+        let scratch = scratch("backend-cargo-lock-link-refusal");
+        let source = scratch.0.join("source/Cargo.lock");
+        let selected = scratch.0.join("selected/Cargo.lock");
+        std::fs::create_dir_all(source.parent().expect("source parent"))
+            .expect("source lock directory");
+        std::fs::create_dir_all(selected.parent().expect("selected parent"))
+            .expect("selected lock directory");
+        std::fs::write(&source, "version = 4\n").expect("source lockfile");
+        std::os::unix::fs::symlink(&source, &selected).expect("selected lock symlink");
+        let selected = selected
+            .parent()
+            .expect("selected parent")
+            .canonicalize()
+            .expect("canonical selected parent")
+            .join("Cargo.lock");
+        assert!(
+            read_required_cargo_lockfile(&selected).is_err(),
+            "configured lockfiles are read through a no-follow directory capability"
+        );
+    }
+
+    #[test]
+    fn lockless_metadata_uses_a_private_lock_and_preserves_the_requested_tree() {
+        let scratch = scratch("backend-cargo-lockless-metadata");
+        std::fs::create_dir_all(&scratch.0).expect("lockless fixture root");
+        let scratch_root = scratch.0.canonicalize().expect("canonical fixture root");
+        let workspace = scratch_root.join("workspace");
+        let app = workspace.join("app");
+        let dependency = scratch_root.join("path-dependency");
+        let config_dir = workspace.join(".cargo");
+        std::fs::create_dir_all(app.join("src")).expect("app source");
+        std::fs::create_dir_all(dependency.join("src")).expect("path dependency source");
+        std::fs::create_dir_all(&config_dir).expect("Cargo config directory");
+        let redirect = scratch_root.join("unwritten redirected lock/Cargo.lock");
+        let config_path = config_dir.join("config.toml");
+        let config = cargo_lockfile_path_config(&redirect).expect("absolute private path setting");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\nresolver = \"3\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"lockless-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nlockless-helper = { path = \"../../path-dependency\" }\n",
+        )
+        .expect("app manifest");
+        std::fs::write(app.join("src/lib.rs"), "pub fn fixture() {}\n").expect("app source file");
+        std::fs::write(
+            dependency.join("Cargo.toml"),
+            "[package]\nname = \"lockless-helper\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("path dependency manifest");
+        std::fs::write(dependency.join("src/lib.rs"), "pub fn helper() {}\n")
+            .expect("path dependency source file");
+        std::fs::write(&config_path, format!("{config}\n")).expect("resolver config");
+        assert!(
+            std::env::var_os("CARGO_RESOLVER_LOCKFILE_PATH").is_none(),
+            "this integration fixture exercises the project-config lock path"
+        );
+
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app = app.canonicalize().expect("canonical app");
+        let requested = requested_cargo_manifest(&app)
+            .expect("exact lockless manifest read")
+            .expect("lockless package");
+        let selected = selected_cargo_program(&app).expect("selected Cargo");
+        let version = run(&selected, &app, &["-vV"], 64 * 1024).expect("Cargo version");
+        let supports_private_lock =
+            cargo_supports_resolver_lockfile_path(&version).expect("Cargo release version");
+        let source_before = [
+            workspace.join("Cargo.toml"),
+            app.join("Cargo.toml"),
+            app.join("src/lib.rs"),
+            dependency.join("Cargo.toml"),
+            dependency.join("src/lib.rs"),
+            config_path.clone(),
+        ]
+        .into_iter()
+        .map(|path| std::fs::read(path).expect("source input bytes"))
+        .collect::<Vec<_>>();
+
+        let mut session = CargoMetadataResolutionSession::default();
+        let first = session.run(&requested, None);
+        if !supports_private_lock {
+            assert!(
+                first.is_err(),
+                "older Cargo must refuse private lock redirection"
+            );
+            assert!(!workspace.join("Cargo.lock").exists());
+            assert!(!app.join("Cargo.lock").exists());
+            assert!(!redirect.exists());
+            return;
+        }
+        let first = first.expect("lockless exact metadata resolution");
+        assert_eq!(
+            first.lock_origin,
+            Some(CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1)
+        );
+        assert_eq!(first.lock_path_witness.as_deref(), Some(redirect.as_path()));
+        assert!(first.lockfile.is_some());
+        assert_eq!(
+            metadata_proves_requested_manifest(&first.metadata, &requested)
+                .expect("resolved exact workspace"),
+            workspace
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&first.metadata).expect("full metadata");
+        assert!(
+            json.get("resolve")
+                .is_some_and(|resolve| !resolve.is_null())
+        );
+        let graph = metadata_input(&first.metadata, &first.host, first.lockfile.as_deref())
+            .expect("resolved lockless dependency graph");
+        let helper = graph
+            .packages
+            .iter()
+            .find(|package| package.name == "lockless-helper")
+            .expect("exact path dependency package row");
+        assert!(
+            graph.edges.iter().any(|edge| {
+                graph
+                    .packages
+                    .iter()
+                    .any(|package| package.id == edge.from && package.name == "lockless-fixture")
+                    && edge.to == helper.id
+            }),
+            "the graph must contain Cargo's resolved app-to-helper edge: {:?}",
+            graph.edges
+        );
+
+        let private_path = match session.lock_state.as_ref().expect("retained lock state") {
+            CargoMetadataLockState::Ephemeral { private_path, .. } => private_path.clone(),
+            CargoMetadataLockState::Observed { .. } => {
+                panic!("the lockless fixture must not use a project lockfile")
+            }
+        };
+        let private_directory = private_path
+            .parent()
+            .expect("private lock directory")
+            .to_path_buf();
+        assert!(!private_directory.starts_with(&workspace));
+        assert!(!private_directory.starts_with(&app));
+        assert!(
+            private_path.is_file(),
+            "the generated lock exists only in the private directory"
+        );
+
+        let second = session
+            .run(&requested, None)
+            .expect("locked metadata repeats from the private generated lock");
+        assert_eq!(second.metadata, first.metadata);
+        assert_eq!(second.lockfile, first.lockfile);
+        assert_eq!(second.lockfile_digest, first.lockfile_digest);
+        assert_eq!(second.lock_origin, first.lock_origin);
+        assert!(!workspace.join("Cargo.lock").exists());
+        assert!(!app.join("Cargo.lock").exists());
+        assert!(!redirect.exists());
+        for (path, expected) in [
+            workspace.join("Cargo.toml"),
+            app.join("Cargo.toml"),
+            app.join("src/lib.rs"),
+            dependency.join("Cargo.toml"),
+            dependency.join("src/lib.rs"),
+            config_path,
+        ]
+        .into_iter()
+        .zip(source_before)
+        {
+            assert_eq!(
+                std::fs::read(path).expect("source still readable"),
+                expected
+            );
+        }
+        drop(session);
+        assert!(
+            !private_directory.exists(),
+            "the private generated lock directory is removed with its RAII owner"
         );
     }
 
@@ -5722,6 +7265,17 @@ mod tests {
         let mut plant_sentinel = |cache: &mut BrowseCache, watched: Vec<PathBuf>| {
             cache.remove_workspace(&root);
             let package_rows = source_package_row_index(&sentinel);
+            let target_roots = sentinel
+                .packages
+                .iter()
+                .filter_map(|package| package.source_root.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let target_witness = cargo_auto_target_membership_witness(&target_roots)
+                .expect("sentinel target membership witness");
+            let lock_origin_witness = [0; 32];
+            let file_witness = witness(&watched);
             let retained_bytes = browse_entry_retained_bytes(
                 &root,
                 &root,
@@ -5735,7 +7289,13 @@ mod tests {
             cache.entries.insert(
                 root.clone(),
                 CacheEntry {
-                    witness: witness(&watched),
+                    witness: compose_cargo_input_witness(
+                        file_witness,
+                        target_witness,
+                        lock_origin_witness,
+                    ),
+                    lock_origin_witness,
+                    target_roots,
                     watched,
                     input: Arc::clone(&sentinel),
                     metadata_context: root.clone(),
@@ -5778,7 +7338,7 @@ mod tests {
 
         // Replant the sentinel against the new lockfile, then change only
         // Cargo.toml. Both inputs to Cargo's answer have independent guards.
-        plant_sentinel(&mut cache, watched);
+        plant_sentinel(&mut cache, watched.clone());
         std::fs::write(
             &manifest,
             "[package]\nname = \"gapfix\"\nversion = \"0.1.0\"\nedition = \"2021\"\ndescription = \"manifest-only cache invalidation\"\n",
@@ -5790,6 +7350,29 @@ mod tests {
             "a changed manifest alone must force a real read: {touched:?}"
         );
         assert_eq!(cache.counters.tree_input_allocations, 2);
+
+        // Cargo discovers `src/bin` targets from directory contents. Adding
+        // one must invalidate a warm dependency-tree cache even though neither
+        // Cargo.toml nor Cargo.lock changed.
+        plant_sentinel(&mut cache, watched);
+        std::fs::create_dir_all(root.join("src/bin")).expect("automatic bin directory");
+        std::fs::write(root.join("src/bin/sidecar.rs"), "fn main() {}\n")
+            .expect("automatic bin target");
+        let touched = cache
+            .project_tree(&root, None)
+            .expect("automatic-target cache invalidation");
+        assert!(
+            matches!(&touched.source, TreeSource::Cargo { host } if !host.is_empty()),
+            "a new Cargo auto-target must force a real metadata refresh: {touched:?}"
+        );
+        assert!(
+            touched
+                .packages
+                .iter()
+                .any(|package| package.name == "gapfix" && package.has_bin),
+            "Cargo metadata should report the newly discovered binary target: {touched:?}"
+        );
+        assert_eq!(cache.counters.tree_input_allocations, 3);
     }
 
     #[test]
