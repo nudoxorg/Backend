@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "name": "drawer-360-200-native-AX-survey",
+  "case": {
+    "id": "drawer_360_200_survey",
+    "flow": "drawer",
+    "owner_phase": "serving",
+    "motion": "full",
+    "transition": "first_open",
+    "viewport": "narrow",
+    "text_scale": "200",
+    "live_index": false
+  },
+  "capture_scope": "app_display",
+  "capture_fps": 60,
+  "duration_ms": 1150,
+  "max_frame_gap_ms": 90,
+  "expected_reduce_motion": false,
+  "actions": [
+    {
+      "at_ms": 80,
+      "kind": "key",
+      "keycode": 42,
+      "modifiers": [
+        "command"
+      ],
+      "label": "open drawer",
+      "expect_visual_ms": 300
+    },
+    {
+      "at_ms": 510,
+      "kind": "probe",
+      "label": "measure native Library shelf",
+      "expect_ax_title": "Library shelf"
+    },
+    {
+      "at_ms": 780,
+      "kind": "key",
+      "keycode": 53,
+      "label": "close drawer with Escape",
+      "expect_visual_ms": 270
+    },
+    {
+      "at_ms": 1070,
+      "kind": "probe",
+      "label": "post-drawer native tree"
+    }
+  ],
+  "crops": []
+}

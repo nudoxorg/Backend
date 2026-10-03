@@ -17,6 +17,13 @@
     {"id": "source_resize_full", "flow": "source", "owner_phase": "serving", "motion": "full", "transition": "resize_midflight", "viewport": "mixed", "text_scale": "100", "live_index": true},
     {"id": "source_text_scale_reduced", "flow": "source", "owner_phase": "serving", "motion": "reduced", "transition": "text_scale_midflight", "viewport": "mixed", "text_scale": "mixed", "live_index": true},
     {"id": "page_failure_recovery_full", "flow": "failure_recovery", "owner_phase": "serving", "motion": "full", "transition": "failure_recovery", "viewport": "wide", "text_scale": "100", "live_index": true},
-    {"id": "page_failure_recovery_reduced", "flow": "failure_recovery", "owner_phase": "serving", "motion": "reduced", "transition": "failure_recovery", "viewport": "narrow", "text_scale": "200", "live_index": true}
+    {"id": "page_failure_recovery_reduced", "flow": "failure_recovery", "owner_phase": "serving", "motion": "reduced", "transition": "failure_recovery", "viewport": "narrow", "text_scale": "200", "live_index": true},
+    {"id": "settings_fast_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "ask_retarget_full", "flow": "ask", "owner_phase": "serving", "motion": "full", "transition": "retarget", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "find_fast_full", "flow": "find", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "settings_settle_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "settle", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "settings_retarget_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "retarget", "viewport": "mixed", "text_scale": "100", "live_index": false},
+    {"id": "drawer_500_100_full", "flow": "drawer", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "narrow", "text_scale": "100", "live_index": false},
+    {"id": "drawer_360_200_full", "flow": "drawer", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "narrow", "text_scale": "200", "live_index": false}
   ]
 }

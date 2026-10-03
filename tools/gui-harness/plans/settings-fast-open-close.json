@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "name": "settings-first-400ms-arrival-exit",
+  "case": {
+    "id": "settings_fast_full",
+    "flow": "settings",
+    "owner_phase": "serving",
+    "motion": "full",
+    "transition": "open_close",
+    "viewport": "wide",
+    "text_scale": "100",
+    "live_index": false
+  },
+  "capture_scope": "app_display",
+  "capture_fps": 60,
+  "duration_ms": 1000,
+  "max_frame_gap_ms": 90,
+  "expected_reduce_motion": false,
+  "actions": [
+    {
+      "at_ms": 80,
+      "kind": "key",
+      "keycode": 43,
+      "modifiers": [
+        "command"
+      ],
+      "label": "open Settings",
+      "expect_visual_ms": 220
+    },
+    {
+      "at_ms": 245,
+      "kind": "probe",
+      "label": "Settings native Appearance",
+      "expect_ax_title": "Appearance"
+    },
+    {
+      "at_ms": 350,
+      "kind": "key",
+      "keycode": 53,
+      "label": "Escape Settings",
+      "expect_visual_ms": 250
+    },
+    {
+      "at_ms": 720,
+      "kind": "probe",
+      "label": "post-exit native tree"
+    }
+  ],
+  "crops": []
+}

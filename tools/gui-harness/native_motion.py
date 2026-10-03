@@ -139,18 +139,18 @@ def require_plan(path: Path) -> dict[str, Any]:
     plan = json.loads(path.read_text())
     if not isinstance(plan, dict) or plan.get("schema") != 1:
         raise ValueError("plan must have schema 1")
-    allowed_plan = {"schema", "name", "duration_ms", "max_frames", "window_id", "capture_fps",
+    allowed_plan = {"schema", "name", "duration_ms", "max_frames", "window_id", "expected_window_frame_pt", "capture_fps",
                     "max_frame_gap_ms", "expected_reduce_motion", "capture_scope", "actions", "crops", "case"}
     if set(plan) - allowed_plan:
         raise ValueError(f"unknown plan fields: {sorted(set(plan) - allowed_plan)}")
     case = plan.get("case")
     if not isinstance(case, dict) or set(case) != {"id", "flow", "owner_phase", "motion", "transition", "viewport", "text_scale", "live_index"}:
         raise ValueError("case requires id, flow, owner_phase, motion, transition, viewport, text_scale, live_index")
-    if case["flow"] not in {"add", "ask", "hand", "settings", "source", "failure_recovery"}:
+    if case["flow"] not in {"add", "ask", "find", "drawer", "hand", "settings", "source", "failure_recovery"}:
         raise ValueError("unknown case flow")
     if case["owner_phase"] not in {"starting", "failed", "serving"} or case["motion"] not in {"full", "reduced"}:
         raise ValueError("invalid owner phase or motion")
-    if case["transition"] not in {"first_open", "open_close", "resize_midflight", "text_scale_midflight", "failure_recovery"}:
+    if case["transition"] not in {"first_open", "open_close", "resize_midflight", "text_scale_midflight", "failure_recovery", "settle", "retarget"}:
         raise ValueError("invalid transition")
     if case["viewport"] not in {"wide", "narrow", "mixed"} or case["text_scale"] not in {"100", "200", "mixed"}:
         raise ValueError("invalid viewport/text scale")
@@ -168,6 +168,11 @@ def require_plan(path: Path) -> dict[str, Any]:
     window_id = plan.get("window_id")
     if window_id is not None and (type(window_id) is not int or window_id < 1):
         raise ValueError("window_id must be positive")
+    expected_frame = plan.get("expected_window_frame_pt")
+    if expected_frame is not None and (not isinstance(expected_frame, list) or len(expected_frame) != 4
+            or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in expected_frame)
+            or min(expected_frame[2:]) <= 0):
+        raise ValueError("expected_window_frame_pt requires finite [x,y,width,height]")
     scope = plan.get("capture_scope", "window")
     if scope not in {"window", "app_display"}:
         raise ValueError("capture_scope must be window or app_display")
@@ -182,8 +187,9 @@ def require_plan(path: Path) -> dict[str, Any]:
     actions = plan.get("actions")
     if not isinstance(actions, list):
         raise ValueError("actions must be a list")
-    allowed = {"key", "move", "click", "resize", "click_ax", "probe"}
+    allowed = {"key", "move", "click", "mouse_down", "mouse_up", "resize", "click_ax", "probe"}
     previous = -1
+    button_down = False
     for index, action in enumerate(actions):
         if not isinstance(action, dict) or action.get("kind") not in allowed:
             raise ValueError(f"action {index}: unknown kind")
@@ -203,12 +209,22 @@ def require_plan(path: Path) -> dict[str, Any]:
                 raise ValueError(f"action {index}: virtual keycode required")
             if any(m not in {"command", "shift", "option", "control"} for m in action.get("modifiers", [])):
                 raise ValueError(f"action {index}: invalid modifier")
-        if kind in {"move", "click"} and not all(isinstance(action.get(k), (int, float)) and math.isfinite(action[k]) for k in ("x", "y")):
+        if kind in {"move", "click", "mouse_down", "mouse_up"} and not all(isinstance(action.get(k), (int, float)) and math.isfinite(action[k]) for k in ("x", "y")):
             raise ValueError(f"action {index}: finite global point required")
         if kind == "resize" and not all(isinstance(action.get(k), (int, float)) and 320 <= action[k] <= 8000 for k in ("width", "height")):
             raise ValueError(f"action {index}: valid width/height required")
         if kind == "click_ax" and (not isinstance(action.get("title"), str) or not action["title"]):
             raise ValueError(f"action {index}: exact AX title required")
+        if kind == "mouse_down":
+            if button_down:
+                raise ValueError(f"action {index}: nested mouse_down")
+            button_down = True
+        elif kind == "mouse_up":
+            if not button_down:
+                raise ValueError(f"action {index}: mouse_up without mouse_down")
+            button_down = False
+        elif button_down and kind not in {"move", "probe"}:
+            raise ValueError(f"action {index}: only move/probe/mouse_up may follow held mouse_down")
         if "expect_visual_ms" in action and (type(action["expect_visual_ms"]) is not int or action["expect_visual_ms"] < 1 or at + action["expect_visual_ms"] > duration):
             raise ValueError(f"action {index}: expect_visual_ms outside capture")
         fraction = action.get("min_visual_fraction", 0.005)
@@ -220,6 +236,8 @@ def require_plan(path: Path) -> dict[str, Any]:
             raise ValueError(f"action {index}: expect_ax_title requires a named probe")
         if "expect_ax_selected_title" in action and (kind != "probe" or not isinstance(action["expect_ax_selected_title"], str) or not action["expect_ax_selected_title"]):
             raise ValueError(f"action {index}: expect_ax_selected_title requires a named probe")
+    if button_down:
+        raise ValueError("plan leaves mouse button down")
     crops = plan.get("crops", [])
     if not isinstance(crops, list):
         raise ValueError("crops must be a list")
@@ -581,6 +599,112 @@ def encode(out: Path, frames: list[dict[str, Any]], timing: dict[str, Any], ffmp
             "last_frame_hold_ms": timing["median_interval_ms"]}
 
 
+def run19_compiler_admission(path: Path, receipt: dict[str, Any], binary: Path,
+                             source: dict[str, str], preservation_path: Path | None) -> dict[str, Any]:
+    """Admit the actual Run19 receipt and a separate proof of its copied .app."""
+    reasons = []
+    binary_link = symlink_in_artifact_path(binary)
+    binary = binary.resolve(strict=True)
+    bundle = bundle_identity(binary)
+    binary_sha = sha256(binary)
+    if source["status_porcelain"] or receipt.get("frozen_source_clean") is not True or \
+            receipt.get("source_changed_during_build") is not False or receipt.get("tracked_status_after") != "":
+        reasons.append("Run19 frozen source was not clean and unchanged")
+    if (receipt.get("frozen_source_path"), receipt.get("frozen_source_head"),
+            receipt.get("frozen_source_tree"), receipt.get("frozen_source_lock_sha256")) != \
+            (source["path"], source["head"], source["tree"], source["cargo_lock_sha256"]):
+        reasons.append("Run19 frozen source path/HEAD/tree/lock differs from capture checkout")
+    if (receipt.get("head"), receipt.get("tree"), receipt.get("lock_sha256")) != \
+            (source["head"], source["tree"], source["cargo_lock_sha256"]):
+        reasons.append("Run19 producing worktree commit differs from frozen source")
+    if receipt.get("exit_status") != 0 or receipt.get("census_complete") is not True or \
+            type(receipt.get("max_conservative_local_occupancy_sampled")) is not int or \
+            type(receipt.get("reserved_remote_builds")) is not int or \
+            not 0 <= receipt["max_conservative_local_occupancy_sampled"] <= 3 or \
+            receipt["reserved_remote_builds"] != 1 or \
+            receipt["max_conservative_local_occupancy_sampled"] + receipt["reserved_remote_builds"] > 4:
+        reasons.append("Run19 build/census/cap receipt is invalid")
+    if binary_link or not binary.is_file() or binary.stat().st_nlink != 1 or \
+            receipt.get("qa_binary_regular_file") is not True:
+        reasons.append("Run19 capture artifact is not a regular single-link QA copy")
+    if receipt.get("qa_binary_path") != str(binary) or receipt.get("qa_binary_sha256") != binary_sha or \
+            bundle is None or receipt.get("qa_bundle_path") != (bundle or {}).get("path") or \
+            receipt.get("qa_info_plist_sha256") != (bundle or {}).get("info_sha256") or \
+            receipt.get("qa_bundle_identifier") != (bundle or {}).get("identifier"):
+        reasons.append("Run19 QA binary/Info.plist/bundle identity differs")
+    command_path = Path(receipt.get("command_path", ""))
+    raw_path = Path(receipt.get("raw_log_path", ""))
+    if command_path != path.with_name("command.sh") or not command_path.is_file() or \
+            sha256(command_path) != receipt.get("command_sha256"):
+        reasons.append("Run19 command.sh path or SHA differs")
+    if raw_path != path.with_name("raw.log") or not raw_path.is_file() or \
+            sha256(raw_path) != receipt.get("raw_log_sha256"):
+        reasons.append("Run19 raw.log path or SHA differs")
+    command = command_path.read_text() if command_path.is_file() else ""
+    saved = [Path(parts[1]) for line in command.splitlines()
+             if len(parts := shlex.split(line, comments=False, posix=True)) == 2 and parts[0] == "source"]
+    if len(saved) != 1 or not saved[0].is_file() or \
+            sha256(saved[0]) != receipt.get("development_environment_sha256"):
+        reasons.append("Run19 saved development environment differs")
+    provenance_path = Path(receipt.get("provenance_path", ""))
+    provenance = {}
+    if not provenance_path.is_file() or sha256(provenance_path) != receipt.get("provenance_sha256"):
+        reasons.append("Run19 producer provenance path or SHA differs")
+    else:
+        provenance = json.loads(provenance_path.read_text())
+        toolchain = provenance.get("toolchain", {})
+        if provenance.get("schema") != 2 or provenance.get("run_id") != receipt.get("provenance_run_id") or \
+                provenance.get("workspace_root") != receipt.get("worktree") or \
+                provenance.get("git_head") != source["head"] or \
+                provenance.get("cargo_lock_sha256") != source["cargo_lock_sha256"] or \
+                provenance.get("cargo_lock_sha256_after") != source["cargo_lock_sha256"] or \
+                provenance.get("cargo_exit_status") != 0 or \
+                provenance.get("source_changed_during_build") is not False or \
+                toolchain.get("capture_complete") is not True or toolchain.get("changed_during_build") is not False or \
+                "rustc 1.97.1" not in toolchain.get("rustc", ""):
+            reasons.append("Run19 producer provenance does not prove the frozen compiler run")
+    binaries = receipt.get("binaries", {})
+    matches = [(name, digest) for name, digest in binaries.items() if digest == binary_sha] if isinstance(binaries, dict) else []
+    compiled_path = matches[0][0] if len(matches) == 1 else None
+    if compiled_path is None or not any(
+            str(Path(provenance.get("cargo_target_dir", "")) / item.get("path", "")) == compiled_path
+            and item.get("sha256") == binary_sha for item in provenance.get("outputs", []) if isinstance(item, dict)):
+        reasons.append("Run19 QA SHA does not identify exactly one recorded compiler output")
+    canary_path = path.with_name("root-canary-receipt.json")
+    canary = json.loads(canary_path.read_text()) if canary_path.is_file() else {}
+    if canary.get("schema") != "root-candidate-verification.v1" or \
+            canary.get("compiler_receipt_path") != str(path) or \
+            canary.get("compiler_receipt_sha256") != sha256(path) or \
+            (canary.get("head"), canary.get("tree"), canary.get("qa_binary"), canary.get("sha256")) != \
+            (source["head"], source["tree"], str(binary), binary_sha) or \
+            not isinstance(canary.get("checks"), dict) or not canary["checks"] or \
+            any(value is not True for value in canary["checks"].values()):
+        reasons.append("Run19 independent root canary is absent or failed")
+    preservation = json.loads(preservation_path.read_text()) if preservation_path is not None else {}
+    expected_preservation = {"schema": 2, "kind": "run19-qa-preservation",
+        "compiler_receipt_sha256": sha256(path), "provenance_sha256": receipt.get("provenance_sha256"),
+        "compiled_artifact_path": compiled_path, "compiled_artifact_sha256": binary_sha,
+        "capture_source_path": source["path"], "source_head": source["head"],
+        "source_tree": source["tree"], "cargo_lock_sha256": source["cargo_lock_sha256"],
+        "capture_artifact_path": str(binary), "capture_artifact_sha256": binary_sha,
+        "capture_bundle_info_path": (bundle or {}).get("info_path"),
+        "capture_bundle_info_sha256": (bundle or {}).get("info_sha256"),
+        "capture_bundle_identifier": (bundle or {}).get("identifier")}
+    if preservation != expected_preservation:
+        reasons.append("Run19 separate hash-bound QA preservation proof is absent or differs")
+    return {"state": "VerifiedBuildReceipt" if not reasons else "UnprovenBinarySource",
+            "reasons": reasons, "receipt_path": str(path), "receipt_sha256": sha256(path),
+            "receipt_kind": receipt["kind"], "build_cwd": receipt.get("worktree"),
+            "compiled_artifact_path": compiled_path, "capture_source_path": source["path"],
+            "capture_artifact_path": str(binary), "capture_artifact_sha256": binary_sha,
+            "capture_bundle": bundle, "provenance_path": str(provenance_path),
+            "provenance_sha256": receipt.get("provenance_sha256"),
+            "canary_path": str(canary_path), "canary_sha256": sha256(canary_path) if canary_path.is_file() else None,
+            "preservation_receipt_path": str(preservation_path) if preservation_path else None,
+            "preservation_receipt_sha256": sha256(preservation_path) if preservation_path else None,
+            "command_sha256": receipt.get("command_sha256"), "raw_log_sha256": receipt.get("raw_log_sha256")}
+
+
 def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str, str],
                        preservation_path: Path | None = None) -> dict[str, Any]:
     """Admit only the root build's completed, source-bound compiler receipt."""
@@ -591,6 +715,9 @@ def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str
     bundle = bundle_identity(binary)
     path = receipt_path.resolve(strict=True)
     receipt = json.loads(path.read_text())
+    if receipt.get("kind") == "desktop-bins-build":
+        return run19_compiler_admission(path, receipt, binary, source,
+                                         preservation_path.resolve(strict=True) if preservation_path else None)
     reasons = []
     if source["status_porcelain"]:
         reasons.append("source checkout is not frozen clean")

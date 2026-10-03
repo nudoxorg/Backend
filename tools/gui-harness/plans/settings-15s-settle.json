@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "name": "settings-non-input-15s-settle",
+  "case": {
+    "id": "settings_settle_full",
+    "flow": "settings",
+    "owner_phase": "serving",
+    "motion": "full",
+    "transition": "settle",
+    "viewport": "wide",
+    "text_scale": "100",
+    "live_index": false
+  },
+  "capture_scope": "app_display",
+  "capture_fps": 30,
+  "duration_ms": 15000,
+  "max_frame_gap_ms": 1000,
+  "expected_reduce_motion": false,
+  "actions": [],
+  "crops": []
+}

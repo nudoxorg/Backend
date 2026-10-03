@@ -7,17 +7,22 @@ import tempfile
 import unittest
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
 import plistlib
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 spec = importlib.util.spec_from_file_location("native_motion", HERE / "native_motion.py")
 motion = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(motion)
 spec_matrix = importlib.util.spec_from_file_location("native_motion_matrix", HERE / "native_motion_matrix.py")
 matrix = importlib.util.module_from_spec(spec_matrix)
 spec_matrix.loader.exec_module(matrix)
+spec_drawer = importlib.util.spec_from_file_location("derive_native_drawer_plan", HERE / "derive_native_drawer_plan.py")
+drawer_plan = importlib.util.module_from_spec(spec_drawer)
+spec_drawer.loader.exec_module(drawer_plan)
 
 
 class NativeMotionTests(unittest.TestCase):
@@ -38,6 +43,152 @@ class NativeMotionTests(unittest.TestCase):
                 motion.require_plan(self.plan(directory, **bad))
             with self.assertRaisesRegex(ValueError, "unknown plan fields"):
                 motion.require_plan(self.plan(directory, accidental_route_seed=True))
+
+    def test_run19_plans_keep_find_drawer_settle_and_retarget_distinct(self):
+        names = ["settings-fast-open-close", "ask-interrupted-reopen", "find-fast-open-close",
+                 "settings-15s-settle", "settings-resize-retarget"]
+        cases = [motion.require_plan(HERE / "plans" / f"{name}.json")["case"] for name in names]
+        for name in ["drawer-500-100-survey", "drawer-360-200-survey"]:
+            survey = motion.require_plan(HERE / "plans" / f"{name}.json")
+            self.assertEqual(survey["case"]["flow"], "drawer")
+        catalog = json.loads((HERE / "native_motion_matrix.json").read_text())
+        by_id = {row["id"]: row for row in catalog["required"]}
+        self.assertEqual(len(by_id), len(catalog["required"]), "independent matrix rows need unique IDs")
+        for case in cases:
+            self.assertEqual(by_id[case["id"]], case)
+        self.assertEqual(cases[2]["flow"], "find")
+        self.assertEqual(cases[3]["transition"], "settle")
+        self.assertEqual(cases[1]["transition"], "retarget")
+        self.assertEqual({by_id["drawer_500_100_full"]["flow"], by_id["drawer_360_200_full"]["flow"]}, {"drawer"})
+        self.assertEqual({by_id["drawer_500_100_full"]["text_scale"],
+                          by_id["drawer_360_200_full"]["text_scale"]}, {"100", "200"})
+
+    def test_native_down_up_requires_a_balanced_ordered_gesture(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            base = json.loads((HERE / "plans/ask-open-close.json").read_text())
+            down = {"at_ms": 100, "kind": "mouse_down", "x": 120.0, "y": 180.0, "label": "press backdrop"}
+            move = {"at_ms": 150, "kind": "move", "x": 30.0, "y": 180.0, "label": "drag into drawer"}
+            up = {"at_ms": 200, "kind": "mouse_up", "x": 30.0, "y": 180.0, "label": "release inside drawer"}
+            base["actions"] = [down, move, up]
+            self.assertEqual(len(motion.require_plan(self.plan(directory, **base))["actions"]), 3)
+            for actions, failure in [([up], "without mouse_down"), ([down], "leaves mouse button down"),
+                                     ([down, down, up], "nested mouse_down"),
+                                     ([down, {"at_ms": 150, "kind": "click", "x": 50, "y": 180,
+                                              "label": "ambiguous click"}, up], "only move/probe/mouse_up")]:
+                with self.assertRaisesRegex(ValueError, failure):
+                    motion.require_plan(self.plan(directory, **dict(base, actions=actions)))
+
+    def test_drawer_gesture_uses_unique_measured_native_bounds(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            window = {"x": 100, "y": 100, "width": 500, "height": 900}
+            survey = {"case": {"id": "drawer_500_100_survey"}, "passed_native_checks": True,
+                "capture_inputs_stable": True, "binary_source_admission": {"state": "VerifiedBuildReceipt"},
+                "window": {"capture_scope": "app_display", "window_id": 123,
+                           "window_frame_pt": window,
+                           "display_frame_pt": {"x": 0, "y": 0, "width": 1440, "height": 1200},
+                           "requested_width_px": 2880, "requested_height_px": 2400},
+                "actions": [
+                    {"phase": "initial", "ax": {"tree": [
+                        {"title": "Full", "bounds_pt": {"x": 510, "y": 500, "width": 40, "height": 24}}]}},
+                    {"phase": "action", "label": "measure native Library shelf", "posted": {"ax": {
+                        "window": {"bounds_pt": window}, "tree": [
+                            {"title": "Library shelf", "bounds_pt": {"x": 100, "y": 140, "width": 400, "height": 800}}]}}}]}
+            path = directory / "CAPTURE.json"
+            path.write_text(json.dumps(survey))
+            generated, derivation = drawer_plan.derive(path, 500, 100)
+            self.assertEqual([generated["actions"][2]["x"], generated["actions"][2]["y"]], [530, 512])
+            self.assertEqual(generated["actions"][4]["x"], 108)
+            self.assertEqual(derivation["down_strategy"], "native Full radio center")
+            self.assertEqual(generated["crops"][0]["rect_px"], [200, 200, 1000, 1800])
+            self.assertEqual(motion.require_plan(self.plan(directory, **generated))["case"]["flow"], "drawer")
+            with self.assertRaisesRegex(ValueError, "expected_window_frame_pt"):
+                motion.require_plan(self.plan(directory, **dict(generated, expected_window_frame_pt=[0, 0, -1, 900])))
+            survey["actions"][1]["posted"]["ax"]["tree"].append(survey["actions"][1]["posted"]["ax"]["tree"][0])
+            path.write_text(json.dumps(survey))
+            with self.assertRaisesRegex(ValueError, "matched 2 nodes"):
+                drawer_plan.derive(path, 500, 100)
+
+    def test_run19_typed_receipt_requires_provenance_canary_and_separate_copy_proof(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root).resolve()
+            target = directory / "target"
+            built = target / "debug/backend-desktop"
+            built.parent.mkdir(parents=True)
+            built.write_bytes(b"exact compiled bytes")
+            binary = directory / "Run19.app/Contents/MacOS/Nudox"
+            binary.parent.mkdir(parents=True)
+            shutil.copy2(built, binary)
+            info = directory / "Run19.app/Contents/Info.plist"
+            info.write_bytes(plistlib.dumps({"CFBundleIdentifier": "dev.nudox.audit.run19",
+                                             "CFBundleExecutable": "Nudox"}))
+            bundle = motion.bundle_identity(binary)
+            env = directory / "development.sh"
+            env.write_text("export RUSTC=rustc\n")
+            command = directory / "command.sh"
+            command.write_text(f"source {env}\nexec cargo build --locked\n")
+            log = directory / "raw.log"
+            log.write_text("compiled\n")
+            source = {"path": str(directory / "frozen"), "head": "frozen-head", "tree": "frozen-tree",
+                      "status_porcelain": "", "cargo_lock_sha256": "frozen-lock"}
+            provenance = {"schema": 2, "run_id": "run-19", "workspace_root": str(directory / "worktree"),
+                "git_head": source["head"], "cargo_lock_sha256": source["cargo_lock_sha256"],
+                "cargo_lock_sha256_after": source["cargo_lock_sha256"], "cargo_exit_status": 0,
+                "source_changed_during_build": False, "cargo_target_dir": str(target),
+                "outputs": [{"path": "debug/backend-desktop", "sha256": motion.sha256(built)}],
+                "toolchain": {"capture_complete": True, "changed_during_build": False,
+                              "rustc": "rustc 1.97.1 (test)"}}
+            provenance_path = directory / "provenance.json"
+            provenance_path.write_text(json.dumps(provenance))
+            receipt = {"kind": "desktop-bins-build", "head": source["head"], "tree": source["tree"],
+                "lock_sha256": source["cargo_lock_sha256"], "worktree": provenance["workspace_root"],
+                "frozen_source_path": source["path"], "frozen_source_head": source["head"],
+                "frozen_source_tree": source["tree"], "frozen_source_lock_sha256": source["cargo_lock_sha256"],
+                "frozen_source_clean": True, "source_changed_during_build": False, "tracked_status_after": "",
+                "exit_status": 0, "census_complete": True, "max_conservative_local_occupancy_sampled": 3,
+                "reserved_remote_builds": 1, "command_path": str(command), "command_sha256": motion.sha256(command),
+                "raw_log_path": str(log), "raw_log_sha256": motion.sha256(log),
+                "development_environment_sha256": motion.sha256(env),
+                "provenance_path": str(provenance_path), "provenance_sha256": motion.sha256(provenance_path),
+                "provenance_run_id": "run-19", "binaries": {str(built): motion.sha256(built)},
+                "qa_binary_path": str(binary), "qa_binary_sha256": motion.sha256(binary),
+                "qa_binary_regular_file": True, "qa_bundle_path": bundle["path"],
+                "qa_info_plist_sha256": bundle["info_sha256"], "qa_bundle_identifier": bundle["identifier"]}
+            receipt_path = directory / "build-receipt.json"
+            receipt_path.write_text(json.dumps(receipt))
+            canary = {"schema": "root-candidate-verification.v1", "compiler_receipt_path": str(receipt_path),
+                "compiler_receipt_sha256": motion.sha256(receipt_path), "head": source["head"],
+                "tree": source["tree"], "qa_binary": str(binary), "sha256": motion.sha256(binary),
+                "checks": {"copy_sha": True, "provenance_sha": True}}
+            (directory / "root-canary-receipt.json").write_text(json.dumps(canary))
+            unproven = motion.compiler_admission(receipt_path, binary, source)
+            self.assertEqual(unproven["state"], "UnprovenBinarySource")
+            self.assertEqual(unproven["reasons"], ["Run19 separate hash-bound QA preservation proof is absent or differs"])
+            proof = {"schema": 2, "kind": "run19-qa-preservation",
+                "compiler_receipt_sha256": motion.sha256(receipt_path),
+                "provenance_sha256": motion.sha256(provenance_path),
+                "compiled_artifact_path": str(built), "compiled_artifact_sha256": motion.sha256(built),
+                "capture_source_path": source["path"], "source_head": source["head"],
+                "source_tree": source["tree"], "cargo_lock_sha256": source["cargo_lock_sha256"],
+                "capture_artifact_path": str(binary), "capture_artifact_sha256": motion.sha256(binary),
+                "capture_bundle_info_path": bundle["info_path"],
+                "capture_bundle_info_sha256": bundle["info_sha256"],
+                "capture_bundle_identifier": bundle["identifier"]}
+            proof_path = directory / "preservation.json"
+            proof_path.write_text(json.dumps(proof))
+            admitted = motion.compiler_admission(receipt_path, binary, source, proof_path)
+            self.assertEqual(admitted["state"], "VerifiedBuildReceipt", admitted["reasons"])
+            proof["source_head"] = "different"
+            proof_path.write_text(json.dumps(proof))
+            self.assertIn("preservation proof", "; ".join(
+                motion.compiler_admission(receipt_path, binary, source, proof_path)["reasons"]))
+            proof["source_head"] = source["head"]
+            proof_path.write_text(json.dumps(proof))
+            canary["checks"]["copy_sha"] = False
+            (directory / "root-canary-receipt.json").write_text(json.dumps(canary))
+            self.assertIn("root canary", "; ".join(
+                motion.compiler_admission(receipt_path, binary, source, proof_path)["reasons"]))
 
     def test_native_pts_selects_cfr_only_for_measured_constant_cadence(self):
         self.assertEqual(motion.cadence([0, 33.3, 66.7, 100.0])["encoding"], "cfr")

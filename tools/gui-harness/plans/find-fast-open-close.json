@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "name": "find-first-400ms-arrival-exit",
+  "case": {
+    "id": "find_fast_full",
+    "flow": "find",
+    "owner_phase": "serving",
+    "motion": "full",
+    "transition": "open_close",
+    "viewport": "wide",
+    "text_scale": "100",
+    "live_index": false
+  },
+  "capture_scope": "app_display",
+  "capture_fps": 60,
+  "duration_ms": 1000,
+  "max_frame_gap_ms": 90,
+  "expected_reduce_motion": false,
+  "actions": [
+    {
+      "at_ms": 80,
+      "kind": "click_ax",
+      "title": "Find packages and declarations",
+      "label": "open Find from current Library shelf",
+      "expect_visual_ms": 220,
+      "expect_focus_title": "Find query"
+    },
+    {
+      "at_ms": 245,
+      "kind": "probe",
+      "label": "Find query arrival",
+      "expect_ax_title": "Find query"
+    },
+    {
+      "at_ms": 350,
+      "kind": "key",
+      "keycode": 123,
+      "modifiers": [
+        "command"
+      ],
+      "label": "Back from Find",
+      "expect_visual_ms": 250
+    },
+    {
+      "at_ms": 720,
+      "kind": "probe",
+      "label": "post-Find native tree"
+    }
+  ],
+  "crops": []
+}

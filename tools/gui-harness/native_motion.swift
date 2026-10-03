@@ -28,6 +28,7 @@ struct Plan: Decodable {
     let duration_ms: Int
     let max_frames: Int
     let window_id: UInt32?
+    let expected_window_frame_pt: [Double]?
     let capture_fps: Int?
     let capture_scope: String?
     let actions: [Action]
@@ -263,7 +264,8 @@ func flags(_ modifiers: [String]?) throws -> CGEventFlags {
     }
     return value
 }
-func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String: Any] {
+func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
+          heldPoint: inout CGPoint?) throws -> [String: Any] {
     if action.kind != "probe" && NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
         return readOnly("target PID is not frontmost")
     }
@@ -288,7 +290,7 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String:
         down.flags = modifierFlags; up.flags = modifierFlags
         down.postToPid(pid); up.postToPid(pid)
         return ["keycode": keycode, "modifiers": action.modifiers ?? [], "disposition": "Posted"]
-    case "move", "click", "click_ax":
+    case "move", "click", "click_ax", "mouse_down", "mouse_up":
         let point: CGPoint
         var targetEvidence: [String: Any] = [:]
         if action.kind == "click_ax" {
@@ -314,11 +316,22 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String:
             return readOnly("pointer point is outside the selected PID/SCWindow")
         }
         let source = CGEventSource(stateID: .hidSystemState)
-        let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!
+        let move = CGEvent(mouseEventSource: source,
+                           mouseType: heldPoint == nil ? .mouseMoved : .leftMouseDragged,
+                           mouseCursorPosition: point, mouseButton: .left)!
         move.post(tap: .cghidEventTap)
         if action.kind == "click" || action.kind == "click_ax" {
+            guard heldPoint == nil else { throw NSError(domain: "native-motion", code: 9) }
             CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
             CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+        } else if action.kind == "mouse_down" {
+            guard heldPoint == nil else { throw NSError(domain: "native-motion", code: 9) }
+            CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+            heldPoint = point
+        } else if action.kind == "mouse_up" {
+            guard heldPoint != nil else { throw NSError(domain: "native-motion", code: 9) }
+            CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+            heldPoint = nil
         }
         targetEvidence["global_point_pt"] = ["x": point.x, "y": point.y]
         targetEvidence["selected_window_bounds_pt"] = ["x": selectedBounds.minX, "y": selectedBounds.minY,
@@ -401,6 +414,16 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String:
             window = selected
         }
         let frame = window.frame
+        if let expected = plan.expected_window_frame_pt {
+            guard expected.count == 4,
+                  abs(frame.origin.x - expected[0]) <= 2,
+                  abs(frame.origin.y - expected[1]) <= 2,
+                  abs(frame.width - expected[2]) <= 2,
+                  abs(frame.height - expected[3]) <= 2 else {
+                throw NSError(domain: "native-motion", code: 17,
+                    userInfo: [NSLocalizedDescriptionKey: "selected window moved or resized since AX survey"])
+            }
+        }
         let display = available.displays.max(by: {
             $0.frame.intersection(frame).width * $0.frame.intersection(frame).height <
                 $1.frame.intersection(frame).width * $1.frame.intersection(frame).height
@@ -464,6 +487,21 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String:
         axSampler.resume()
         defer { axSampler.cancel() }
         actions.write(jsonLine(["phase": "initial", "at_ms": 0, "ax": timedAXSnapshot(pid: pid, full: true)]))
+        // A held gesture must start and end inside this same visible window.
+        // Reject a stale survey before posting the first Down. Every event is
+        // checked again at dispatch; an ownership change fails the capture and
+        // never synthesizes an Up in a foreign app or a click on the old point.
+        for action in plan.actions where action.kind == "mouse_down" || action.kind == "mouse_up" {
+            guard let x = action.x, let y = action.y,
+                  let bounds = selectedWindowBounds(pid: pid, windowID: window.windowID),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  inside(CGPoint(x: x, y: y), bounds),
+                  pointHitsSelectedWindow(CGPoint(x: x, y: y), pid: pid, windowID: window.windowID) else {
+                throw NSError(domain: "native-motion", code: 18,
+                    userInfo: [NSLocalizedDescriptionKey: "gesture preflight left selected PID/SCWindow"])
+            }
+        }
+        var heldPoint: CGPoint?
         for action in plan.actions.sorted(by: { $0.at_ms < $1.at_ms }) {
             let target = started + UInt64(action.at_ms) * 1_000_000
             let now = DispatchTime.now().uptimeNanoseconds
@@ -472,17 +510,28 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String:
             let dispatchHostNS = DispatchTime.now().uptimeNanoseconds
             let actualMs = Double(dispatchHostNS - started) / 1_000_000
             do {
-                let delivered = try send(action, pid: pid, windowID: window.windowID)
+                let delivered = try send(action, pid: pid, windowID: window.windowID,
+                                         heldPoint: &heldPoint)
                 let postedHostNS = DispatchTime.now().uptimeNanoseconds
                 actions.write(jsonLine(["phase": "action", "label": action.label, "kind": action.kind,
                     "requested_ms": action.at_ms, "actual_ms": actualMs,
                     "dispatch_host_ns": dispatchHostNS, "posted_host_ns": postedHostNS,
                     "before": before, "posted": delivered]))
+                if delivered["disposition"] as? String == "ReadOnlyOutOfScope",
+                   action.kind == "mouse_down" || action.kind == "mouse_up" || heldPoint != nil {
+                    throw NSError(domain: "native-motion", code: 19,
+                        userInfo: [NSLocalizedDescriptionKey: "gesture left selected PID/SCWindow; no substitute input posted"])
+                }
             } catch {
                 actions.write(jsonLine(["phase": "action_failed", "label": action.label, "actual_ms": actualMs,
-                    "dispatch_host_ns": dispatchHostNS, "error": String(describing: error)]))
+                    "dispatch_host_ns": dispatchHostNS, "held_input_unreleased": heldPoint != nil,
+                    "error": String(describing: error)]))
                 throw error
             }
+        }
+        if heldPoint != nil {
+            throw NSError(domain: "native-motion", code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "native gesture lost ownership; held input unreleased"])
         }
         let end = started + UInt64(plan.duration_ms) * 1_000_000
         let now = DispatchTime.now().uptimeNanoseconds
