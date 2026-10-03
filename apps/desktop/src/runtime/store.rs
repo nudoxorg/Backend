@@ -38,7 +38,7 @@ pub(crate) use self::dependencies::{
     ContentAdmission, ContentFailure, RouteDependencies, RouteReadLease,
 };
 use self::keeper::SnapshotKeeper;
-pub(crate) use self::owner_link::OwnerAttachment;
+pub(crate) use self::owner_link::{OwnerAttachment, OwnerRetryAttachment};
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
@@ -1138,6 +1138,21 @@ impl DataStore {
     /// A captured visit cannot act through a later same-root attachment.
     pub(crate) fn admits_owner_attachment(&self, expected: &OwnerAttachment) -> bool {
         self.current_owner_attachment().as_ref() == Some(expected)
+    }
+
+    /// Whether the current failure has a live producer able to consume Retry.
+    pub(crate) fn can_retry_current(&self) -> bool { self.owner.can_retry_current() }
+
+    /// Capture this rendered failure; a delayed action must retain this token.
+    pub(crate) fn current_owner_retry(&self) -> Option<OwnerRetryAttachment> {
+        self.owner.current_retry_attachment()
+    }
+
+    /// Retry only the captured failure, never a subsequent attachment/failure.
+    pub(crate) fn retry_owner_at(&mut self, expected: &OwnerRetryAttachment, key: PageKey, cx: &mut Context<Self>) -> bool {
+        if !self.owner.retry_at(expected, key.clone()) { return false; }
+        self.emit(StoreEvent::Resource(key), cx);
+        true
     }
 
     /// The current serving attachment and producer authority must both admit

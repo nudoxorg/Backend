@@ -27,13 +27,27 @@ impl Binding {
 
     /// Only the host discovery producer installs the binding, before Ready.
     pub(crate) fn install(&self, paths: WorkspacePaths) -> Result<&BoundWorkspace, String> {
-        if self.get().is_none() {
-            let project = LocalProjectId::from_path(paths.project()).map_err(|error| {
-                format!("the discovered workspace path cannot be represented safely: {error}")
-            })?;
-            let bound = super::launch::restore_binding(paths, project);
-            // A losing installation never replaces any path or authority.
-            let _ = self.0.set(bound);
+        if let Some(bound) = self.get() {
+            return if bound.paths == paths {
+                Ok(bound)
+            } else {
+                Err("this window is already bound to a different local workspace".to_owned())
+            };
+        }
+        let project = LocalProjectId::from_path(paths.project()).map_err(|error| {
+            format!("the discovered workspace path cannot be represented safely: {error}")
+        })?;
+        let bound = super::launch::restore_binding(paths, project);
+        // A losing installation never replaces any path or authority.
+        if let Err(candidate) = self.0.set(bound) {
+            if self
+                .get()
+                .is_none_or(|bound| bound.paths != candidate.paths)
+            {
+                return Err(
+                    "this window is already bound to a different local workspace".to_owned(),
+                );
+            }
         }
         self.get()
             .ok_or_else(|| "the local workspace binding was not installed".to_owned())
@@ -360,6 +374,28 @@ mod tests {
             &Route::Orbit(OrbitRoute::Home)
         );
     }
+    #[test]
+    fn an_installed_binding_explicitly_rejects_distinct_workspace_paths() {
+        let (root, paths) = fixture("pinned");
+        let binding = Binding::default();
+        binding.install(paths.clone()).expect("first installation");
+        binding
+            .install(paths.clone())
+            .expect("same binding remains admissible");
+        let distinct = WorkspacePaths::discover(
+            Some(paths.project().to_path_buf()),
+            Some(paths.data().to_path_buf()),
+            Some(root.join("another.sock")),
+        )
+        .expect("distinct endpoint");
+        assert!(
+            binding.install(distinct).is_err(),
+            "a caller must see that its paths were rejected"
+        );
+        assert_eq!(binding.get().expect("unchanged binding").paths, paths);
+        std::fs::remove_dir_all(root).expect("fixture removed");
+    }
+
     #[test]
     fn a_local_preflight_refusal_cannot_overwrite_a_submitted_or_newer_root_request() {
         struct NoIo;

@@ -6,7 +6,7 @@
 //! that does not exist yet, and never asked at a root nobody served. A failed
 //! owner is a fault on every page, in its own words.
 
-use crate::runtime::owner::{Epoch, OwnerFault, OwnerGate, OwnerState};
+use crate::runtime::owner::{Epoch, OwnerFault, OwnerGate, OwnerState, RetryGeneration};
 use crate::model::pages::PageKey;
 use std::collections::BTreeSet;
 
@@ -30,6 +30,20 @@ impl PartialEq for OwnerAttachment {
 }
 
 impl Eq for OwnerAttachment {}
+
+/// A rendered Retry belongs to this exact failed publication and gate.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnerRetryAttachment {
+    gate: OwnerGate,
+    generation: RetryGeneration,
+}
+
+impl PartialEq for OwnerRetryAttachment {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation && self.gate.same_gate(&other.gate)
+    }
+}
+impl Eq for OwnerRetryAttachment {}
 
 /// One Ready publication captured before the store revokes previous reads.
 pub(super) struct OwnerAnswer {
@@ -113,6 +127,23 @@ impl OwnerLink {
         }
     }
 
+    pub(super) fn can_retry_current(&self) -> bool {
+        self.gate.as_ref().is_some_and(OwnerGate::can_retry_current)
+    }
+
+    pub(super) fn current_retry_attachment(&self) -> Option<OwnerRetryAttachment> {
+        let gate = self.gate.as_ref()?;
+        Some(OwnerRetryAttachment { gate: gate.clone(), generation: gate.retry_generation()? })
+    }
+
+    pub(super) fn retry_at(&mut self, expected: &OwnerRetryAttachment, key: PageKey) -> bool {
+        let Some(gate) = self.gate.as_ref() else { return false; };
+        if !gate.same_gate(&expected.gate) || !gate.restart_at(expected.generation) { return false; }
+        self.phase = OwnerPhase::Starting;
+        self.held.insert(key);
+        true
+    }
+
     /// A same-root reattachment still changes the authority for in-flight
     /// results. Check the gate directly, since several state publications
     /// can coalesce before the UI watcher runs.
@@ -164,11 +195,7 @@ impl OwnerLink {
     /// "Try again" on a failed owner: asks it to start again (a starting one
     /// is left alone) and holds the page until it answers.
     pub(super) fn retry(&mut self, key: PageKey) {
-        if let Some(gate) = &self.gate {
-            let _ = gate.restart();
-        }
-        self.phase = OwnerPhase::Starting;
-        self.held.insert(key);
+        if let Some(expected) = self.current_retry_attachment() { let _ = self.retry_at(&expected, key); }
     }
 }
 
@@ -250,4 +277,40 @@ mod tests {
         let answer = link.prepare_answer();
         assert_eq!(link.answered(answer), BTreeSet::from([PageKey::Health]));
     }
+    #[test]
+    fn an_incapable_failure_remains_failed_when_retry_is_requested() {
+        let gate = OwnerGate::starting();
+        gate.disable_restart();
+        gate.publish(OwnerState::Failed("there is no startup worker".into()));
+        let mut link = OwnerLink::behind(gate.clone());
+        assert!(!link.can_retry_current());
+        assert!(link.current_retry_attachment().is_none());
+        link.retry(PageKey::Health);
+        assert!(matches!(link.phase(), OwnerPhase::Failed(_)));
+        assert!(link.held.is_empty());
+        assert!(matches!(gate.state(), OwnerState::Failed(_)));
+    }
+
+    #[test]
+    fn a_rendered_retry_cannot_act_on_a_later_failure_or_another_gate() {
+        let gate = OwnerGate::starting();
+        gate.publish(OwnerState::Failed("first failure".into()));
+        let mut link = OwnerLink::behind(gate.clone());
+        let old = link.current_retry_attachment().expect("first retry capability");
+        gate.publish(OwnerState::Failed("later failure".into()));
+        assert!(!link.retry_at(&old, PageKey::Health));
+        assert!(matches!(gate.state(), OwnerState::Failed(_)));
+        let current = link.current_retry_attachment().expect("current retry capability");
+        let other = OwnerGate::starting();
+        other.publish(OwnerState::Failed("first failure".into()));
+        other.publish(OwnerState::Failed("later failure".into()));
+        let mut other_link = OwnerLink::behind(other);
+        assert!(!other_link.retry_at(&current, PageKey::Health));
+        assert!(link.retry_at(&current, PageKey::Health));
+        assert_eq!(gate.state(), OwnerState::Starting);
+        assert!(matches!(link.phase(), OwnerPhase::Starting));
+        assert!(!link.retry_at(&current, PageKey::Health), "one failure capability starts at most once");
+        assert!(!link.can_retry_current());
+    }
+
 }

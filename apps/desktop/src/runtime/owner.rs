@@ -87,6 +87,11 @@ impl Epoch {
     }
 }
 
+/// A capability for exactly one currently failed, retryable publication.
+/// Serving attachment and publication epochs cannot construct this token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RetryGeneration(Epoch);
+
 /// What the window knows about its owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant, reason = "a handful are published per process")]
@@ -552,13 +557,30 @@ impl OwnerGate {
         inner.restart = false;
     }
 
+    /// Current capability and failure generation, admitted under one lock.
+    pub(crate) fn retry_generation(&self) -> Option<RetryGeneration> {
+        let inner = self.lock();
+        (inner.retry_enabled && !inner.closed && matches!(inner.state, OwnerState::Failed(_)))
+            .then_some(RetryGeneration(inner.epoch))
+    }
+
+    pub(crate) fn can_retry_current(&self) -> bool { self.retry_generation().is_some() }
+
+    /// A delayed UI callback cannot retry a later same-root failure.
+    pub(crate) fn restart_at(&self, expected: RetryGeneration) -> bool {
+        self.restart_current(Some(expected))
+    }
+
     /// Asks a failed owner to try again. Returns whether it was asked: a
     /// starting or answering owner is left alone.
     #[must_use]
-    pub fn restart(&self) -> bool {
+    pub fn restart(&self) -> bool { self.restart_current(None) }
+
+    fn restart_current(&self, expected: Option<RetryGeneration>) -> bool {
         let (cancel, waker) = {
             let mut inner = self.lock();
-            if !inner.retry_enabled || inner.closed || !matches!(inner.state, OwnerState::Failed(_)) {
+            if !inner.retry_enabled || inner.closed || !matches!(inner.state, OwnerState::Failed(_))
+                || expected.is_some_and(|expected| expected.0 != inner.epoch) {
                 return false;
             }
             // Capability, request, and Starting are one admission. A cloned
