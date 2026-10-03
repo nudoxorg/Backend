@@ -504,6 +504,7 @@ struct TrafficLightButtons {
 
 struct MacWindowState {
     handle: AnyWindowHandle,
+    self_weak: Weak<Mutex<MacWindowState>>,
     foreground_executor: ForegroundExecutor,
     background_executor: BackgroundExecutor,
     native_window: id,
@@ -514,6 +515,9 @@ struct MacWindowState {
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     frame_ticks: u64,
+    frame_link_retry_generation: u64,
+    frame_link_retry_attempts: usize,
+    frame_link_retry_pending: bool,
     renderer: renderer::Renderer,
     request_presentation_on_next_frame: bool,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
@@ -559,6 +563,47 @@ struct MacWindowState {
 }
 
 impl MacWindowState {
+    // A stop can return while CoreVideo's I/O thread is still retiring. Its
+    // immediate replacement may reject Start. Keep one weakly owned retry in
+    // flight, with a finite backoff; a hide, success, or close invalidates it.
+    const FRAME_LINK_RETRY_DELAYS_MS: [u64; 6] = [16, 32, 64, 128, 256, 512];
+
+    fn cancel_frame_link_retry(&mut self) {
+        self.frame_link_retry_generation = self.frame_link_retry_generation.wrapping_add(1);
+        self.frame_link_retry_attempts = 0;
+        self.frame_link_retry_pending = false;
+    }
+
+    fn schedule_frame_link_retry(&mut self) {
+        if self.frame_link_retry_pending
+            || self.closed.load(Ordering::Acquire)
+            || self.frame_link_retry_attempts >= Self::FRAME_LINK_RETRY_DELAYS_MS.len()
+        {
+            return;
+        }
+        let delay = Self::FRAME_LINK_RETRY_DELAYS_MS[self.frame_link_retry_attempts];
+        self.frame_link_retry_attempts += 1;
+        self.frame_link_retry_pending = true;
+        let generation = self.frame_link_retry_generation;
+        let weak = self.self_weak.clone();
+        let background = self.background_executor.clone();
+        self.foreground_executor
+            .spawn(async move {
+                background.timer(Duration::from_millis(delay)).await;
+                let Some(owner) = weak.upgrade() else { return };
+                let mut state = owner.lock();
+                if state.closed.load(Ordering::Acquire)
+                    || state.frame_link_retry_generation != generation
+                    || !state.frame_link_retry_pending
+                {
+                    return;
+                }
+                state.frame_link_retry_pending = false;
+                state.start_display_link();
+            })
+            .detach();
+    }
+
     fn record_frame_event(&self, kind: gpui::profiler::FrameLifecycleKind) {
         if gpui::profiler::frame_trace_enabled() {
             gpui::profiler::record_frame_lifecycle(gpui::profiler::FrameLifecycleEvent {
@@ -709,22 +754,36 @@ impl MacWindowState {
         let frame_source = self
             .frame_source
             .get_or_insert_with(|| WindowFrameSource::new(data, step));
-        if frame_source.registered_display_id() == Some(display_id) {
+        let previous_display = frame_source.registered_display_id();
+        if previous_display == Some(display_id) {
+            self.cancel_frame_link_retry();
             return;
         }
-        match frame_source.start(display_id) {
-            Ok(()) => self
-                .record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStarted { display_id }),
+        let result = frame_source.start(display_id);
+        if let Some(previous_display) = previous_display {
+            self.record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStopped {
+                display_id: previous_display,
+            });
+        }
+        match result {
+            Ok(()) => {
+                self.cancel_frame_link_retry();
+                self.record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStarted {
+                    display_id,
+                });
+            }
             Err(error) => {
                 self.record_frame_event(gpui::profiler::FrameLifecycleKind::LinkStartFailed {
                     display_id,
                 });
                 Err::<(), _>(error).log_err();
+                self.schedule_frame_link_retry();
             }
         }
     }
 
     fn stop_display_link(&mut self) {
+        self.cancel_frame_link_retry();
         if let Some(frame_source) = self.frame_source.as_mut() {
             let registered = frame_source.registered_display_id();
             frame_source.stop();
@@ -936,6 +995,7 @@ impl MacWindow {
 
             let mut window = Self(Arc::new(Mutex::new(MacWindowState {
                 handle,
+                self_weak: Weak::new(),
                 foreground_executor,
                 background_executor,
                 native_window,
@@ -946,6 +1006,9 @@ impl MacWindow {
                 cursor_visible,
                 frame_source: None,
                 frame_ticks: 0,
+                frame_link_retry_generation: 0,
+                frame_link_retry_attempts: 0,
+                frame_link_retry_pending: false,
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -991,6 +1054,8 @@ impl MacWindow {
                 accesskit_adapter: None,
                 sheet_parent: None,
             })));
+
+            window.0.lock().self_weak = Arc::downgrade(&window.0);
 
             (*native_window).set_ivar(
                 WINDOW_STATE_IVAR,
@@ -1225,6 +1290,8 @@ impl MacWindow {
 impl Drop for MacWindow {
     fn drop(&mut self) {
         let mut this = self.0.lock();
+        this.closed.store(true, Ordering::Release);
+        this.cancel_frame_link_retry();
         this.renderer.destroy();
         let window = this.native_window;
         let sheet_parent = this.sheet_parent.take();
