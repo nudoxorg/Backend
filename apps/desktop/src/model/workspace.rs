@@ -64,9 +64,8 @@ pub struct WorkspaceProject {
     pub progress: Option<u8>,
     /// Backend-reported file count, when the service exposes it.
     pub files_indexed: Option<u64>,
-    /// Ephemeral compatibility request while the shared ProjectIngest receipt
-    /// surface is unavailable. This is cleared on terminal owner response and
-    /// is never used as durable identity.
+    /// Ephemeral transport request for a start or status read. It is cleared
+    /// on every admitted observation and never serves as durable identity.
     pub request: Option<RequestId>,
     /// Exact durable caller key and payload, retained until its owner outcome
     /// is known. A missing claim on an old interrupted row cannot be invented.
@@ -116,6 +115,17 @@ impl WorkspaceProject {
             error: None,
             recent: true,
         }
+    }
+
+    /// A retained active observation after interruption does not assert that
+    /// the new owner is still working. Terminal/unknown evidence says itself.
+    #[must_use]
+    pub fn index_status_text(&self) -> Option<&'static str> {
+        self.operation.as_ref().map(|operation| {
+            if self.phase == ProjectPhase::Unconfirmed && operation.needs_observation() {
+                "Checking the saved index operation"
+            } else { operation.status_text() }
+        })
     }
 
     /// Returns a bounded display-safe failure row.

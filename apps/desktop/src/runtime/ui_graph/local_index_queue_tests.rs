@@ -48,11 +48,16 @@ impl Schedule {
                 None,
             )
         });
+        static NEXT_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let directory = std::env::temp_dir().join(format!("nudox-operation-preflight-{}-{}", std::process::id(),
+            NEXT_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        crate::host::private_dir(&directory).expect("private operation fixture state");
+        let persistence = PersistentState::at(directory.join("desktop.json"));
         let actor = EngineActor::start(NoIo, 4).expect("actor");
         let attached = store.clone();
         let root = cx.update(|cx| {
             cx.new(|_| {
-                let mut root = UiRootEntity::new(DesktopRuntime::new(snapshot, actor), None);
+                let mut root = UiRootEntity::new(DesktopRuntime::new(snapshot, actor), Some(persistence));
                 root.pending.clear();
                 root.store = Some(attached);
                 root.published = Some(root.snapshot());
@@ -207,10 +212,11 @@ fn a_queued_request_is_saved_as_submitted_before_entering_the_actor(cx: &mut Tes
             root.schedule_pending_indexes(cx);
             root.flush_pending(cx);
             assert!(root.snapshot().workspace().projects[0].request.is_some());
-            assert_eq!(
-                persistence.load().expect("submitted state").shelf[0].phase,
-                crate::model::PersistedProjectPhase::Indexing
-            );
+            let written = persistence.load().expect("submitted state");
+            assert_eq!(written.shelf[0].phase, crate::model::PersistedProjectPhase::Indexing);
+            assert_eq!(written.shelf[0].operation, root.snapshot().workspace().projects[0].operation,
+                "the exact caller key and payload are durable before the actor can run");
+            assert!(written.shelf[0].operation.is_some());
         });
     });
     std::fs::remove_dir_all(directory).expect("remove persistence directory");
@@ -249,4 +255,21 @@ fn failed_durable_admission_never_submits_an_index_or_requeues_it_forever(cx: &m
         });
     });
     std::fs::remove_dir_all(directory).expect("remove persistence directory");
+}
+
+#[gpui::test]
+fn absent_persistence_fails_closed_without_allocating_a_sent_claim(cx: &mut TestAppContext) {
+    let schedule = Schedule::new(cx, OwnerGate::ready(authority(), ServiceMode::Attached));
+    cx.update(|cx| schedule.root.update(cx, |root, cx| {
+        root.persistence = None;
+        root.schedule_pending_indexes(cx);
+        root.flush_pending(cx);
+        let snapshot = root.snapshot();
+        let row = &snapshot.workspace().projects[0];
+        assert_eq!(row.phase, ProjectPhase::Failed);
+        assert_eq!(row.request, None);
+        assert_eq!(row.operation, None);
+        assert!(!root.has_pending_work());
+        assert!(row.error.as_deref().expect("actionable reason").contains("cannot be saved"));
+    }));
 }

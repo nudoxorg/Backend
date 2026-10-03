@@ -61,23 +61,20 @@ impl EngineClient for EchoClient {
                 command: command.clone(),
                 reply: backend_library::SurfaceReply::Explored(Box::new([])),
             }),
+            EngineRequest::IndexOperationStatus { request, project, operation, basis, .. } => Ok(EngineDto::IndexOperation {
+                request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                observation: backend_library::IndexOperationObservation::Unknown { operation_key: operation.key },
+            }),
             EngineRequest::IndexProject {
                 request,
                 project,
+                operation,
                 basis,
                 ..
             } => {
-                let (key, revision) = next_key(*basis);
-                Ok(EngineDto::Index {
-                    request: *request,
-                    basis: *basis,
-                    key,
-                    revision,
-                    delta: None,
-                    project: project.clone(),
-                    project_state: None,
-                    catalog: None,
-                    files_indexed: None,
+                Ok(EngineDto::IndexOperation {
+                    request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                    observation: crate::model::index_operation::tests::published(operation),
                 })
             }
         }

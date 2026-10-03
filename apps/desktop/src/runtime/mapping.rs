@@ -195,6 +195,10 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                     ),
                 )));
             }
+            if current.workspace().projects.iter().any(|row| row.id == project && row.request == Some(request) && row.operation.is_some()) {
+                return Ok(mark_index_unconfirmed(current, request, &project,
+                    "The index reply did not carry this operation's durable receipt. Check the saved operation before starting another."));
+            }
             // A project result may arrive after a newer project has published.
             // Keep its row terminal evidence, while admitting the root only
             // when its producer authority is current.
@@ -227,6 +231,45 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                 &project,
                 files_indexed,
             ))
+        }
+        EngineDto::IndexOperation { request, basis: dto_basis, project, operation, observation } => {
+            if request != event_request { return Err(MappingError::RequestMismatch { expected: event_request, observed: request }); }
+            if !dto_basis.same_authority(basis) { return Err(MappingError::BasisMismatch { expected: basis, observed: dto_basis }); }
+            if !operation.belongs_to(&project) || !operation.admits_observation(&observation) {
+                return Ok(mark_index_unconfirmed(current, event_request, &project,
+                    "The owner reply did not match this saved index operation. Its exact outcome is still unconfirmed."));
+            }
+            // Work identity survives root advances, while request/key/payload
+            // membership rejects a late answer for a removed or replaced row.
+            let mut workspace = current.workspace().clone();
+            let mut rows = workspace.projects.to_vec();
+            let Some(row) = rows.iter_mut().find(|row| row.id == project && row.request == Some(request)
+                && row.operation.as_ref().is_some_and(|saved| saved.same_request(&operation))) else { return Ok(current.clone()); };
+            use backend_library::{IndexOperationFailureReason, IndexOperationObservation, IndexOperationState};
+            let (phase, error) = match &observation {
+                IndexOperationObservation::Known(status) => match &status.state {
+                    IndexOperationState::Accepted => (ProjectPhase::Indexing, None),
+                    IndexOperationState::Active { .. } => (ProjectPhase::Indexing, None),
+                    IndexOperationState::Published(_) => (ProjectPhase::Ready, None),
+                    IndexOperationState::Failed { reason, detail } => (
+                        if *reason == IndexOperationFailureReason::Cancelled { ProjectPhase::Cancelled } else { ProjectPhase::Failed },
+                        Some(Arc::from(detail.as_str())),
+                    ),
+                    IndexOperationState::Unresolved { detail, .. } => (ProjectPhase::Unconfirmed, Some(Arc::from(detail.as_str()))),
+                },
+                IndexOperationObservation::Unknown { .. } => (ProjectPhase::Unconfirmed,
+                    Some(Arc::from("The owner has no retained receipt for this saved operation. Its outcome is unknown; another index has not been started."))),
+            };
+            row.phase = phase;
+            row.progress = None; // a stage is not a percentage
+            row.files_indexed = None; // global health is not a per-operation count
+            row.request = None;
+            row.error = error;
+            row.recent = true;
+            if let Some(saved) = row.operation.as_mut() { saved.observation = Some(observation); }
+            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) { workspace.host = Some(project); }
+            workspace.projects = rows.into();
+            Ok(current.with_workspace(workspace))
         }
         EngineDto::LocalPackage {
             request,
@@ -375,6 +418,61 @@ mod tests {
             ),
             current.observation(),
         )
+    }
+
+    fn saved_operation() -> (AppSnapshot, crate::core::LocalProjectId, crate::model::IndexOperationClaim, RequestId) {
+        let project = crate::core::LocalProjectId::new("/fixture/keyed-mapping").expect("project");
+        let operation = crate::model::index_operation::tests::claim(&project, 0x61);
+        let request = RequestId::new(70);
+        let added = crate::navigation::reduce(&AppSnapshot::empty(root()),
+            crate::navigation::Intent::AddProject { project: project.clone() }).snapshot;
+        let submitted = crate::navigation::reduce(&added, crate::navigation::Intent::IndexProject {
+            project: project.clone(), operation: operation.clone(), basis: root(), request }).snapshot;
+        (submitted, project, operation, request)
+    }
+
+    fn operation_event(project: crate::core::LocalProjectId, operation: crate::model::IndexOperationClaim,
+        request: RequestId, observation: backend_library::IndexOperationObservation) -> EngineEvent {
+        EngineEvent { basis: root(), request, lane: None, result: Ok(EngineDto::IndexOperation {
+            request, basis: root(), project, operation, observation }) }
+    }
+
+    #[test]
+    fn exact_publication_finishes_saved_work_after_root_advance_without_adopting_its_root() {
+        let (submitted, project, operation, request) = saved_operation();
+        let current_key = published_after(root(), "unrelated-current-view");
+        let current = submitted.with_key(current_key, None);
+        let observation = crate::model::index_operation::tests::published(&operation);
+        let received = map_event(&current, operation_event(project, operation.clone(), request, observation.clone())).expect("exact receipt");
+        let row = &received.workspace().projects[0];
+        assert_eq!(row.phase, ProjectPhase::Ready);
+        assert_eq!(row.request, None);
+        assert_eq!(row.files_indexed, None);
+        assert_eq!(row.operation.as_ref().and_then(|claim| claim.observation.as_ref()), Some(&observation));
+        assert_eq!(received.key(), current_key, "receipt settles work, not current content authority");
+    }
+
+    #[test]
+    fn accepted_unknown_wrong_payload_and_replaced_key_never_invent_publication() {
+        let (current, project, operation, request) = saved_operation();
+        let accepted = crate::model::index_operation::tests::observation(&operation, backend_library::IndexOperationState::Accepted);
+        let received = map_event(&current, operation_event(project.clone(), operation.clone(), request, accepted)).expect("accepted");
+        assert_eq!(received.workspace().projects[0].phase, ProjectPhase::Indexing);
+        assert!(received.workspace().projects[0].operation.as_ref().expect("claim").needs_observation());
+        let unknown = backend_library::IndexOperationObservation::Unknown { operation_key: operation.key };
+        let received = map_event(&current, operation_event(project.clone(), operation.clone(), request, unknown)).expect("unknown");
+        assert_eq!(received.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        assert!(!received.workspace().projects[0].operation.as_ref().expect("claim").needs_observation());
+        let other = crate::core::LocalProjectId::new("/fixture/wrong-payload").expect("project");
+        let wrong_payload = crate::model::IndexOperationClaim::for_project(operation.key, &other).expect("other payload");
+        let wrong_receipt = crate::model::index_operation::tests::published(&wrong_payload);
+        let received = map_event(&current, operation_event(project.clone(), operation.clone(), request, wrong_receipt)).expect("held");
+        assert_eq!(received.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        assert_eq!(received.workspace().projects[0].operation, Some(operation.clone()));
+        let replacement = crate::model::index_operation::tests::claim(&project, 0x62);
+        let late_receipt = crate::model::index_operation::tests::published(&replacement);
+        let received = map_event(&current, operation_event(project, replacement, request, late_receipt)).expect("stale ignored");
+        assert_eq!(received, current, "another key cannot finish this row even with the same transport request");
     }
 
     #[test]

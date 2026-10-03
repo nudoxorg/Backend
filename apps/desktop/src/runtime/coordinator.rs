@@ -112,7 +112,7 @@ impl DesktopRuntime {
         let mut workspace = self.snapshot.workspace().clone();
         let mut projects = workspace.projects.to_vec();
         let Some(row) = projects.iter_mut().find(|row| row.id == *project
-            && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none()) else { return Vec::new(); };
+            && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none() && row.operation.is_none()) else { return Vec::new(); };
         row.phase = crate::model::ProjectPhase::Failed;
         row.error = Some(message);
         row.progress = None;
@@ -177,6 +177,7 @@ impl DesktopRuntime {
             }
             EngineCommand::IndexProject {
                 project,
+                operation,
                 basis,
                 request,
             } => {
@@ -186,12 +187,19 @@ impl DesktopRuntime {
                     EngineRequest::IndexProject {
                         request,
                         project,
+                        operation,
                         basis,
                         cancel: cancel.clone(),
                     },
                     basis,
                     cancel,
                 )
+            }
+            EngineCommand::IndexOperationStatus { project, operation, basis, request } => {
+                let cancel = CancellationToken::new();
+                (request, EngineRequest::IndexOperationStatus {
+                    request, project, operation, basis, cancel: cancel.clone(),
+                }, basis, cancel)
             }
             EngineCommand::ReadObject {
                 object,
@@ -241,7 +249,7 @@ impl DesktopRuntime {
                 cancel,
                 lane,
                 index_project: match &engine_request {
-                    EngineRequest::IndexProject { project, .. } => Some(project.clone()),
+                    EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } => Some(project.clone()),
                     _ => None,
                 },
                 rooted: true,
@@ -257,6 +265,7 @@ impl DesktopRuntime {
                 }
             }
             super::mailbox::PushResult::Full(request) => {
+                events.extend(self.hold_refused_index(&request));
                 if let Some(event) = self.retire_request(
                     request.request(),
                     RequestOutcome::Refused(RequestRefusalReason::QueueFull),
@@ -265,6 +274,7 @@ impl DesktopRuntime {
                 }
             }
             super::mailbox::PushResult::Closed(request) => {
+                events.extend(self.hold_refused_index(&request));
                 if let Some(event) = self.retire_request(
                     request.request(),
                     RequestOutcome::Refused(RequestRefusalReason::Closed),
@@ -274,6 +284,18 @@ impl DesktopRuntime {
             }
         }
         events
+    }
+
+    /// Queue refusal is not an owner terminal answer, especially for a
+    /// status read of already accepted work. Release the local request while
+    /// retaining the exact durable claim for a later read.
+    fn hold_refused_index(&mut self, request: &EngineRequest) -> Vec<RuntimeEvent> {
+        let (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. }) = request else { return Vec::new(); };
+        let event = super::actor::EngineEvent { basis: self.inflight.get(&request.request()).map_or(self.snapshot.key(), |entry| entry.basis), request: request.request(), lane: None,
+            result: Err(super::actor::EngineFault::IndexUnconfirmed { project: project.clone() }) };
+        let Ok(snapshot) = map_event(&self.snapshot, event) else { return Vec::new(); };
+        self.snapshot = Arc::new(snapshot);
+        vec![RuntimeEvent::SnapshotChanged(self.snapshot.clone()), RuntimeEvent::PersistRequested(self.snapshot.clone())]
     }
 
     /// Submits one local read on the actor's local lane, replacing any

@@ -176,18 +176,10 @@ fn next(basis: VersionedRoot) -> (VersionedRoot, backend_library::Cursor) {
 impl EngineClient for Indexes {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         match request {
-            EngineRequest::IndexProject { request, project, basis, .. } => {
-                let (key, revision) = next(*basis);
-                Ok(EngineDto::Index {
-                    request: *request,
-                    basis: *basis,
-                    key,
-                    revision,
-                    delta: None,
-                    project: project.clone(),
-                    project_state: None,
-                    catalog: None,
-                    files_indexed: Some(3),
+            EngineRequest::IndexProject { request, project, operation, basis, .. } => {
+                Ok(EngineDto::IndexOperation {
+                    request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                    observation: crate::model::index_operation::tests::published(operation),
                 })
             }
             _ => Err(EngineFault::Cancelled),
@@ -221,8 +213,8 @@ fn a_finished_index_is_written_down_the_moment_it_finishes(cx: &mut TestAppConte
     let saved = PersistentState::at(&state_file).load().expect("the state file");
     assert_eq!(
         saved.shelf.iter().map(|item| (item.local_path.clone(), item.phase, item.files_indexed)).collect::<Vec<_>>(),
-        [(project.as_str().to_owned(), PersistedProjectPhase::Ready, Some(3))],
-        "a relaunch finds the project ready, with the files the owner counted"
+        [(project.as_str().to_owned(), PersistedProjectPhase::Ready, None)],
+        "a relaunch retains the exact publication receipt without guessing a per-operation count"
     );
     std::fs::remove_dir_all(&root).ok();
 }

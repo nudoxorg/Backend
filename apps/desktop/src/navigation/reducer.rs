@@ -254,6 +254,8 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::OpenFolderPicker
         | Intent::FolderPickerResult { .. }
         | Intent::IndexProject { .. }
+        | Intent::ReconcileIndexProject { .. }
+        | Intent::CheckIndexOutcome(_)
         | Intent::AddProject { .. }
         | Intent::RejectProjectPath { .. }
         | Intent::ActivateProject(_)

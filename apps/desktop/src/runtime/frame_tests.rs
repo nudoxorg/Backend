@@ -54,9 +54,14 @@ impl EngineClient for HeldIndexClient {
                     catalog: None,
                 })
             }
+            EngineRequest::IndexOperationStatus { request, project, operation, basis, .. } => Ok(EngineDto::IndexOperation {
+                request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                observation: backend_library::IndexOperationObservation::Unknown { operation_key: operation.key },
+            }),
             EngineRequest::IndexProject {
                 request,
                 project,
+                operation,
                 basis,
                 ..
             } => {
@@ -69,17 +74,9 @@ impl EngineClient for HeldIndexClient {
                 while !*open {
                     open = released.wait(open).unwrap_or_else(PoisonError::into_inner);
                 }
-                let (key, revision) = next_key(*basis);
-                Ok(EngineDto::Index {
-                    request: *request,
-                    basis: *basis,
-                    key,
-                    revision,
-                    delta: None,
-                    project: project.clone(),
-                    project_state: None,
-                    catalog: None,
-                    files_indexed: Some(3),
+                Ok(EngineDto::IndexOperation {
+                    request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                    observation: crate::model::index_operation::tests::published(operation),
                 })
             }
             EngineRequest::Object { .. } | EngineRequest::Surface { .. } => Err(EngineFault::Cancelled),
@@ -128,7 +125,8 @@ fn rig(cx: &mut TestAppContext) -> Rig {
     let actor = EngineActor::start(client, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let pool = ReadPool::start(2, |_| Fixture).expect("pool");
-    let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
+    let state = crate::model::PersistentState::at(folder.join("frame-desktop-state.json"));
+    let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, Some(state), Some(pool)));
     let window_graph = UiEntityGraph {
         root: graph.root.clone(),
         store: graph.store.clone(),

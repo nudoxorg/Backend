@@ -166,6 +166,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         },
         Intent::IndexProject {
             project,
+            operation,
             basis,
             request,
         } => {
@@ -173,17 +174,22 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .workspace()
                 .projects
                 .iter()
-                .any(|item| item.id == *project && item.phase == ProjectPhase::Indexing && item.request.is_none())
+                .any(|item| item.id == *project && item.phase == ProjectPhase::Indexing && item.request.is_none() && item.operation.is_none())
+                && operation.belongs_to(project)
             {
-                next =
-                    set_project_phase(&next, project, ProjectPhase::Indexing, None, Some(*request));
-                // This compatibility command reaches Session::index at the
-                // service boundary. The package-owned ProjectIngest receipt
-                // transport will replace this effect once it lands; until
-                // then terminal state still comes from the live service
-                // response rather than from a local timer or scanner.
+                next = set_project_phase(&next, project, ProjectPhase::Indexing, None, Some(*request));
+                let mut workspace = next.workspace().clone();
+                workspace.projects = workspace.projects.iter().cloned().map(|mut row| {
+                    if row.id == *project { row.operation = Some(operation.clone()); }
+                    row
+                }).collect::<Vec<_>>().into();
+                next = next.with_workspace(workspace);
+                // The root saves this exact key/payload before this effect
+                // reaches transport. Only its canonical owner receipt may
+                // settle the mutation.
                 effects.push(Effect::Engine(super::intent::EngineCommand::IndexProject {
                     project: project.clone(),
+                    operation: operation.clone(),
                     basis: *basis,
                     request: *request,
                 }));
@@ -197,6 +203,22 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 effects.push(Effect::Persist);
             }
         }
+        Intent::ReconcileIndexProject { project, operation, basis, request } => {
+            if operation.belongs_to(project) && next.workspace().projects.iter().any(|row|
+                row.id == *project && row.request.is_none() && row.operation.as_ref() == Some(operation))
+            {
+                let mut workspace = next.workspace().clone();
+                workspace.projects = workspace.projects.iter().cloned().map(|mut row| {
+                    if row.id == *project { row.request = Some(*request); }
+                    row
+                }).collect::<Vec<_>>().into();
+                next = next.with_workspace(workspace);
+                effects.push(Effect::Engine(super::intent::EngineCommand::IndexOperationStatus {
+                    project: project.clone(), operation: operation.clone(), basis: *basis, request: *request,
+                }));
+            }
+        }
+        Intent::CheckIndexOutcome(_) => {}, // the root admits the saved key and live owner
         Intent::AddProject { project } => {
             next = admit_project(&next, project.clone());
             effects.push(Effect::Persist);
@@ -280,7 +302,8 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::RevealProject(_) | Intent::OpenSource { .. } => {}
         Intent::RetryIndex(project) => {
-            if next.workspace().projects.iter().any(|item| item.id == *project && item.phase == ProjectPhase::Unconfirmed) {
+            if next.workspace().projects.iter().any(|item| item.id == *project && (matches!(item.phase, ProjectPhase::Unconfirmed | ProjectPhase::Cancelling)
+                || (item.phase == ProjectPhase::Indexing && (item.request.is_some() || item.operation.is_some())))) {
                 let mut workspace = next.workspace().clone();
                 workspace.path_error = Some(Arc::from("The previous index may have committed. Check its exact owner operation before starting another."));
                 next = next.with_workspace(workspace);
@@ -293,6 +316,12 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .find(|item| item.id == *project)
                 .and_then(|item| item.request);
             next = set_project_phase(&next, project, ProjectPhase::Indexing, None, None);
+            let mut workspace = next.workspace().clone();
+            workspace.projects = workspace.projects.iter().cloned().map(|mut row| {
+                if row.id == *project { row.operation = None; }
+                row
+            }).collect::<Vec<_>>().into();
+            next = next.with_workspace(workspace);
             if let Some(request) = previous_request {
                 effects.push(Effect::Cancel(request));
             }
@@ -368,6 +397,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                     match project.phase {
                         ProjectPhase::Ready => {
                             project.phase = ProjectPhase::Indexing;
+                            project.operation = None; // a proven terminal attempt may be replaced
                             project.progress = None;
                             project.files_indexed = None;
                             project.request = None;
@@ -376,7 +406,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                         // No request was submitted for a queued local folder.
                         // Replacing an old index does not make that admission
                         // an uncertain producer operation.
-                        ProjectPhase::Indexing if project.request.is_none() => {}
+                        ProjectPhase::Indexing if project.request.is_none() && project.operation.is_none() => {}
                         ProjectPhase::Indexing | ProjectPhase::Cancelling => {
                             project.phase = ProjectPhase::Unconfirmed;
                             project.progress = None;
@@ -620,7 +650,7 @@ mod tests {
             let added = reduce(&existing, &Intent::AddProject { project: project.clone() }).expect("repeat admission").snapshot;
             assert_eq!((added.workspace().projects[0].phase, added.workspace().projects[0].request), (phase, request));
             if request.is_some() {
-                let duplicate = reduce(&added, &Intent::IndexProject { project: project.clone(), basis: added.key(), request: RequestId::new(99) }).expect("duplicate request");
+                let duplicate = reduce(&added, &Intent::IndexProject { operation: crate::model::index_operation::tests::claim(&project, 0x51), project: project.clone(), basis: added.key(), request: RequestId::new(99) }).expect("duplicate request");
                 assert!(!duplicate.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))), "a held request cannot authorize a second mutation");
                 assert_eq!(duplicate.snapshot.workspace().projects[0].request, request);
             }
@@ -668,6 +698,7 @@ mod tests {
         let reduction = reduce(
             &admitted.snapshot,
             &Intent::IndexProject {
+                operation: crate::model::index_operation::tests::claim(&project, 0x51),
                 project: project.clone(),
                 basis,
                 request,
@@ -682,6 +713,7 @@ mod tests {
                     project: actual,
                     basis: actual_basis,
                     request: actual_request,
+                    ..
                 }),
                 Effect::Persist
             ] if actual == &project && *actual_basis == basis && *actual_request == request
@@ -787,6 +819,7 @@ mod tests {
         let added = reduce(&uncertain, &Intent::AddProject { project: project.clone() }).expect("add");
         assert_eq!(added.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
         let direct = reduce(&uncertain, &Intent::IndexProject {
+            operation: crate::model::index_operation::tests::claim(&project, 0x51),
             project, basis: uncertain.key(), request: RequestId::new(53),
         }).expect("direct index");
         assert!(!direct.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
@@ -942,6 +975,7 @@ mod tests {
         let indexing = reduce(
             &admitted.snapshot,
             &Intent::IndexProject {
+                operation: crate::model::index_operation::tests::claim(&project, 0x51),
                 project: project.clone(),
                 basis: admitted.snapshot.key(),
                 request: RequestId::new(52),

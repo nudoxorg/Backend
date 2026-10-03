@@ -422,6 +422,7 @@ mod tests {
         let submitted = crate::navigation::reduce(
             &unsent,
             Intent::IndexProject {
+                operation: crate::model::index_operation::tests::claim(&project, 0x51),
                 project: project.clone(),
                 basis: key,
                 request: RequestId::new(7),

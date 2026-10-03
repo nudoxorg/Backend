@@ -18,6 +18,9 @@ pub struct IndexOperationClaim {
     pub package: PackageReference,
     /// Execution policy sent with the first request and every safe replay.
     pub execution_intent: CompileExecutionIntent,
+    /// Canonical owner evidence; missing means no answer was admitted yet.
+    #[serde(default)]
+    pub observation: Option<backend_library::IndexOperationObservation>,
 }
 
 impl IndexOperationClaim {
@@ -38,9 +41,7 @@ impl IndexOperationClaim {
         return Err("This platform cannot generate a durable index operation key.".to_owned());
         // The canonical key owns nonzero and lower-hex admission. An entropy
         // failure is never replaced by a timestamp, PID, root or local counter.
-        let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        let wire = serde_json::to_string(&text).map_err(|error| error.to_string())?;
-        let key = serde_json::from_str(&wire).map_err(|error| error.to_string())?;
+        let key = IndexOperationKey::from_bytes(bytes).map_err(|error| error.to_string())?;
         Self::for_project(key, project)
     }
 
@@ -48,7 +49,64 @@ impl IndexOperationClaim {
     pub fn for_project(key: IndexOperationKey, project: &LocalProjectId) -> Result<Self, String> {
         let coordinate = project.service_coordinate().map_err(|error| error.to_string())?;
         let package = PackageReference::parse(coordinate.to_owned()).map_err(|error| error.to_string())?;
-        Ok(Self { key, package, execution_intent: CompileExecutionIntent::Interactive })
+        Ok(Self { key, package, execution_intent: CompileExecutionIntent::Interactive, observation: None })
+    }
+
+    /// Match an observation to the caller payload and re-admit the canonical
+    /// receipt shape, including digest and fixed-width publication cursor.
+    #[must_use]
+    pub fn admits_observation(&self, observation: &backend_library::IndexOperationObservation) -> bool {
+        use backend_library::{IndexOperationObservation, SurfaceCommand, SurfaceReply};
+        let command = SurfaceCommand::IndexOperationStatus { operation_key: self.key };
+        if SurfaceReply::IndexOperationStatus(observation.clone()).admit(command.id()).is_err() { return false; }
+        match observation {
+            IndexOperationObservation::Known(status) => status.operation_key == self.key
+                && status.package == self.package && status.execution_intent == self.execution_intent
+                && status.request_digest == backend_library::index_operation_request_digest(&self.package, self.execution_intent),
+            IndexOperationObservation::Unknown { operation_key } => *operation_key == self.key,
+        }
+    }
+
+    /// Durable request identity excludes the latest changing observation.
+    #[must_use]
+    pub fn same_request(&self, other: &Self) -> bool {
+        self.key == other.key && self.package == other.package && self.execution_intent == other.execution_intent
+    }
+
+    /// Whether the owner still owes a terminal observation. This is a work
+    /// lifecycle, never a guess from package coverage or elapsed time.
+    #[must_use]
+    pub fn needs_observation(&self) -> bool {
+        match self.observation.as_ref() {
+            None => true,
+            Some(backend_library::IndexOperationObservation::Known(status)) => matches!(status.state,
+                backend_library::IndexOperationState::Accepted | backend_library::IndexOperationState::Active { .. }),
+            Some(backend_library::IndexOperationObservation::Unknown { .. }) => false,
+        }
+    }
+
+    /// Plain product wording for the exact owner observation. No key, digest
+    /// or protocol representation is exposed as ordinary progress.
+    #[must_use]
+    pub fn status_text(&self) -> &'static str {
+        use backend_library::{IndexJobStage, IndexOperationObservation, IndexOperationState};
+        match self.observation.as_ref() {
+            None => "Checking the saved index operation",
+            Some(IndexOperationObservation::Unknown { .. }) => "No operation receipt is available",
+            Some(IndexOperationObservation::Known(status)) => match &status.state {
+                IndexOperationState::Accepted => "Accepted by the index owner",
+                IndexOperationState::Active { stage, .. } => match stage {
+                    IndexJobStage::Acquiring => "Acquiring the package",
+                    IndexJobStage::Staging => "Preparing the package sources",
+                    IndexJobStage::Scanning => "Reading the package sources",
+                    IndexJobStage::Compiling => "Compiling the package",
+                    IndexJobStage::Publishing => "Publishing the index",
+                },
+                IndexOperationState::Published(_) => "Index published",
+                IndexOperationState::Failed { .. } => "Index stopped before publication",
+                IndexOperationState::Unresolved { .. } => "Index outcome is unresolved",
+            },
+        }
     }
 
     /// Admit a restored payload against the durable native project identity.
@@ -70,6 +128,44 @@ pub(crate) mod tests {
         let wire = format!("\"{}\"", format!("{byte:02x}").repeat(32));
         let key = serde_json::from_str(&wire).expect("nonzero canonical caller key");
         IndexOperationClaim::for_project(key, project).expect("exact project payload")
+    }
+
+    pub(crate) fn observation(operation: &IndexOperationClaim, state: backend_library::IndexOperationState) -> backend_library::IndexOperationObservation {
+        backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
+            operation_key: operation.key,
+            request_digest: backend_library::index_operation_request_digest(&operation.package, operation.execution_intent),
+            package: operation.package.clone(), execution_intent: operation.execution_intent, state,
+        })
+    }
+
+    /// A checked transport fixture receipt, not a claim of live compilation.
+    pub(crate) fn published(operation: &IndexOperationClaim) -> backend_library::IndexOperationObservation {
+        let root = backend_library::view_state_root(&[]);
+        let basis = backend_library::Basis::new(root, backend_library::object_version(b"desktop-operation-fixture"));
+        let frontier = backend_library::Frontier::new(backend_library::branch_key("main"),
+            backend_library::log_key("library"), backend_library::CURSOR_SCHEMA, root, 0);
+        let view = backend_library::ViewRoot::new_incomplete(backend_library::view_key(b"desktop-operation-fixture"),
+            basis, frontier, Vec::new(), Vec::new()).expect("checked fixture view");
+        let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]), [2; 32], [3; 32], 1, &view, backend_library::Cursor::for_view_root(&view)).expect("checked fixture receipt");
+        observation(operation, backend_library::IndexOperationState::Published(receipt))
+    }
+
+    #[test]
+    fn observation_admission_requires_exact_key_payload_and_checked_receipt() {
+        let project = LocalProjectId::new("/fixture/admitted-operation").expect("project");
+        let operation = claim(&project, 0x71);
+        assert!(operation.admits_observation(&published(&operation)));
+        assert!(operation.admits_observation(&backend_library::IndexOperationObservation::Unknown { operation_key: operation.key }));
+        let another = claim(&project, 0x72);
+        assert!(!operation.admits_observation(&published(&another)));
+        assert!(!operation.admits_observation(&backend_library::IndexOperationObservation::Unknown { operation_key: another.key }));
+        let other_project = LocalProjectId::new("/fixture/another-package").expect("project");
+        let wrong_payload = IndexOperationClaim::for_project(operation.key, &other_project).expect("payload");
+        assert!(!operation.admits_observation(&published(&wrong_payload)));
+        let mut wrong_digest = published(&operation);
+        if let backend_library::IndexOperationObservation::Known(status) = &mut wrong_digest { status.request_digest = [0; 32]; }
+        assert!(!operation.admits_observation(&wrong_digest));
     }
 
     #[test]

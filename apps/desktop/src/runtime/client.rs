@@ -271,71 +271,62 @@ impl LocalEngineClient {
     }
 
     fn request_index(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        let EngineRequest::IndexProject {
-            request: request_id,
-            project,
-            basis,
-            ..
-        } = request
-        else {
+        let EngineRequest::IndexProject { request: request_id, project, operation, basis, .. } = request else {
             unreachable!("index adapter called with a non-index request")
         };
+        if !operation.belongs_to(project) {
+            return Err(EngineFault::IndexFailed { project: project.clone(), error: crate::core::ErrorValue::new(
+                FaultCode::Protocol, "The saved index operation does not belong to this project.") });
+        }
         let mut session = Session::connect_with_timeouts(&self.endpoint, DESKTOP_CONNECT_TIMEOUT, Duration::from_secs(30))
-            .map_err(|error| self.client_fault(error))
-            .map_err(|error| index_fault(project.clone(), error))?;
+            .map_err(|error| index_fault(project.clone(), self.client_fault(error)))?;
         let cancel = self.current_cancel()?;
-        let coordinate =
-            project
-                .service_coordinate()
-                .map_err(|error| EngineFault::IndexFailed {
-                    project: project.clone(),
-                    error: crate::core::ErrorValue::new(FaultCode::Protocol, error.to_string()),
-                })?;
-        let index_result = {
+        let result = {
             let _wake = cancel_wake(&cancel, session.interrupt_handle())
                 .map_err(|error| index_fault(project.clone(), error))?;
-            if cancel.is_cancelled() { return Err(EngineFault::IndexCancelled { project: project.clone() }); }
-            session.index(coordinate)
+            if cancel.is_cancelled() { return Err(EngineFault::IndexUnconfirmed { project: project.clone() }); }
+            // Exactly one mutation send. Every interrupted answer is reconciled
+            // by this persisted key; it never starts a new request implicitly.
+            session.start_index_operation(operation.key, operation.package.clone(), operation.execution_intent)
         };
-        if let Err(error) = index_result {
-            if cancel.is_cancelled() || transport_break(&error) {
+        let observation = match result {
+            Ok(observation) => observation,
+            Err(error) => {
+                let _ = self.client_fault(error);
                 return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
             }
-            return Err(index_fault(project.clone(), self.client_fault(error)));
-        }
+        };
         self.session = Some(session);
-        let (view, revision) = self
-            .bootstrap_root(false)
-            .map_err(|_error| EngineFault::IndexUnconfirmed { project: project.clone() })?;
-        if revision.root() != view.root() {
-            // The owner already accepted the index command. A failed
-            // projection cannot turn that mutation into a safe retry.
+        self.index_observation(*request_id, *basis, project, operation, observation)
+    }
+
+    fn request_index_status(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        let EngineRequest::IndexOperationStatus { request: request_id, project, operation, basis, .. } = request else {
+            unreachable!("index status adapter called with a non-status request")
+        };
+        // Status is read-only and may reconnect once. It never calls Start,
+        // even when the owner reports Unknown or Unresolved.
+        let observation = self.with_session_read(|session| session.index_operation_status(operation.key))
+            .map_err(|_| EngineFault::IndexUnconfirmed { project: project.clone() })?;
+        self.index_observation(*request_id, *basis, project, operation, observation)
+    }
+
+    fn index_observation(&mut self, request: crate::navigation::RequestId, basis: VersionedRoot,
+        project: &LocalProjectId, operation: &crate::model::IndexOperationClaim,
+        observation: backend_library::IndexOperationObservation) -> Result<EngineDto, EngineFault>
+    {
+        if !operation.belongs_to(project) || !operation.admits_observation(&observation) {
             return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
         }
-        // The owner has now admitted the selected project and published its
-        // post-index revision. Switch subsequent root/read projections to
-        // this local workspace only at that authoritative boundary; a failed
-        // or cancelled attempt leaves the last served workspace untouched.
-        let key =
-            VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation());
-        let project_state = Some(project_dto(project.clone(), project_label(project), &view));
-        let catalog = Some(self.catalog().map_err(|_error| EngineFault::IndexUnconfirmed {
-            project: project.clone(),
-        })?);
-        self.project = project.clone();
-        Ok(EngineDto::Index {
-            request: *request_id,
-            basis: *basis,
-            key,
-            revision,
-            delta: None,
-            project: project.clone(),
-            project_state,
-            catalog,
-            // The current service health report is owner-global. Do not lower
-            // it into a per-project count until the owner publishes one.
-            files_indexed: None,
-        })
+        if matches!(&observation, backend_library::IndexOperationObservation::Known(status)
+            if matches!(status.state, backend_library::IndexOperationState::Published(_)))
+        {
+            // The exact operation receipt settles the mutation independently
+            // of optional catalog/hydration reads. The regular root observer
+            // supplies current content under its own authority afterwards.
+            self.project = project.clone();
+        }
+        Ok(EngineDto::IndexOperation { request, basis, project: project.clone(), operation: operation.clone(), observation })
     }
 
     /// A read may be retried once after a transport break, using a fresh
@@ -431,7 +422,14 @@ impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         self.active_cancel = Some(request.cancellation().clone());
         if let Some(gate) = &self.gate {
-            gate.wait_cancelled(request.cancellation()).map_err(owner_fault)?;
+            if let Err(error) = gate.wait_cancelled(request.cancellation()) {
+                self.active_cancel = None;
+                return Err(match request {
+                    EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } =>
+                        EngineFault::IndexUnconfirmed { project: project.clone() },
+                    _ => owner_fault(error),
+                });
+            }
             // Superseded while it waited (the startup root read, once the
             // owner's own root arrived): not run.
             if request.cancelled() {
@@ -451,6 +449,7 @@ impl EngineClient for LocalEngineClient {
             EngineRequest::Root { .. } => self.request_root(request),
             EngineRequest::Surface { .. } => self.request_surface(request),
             EngineRequest::IndexProject { .. } => self.request_index(request),
+            EngineRequest::IndexOperationStatus { .. } => self.request_index_status(request),
             EngineRequest::Object {
                 request,
                 basis,
@@ -468,6 +467,12 @@ impl EngineClient for LocalEngineClient {
         let owner_changed = self.attached_epoch.is_some()
             && self.gate.as_ref().and_then(super::owner::OwnerGate::ready_epoch)
                 != self.attached_epoch;
+        let result = match (request, result) {
+            (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. },
+                Err(EngineFault::Cancelled | EngineFault::Superseded | EngineFault::Failed(_))) =>
+                Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
+            (_, result) => result,
+        };
         owner_change_result(request, result, owner_changed)
     }
 }
@@ -484,9 +489,11 @@ fn owner_change_result(
         return result;
     }
     match (request, result) {
-            // An explicit successful reply remains a real owner receipt even
-            // when a replacement owner comes up before the UI observes it.
-            (EngineRequest::IndexProject { .. }, Ok(dto @ EngineDto::Index { .. })) => Ok(dto),
+            (EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. }, Ok(dto @ EngineDto::IndexOperation { .. }))
+                if matches!(&dto, EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. }
+                    if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::Failed { .. })) => Ok(dto),
+            (EngineRequest::IndexOperationStatus { project, .. }, _) =>
+                Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
             (EngineRequest::IndexProject { .. }, Err(EngineFault::IndexCancelled { project })) =>
                 Err(EngineFault::IndexCancelled { project }),
             (EngineRequest::IndexProject { project, .. }, _) =>
@@ -603,18 +610,23 @@ mod tests {
         let basis = VersionedRoot::unserved();
         let request_id = RequestId::new(17);
         let request = EngineRequest::IndexProject {
+            operation: crate::model::index_operation::tests::claim(&project, 0x51),
             request: request_id, project: project.clone(), basis,
             cancel: CancellationToken::new(),
         };
-        let confirmed = EngineDto::Index {
-            request: request_id, basis, key: basis, revision: basis.revision(),
-            delta: None, project: project.clone(), project_state: None,
-            catalog: None, files_indexed: None,
+        let operation = crate::model::index_operation::tests::claim(&project, 0x51);
+        let confirmed = EngineDto::IndexOperation {
+            request: request_id, basis, project: project.clone(),
+            observation: crate::model::index_operation::tests::published(&operation), operation,
         };
         assert!(matches!(
             owner_change_result(&request, Ok(confirmed), true),
-            Ok(EngineDto::Index { project: received, .. }) if received == project
+            Ok(EngineDto::IndexOperation { project: received, .. }) if received == project
         ));
+        let legacy = EngineDto::Index { request: request_id, basis, key: basis, revision: basis.revision(),
+            delta: None, project: project.clone(), project_state: None, catalog: None, files_indexed: None };
+        assert!(matches!(owner_change_result(&request, Ok(legacy), true),
+            Err(EngineFault::IndexUnconfirmed { .. })), "an unkeyed publication cannot settle this operation");
         assert!(matches!(
             owner_change_result(&request, Err(EngineFault::Cancelled), true),
             Err(EngineFault::IndexUnconfirmed { project: received }) if received == project

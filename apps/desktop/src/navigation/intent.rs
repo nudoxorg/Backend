@@ -189,11 +189,22 @@ pub enum Intent {
     },
     /// Request one canonical project index through the root-owned actor.
     IndexProject {
+        /// Durable caller identity and exact immutable owner payload.
+        operation: crate::model::IndexOperationClaim,
         /// Local project identity admitted by the path boundary.
         project: LocalProjectId,
         /// Root authority captured before the request was queued.
         basis: VersionedRoot,
         /// Compatibility request retained until the service owner replies.
+        request: RequestId,
+    },
+    /// Ask to check a saved exact operation; no new index starts.
+    CheckIndexOutcome(LocalProjectId),
+    /// Root-owned reconciliation after admitting a live owner and saved claim.
+    ReconcileIndexProject {
+        project: LocalProjectId,
+        operation: crate::model::IndexOperationClaim,
+        basis: VersionedRoot,
         request: RequestId,
     },
     /// Admit one validated native local folder to the durable shelf.
@@ -323,11 +334,20 @@ pub enum EngineCommand {
     },
     /// Submit one local project through the canonical service index command.
     IndexProject {
+        /// Durable caller identity saved before submission.
+        operation: crate::model::IndexOperationClaim,
         /// Local identity admitted by the native path boundary.
         project: LocalProjectId,
         /// Root basis captured before submission.
         basis: VersionedRoot,
         /// Request identity used for terminal projection matching.
+        request: RequestId,
+    },
+    /// Read the durable outcome of one exact caller operation.
+    IndexOperationStatus {
+        project: LocalProjectId,
+        operation: crate::model::IndexOperationClaim,
+        basis: VersionedRoot,
         request: RequestId,
     },
     /// Ask for one object/delta projection.

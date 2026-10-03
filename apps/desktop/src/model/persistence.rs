@@ -1227,15 +1227,30 @@ impl PersistentState {
                 // Folder disappearance does not prove an in-flight owner
                 // operation stopped. Keep its exact recovery path visible
                 // even when the source is also temporarily unavailable.
-                let unresolved = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling | PersistedProjectPhase::Unconfirmed)
-                    || (item.operation.is_some() && item.phase == PersistedProjectPhase::Queued);
-                let phase = if unresolved {
-                    ProjectPhase::Unconfirmed
-                } else if !path.is_dir() {
-                    ProjectPhase::Missing
-                } else {
-                    item.phase.into()
-                };
+                let valid_operation = item.operation.as_ref().filter(|operation| operation.belongs_to(&id)
+                    && operation.observation.as_ref().is_none_or(|observation| operation.admits_observation(observation)));
+                // Canonical operation evidence owns lifecycle when present.
+                // A stale display phase cannot turn Unknown into Ready or
+                // keep a checked publication permanently Unconfirmed.
+                let operation_phase = valid_operation.map(|operation| {
+                    use backend_library::{IndexOperationObservation, IndexOperationState, IndexOperationFailureReason};
+                    match operation.observation.as_ref() {
+                        Some(IndexOperationObservation::Known(status)) => match &status.state {
+                            IndexOperationState::Published(_) => ProjectPhase::Ready,
+                            IndexOperationState::Failed { reason, .. } => if *reason == IndexOperationFailureReason::Cancelled {
+                                ProjectPhase::Cancelled
+                            } else { ProjectPhase::Failed },
+                            IndexOperationState::Accepted | IndexOperationState::Active { .. } | IndexOperationState::Unresolved { .. } => ProjectPhase::Unconfirmed,
+                        },
+                        None | Some(IndexOperationObservation::Unknown { .. }) => ProjectPhase::Unconfirmed,
+                    }
+                });
+                let unresolved = operation_phase == Some(ProjectPhase::Unconfirmed)
+                    || (item.operation.is_some() && valid_operation.is_none())
+                    || (operation_phase.is_none() && matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling | PersistedProjectPhase::Unconfirmed));
+                let phase = if unresolved { ProjectPhase::Unconfirmed }
+                    else if !path.is_dir() { ProjectPhase::Missing }
+                    else { operation_phase.unwrap_or_else(|| item.phase.into()) };
                 let display_path: Arc<str> = item
                     .display_path
                     .as_deref()
@@ -1246,10 +1261,10 @@ impl PersistentState {
                     path: display_path,
                     label: item.label.clone().into(),
                     phase,
-                    progress: (!unresolved).then_some(item.progress).flatten().map(|progress| progress.min(100)),
-                    files_indexed: (!unresolved).then_some(item.files_indexed).flatten(),
+                    progress: (!unresolved && valid_operation.is_none()).then_some(item.progress).flatten().map(|progress| progress.min(100)),
+                    files_indexed: (!unresolved && valid_operation.is_none()).then_some(item.files_indexed).flatten(),
                     request: None,
-                    operation: item.operation.as_ref().filter(|operation| operation.belongs_to(&id)).cloned(),
+                    operation: valid_operation.cloned(),
                     error: if unresolved && item.error.is_none() {
                         Some(Arc::from("This index request was interrupted. Check its exact owner operation before starting another."))
                     } else {
@@ -1521,6 +1536,36 @@ mod tests {
     }
 
     #[test]
+    fn cold_restart_keeps_terminal_receipt_and_never_promotes_accepted_or_unknown_work() {
+        let directory = fixture("durable-terminal-state");
+        let project = LocalProjectId::from_path(&directory).expect("project");
+        let store = PersistentState::at(directory.join("desktop.json"));
+        let added = crate::navigation::reduce(&AppSnapshot::empty(crate::core::VersionedRoot::unserved()),
+            crate::navigation::Intent::AddProject { project: project.clone() }).snapshot;
+        let operation = crate::model::index_operation::tests::claim(&project, 0x74);
+        let mut value = PersistentState::project(&added);
+        let mut published = operation.clone();
+        published.observation = Some(crate::model::index_operation::tests::published(&operation));
+        value.shelf[0].operation = Some(published.clone());
+        value.shelf[0].phase = PersistedProjectPhase::Unconfirmed;
+        store.save(&value).expect("terminal receipt persisted");
+        let restored = store.cold_workspace(&store.load().expect("cold receipt"));
+        assert_eq!(restored.projects[0].phase, ProjectPhase::Ready);
+        assert_eq!(restored.projects[0].operation, Some(published));
+        let mut accepted = operation.clone();
+        accepted.observation = Some(crate::model::index_operation::tests::observation(&operation,
+            backend_library::IndexOperationState::Accepted));
+        value.shelf[0].operation = Some(accepted);
+        assert_eq!(store.cold_workspace(&value).projects[0].phase, ProjectPhase::Unconfirmed,
+            "a durable acceptance cannot prove terminal publication after restart");
+        value.shelf[0].phase = PersistedProjectPhase::Ready; // stale paint state is not an owner receipt
+        value.shelf[0].operation.as_mut().expect("claim").observation = Some(
+            backend_library::IndexOperationObservation::Unknown { operation_key: operation.key });
+        assert_eq!(store.cold_workspace(&value).projects[0].phase, ProjectPhase::Unconfirmed);
+        fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
     fn queued_local_admission_survives_restart_without_becoming_an_uncertain_mutation() {
         let root = fixture("queued-admission");
         let project = LocalProjectId::from_path(&root).expect("local project");
@@ -1537,6 +1582,7 @@ mod tests {
         assert_eq!(restored.projects[0].error, None);
 
         let submitted = crate::navigation::reduce(&snapshot, crate::navigation::Intent::IndexProject {
+            operation: crate::model::index_operation::tests::claim(&project, 0x51),
             project, basis: snapshot.key(), request: crate::navigation::RequestId::new(7),
         }).snapshot;
         let submitted = PersistentState::project(&submitted);

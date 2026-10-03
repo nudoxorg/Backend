@@ -566,7 +566,11 @@ fn rig_with_engine_gate_at_root_keep(
     }
     let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
-    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, None, Some(pool), gate, keep));
+    static NEXT_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let state = folder.join(format!("operation-state-{}", NEXT_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    crate::host::private_dir(&state).expect("private operation fixture state");
+    let persistence = crate::model::PersistentState::at(state.join("desktop.json"));
+    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx, runtime, Some(persistence), Some(pool), gate, keep));
     let window_graph = UiEntityGraph {
         root: graph.root.clone(),
         store: graph.store.clone(),

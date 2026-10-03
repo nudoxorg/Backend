@@ -93,11 +93,12 @@ pub(crate) struct GraphViewRequest {
 enum QueuedIntent {
     Plain(Intent),
     Index { intent: Intent, attachment: OwnerAttachment },
+    IndexStatus { intent: Intent, attachment: OwnerAttachment },
     Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Index { intent, .. } | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
 /// The complete UI-thread state owner for one desktop window.
@@ -107,6 +108,8 @@ pub struct UiRootEntity {
     persistence: Option<PersistentState>,
     bootstrap: Option<(crate::host::bootstrap::Binding, Arc<AppSnapshot>)>,
     folder_picker_task: Option<Task<()>>,
+    /// One bounded cadence task for accepted/active durable operation reads.
+    index_poll: Option<Task<()>>,
     connection_probe: ConnectionProbeLatch,
     /// The data plane: snapshot mirror, keyed page resources, read pool.
     store: Option<Entity<DataStore>>,
@@ -139,6 +142,7 @@ impl UiRootEntity {
             persistence,
             bootstrap: None,
             folder_picker_task: None,
+            index_poll: None,
             connection_probe: ConnectionProbeLatch::default(),
             store: None,
             engine_wake: None,
@@ -242,7 +246,13 @@ impl UiRootEntity {
                     if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
                         && matches!(&intent, Intent::IndexProject { basis, project, .. } if self.snapshot().key().same_authority(*basis)
                             && self.snapshot().workspace().projects.iter().any(|item| item.id == *project
-                                && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none())) => self.dispatch_index(intent, attachment, cx),
+                                && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none() && item.operation.is_none())) => self.dispatch_index(intent, attachment, cx),
+                QueuedIntent::IndexStatus { intent, attachment }
+                    if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
+                        && matches!(&intent, Intent::ReconcileIndexProject { project, operation, basis, .. }
+                            if self.snapshot().key().same_authority(*basis) && self.snapshot().workspace().projects.iter().any(|row|
+                                row.id == *project && row.request.is_none() && row.operation.as_ref() == Some(operation))) => self.dispatch_runtime(intent, cx),
+                QueuedIntent::IndexStatus { .. } => {},
                 // An unsent local admission remains on the shelf. A replacement
                 // owner will schedule it against its own attachment and root.
                 QueuedIntent::Index { .. } => {}
@@ -258,7 +268,15 @@ impl UiRootEntity {
     /// failed save leaves the folder unsent. Persistence already belongs to
     /// this root, and the exact owner lease is checked again after publication.
     fn dispatch_index(&mut self, intent: Intent, attachment: OwnerAttachment, cx: &mut Context<Self>) {
-        if let Some(persistence) = &self.persistence {
+        let Some(persistence) = &self.persistence else {
+            if let Intent::IndexProject { project, basis, .. } = &intent {
+                let events = self.runtime.reject_unsent_index(project, *basis,
+                    "The index request cannot start because its durable operation key cannot be saved. The folder remains on your shelf.".into());
+                self.apply_events(events, cx);
+            }
+            return;
+        };
+        {
             let submitted = crate::navigation::reduce(&self.snapshot(), intent.clone()).snapshot;
             if let Err(error) = persistence.save(&PersistentState::project(&submitted)) {
                 if let Intent::IndexProject { project, basis, .. } = intent {
@@ -426,6 +444,7 @@ impl UiRootEntity {
                 self.dispatch_runtime(Intent::RetryIndex(project), cx);
                 self.schedule_pending_indexes(cx);
             }
+            Intent::CheckIndexOutcome(project) => self.schedule_index_check(project, cx),
             Intent::AddRelease(release) => super::acquire::add(release, cx.weak_entity(), cx),
             other => self.dispatch_runtime(other, cx),
         }
@@ -461,6 +480,13 @@ impl UiRootEntity {
         if let Some(moved) = crate::host::aside::take() {
             self.dispatch(Intent::LibraryRebuilding { kept_at: Arc::from(moved.display().to_string()) }, cx);
         }
+        // One fresh owner observation may reconcile previously Unknown or
+        // Unresolved durable evidence. Their same-owner idle state does not poll.
+        let uncertain = self.snapshot().workspace().projects.iter().filter(|row|
+            row.phase == crate::model::ProjectPhase::Unconfirmed && row.operation.is_some() && row.request.is_none())
+            .map(|row| row.id.clone()).collect::<Vec<_>>();
+        for project in uncertain { self.schedule_index_check(project, cx); }
+        self.schedule_operation_observation(cx);
         // Packages an earlier launch was still adding are added now.
         super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
         self.resume_indexes_after_owner(cx);
@@ -558,6 +584,7 @@ impl UiRootEntity {
             .filter(|project| {
                 project.phase == crate::model::ProjectPhase::Indexing
                     && project.request.is_none()
+                    && project.operation.is_none()
                     && !self.index_intent_pending(&project.id)
             })
             .map(|project| project.id.clone())
@@ -569,7 +596,7 @@ impl UiRootEntity {
 
     fn schedule_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
         if self.index_intent_pending(&project)
-            || !self.snapshot().workspace().projects.iter().any(|item| item.id == project && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none())
+            || !self.snapshot().workspace().projects.iter().any(|item| item.id == project && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none() && item.operation.is_none())
         {
             return;
         }
@@ -578,12 +605,52 @@ impl UiRootEntity {
         let Some(attachment) = store.current_owner_attachment() else { return; };
         let basis = self.snapshot().key();
         if !store.snapshot().key().same_authority(basis) { return; }
+        let operation = match crate::model::IndexOperationClaim::fresh(&project) {
+            Ok(operation) => operation,
+            Err(message) => {
+                let events = self.runtime.reject_unsent_index(&project, basis, message.into());
+                self.apply_events(events, cx);
+                return;
+            }
+        };
         let request = self.runtime.allocate_request();
         self.pending.push(QueuedIntent::Index {
-            intent: Intent::IndexProject { project, basis, request },
+            intent: Intent::IndexProject { project, operation, basis, request },
             attachment,
         });
         self.schedule_flush(cx);
+    }
+
+    fn schedule_index_check(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
+        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
+        let snapshot = self.snapshot();
+        let Some(row) = snapshot.workspace().projects.iter().find(|row| row.id == project && row.request.is_none()) else { return; };
+        let Some(operation) = row.operation.as_ref().filter(|operation| operation.belongs_to(&project)).cloned() else { return; };
+        let Some(store) = self.store.as_ref() else { return; };
+        let Some(attachment) = store.read(cx).current_owner_attachment() else { return; };
+        let request = self.runtime.allocate_request();
+        self.pending.push(QueuedIntent::IndexStatus {
+            intent: Intent::ReconcileIndexProject { project, operation, basis: snapshot.key(), request }, attachment,
+        });
+        self.schedule_flush(cx);
+    }
+
+    fn schedule_operation_observation(&mut self, cx: &mut Context<Self>) {
+        if self.index_poll.is_some() || !self.store.as_ref().is_some_and(|store| store.read(cx).owner_serving()) { return; }
+        if !self.snapshot().workspace().projects.iter().any(|row| row.request.is_none()
+            && row.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::needs_observation)) { return; }
+        self.index_poll = Some(cx.spawn(async move |root, cx| {
+            // A cadence bounds read traffic; elapsed time never determines an
+            // operation's phase, receipt, failure or retry permission.
+            cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+            let _ = root.update(cx, |root, cx| {
+                root.index_poll = None;
+                let projects = root.snapshot().workspace().projects.iter().filter(|row| row.request.is_none()
+                    && row.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::needs_observation))
+                    .map(|row| row.id.clone()).collect::<Vec<_>>();
+                for project in projects { root.schedule_index_check(project, cx); }
+            });
+        }));
     }
 
     fn index_intent_pending(&self, project: &crate::core::LocalProjectId) -> bool {
@@ -614,11 +681,24 @@ impl UiRootEntity {
             }
         }
         self.publish_snapshot(cx);
+        if before.as_ref().is_some_and(|before| self.snapshot().workspace().projects.iter().any(|row|
+            row.phase == crate::model::ProjectPhase::Ready && row.operation.as_ref().is_some_and(|operation|
+                matches!(operation.observation.as_ref(), Some(backend_library::IndexOperationObservation::Known(status))
+                    if matches!(status.state, backend_library::IndexOperationState::Published(_))))
+            && !before.workspace().projects.iter().any(|old| old.id == row.id && old.phase == crate::model::ProjectPhase::Ready)))
+        {
+            // Hydration has its own read authority. Failure here cannot undo an
+            // already admitted durable publication receipt.
+            let basis = self.snapshot().key();
+            let request = self.runtime.allocate_request();
+            self.queue(Intent::RefreshRoot { basis, request }, cx);
+        }
         // A project the owner just indexed brings the packages it builds with.
         super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), cx.weak_entity(), cx);
         // Cold restart restores durable Indexing rows without an ephemeral
         // request; reattach them once through the typed intent path.
         self.schedule_pending_indexes(cx);
+        self.schedule_operation_observation(cx);
     }
 
 

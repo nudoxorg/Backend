@@ -126,9 +126,10 @@ pub enum EngineRequest {
         /// Cancellation state.
         cancel: CancellationToken,
     },
-    /// Submit one project to the canonical service index command while the
-    /// shared `ProjectIngest` receipt transport is unavailable.
+    /// Start one exact durable caller operation through the canonical service.
     IndexProject {
+        /// Exact caller operation persisted before the first mutation send.
+        operation: crate::model::IndexOperationClaim,
         /// Request identity retained until the owner replies.
         request: RequestId,
         /// Native project identity admitted by the picker boundary.
@@ -136,6 +137,14 @@ pub enum EngineRequest {
         /// Producer root basis captured before submission.
         basis: VersionedRoot,
         /// Cancellation request; terminal state is still owner-driven.
+        cancel: CancellationToken,
+    },
+    /// Read-only reconciliation of an exact saved caller operation.
+    IndexOperationStatus {
+        operation: crate::model::IndexOperationClaim,
+        project: LocalProjectId,
+        request: RequestId,
+        basis: VersionedRoot,
         cancel: CancellationToken,
     },
 }
@@ -146,7 +155,8 @@ impl EngineRequest {
             Self::Root { basis, .. }
             | Self::Object { basis, .. }
             | Self::Surface { basis, .. }
-            | Self::IndexProject { basis, .. } => *basis,
+            | Self::IndexProject { basis, .. }
+            | Self::IndexOperationStatus { basis, .. } => *basis,
         }
     }
 
@@ -155,7 +165,8 @@ impl EngineRequest {
             Self::Root { request, .. }
             | Self::Object { request, .. }
             | Self::Surface { request, .. }
-            | Self::IndexProject { request, .. } => *request,
+            | Self::IndexProject { request, .. }
+            | Self::IndexOperationStatus { request, .. } => *request,
         }
     }
 
@@ -168,7 +179,8 @@ impl EngineRequest {
             Self::Root { cancel, .. }
             | Self::Object { cancel, .. }
             | Self::Surface { cancel, .. }
-            | Self::IndexProject { cancel, .. } => cancel,
+            | Self::IndexProject { cancel, .. }
+            | Self::IndexOperationStatus { cancel, .. } => cancel,
         }
     }
 }
@@ -179,7 +191,7 @@ impl Coalescible for EngineRequest {
             Self::Root { .. } => Some(CoalesceKey::Root),
             Self::Object { object, .. } => Some(CoalesceKey::Object(*object)),
             Self::Surface { command, .. } => Some(CoalesceKey::Surface(command.id())),
-            Self::IndexProject { project, .. } => Some(CoalesceKey::Index(project.key())),
+            Self::IndexProject { project, .. } | Self::IndexOperationStatus { project, .. } => Some(CoalesceKey::Index(project.key())),
         }
     }
 }
@@ -273,6 +285,14 @@ pub enum EngineDto {
         /// Per-project file count when the service exposes one.
         files_indexed: Option<u64>,
     },
+    /// Owner observation tied to an immutable durable caller claim.
+    IndexOperation {
+        request: RequestId,
+        basis: VersionedRoot,
+        project: LocalProjectId,
+        operation: crate::model::IndexOperationClaim,
+        observation: backend_library::IndexOperationObservation,
+    },
     /// Package facts read from a local project's own manifests.
     LocalPackage {
         /// Request identity.
@@ -360,7 +380,7 @@ impl Coalescible for EngineEvent {
             Ok(EngineDto::Root { .. }) => Some(CoalesceKey::Root),
             Ok(EngineDto::Object { object, .. }) => Some(CoalesceKey::Object(*object)),
             Ok(EngineDto::Surface { command, .. }) => Some(CoalesceKey::Surface(command.id())),
-            Ok(EngineDto::Index { project, .. }) => Some(CoalesceKey::Index(project.key())),
+            Ok(EngineDto::Index { project, .. }) | Ok(EngineDto::IndexOperation { project, .. }) => Some(CoalesceKey::Index(project.key())),
             Ok(EngineDto::LocalPackage { package, .. }) => {
                 Some(CoalesceKey::LocalPackage(package.project.key()))
             }
@@ -542,7 +562,8 @@ impl EngineActor {
                 EngineRequest::Root { cancel, .. }
                 | EngineRequest::Object { cancel, .. }
                 | EngineRequest::Surface { cancel, .. }
-                | EngineRequest::IndexProject { cancel, .. } => cancel.cancel(),
+                | EngineRequest::IndexProject { cancel, .. }
+                | EngineRequest::IndexOperationStatus { cancel, .. } => cancel.cancel(),
             }
         }
         result
@@ -627,7 +648,7 @@ fn run_actor(
         let basis = request.basis();
         let id = request.request();
         let lane = request.coalesce_key();
-        let index_lane = matches!(&request, EngineRequest::IndexProject { .. });
+        let index_lane = matches!(&request, EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. });
         if request.cancelled() {
             if !events.push_wait(
                 EngineEvent {
@@ -741,8 +762,8 @@ fn run_local_reads(
 }
 
 fn cancelled_fault(request: &EngineRequest) -> EngineFault {
-    if let EngineRequest::IndexProject { project, .. } = request {
-        return EngineFault::IndexCancelled {
+    if let EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } = request {
+        return EngineFault::IndexUnconfirmed {
             project: project.clone(),
         };
     }
@@ -836,6 +857,7 @@ mod tests {
         let project = LocalProjectId::from_path(std::path::Path::new("/tmp"))
             .expect("project identity");
         assert!(matches!(actor.try_submit(EngineRequest::IndexProject {
+            operation: crate::model::index_operation::tests::claim(&project, 0x51),
             request: RequestId::new(2),
             project,
             basis: VersionedRoot::unserved(),
