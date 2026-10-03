@@ -299,7 +299,8 @@ fn append_bounded(
 }
 
 #[cfg(unix)]
-fn configure(pipe: &impl AsFd) -> io::Result<()> {
+/// Configures a child output pipe for bounded, nonblocking reads.
+pub fn configure(pipe: &impl AsFd) -> io::Result<()> {
     use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
     let flags = fcntl_getfl(pipe)?;
     fcntl_setfl(pipe, flags | OFlags::NONBLOCK)?;
@@ -307,7 +308,8 @@ fn configure(pipe: &impl AsFd) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn read_available(pipe: &mut impl Read, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+/// Reads available bytes, distinguishing a temporarily empty pipe from EOF.
+pub fn read_available(pipe: &mut impl Read, buffer: &mut [u8]) -> io::Result<Option<usize>> {
     match pipe.read(buffer) {
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
         result => result.map(Some),

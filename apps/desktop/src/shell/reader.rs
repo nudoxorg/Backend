@@ -1635,7 +1635,7 @@ fn place_name(route: &Route) -> String {
         Route::Package(package) => (package.package.as_str().to_owned(), package.at.as_ref()),
         Route::Orbit(_) => return "Library".to_owned(),
         Route::World => return "Graph".to_owned(),
-        Route::CargoSource(source) => return format!("{} · {}", source.package.as_str(), source.file.as_str()),
+        Route::CargoSource(source) => return format!("{} · {}", source.package.as_str(), source.target.path().as_str()),
     };
     release.map_or(name.clone(), |at| format!("{name} @ {}", at.as_str()))
 }

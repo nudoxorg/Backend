@@ -12,7 +12,8 @@ use facet::icons::Kind;
 use facet::tokens::TypeRole;
 use facet::{Measure, Palette, Set as _};
 use gpui::{
-    App, Context, Div, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, Task,
+    App, Context, Div, Hsla, InteractiveElement as _, IntoElement, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement as _, Styled, Task,
     Window, div, px,
 };
 use std::time::Duration;
@@ -30,6 +31,8 @@ pub(crate) fn text(role: TypeRole, measure: &Measure, color: impl Into<Hsla>) ->
         role: measure.role(role),
         content: String::new(),
         key: None,
+        accessibility_role: None,
+        accessibility_label: None,
     }
 }
 
@@ -39,6 +42,8 @@ pub(crate) struct Said {
     role: TypeRole,
     content: String,
     key: Option<gpui::ElementId>,
+    accessibility_role: Option<gpui::Role>,
+    accessibility_label: Option<SharedString>,
 }
 
 /// A child a [`Said`] can hold, and the words it contributes.
@@ -78,6 +83,18 @@ impl SaidChild for gpui::InteractiveText {
 }
 
 impl Said {
+    /// Gives this text a native accessibility node when it is rendered.
+    pub(crate) fn role(mut self, role: gpui::Role) -> Self {
+        self.accessibility_role = Some(role);
+        self
+    }
+
+    /// Names the native accessibility node for this text.
+    pub(crate) fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
     /// Publishes the words under `key` instead of `text:{words}`.
     pub(crate) fn keyed(mut self, key: impl Into<gpui::ElementId>) -> Self {
         self.key = Some(key.into());
@@ -110,9 +127,6 @@ impl IntoElement for Said {
     type Element = gpui::AnyElement;
 
     fn into_element(mut self) -> gpui::AnyElement {
-        if self.content.is_empty() {
-            return self.div.into_any_element();
-        }
         let style = &self.div.style().text;
         let overflow = if style.text_overflow.is_some() {
             facet::probe::TextOverflow::Ellipsis
@@ -124,7 +138,20 @@ impl IntoElement for Said {
         let key = self
             .key
             .unwrap_or_else(|| gpui::ElementId::Name(SharedString::from(format!("text:{}", self.content))));
-        facet::probe::text(key, self.content, self.role, 1.0, overflow, self.div).into_any_element()
+        let div = if let Some(role) = self.accessibility_role {
+            let mut div = self.div.id(key.clone()).role(role);
+            if let Some(label) = self.accessibility_label {
+                div = div.aria_label(label);
+            }
+            div.into_any_element()
+        } else {
+            self.div.into_any_element()
+        };
+        if self.content.is_empty() {
+            div
+        } else {
+            facet::probe::text(key, self.content, self.role, 1.0, overflow, div).into_any_element()
+        }
     }
 }
 

@@ -246,7 +246,7 @@ impl Render for Status {
         let foot = div().relative().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
         if let Some(opening) = &self.opening {
             return foot.pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
-                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).role(gpui::Role::Status).aria_label(opening.clone()).child(opening.clone()));
+                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).keyed("status-opening").role(gpui::Role::Status).aria_label(opening.clone()).child(opening.clone()));
         }
         let (focus, notice) = (store.graph_focus().cloned(), store.notice().cloned());
         let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
@@ -293,7 +293,7 @@ impl Render for Status {
                     .min_w_0()
                     .items_baseline()
                     .gap(px(5.0 * measure.scale()))
-                    .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).min_w_0().truncate().role(gpui::Role::Label).aria_label(name.clone()).child(name))
+                    .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).keyed("status-whisper-name").min_w_0().truncate().role(gpui::Role::Label).aria_label(name.clone()).child(name))
                     .child(super::kit::text(ty::CAPTION, &measure, palette.ink3).child("in hand"))
             });
             let mut row = div()
@@ -304,7 +304,7 @@ impl Render for Status {
                     .children(self.marks.render(&view, &self.links, &measure, palette, window, cx))
                     .children(words);
             if let Some(status) = &view.status {
-                row = row.child(super::kit::text(ty::CAPTION, &measure, palette.ink2).min_w_0().flex_1().truncate().role(gpui::Role::Status).aria_label(status.to_string()).child(status.to_string()));
+                row = row.child(super::kit::text(ty::CAPTION, &measure, palette.ink2).keyed("status-hand-status").min_w_0().flex_1().truncate().role(gpui::Role::Status).aria_label(status.to_string()).child(status.to_string()));
             }
             let foot = foot.child(row.pl(left));
             if !speaks { return foot; }

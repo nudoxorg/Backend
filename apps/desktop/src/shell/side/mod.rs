@@ -819,6 +819,7 @@ fn release_address<'a>(route: &'a Route, package: &PackageRef) -> Option<(Packag
         let pin = match route {
             Route::Package(route) => PackageRef::parse(route.package.as_str()).ok()?,
             Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok()?,
+            Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()?,
             Route::Orbit(_) | Route::World => return None,
         };
         Some((pin, route.at().map(|at| at.as_str())))

@@ -14,6 +14,7 @@ use crate::shell::region::Links;
 #[cfg(test)]
 use facet::graph::World;
 use facet::graph::{GraphView, GraphWorkStatus as FacetGraphWorkStatus, NodeId, Start};
+use facet::ActiveFacet as _;
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement, IntoElement, ParentElement, Render,
     Styled, Subscription, Window, div, px,
@@ -1441,9 +1442,9 @@ impl Render for Map {
             );
         } else {
             let message = self.load_error.clone().unwrap_or_else(|| "Reading the indexed graph…".into());
-            let measure = facet::Measure::new(window.viewport_size().width, &facet::ActiveFacet::facet(cx));
+            let measure = facet::Measure::new(window.viewport_size().width, &cx.facet());
             root = root.flex().items_center().justify_center().child(
-                crate::shell::kit::text(facet::tokens::ty::SMALL, &measure, facet::ActiveFacet::facet(cx).palette().ink2)
+                crate::shell::kit::text(facet::tokens::ty::SMALL, &measure, cx.facet().palette().ink2)
                     .keyed("graph-terminal-message")
                     .role(gpui::Role::Status).aria_label(message.clone())
                     .max_w(gpui::relative(0.9))
@@ -1459,7 +1460,7 @@ impl Render for Map {
                 })
             }
         });
-        let measure = facet::Measure::new(window.viewport_size().width, &facet::ActiveFacet::facet(cx));
+        let measure = facet::Measure::new(window.viewport_size().width, &cx.facet());
         let root = root.child(
             // Bottom right: the where-line owns the bottom left (W-Flip R-T2-1).
             // It gives way to the where-line on a narrow window: it never takes
@@ -1471,7 +1472,7 @@ impl Render for Map {
                 .max_w(gpui::relative(0.62))
                 .min_w_0()
                 .child(
-                    crate::shell::kit::text(facet::tokens::ty::MONO_SMALL, &measure, facet::ActiveFacet::facet(cx).palette().ink3)
+                    crate::shell::kit::text(facet::tokens::ty::MONO_SMALL, &measure, cx.facet().palette().ink3)
                         .keyed("graph-projection-status")
                         .role(gpui::Role::Status).aria_label(message.clone())
                         .truncate().child(message),

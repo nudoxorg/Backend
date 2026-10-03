@@ -13,9 +13,10 @@ use crate::shell::focus::Target;
 use crate::shell::kit::{quiet, text};
 use crate::shell::markdown::FollowMarkdownLink;
 use crate::shell::reader::Reader;
-use facet::{Space, tokens::ty};
+use facet::{Set as _, Space, tokens::ty};
 use gpui::{
     App, AppContext as _, Context, ElementId, Global, InteractiveElement, ParentElement,
+    StatefulInteractiveElement,
     SharedString, Styled, Window, div, px,
 };
 use std::cell::{Cell, RefCell};
@@ -69,6 +70,7 @@ pub(super) fn body(place: &Route, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
                 let snippet = document.source.chars().take(512).collect::<String>();
                 leaves.push(Leaf::new(
                     div()
+                        .id("cargo-readme-retained-snippet")
                         .role(gpui::Role::Label)
                         .aria_label("Earlier README text")
                         .child(quiet(ctx.say(snippet), &ctx.measure, ctx.palette)),
@@ -301,6 +303,7 @@ fn document_leaf(
         if let CargoReadmeDestination::Unavailable(reason) = &link.destination {
             column = column.child(
                 div()
+                    .id(id.clone())
                     .role(gpui::Role::Label)
                     .aria_label(label.to_string())
                     .child(
