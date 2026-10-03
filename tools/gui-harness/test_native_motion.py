@@ -46,7 +46,7 @@ class NativeMotionTests(unittest.TestCase):
 
     def test_run19_plans_keep_find_drawer_settle_and_retarget_distinct(self):
         names = ["settings-fast-open-close", "ask-interrupted-reopen", "find-fast-open-close",
-                 "settings-15s-settle", "settings-resize-retarget"]
+                 "settings-15s-settle", "settings-resize-retarget", "shelf-hide-reveal"]
         cases = [motion.require_plan(HERE / "plans" / f"{name}.json")["case"] for name in names]
         for name in ["drawer-500-100-survey", "drawer-360-200-survey"]:
             survey = motion.require_plan(HERE / "plans" / f"{name}.json")
@@ -59,6 +59,7 @@ class NativeMotionTests(unittest.TestCase):
         self.assertEqual(cases[2]["flow"], "find")
         self.assertEqual(cases[3]["transition"], "settle")
         self.assertEqual(cases[1]["transition"], "retarget")
+        self.assertEqual((cases[5]["flow"], cases[5]["transition"]), ("shelf", "hide_reveal"))
         self.assertEqual({by_id["drawer_500_100_full"]["flow"], by_id["drawer_360_200_full"]["flow"]}, {"drawer"})
         self.assertEqual({by_id["drawer_500_100_full"]["text_scale"],
                           by_id["drawer_360_200_full"]["text_scale"]}, {"100", "200"})

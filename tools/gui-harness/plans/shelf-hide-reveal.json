@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "name": "wide-shelf-interrupted-hide-reveal",
+  "case": {
+    "id": "shelf_hide_reveal_full",
+    "flow": "shelf",
+    "owner_phase": "serving",
+    "motion": "full",
+    "transition": "hide_reveal",
+    "viewport": "wide",
+    "text_scale": "100",
+    "live_index": false
+  },
+  "capture_scope": "app_display",
+  "capture_fps": 60,
+  "duration_ms": 1550,
+  "max_frame_gap_ms": 90,
+  "expected_reduce_motion": false,
+  "actions": [
+    {
+      "at_ms": 50,
+      "kind": "probe",
+      "label": "native shelf toggle before motion",
+      "expect_ax_title": "Toggle the shelf"
+    },
+    {
+      "at_ms": 100,
+      "kind": "key",
+      "keycode": 42,
+      "modifiers": [
+        "command"
+      ],
+      "label": "hide wide shelf",
+      "expect_visual_ms": 200
+    },
+    {
+      "at_ms": 310,
+      "kind": "key",
+      "keycode": 42,
+      "modifiers": [
+        "command"
+      ],
+      "label": "reveal shelf mid-hide",
+      "expect_visual_ms": 200
+    },
+    {
+      "at_ms": 530,
+      "kind": "key",
+      "keycode": 42,
+      "modifiers": [
+        "command"
+      ],
+      "label": "hide shelf mid-reveal",
+      "expect_visual_ms": 200
+    },
+    {
+      "at_ms": 800,
+      "kind": "key",
+      "keycode": 42,
+      "modifiers": [
+        "command"
+      ],
+      "label": "reveal shelf again",
+      "expect_visual_ms": 300
+    },
+    {
+      "at_ms": 1250,
+      "kind": "probe",
+      "label": "native shelf toggle after settlement",
+      "expect_ax_title": "Toggle the shelf"
+    }
+  ],
+  "crops": []
+}

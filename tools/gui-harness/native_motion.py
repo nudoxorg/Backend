@@ -146,11 +146,11 @@ def require_plan(path: Path) -> dict[str, Any]:
     case = plan.get("case")
     if not isinstance(case, dict) or set(case) != {"id", "flow", "owner_phase", "motion", "transition", "viewport", "text_scale", "live_index"}:
         raise ValueError("case requires id, flow, owner_phase, motion, transition, viewport, text_scale, live_index")
-    if case["flow"] not in {"add", "ask", "find", "drawer", "hand", "settings", "source", "failure_recovery"}:
+    if case["flow"] not in {"add", "ask", "find", "drawer", "shelf", "hand", "settings", "source", "failure_recovery"}:
         raise ValueError("unknown case flow")
     if case["owner_phase"] not in {"starting", "failed", "serving"} or case["motion"] not in {"full", "reduced"}:
         raise ValueError("invalid owner phase or motion")
-    if case["transition"] not in {"first_open", "open_close", "resize_midflight", "text_scale_midflight", "failure_recovery", "settle", "retarget"}:
+    if case["transition"] not in {"first_open", "open_close", "resize_midflight", "text_scale_midflight", "failure_recovery", "settle", "retarget", "hide_reveal"}:
         raise ValueError("invalid transition")
     if case["viewport"] not in {"wide", "narrow", "mixed"} or case["text_scale"] not in {"100", "200", "mixed"}:
         raise ValueError("invalid viewport/text scale")
