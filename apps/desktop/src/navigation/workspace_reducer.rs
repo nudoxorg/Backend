@@ -302,7 +302,9 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::RevealProject(_) | Intent::OpenSource { .. } => {}
         Intent::RetryIndex(project) => {
-            if next.workspace().projects.iter().any(|item| item.id == *project && (matches!(item.phase, ProjectPhase::Unconfirmed | ProjectPhase::Cancelling)
+            if next.workspace().projects.iter().any(|item| item.id == *project && (item.phase == ProjectPhase::Cancelling
+                || (item.phase == ProjectPhase::Unconfirmed && !(item.request.is_none() && item.operation.as_ref()
+                    .is_some_and(|operation| operation.belongs_to(project) && operation.permits_new_attempt())))
                 || (item.phase == ProjectPhase::Indexing && (item.request.is_some() || item.operation.is_some())))) {
                 let mut workspace = next.workspace().clone();
                 workspace.path_error = Some(Arc::from("The previous index may have committed. Check its exact owner operation before starting another."));
@@ -824,6 +826,31 @@ mod tests {
         }).expect("direct index");
         assert!(!direct.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
         assert_eq!(direct.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+    }
+
+    #[test]
+    fn only_a_checked_consumed_key_can_prepare_an_explicit_new_attempt() {
+        let (snapshot, project, _) = two_ready_projects();
+        let mut operation = crate::model::index_operation::tests::claim(&project, 0x81);
+        operation.observation = Some(crate::model::index_operation::tests::outside(&operation));
+        let mut workspace = snapshot.workspace().clone();
+        let mut rows = workspace.projects.to_vec();
+        let row = rows.iter_mut().find(|row| row.id == project).expect("row");
+        row.phase = ProjectPhase::Unconfirmed; row.request = None; row.operation = Some(operation.clone());
+        workspace.projects = rows.into();
+        let archived = snapshot.with_workspace(workspace);
+        let picked = reduce(&archived, &Intent::AddProject { project: project.clone() }).expect("pick");
+        assert_eq!(picked.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed, "mere folder selection starts nothing");
+        let prepared = reduce(&archived, &Intent::RetryIndex(project.clone())).expect("explicit new attempt");
+        let row = prepared.snapshot.workspace().projects.iter().find(|row| row.id == project).expect("row");
+        assert_eq!(row.phase, ProjectPhase::Indexing);
+        assert!(row.operation.is_none(), "the consumed key cannot be reused");
+        assert!(!prepared.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))), "new key must still pass durable preflight");
+        let mut wrong = operation.clone();
+        if let Some(backend_library::IndexOperationObservation::OutsideReceiptWindow { request_digest, .. }) = &mut wrong.observation { *request_digest = [5; 32]; }
+        assert!(!wrong.permits_new_attempt(), "mismatched tombstone grants no recovery capability");
+        operation.observation = Some(backend_library::IndexOperationObservation::Unknown { operation_key: operation.key });
+        assert!(!operation.permits_new_attempt(), "unknown is not proof of a consumed terminal key");
     }
 
     #[test]

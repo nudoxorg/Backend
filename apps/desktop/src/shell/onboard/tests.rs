@@ -541,3 +541,80 @@ fn retained_check_outcome_callback_cannot_cross_a_same_root_owner_replacement(cx
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert_eq!(snapshot(&mut rig).workspace().projects[0].phase, ProjectPhase::Unconfirmed);
 }
+
+struct ArchivedOperations { starts: Arc<std::sync::Mutex<Vec<crate::model::IndexOperationClaim>>> }
+impl EngineClient for ArchivedOperations {
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        match request {
+            EngineRequest::IndexProject { request, basis, project, operation, .. } => {
+                let mut starts = self.starts.lock().expect("fixture starts");
+                starts.push(operation.clone());
+                let observation = if starts.len() == 1 { crate::model::index_operation::tests::outside(operation) }
+                    else { crate::model::index_operation::tests::published(operation) };
+                Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(), operation: operation.clone(), observation })
+            }
+            EngineRequest::IndexOperationStatus { request, basis, project, operation, .. } => {
+                Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                    observation: crate::model::index_operation::tests::outside(operation) })
+            }
+            other => RootOnly.execute(other),
+        }
+    }
+}
+
+#[gpui::test]
+fn native_new_index_after_archival_uses_a_distinct_key_only_on_user_activation(cx: &mut TestAppContext) {
+    let (_, folder) = project("archived-operation");
+    let starts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let authority = crate::core::VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(authority, crate::model::ServiceMode::Attached);
+    let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0,
+        ReadPool::start(2, |_| NothingYet).expect("pool"), ArchivedOperations { starts: starts.clone() }, Some(gate));
+    rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
+    assert_eq!(phases(&mut rig), [ProjectPhase::Unconfirmed]);
+    assert_eq!(starts.lock().expect("starts").len(), 1, "archival never causes an automatic second mutation");
+    let saved = snapshot(&mut rig).workspace().projects[0].operation.clone().expect("consumed key");
+    assert!(saved.permits_new_attempt());
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let native = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+    let tree: serde_json::Value = serde_json::from_str(&native).expect("AccessKit JSON");
+    assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
+        node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Start a new index")));
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("native new attempt");
+    assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
+    let stale = target.act.clone();
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
+    let started = starts.lock().expect("starts");
+    assert_eq!(started.len(), 2);
+    assert_ne!(started[0].key, started[1].key, "production OS entropy allocates distinct durable work");
+    assert_eq!(started[0].package, started[1].package);
+    drop(started);
+    rig.cx.update(|window, cx| stale(window, cx));
+    rig.settle();
+    assert_eq!(starts.lock().expect("starts").len(), 2, "captured consumed-key control cannot act on its replacement claim");
+}
+
+#[gpui::test]
+fn captured_new_index_control_cannot_cross_same_root_owner_replacement(cx: &mut TestAppContext) {
+    let (_, folder) = project("stale-archived-operation");
+    let starts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let authority = crate::core::VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(authority, crate::model::ServiceMode::Attached);
+    let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0,
+        ReadPool::start(2, |_| NothingYet).expect("pool"), ArchivedOperations { starts: starts.clone() }, Some(gate.clone()));
+    rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let action = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("live action").0.act.clone();
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: authority, mode: crate::model::ServiceMode::Attached });
+    rig.cx.update(|window, cx| action(window, cx));
+    rig.settle();
+    assert_eq!(starts.lock().expect("starts").len(), 1, "old owner attachment cannot start distinct work under replacement");
+    assert_eq!(phases(&mut rig), [ProjectPhase::Unconfirmed]);
+}

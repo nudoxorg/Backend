@@ -27,6 +27,8 @@ pub(crate) enum ProjectCommand {
     Resume,
     /// Read the durable outcome of its saved operation; starts no new index.
     CheckOutcome,
+    /// Deliberately start distinct work after an exact consumed-key tombstone.
+    StartNewIndex,
     /// Show its folder in the file manager.
     Reveal,
     /// Add its folder again (the one it was is gone).
@@ -55,6 +57,7 @@ impl ProjectCommand {
             Self::Retry => "Try again",
             Self::Resume => "Resume",
             Self::CheckOutcome => "Check outcome",
+            Self::StartNewIndex => "Start a new index",
             Self::Reveal => "Reveal",
             Self::Locate => "Add it again",
             Self::Remove => "Remove from shelf",
@@ -65,7 +68,7 @@ impl ProjectCommand {
     #[must_use]
     pub(crate) const fn weight(self) -> Weight {
         match self {
-            Self::Retry | Self::Resume | Self::Locate | Self::CheckOutcome => Weight::Primary,
+            Self::Retry | Self::Resume | Self::Locate | Self::CheckOutcome | Self::StartNewIndex => Weight::Primary,
             Self::Activate | Self::Reveal => Weight::Plain,
             Self::Remove => Weight::Danger,
         }
@@ -76,7 +79,7 @@ impl ProjectCommand {
     pub(crate) fn intent(self, project: &LocalProjectId) -> Intent {
         match self {
             Self::Activate => Intent::ActivateProject(project.clone()),
-            Self::Retry | Self::Resume => Intent::RetryIndex(project.clone()),
+            Self::Retry | Self::Resume | Self::StartNewIndex => Intent::RetryIndex(project.clone()),
             Self::CheckOutcome => Intent::CheckIndexOutcome(project.clone()),
             Self::Reveal => Intent::RevealProject(project.clone()),
             Self::Locate => Intent::OpenAddProject,
@@ -89,7 +92,9 @@ impl ProjectCommand {
         let mut commands = Self::for_phase(project.phase, active);
         if owner_serving && project.phase == ProjectPhase::Unconfirmed && project.request.is_none()
             && project.operation.as_ref().is_some_and(|operation| operation.belongs_to(&project.id))
-        { commands.insert(0, Self::CheckOutcome); }
+        { commands.insert(0, if project.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::permits_new_attempt) {
+            Self::StartNewIndex
+        } else { Self::CheckOutcome }); }
         commands
     }
 
@@ -113,6 +118,25 @@ impl ProjectCommand {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_attempt_control_requires_checked_consumed_key_and_live_owner() {
+        let project = LocalProjectId::new("/fixture/new-index-command").expect("project");
+        let mut row = crate::model::WorkspaceProject::indexing_with_id(project.clone());
+        row.phase = ProjectPhase::Unconfirmed;
+        let mut operation = crate::model::index_operation::tests::claim(&project, 0x83);
+        operation.observation = Some(crate::model::index_operation::tests::outside(&operation));
+        row.operation = Some(operation);
+        assert_eq!(ProjectCommand::for_project(&row, true, true), [ProjectCommand::StartNewIndex, ProjectCommand::Reveal]);
+        assert_eq!(ProjectCommand::for_project(&row, true, false), [ProjectCommand::Reveal]);
+        row.request = Some(crate::navigation::RequestId::new(7));
+        assert_eq!(ProjectCommand::for_project(&row, true, true), [ProjectCommand::Reveal]);
+        row.request = None;
+        let saved = row.operation.as_mut().expect("claim");
+        saved.observation = Some(backend_library::IndexOperationObservation::Unknown { operation_key: saved.key });
+        assert_eq!(ProjectCommand::for_project(&row, true, true), [ProjectCommand::CheckOutcome, ProjectCommand::Reveal]);
+        assert_eq!(ProjectCommand::StartNewIndex.label(), "Start a new index");
+    }
 
     #[test]
     fn every_phase_offers_what_makes_sense_and_each_command_dispatches_its_own_intent() {

@@ -211,12 +211,14 @@ fn act(ctx: &mut Ctx<'_>, id: String, command: ProjectCommand, project: &LocalPr
     let expected = ctx.links.snapshot(cx).workspace().projects.iter().find(|row| row.id == *project).and_then(|row| row.operation.clone());
     let project = project.clone();
     let act: Act = Rc::new(move |_, cx| {
-        if command == ProjectCommand::CheckOutcome && !links.snapshot(cx).workspace().projects.iter().any(|row|
+        if matches!(command, ProjectCommand::CheckOutcome | ProjectCommand::StartNewIndex) && !links.snapshot(cx).workspace().projects.iter().any(|row|
             row.id == project && row.phase == ProjectPhase::Unconfirmed && row.request.is_none()
-                && row.operation.as_ref().zip(expected.as_ref()).is_some_and(|(saved, expected)| saved.same_request(expected))) { return; }
+                && row.operation.as_ref().zip(expected.as_ref()).is_some_and(|(saved, expected)| saved.same_request(expected)
+                    && saved.belongs_to(&project)
+                    && (command != ProjectCommand::StartNewIndex || (saved.permits_new_attempt() && expected.permits_new_attempt())))) { return; }
         links.dispatch(intent.clone(), cx);
     });
-    let act = if command == ProjectCommand::CheckOutcome { ctx.native_snapshot_action(act, cx) }
+    let act = if matches!(command, ProjectCommand::CheckOutcome | ProjectCommand::StartNewIndex) { ctx.native_snapshot_action(act, cx) }
         else { ctx.native_local_action(act, cx) };
     ctx.targets.push(Target { id: id.clone().into(), label: command.label().into(), act: Rc::clone(&act), peek: None, source: None });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);

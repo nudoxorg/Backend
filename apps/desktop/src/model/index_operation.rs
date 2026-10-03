@@ -85,6 +85,15 @@ impl IndexOperationClaim {
         Some(incoming)
     }
 
+    /// Only a checked consumed-key tombstone permits a deliberate new attempt.
+    /// Unknown or unresolved work might still be active and never permits one.
+    #[must_use]
+    pub fn permits_new_attempt(&self) -> bool {
+        self.observation.as_ref().is_some_and(|observation|
+            matches!(observation, backend_library::IndexOperationObservation::OutsideReceiptWindow { .. })
+                && self.admits_observation(observation))
+    }
+
     /// Durable request identity excludes the latest changing observation.
     #[must_use]
     pub fn same_request(&self, other: &Self) -> bool {
@@ -206,11 +215,13 @@ pub(crate) mod tests {
         operation.observation = operation.observation_for(incoming.clone());
         assert_eq!(operation.observation.as_ref(), Some(&incoming));
         assert!(!operation.needs_observation(), "an archived terminal operation is not active progress");
+        assert!(operation.permits_new_attempt());
         assert_eq!(operation.status_text(), "Index receipt is outside the evidence window");
         let restored: IndexOperationClaim = serde_json::from_slice(&serde_json::to_vec(&operation).expect("saved tombstone")).expect("cold claim");
         assert_eq!(restored, operation);
         let receipt = published(&operation);
         operation.observation = Some(receipt.clone());
+        assert!(!operation.permits_new_attempt(), "an owned publication keeps its own successful lifecycle");
         assert_eq!(operation.observation_for(incoming), Some(receipt), "an exact owned receipt remains readonly publication evidence");
         assert!(operation.observation_for(wrong).is_none(), "even an owned receipt does not admit a mismatched tombstone");
     }
