@@ -1233,7 +1233,7 @@ fn margin(
             (store.stamp(&source_key), store.stamp(&semantic_key))
         };
         let source_guard = ctx.native_dependency_guard((source_key, source_stamp), cx);
-        let semantic_guard = ctx.native_dependency_guard((semantic_key, semantic_stamp), cx);
+        let semantic_guard = ctx.native_dependency_guard((semantic_key.clone(), semantic_stamp), cx);
         column = column.child(
             text(ty::SMALL, &measure, palette.ink3)
                 .role(gpui::Role::Label).aria_label(incoming_heading(callers))
@@ -1247,9 +1247,10 @@ fn margin(
             let id: SharedString = format!("caller-{}", caller.decl.coordinate).into();
             let source_guard = Rc::clone(&source_guard);
             let semantic_guard = Rc::clone(&semantic_guard);
+            let dependency = (semantic_key.clone(), semantic_stamp);
             let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
                 if !source_guard(app) || !semantic_guard(app) { return; }
-                if let Some(route) = target.clone() { links.dispatch(Intent::Navigate(route), app); }
+                if let Some(route) = target.clone() { links.dispatch_read(Intent::Navigate(route), dependency.clone(), app); }
             });
             ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: act.clone(), peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
