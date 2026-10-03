@@ -3,7 +3,7 @@
 use super::{
     LOCAL_CONTROL_MAX_PENDING, LOCAL_CONTROL_MAX_PENDING_BYTES, LocalControlError,
     LocalControlLimits, LocalControlRequest, LocalControlResponse, decode_response, encode_request,
-    frame, read_frame_into, write_frame,
+    read_frame_into, write_frame,
 };
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::io::{Read, Write};
@@ -172,30 +172,7 @@ impl<S: Read + Write> LocalControlClient<S> {
         request: &LocalControlRequest,
         deadline: Instant,
     ) -> Result<PendingLocalControlExchange<'a, S>, LocalControlError> {
-        let started_at = Instant::now();
-        self.ensure_usable()?;
-        let request_id = request.request_id();
-        if self.pending.contains_key(&request_id) {
-            return Err(LocalControlError::Invalid("duplicate pending request id"));
-        }
-        let payload = encode_request(request, self.limits)?;
-        let request_frame = frame(&payload, self.limits)?;
-        self.receive.clear();
-        Ok(PendingLocalControlExchange {
-            client: self,
-            request_id,
-            request_frame,
-            write_offset: 0,
-            header: [0; 4],
-            header_offset: 0,
-            body_len: None,
-            body_offset: 0,
-            phase: LocalControlExchangePhase::Sending,
-            started_at,
-            deadline,
-            complete: false,
-            terminal: None,
-        })
+        PendingLocalControlExchange::new(self, request, deadline)
     }
 
     fn ensure_usable(&self) -> Result<(), LocalControlError> {

@@ -1,5 +1,6 @@
 //! Resumable one-request local-control exchange state machine.
 
+use super::super::{LocalControlRequest, encode_request, frame};
 use super::{LocalControlClient, LocalControlError, LocalControlResponse, decode_response};
 use std::io::{ErrorKind, Read, Write};
 use std::time::{Duration, Instant};
@@ -128,7 +129,39 @@ pub struct PendingLocalControlExchange<'a, S> {
     terminal: Option<LocalControlExchangeError>,
 }
 
-impl<S: Read + Write> PendingLocalControlExchange<'_, S> {
+impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
+    /// Creates one empty-offset exchange inside the module that owns its state.
+    pub(super) fn new(
+        client: &'a mut LocalControlClient<S>,
+        request: &LocalControlRequest,
+        deadline: Instant,
+    ) -> Result<Self, LocalControlError> {
+        let started_at = Instant::now();
+        client.ensure_usable()?;
+        let request_id = request.request_id();
+        if client.pending.contains_key(&request_id) {
+            return Err(LocalControlError::Invalid("duplicate pending request id"));
+        }
+        let payload = encode_request(request, client.limits)?;
+        let request_frame = frame(&payload, client.limits)?;
+        client.receive.clear();
+        Ok(Self {
+            client,
+            request_id,
+            request_frame,
+            write_offset: 0,
+            header: [0; 4],
+            header_offset: 0,
+            body_len: None,
+            body_offset: 0,
+            phase: LocalControlExchangePhase::Sending,
+            started_at,
+            deadline,
+            complete: false,
+            terminal: None,
+        })
+    }
+
     /// Drives the same request across readiness timeouts until its exact
     /// correlated response arrives or its fixed deadline/cancellation ends it.
     ///

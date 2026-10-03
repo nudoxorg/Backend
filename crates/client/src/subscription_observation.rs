@@ -764,17 +764,22 @@ fn invalid(message: &str) -> PublicationExchangeError {
 mod tests {
     use super::*;
     use backend_library::{
-        AuthorityScopeClaim, Basis, CoverageCapability, Frontier, ProducerObservationClaims,
-        ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
-        admit_producer_observation, object_version, view_key, view_state_root,
+        AuthorityScopeClaim, Basis, Coverage, CoverageCapability, CursorResetReason, Frontier,
+        ProducerObservationClaims, ProducerObservationVerifier, Row, RowId, ScopeRoot,
+        SnapshotPageDto, UntrustedProducerObservation, ViewPageCursor, ViewRoot, WireCertificate,
+        WireClaim, WireSchema, admit_complete_scope, admit_producer_observation,
+        empty_view_relation_preimage, encode_id, object_version, symbol_key, view_key,
+        view_state_root, view_version_preimage,
     };
     use backend_replication::{
         LocalControlRequest, LocalControlResponse, LocalSubscriptionOperation, decode_request,
         encode_response, frame, read_frame, write_frame,
     };
     use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::net::UnixStream;
     use std::thread::JoinHandle;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct FixtureVerifier;
     impl ProducerObservationVerifier for FixtureVerifier {
@@ -839,6 +844,43 @@ mod tests {
         let join = std::thread::spawn(move || serve(&mut server));
         (LocalSubscriptionTransport::from_stream(client), join)
     }
+    fn authenticated_pair(
+        serve: impl FnOnce(&mut UnixStream) + Send + 'static,
+    ) -> (
+        LocalSubscriptionTransport,
+        std::path::PathBuf,
+        JoinHandle<()>,
+    ) {
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/nudox-pub-{}-{}.sock",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&path)
+            .expect("bind authenticated local endpoint");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("restrict authenticated local endpoint");
+        let join = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept authenticated client");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("owner read deadline");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .expect("owner write deadline");
+            serve(&mut stream);
+        });
+        let transport = LocalSubscriptionTransport::connect_with_timeouts(
+            &path,
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+        )
+        .expect("connect and authenticate local producer");
+        (transport, path, join)
+    }
     fn request(stream: &mut UnixStream) -> (u64, LocalSubscriptionOperation) {
         let body = read_frame(stream, crate::limits()).expect("request frame");
         let LocalControlRequest::Subscription(request) =
@@ -859,6 +901,244 @@ mod tests {
             stream.write_all(chunk).expect("fragmented response");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    type EncodedSnapshotPage = (Box<[u8]>, Box<[u8]>, Option<Box<[u8]>>);
+
+    fn multi_page_reset_fixture() -> (
+        Arc<ViewRoot>,
+        Arc<ViewRoot>,
+        Cursor,
+        Cursor,
+        Vec<EncodedSnapshotPage>,
+    ) {
+        let initial = root();
+        let basis = initial.basis();
+        let labels = (0..130)
+            .map(|index| format!("ObservedItem{index:03}"))
+            .collect::<Vec<_>>();
+        let rows = labels
+            .iter()
+            .map(|label| Row::new(RowId::Symbol(symbol_key(label)), basis, label.clone()))
+            .collect::<Vec<_>>();
+        let target = Arc::new(
+            ViewRoot::new_checked(
+                view_key(b"publication-view"),
+                basis,
+                initial.frontier(),
+                rows,
+                vec![Coverage::Complete],
+                initial.capability().expect("complete fixture capability"),
+            )
+            .expect("multi-page target root"),
+        );
+        let previous = Cursor::for_view_root_at(&initial, 0);
+        let cursor = Cursor::for_view_root_at(&target, 1);
+        let capability = target.capability().expect("target capability");
+        let source_id = encode_id(basis.object.as_bytes());
+        let mut certificate = WireCertificate::new()
+            .with_claim(WireClaim::KeyBytes {
+                schema: WireSchema::ViewRecipe,
+                id: encode_id(target.recipe().as_bytes()),
+                value: b"publication-view".to_vec().into_boxed_slice(),
+            })
+            .with_claim(WireClaim::Version {
+                schema: WireSchema::ViewVersion,
+                id: encode_id(target.version().as_bytes()),
+                value: view_version_preimage(
+                    target.recipe(),
+                    basis,
+                    target.frontier(),
+                    target.root(),
+                    target.coverage(),
+                )
+                .into_boxed_slice(),
+            })
+            .with_claim(WireClaim::RootCommitment {
+                schema: WireSchema::ViewRelation,
+                id: encode_id(target.root().as_bytes()),
+            })
+            .with_claim(WireClaim::Root {
+                schema: WireSchema::ViewRelation,
+                id: encode_id(basis.root.as_bytes()),
+                canonical: empty_view_relation_preimage().into_boxed_slice(),
+            })
+            .with_claim(WireClaim::Version {
+                schema: WireSchema::Object,
+                id: source_id.clone(),
+                value: b"publication-source".to_vec().into_boxed_slice(),
+            })
+            .with_claim(WireClaim::Coverage {
+                scope: source_id.clone(),
+                observed: source_id,
+                producer: encode_id(&capability.producer_identity()),
+                context: encode_id(&capability.context()),
+                evidence: capability.evidence().to_vec().into_boxed_slice(),
+            })
+            .with_claim(WireClaim::Key {
+                schema: WireSchema::Branch,
+                id: encode_id(basis.branch.as_bytes()),
+                value: "main".to_owned(),
+            })
+            .with_claim(WireClaim::Key {
+                schema: WireSchema::Log,
+                id: encode_id(basis.log.as_bytes()),
+                value: "library".to_owned(),
+            })
+            .with_claim(WireClaim::Cursor {
+                recipe: encode_id(cursor.recipe().as_bytes()),
+                version: encode_id(cursor.version().as_bytes()),
+                branch: encode_id(cursor.branch().as_bytes()),
+                log: encode_id(cursor.log().as_bytes()),
+                schema: cursor.schema(),
+                root: encode_id(cursor.root().as_bytes()),
+                sequence: cursor.sequence(),
+            });
+        for label in &labels {
+            certificate = certificate.with_claim(WireClaim::Key {
+                schema: WireSchema::Symbol,
+                id: encode_id(symbol_key(label).as_bytes()),
+                value: label.clone(),
+            });
+        }
+
+        let mut request_page = Vec::<u8>::new().into_boxed_slice();
+        let mut page_cursor = ViewPageCursor::first(&target);
+        let mut pages = Vec::new();
+        loop {
+            let page = target.page(page_cursor, CREDIT).expect("bounded view page");
+            let following_cursor = page.next();
+            let dto = SnapshotPageDto::try_new(
+                previous,
+                cursor,
+                target.descriptor(),
+                page,
+                CursorResetReason::Pruned,
+            )
+            .expect("checked snapshot page")
+            .with_certificate(certificate.clone());
+            let next = dto.next_token().expect("continuation token");
+            let payload = serde_json::to_vec(&dto)
+                .expect("encode authenticated snapshot page")
+                .into_boxed_slice();
+            pages.push((request_page, payload, next.clone()));
+            match (following_cursor, next) {
+                (Some(following_cursor), Some(next)) => {
+                    page_cursor = following_cursor;
+                    request_page = next;
+                }
+                (None, None) => break,
+                _ => panic!("fixture page token and page cursor disagree"),
+            }
+        }
+        assert_eq!(pages.len(), 3);
+        (initial, target, previous, cursor, pages)
+    }
+
+    fn serve_snapshot_reset(
+        stream: &mut UnixStream,
+        previous: Cursor,
+        target_cursor: Cursor,
+        lease: LocalSubscriptionId,
+        pages: Vec<EncodedSnapshotPage>,
+        corrupt_page: Option<usize>,
+        reject_ack_cursor: bool,
+        acknowledged: Option<std::sync::mpsc::Sender<u64>>,
+    ) {
+        let (request_id, operation) = request(stream);
+        let request_cursor = match operation {
+            LocalSubscriptionOperation::Open { cursor, .. }
+            | LocalSubscriptionOperation::Resume { cursor, .. } => cursor,
+            _ => panic!("snapshot reset must begin with Open or Resume"),
+        };
+        assert_eq!(request_cursor.as_ref(), previous.encode_control().as_ref());
+        let (page, payload, next) = &pages[0];
+        let payload = if corrupt_page == Some(0) {
+            let mut malformed = payload.to_vec();
+            if let Some(first) = malformed.first_mut() {
+                *first = b'!';
+            }
+            malformed.into_boxed_slice()
+        } else {
+            payload.clone()
+        };
+        reply(
+            stream,
+            LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                request_id,
+                lease,
+                page: page.clone(),
+                next: next.clone(),
+                credit: CREDIT,
+                payload,
+            }),
+        );
+        if corrupt_page == Some(0) {
+            return;
+        }
+        for (index, (page, payload, next)) in pages.iter().enumerate().skip(1) {
+            let (request_id, operation) = request(stream);
+            let LocalSubscriptionOperation::Page {
+                lease: requested_lease,
+                page: requested_page,
+                credit: CREDIT,
+            } = operation
+            else {
+                panic!("reset continuation must be a page request");
+            };
+            assert_eq!(requested_lease, lease);
+            assert_eq!(requested_page.as_ref(), page.as_ref());
+            let payload = if corrupt_page == Some(index) {
+                let mut malformed = payload.to_vec();
+                if let Some(first) = malformed.first_mut() {
+                    *first = b'!';
+                }
+                malformed.into_boxed_slice()
+            } else {
+                payload.clone()
+            };
+            reply(
+                stream,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                    request_id,
+                    lease,
+                    page: requested_page,
+                    next: next.clone(),
+                    credit: CREDIT,
+                    payload,
+                }),
+            );
+            if corrupt_page == Some(index) {
+                return;
+            }
+        }
+
+        let (ack_id, operation) = request(stream);
+        let LocalSubscriptionOperation::Ack {
+            lease: ack_lease,
+            cursor: ack_cursor,
+        } = operation
+        else {
+            panic!("complete reset must finish with one Ack");
+        };
+        assert_eq!(ack_lease, lease);
+        let expected = if reject_ack_cursor {
+            previous.encode_control()
+        } else {
+            target_cursor.encode_control()
+        };
+        assert_eq!(ack_cursor.as_ref(), expected.as_ref());
+        if let Some(acknowledged) = acknowledged {
+            acknowledged.send(ack_id).expect("report Ack correlation");
+        }
+        reply(
+            stream,
+            LocalControlResponse::Subscription(LocalSubscriptionResponse::Acked {
+                request_id: ack_id,
+                lease,
+                cursor: expected,
+            }),
+        );
     }
 
     #[test]
@@ -1023,6 +1303,178 @@ mod tests {
     }
 
     #[test]
+    fn observed_ordinary_admission_uses_the_minimum_fixed_deadline() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        for caller_window in [Duration::from_secs(2), Duration::from_secs(30)] {
+            let (mut transport, owner) = pair(move |stream| {
+                let (request_id, operation) = request(stream);
+                assert!(matches!(operation, LocalSubscriptionOperation::Open { .. }));
+                reply(
+                    stream,
+                    LocalControlResponse::Subscription(LocalSubscriptionResponse::Opened {
+                        request_id,
+                        lease,
+                        cursor: cursor.encode_control(),
+                        credit: CREDIT,
+                        lease_ms: LEASE_MS,
+                    }),
+                );
+            });
+            let recovery_deadline = Instant::now() + caller_window;
+            let cancelled = || false;
+            let mut tick = |_| PublicationObservationDecision::Continue;
+            let mut control =
+                ObservedPublicationControl::new(recovery_deadline, &cancelled, &mut tick);
+            let state = transport
+                .acquire_publications_observed(Arc::clone(&root), cursor, &mut control)
+                .expect("quiet observed open");
+            let budget = control.budget();
+            assert_eq!(budget.kind(), PublicationBudgetKind::Ordinary);
+            assert_eq!(
+                budget.deadline(),
+                recovery_deadline.min(budget.started() + RESET_TIME)
+            );
+            assert_eq!(state.cursor(), cursor);
+            drop(control);
+            drop(transport);
+            owner.join().expect("owner");
+        }
+    }
+
+    #[test]
+    fn observed_authenticated_reset_pages_and_ack_share_one_expanded_deadline() {
+        let (initial, target, previous, target_cursor, pages) = multi_page_reset_fixture();
+        let lease = LocalSubscriptionId::from_bytes([11; 16]);
+        let (ack_sent, ack_received) = std::sync::mpsc::channel();
+        let (mut transport, path, owner) = authenticated_pair(move |stream| {
+            serve_snapshot_reset(
+                stream,
+                previous,
+                target_cursor,
+                lease,
+                pages,
+                None,
+                false,
+                Some(ack_sent),
+            );
+        });
+        // The authenticated reset budget must expand beyond this caller's
+        // short ordinary recovery window and then stay fixed through Ack.
+        let recovery_deadline = Instant::now() + Duration::from_secs(2);
+        let cancelled = || false;
+        let mut progress = Vec::new();
+        let mut tick = |item| {
+            progress.push(item);
+            PublicationObservationDecision::Continue
+        };
+        let mut control = ObservedPublicationControl::new(recovery_deadline, &cancelled, &mut tick);
+        let state = transport
+            .acquire_publications_observed(Arc::clone(&initial), previous, &mut control)
+            .expect("fully admitted multi-page reset");
+        let ack_id = ack_received
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server observed final Ack");
+        assert_eq!(state.cursor(), target_cursor);
+        assert_eq!(state.root().root(), target.root());
+        let final_budget = control.budget();
+        drop(control);
+        drop(tick);
+        drop(transport);
+        owner.join().expect("authenticated owner");
+        std::fs::remove_file(path).expect("remove test socket");
+
+        let reset_steps = progress
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step.budget.kind(),
+                    PublicationBudgetKind::AuthenticatedReset {
+                        rows: 130,
+                        pages: 3
+                    }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !reset_steps.is_empty(),
+            "page and Ack ticks observe reset budget"
+        );
+        let fixed = reset_steps[0].budget;
+        assert_eq!(fixed.allowance(), RESET_TIME + PAGE_TIME * 3);
+        assert!(fixed.deadline() > recovery_deadline);
+        assert!(reset_steps.iter().all(|step| {
+            step.budget.started() == fixed.started()
+                && step.budget.deadline() == fixed.deadline()
+                && step.exchange.deadline == fixed.deadline()
+        }));
+        assert!(
+            reset_steps
+                .iter()
+                .any(|step| step.exchange.request_id == ack_id)
+        );
+        assert!(
+            progress
+                .iter()
+                .filter(|step| step.exchange.request_id != ack_id)
+                .all(|step| step.exchange.deadline == step.budget.deadline())
+        );
+        assert!(progress.iter().any(|step| {
+            step.budget.kind() == PublicationBudgetKind::Ordinary
+                && step.exchange.deadline == recovery_deadline
+        }));
+        assert_eq!(
+            final_budget.kind(),
+            PublicationBudgetKind::AuthenticatedReset {
+                rows: 130,
+                pages: 3
+            }
+        );
+        assert_eq!(final_budget.deadline(), fixed.deadline());
+    }
+
+    #[test]
+    fn invalid_authenticated_reset_page_or_ack_never_replaces_retained_root() {
+        for (corrupt_page, reject_ack_cursor) in [(Some(1), false), (None, true)] {
+            let (initial, _target, previous, target_cursor, pages) = multi_page_reset_fixture();
+            let lease = LocalSubscriptionId::from_bytes([12; 16]);
+            let mut state = PublicationLease {
+                lease,
+                cursor: previous,
+                root: Arc::clone(&initial),
+            };
+            let (mut transport, path, owner) = authenticated_pair(move |stream| {
+                serve_snapshot_reset(
+                    stream,
+                    previous,
+                    target_cursor,
+                    lease,
+                    pages,
+                    corrupt_page,
+                    reject_ack_cursor,
+                    None,
+                );
+            });
+            let recovery_deadline = Instant::now() + Duration::from_secs(30);
+            let cancelled = || false;
+            let mut tick = |_| PublicationObservationDecision::Continue;
+            let mut control =
+                ObservedPublicationControl::new(recovery_deadline, &cancelled, &mut tick);
+            let error = transport
+                .resume_publications_observed(&mut state, &mut control)
+                .expect_err("invalid reset page or acknowledgement");
+            assert!(matches!(error, PublicationExchangeError::Invalid(_)));
+            assert_eq!(state.cursor(), previous);
+            assert_eq!(state.root().root(), initial.root());
+            drop(control);
+            drop(transport);
+            owner.join().expect("authenticated owner");
+            std::fs::remove_file(path).expect("remove test socket");
+        }
+    }
+
+    #[test]
     fn observed_resume_keeps_server_rejection_distinct_from_local_invalid_reply() {
         let root = root();
         let cursor = Cursor::for_view_root_at(&root, 0);
@@ -1125,9 +1577,10 @@ mod tests {
             &cancelled,
             &mut tick,
         );
-        let error = transport
-            .acquire_publications_observed(root, cursor, &mut control)
-            .expect_err("cancelled incomplete request");
+        let error = match transport.acquire_publications_observed(root, cursor, &mut control) {
+            Err(error) => error,
+            Ok(_) => panic!("cancelled incomplete request returned a lease"),
+        };
         assert!(matches!(
             error,
             PublicationExchangeError::Exchange(LocalControlExchangeError {
