@@ -7,11 +7,11 @@
 //! network for a missing download, a stale lockfile under `--locked`), the
 //! tree is read from `Cargo.lock` alone and says so.
 //!
-//! The Cargo half is cached against the effective lock, exact package
-//! manifests, Cargo configuration and tools, registry checksums, and bounded
-//! auto-target membership. A warm read reuses that graph only after the same
-//! inputs are rechecked. Advisories are observed on every read, so a refresh
-//! shows at once.
+//! The Cargo half is cached against the full exact-manifest metadata response,
+//! selected lock origin, package manifests, exact Cargo target rows,
+//! configuration, tools, and registry checksums. Every candidate cache hit
+//! first asks Cargo again, so Cargo decides current members, targets, patches,
+//! and resolution state. Advisories are observed on every read.
 
 use backend_library::browse::{
     LockedInactiveCoverage, LockfileGraphCoverage, ProjectTree, TreeInput, TreeInputPackage,
@@ -51,9 +51,8 @@ const CARGO_DEADLINE: Duration = Duration::from_secs(90);
 const MAX_CARGO_OBSERVATION_PATHS: usize = 42_048;
 const MAX_CARGO_OBSERVATION_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CARGO_OBSERVATION_TOTAL_BYTES: usize = 256 * 1024 * 1024;
-const MAX_CARGO_TARGET_MEMBERSHIP_ROOTS: usize = 20_000;
-const MAX_CARGO_TARGET_MEMBERSHIP_ENTRIES: usize = 65_536;
-const MAX_CARGO_TARGET_MEMBERSHIP_DEPTH: usize = 16;
+const MAX_CARGO_METADATA_PACKAGES: usize = 20_000;
+const MAX_CARGO_METADATA_TARGETS_PER_PACKAGE: usize = 65_536;
 const MAX_CARGO_TOOL_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CARGO_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_CARGO_CONFIG_INPUTS: usize = 256;
@@ -221,8 +220,6 @@ impl Default for BrowseCache {
 
 struct CacheEntry {
     witness: [u8; 32],
-    lock_origin_witness: [u8; 32],
-    target_roots: Vec<PathBuf>,
     watched: Vec<PathBuf>,
     input: Arc<TreeInput>,
     /// Directory from which the exact-manifest metadata command was run.
@@ -1062,10 +1059,10 @@ impl BrowseCache {
     fn input_with_read_project(
         &mut self,
         root: &Path,
-        read: impl FnOnce(
+        mut read: impl FnMut(
             &RequestedCargoManifest,
             Option<&CargoToolWitnessReuse>,
-        ) -> Result<ProjectInputRead, String>,
+        ) -> Result<CargoProjectRead, String>,
     ) -> Result<Arc<TreeInput>, String> {
         let requested = requested_cargo_manifest(root)?.ok_or_else(|| {
             format!(
@@ -1096,35 +1093,38 @@ impl BrowseCache {
             })
             .map(|(workspace, _)| workspace.clone())
             .collect::<Vec<_>>();
+        let fresh = if let Some(workspace) = candidates.first() {
+            let cached_tool = self
+                .entries
+                .get(workspace)
+                .and_then(|entry| entry.tool_witness_reuse.clone());
+            match read(&requested, cached_tool.as_ref()) {
+                Ok(read) => Some(read),
+                Err(error) => {
+                    // Cancellation yields no freshness evidence. Keep the
+                    // previous entry for a later request, which must still
+                    // run a fresh Cargo observation before reusing it.
+                    if !error.contains("cancelled") {
+                        for workspace in &candidates {
+                            self.remove_workspace(workspace);
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         for workspace in candidates {
-            let observed = {
-                let entry = self
-                    .entries
-                    .get(&workspace)
-                    .expect("candidate entry remained present during freshness check");
-                observation_witness_for_context(
-                    &workspace,
-                    &entry.metadata_context,
-                    &entry.watched,
-                    entry.tool_witness_reuse.as_ref(),
-                )
-                .and_then(|observed| {
-                    let target_witness = cargo_auto_target_membership_witness(&entry.target_roots)?;
-                    Ok(compose_cargo_input_witness(
-                        observed.digest,
-                        target_witness,
-                        entry.lock_origin_witness,
-                    ))
-                })
-            };
-            // A cancelled witness read says nothing about freshness. Keep the
-            // prior admitted observation and bindings for a later request.
+            let current = fresh
+                .as_ref()
+                .expect("candidate freshness read was performed");
+            let matches = current.is_metadata_authority()
+                && self.entries.get(&workspace).is_some_and(|entry| {
+                    current.workspace_root() == workspace && current.witness() == entry.witness
+                });
             observation_budget()?;
-            if observed.is_ok_and(|observed| {
-                self.entries
-                    .get(&workspace)
-                    .is_some_and(|entry| observed == entry.witness)
-            }) {
+            if matches {
                 self.touch_entry(&workspace);
                 let entry = self
                     .entries
@@ -1140,20 +1140,25 @@ impl BrowseCache {
                 }
                 return Ok(Arc::clone(&entry.input));
             }
-            // A failed or changed witness revokes every binding before a new
-            // exact-manifest metadata observation can be admitted.
+            // Fresh Cargo output or its complete bounded input witness changed;
+            // revoke the old graph before admitting the replacement below.
             self.remove_workspace(&workspace);
         }
 
         let metadata_context = requested.root.clone();
-        let read = read(&requested, None)?;
+        let read = match fresh {
+            Some(read) => read,
+            None => read(&requested, None)?,
+        };
         let witness = read.witness();
+        let workspace = read.workspace_root().to_path_buf();
+        let cacheable = read.is_metadata_authority();
+        let read = read.into_input(&requested)?;
         if !tree_input_proves_requested_manifest(&read.input, &requested, &read.watched) {
             return Err(
                 "Cargo metadata did not admit the exact requested package manifest in its resolved workspace".to_owned(),
             );
         }
-        let workspace = PathBuf::from(&read.input.root);
         let canonical_workspace = workspace
             .canonicalize()
             .map_err(|_| "Cargo metadata returned a missing workspace root".to_owned())?;
@@ -1163,9 +1168,16 @@ impl BrowseCache {
         // Replacing an entry at the same effective root must also revoke its
         // old request bindings, even if it did not prove this request.
         self.remove_workspace(&workspace);
-        let target_roots = read.target_roots;
         let input = Arc::new(read.input);
         let package_rows = source_package_row_index(&input);
+        #[cfg(test)]
+        {
+            self.counters.tree_input_allocations =
+                self.counters.tree_input_allocations.saturating_add(1);
+        }
+        if !cacheable {
+            return Ok(input);
+        }
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
             &metadata_context,
@@ -1175,11 +1187,6 @@ impl BrowseCache {
             &package_rows,
             read.tool_witness_reuse.as_ref(),
         );
-        #[cfg(test)]
-        {
-            self.counters.tree_input_allocations =
-                self.counters.tree_input_allocations.saturating_add(1);
-        }
         if retained_bytes <= MAX_BROWSE_CACHE_BYTES {
             while self.entries.len() >= MAX_BROWSE_CACHED_WORKSPACES
                 || self.cached_bytes.saturating_add(retained_bytes) > MAX_BROWSE_CACHE_BYTES
@@ -1207,8 +1214,6 @@ impl BrowseCache {
                     workspace.clone(),
                     CacheEntry {
                         witness,
-                        lock_origin_witness: read.lock_origin_witness,
-                        target_roots,
                         watched: read.watched,
                         input: Arc::clone(&input),
                         metadata_context,
@@ -2123,9 +2128,8 @@ impl From<(Vec<u8>, String, [u8; 32])> for CargoMetadataRun {
 struct ProjectInputRead {
     input: TreeInput,
     watched: Vec<PathBuf>,
-    target_roots: Vec<PathBuf>,
     file_witness: [u8; 32],
-    target_witness: [u8; 32],
+    metadata_witness: [u8; 32],
     lock_origin_witness: [u8; 32],
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
 }
@@ -2134,9 +2138,54 @@ impl ProjectInputRead {
     fn witness(&self) -> [u8; 32] {
         compose_cargo_input_witness(
             self.file_witness,
-            self.target_witness,
+            self.metadata_witness,
             self.lock_origin_witness,
         )
+    }
+}
+
+enum CargoProjectRead {
+    Metadata(CoherentMetadata),
+    LockfileFallback(ProjectInputRead),
+    #[cfg(test)]
+    TestMetadata(ProjectInputRead),
+}
+
+impl CargoProjectRead {
+    fn witness(&self) -> [u8; 32] {
+        match self {
+            Self::Metadata(metadata) => metadata.witness(),
+            Self::LockfileFallback(input) => input.witness(),
+            #[cfg(test)]
+            Self::TestMetadata(input) => input.witness(),
+        }
+    }
+
+    fn workspace_root(&self) -> &Path {
+        match self {
+            Self::Metadata(metadata) => &metadata.workspace_root,
+            Self::LockfileFallback(input) => Path::new(&input.input.root),
+            #[cfg(test)]
+            Self::TestMetadata(input) => Path::new(&input.input.root),
+        }
+    }
+
+    fn is_metadata_authority(&self) -> bool {
+        match self {
+            Self::Metadata(_) => true,
+            Self::LockfileFallback(_) => false,
+            #[cfg(test)]
+            Self::TestMetadata(_) => true,
+        }
+    }
+
+    fn into_input(self, requested: &RequestedCargoManifest) -> Result<ProjectInputRead, String> {
+        match self {
+            Self::Metadata(metadata) => project_input_from_metadata(requested, metadata),
+            Self::LockfileFallback(input) => Ok(input),
+            #[cfg(test)]
+            Self::TestMetadata(input) => Ok(input),
+        }
     }
 }
 
@@ -2184,14 +2233,20 @@ struct CargoToolSelection {
 struct CoherentMetadata {
     metadata: Vec<u8>,
     host: String,
+    workspace_root: PathBuf,
     input_witness: [u8; 32],
     file_witness: [u8; 32],
-    target_witness: [u8; 32],
+    metadata_witness: [u8; 32],
     lock_origin_witness: [u8; 32],
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
     lockfile: Option<String>,
-    target_roots: Vec<PathBuf>,
     watched: Vec<PathBuf>,
+}
+
+impl CoherentMetadata {
+    fn witness(&self) -> [u8; 32] {
+        self.input_witness
+    }
 }
 
 /// Hashes a bounded, exact Cargo input set through no-follow capabilities.
@@ -3408,42 +3463,21 @@ fn find_executable_on_path(name: &std::ffi::OsStr, workspace: &Path) -> Option<P
         .find(|path| path.is_file())
 }
 
-/// The tree input and its observed paths. The first metadata call discovers
-/// the exact package-manifest set. A second call is bracketed by a bounded
-/// no-follow read-set witness, and its output must equal the discovery pass.
-/// The selected Cargo still opens source paths itself: these checks detect
-/// ordinary concurrent edits but are not an atomic snapshot or a sandbox
-/// against a hostile writer or Cargo executable that mutates and restores a
-/// path between samples.
+/// Reads fresh Cargo metadata even on a cache candidate. The first metadata
+/// call discovers Cargo's exact package and target paths; the second is
+/// bracketed by a bounded no-follow read-set witness. Cache hits compare the
+/// full metadata response and lock origin, so Cargo remains the authority for
+/// membership, target discovery, and dependency resolution.
 fn read_project(
     requested: &RequestedCargoManifest,
     cached_tool: Option<&CargoToolWitnessReuse>,
-) -> Result<ProjectInputRead, String> {
+) -> Result<CargoProjectRead, String> {
     match coherent_metadata(requested, cached_tool) {
-        Ok(observed) => {
-            let input = metadata_input_with_stable_source_witness(
-                &observed.metadata,
-                &observed.host,
-                observed.lockfile.as_deref(),
-                observed.input_witness,
-            )
-            .map_err(|error| error.to_string())?;
-            if !tree_input_proves_requested_manifest(&input, requested, &observed.watched) {
-                return Err(
-                    "Cargo metadata did not admit the exact requested package manifest in its resolved workspace".to_owned(),
-                );
-            }
-            Ok(ProjectInputRead {
-                input,
-                watched: observed.watched,
-                target_roots: observed.target_roots,
-                file_witness: observed.file_witness,
-                target_witness: observed.target_witness,
-                lock_origin_witness: observed.lock_origin_witness,
-                tool_witness_reuse: observed.tool_witness_reuse,
-            })
-        }
+        Ok(observed) => Ok(CargoProjectRead::Metadata(observed)),
         Err(reason) => {
+            if reason.contains("cancelled") {
+                return Err(reason);
+            }
             // A package path may be a member, excluded standalone package, or
             // an explicit member of a non-ancestor workspace. Without Cargo's
             // exact-manifest resolution, an ancestor lockfile is not a safe
@@ -3494,17 +3528,42 @@ fn read_project(
                 &workspace.join("Cargo.lock"),
                 *blake3::hash(lockfile.as_bytes()).as_bytes(),
             );
-            Ok(ProjectInputRead {
+            Ok(CargoProjectRead::LockfileFallback(ProjectInputRead {
                 input,
                 watched,
-                target_roots: Vec::new(),
                 file_witness: observed.digest,
-                target_witness: [0; 32],
+                metadata_witness: [0; 32],
                 lock_origin_witness,
                 tool_witness_reuse: observed.tool_witness_reuse,
-            })
+            }))
         }
     }
+}
+
+fn project_input_from_metadata(
+    requested: &RequestedCargoManifest,
+    observed: CoherentMetadata,
+) -> Result<ProjectInputRead, String> {
+    let input = metadata_input_with_stable_source_witness(
+        &observed.metadata,
+        &observed.host,
+        observed.lockfile.as_deref(),
+        observed.input_witness,
+    )
+    .map_err(|error| error.to_string())?;
+    if !tree_input_proves_requested_manifest(&input, requested, &observed.watched) {
+        return Err(
+            "Cargo metadata did not admit the exact requested package manifest in its resolved workspace".to_owned(),
+        );
+    }
+    Ok(ProjectInputRead {
+        input,
+        watched: observed.watched,
+        file_witness: observed.file_witness,
+        metadata_witness: observed.metadata_witness,
+        lock_origin_witness: observed.lock_origin_witness,
+        tool_witness_reuse: observed.tool_witness_reuse,
+    })
 }
 
 fn coherent_metadata(
@@ -3538,20 +3597,18 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     observation_budget()?;
     let discovery = run_metadata(&requested.manifest)?.into();
     observation_budget()?;
-    let discovery_workspace = metadata_proves_requested_manifest(&discovery.metadata, requested)?;
-    let mut discovery_paths =
-        metadata_observation_paths(&requested.root, &discovery_workspace, &discovery.metadata)?;
+    let discovery_document = CargoMetadataDocument::parse(&discovery.metadata)?;
+    let discovery_workspace = discovery_document.proves_requested_manifest(requested)?;
+    let mut discovery_paths = discovery_document
+        .inputs
+        .observation_paths(&requested.root, &discovery_workspace)?;
     if let Some(lock_path) = &discovery.lock_path_witness {
         add_observed_path(&mut discovery_paths, lock_path)?;
     }
-    let required_manifests = metadata_required_manifests(
-        &discovery.metadata,
-        &requested.manifest,
-        &discovery_workspace,
-    )?;
-    let required_registry_checksums = metadata_required_registry_checksums(&discovery.metadata)?;
-    let target_roots = metadata_target_roots(&discovery.metadata)?;
-    let discovery_target_witness = cargo_auto_target_membership_witness(&target_roots)?;
+    let required_manifests = discovery_document
+        .inputs
+        .required_manifests(&requested.manifest, &discovery_workspace);
+    let required_registry_checksums = discovery_document.inputs.registry_checksums.clone();
     let before = observe(&discovery_workspace, &discovery_paths)?;
     observation_budget()?;
     require_required_manifests_present(&before, &required_manifests)?;
@@ -3571,12 +3628,14 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     {
         return Err("Cargo metadata inputs or tool changed between observation passes".to_owned());
     }
-    let effective_workspace = metadata_proves_requested_manifest(&observed.metadata, requested)?;
+    let observed_document = CargoMetadataDocument::parse(&observed.metadata)?;
+    let effective_workspace = observed_document.proves_requested_manifest(requested)?;
     if effective_workspace != discovery_workspace {
         return Err("Cargo effective workspace changed between observation passes".to_owned());
     }
-    let mut watched =
-        metadata_observation_paths(&requested.root, &effective_workspace, &observed.metadata)?;
+    let mut watched = observed_document
+        .inputs
+        .observation_paths(&requested.root, &effective_workspace)?;
     if let Some(lock_path) = &observed.lock_path_witness {
         add_observed_path(&mut watched, lock_path)?;
     }
@@ -3584,6 +3643,9 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     watched.dedup();
     if watched != discovery_paths {
         return Err("Cargo metadata input set changed during observation".to_owned());
+    }
+    if observed_document != discovery_document {
+        return Err("Cargo metadata file set changed during observation".to_owned());
     }
     let after = observe(&effective_workspace, &watched)?;
     observation_budget()?;
@@ -3595,428 +3657,333 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
             "Cargo manifests, lockfile, configuration, or tools changed during metadata".to_owned(),
         );
     }
-    let target_witness =
-        cargo_auto_target_membership_witness(&metadata_target_roots(&observed.metadata)?)?;
-    if discovery_target_witness != target_witness {
-        return Err("Cargo automatic target directories changed during metadata".to_owned());
-    }
     let lock_origin_witness = lock_origin_witness_for_run(&observed)?;
+    let metadata_witness = cargo_metadata_output_witness(&observed.metadata, &observed.host);
     let input_witness =
-        compose_cargo_input_witness(after.digest, target_witness, lock_origin_witness);
+        compose_cargo_input_witness(after.digest, metadata_witness, lock_origin_witness);
     Ok(CoherentMetadata {
         metadata: observed.metadata,
         host: observed.host,
+        workspace_root: effective_workspace,
         input_witness,
         file_witness: after.digest,
-        target_witness,
+        metadata_witness,
         lock_origin_witness,
         tool_witness_reuse: after.tool_witness_reuse,
         lockfile: observed.lockfile.or(after.lockfile),
-        target_roots,
         watched,
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CargoMetadataDocument {
+    workspace_root: PathBuf,
+    workspace_members: BTreeSet<String>,
+    package_ids: Vec<(String, PathBuf)>,
+    inputs: CargoMetadataInputs,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CargoMetadataInputs {
+    package_manifests: Vec<PathBuf>,
+    registry_checksums: Vec<PathBuf>,
+    target_sources: Vec<PathBuf>,
+    package_roots: Vec<PathBuf>,
+}
+
+impl CargoMetadataDocument {
+    fn parse(metadata: &[u8]) -> Result<Self, String> {
+        if metadata.len() > MAX_METADATA_BYTES {
+            return Err("Cargo metadata exceeded its bounded response size".to_owned());
+        }
+        let value: serde_json::Value = serde_json::from_slice(metadata)
+            .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
+        let packages = value
+            .get("packages")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
+        if packages.len() > MAX_CARGO_METADATA_PACKAGES {
+            return Err("Cargo metadata package set exceeds the observation limit".to_owned());
+        }
+        let workspace_root_text = value
+            .get("workspace_root")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Cargo metadata omitted workspace_root".to_owned())?;
+        let workspace_root = canonical_metadata_workspace(workspace_root_text)?;
+        let members = value
+            .get("workspace_members")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "Cargo metadata has no workspace member array".to_owned())?;
+        if members.len() > MAX_CARGO_METADATA_PACKAGES {
+            return Err("Cargo metadata workspace member set exceeds its limit".to_owned());
+        }
+        let mut workspace_members = BTreeSet::new();
+        let mut package_ids = Vec::with_capacity(packages.len());
+        let mut total_id_bytes = 0_usize;
+        for member in members {
+            observation_budget()?;
+            let id = member
+                .as_str()
+                .ok_or_else(|| "Cargo metadata workspace member id is malformed".to_owned())?;
+            account_metadata_identifier_bytes(&mut total_id_bytes, id)?;
+            if !workspace_members.insert(id.to_owned()) {
+                return Err("Cargo metadata repeated a workspace member id".to_owned());
+            }
+        }
+
+        let mut manifests = BTreeSet::new();
+        let mut checksums = BTreeSet::new();
+        let mut target_sources = BTreeSet::new();
+        let mut package_roots = BTreeSet::new();
+        let mut total_path_bytes = 0_usize;
+        for package in packages {
+            observation_budget()?;
+            let manifest = metadata_path(package, "manifest_path", "Cargo.toml")?;
+            let id = package
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Cargo metadata package omitted id".to_owned())?;
+            account_metadata_identifier_bytes(&mut total_id_bytes, id)?;
+            package_ids.push((id.to_owned(), manifest.clone()));
+            account_metadata_path_bytes(&mut total_path_bytes, &manifest)?;
+            let package_root = manifest
+                .parent()
+                .ok_or_else(|| "Cargo metadata package manifest has no parent".to_owned())?;
+            manifests.insert(manifest.clone());
+            package_roots.insert(package_root.to_path_buf());
+
+            if package
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|source| {
+                    source.starts_with("registry+") || source.starts_with("sparse+")
+                })
+            {
+                checksums.insert(package_root.join(".cargo-checksum.json"));
+            }
+
+            let targets = package
+                .get("targets")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "Cargo metadata package omitted targets".to_owned())?;
+            if targets.len() > MAX_CARGO_METADATA_TARGETS_PER_PACKAGE {
+                return Err("Cargo metadata target set exceeds the observation limit".to_owned());
+            }
+            for target in targets {
+                observation_budget()?;
+                let source = metadata_target_source_path(target)?;
+                account_metadata_path_bytes(&mut total_path_bytes, &source)?;
+                target_sources.insert(source);
+                if manifests.len() + checksums.len() + target_sources.len()
+                    > MAX_CARGO_OBSERVATION_PATHS
+                {
+                    return Err("Cargo metadata input set exceeds the observation limit".to_owned());
+                }
+            }
+        }
+        Ok(Self {
+            workspace_root,
+            workspace_members,
+            package_ids,
+            inputs: CargoMetadataInputs {
+                package_manifests: manifests.into_iter().collect(),
+                registry_checksums: checksums.into_iter().collect(),
+                target_sources: target_sources.into_iter().collect(),
+                package_roots: package_roots.into_iter().collect(),
+            },
+        })
+    }
+
+    fn proves_requested_manifest(
+        &self,
+        requested: &RequestedCargoManifest,
+    ) -> Result<PathBuf, String> {
+        let requested_is_member = self.package_ids.iter().any(|(id, manifest)| {
+            manifest == &requested.manifest && self.workspace_members.contains(id)
+        });
+        if requested.has_package && !requested_is_member {
+            return Err(
+                "Cargo metadata did not admit the exact requested package manifest as a workspace member".to_owned(),
+            );
+        }
+        if requested.has_workspace && self.workspace_root != requested.root {
+            return Err(
+                "Cargo resolved the requested workspace manifest to a different workspace root"
+                    .to_owned(),
+            );
+        }
+        if !requested.has_package && !requested.has_workspace {
+            return Err("requested Cargo manifest declares no project scope".to_owned());
+        }
+        if !requested.has_package && self.workspace_root != requested.root {
+            return Err(
+                "Cargo metadata did not resolve the exact requested virtual workspace root"
+                    .to_owned(),
+            );
+        }
+        Ok(self.workspace_root.clone())
+    }
+}
+
+impl CargoMetadataInputs {
+    fn observation_paths(
+        &self,
+        request_context: &Path,
+        workspace: &Path,
+    ) -> Result<Vec<PathBuf>, String> {
+        let mut paths = basic_input_paths(workspace)?;
+        paths.extend(self.package_manifests.iter().cloned());
+        paths.extend(self.registry_checksums.iter().cloned());
+        // Exact target membership and `src_path` values remain in the complete
+        // Cargo metadata witness. Source contents do not affect this dependency
+        // graph, so avoid reading every target file just to validate the cache.
+        paths.extend(cargo_config_paths(request_context)?);
+        paths.extend(cargo_config_paths(workspace)?);
+        paths.extend(sccache_configuration_paths(request_context)?);
+        paths.extend(sccache_configuration_paths(workspace)?);
+        paths.extend(rustup_selection_paths(request_context)?);
+        paths.extend(rustup_selection_paths(workspace)?);
+        paths.sort();
+        paths.dedup();
+        if paths.len() > MAX_CARGO_OBSERVATION_PATHS {
+            return Err("Cargo metadata input set exceeds the observation limit".to_owned());
+        }
+        Ok(paths)
+    }
+
+    fn required_manifests(&self, requested: &Path, workspace: &Path) -> Vec<PathBuf> {
+        self.package_manifests
+            .iter()
+            .cloned()
+            .chain([requested.to_path_buf(), workspace.join("Cargo.toml")])
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
+fn canonical_metadata_workspace(text: &str) -> Result<PathBuf, String> {
+    if text.len() > 4 * 1024 {
+        return Err("Cargo metadata workspace path exceeds the observation limit".to_owned());
+    }
+    let workspace = PathBuf::from(text);
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|_| "Cargo metadata returned a missing workspace root".to_owned())?;
+    if !workspace.is_absolute()
+        || text.contains("//")
+        || workspace.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        || canonical_workspace != workspace
+    {
+        return Err("Cargo metadata returned a noncanonical workspace root".to_owned());
+    }
+    Ok(workspace)
+}
+
+fn account_metadata_identifier_bytes(total: &mut usize, id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 4 * 1024 {
+        return Err("Cargo metadata package id exceeds the observation limit".to_owned());
+    }
+    *total = total.saturating_add(id.len());
+    if *total > 16 * 1024 * 1024 {
+        return Err("Cargo metadata package ids exceed their byte budget".to_owned());
+    }
+    Ok(())
+}
+
+fn metadata_path(
+    object: &serde_json::Value,
+    field: &str,
+    expected_file_name: &str,
+) -> Result<PathBuf, String> {
+    let text = object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("Cargo metadata omitted {field}"))?;
+    if text.len() > 4 * 1024 {
+        return Err("Cargo metadata path exceeds the observation limit".to_owned());
+    }
+    let path = PathBuf::from(text);
+    if !path.is_absolute()
+        || text.contains("//")
+        || (!expected_file_name.is_empty()
+            && path.file_name().and_then(std::ffi::OsStr::to_str) != Some(expected_file_name))
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(format!("Cargo metadata returned a noncanonical {field}"));
+    }
+    Ok(path)
+}
+
+/// Cargo may report an explicit target whose manifest-relative path crosses
+/// package parents. Keep that exact absolute spelling in the metadata
+/// document; target paths are not opened by this dependency-graph observer.
+fn metadata_target_source_path(target: &serde_json::Value) -> Result<PathBuf, String> {
+    let text = target
+        .get("src_path")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Cargo metadata target omitted src_path".to_owned())?;
+    if text.is_empty()
+        || text.len() > 4 * 1024
+        || text.contains("//")
+        || text.chars().any(char::is_control)
+    {
+        return Err("Cargo metadata target path exceeds the observation limit".to_owned());
+    }
+    let path = PathBuf::from(text);
+    if !path.is_absolute()
+        || path.file_name().is_none()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::CurDir))
+    {
+        return Err("Cargo metadata returned a noncanonical target src_path".to_owned());
+    }
+    Ok(path)
+}
+
+fn account_metadata_path_bytes(total: &mut usize, path: &Path) -> Result<(), String> {
+    *total = total.saturating_add(path.as_os_str().as_encoded_bytes().len());
+    if *total > 16 * 1024 * 1024 {
+        return Err("Cargo metadata paths exceed their byte budget".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn metadata_observation_paths(
     request_context: &Path,
     workspace: &Path,
     metadata: &[u8],
 ) -> Result<Vec<PathBuf>, String> {
-    if metadata.len() > MAX_METADATA_BYTES {
-        return Err("Cargo metadata exceeded its bounded response size".to_owned());
-    }
-    let value: serde_json::Value = serde_json::from_slice(metadata)
-        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
-    let packages = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
-    if packages.len() > 20_000 {
-        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
-    }
-    let mut paths = basic_input_paths(workspace)?;
-    let mut manifest_path_bytes = 0_usize;
-    for package in packages {
-        let manifest = package
-            .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "Cargo metadata package omitted manifest_path".to_owned())?;
-        if manifest.len() > 4 * 1024 {
-            return Err("Cargo metadata manifest path exceeds the observation limit".to_owned());
-        }
-        manifest_path_bytes = manifest_path_bytes.saturating_add(manifest.len());
-        if manifest_path_bytes > 16 * 1024 * 1024 {
-            return Err("Cargo metadata manifest paths exceed their byte budget".to_owned());
-        }
-        let path = PathBuf::from(manifest);
-        if !path.is_absolute()
-            || manifest.contains("//")
-            || path.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.toml")
-            || path.components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::CurDir | std::path::Component::ParentDir
-                )
-            })
-        {
-            return Err("Cargo metadata returned a noncanonical manifest path".to_owned());
-        }
-        paths.push(path);
-        let source = package.get("source").and_then(serde_json::Value::as_str);
-        if source
-            .is_some_and(|source| source.starts_with("registry+") || source.starts_with("sparse+"))
-        {
-            let package_root = path
-                .parent()
-                .ok_or_else(|| "Cargo registry manifest has no package root".to_owned())?;
-            paths.push(package_root.join(".cargo-checksum.json"));
-        }
-    }
-    // Cargo was invoked from the exact requested manifest's directory. Keep
-    // its config search path, and the effective workspace's lock/manifest,
-    // inside the same stable witness even for non-ancestor workspaces.
-    paths.extend(cargo_config_paths(request_context)?);
-    paths.extend(cargo_config_paths(workspace)?);
-    paths.extend(sccache_configuration_paths(request_context)?);
-    paths.extend(sccache_configuration_paths(workspace)?);
-    paths.extend(rustup_selection_paths(request_context)?);
-    paths.extend(rustup_selection_paths(workspace)?);
-    paths.sort();
-    paths.dedup();
-    if paths.len() > MAX_CARGO_OBSERVATION_PATHS {
-        return Err("Cargo metadata input set exceeds the observation limit".to_owned());
-    }
-    Ok(paths)
+    CargoMetadataDocument::parse(metadata)?
+        .inputs
+        .observation_paths(request_context, workspace)
 }
 
-fn metadata_required_registry_checksums(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
-    if metadata.len() > MAX_METADATA_BYTES {
-        return Err("Cargo metadata exceeded its bounded response size".to_owned());
-    }
-    let value: serde_json::Value = serde_json::from_slice(metadata)
-        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
-    let packages = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
-    if packages.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
-        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
-    }
-    let mut checksums = BTreeSet::new();
-    for package in packages {
-        let Some(source) = package.get("source").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        if !source.starts_with("registry+") && !source.starts_with("sparse+") {
-            continue;
-        }
-        let manifest = package
-            .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "Cargo registry package omitted manifest_path".to_owned())?;
-        let manifest = PathBuf::from(manifest);
-        if !manifest.is_absolute()
-            || manifest.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.toml")
-            || manifest.components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::CurDir | std::path::Component::ParentDir
-                )
-            })
-        {
-            return Err("Cargo registry package returned a noncanonical manifest path".to_owned());
-        }
-        let package_root = manifest
-            .parent()
-            .ok_or_else(|| "Cargo registry manifest has no package root".to_owned())?;
-        checksums.insert(package_root.join(".cargo-checksum.json"));
-    }
-    Ok(checksums.into_iter().collect())
+fn metadata_package_roots(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
+    Ok(CargoMetadataDocument::parse(metadata)?.inputs.package_roots)
 }
 
-fn metadata_target_roots(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
-    if metadata.len() > MAX_METADATA_BYTES {
-        return Err("Cargo metadata exceeded its bounded response size".to_owned());
-    }
-    let value: serde_json::Value = serde_json::from_slice(metadata)
-        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
-    let packages = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
-    if packages.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
-        return Err("Cargo metadata package set exceeds the target-root limit".to_owned());
-    }
-    let mut roots = BTreeSet::new();
-    for package in packages {
-        let manifest = package
-            .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "Cargo metadata package omitted manifest_path".to_owned())?;
-        let manifest = PathBuf::from(manifest);
-        if !manifest.is_absolute()
-            || manifest.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.toml")
-            || manifest.components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::CurDir | std::path::Component::ParentDir
-                )
-            })
-        {
-            return Err("Cargo metadata returned a noncanonical target manifest".to_owned());
-        }
-        let root = manifest
-            .parent()
-            .ok_or_else(|| "Cargo metadata package manifest has no parent".to_owned())?;
-        roots.insert(root.to_path_buf());
-    }
-    Ok(roots.into_iter().collect())
-}
-
-/// Captures only Cargo auto-target candidate directories. The bounded
-/// no-follow membership snapshot catches a newly added `src/bin`, example,
-/// test, or benchmark target without reimplementing Cargo's target rules.
-fn cargo_auto_target_membership_witness(roots: &[PathBuf]) -> Result<[u8; 32], String> {
-    if roots.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
-        return Err("Cargo automatic target root set exceeds its limit".to_owned());
-    }
-    if roots.is_empty() {
-        return Ok([0; 32]);
-    }
-    let mut roots = roots.to_vec();
-    roots.sort();
-    roots.dedup();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.cargo-auto-target-directory-membership.v1\0");
-    let mut total_entries = 0_usize;
-    for root in roots {
-        observation_budget()?;
-        if !root.is_absolute()
-            || root.components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::CurDir | std::path::Component::ParentDir
-                )
-            })
-        {
-            return Err("Cargo automatic target root is not a canonical absolute path".to_owned());
-        }
-        let path = root.as_os_str().as_encoded_bytes();
-        hasher.update(&(path.len() as u64).to_le_bytes());
-        hasher.update(path);
-        let directory = match DirectoryCapability::open_read_only_source(&root) {
-            Ok(directory) => directory,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                hasher.update(&[0]);
-                continue;
-            }
-            Err(error) => return Err(format!("cannot hold Cargo target package root: {error}")),
-        };
-        hasher.update(&[1]);
-        let entries = directory
-            .entries(MAX_SOURCE_DIRECTORY_ENTRIES)
-            .map_err(|error| format!("cannot enumerate Cargo target package root: {error}"))?;
-        account_target_entries(&mut total_entries, entries.len())?;
-        for entry in &entries {
-            hash_target_entry(&mut hasher, b".", entry);
-            let name = entry.name.as_encoded_bytes();
-            if name == b"build.rs" && entry.kind != EntryKind::File {
-                return Err("Cargo build.rs is linked or is not a regular file".to_owned());
-            }
-            if name == b"src" {
-                match entry.kind {
-                    EntryKind::Directory => {
-                        let name = entry.name.to_str().ok_or_else(|| {
-                            "Cargo automatic target directory name is not UTF-8".to_owned()
-                        })?;
-                        let src = directory.open_dir(name).map_err(|error| {
-                            format!("cannot open Cargo src target directory safely: {error}")
-                        })?;
-                        scan_src_target_directory(
-                            &src,
-                            b"src",
-                            &mut hasher,
-                            &mut total_entries,
-                            1,
-                        )?;
-                    }
-                    EntryKind::Link | EntryKind::Special => {
-                        return Err("Cargo src target directory is linked or special".to_owned());
-                    }
-                    EntryKind::File => {}
-                }
-            } else if name == b"examples" || name == b"tests" || name == b"benches" {
-                match entry.kind {
-                    EntryKind::Directory => {
-                        let name = entry.name.to_str().ok_or_else(|| {
-                            "Cargo automatic target directory name is not UTF-8".to_owned()
-                        })?;
-                        let child = directory.open_dir(name).map_err(|error| {
-                            format!("cannot open Cargo automatic target directory safely: {error}")
-                        })?;
-                        scan_target_directory(
-                            &child,
-                            name.as_bytes(),
-                            &mut hasher,
-                            &mut total_entries,
-                            1,
-                        )?;
-                    }
-                    EntryKind::Link | EntryKind::Special => {
-                        return Err(
-                            "Cargo automatic target directory is linked or special".to_owned()
-                        );
-                    }
-                    EntryKind::File => {}
-                }
-            }
-        }
-    }
-    Ok(*hasher.finalize().as_bytes())
-}
-
-fn account_target_entries(total: &mut usize, count: usize) -> Result<(), String> {
-    *total = total.saturating_add(count);
-    if *total > MAX_CARGO_TARGET_MEMBERSHIP_ENTRIES {
-        return Err("Cargo automatic target directory scan exceeded its entry limit".to_owned());
-    }
-    observation_budget()
-}
-
-fn hash_target_entry(
-    hasher: &mut blake3::Hasher,
-    parent: &[u8],
-    entry: &backend_platform::directory::DirectoryEntry,
-) {
-    let name = entry.name.as_encoded_bytes();
-    hasher.update(&(parent.len() as u64).to_le_bytes());
-    hasher.update(parent);
-    hasher.update(&(name.len() as u64).to_le_bytes());
-    hasher.update(name);
-    hasher.update(&[match entry.kind {
-        EntryKind::File => 1,
-        EntryKind::Directory => 2,
-        EntryKind::Link => 3,
-        EntryKind::Special => 4,
-    }]);
-}
-
-fn scan_src_target_directory(
-    directory: &DirectoryCapability,
-    prefix: &[u8],
-    hasher: &mut blake3::Hasher,
-    total_entries: &mut usize,
-    depth: usize,
-) -> Result<(), String> {
-    if depth > MAX_CARGO_TARGET_MEMBERSHIP_DEPTH {
-        return Err("Cargo src/bin target scan exceeded its depth limit".to_owned());
-    }
-    let entries = directory
-        .entries(MAX_SOURCE_DIRECTORY_ENTRIES)
-        .map_err(|error| format!("cannot enumerate Cargo src target directory: {error}"))?;
-    account_target_entries(total_entries, entries.len())?;
-    for entry in &entries {
-        hash_target_entry(hasher, prefix, entry);
-        let name = entry.name.as_encoded_bytes();
-        if (name == b"main.rs" || name == b"lib.rs") && entry.kind != EntryKind::File {
-            return Err("Cargo src target file is linked or is not regular".to_owned());
-        }
-        if name == b"bin" {
-            match entry.kind {
-                EntryKind::Directory => {
-                    let name = entry.name.to_str().ok_or_else(|| {
-                        "Cargo src/bin target directory name is not UTF-8".to_owned()
-                    })?;
-                    let child = directory.open_dir(name).map_err(|error| {
-                        format!("cannot open Cargo src/bin directory safely: {error}")
-                    })?;
-                    let mut child_prefix = prefix.to_vec();
-                    child_prefix.extend_from_slice(b"/bin");
-                    scan_target_directory(&child, &child_prefix, hasher, total_entries, depth + 1)?;
-                }
-                EntryKind::Link | EntryKind::Special => {
-                    return Err("Cargo src/bin directory is linked or special".to_owned());
-                }
-                EntryKind::File => {}
-            }
-        }
-    }
-    Ok(())
-}
-
-fn scan_target_directory(
-    directory: &DirectoryCapability,
-    prefix: &[u8],
-    hasher: &mut blake3::Hasher,
-    total_entries: &mut usize,
-    depth: usize,
-) -> Result<(), String> {
-    if depth > MAX_CARGO_TARGET_MEMBERSHIP_DEPTH {
-        return Err("Cargo automatic target scan exceeded its depth limit".to_owned());
-    }
-    let entries = directory
-        .entries(MAX_SOURCE_DIRECTORY_ENTRIES)
-        .map_err(|error| format!("cannot enumerate Cargo automatic target directory: {error}"))?;
-    account_target_entries(total_entries, entries.len())?;
-    for entry in &entries {
-        hash_target_entry(hasher, prefix, entry);
-        match entry.kind {
-            EntryKind::Directory => {
-                let name = entry.name.to_str().ok_or_else(|| {
-                    "Cargo automatic target subdirectory name is not UTF-8".to_owned()
-                })?;
-                let child = directory.open_dir(name).map_err(|error| {
-                    format!("cannot open Cargo automatic target subdirectory safely: {error}")
-                })?;
-                let mut child_prefix = prefix.to_vec();
-                child_prefix.push(b'/');
-                child_prefix.extend_from_slice(entry.name.as_encoded_bytes());
-                scan_target_directory(&child, &child_prefix, hasher, total_entries, depth + 1)?;
-            }
-            EntryKind::Link | EntryKind::Special => {
-                return Err(
-                    "Cargo automatic target tree contains a link or special file".to_owned(),
-                );
-            }
-            EntryKind::File => {}
-        }
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn metadata_required_manifests(
     metadata: &[u8],
     requested_manifest: &Path,
     workspace: &Path,
 ) -> Result<Vec<PathBuf>, String> {
-    let value: serde_json::Value = serde_json::from_slice(metadata)
-        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
-    let packages = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
-    if packages.len() > 20_000 {
-        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
-    }
-    let mut required = BTreeSet::new();
-    let mut total_path_bytes = 0_usize;
-    for package in packages {
-        let manifest = package
-            .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "Cargo metadata package omitted manifest_path".to_owned())?;
-        if manifest.len() > 4 * 1024 {
-            return Err("Cargo metadata manifest path exceeds the observation limit".to_owned());
-        }
-        total_path_bytes = total_path_bytes.saturating_add(manifest.len());
-        if total_path_bytes > 16 * 1024 * 1024 {
-            return Err("Cargo metadata manifest paths exceed their byte budget".to_owned());
-        }
-        required.insert(PathBuf::from(manifest));
-    }
-    required.insert(requested_manifest.to_path_buf());
-    required.insert(workspace.join("Cargo.toml"));
-    Ok(required.into_iter().collect())
+    Ok(CargoMetadataDocument::parse(metadata)?
+        .inputs
+        .required_manifests(requested_manifest, workspace))
 }
 
 fn require_required_manifests_present(
@@ -4124,14 +4091,24 @@ fn cargo_lock_origin_witness(
 
 fn compose_cargo_input_witness(
     file_witness: [u8; 32],
-    target_witness: [u8; 32],
+    metadata_witness: [u8; 32],
     lock_origin_witness: [u8; 32],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.cargo-source-input-composition.v1\0");
+    hasher.update(b"backend.cargo-metadata-input-composition.v2\0");
     hasher.update(&file_witness);
-    hasher.update(&target_witness);
+    hasher.update(&metadata_witness);
     hasher.update(&lock_origin_witness);
+    *hasher.finalize().as_bytes()
+}
+
+fn cargo_metadata_output_witness(metadata: &[u8], host: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-metadata-output.v1\0");
+    hasher.update(&(host.len() as u64).to_le_bytes());
+    hasher.update(host.as_bytes());
+    hasher.update(&(metadata.len() as u64).to_le_bytes());
+    hasher.update(metadata);
     *hasher.finalize().as_bytes()
 }
 
@@ -4461,81 +4438,7 @@ fn metadata_proves_requested_manifest(
     metadata: &[u8],
     requested: &RequestedCargoManifest,
 ) -> Result<PathBuf, String> {
-    if metadata.len() > MAX_METADATA_BYTES {
-        return Err("Cargo metadata exceeded its bounded response size".to_owned());
-    }
-    let value: serde_json::Value = serde_json::from_slice(metadata)
-        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
-    let workspace_text = value
-        .get("workspace_root")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "Cargo metadata omitted workspace_root".to_owned())?;
-    let workspace = PathBuf::from(workspace_text);
-    let canonical_workspace = workspace
-        .canonicalize()
-        .map_err(|_| "Cargo metadata returned a missing workspace root".to_owned())?;
-    if !workspace.is_absolute()
-        || workspace_text.contains("//")
-        || workspace.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-        || canonical_workspace != workspace
-    {
-        return Err("Cargo metadata returned a noncanonical workspace root".to_owned());
-    }
-
-    let packages = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
-    if packages.len() > 20_000 {
-        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
-    }
-    let members = value
-        .get("workspace_members")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Cargo metadata has no workspace member array".to_owned())?;
-    if members.len() > 20_000 {
-        return Err("Cargo metadata workspace member set exceeds the observation limit".to_owned());
-    }
-    let requested_manifest = requested
-        .manifest
-        .to_str()
-        .ok_or_else(|| "requested Cargo manifest path is not UTF-8".to_owned())?;
-    let requested_is_member = packages.iter().any(|package| {
-        package
-            .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
-            == Some(requested_manifest)
-            && package
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| members.iter().any(|member| member.as_str() == Some(id)))
-    });
-
-    if requested.has_package && !requested_is_member {
-        return Err(
-            "Cargo metadata did not admit the exact requested package manifest as a workspace member".to_owned(),
-        );
-    }
-    if requested.has_workspace && workspace != requested.root {
-        return Err(
-            "Cargo resolved the requested workspace manifest to a different workspace root"
-                .to_owned(),
-        );
-    }
-    if !requested.has_package && !requested.has_workspace {
-        return Err("requested Cargo manifest declares no project scope".to_owned());
-    }
-    if !requested.has_package && workspace != requested.root {
-        return Err(
-            "Cargo metadata did not resolve the exact requested virtual workspace root".to_owned(),
-        );
-    }
-    Ok(workspace)
+    CargoMetadataDocument::parse(metadata)?.proves_requested_manifest(requested)
 }
 
 fn tree_input_proves_requested_manifest(
@@ -4603,9 +4506,9 @@ impl CargoMetadataResolutionSession {
     /// Runs Cargo for the exact requested manifest. A missing source lock is
     /// recognized only from Cargo's own `--locked` diagnostic; the only
     /// unlocked full metadata pass is redirected by CLI config to a private
-    /// RAII directory, whose lock is then proved with `--locked`. The stable
-    /// CLI-config behavior is supported only for Cargo 1.97 or newer and was
-    /// exercised against the pinned 1.97.1 binary. Cargo remains a trusted
+    /// RAII directory, whose lock is then proved with `--locked`. Before that
+    /// user-source write attempt, the selected executable must pass a real
+    /// private-fixture precedence and replay probe. Cargo remains a trusted
     /// executable in this design; path checks are not a process sandbox.
     fn run(
         &mut self,
@@ -4737,13 +4640,18 @@ impl CargoMetadataResolutionSession {
                             return Err("Cargo reported a missing lockfile that was present before metadata".to_owned());
                         }
                     }
-                    if !cargo_supports_resolver_lockfile_path(&version)? {
-                        return Err(format!(
-                            "{error}; selected Cargo does not support stable private lockfile redirection"
-                        ));
-                    }
+                    verify_private_cargo_lockfile_redirect(
+                        &cargo,
+                        &selection_before,
+                        &host,
+                    )
+                    .map_err(|probe| {
+                        format!(
+                            "{error}; selected Cargo did not prove safe private lockfile redirection: {probe}"
+                        )
+                    })?;
                     let mut source_roots = vec![requested.root.clone(), no_deps_workspace.clone()];
-                    source_roots.extend(metadata_target_roots(&no_deps)?);
+                    source_roots.extend(metadata_package_roots(&no_deps)?);
                     let (directory, private_directory) =
                         create_private_cargo_lock_directory(&source_roots)?;
                     let private_path = private_directory.join("Cargo.lock");
@@ -5022,7 +4930,7 @@ fn cargo_lockfile_path_config(lockfile: &Path) -> Result<String, String> {
 fn create_private_cargo_lock_directory(
     source_roots: &[PathBuf],
 ) -> Result<(tempfile::TempDir, PathBuf), String> {
-    if source_roots.len() > MAX_CARGO_TARGET_MEMBERSHIP_ROOTS {
+    if source_roots.len() > MAX_CARGO_METADATA_PACKAGES {
         return Err("Cargo source-root set exceeds the private-lock limit".to_owned());
     }
     let mut canonical_roots = Vec::with_capacity(source_roots.len());
@@ -5114,31 +5022,141 @@ fn missing_cargo_lockfile_path(error: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-fn cargo_supports_resolver_lockfile_path(version_output: &[u8]) -> Result<bool, String> {
-    let version = String::from_utf8_lossy(version_output);
-    let release = version
-        .lines()
-        .find_map(|line| line.strip_prefix("cargo "))
-        .and_then(|line| line.split_whitespace().next())
-        .ok_or_else(|| "selected Cargo returned no parseable release version".to_owned())?;
-    let mut components = release.split('.');
-    let major = components
-        .next()
-        .and_then(|component| component.parse::<u64>().ok())
-        .ok_or_else(|| "selected Cargo returned an invalid major version".to_owned())?;
-    let minor = components
-        .next()
-        .and_then(|component| component.parse::<u64>().ok())
-        .ok_or_else(|| "selected Cargo returned an invalid minor version".to_owned())?;
-    let _patch = components
-        .next()
-        .and_then(|component| component.split(['-', '+']).next())
-        .and_then(|component| component.parse::<u64>().ok())
-        .ok_or_else(|| "selected Cargo returned an invalid patch version".to_owned())?;
-    if components.next().is_some() {
-        return Err("selected Cargo returned an invalid release version".to_owned());
+/// Proves the selected Cargo's CLI lockfile redirect in an isolated fixture
+/// before allowing any unlocked metadata command against the requested source.
+/// The fixture deliberately conflicts at project-config and environment
+/// priority, then requires both unlocked generation and a locked replay to
+/// touch only the private CLI-selected lockfile.
+fn verify_private_cargo_lockfile_redirect(
+    cargo: &Path,
+    selection: &CargoToolSelection,
+    host: &str,
+) -> Result<(), String> {
+    let (directory, private_root) = create_private_cargo_lock_directory(&[])?;
+    let temporary_root = directory.path().to_path_buf();
+    let workspace = temporary_root.join("probe-workspace");
+    let config_dir = workspace.join(".cargo");
+    let cli_lock_directory = private_root.join("cli-lock");
+    let environment_lock = private_root.join("environment-sentinel/Cargo.lock");
+    let config_lock = private_root.join("config-sentinel/Cargo.lock");
+    let cli_lock = cli_lock_directory.join("Cargo.lock");
+    std::fs::create_dir_all(workspace.join("src"))
+        .map_err(|error| format!("cannot create Cargo lockfile capability fixture: {error}"))?;
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|error| format!("cannot create Cargo capability config: {error}"))?;
+    std::fs::create_dir_all(cli_lock_directory)
+        .map_err(|error| format!("cannot create private CLI lock directory: {error}"))?;
+    std::fs::create_dir_all(environment_lock.parent().expect("sentinel parent"))
+        .map_err(|error| format!("cannot create environment sentinel directory: {error}"))?;
+    std::fs::create_dir_all(config_lock.parent().expect("sentinel parent"))
+        .map_err(|error| format!("cannot create config sentinel directory: {error}"))?;
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve Cargo capability fixture: {error}"))?;
+    let manifest = workspace.join("Cargo.toml");
+    let config_lock_value = serde_json::to_string(
+        config_lock
+            .to_str()
+            .ok_or_else(|| "Cargo config sentinel path is not UTF-8".to_owned())?,
+    )
+    .map_err(|error| format!("cannot encode Cargo config sentinel: {error}"))?;
+    std::fs::write(
+        &manifest,
+        "[package]\nname = \"cargo-lockfile-capability-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .map_err(|error| format!("cannot write Cargo capability manifest: {error}"))?;
+    std::fs::write(workspace.join("src/lib.rs"), "pub fn probe() {}\n")
+        .map_err(|error| format!("cannot write Cargo capability source: {error}"))?;
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("[resolver]\nlockfile-path = {config_lock_value}\n"),
+    )
+    .map_err(|error| format!("cannot write Cargo capability config: {error}"))?;
+
+    let cli_config = cargo_lockfile_path_config(&cli_lock)?;
+    let manifest_text = manifest
+        .to_str()
+        .ok_or_else(|| "Cargo capability manifest path is not UTF-8".to_owned())?;
+    let mut unlocked_arguments = vec![
+        "--config".to_owned(),
+        cli_config.clone(),
+        "metadata".to_owned(),
+        "--offline".to_owned(),
+        "--format-version".to_owned(),
+        "1".to_owned(),
+        "--filter-platform".to_owned(),
+        host.to_owned(),
+        "--manifest-path".to_owned(),
+        manifest_text.to_owned(),
+    ];
+    let environment_overrides = [(
+        std::ffi::OsString::from("CARGO_RESOLVER_LOCKFILE_PATH"),
+        environment_lock.as_os_str().to_os_string(),
+    )];
+    let unlocked_refs = unlocked_arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let unlocked = run_with_default_rustc_and_overrides(
+        cargo,
+        &workspace,
+        &unlocked_refs,
+        MAX_METADATA_BYTES,
+        selection
+            .inject_default_rustc
+            .then_some(selection.rustc.as_path()),
+        &environment_overrides,
+    )
+    .map_err(|error| format!("private redirect fixture resolution failed: {error}"))?;
+    let (private_lock, private_digest) = read_required_cargo_lockfile(&cli_lock)
+        .map_err(|error| format!("CLI-selected lockfile was not generated: {error}"))?;
+    if workspace.join("Cargo.lock").exists() || environment_lock.exists() || config_lock.exists() {
+        return Err(
+            "Cargo wrote a source, environment, or project-config sentinel lock".to_owned(),
+        );
     }
-    Ok(major > 1 || (major == 1 && minor >= 97))
+    let requested = RequestedCargoManifest {
+        root: workspace.clone(),
+        manifest: manifest.clone(),
+        has_package: true,
+        has_workspace: false,
+    };
+    metadata_proves_requested_manifest(&unlocked, &requested)?;
+
+    unlocked_arguments.insert(4, "--locked".to_owned());
+    let locked_refs = unlocked_arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let locked = run_with_default_rustc_and_overrides(
+        cargo,
+        &workspace,
+        &locked_refs,
+        MAX_METADATA_BYTES,
+        selection
+            .inject_default_rustc
+            .then_some(selection.rustc.as_path()),
+        &environment_overrides,
+    )
+    .map_err(|error| format!("private redirect locked replay failed: {error}"))?;
+    let (replayed_lock, replayed_digest) = read_required_cargo_lockfile(&cli_lock)
+        .map_err(|error| format!("CLI-selected lockfile disappeared on replay: {error}"))?;
+    if locked != unlocked || replayed_lock != private_lock || replayed_digest != private_digest {
+        return Err("CLI-selected lockfile did not reproduce the same Cargo metadata".to_owned());
+    }
+    if workspace.join("Cargo.lock").exists() || environment_lock.exists() || config_lock.exists() {
+        return Err(
+            "Cargo touched a source, environment, or project-config sentinel lock".to_owned(),
+        );
+    }
+
+    directory
+        .close()
+        .map_err(|error| format!("cannot remove Cargo lockfile capability fixture: {error}"))?;
+    if temporary_root.exists() {
+        return Err("Cargo lockfile capability fixture was not removed".to_owned());
+    }
+    Ok(())
 }
 
 /// Resolves only the lockfile override that Cargo successfully used. An
@@ -5285,6 +5303,17 @@ fn run_with_default_rustc(
     maximum: usize,
     default_rustc: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
+    run_with_default_rustc_and_overrides(program, directory, arguments, maximum, default_rustc, &[])
+}
+
+fn run_with_default_rustc_and_overrides(
+    program: &Path,
+    directory: &Path,
+    arguments: &[&str],
+    maximum: usize,
+    default_rustc: Option<&Path>,
+    environment_overrides: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<Vec<u8>, String> {
     observation_budget()?;
     let started = Instant::now();
     let deadline = observation_deadline().map_or(started + CARGO_DEADLINE, |deadline| {
@@ -5295,6 +5324,14 @@ fn run_with_default_rustc(
     let cancelled = control
         .as_ref()
         .map_or(&never_cancel, |control| &control.cancelled);
+    let mut overrides = default_rustc
+        .map(|rustc| vec![("RUSTC".into(), Some(rustc.as_os_str().to_os_string()))])
+        .unwrap_or_default();
+    overrides.extend(
+        environment_overrides
+            .iter()
+            .map(|(name, value)| (name.clone(), Some(value.clone()))),
+    );
     let command = CaptureCommand {
         program: program.as_os_str().to_os_string(),
         args: arguments
@@ -5305,9 +5342,7 @@ fn run_with_default_rustc(
         environment: CaptureEnvironment::Inherit,
         // Cargo's selected compiler has already been resolved and witnessed.
         // Override only when no environment or Cargo config selected one.
-        overrides: default_rustc
-            .map(|rustc| vec![("RUSTC".into(), Some(rustc.as_os_str().to_os_string()))])
-            .unwrap_or_default(),
+        overrides,
     };
     let output = child_output::capture(
         &command,
@@ -5396,6 +5431,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cancelled_private_resolution_releases_its_ephemeral_lock_directory() {
+        let (directory, private_root) =
+            create_private_cargo_lock_directory(&[]).expect("private lock directory");
+        let private_root = private_root.to_path_buf();
+        let private_lock = private_root.join("Cargo.lock");
+        std::fs::write(&private_lock, "version = 4\n").expect("private generated lock");
+
+        let control = Arc::new(ObservationControl::new());
+        let cancelling = Arc::clone(&control);
+        let trigger = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancelling.cancel();
+        });
+        let result = with_observation_control(control, || {
+            run(
+                Path::new("/bin/sh"),
+                &private_root,
+                &["-c", "sleep 10"],
+                1024,
+            )
+        });
+        trigger.join().expect("cancellation trigger");
+        assert!(
+            result.is_err_and(|error| error.contains("cancelled")),
+            "the bounded resolver must stop on cancellation"
+        );
+
+        directory
+            .close()
+            .expect("remove cancelled resolver's private directory");
+        assert!(
+            !private_root.exists(),
+            "the ephemeral generated lock and its directory must be cleaned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     #[ignore = "native child fixture; invoked by the bounded capture test"]
     fn blocked_cargo_capture_fixture() {
         let child = std::process::Command::new(std::env::current_exe().expect("test executable"))
@@ -5473,21 +5546,11 @@ mod tests {
         file_witness: [u8; 32],
         tool_witness_reuse: Option<CargoToolWitnessReuse>,
     ) -> ProjectInputRead {
-        let target_roots = input
-            .packages
-            .iter()
-            .filter_map(|package| package.source_root.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let target_witness = cargo_auto_target_membership_witness(&target_roots)
-            .expect("test target membership witness");
         ProjectInputRead {
             input,
             watched,
-            target_roots,
             file_witness,
-            target_witness,
+            metadata_witness: [0; 32],
             lock_origin_witness: [0; 32],
             tool_witness_reuse,
         }
@@ -5500,15 +5563,6 @@ mod tests {
         metadata_context: &Path,
     ) {
         let workspace = PathBuf::from(&input.root);
-        let target_roots = input
-            .packages
-            .iter()
-            .filter_map(|package| package.source_root.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let target_witness = cargo_auto_target_membership_witness(&target_roots)
-            .expect("fixture target membership witness");
         let lock_origin_witness = [0; 32];
         let input = Arc::new(input);
         let package_rows = source_package_row_index(&input);
@@ -5516,8 +5570,7 @@ mod tests {
             observation_witness_for_context(&workspace, metadata_context, &watched, None)
                 .expect("fixture observation witness")
                 .digest;
-        let witness =
-            compose_cargo_input_witness(file_witness, target_witness, lock_origin_witness);
+        let witness = compose_cargo_input_witness(file_witness, [0; 32], lock_origin_witness);
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
             &metadata_context.to_path_buf(),
@@ -5533,8 +5586,6 @@ mod tests {
             workspace,
             CacheEntry {
                 witness,
-                lock_origin_witness,
-                target_roots,
                 watched,
                 input,
                 metadata_context: metadata_context.to_path_buf(),
@@ -5628,9 +5679,28 @@ mod tests {
         let mut cache = BrowseCache::default();
         plant_fixture_cache_entry(&mut cache, workspace_tree, watched, &member);
 
+        let fresh_member_watched = vec![
+            workspace.join("Cargo.lock"),
+            workspace.join("Cargo.toml"),
+            member.join("Cargo.toml"),
+        ];
         let reused_member = cache
-            .input_with_read_project(&member, |_requested, _cached| {
-                panic!("fresh metadata membership should reuse this exact member request")
+            .input_with_read_project(&member, |requested, _cached| {
+                let input = fixture_member_input(&workspace, &member, "member 0.1.0 (fixture)");
+                let file_witness = observation_witness_for_context(
+                    &workspace,
+                    &requested.root,
+                    &fresh_member_watched,
+                    None,
+                )
+                .expect("fresh exact-manifest observation")
+                .digest;
+                Ok(CargoProjectRead::TestMetadata(project_input_read_for_test(
+                    input,
+                    fresh_member_watched.clone(),
+                    file_witness,
+                    None,
+                )))
             })
             .expect("fresh member cache hit");
         assert_eq!(reused_member.root, workspace.to_string_lossy().into_owned());
@@ -5644,7 +5714,7 @@ mod tests {
                 let metadata = serde_json::to_vec(&serde_json::json!({
                     "workspace_root": excluded.clone(),
                     "workspace_members": [id],
-                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone() }]
+                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
                 }))
                 .expect("standalone Cargo-shaped metadata");
                 assert_eq!(
@@ -5659,7 +5729,9 @@ mod tests {
                     observation_witness_for_context(&excluded, &requested.root, &watched, None)
                         .expect("standalone observation")
                         .digest;
-                Ok(project_input_read_for_test(input, watched, witness, None))
+                Ok(CargoProjectRead::TestMetadata(project_input_read_for_test(
+                    input, watched, witness, None,
+                )))
             })
             .expect("standalone package is resolved from its own exact manifest");
 
@@ -5717,12 +5789,12 @@ mod tests {
                 let witness = observation_witness_for_context(&workspace, &member, &watched, None)
                     .expect("member-context observation")
                     .digest;
-                Ok(project_input_read_for_test(
+                Ok(CargoProjectRead::TestMetadata(project_input_read_for_test(
                     input,
                     watched.clone(),
                     witness,
                     None,
-                ))
+                )))
             })
             .expect("member context must be resolved independently");
 
@@ -5791,7 +5863,7 @@ mod tests {
                 let metadata = serde_json::to_vec(&serde_json::json!({
                     "workspace_root": external.clone(),
                     "workspace_members": [id],
-                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone() }]
+                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
                 }))
                 .expect("Cargo-shaped replacement metadata");
                 assert_eq!(
@@ -5809,7 +5881,9 @@ mod tests {
                     observation_witness_for_context(&external, &requested.root, &watched, None)
                         .expect("new workspace witness")
                         .digest;
-                Ok(project_input_read_for_test(input, watched, witness, None))
+                Ok(CargoProjectRead::TestMetadata(project_input_read_for_test(
+                    input, watched, witness, None,
+                )))
             })
             .expect("replacement manifest resolves through Cargo metadata");
 
@@ -5869,7 +5943,7 @@ mod tests {
         let metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),
             "workspace_members": [id],
-            "packages": [{ "id": id, "manifest_path": requested.manifest.clone() }]
+            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
         }))
         .expect("Cargo-shaped metadata");
         // Cargo's metadata is the authority for glob and default-member
@@ -5937,7 +6011,7 @@ mod tests {
         let metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),
             "workspace_members": [id],
-            "packages": [{ "id": id, "manifest_path": requested.manifest.clone() }]
+            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
         }))
         .expect("Cargo-shaped metadata");
         assert_eq!(
@@ -5950,7 +6024,7 @@ mod tests {
         let excluded_metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),
             "workspace_members": [],
-            "packages": [{ "id": id, "manifest_path": requested.manifest.clone() }]
+            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
         }))
         .expect("nonmember Cargo-shaped metadata");
         assert!(
@@ -5991,20 +6065,6 @@ mod tests {
             "cargo metadata failed: error: cannot create the lock file relative/Cargo.lock because --locked was passed to prevent this"
         )
         .is_none());
-
-        assert!(
-            cargo_supports_resolver_lockfile_path(b"cargo 1.97.1 (hash)\n")
-                .expect("current release parses")
-        );
-        assert!(
-            cargo_supports_resolver_lockfile_path(b"cargo 1.97.0-nightly (hash)\n")
-                .expect("nightly release parses")
-        );
-        assert!(
-            !cargo_supports_resolver_lockfile_path(b"cargo 1.96.9 (hash)\n")
-                .expect("older release parses")
-        );
-        assert!(cargo_supports_resolver_lockfile_path(b"cargo 1.97.invalid (hash)\n").is_err());
     }
 
     #[test]
@@ -6071,44 +6131,51 @@ mod tests {
     }
 
     #[test]
-    fn selected_registry_checksum_and_target_membership_are_witnessed() {
+    fn registry_checksums_are_observed_and_target_paths_are_in_metadata_witness() {
         let scratch = scratch("backend-cargo-metadata-input-membership");
+        let workspace = scratch.0.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("fixture workspace");
+        let workspace = workspace
+            .canonicalize()
+            .expect("canonical fixture workspace");
         let registry_manifest = scratch.0.join("registry/serde/Cargo.toml");
-        let local_manifest = scratch.0.join("workspace/local/Cargo.toml");
+        let local_manifest = workspace.join("local/Cargo.toml");
+        let outside_target = workspace.join("local/../../external/custom-main.rs");
         let metadata = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace.clone(),
+            "workspace_members": ["local 0.1.0 (fixture)"],
             "packages": [
                 {
+                    "id": "serde 1.0.0 (registry)",
                     "source": "registry+https://github.com/rust-lang/crates.io-index",
                     "manifest_path": registry_manifest,
+                    "targets": []
                 },
-                {"source": null, "manifest_path": local_manifest}
+                {
+                    "id": "local 0.1.0 (fixture)",
+                    "source": null,
+                    "manifest_path": local_manifest,
+                    "targets": [{ "src_path": outside_target, "kind": ["bin"] }]
+                }
             ]
         }))
         .expect("metadata package rows");
+        let document = CargoMetadataDocument::parse(&metadata).expect("bounded metadata inputs");
+        let inputs = &document.inputs;
         assert_eq!(
-            metadata_required_registry_checksums(&metadata).expect("registry checksum set"),
+            inputs.registry_checksums,
             [scratch.0.join("registry/serde/.cargo-checksum.json")]
         );
-
-        let package = scratch.0.join("workspace/local");
-        std::fs::create_dir_all(package.join("src")).expect("package src");
-        std::fs::write(package.join("Cargo.toml"), "[package]\n").expect("package manifest");
-        std::fs::write(package.join("src/lib.rs"), "pub fn local() {}\n").expect("lib source");
-        let package = package.canonicalize().expect("canonical package root");
-        let before = cargo_auto_target_membership_witness(std::slice::from_ref(&package))
-            .expect("initial automatic target membership");
-        std::fs::create_dir_all(package.join("src/bin")).expect("src/bin");
-        std::fs::write(package.join("src/bin/tool.rs"), "fn main() {}\n").expect("new target");
-        let after = cargo_auto_target_membership_witness(std::slice::from_ref(&package))
-            .expect("updated automatic target membership");
-        assert_ne!(
-            before, after,
-            "new auto-target names invalidate warm membership"
-        );
+        assert_eq!(inputs.target_sources, [outside_target.clone()]);
+        let observed = inputs
+            .observation_paths(&scratch.0, &workspace)
+            .expect("bounded metadata observation paths");
+        assert!(observed.iter().any(|path| path.ends_with("Cargo.toml")));
+        assert!(!observed.contains(&outside_target));
 
         let lock_bytes = b"version = 4\n";
         let digest = *blake3::hash(lock_bytes).as_bytes();
-        let path = package.join("Cargo.lock");
+        let path = scratch.0.join("workspace/Cargo.lock");
         let observed = cargo_lock_origin_witness(CargoMetadataLockOrigin::Observed, &path, digest);
         let ephemeral = cargo_lock_origin_witness(
             CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1,
@@ -6123,20 +6190,235 @@ mod tests {
             compose_cargo_input_witness([1; 32], [2; 32], observed),
             compose_cargo_input_witness([1; 32], [2; 32], ephemeral)
         );
+        let first_output = cargo_metadata_output_witness(&metadata, "fixture-host");
+        let mut updated_metadata: serde_json::Value =
+            serde_json::from_slice(&metadata).expect("metadata json");
+        updated_metadata["packages"][1]["targets"][0]["src_path"] = serde_json::Value::String(
+            scratch
+                .0
+                .join("external/updated-main.rs")
+                .display()
+                .to_string(),
+        );
+        let second_output = cargo_metadata_output_witness(
+            &serde_json::to_vec(&updated_metadata).expect("updated metadata"),
+            "fixture-host",
+        );
+        assert_ne!(
+            first_output, second_output,
+            "Cargo target rows are part of the graph witness"
+        );
+        assert_ne!(
+            cargo_metadata_output_witness(&metadata, "fixture-host"),
+            cargo_metadata_output_witness(&metadata, "updated-host"),
+            "the Cargo host selection is part of the metadata witness"
+        );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn automatic_target_membership_refuses_linked_candidate_directories() {
-        let scratch = scratch("backend-cargo-target-link-refusal");
-        let package = scratch.0.join("package");
-        let outside = scratch.0.join("outside");
-        std::fs::create_dir_all(&package).expect("package root");
-        std::fs::create_dir_all(&outside).expect("outside directory");
-        std::os::unix::fs::symlink(&outside, package.join("examples"))
-            .expect("linked Cargo auto-target directory");
-        let package = package.canonicalize().expect("canonical package");
-        assert!(cargo_auto_target_membership_witness(&[package]).is_err());
+    fn warm_cache_rejects_changed_registry_git_and_patch_resolution_rows() {
+        let scratch = scratch("backend-browse-registry-git-refresh");
+        let root = scratch.0.join("workspace/app");
+        std::fs::create_dir_all(&root).expect("app directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"cache-root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("app manifest");
+        std::fs::write(root.join("Cargo.lock"), "version = 4\n").expect("lockfile");
+        let root = root.canonicalize().expect("canonical app root");
+        let requested = requested_cargo_manifest(&root)
+            .expect("exact app manifest")
+            .expect("app package");
+        let registry_manifest = scratch.0.join("registry/cache-indexed/Cargo.toml");
+        let git_manifest = scratch.0.join("git/cache-git/Cargo.toml");
+        let patch_manifest = scratch.0.join("patches/cache-patch/Cargo.toml");
+        let watched = vec![root.join("Cargo.lock"), requested.manifest.clone()];
+        std::fs::create_dir_all(patch_manifest.parent().expect("patch parent"))
+            .expect("unselected patch candidate directory");
+        std::fs::write(
+            &patch_manifest,
+            "[package]\nname = \"cache-patch\"\nversion = \"1.2.0\"\nedition = \"2021\"\n",
+        )
+        .expect("unselected patch candidate manifest");
+        assert!(!watched.contains(&patch_manifest));
+
+        fn selected_rows(
+            requested: &RequestedCargoManifest,
+            registry_manifest: &Path,
+            git_manifest: &Path,
+            registry_version: &str,
+            git_revision: &str,
+            patch_version: Option<&str>,
+            watched: &[PathBuf],
+        ) -> Result<CargoProjectRead, String> {
+            let mut package_rows = vec![
+                serde_json::json!({
+                    "id": "cache-root 0.1.0 (path+file:///cache-root)",
+                    "name": "cache-root",
+                    "version": "0.1.0",
+                    "manifest_path": requested.manifest,
+                    "source": null,
+                    "targets": []
+                }),
+                serde_json::json!({
+                    "id": format!("cache-indexed {registry_version} (registry+https://index.example)"),
+                    "name": "cache-indexed",
+                    "version": registry_version,
+                    "manifest_path": registry_manifest,
+                    "source": "registry+https://index.example",
+                    "targets": []
+                }),
+                serde_json::json!({
+                    "id": format!("cache-git {git_revision} (git+https://git.example/cache-git#{git_revision})"),
+                    "name": "cache-git",
+                    "version": "0.4.0",
+                    "manifest_path": git_manifest,
+                    "source": format!("git+https://git.example/cache-git?rev={git_revision}#{git_revision}"),
+                    "targets": []
+                }),
+            ];
+            if let Some(version) = patch_version {
+                package_rows.push(serde_json::json!({
+                    "id": format!("cache-patch {version} (path+file:///patches/cache-patch)"),
+                    "name": "cache-patch",
+                    "version": version,
+                    "manifest_path": patch_manifest,
+                    "source": null,
+                    "targets": []
+                }));
+            }
+            let metadata = serde_json::to_vec(&serde_json::json!({
+                "workspace_root": requested.root,
+                "workspace_members": ["cache-root 0.1.0 (path+file:///cache-root)"],
+                "packages": package_rows
+            }))
+            .map_err(|error| error.to_string())?;
+            let file_witness =
+                observation_witness_for_context(&requested.root, &requested.root, watched, None)?
+                    .digest;
+            let mut input = fixture_member_input(
+                &requested.root,
+                &requested.root,
+                "cache-root 0.1.0 (fresh metadata)",
+            );
+            input.packages.extend([
+                TreeInputPackage {
+                    id: format!("cache-indexed {registry_version} (registry)"),
+                    name: "cache-indexed".to_owned(),
+                    version: registry_version.to_owned(),
+                    member: false,
+                    has_bin: false,
+                    origin: None,
+                    source_root: None,
+                    source_authority: CargoPackageSourceAuthorityStateV1::Unavailable(
+                        CargoPackageSourceAuthorityFailureV1::NotObserved,
+                    ),
+                    license: None,
+                    description: None,
+                    categories: Vec::new(),
+                    keywords: Vec::new(),
+                },
+                TreeInputPackage {
+                    id: format!("cache-git {git_revision} (git)"),
+                    name: "cache-git".to_owned(),
+                    version: "0.4.0".to_owned(),
+                    member: false,
+                    has_bin: false,
+                    origin: None,
+                    source_root: None,
+                    source_authority: CargoPackageSourceAuthorityStateV1::Unavailable(
+                        CargoPackageSourceAuthorityFailureV1::NotObserved,
+                    ),
+                    license: None,
+                    description: None,
+                    categories: Vec::new(),
+                    keywords: Vec::new(),
+                },
+            ]);
+            if let Some(version) = patch_version {
+                input.packages.push(TreeInputPackage {
+                    id: format!("cache-patch {version} (path)"),
+                    name: "cache-patch".to_owned(),
+                    version: version.to_owned(),
+                    member: false,
+                    has_bin: false,
+                    origin: None,
+                    source_root: patch_manifest.parent().map(Path::to_path_buf),
+                    source_authority: CargoPackageSourceAuthorityStateV1::Unavailable(
+                        CargoPackageSourceAuthorityFailureV1::NotObserved,
+                    ),
+                    license: None,
+                    description: None,
+                    categories: Vec::new(),
+                    keywords: Vec::new(),
+                });
+            }
+            let mut read = project_input_read_for_test(input, watched.to_vec(), file_witness, None);
+            read.metadata_witness = cargo_metadata_output_witness(&metadata, "fixture-host");
+            Ok(CargoProjectRead::TestMetadata(read))
+        }
+
+        let mut cache = BrowseCache::default();
+        let first = cache
+            .input_with_read_project(&root, |requested, _| {
+                selected_rows(
+                    requested,
+                    &registry_manifest,
+                    &git_manifest,
+                    "1.0.0",
+                    "aaaaaaaa",
+                    None,
+                    &watched,
+                )
+            })
+            .expect("initial selected registry and git rows");
+        let unchanged = cache
+            .input_with_read_project(&root, |requested, _| {
+                selected_rows(
+                    requested,
+                    &registry_manifest,
+                    &git_manifest,
+                    "1.0.0",
+                    "aaaaaaaa",
+                    None,
+                    &watched,
+                )
+            })
+            .expect("unchanged exact Cargo output reuses its graph");
+        assert!(Arc::ptr_eq(&first, &unchanged));
+        let updated = cache
+            .input_with_read_project(&root, |requested, _| {
+                selected_rows(
+                    requested,
+                    &registry_manifest,
+                    &git_manifest,
+                    "1.1.0",
+                    "bbbbbbbb",
+                    None,
+                    &watched,
+                )
+            })
+            .expect("updated resolver output replaces the warm graph");
+        assert_eq!(updated.packages[1].version, "1.1.0");
+        assert_eq!(updated.packages[2].id, "cache-git bbbbbbbb (git)");
+        let patch_candidate = cache
+            .input_with_read_project(&root, |requested, _| {
+                selected_rows(
+                    requested,
+                    &registry_manifest,
+                    &git_manifest,
+                    "1.1.0",
+                    "bbbbbbbb",
+                    Some("1.2.0"),
+                    &watched,
+                )
+            })
+            .expect("Cargo selects a changed local patch candidate outside the old graph");
+        assert_eq!(patch_candidate.packages[3].name, "cache-patch");
+        assert_eq!(patch_candidate.packages[3].version, "1.2.0");
+        assert_eq!(cache.counters.cache_hits, 1);
+        assert_eq!(cache.counters.tree_input_allocations, 3);
     }
 
     #[test]
@@ -6218,10 +6500,6 @@ mod tests {
         let requested = requested_cargo_manifest(&app)
             .expect("exact lockless manifest read")
             .expect("lockless package");
-        let selected = selected_cargo_program(&app).expect("selected Cargo");
-        let version = run(&selected, &app, &["-vV"], 64 * 1024).expect("Cargo version");
-        let supports_private_lock =
-            cargo_supports_resolver_lockfile_path(&version).expect("Cargo release version");
         let source_before = [
             workspace.join("Cargo.toml"),
             app.join("Cargo.toml"),
@@ -6235,18 +6513,9 @@ mod tests {
         .collect::<Vec<_>>();
 
         let mut session = CargoMetadataResolutionSession::default();
-        let first = session.run(&requested, None);
-        if !supports_private_lock {
-            assert!(
-                first.is_err(),
-                "older Cargo must refuse private lock redirection"
-            );
-            assert!(!workspace.join("Cargo.lock").exists());
-            assert!(!app.join("Cargo.lock").exists());
-            assert!(!redirect.exists());
-            return;
-        }
-        let first = first.expect("lockless exact metadata resolution");
+        let first = session
+            .run(&requested, None)
+            .expect("isolated Cargo probe and lockless exact metadata resolution");
         assert_eq!(
             first.lock_origin,
             Some(CargoMetadataLockOrigin::EphemeralGeneratedCargoLockV1)
@@ -7190,7 +7459,7 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_workspace_is_cached_but_lockfile_and_manifest_changes_each_invalidate_it() {
+    fn each_warm_cache_candidate_runs_a_fresh_observation_before_reuse() {
         struct Scratch(PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -7230,149 +7499,257 @@ mod tests {
         std::fs::write(scratch.0.join("src/lib.rs"), "").expect("lib.rs");
         let root = scratch.0.canonicalize().expect("canonical root");
 
-        // Plant a cache entry whose witness matches the files exactly as
-        // they stand right now, but whose Cargo input contains a sentinel
-        // host string. An untouched read must come back exactly as planted,
-        // proving the fresh metadata membership row is sufficient to reuse
-        // the observation without starting Cargo again.
-        let watched = vec![root.join("Cargo.lock"), root.join("Cargo.toml")];
-        let sentinel = Arc::new(TreeInput {
-            source: TreeSource::Cargo {
-                host: "planted-by-test".to_owned(),
-            },
-            root: root.to_string_lossy().into_owned(),
-            packages: vec![TreeInputPackage {
-                id: "gapfix 0.1.0 (test)".to_owned(),
-                name: "gapfix".to_owned(),
-                version: "0.1.0".to_owned(),
-                member: true,
-                has_bin: false,
-                origin: None,
-                source_root: Some(root.clone()),
-                source_authority: CargoPackageSourceAuthorityStateV1::Unavailable(
-                    backend_library::CargoPackageSourceAuthorityFailureV1::NotObserved,
-                ),
-                license: None,
-                description: None,
-                categories: Vec::new(),
-                keywords: Vec::new(),
-            }],
-            edges: Vec::new(),
-            locked_inactive: 0,
-            locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
-        });
         let mut cache = BrowseCache::default();
-        let mut plant_sentinel = |cache: &mut BrowseCache, watched: Vec<PathBuf>| {
-            cache.remove_workspace(&root);
-            let package_rows = source_package_row_index(&sentinel);
-            let target_roots = sentinel
-                .packages
-                .iter()
-                .filter_map(|package| package.source_root.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let target_witness = cargo_auto_target_membership_witness(&target_roots)
-                .expect("sentinel target membership witness");
-            let lock_origin_witness = [0; 32];
-            let file_witness = witness(&watched);
-            let retained_bytes = browse_entry_retained_bytes(
-                &root,
-                &root,
-                &watched,
-                watched.capacity(),
-                &sentinel,
-                &package_rows,
+        let mut read_count = 0;
+        fn fresh_read(
+            requested: &RequestedCargoManifest,
+            read_count: &mut usize,
+        ) -> Result<CargoProjectRead, String> {
+            *read_count += 1;
+            let workspace = requested.root.clone();
+            let target = workspace.join("src/bin/sidecar.rs");
+            let mut watched = vec![
+                workspace.join("Cargo.lock"),
+                workspace.join("Cargo.toml"),
+                workspace.join("src/lib.rs"),
+            ];
+            if target.is_file() {
+                watched.push(target);
+            }
+            let file_witness =
+                observation_witness_for_context(&workspace, &requested.root, &watched, None)?
+                    .digest;
+            let mut input = fixture_member_input(&workspace, &workspace, "gapfix 0.1.0 (fresh)");
+            input.source = TreeSource::Cargo {
+                host: format!("fresh-read-{read_count}"),
+            };
+            input.packages[0].has_bin = target.is_file();
+            Ok(CargoProjectRead::TestMetadata(project_input_read_for_test(
+                input,
+                watched,
+                file_witness,
                 None,
-            );
-            cache.cached_bytes = cache.cached_bytes.saturating_add(retained_bytes);
-            cache.entries.insert(
-                root.clone(),
-                CacheEntry {
-                    witness: compose_cargo_input_witness(
-                        file_witness,
-                        target_witness,
-                        lock_origin_witness,
-                    ),
-                    lock_origin_witness,
-                    target_roots,
-                    watched,
-                    input: Arc::clone(&sentinel),
-                    metadata_context: root.clone(),
-                    retained_bytes,
-                    package_rows,
-                    request_bindings: HashMap::new(),
-                    tool_witness_reuse: None,
-                    last_used: 1,
-                },
-            );
-        };
-        plant_sentinel(&mut cache, watched.clone());
+            )))
+        }
 
-        let untouched = cache.project_tree(&root, None).expect("untouched read");
+        let first = cache
+            .input_with_read_project(&root, |requested, _| fresh_read(requested, &mut read_count))
+            .expect("initial exact observation");
+        let second = cache
+            .input_with_read_project(&root, |requested, _| fresh_read(requested, &mut read_count))
+            .expect("fresh observation reuses unchanged graph");
+        assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(
-            untouched.source, sentinel.source,
-            "an untouched workspace must be served from the cache, not recomputed: {untouched:?}"
+            read_count, 2,
+            "a warm candidate still runs a fresh observer"
         );
         assert_eq!(cache.counters.cache_hits, 1);
-        assert!(cache.counters.retained_bytes_reused > 0);
-        let shared_first = cache.input(&root).expect("first shared input handle");
-        let shared_second = cache.input(&root).expect("second shared input handle");
-        assert!(Arc::ptr_eq(&shared_first, &shared_second));
+        assert_eq!(cache.counters.tree_input_allocations, 1);
+
+        let cancelled = cache
+            .input_with_read_project(&root, |_requested, _| {
+                Err("Cargo source observation was cancelled".to_owned())
+            })
+            .expect_err("cancelled freshness reads return no cached graph");
+        assert!(cancelled.contains("cancelled"));
+        assert_eq!(cache.entries.len(), 1, "cancellation preserves the entry");
+        let after_cancel = cache
+            .input_with_read_project(&root, |requested, _| fresh_read(requested, &mut read_count))
+            .expect("later request freshly validates the retained graph");
+        assert!(Arc::ptr_eq(&first, &after_cancel));
+        assert_eq!(cache.counters.cache_hits, 2);
 
         // A lockfile-only edit invalidates the cached Cargo resolution. Its
-        // manifest stays byte-for-byte identical, so watching only manifests
-        // cannot pass this assertion.
+        // manifest stays byte-for-byte identical.
         let initial_lock = std::fs::read_to_string(&lockfile).expect("initial lockfile");
         std::fs::write(
             &lockfile,
             format!("{initial_lock}\n# lockfile changed alone\n"),
         )
         .expect("changed lockfile");
-        let touched = cache.project_tree(&root, None).expect("lockfile-only read");
+        let touched = cache
+            .input_with_read_project(&root, |requested, _| fresh_read(requested, &mut read_count))
+            .expect("lockfile-only read");
         assert!(
-            matches!(&touched.source, TreeSource::Cargo { host } if !host.is_empty()),
-            "a lockfile-only change must force a fresh metadata authority, not the planted sentinel: {touched:?}"
+            matches!(&touched.source, TreeSource::Cargo { host } if host == "fresh-read-4"),
+            "a lockfile-only change must admit the new exact observation"
         );
-        assert_eq!(cache.counters.tree_input_allocations, 1);
+        assert_eq!(cache.counters.tree_input_allocations, 2);
 
         // Replant the sentinel against the new lockfile, then change only
         // Cargo.toml. Both inputs to Cargo's answer have independent guards.
-        plant_sentinel(&mut cache, watched.clone());
         std::fs::write(
             &manifest,
             "[package]\nname = \"gapfix\"\nversion = \"0.1.0\"\nedition = \"2021\"\ndescription = \"manifest-only cache invalidation\"\n",
         )
         .expect("changed manifest");
-        let touched = cache.project_tree(&root, None).expect("manifest-only read");
+        let touched = cache
+            .input_with_read_project(&root, |requested, _| fresh_read(requested, &mut read_count))
+            .expect("manifest-only read");
         assert_ne!(
-            touched.source, sentinel.source,
+            &touched.source, &first.source,
             "a changed manifest alone must force a real read: {touched:?}"
         );
-        assert_eq!(cache.counters.tree_input_allocations, 2);
+        assert_eq!(cache.counters.tree_input_allocations, 3);
 
         // Cargo discovers `src/bin` targets from directory contents. Adding
         // one must invalidate a warm dependency-tree cache even though neither
         // Cargo.toml nor Cargo.lock changed.
-        plant_sentinel(&mut cache, watched);
         std::fs::create_dir_all(root.join("src/bin")).expect("automatic bin directory");
         std::fs::write(root.join("src/bin/sidecar.rs"), "fn main() {}\n")
             .expect("automatic bin target");
         let touched = cache
-            .project_tree(&root, None)
-            .expect("automatic-target cache invalidation");
+            .input_with_read_project(&root, |requested, _| fresh_read(requested, &mut read_count))
+            .expect("fresh Cargo target observation");
         assert!(
             matches!(&touched.source, TreeSource::Cargo { host } if !host.is_empty()),
-            "a new Cargo auto-target must force a real metadata refresh: {touched:?}"
+            "a new Cargo auto-target path must force a new observation: {touched:?}"
         );
+        assert!(touched.packages[0].has_bin);
+        assert_eq!(cache.counters.tree_input_allocations, 4);
+    }
+
+    #[test]
+    fn warm_lockless_workspace_refreshes_members_custom_targets_and_local_patches() {
+        let scratch = scratch("backend-browse-lockless-warm-refresh");
+        let workspace = scratch.0.join("workspace");
+        let app = workspace.join("crates/app");
+        let patch = scratch.0.join("patches/patchy");
+        let external_target = scratch.0.join("targets/outside-main.rs");
+        std::fs::create_dir_all(app.join("src")).expect("app source");
+        std::fs::create_dir_all(patch.join("src")).expect("patch source");
+        std::fs::create_dir_all(external_target.parent().expect("target parent"))
+            .expect("external target directory");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"cache-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npatchy = \"1\"\n\n[patch.crates-io]\npatchy = { path = \"../../../patches/patchy\" }\n",
+        )
+        .expect("app manifest");
+        std::fs::write(app.join("src/lib.rs"), "pub fn app() {}\n").expect("app source file");
+        std::fs::write(
+            patch.join("Cargo.toml"),
+            "[package]\nname = \"patchy\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+        )
+        .expect("patch package manifest");
+        std::fs::write(patch.join("src/lib.rs"), "pub fn patched() {}\n")
+            .expect("patch source file");
+
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app = app.canonicalize().expect("canonical app");
+        let patch = patch.canonicalize().expect("canonical patch package");
+        let mut cache = BrowseCache::default();
+        let first = cache
+            .project_tree(&app, None)
+            .expect("first exact Cargo metadata graph");
         assert!(
-            touched
+            first
                 .packages
                 .iter()
-                .any(|package| package.name == "gapfix" && package.has_bin),
-            "Cargo metadata should report the newly discovered binary target: {touched:?}"
+                .any(|package| { package.name == "patchy" && package.version == "1.0.0" })
+        );
+        assert!(!workspace.join("Cargo.lock").exists());
+
+        let unchanged = cache
+            .project_tree(&app, None)
+            .expect("fresh metadata confirms unchanged warm graph");
+        assert_eq!(cache.counters.cache_hits, 1);
+        assert_eq!(cache.counters.tree_input_allocations, 1);
+        assert!(!workspace.join("Cargo.lock").exists());
+        assert_eq!(
+            unchanged.packages.len(),
+            first.packages.len(),
+            "the exact metadata response remains reusable when unchanged"
+        );
+
+        // Cargo's glob expansion, rather than a local directory walker,
+        // decides that this newly added package belongs to the workspace.
+        let new_member = workspace.join("crates/new-member");
+        std::fs::create_dir_all(new_member.join("src")).expect("new member source");
+        std::fs::write(
+            new_member.join("Cargo.toml"),
+            "[package]\nname = \"cache-new-member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("new member manifest");
+        std::fs::write(new_member.join("src/lib.rs"), "pub fn member() {}\n")
+            .expect("new member source file");
+        let after_member = cache
+            .project_tree(&app, None)
+            .expect("fresh Cargo metadata notices the new glob member");
+        assert!(
+            after_member
+                .packages
+                .iter()
+                .any(|package| package.name == "cache-new-member" && package.member)
+        );
+        assert_eq!(cache.counters.tree_input_allocations, 2);
+        assert!(!workspace.join("Cargo.lock").exists());
+
+        // Lockless re-resolution sees a changed local patch manifest and
+        // returns the new selected package row and generated lock digest.
+        std::fs::write(
+            patch.join("Cargo.toml"),
+            "[package]\nname = \"patchy\"\nversion = \"1.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("updated patch candidate manifest");
+        let after_patch = cache
+            .project_tree(&app, None)
+            .expect("fresh lockless resolution notices the local patch update");
+        assert!(
+            after_patch
+                .packages
+                .iter()
+                .any(|package| package.name == "patchy" && package.version == "1.1.0")
         );
         assert_eq!(cache.counters.tree_input_allocations, 3);
+        assert!(!workspace.join("Cargo.lock").exists());
+
+        // Cargo reports this explicit target's source outside the package
+        // directory. The source path is admitted from target.src_path itself.
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"cache-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npatchy = \"1\"\n\n[patch.crates-io]\npatchy = { path = \"../../../patches/patchy\" }\n\n[[bin]]\nname = \"outside-target\"\npath = \"../../../targets/outside-main.rs\"\n",
+        )
+        .expect("custom target manifest");
+        std::fs::write(&external_target, "fn main() {}\n").expect("external target source");
+        let with_target = cache
+            .project_tree(&app, None)
+            .expect("fresh Cargo metadata reports custom target");
+        assert!(
+            with_target
+                .packages
+                .iter()
+                .any(|package| package.name == "cache-app" && package.has_bin)
+        );
+        let app_root = PathBuf::from(&with_target.root);
+        let entry = cache
+            .entries
+            .get(&app_root)
+            .expect("warm metadata cache entry");
+        assert!(!entry.watched.contains(&external_target));
+        assert_eq!(cache.counters.tree_input_allocations, 4);
+
+        // Editing an existing target body leaves Cargo's package graph and
+        // target row unchanged, so the graph cache can reuse its tree input.
+        std::fs::write(&external_target, "fn main() { let _ = 1; }\n")
+            .expect("change external target source");
+        let after_target_edit = cache
+            .project_tree(&app, None)
+            .expect("fresh Cargo metadata confirms unchanged target row");
+        assert!(
+            after_target_edit
+                .packages
+                .iter()
+                .any(|package| package.name == "cache-app" && package.has_bin)
+        );
+        assert_eq!(cache.counters.cache_hits, 2);
+        assert_eq!(cache.counters.tree_input_allocations, 4);
+        assert!(!workspace.join("Cargo.lock").exists());
+        assert!(patch.join("Cargo.toml").is_file());
     }
 
     #[test]
@@ -7430,12 +7807,14 @@ mod tests {
                     "name": "app",
                     "version": "0.1.0",
                     "manifest_path": app_manifest,
+                    "targets": []
                 },
                 {
                     "id": "dep 0.1.0 (path+file:///path-dependency)",
                     "name": "dep",
                     "version": "0.1.0",
                     "manifest_path": dependency_manifest,
+                    "targets": []
                 }
             ]
         }))
@@ -7514,8 +7893,8 @@ mod tests {
             "workspace_root": workspace,
             "workspace_members": ["app 0.1.0 (path+file:///workspace/app)"],
             "packages": [
-                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest},
-                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest}
+                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest, "targets": []},
+                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest, "targets": []}
             ]
         }))
         .expect("metadata fixture");
@@ -8032,8 +8411,8 @@ mod tests {
             "workspace_root": workspace,
             "workspace_members": ["app 0.1.0 (path+file:///workspace/app)"],
             "packages": [
-                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest},
-                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest}
+                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest, "targets": []},
+                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest, "targets": []}
             ]
         }))
         .expect("metadata fixture");
