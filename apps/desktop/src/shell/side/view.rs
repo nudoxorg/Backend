@@ -43,6 +43,7 @@ impl Shelf {
         let snapshot = links.snapshot(cx);
         let drawer = self.overlay_surface;
         let attachment = links.store.read(cx).current_owner_attachment();
+        let scope = links.shell.upgrade().and_then(|shell| shell.read(cx).shelf_input_scope(drawer, cx));
         window.defer(cx, move |window, cx| {
             let current = links.snapshot(cx);
             if current.route() != snapshot.route() || current.overlay() != snapshot.overlay()
@@ -50,7 +51,7 @@ impl Shelf {
                 || !current.key().same_authority(snapshot.key())
                 || links.store.read(cx).current_owner_attachment() != attachment { return; }
             links.shell(cx, |shell, cx| {
-                if shell.shelf_input_owner(drawer) { shell.take_zone(Zone::Shelf, window, cx); }
+                if scope.as_ref().is_some_and(|scope| shell.admits_shelf_input_scope(scope, cx)) { shell.take_zone(Zone::Shelf, window, cx); }
             });
         });
     }
@@ -177,6 +178,7 @@ impl Shelf {
             .border_b_1()
             .border_color(palette.line1.hsla());
         for (index, item) in chain {
+            let guard = self.action_guard(cx);
             let indent =
                 measure.space(Space::Roomy) + measure.space(Space::Gutter) * f32::from(item.depth);
             pinned = pinned.child(
@@ -199,6 +201,7 @@ impl Shelf {
                             .child(item.name.clone()),
                     )
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
+                        if !guard(cx) { return; }
                         shelf.scroll.scroll_to_item(index, ScrollStrategy::Top);
                         cx.notify();
                     })),
@@ -224,6 +227,7 @@ impl Shelf {
             .pb(measure.space(Space::Base));
         for chip in chips {
             let card = chip.card;
+            let guard = self.action_guard(cx);
             row = row.child(
                 div()
                     .id(SharedString::from(format!("shelf-held-{card}")))
@@ -254,6 +258,7 @@ impl Shelf {
                             .child(hold::cap(card)),
                     )
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                        if !guard(cx) { return; }
                         shelf.take_keyboard(window, cx);
                         let links = shelf.links.clone();
                         cx.defer(move |cx| links.shell(cx, |shell, cx| shell.hand_card(card, cx)));
@@ -281,6 +286,7 @@ impl Shelf {
                 places = places.child(text(ty::MONO_SMALL, measure, palette.ink3).child("‹"));
             }
             let route = step.route.clone();
+            let guard = self.action_guard(cx);
             places = places.child(
                 div()
                     .id(SharedString::from(format!("shelf-trail-{index}")))
@@ -290,6 +296,7 @@ impl Shelf {
                     .cursor_pointer()
                     .child(text(ty::MONO_SMALL, measure, palette.ink3).child(step.label.clone()))
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
+                        if !guard(cx) { return; }
                         shelf.perform(&Do::Go(route.clone()), cx)
                     })),
             );
@@ -317,6 +324,7 @@ impl Shelf {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let does = step.does.clone();
+        let guard = self.action_guard(cx);
         div()
             .id("shelf-crumb")
             .role(gpui::Role::Button)
@@ -335,6 +343,7 @@ impl Shelf {
             )
             .child(text(ty::SMALL, measure, palette.ink2).child(step.label.clone()))
             .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                if !guard(cx) { return; }
                 shelf.take_keyboard(window, cx);
                 match &does {
                     StepDoes::Pop => {
@@ -499,7 +508,9 @@ impl Shelf {
             // lenses by their `G` chords, not by walking): published as a
             // target, not a stop on the walk.
             let visit = self.reading_visit;
+            let guard = self.action_guard(cx);
             let tab = tab.on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                if !guard(cx) { return; }
                 if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
                 shelf.take_keyboard(window, cx);
                 shelf.perform(&Do::Lens(lens), cx);
@@ -517,9 +528,11 @@ impl Shelf {
     /// with one of your crates chosen it says what it is narrowed to.
     fn narrow_line(&self, measure: &Measure, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let height = measure.row() + measure.space(Space::Tight);
+        let guard = self.action_guard(cx);
         let line = div()
             .id("shelf-narrow")
-            .on_click(cx.listener(|shelf, _, window, cx| {
+            .on_click(cx.listener(move |shelf, _, window, cx| {
+                if !guard(cx) { return; }
                 shelf.take_keyboard(window, cx);
                 cx.stop_propagation();
             }))
@@ -741,8 +754,10 @@ impl Shelf {
             // owner per frame. The row for the page you are on opens nothing.
             let opens = item.source.clone().filter(|_| !item.current);
             let visit = self.reading_visit;
+            let guard = self.action_guard(cx);
             element =
                 element.on_click(cx.listener(move |shelf, event: &ClickEvent, window, cx| {
+                    if !guard(cx) { return; }
                     if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
                     shelf.take_keyboard(window, cx);
                     shelf.targets.focus(id.clone());
@@ -795,6 +810,7 @@ impl Shelf {
             icon = icon.with_transformation(Transformation::rotate(radians(FRAC_PI_2)));
         }
         let id = item.id.clone();
+        let guard = self.action_guard(cx);
         div()
             .id(SharedString::from(format!("{}#fold", item.key)))
             .role(gpui::Role::Button)
@@ -811,6 +827,7 @@ impl Shelf {
             .child(icon)
             .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
+                if !guard(cx) { return; }
                 shelf.take_keyboard(window, cx);
                 shelf.flip(id.clone(), cx);
             }))
@@ -908,7 +925,9 @@ impl Shelf {
                 cell = cell.track_focus(&handle);
                 let does = item.does.clone();
                 let shelf = cx.weak_entity();
+                let guard = self.action_guard(cx);
                 cell = cell.on_click(move |_: &ClickEvent, _, cx| {
+                    if !guard(cx) { return; }
                     let _ = shelf.update(cx, |shelf, cx| shelf.perform(&does, cx));
                 });
             }

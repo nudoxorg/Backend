@@ -61,6 +61,14 @@ pub(crate) struct PageInputScope {
     retry: Option<OwnerRetryAttachment>,
 }
 
+/// A shelf control belongs to one current native scene, in its dock or drawer.
+/// It shares the page input epoch and producer identity, never reading history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ShelfInputScope {
+    input: PageInputScope,
+    drawer: bool,
+}
+
 /// Exact return claim for a covered native input owner. The model's top
 /// overlay remains the authority; this stores only native focus and its visit.
 #[derive(Clone)]
@@ -588,7 +596,7 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => {
                 self.advance_transient_generation();
-                self.advance_page_input_generation();
+                self.advance_page_input_generation(cx);
                 if self.links.snapshot(cx).overlay().is_some() {
                     self.reader
                         .update(cx, |reader, _| reader.cancel_native_return());
@@ -597,7 +605,7 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::Route) => {
                 self.advance_transient_generation();
-                self.advance_page_input_generation();
+                self.advance_page_input_generation(cx);
                 self.pending_transient_return = None;
                 let snapshot = self.links.snapshot(cx);
                 let route = snapshot.route().clone();
@@ -755,8 +763,12 @@ impl Shell {
         self.pending_transient_return = None;
     }
 
-    fn advance_page_input_generation(&mut self) {
+    fn advance_page_input_generation(&mut self, cx: &mut Context<Self>) {
         self.page_input_generation = self.page_input_generation.and_then(|generation| generation.checked_add(1));
+        // Cached columns need fresh callbacks when native scene ownership changes.
+        // An old callback retains its old scope; only a new paint gets this epoch.
+        self.shelf.update(cx, |_, cx| cx.notify());
+        self.shelf_over.update(cx, |_, cx| cx.notify());
     }
 
     fn return_identity_current(&self, saved: &TransientFocusReturn, cx: &App) -> bool {
@@ -933,7 +945,7 @@ impl Shell {
     pub(crate) fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.advance_transient_generation();
         if self.frame.is_some_and(|frame| frame.shelf_overlays) {
-            self.advance_page_input_generation();
+            self.advance_page_input_generation(cx);
             self.shelf_over_open = !self.shelf_over_open;
             cx.notify();
         } else {
@@ -1353,6 +1365,10 @@ impl Shell {
 
     pub(crate) fn page_input_scope(&self, cx: &App) -> Option<PageInputScope> {
         if !self.page_input_allowed(cx) { return None; }
+        self.native_input_scope(cx)
+    }
+
+    fn native_input_scope(&self, cx: &App) -> Option<PageInputScope> {
         let store = self.links.store.read(cx);
         Some(PageInputScope {
             generation: self.page_input_generation?,
@@ -1364,6 +1380,16 @@ impl Shell {
 
     pub(crate) fn admits_page_input_scope(&self, scope: &PageInputScope, cx: &App) -> bool {
         self.page_input_scope(cx).as_ref() == Some(scope)
+    }
+
+    pub(crate) fn shelf_input_scope(&self, drawer: bool, cx: &App) -> Option<ShelfInputScope> {
+        if !self.shelf_input_owner(drawer)
+            || matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject)) { return None; }
+        self.native_input_scope(cx).map(|input| ShelfInputScope { input, drawer })
+    }
+
+    pub(crate) fn admits_shelf_input_scope(&self, scope: &ShelfInputScope, cx: &App) -> bool {
+        self.shelf_input_scope(scope.drawer, cx).as_ref() == Some(scope)
     }
 
     fn page_input_allowed(&self, cx: &App) -> bool {
@@ -1447,7 +1473,7 @@ impl Shell {
         }
         if self.shelf_over_open {
             self.advance_transient_generation();
-            self.advance_page_input_generation();
+            self.advance_page_input_generation(cx);
             self.shelf_over_open = false;
             cx.notify();
             return;
@@ -2088,7 +2114,7 @@ impl Render for Shell {
                                     // another activation from this same MouseUp.
                                     cx.stop_propagation();
                                     shell.advance_transient_generation();
-                                    shell.advance_page_input_generation();
+                                    shell.advance_page_input_generation(cx);
                                     shell.shelf_over_open = false;
                                     cx.notify();
                                 })),
@@ -2225,5 +2251,57 @@ mod transient_return_admission_tests {
         assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&exhausted_generation, cx)));
         shell.update(rig.cx, |shell, _| shell.advance_transient_generation());
         assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)), "a subsequent native input generation retires the old return");
+    }
+}
+
+#[cfg(test)]
+mod shelf_scene_admission_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn mounted_shelf_click_keeps_its_scene_but_back_never_revives_old_callbacks(cx: &mut gpui::TestAppContext) {
+        let route = super::super::tests::page_route("RelationLabel");
+        let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 900.0);
+        let shell = rig.shell.clone();
+        let scope = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(false, cx).expect("docked shelf scene"));
+        let retired = shell.read_with(rig.cx, |shell, cx| {
+            let list = shell.shelf.read(cx).targets.list_probe().upgrade().expect("mounted shelf targets");
+            let target = list.borrow().first().cloned().expect("mounted actionable target");
+            target.act
+        });
+        let tab = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("mounted native tab");
+        rig.cx.simulate_click(tab.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "ordinary mouse down/up does not retire the painted scene");
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Shelf tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
+        assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "Used by" && node["aria"]["selected"] == true), "native click selected the actual tab: {tree}");
+        rig.go(Intent::Navigate(Route::World));
+        rig.keys("cmd-[");
+        assert_eq!(rig.route(), route);
+        assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "history can restore reading intent, never a retired native scene");
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        rig.cx.update(|window, cx| retired(window, cx));
+        rig.settle();
+        assert_eq!(rig.route(), route, "old painted target cannot navigate after Back");
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "denied old callback does not take focus");
+        let fresh = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(false, cx).expect("fresh docked shelf scene"));
+        assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)));
+        rig.cx.simulate_resize(gpui::size(px(360.0), px(900.0)));
+        rig.settle();
+        rig.keys("cmd-\\");
+        let drawer = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(true, cx).expect("current drawer"));
+        assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)));
+        assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)), "drawer cannot borrow a docked callback");
+        rig.keys("escape");
+        assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)), "closed drawer callbacks stay retired");
+        rig.cx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
+        rig.settle();
+        let current_tab = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh docked tab after drawer dismissal");
+        rig.cx.simulate_click(current_tab.center(), gpui::Modifiers::none());
+        rig.settle();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("fresh native tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
+        assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "Rests on" && node["aria"]["selected"] == true), "a refreshed cached column has live callbacks: {tree}");
     }
 }

@@ -381,6 +381,16 @@ impl Shelf {
     // ------------------------------------------------------------ what a row does
 
     /// Carries out what a row (or a key) asks.
+    /// Pure reading visits may return through history. Mounted callbacks may
+    /// act only in the native scene that painted them, before taking focus.
+    fn action_guard(&self, cx: &App) -> Rc<dyn Fn(&mut App) -> bool> {
+        let shell = self.links.shell.clone();
+        let scope = shell.upgrade().and_then(|shell| shell.read(cx).shelf_input_scope(self.overlay_surface, cx));
+        Rc::new(move |cx| {
+            scope.as_ref().is_some_and(|scope| shell.upgrade().is_some_and(|shell| shell.read(cx).admits_shelf_input_scope(scope, cx)))
+        })
+    }
+
     fn perform(&mut self, does: &Do, cx: &mut Context<Self>) {
         match does {
             Do::Nothing => {}
@@ -920,6 +930,7 @@ impl Render for Shelf {
             matched,
         } = self.listing(&snapshot, cx);
         let weak = cx.weak_entity();
+        let guard = self.action_guard(cx);
         for row in &rows {
             if let Row::Item(item) = row
                 && item.is_target()
@@ -927,7 +938,7 @@ impl Render for Shelf {
                 self.targets.push(Target {
                     id: item.key.clone(),
                     label: item.name.clone(),
-                    act: act(&weak, item.does.clone(), snapshot.session().reading.current.id),
+                    act: act(&weak, item.does.clone(), snapshot.session().reading.current.id, guard.clone()),
                     peek: item.warm.clone(),
                     source: item.source.clone(),
                 });
@@ -1057,9 +1068,10 @@ impl Shelf {
 }
 
 /// What a target does when activated: whatever its row does.
-fn act(shelf: &gpui::WeakEntity<Shelf>, does: Do, visit: crate::navigation::presentation::VisitId) -> Act {
+fn act(shelf: &gpui::WeakEntity<Shelf>, does: Do, visit: crate::navigation::presentation::VisitId, guard: Rc<dyn Fn(&mut App) -> bool>) -> Act {
     let shelf = shelf.clone();
     Rc::new(move |_: &mut Window, cx: &mut App| {
+        if !guard(cx) { return; }
         let _ = shelf.update(cx, |shelf, cx| {
             if shelf.links.snapshot(cx).session().reading.current.id == visit { shelf.perform(&does, cx); }
         });
