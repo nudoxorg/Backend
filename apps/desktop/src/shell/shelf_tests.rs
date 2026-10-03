@@ -680,3 +680,92 @@ fn forced_accessibility_survives_native_pointer_then_right_click_on_local_and_re
         assert!(!shelf_texts(&mut rig).is_empty(), "the native shelf remains rendered");
     }
 }
+
+/// Exact observed empty relationships, supplied by the same native read path
+/// as positive fixtures; absence is never inferred from missing rows.
+struct EmptyRelations;
+
+impl PageReader for EmptyRelations {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        if let ReadRequest::Package(package) = request {
+            let mut about = registry_dossier(package);
+            about.dependencies = Known::Known(Arc::from([]));
+            about.dependents = Known::Known(Arc::from([]));
+            return Ok(PageValue::Package(about));
+        }
+        Fixture.read(request, context)
+    }
+}
+
+fn fact_rig(cx: &mut TestAppContext, route: Route) -> (Rig, crate::runtime::owner::OwnerGate) {
+    let root = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate(cx, Some(route), 1440.0, 900.0,
+        ReadPool::start(2, |_| EmptyRelations).expect("pool"), super::tests::RootOnly, Some(gate.clone()));
+    rig.cx.update(|window, cx| { facet::probe::enable(cx); window.set_a11y_forced(true); });
+    rig.repaint();
+    (rig, gate)
+}
+
+fn shelf_native_labels(rig: &mut Rig) -> Vec<String> {
+    // Paint immediately, before servicing the gate watcher: a live owner fence
+    // must revoke stale facts even while the Store still retains its old bytes.
+    rig.repaint();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Shelf tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    tree["nodes"].as_object().expect("nodes").values()
+        .filter_map(|node| node["aria"]["label"].as_str().map(str::to_owned)).collect()
+}
+
+#[gpui::test]
+fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut TestAppContext) {
+    let (mut rig, _gate) = fact_rig(cx, Route::Orbit(crate::navigation::OrbitRoute::Home));
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    for appearance in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
+        rig.go(Intent::SetAppearance(appearance));
+        for percent in [100_u16, 150, 200] {
+            rig.go(Intent::ZoomTo { display: display.clone(), percent });
+            for width in [360.0, 480.0, 663.0, 1440.0] {
+                rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+                rig.settle();
+                into_the_sidebar(&mut rig);
+                for (keys, expected) in [
+                    ("g r", "Library dependency relationships are not indexed. Choose a package to read its dependencies."),
+                    ("g u", "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages."),
+                ] {
+                    rig.keys(keys);
+                    let labels = shelf_native_labels(&mut rig);
+                    assert!(labels.iter().any(|label| label == expected), "{width}px/{percent}%: {labels:?}");
+                    assert!(!labels.iter().any(|label| label == "The library rests on nothing." || label == "No project of yours uses the library yet."));
+                    let bounds = rig.cx.debug_bounds("shelf-note-0").expect("painted relation note");
+                    assert!(bounds.left() >= px(0.0) && bounds.right() <= px(width) && bounds.bottom() <= px(900.0), "note outside native window at {width}px/{percent}%: {bounds:?}");
+                    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+                    assert!(ledger.texts.iter().any(|text| text.content == expected), "a native note must actually paint");
+                }
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn native_owner_loss_and_replacement_immediately_revoke_observed_empty_shelf_facts(cx: &mut TestAppContext) {
+    use crate::runtime::owner::OwnerState;
+    for (keys, empty) in [("g r", "Rests on nothing"), ("g u", "Nothing here uses it yet")] {
+        for replacement in [false, true] {
+            let (mut rig, gate) = fact_rig(cx, toml());
+            into_the_sidebar(&mut rig);
+            rig.keys(keys);
+            assert!(shelf_native_labels(&mut rig).iter().any(|label| label == empty), "current completed fixture establishes actual absence");
+            if replacement {
+                let current = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+                gate.publish(OwnerState::Ready { key: current.with_generation(current.generation().saturating_add(1)), mode: crate::model::ServiceMode::Attached });
+            } else {
+                gate.publish(OwnerState::Failed("The relationship source stopped answering.".into()));
+            }
+            let labels = shelf_native_labels(&mut rig);
+            assert!(!labels.iter().any(|label| label == empty), "old facts cannot assert current absence before the watcher runs: {labels:?}");
+            assert!(labels.iter().any(|label| label.contains("earlier reading is retained")), "retained evidence must be disclosed: {labels:?}");
+            assert!(labels.iter().any(|label| label.contains("not serving") || label.contains("current reading failed")), "owner loss has a native reason: {labels:?}");
+        }
+    }
+}

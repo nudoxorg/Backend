@@ -1164,6 +1164,30 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_relationship_facts_keep_their_gap_with_positive_observations() {
+        use crate::core::Resource;
+        use crate::model::pages::{Gap, GapReason};
+        let root = fact_root(1);
+        let orbit = Resource::loaded_at(empty_orbit(), root);
+        for reason in [GapReason::Unknown, GapReason::ReadFailed, GapReason::Unconfigured, GapReason::NotServed] {
+            let mut package = crate::shell::tests::dossier();
+            let gap = Gap { reason, detail: "relationships were not fully read".into() };
+            package.dependencies = Known::Unknown(gap.clone());
+            package.dependents = Known::Unknown(gap);
+            package.observed_dependents = std::sync::Arc::from([package.record.known().cloned().expect("observed fixture record")]);
+            let read = Resource::loaded_at(package, root);
+            for lens in [Lens::RestsOn, Lens::UsedBy] {
+                let listed = fact_listing(Some(&read), &orbit, root, true, lens, false, "");
+                assert_eq!(listed.head.counts.expect("counts").of(lens), None);
+                let said = words(&listed);
+                assert!(said.iter().any(|words| words.contains("relationships were not fully read")), "{said:?}");
+                assert!(!said.iter().any(|words| words == "Rests on nothing" || words == "Nothing here uses it yet"));
+                if lens == Lens::UsedBy { assert!(listed.rows.iter().any(|row| row.item().is_some()), "observed uses survive alongside the coverage gap"); }
+            }
+        }
+    }
+
+    #[test]
     fn unread_outline_does_not_establish_that_a_hoisted_node_is_absent() {
         use crate::core::Resource;
         let root = fact_root(1);
