@@ -125,7 +125,7 @@ pub(crate) fn install_local_actions(graph: &UiEntityGraph, cx: &mut App) {
 mod tests {
     use super::*;
     use crate::model::ServiceMode;
-    use crate::navigation::{OrbitRoute, Overlay, Route};
+    use crate::navigation::Overlay;
     use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
     use crate::runtime::reads::ReadPool;
     use crate::shell::tests::{Fixture, Rig, RootOnly, native_bounds_id, rig_with_engine_gate};
@@ -143,7 +143,7 @@ mod tests {
     #[gpui::test]
     fn cold_and_recovered_home_keep_local_native_menu_actions_available(cx: &mut TestAppContext) {
         let gate = OwnerGate::starting();
-        let mut rig = rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0,
+        let mut rig = rig_with_engine_gate(cx, None, 1440.0, 900.0,
             ReadPool::start(2, |_| Fixture).expect("reader"), RootOnly, Some(gate.clone()));
         rig.cx.cx.update(|cx| install_local_actions(&rig.graph, cx));
         // macOS validates against App::is_action_available before any field
