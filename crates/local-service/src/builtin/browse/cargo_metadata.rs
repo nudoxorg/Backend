@@ -633,6 +633,23 @@ struct CargoMetadataResolutionSession {
 }
 
 impl CargoMetadataResolutionSession {
+    fn retain_ephemeral_lock(
+        &mut self,
+        directory: tempfile::TempDir,
+        private_path: PathBuf,
+        missing_source_path: PathBuf,
+        lockfile: String,
+        digest: [u8; 32],
+    ) {
+        self.lock_state = Some(CargoMetadataLockState::Ephemeral {
+            _directory: directory,
+            private_path,
+            missing_source_path,
+            lockfile,
+            digest,
+        });
+    }
+
     /// Runs Cargo for the exact requested manifest. A missing source lock is
     /// recognized only from Cargo's own `--locked` diagnostic; the only
     /// unlocked full metadata pass is redirected by CLI config to a private
@@ -770,6 +787,11 @@ impl CargoMetadataResolutionSession {
                             return Err("Cargo reported a missing lockfile that was present before metadata".to_owned());
                         }
                     }
+                    // These are the source roots available before full
+                    // dependency resolution: the requested package, Cargo's
+                    // effective no-deps workspace, and its package rows.
+                    // Nonmember path dependencies require separate Cargo
+                    // metadata closure before this can be called complete.
                     let mut source_roots =
                         BTreeSet::from([requested.root.clone(), no_deps_workspace.clone()]);
                     source_roots.extend(metadata_package_roots(&no_deps)?);
@@ -851,13 +873,13 @@ impl CargoMetadataResolutionSession {
                                 .to_owned(),
                         );
                     }
-                    self.lock_state = Some(CargoMetadataLockState::Ephemeral {
-                        _directory: directory,
+                    self.retain_ephemeral_lock(
+                        directory,
                         private_path,
                         missing_source_path,
                         lockfile,
                         digest,
-                    });
+                    );
                     locked
                 }
             }
@@ -1101,7 +1123,7 @@ fn create_private_cargo_lock_directory_in(
         .iter()
         .any(|source_root| temporary_root.starts_with(source_root))
     {
-        return Err("system temporary directory is inside the Cargo source tree".to_owned());
+        return Err("temporary directory is inside a known Cargo source root".to_owned());
     }
     let directory = tempfile::Builder::new()
         .prefix("backend-cargo-metadata-")
@@ -1115,7 +1137,9 @@ fn create_private_cargo_lock_directory_in(
         .iter()
         .any(|source_root| private_directory.starts_with(source_root))
     {
-        return Err("private Cargo lock directory was created inside a source root".to_owned());
+        return Err(
+            "private Cargo lock directory was created inside a known source root".to_owned(),
+        );
     }
     Ok((directory, private_directory))
 }
@@ -1173,7 +1197,26 @@ fn verify_private_cargo_lockfile_redirect(
     host: &str,
     source_roots: &[PathBuf],
 ) -> Result<(), String> {
-    let (directory, private_root) = create_private_cargo_lock_directory(source_roots)?;
+    verify_private_cargo_lockfile_redirect_in(
+        cargo,
+        selection,
+        host,
+        source_roots,
+        &std::env::temp_dir(),
+    )
+}
+
+fn verify_private_cargo_lockfile_redirect_in(
+    cargo: &Path,
+    selection: &CargoToolSelection,
+    host: &str,
+    source_roots: &[PathBuf],
+    temporary_root: &Path,
+) -> Result<(), String> {
+    // Admit the exact temporary base against the known source-root set before
+    // creating any capability-fixture files beneath it.
+    let (directory, private_root) =
+        create_private_cargo_lock_directory_in(source_roots, temporary_root)?;
     let temporary_root = directory.path().to_path_buf();
     let workspace = temporary_root.join("probe-workspace");
     let config_dir = workspace.join(".cargo");
@@ -1410,7 +1453,17 @@ mod tests {
             create_private_cargo_lock_directory(&[]).expect("private lock directory");
         let private_root = private_root.to_path_buf();
         let private_lock = private_root.join("Cargo.lock");
-        std::fs::write(&private_lock, "version = 4\n").expect("private generated lock");
+        let lockfile = "version = 4\n".to_owned();
+        std::fs::write(&private_lock, &lockfile).expect("private generated lock");
+        let digest = *blake3::hash(lockfile.as_bytes()).as_bytes();
+        let mut session = CargoMetadataResolutionSession::default();
+        session.retain_ephemeral_lock(
+            directory,
+            private_lock,
+            private_root.join("source/Cargo.lock"),
+            lockfile,
+            digest,
+        );
 
         let control = Arc::new(ObservationControl::new());
         let cancelling = Arc::clone(&control);
@@ -1431,13 +1484,14 @@ mod tests {
             result.is_err_and(|error| error.contains("cancelled")),
             "the bounded resolver must stop on cancellation"
         );
-
-        directory
-            .close()
-            .expect("remove cancelled resolver's private directory");
+        assert!(
+            private_root.exists(),
+            "the session retains its lock until the cancelled observation is dropped"
+        );
+        drop(session);
         assert!(
             !private_root.exists(),
-            "the ephemeral generated lock and its directory must be cleaned"
+            "dropping the cancelled Cargo metadata session removes its private lock"
         );
     }
 
@@ -1873,6 +1927,24 @@ mod tests {
             .canonicalize()
             .expect("canonical nested temporary root");
         let before = source_tree_hash(&source_root);
+        let selection = CargoToolSelection {
+            cargo: PathBuf::from("/unreachable/cargo"),
+            rustc: PathBuf::from("/unreachable/rustc"),
+            rustc_wrapper: None,
+            rustc_workspace_wrapper: None,
+            inject_default_rustc: false,
+        };
+        assert!(
+            verify_private_cargo_lockfile_redirect_in(
+                Path::new("/unreachable/cargo"),
+                &selection,
+                "fixture-host",
+                std::slice::from_ref(&source_root),
+                &temporary_root,
+            )
+            .is_err_and(|error| error.contains("inside a known Cargo source root")),
+            "the capability probe refuses the same known source-overlapping temp root before creating fixtures"
+        );
         assert!(
             create_private_cargo_lock_directory_in(
                 std::slice::from_ref(&source_root),
