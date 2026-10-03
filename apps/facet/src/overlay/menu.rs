@@ -20,8 +20,8 @@ use crate::tokens::{Face, TypeRole};
 use gpui::{
     AnyElement, App, Bounds, ElementId, InteractiveElement, IntoElement, Keystroke, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{OnceCell, RefCell};
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 /// One row.
@@ -157,6 +157,19 @@ struct State {
     typed_at: Option<Instant>,
 }
 
+// One popup owns its content identity. The weak reference avoids a cycle
+// with the builder; same-key replacements have a different identity.
+#[derive(Default)]
+struct Owner {
+    content: OnceCell<Weak<dyn Fn(&Measure, &mut Window, &mut App) -> AnyElement>>,
+}
+impl Owner {
+    fn focus(&self, key: &ElementId, window: &Window, cx: &App) -> Option<gpui::FocusHandle> {
+        let content = self.content.get()?.upgrade()?;
+        float::content_focus(key, &content, window, cx)
+    }
+}
+
 // ------------------------------------------------------------------ render
 
 const LABEL: TypeRole = TypeRole {
@@ -200,27 +213,29 @@ fn row_top(items: &[MenuItem], index: usize, measure: &Measure) -> Pixels {
 }
 
 /// The content builder for the float layer.
-fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static {
+fn content(key: ElementId, menu: Menu, owner: Rc<Owner>) -> impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static {
     let state = Rc::new(RefCell::new(State::default()));
     let motion = Motion::new();
     move |measure: &Measure, window: &mut Window, cx: &mut App| {
+        let focus = owner.focus(&key, window, cx);
         let palette = cx.facet().palette();
         let disabled: Vec<bool> = menu.items.iter().map(|item| item.disabled).collect();
         {
             let mut state = state.borrow_mut();
-            if state.active.is_none() {
+            if focus.is_some() && state.active.is_none() {
                 state.active = step(None, &disabled, 1);
             }
         }
-        // Keys, before the layer's own (Esc still steps back).
-        {
+        // Keys belong only to the current open content identity.
+        if focus.is_some() {
             let state = state.clone();
             let menu = menu.clone();
             let key = key.clone();
             let disabled = disabled.clone();
+            let owner = owner.clone();
             float::on_key(
                 move |keystroke: &Keystroke, window, cx| {
-                    handle(&state, &menu, &key, &disabled, keystroke, window, cx)
+                    handle(&owner, &state, &menu, &key, &disabled, keystroke, window, cx)
                 },
                 window,
                 cx,
@@ -233,11 +248,16 @@ fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut Ap
         let shown = motion.animate("menu-plate-shown", if active.is_some() { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let keys_held = measure.reveal().keys;
         let mut column = div()
+            .id(key.clone())
+            .role(gpui::Role::Menu)
             .relative()
             .w(width)
             .flex()
             .flex_col()
             .py(px(PAD * measure.scale()));
+        if let Some(focus) = &focus {
+            column = column.track_focus(focus);
+        }
         // The selection plate: one element, gliding.
         column = column.child(
             div()
@@ -263,6 +283,10 @@ fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut Ap
             };
             let mut row = div()
                 .id(("menu-row", index))
+                .role(gpui::Role::MenuItem)
+                .aria_label(item.label.clone())
+                .aria_selected(active == Some(index))
+                .aria_disabled(item.disabled)
                 .relative()
                 .h(row_height(measure))
                 .mx(px(PAD * measure.scale()))
@@ -270,6 +294,9 @@ fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut Ap
                 .flex()
                 .items_center()
                 .gap(px(10.0 * measure.scale()));
+            if active == Some(index) && !item.disabled {
+                row = row.aria_active_descendant();
+            }
             if let Some(icon) = item.icon {
                 row = row.child(icons::ui(icon, IconSize::S14, ink).size(measure.icon(14.0)));
             }
@@ -290,8 +317,12 @@ fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut Ap
                 let hover_state = state.clone();
                 let choose_menu = menu.clone();
                 let choose_key = key.clone();
+                let hover_key = key.clone();
+                let hover_owner = owner.clone();
+                let choose_owner = owner.clone();
                 row = row
                     .on_mouse_move(move |_, window, _cx| {
+                        if hover_owner.focus(&hover_key, window, _cx).is_none() { return; }
                         let mut state = hover_state.borrow_mut();
                         if state.active != Some(index) {
                             state.active = Some(index);
@@ -300,7 +331,7 @@ fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut Ap
                         }
                     })
                     .on_click(move |_, window, cx| {
-                        choose(&choose_menu, &choose_key, index, window, cx);
+                        choose(&choose_owner, &choose_menu, &choose_key, index, window, cx);
                     });
             }
             column = column.child(row);
@@ -314,12 +345,16 @@ fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut Ap
                 );
             }
         }
-        column.into_any_element()
+        if focus.is_some() {
+            column.into_any_element()
+        } else {
+            gpui::inert("retained-menu-content", "This popup no longer owns input", column).into_any_element()
+        }
     }
 }
 
-fn choose(menu: &Menu, key: &ElementId, index: usize, window: &mut Window, cx: &mut App) {
-    if menu.items.get(index).is_none_or(|item| item.disabled) {
+fn choose(owner: &Owner, menu: &Menu, key: &ElementId, index: usize, window: &mut Window, cx: &mut App) {
+    if owner.focus(key, window, cx).is_none() || menu.items.get(index).is_none_or(|item| item.disabled) {
         return;
     }
     float::close(key, window, cx);
@@ -327,6 +362,7 @@ fn choose(menu: &Menu, key: &ElementId, index: usize, window: &mut Window, cx: &
 }
 
 fn handle(
+    owner: &Owner,
     state: &Rc<RefCell<State>>,
     menu: &Menu,
     key: &ElementId,
@@ -335,6 +371,7 @@ fn handle(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    if owner.focus(key, window, cx).is_none() { return false; }
     let mods = keystroke.modifiers;
     if mods.platform || mods.control || mods.alt {
         return false;
@@ -347,7 +384,7 @@ fn handle(
         "end" => step(None, disabled, -1),
         "enter" => {
             if let Some(index) = active {
-                choose(menu, key, index, window, cx);
+                choose(owner, menu, key, index, window, cx);
             }
             return true;
         }
@@ -385,7 +422,9 @@ fn handle(
 /// a key; focus moves into the menu and returns when it closes.
 pub fn open(key: impl Into<ElementId>, anchor: Bounds<Pixels>, side: Side, menu: Menu, window: &mut Window, cx: &mut App) {
     let key = key.into();
-    let request = FloatRequest::new(key.clone(), anchor, FloatKind::Menu, content(key, menu)).side(side);
+    let owner = Rc::new(Owner::default());
+    let request = FloatRequest::new(key.clone(), anchor, FloatKind::Menu, content(key, menu, owner.clone())).side(side);
+    assert!(owner.content.set(Rc::downgrade(&request.content)).is_ok());
     float::open(request, window, cx);
 }
 
@@ -423,3 +462,7 @@ mod tests {
         assert_eq!(type_ahead(&labels, &disabled, "x", 0), None);
     }
 }
+
+#[cfg(test)]
+#[path = "menu_native_tests.rs"]
+mod native_tests;

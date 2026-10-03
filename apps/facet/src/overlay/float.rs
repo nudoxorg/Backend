@@ -317,6 +317,15 @@ fn state(window: &Window, cx: &mut App) -> Rc<RefCell<Layer>> {
         .clone()
 }
 
+/// The canonical focus of exactly this open card. A retained callback from
+/// a replaced/closing card cannot acquire the new card's focus by key alone.
+/// Reading ownership does not create a layer or a focus handle.
+pub(crate) fn content_focus(key: &ElementId, content: &Content, window: &Window, cx: &App) -> Option<FocusHandle> {
+    let layer = cx.try_global::<Layers>()?.0.get(&window.window_handle().window_id())?.borrow();
+    let card = layer.focus.keys().filter_map(|id| layer.model.card(*id)).find(|card| card.is_open() && card.key == *key && Rc::ptr_eq(&card.content, content))?;
+    layer.focus.get(&card.id).map(|focus| focus.handle.clone())
+}
+
 /// Runs `f` on this window's model at the executor clock, then applies the
 /// consequences (focus restore, the next timer, a repaint).
 fn with_model<R>(window: &mut Window, cx: &mut App, f: impl FnOnce(&mut Model, Instant) -> R) -> R {
