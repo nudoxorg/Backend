@@ -707,6 +707,16 @@ impl Shell {
 
     fn sync_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
+        // App-menu actions can open Settings while no element owns keyboard
+        // focus (for example after the window was blurred). Give that local
+        // page the mounted Shell receiver so its first Escape is actionable.
+        // An existing page or control owner is the return origin and must
+        // remain untouched.
+        if matches!(snapshot.overlay(), Some(Overlay::Settings(_)))
+            && window.focused(cx).is_none()
+        {
+            self.focus.focus(window, cx);
+        }
         let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
         let opening = wants_ask && !self.ask_open;
         let fresh_ask = opening && self.ask_return.is_none();

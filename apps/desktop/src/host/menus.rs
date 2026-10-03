@@ -160,6 +160,8 @@ mod tests {
         rig.settle();
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::Settings(SettingsPage::About)));
+        assert!(rig.cx.update(|window, cx| window.focused(cx)).is_some(),
+            "the app-menu Settings page must mount a keyboard owner even after blur");
         assert!(rig.said().iter().any(|line| line == "About Nudox"));
         rig.keys("escape");
 
