@@ -23,7 +23,7 @@ use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
-    AnyElement, ClickEvent, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    AnyElement, App, AppContext as _, FocusHandle, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
     div, px,
 };
 
@@ -48,6 +48,48 @@ fn go(links: &Links, view: &HandView, n: usize, cx: &mut gpui::App) {
         links.dispatch(Intent::Navigate(route), cx);
         links.dispatch(Intent::TouchHeld(card.held.clone(), super::root::now_ms()), cx);
     }
+}
+
+/// A native control keeps its focus identity across frames. Activation owns
+/// the same local visit and held membership as the pixels, including offline
+/// address selection; it does not borrow index authority to open a saved card.
+fn control(
+    id: SharedString,
+    label: SharedString,
+    links: &Links,
+    held: Option<crate::model::hand::Held>,
+    window: &mut Window,
+    cx: &mut App,
+    act: super::focus::Act,
+) -> gpui::Stateful<gpui::Div> {
+    let namespace = if id.starts_with("hand-mark-") { "mark" } else { "card" };
+    let native_identity = held.as_ref().map_or_else(|| id.to_string(), |held| format!("{namespace}:{}", card_key(held)));
+    let focus = window.use_keyed_state(
+        gpui::ElementId::Name(format!("hand:{native_identity}:native-focus").into()), cx,
+        |_, cx| cx.focus_handle().tab_stop(true),
+    ).read(cx).clone();
+    let snapshot = links.snapshot(cx);
+    let links = links.clone();
+    let route = snapshot.route().clone();
+    let authority = snapshot.key().authority();
+    facet::controls::button::native_button(
+        div().id(id).role(gpui::Role::Button).aria_label(label), &focus,
+        move |window, cx| {
+            let current = links.snapshot(cx);
+            let blocked = links.shell.upgrade().is_none_or(|shell| {
+                let (ask, peek, hints) = shell.read(cx).transients();
+                ask || peek || hints
+            });
+            let member = held.as_ref().map_or_else(
+                || !current.session().hand.is_empty(),
+                |held| current.session().hand.held().iter().any(|current| current.same(held)),
+            );
+            if !blocked && member && current.overlay().is_none()
+                && current.route() == &route && current.key().authority() == authority {
+                act(window, cx);
+            }
+        },
+    )
 }
 
 /// A card's identity on the Mark rung (its Presence key).
@@ -134,18 +176,18 @@ impl Marks {
             return None;
         }
         let open_links = links.clone();
+        let open: super::focus::Act = std::rc::Rc::new(move |_, cx| open_links.shell(cx, |shell, cx| shell.toggle_hand(cx)));
         // Not clipped: the digits rise above the foot while ⌘ is held; the
         // window's own floor clips a stone that sinks.
         let mut row = div()
             .flex()
+            .flex_none()
             .items_center()
             .child(
-                div()
-                    .id("hand-open")
+                control("hand-open".into(), "Open hand".into(), links, None, window, cx, open)
                     .cursor_pointer()
                     .pr(px(6.0 * scale))
-                    .child(text(ty::SMALL, measure, palette.ink3).keyed("hand-open").child("›"))
-                    .on_click(move |_: &ClickEvent, _, cx| open_links.shell(cx, |shell, cx| shell.toggle_hand(cx))),
+                    .child(text(ty::SMALL, measure, palette.ink3).keyed("hand-open").child("›")),
             );
         let keys = facet::ActiveFacet::facet(cx).reveal.keys;
         for item in &items {
@@ -161,7 +203,7 @@ impl Marks {
                     .into_any_element(),
                 _ => mark,
             };
-            let links = links.clone();
+            let go_links = links.clone();
             let view = std::sync::Arc::clone(view);
             let mut cell = div().flex().items_center();
             cell = if follows {
@@ -169,9 +211,18 @@ impl Marks {
             } else {
                 cell.pl(px(6.0 * scale))
             };
+            let id: SharedString = format!("hand-mark-{}", item.index).into();
+            let label: SharedString = format!("Open {} from hand", card.name).into();
+            let action: super::focus::Act = std::rc::Rc::new(move |_, cx| {
+                if let Some(n) = shown { go(&go_links, &view, n, cx); }
+            });
+            let mark_control = if item.is_leaving() {
+                div().id(id).role(gpui::Role::Label).aria_label(label)
+            } else {
+                control(id, label, links, Some(card.held.clone()), window, cx, action)
+            };
             cell = cell.child(
-                div()
-                    .id(SharedString::from(format!("hand-mark-{}", item.index)))
+                mark_control
                     .relative()
                     .cursor_pointer()
                     .child(mark)
@@ -194,12 +245,7 @@ impl Marks {
                                 facet::probe::TextOverflow::Clip,
                                 cap,
                             ))
-                    }))
-                    .on_click(move |_: &ClickEvent, _, cx| {
-                        if let Some(n) = shown {
-                            go(&links, &view, n, cx);
-                        }
-                    }),
+                    })),
             );
             row = row.child(item.slot(cell));
         }
@@ -208,27 +254,27 @@ impl Marks {
 }
 
 /// The Row rung: the hand opened, over the foot.
-pub(crate) fn row(view: &std::sync::Arc<HandView>, at: usize, links: &Links, measure: &Measure, palette: &'static Palette) -> AnyElement {
+pub(crate) fn row(view: &std::sync::Arc<HandView>, at: usize, links: &Links, measure: &Measure, palette: &'static Palette, window: &mut Window, cx: &mut App) -> AnyElement {
     let scale = measure.scale();
-    let card = |n: usize| {
+    let mut card = |n: usize| {
         let held = &view.cards[n];
-        let links = links.clone();
+        let go_links = links.clone();
         let view = std::sync::Arc::clone(view);
-        cut()
+        let action: super::focus::Act = std::rc::Rc::new(move |_, cx| go(&go_links, &view, n, cx));
+        control(format!("hand-card-{n}").into(), format!("Open {} from hand", held.name).into(), links, Some(held.held.clone()), window, cx, action)
+            .child(cut()
             .chamfer(Chamfer::Sm)
             // The card the keyboard stands on wears the focus bevel.
             .bevel(if n == at { Bevel::Focus } else { Bevel::Rest })
             .fill(palette.plate)
-            .id(SharedString::from(format!("hand-card-{n}")))
             .cursor_pointer()
             .flex()
             .items_center()
             .gap(px(6.0 * scale))
             .px(px(8.0 * scale))
-            .h(px(26.0 * scale))
+            .min_h(px(26.0 * scale))
             .child(kind_mark(held.kind, KindSize::Sm, measure, palette))
-            .child(text(ty::MONO_ROW, measure, palette.ink0).keyed(SharedString::from(format!("hand-row:card:{n}"))).child(held.name.clone()))
-            .on_click(move |_: &ClickEvent, _, cx| go(&links, &view, n, cx))
+            .child(text(ty::MONO_ROW, measure, palette.ink0).min_w_0().keyed(SharedString::from(format!("hand-row:card:{n}"))).child(held.name.clone())))
     };
     let mut column = cut()
         .chamfer(Chamfer::Float)
@@ -243,6 +289,7 @@ pub(crate) fn row(view: &std::sync::Arc<HandView>, at: usize, links: &Links, mea
         column = column.child(
             text(ty::CAPTION, measure, palette.ink2)
                 .keyed("hand-row:status")
+                .role(gpui::Role::Status).aria_label(status.to_string())
                 .child(status.to_string()),
         );
     }
@@ -272,6 +319,7 @@ pub(crate) fn row(view: &std::sync::Arc<HandView>, at: usize, links: &Links, mea
             .child(
                 text(ty::CAPTION, measure, palette.ink3)
                     .keyed(SharedString::from(format!("hand-row:sentence:{}", road.cards.first().copied().unwrap_or_default())))
+                    .role(gpui::Role::Label).aria_label(SharedString::from(road.sentence.clone()))
                     .child(SharedString::from(road.sentence.clone())),
             );
     }

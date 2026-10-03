@@ -89,6 +89,61 @@ fn an_empty_hand_shows_nothing_in_the_foot(cx: &mut TestAppContext) {
     assert!(row(&mut rig).is_empty(), "H on an empty hand opens nothing");
 }
 
+fn native_tree(rig: &mut Rig) -> serde_json::Value {
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native hand tree");
+    serde_json::from_str(&json).expect("native hand JSON")
+}
+
+#[gpui::test]
+fn native_hand_exposes_saved_card_controls_and_visible_road_explanations(cx: &mut TestAppContext) {
+    let mut rig = two_held(cx);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.keys("h");
+    for percent in [100_u16, 150, 200] {
+        rig.go(Intent::ZoomTo { display: display.clone(), percent });
+        for width in [360.0, 480.0, 663.0, 1440.0] {
+            rig.cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.0)));
+            rig.settle();
+            let tree = native_tree(&mut rig);
+            let nodes = tree["nodes"].as_object().expect("native nodes");
+            for label in ["Open hand", "Open relation_label from hand", "Open RelationLabel from hand"] {
+                let node = nodes.values().find(|node| node["aria"]["label"].as_str() == Some(label)).expect("native hand button");
+                assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+                assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
+            }
+            assert!(nodes.values().any(|node| node["aria"]["label"].as_str() == Some("from Link to RelationLabel, in one step")), "native Hand must say the sentence it paints");
+            rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
+            let ledger = painted(&mut rig);
+            for text in ledger.texts.iter().filter(|text| text.key.starts_with("hand-row:")) {
+                assert!(!text.clipped_without_ellipsis() && !text.clipped_vertically(), "{width}px/{percent}%: {text:?}");
+                assert!(text.bounds.x >= -0.5 && text.bounds.x + text.bounds.width <= width + 0.5, "Hand text leaves window: {text:?}");
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn native_hand_card_focus_cannot_activate_its_replacement_after_release(cx: &mut TestAppContext) {
+    let mut rig = two_held(cx);
+    rig.keys("h");
+    native_tree(&mut rig);
+    let card = rig.cx.debug_bounds("hand-card-0").expect("first native card");
+    rig.cx.simulate_event(gpui::MouseDownEvent { position: card.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+    let coordinate = super::tests::coordinate("relation_label");
+    let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().iter()
+        .find(|held| held.id.as_ref().is_some_and(|id| id.as_str() == coordinate)).expect("the displayed first held card").clone());
+    rig.go(Intent::LetGo(held));
+    rig.cx.simulate_event(gpui::MouseUpEvent { position: card.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1 });
+    rig.settle();
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home), "a press on a released card cannot open the replacement");
+    let replacement = rig.cx.debug_bounds("hand-card-0").expect("replacement card");
+    rig.cx.simulate_click(replacement.center(), gpui::Modifiers::default());
+    rig.settle();
+    assert_eq!(rig.route(), page_route("RelationLabel"), "the fresh native click selects the saved address");
+}
+
 #[gpui::test]
 fn the_hand_is_what_a_restart_restores(cx: &mut TestAppContext) {
     let rig = two_held(cx);
