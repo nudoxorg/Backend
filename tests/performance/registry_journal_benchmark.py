@@ -6,11 +6,12 @@ a private copy of a prepared workspace, drives the supplied CLI through the
 real ``index-search`` command, follows every cursor, and checks every result
 against labels recorded independently from the source PURLs.
 
-The first pass includes creation of the durable search projection. A second
-pass reopens the same workspace in a fresh locald process and measures the
-cold durable open and warm repeated queries separately. Timings include one
-CLI process and local transport round trip per page; they are end-to-end
-surface timings, not claims about scorer-only latency.
+The first pass measures the supplied workspace's first open. It may build a
+projection only when the copied template did not already contain one; a
+retained projection is reported as an existing-index open. A second pass
+reopens the same workspace in a fresh locald process. Timings include one CLI
+process and local transport round trip per page; they are end-to-end surface
+timings, not claims about scorer-only latency.
 """
 
 from __future__ import annotations
@@ -43,6 +44,12 @@ DEFAULT_WORKSPACE = Path(
     "/Users/mileswirht/Downloads/backend/.local/live-maven-replay/"
     "20260930T054321Z/case/workspace"
 )
+DEFAULT_MAVEN_JOURNAL_SHA256 = "7b156608e0427b60a7fd394f1d4d0c4b68aa7d7df6d55f0b12a1da80f9f36899"
+DEFAULT_MAVEN_LABELS_SHA256 = "16475bf6c658d380873e01c5555e888093a052cb372699690f4e19b9c7d927bd"
+MAX_JOURNAL_BYTES = 128 * 1024 * 1024
+MAX_LABEL_BYTES = 16 * 1024 * 1024
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_LOCK_BYTES = 16 * 1024 * 1024
 
 
 def sha256(path: Path) -> str:
@@ -51,6 +58,43 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def read_frozen_file(path: Path, maximum_bytes: int, label: str) -> bytes:
+    """Read one bounded regular file and reject links and mid-read replacement."""
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise ValueError(f"{label} must be a single-link regular file: {path}")
+    if before.st_size > maximum_bytes:
+        raise ValueError(f"{label} exceeds the {maximum_bytes}-byte bound: {path}")
+    with path.open("rb") as stream:
+        payload = stream.read(maximum_bytes + 1)
+    after = path.lstat()
+    if (
+        len(payload) > maximum_bytes
+        or len(payload) != before.st_size
+        or (before.st_dev, before.st_ino, before.st_size)
+        != (after.st_dev, after.st_ino, after.st_size)
+        or not stat.S_ISREG(after.st_mode)
+        or after.st_nlink != 1
+    ):
+        raise ValueError(f"{label} changed while it was being frozen: {path}")
+    return payload
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def owner_environment(endpoint: Path) -> dict[str, str]:
+    """Remove inherited service policy and prevent CLI daemon auto-start."""
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("BACKEND_")
+    }
+    environment["BACKEND_LOCALD_BIN"] = str(endpoint.parent / "no-autostart-locald")
+    return environment
 
 
 def tree_bytes(path: Path) -> int:
@@ -158,7 +202,18 @@ def snapshot_executable(path: Path) -> dict[str, Any]:
     resolved = path.resolve(strict=True)
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise ValueError(f"executable is not a runnable file: {resolved}")
-    return {"path": str(resolved), "sha256": sha256(resolved), "bytes": resolved.stat().st_size}
+    before = resolved.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"executable is not a regular file: {resolved}")
+    digest = sha256(resolved)
+    after = resolved.lstat()
+    if (before.st_dev, before.st_ino, before.st_size) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+    ) or not stat.S_ISREG(after.st_mode):
+        raise ValueError(f"executable changed while its digest was measured: {resolved}")
+    return {"path": str(resolved), "sha256": digest, "bytes": after.st_size}
 
 
 def run_cli_page(
@@ -189,10 +244,7 @@ def run_cli_page(
     ]
     if cursor is not None:
         command.extend(("--cursor", cursor))
-    environment = os.environ.copy()
-    # A failed explicit owner must fail closed; the CLI may attach, but must
-    # never quietly start a second daemon with a different binary.
-    environment["BACKEND_LOCALD_BIN"] = str(endpoint.parent / "no-autostart-locald")
+    environment = owner_environment(endpoint)
     started = time.perf_counter_ns()
     completed = subprocess.run(
         command,
@@ -232,6 +284,7 @@ def search_query(
     observed: list[str] = []
     page_latencies: list[int] = []
     page_sizes: list[int] = []
+    snapshot: list[int] | None = None
     started = time.perf_counter_ns()
     for page_number in range(1, 10_001):
         response, elapsed = run_cli_page(
@@ -248,13 +301,28 @@ def search_query(
         records = response.get("records")
         if not isinstance(records, list):
             raise ValueError(f"query {query!r} response has no records array")
-        operands = [record.get("operand") for record in records if isinstance(record, dict)]
+        if any(not isinstance(record, dict) for record in records):
+            raise ValueError(f"query {query!r} returned a malformed non-object record")
+        operands = [record.get("operand") for record in records]
         if any(not isinstance(operand, str) for operand in operands):
             raise ValueError(f"query {query!r} returned a record without an exact operand")
         observed.extend(operands)
         page_sizes.append(len(operands))
-        info = response.get("index_search_page") or {}
-        next_cursor = info.get("next_cursor") if isinstance(info, dict) else None
+        info = response.get("index_search_page")
+        if not isinstance(info, dict):
+            raise ValueError(f"query {query!r} response has no index-search page envelope")
+        page_snapshot = info.get("snapshot")
+        if (
+            not isinstance(page_snapshot, list)
+            or len(page_snapshot) != 32
+            or any(not isinstance(value, int) or value < 0 or value > 255 for value in page_snapshot)
+        ):
+            raise ValueError(f"query {query!r} returned a malformed snapshot identity")
+        if snapshot is None:
+            snapshot = page_snapshot
+        elif page_snapshot != snapshot:
+            raise ValueError(f"query {query!r} cursor chain crossed index snapshots")
+        next_cursor = info.get("next_cursor")
         if next_cursor is None:
             break
         if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
@@ -271,6 +339,7 @@ def search_query(
         "page_elapsed_ns": page_latencies,
         "page_sizes": page_sizes,
         "observed": observed,
+        "snapshot": snapshot,
     }
 
 
@@ -285,8 +354,7 @@ def wait_ready(
     started = time.perf_counter_ns()
     deadline = time.monotonic() + timeout_seconds
     last_error = ""
-    environment = os.environ.copy()
-    environment["BACKEND_LOCALD_BIN"] = str(endpoint.parent / "no-autostart-locald")
+    environment = owner_environment(endpoint)
     while time.monotonic() < deadline:
         if locald.poll() is not None:
             raise RuntimeError(f"locald exited before readiness with code {locald.returncode}")
@@ -377,24 +445,63 @@ def main() -> int:
     locald_path = args.locald.resolve(strict=True)
     cli_path = args.cli.resolve(strict=True)
     build_manifest_path = args.build_manifest.resolve(strict=True)
-    build_manifest = json.loads(build_manifest_path.read_text(encoding="utf-8"))
+    script_path = Path(__file__).resolve(strict=True)
+    repository = script_path.parents[2]
+    lock_path = repository / "Cargo.lock"
+
+    journal_bytes = read_frozen_file(journal, MAX_JOURNAL_BYTES, "registry journal")
+    labels_bytes = read_frozen_file(labels_path, MAX_LABEL_BYTES, "independent labels")
+    manifest_bytes = read_frozen_file(build_manifest_path, MAX_MANIFEST_BYTES, "build manifest")
+    lock_bytes = read_frozen_file(lock_path, MAX_LOCK_BYTES, "Cargo.lock")
+    runner_bytes = read_frozen_file(script_path, MAX_MANIFEST_BYTES, "benchmark runner")
+    journal_digest = sha256_bytes(journal_bytes)
+    labels_digest = sha256_bytes(labels_bytes)
+    manifest_digest = sha256_bytes(manifest_bytes)
+    lock_digest = sha256_bytes(lock_bytes)
+    runner_digest = sha256_bytes(runner_bytes)
+    labels = json.loads(labels_bytes)
+    build_manifest = json.loads(manifest_bytes)
+    if not isinstance(labels, dict) or not isinstance(build_manifest, dict):
+        raise ValueError("labels and build manifest must each be JSON objects")
     if build_manifest.get("schema") != "nudox.runtime-build-manifest.v1":
         raise ValueError("runtime build manifest has an unsupported schema")
-    if not build_manifest.get("source", {}).get("clean"):
+    source_manifest = build_manifest.get("source")
+    if not isinstance(source_manifest, dict) or not source_manifest.get("clean"):
         raise ValueError("runtime build manifest must identify a clean source revision")
+    executable_manifest = build_manifest.get("executables")
+    if not isinstance(executable_manifest, dict):
+        raise ValueError("runtime build manifest must contain an executable map")
+    git_revision_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True, capture_output=True, check=False
+    )
+    if git_revision_result.returncode:
+        raise RuntimeError(f"could not identify source revision: {git_revision_result.stderr[-2000:]}")
+    git_revision = git_revision_result.stdout.strip()
+    if source_manifest.get("commit") != git_revision:
+        raise ValueError("runtime build manifest source commit does not match the benchmark source tree")
+    git_status_result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if git_status_result.returncode or git_status_result.stdout.strip():
+        raise ValueError("benchmark source tree must be clean before measurement")
+    if len(journal_bytes) > MAX_JOURNAL_BYTES:
+        raise ValueError("registry journal exceeded its frozen read bound")
+    if len(journal_bytes) != journal.stat().st_size:
+        raise ValueError("registry journal size changed after its frozen read")
     for name, executable in (("backend-locald", locald_path), ("backend-cli", cli_path)):
-        recorded = build_manifest.get("executables", {}).get(name)
+        recorded = executable_manifest.get(name)
         current = snapshot_executable(executable)
         if not isinstance(recorded, dict) or any(
             recorded.get(key) != current.get(key) for key in ("path", "sha256", "bytes")
         ):
             raise ValueError(f"{name} does not match the frozen runtime build manifest")
-    output = args.output.resolve()
+    output = args.output.resolve(strict=False)
     if output.exists():
         parser.error(f"output already exists; choose a fresh path: {output}")
-    output.mkdir(parents=True, mode=0o700)
-
-    labels = json.loads(labels_path.read_text(encoding="utf-8"))
     queries = labels.get("queries")
     if not isinstance(queries, list) or not queries:
         raise ValueError("independent labels must contain a nonempty query list")
@@ -412,20 +519,67 @@ def main() -> int:
         if (
             not isinstance(item, dict)
             or not isinstance(item.get("query"), str)
+            or not item["query"].strip()
             or not isinstance(item.get("expected"), list)
             or any(not isinstance(value, str) for value in item["expected"])
             or len(item["expected"]) != len(set(item["expected"]))
         ):
             raise ValueError(f"malformed independent query label: {item!r}")
-    journal_digest = sha256(journal)
-    journal_size = journal.stat().st_size
+    journal_size = len(journal_bytes)
     if labels.get("journal_sha256") != journal_digest:
         raise ValueError("independent labels were recorded against a different journal")
-    if journal_size != 722_663 and not args.allow_non_maven_dataset:
+    if not args.allow_non_maven_dataset and labels_digest != DEFAULT_MAVEN_LABELS_SHA256:
+        raise ValueError("default Maven labels do not match the frozen independent-label snapshot")
+    if (
+        not args.allow_non_maven_dataset
+        and (journal_size != 722_663 or journal_digest != DEFAULT_MAVEN_JOURNAL_SHA256)
+    ):
         raise ValueError(f"expected the retained 722,663-byte Maven journal, found {journal_size}")
     template_journal = workspace_template / "registry-discovery" / "catalog.journal"
-    if sha256(template_journal) != journal_digest:
-        raise ValueError("workspace template does not contain the exact labeled Maven journal")
+    template_journal_bytes = read_frozen_file(
+        template_journal, MAX_JOURNAL_BYTES, "workspace template discovery journal"
+    )
+    if sha256_bytes(template_journal_bytes) != journal_digest:
+        raise ValueError("workspace template does not contain the exact label-bound journal")
+    if not workspace_template.is_dir() or not project_template.is_dir():
+        raise ValueError("workspace and project templates must be directories")
+    workspace_template_bytes = tree_bytes(workspace_template)
+    project_template_bytes = tree_bytes(project_template)
+
+    executable_snapshots = {
+        "backend-locald": snapshot_executable(locald_path),
+        "backend-cli": snapshot_executable(cli_path),
+    }
+
+    def verify_frozen_inputs(stage: str) -> None:
+        frozen_paths = (
+            (journal, journal_bytes, MAX_JOURNAL_BYTES, "registry journal"),
+            (labels_path, labels_bytes, MAX_LABEL_BYTES, "independent labels"),
+            (build_manifest_path, manifest_bytes, MAX_MANIFEST_BYTES, "build manifest"),
+            (lock_path, lock_bytes, MAX_LOCK_BYTES, "Cargo.lock"),
+            (script_path, runner_bytes, MAX_MANIFEST_BYTES, "benchmark runner"),
+        )
+        for path, expected_bytes, maximum, label in frozen_paths:
+            if read_frozen_file(path, maximum, label) != expected_bytes:
+                raise ValueError(f"{label} changed {stage}: {path}")
+        for name, executable in (("backend-locald", locald_path), ("backend-cli", cli_path)):
+            if snapshot_executable(executable) != executable_snapshots[name]:
+                raise ValueError(f"{name} binary changed {stage}: {executable}")
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repository, text=True, capture_output=True, check=False
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if revision.returncode or revision.stdout.strip() != git_revision or status.returncode or status.stdout.strip():
+            raise ValueError(f"source tree changed {stage}")
+
+    verify_frozen_inputs("before preparing the private workspace")
+    output.mkdir(parents=True, mode=0o700)
     work = output / "private-run"
     work.mkdir(mode=0o700)
     workspace = work / "workspace"
@@ -436,13 +590,27 @@ def main() -> int:
     if not stat.S_ISDIR(registry_directory.lstat().st_mode):
         raise ValueError(f"copied registry state directory is not a real directory: {registry_directory}")
     make_private_owner_file(registry_directory / "advisory-authority.json")
-    if sha256(workspace / "registry-discovery" / "catalog.journal") != journal_digest:
+    if sha256_bytes(
+        read_frozen_file(
+            workspace / "registry-discovery" / "catalog.journal",
+            MAX_JOURNAL_BYTES,
+            "private discovery journal",
+        )
+    ) != journal_digest:
         raise ValueError("private workspace copy changed the labeled journal")
+
+    search_root = workspace / "registry-discovery" / "catalog-search-v1"
+    if search_root.is_symlink():
+        raise ValueError(f"refusing symlinked search projection in private workspace: {search_root}")
+    if search_root.exists() and not search_root.is_dir():
+        raise ValueError(f"search projection path is not a directory: {search_root}")
+    projection_existed_before = search_root.is_dir()
+    projection_bytes_before = tree_bytes(search_root) if projection_existed_before else 0
 
     socket_dir = Path(tempfile.mkdtemp(prefix="nx-rij-"))
     endpoint = socket_dir / "locald.sock"
     log = (output / "locald.log").open("w", encoding="utf-8")
-    environment = os.environ.copy()
+    environment = owner_environment(endpoint)
     locald_command = [
         str(locald_path),
         "--workspace",
@@ -451,7 +619,10 @@ def main() -> int:
         str(endpoint),
         "--profile",
         "builtin",
+        "--registry-offline",
         "--registry-discovery-offline",
+        "--advisory-offline",
+        "--forge-offline",
         "--idle-timeout-ms",
         "0",
     ]
@@ -460,10 +631,10 @@ def main() -> int:
     owner_rss: int | None = None
     owner_rss_sample_count = 0
     startup_ns = 0
-    passes: dict[str, list[dict[str, Any]]] = {"initial": [], "reopen": []}
-    projection_bytes_after_build: int | None = None
+    passes: dict[str, list[dict[str, Any]]] = {"first_open": [], "reopen": []}
+    projection_bytes_after_first_open: int | None = None
     workspace_bytes_before = tree_bytes(workspace)
-    workspace_bytes_after_build: int | None = None
+    workspace_bytes_after_first_open: int | None = None
     first_exit: int | None = None
     first_health: dict[str, Any] | None = None
     reopen_health: dict[str, Any] | None = None
@@ -483,6 +654,7 @@ def main() -> int:
 
     def measure_round(round_name: str, process: subprocess.Popen[str]) -> dict[str, Any]:
         query_rows: list[dict[str, Any]] = []
+        round_snapshot: list[int] | None = None
         for item in labels["queries"]:
             result = search_query(
                 cli_path,
@@ -495,6 +667,10 @@ def main() -> int:
             )
             expected = item["expected"]
             observed = result["observed"]
+            if round_snapshot is None:
+                round_snapshot = result["snapshot"]
+            elif result["snapshot"] != round_snapshot:
+                raise ValueError(f"index snapshot changed between queries in {round_name}")
             query_rows.append(
                 {
                     "query": item["query"],
@@ -504,6 +680,7 @@ def main() -> int:
                     "missing": sorted(set(expected) - set(observed)),
                     "unexpected": sorted(set(observed) - set(expected)),
                     "result_order": observed,
+                    "snapshot": result["snapshot"],
                     "page_sizes": result["page_sizes"],
                     "page_latency_ns": result["page_elapsed_ns"],
                     "page_latency_ms": [round(value / 1_000_000, 3) for value in result["page_elapsed_ns"]],
@@ -518,22 +695,23 @@ def main() -> int:
     process: subprocess.Popen[str] | None = None
     sampler: RssSampler | None = None
     try:
+        verify_frozen_inputs("before first owner start")
         process, sampler = start_owner()
         first_owner_pid = process.pid
         startup_ns, first_health = wait_ready(
             process, cli_path, project, workspace, endpoint, args.timeout_seconds
         )
         for repetition in range(args.repetitions):
-            passes["initial"].append(measure_round(f"first-open-{repetition + 1}", process))
-        workspace_bytes_after_build = tree_bytes(workspace)
-        search_root = workspace / "registry-discovery" / "catalog-search-v1"
-        projection_bytes_after_build = tree_bytes(search_root) if search_root.is_dir() else 0
+            passes["first_open"].append(measure_round(f"first-open-{repetition + 1}", process))
+        workspace_bytes_after_first_open = tree_bytes(workspace)
+        projection_bytes_after_first_open = tree_bytes(search_root) if search_root.is_dir() else 0
         owner_rss = sampler.stop()
         owner_rss_sample_count += len(sampler.values)
         first_exit = stop_owner(process)
         process = None
         sampler = None
 
+        verify_frozen_inputs("before cold-reopen owner start")
         process, sampler = start_owner()
         reopen_owner_pid = process.pid
         reopen_start, reopen_health = wait_ready(
@@ -557,8 +735,15 @@ def main() -> int:
         log.close()
         shutil.rmtree(socket_dir, ignore_errors=True)
 
-    journal_after = sha256(journal)
-    copied_journal_after = sha256(workspace / "registry-discovery" / "catalog.journal")
+    verify_frozen_inputs("after all owner processes stopped")
+    journal_after = sha256_bytes(read_frozen_file(journal, MAX_JOURNAL_BYTES, "registry journal"))
+    copied_journal_after = sha256_bytes(
+        read_frozen_file(
+            workspace / "registry-discovery" / "catalog.journal",
+            MAX_JOURNAL_BYTES,
+            "private discovery journal",
+        )
+    )
     correctness = all(
         row["exact_membership"]
         for phase in passes.values()
@@ -567,7 +752,7 @@ def main() -> int:
     )
     first_pages = [
         round_row["queries"][index]["page_latency_ns"][0]
-        for round_row in passes["initial"][:1]
+        for round_row in passes["first_open"][:1]
         for index in range(len(labels["queries"]))
     ]
     reopen_pages = [
@@ -584,34 +769,35 @@ def main() -> int:
             "journal_sha256": journal_digest,
             "journal_bytes": journal_size,
             "workspace_template": str(workspace_template),
+            "workspace_template_file_bytes": workspace_template_bytes,
+            "project_template_file_bytes": project_template_bytes,
             "private_workspace": str(workspace),
             "private_journal_sha256_after": copied_journal_after,
             "source_journal_sha256_after": journal_after,
             "labels_path": str(labels_path),
-            "labels_sha256": sha256(labels_path),
+            "labels_sha256": labels_digest,
             "independent_label_scope": labels.get("scope"),
             "locald": snapshot_executable(locald_path),
             "cli": snapshot_executable(cli_path),
             "binary_source_commit": build_manifest["source"]["commit"],
             "build_manifest": str(build_manifest_path),
-            "build_manifest_sha256": sha256(build_manifest_path),
+            "build_manifest_sha256": manifest_digest,
+            "build_toolchain": build_manifest.get("toolchain"),
             "benchmark_runner": {
-                "path": str(Path(__file__).resolve()),
-                "sha256": sha256(Path(__file__).resolve()),
+                "path": str(script_path),
+                "sha256": runner_digest,
             },
             "python": sys.version,
             "platform": platform.platform(),
             "machine": platform.machine(),
-            "git_revision": subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=Path(__file__).resolve().parents[2],
-                text=True,
-                capture_output=True,
-                check=False,
-            ).stdout.strip(),
+            "git_revision": git_revision,
             "nix_shell": os.environ.get("IN_NIX_SHELL"),
-            "cargo_lock_sha256": sha256(Path(__file__).resolve().parents[2] / "Cargo.lock"),
+            "cargo_lock_path": str(lock_path),
+            "cargo_lock_sha256": lock_digest,
+            "cargo_lock_bytes": len(lock_bytes),
+            "frozen_inputs_rechecked_before_and_after": True,
             "locald_argv": locald_command,
+            "inherited_backend_environment": "all BACKEND_* variables removed; explicit offline flags supplied",
         },
         "configuration": {
             "non_maven_dataset_opt_in": args.allow_non_maven_dataset,
@@ -620,8 +806,13 @@ def main() -> int:
             "latency_boundary": "one backend-cli process + local socket roundtrip per page",
             "projection_path": str(workspace / "registry-discovery" / "catalog-search-v1"),
             "workspace_bytes_before_first_open": workspace_bytes_before,
-            "workspace_bytes_after_first_open": workspace_bytes_after_build,
-            "projection_bytes_after_first_open": projection_bytes_after_build,
+            "workspace_bytes_after_first_open": workspace_bytes_after_first_open,
+            "projection_present_before_first_open": projection_existed_before,
+            "projection_state_before_first_open": (
+                "preexisting-projection-open" if projection_existed_before else "absent-before-first-open"
+            ),
+            "projection_bytes_before_first_open": projection_bytes_before,
+            "projection_bytes_after_first_open": projection_bytes_after_first_open,
             "locald_pid_first_open": first_owner_pid,
             "locald_pid_cold_reopen": reopen_owner_pid,
             "sampled_peak_locald_rss_bytes_across_processes": owner_rss,
