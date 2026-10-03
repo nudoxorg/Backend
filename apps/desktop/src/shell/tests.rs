@@ -1504,6 +1504,76 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     assert!(matches!(gate.state(), OwnerState::Starting), "native Retry asks the failed owner to restart");
 }
 
+/// A local page must own the first submitted body frame. Accessibility is
+/// built from the new Reader tree even while an opening plate can still
+/// expose the previous page's pixels; inspect both native outputs together.
+#[gpui::test]
+fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    rig.draw();
+    rig.repaint();
+    assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text|
+        text.text.to_string().contains("The packages around your projects could not be read"))),
+        "the first native frame really paints the failed Home body");
+
+    rig.cx.simulate_keystrokes("cmd-,");
+    rig.cx.run_until_parked();
+    rig.draw_frame();
+    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()),
+        Some(crate::navigation::Overlay::Settings(crate::navigation::SettingsPage::Appearance))));
+    let (paint, ax) = rig.cx.update(|window, _| {
+        (window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
+         window.debug_a11y_tree_json().expect("native Settings tree"))
+    });
+    assert!(paint.iter().any(|text| text == "Theme") && paint.iter().any(|text| text == "Contrast"),
+        "Settings controls paint on the first native frame: {paint:?}");
+    assert!(!paint.iter().any(|text| text.contains("The packages around your projects could not be read")),
+        "the old failed Home cannot remain under the local page: {paint:?}");
+    assert!(ax.contains("Appearance") && ax.contains("Theme") && ax.contains("Contrast"),
+        "native accessibility and pixels describe the same Settings body: {ax}");
+}
+
+#[gpui::test]
+fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    rig.draw();
+    rig.repaint();
+    let inbox = native_bounds(&mut rig, "button", "Inbox", true).expect("native Inbox control");
+    rig.cx.simulate_click(inbox.center(), Modifiers::default());
+    rig.cx.run_until_parked();
+    rig.draw_frame();
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()),
+        Some(crate::navigation::Overlay::Inbox));
+    let (paint, ax) = rig.cx.update(|window, _| {
+        (window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
+         window.debug_a11y_tree_json().expect("native Inbox tree"))
+    });
+    assert!(paint.iter().any(|text| text.contains("Nothing followed yet")),
+        "Inbox's local explanation paints on the first native frame: {paint:?}");
+    assert!(!paint.iter().any(|text| text.contains("The packages around your projects could not be read")),
+        "the old failed Home cannot remain under Inbox: {paint:?}");
+    assert!(ax.contains("Nothing followed yet"),
+        "native accessibility and pixels describe the same Inbox body: {ax}");
+}
+
 /// The lead's report: on a symbol page, Tab, J and Space each changed
 /// nothing. Confirms all three are wired end to end on a fresh page: Tab
 /// moves the keyboard zone, J walks the reader's focus, and Space peeks a
