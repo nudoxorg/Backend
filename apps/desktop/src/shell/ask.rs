@@ -1360,6 +1360,17 @@ mod tests {
         });
         rig.settle();
 
+        // Keep the Hand's raw key session open under Ask. The
+        // first character tests native text delivery; Backspace tests that
+        // the covered Hand cannot let go of the saved card instead.
+        rig.keys("cmd-d");
+        let held = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _|
+            store.snapshot().session().hand.held().len());
+        assert_eq!(held(&mut rig), 1, "fixture page is held");
+        rig.keys("h");
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.chrome_words(cx))
+            .contains(&("hand", "open".to_owned())), "Hand is open behind Ask");
+
         let open_from_button = |rig: &mut Rig| {
             let ledger = crate::shell::anatomy_tests::painted(rig);
             let button = ledger.targets.iter().find(|target| target.key == "here")
@@ -1388,17 +1399,25 @@ mod tests {
         };
 
         let (ask, input) = open_from_button(&mut rig);
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.chrome_words(cx))
+            .contains(&("hand", "open".to_owned())), "Ask covers an open Hand");
         rig.keys("f");
         assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "f",
             "one platform key reaches the editor without a second click");
         assert!(matches!(ask.read_with(rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
         assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
             "plain f inside Ask cannot start body hints");
+        rig.keys("backspace");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "",
+            "Backspace edits the focused Ask input while Hand is open");
+        assert_eq!(held(&mut rig), 1, "Backspace cannot let go of a covered Hand card");
 
         rig.keys("escape");
         rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
             &crate::runtime::owner::OwnerFault::Lost("fixture owner unavailable".into()), cx));
         rig.settle();
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.chrome_words(cx))
+            .contains(&("hand", "open".to_owned())), "owner loss leaves the local Hand session open");
         rig.keys("f");
         assert!(rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
             "an uncovered page first owns its hint session");
@@ -1409,6 +1428,10 @@ mod tests {
         assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "r",
             "owner loss cannot prevent local Ask typing or let old hints eat it");
         assert!(matches!(ask.read_with(rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
+        rig.keys("backspace");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "",
+            "offline Backspace still belongs to the native editor");
+        assert_eq!(held(&mut rig), 1, "owner loss cannot revive the covered Hand keyboard session");
     }
 
     #[test]

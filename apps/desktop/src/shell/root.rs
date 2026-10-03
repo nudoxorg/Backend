@@ -1222,7 +1222,7 @@ impl Shell {
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // ↵ in the open hand goes to the card it stands on.
-        if self.hand_open && self.hand_key("enter", cx) {
+        if self.hand_open && self.page_keyboard_session_owns(window, cx) && self.hand_key("enter", cx) {
             return;
         }
         if let Some(target) = self.current(cx) {
@@ -1442,6 +1442,16 @@ impl Shell {
         self.page_input_allowed(cx) && self.target_structure_current(scope, cx)
     }
 
+    /// Hints and the open Hand are keyboard sessions on the uncovered page.
+    /// A mounted editor or local overlay owns its own keys, even if a Hand
+    /// row remains painted beneath it or a hint session has not retired yet.
+    fn page_keyboard_session_owns(&self, window: &mut Window, cx: &mut App) -> bool {
+        self.page_input_allowed(cx)
+            && !super::titlebar::menu_open(window, cx)
+            && (window.root::<gpui_component::Root>().flatten().is_none()
+                || !window.has_focused_input(cx))
+    }
+
     fn target_structure_current(&self, scope: &HintScope, cx: &App) -> bool {
         let snapshot = self.links.snapshot(cx);
         self.local_activation_scope() == scope.local_input
@@ -1530,16 +1540,20 @@ impl Shell {
                 return;
             }
         }
+        // This is the Shell's capture phase, before a focused input's raw
+        // key/character delivery. Admit both transient keyboard sessions
+        // from the same current owner before either can stop propagation.
+        if !self.page_keyboard_session_owns(window, cx) {
+            if self.hints.take().is_some() { cx.notify(); }
+            return;
+        }
         if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx) {
             cx.stop_propagation();
             return;
         }
-        // Focus can move into a mounted editor without changing the route or
-        // overlay (Find, for example). Retire that old hint owner before it
-        // can consume the editor's first text event.
-        if self.hints.as_ref().is_some_and(|session| !self.hint_scope_current(&session.scope, cx))
-            || (self.hints.is_some() && window.root::<gpui_component::Root>().flatten().is_some()
-                && window.has_focused_input(cx)) {
+        // A route or native target change can revoke a hint without leaving
+        // the uncovered page. Do not consume the key that discovers this.
+        if self.hints.as_ref().is_some_and(|session| !self.hint_scope_current(&session.scope, cx)) {
             self.hints = None;
             cx.notify();
             return;
