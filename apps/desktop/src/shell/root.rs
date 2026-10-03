@@ -41,7 +41,7 @@ use facet::tokens::fluid::COLUMNS_SHARE;
 use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement, IntoElement,
     KeyContext, KeyDownEvent, Modifiers, ModifiersChangedEvent, ParentElement, Render, SharedString,
     Pixels, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window,
     WindowAppearance, div, px,
