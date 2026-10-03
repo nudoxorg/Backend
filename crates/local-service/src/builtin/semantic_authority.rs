@@ -4055,6 +4055,12 @@ mod tests {
             "[package]\nname = \"semantic_recipe_join_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .expect("write minimal Rust package manifest");
+        // Cargo discovers targets before the analyzer installs the admitted
+        // in-memory source frontier. Give it the real package tree first.
+        std::fs::write(package_root.join("src/lib.rs"), LIB).expect("write crate root");
+        std::fs::write(package_root.join("src/child.rs"), CHILD).expect("write child module");
+        let original_lock = package_root.join("Cargo.lock");
+        assert!(!original_lock.exists(), "the real package starts lockless");
 
         let rustc = std::env::var_os("RUSTC").map_or_else(
             || std::path::PathBuf::from("rustc"),
@@ -4138,6 +4144,7 @@ mod tests {
                 .expect("admit complete Rust source set"),
             )
             .expect("compile real multifile Rust package");
+        assert!(!original_lock.exists(), "offline metadata must keep the generated lock private");
         assert_eq!(staged.artifacts().len(), 2, "both crate sources compile");
         let planes = staged
             .versioned_planes()
