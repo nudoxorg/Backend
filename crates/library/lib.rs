@@ -39,6 +39,7 @@ pub mod protocol;
 mod registry_forge;
 mod registry_native;
 mod rich_graph;
+mod source_atom;
 mod surface;
 mod view;
 mod wire;
@@ -47,6 +48,7 @@ mod wire;
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
 pub use arrangement::QueryWork;
+pub use source_atom::SourceAtomText;
 pub use backend_advisory::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
     AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,
