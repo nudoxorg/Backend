@@ -2,7 +2,11 @@
 
 This extends the [2 October exhaustive checkpoint](../checkpoint-2026-10-02/README.md). It records the current implementation contracts, observed failures, evidence requirements, deployment boundaries, and remaining work. It does **not** declare the GUI or distributed deployment production-ready. Source review, compiled tests, native interaction, and remote service acceptance are separate gates.
 
-## Latest checkpoint: 13:40 UTC
+## Current continuation
+
+The [17:20 UTC integration and failure brief](CONTINUATION-1720.md) supersedes the present-tense status below. It records the composed source candidate, observed subscription recovery, recorder permission boundary, exact remote recipe mismatch, and the remaining acceptance gates. The campaign remains active.
+
+## Earlier checkpoint: 13:40 UTC
 
 This checkpoint supersedes the earlier present-tense sections. The full implementation and acceptance brief continues below; this is the current evidence, integration state, failure classification, and next execution order. The active campaign is not complete and there is no production-readiness claim.
 
