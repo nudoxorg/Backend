@@ -92,7 +92,18 @@ fn owner(page: &SymbolPage) -> (String, Option<String>) {
 }
 
 fn separator_only(line: &str) -> bool {
-    !line.chars().any(char::is_alphanumeric)
+    let mut marks = line.chars().filter(|character| !character.is_whitespace());
+    let Some(mark @ ('-' | '*' | '_')) = marks.next() else {
+        return false;
+    };
+    let mut count = 1;
+    for character in marks {
+        if character != mark {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
 }
 
 /// Doc fragments as blocks in markup: paragraphs (two breaks or a blank
@@ -139,7 +150,7 @@ pub(super) fn blocks(fragments: &[DocFragment]) -> Vec<Block> {
                     if index > 0 {
                         flush(&mut para, &mut out);
                     }
-                    for line in part.lines() {
+                    for (line_index, line) in part.split('\n').enumerate() {
                         if separator_only(line.trim()) {
                             continue;
                         }
@@ -148,10 +159,15 @@ pub(super) fn blocks(fragments: &[DocFragment]) -> Vec<Block> {
                             flush(&mut para, &mut out);
                             continue;
                         }
-                        if !para.is_empty() && !para.ends_with(char::is_whitespace) {
+                        if line_index > 0
+                            && !para.is_empty()
+                            && !para.ends_with(char::is_whitespace)
+                        {
                             para.push(' ');
                         }
-                        para.push_str(line.trim());
+                        // Only line boundaries introduce a soft break. Fragment
+                        // boundaries preserve the author's spaces and punctuation.
+                        para.push_str(line);
                     }
                 }
             }
@@ -434,4 +450,59 @@ pub(super) fn facts(
         });
     }
     facts
+}
+
+#[cfg(test)]
+mod fragment_spacing_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn inline_fragment_boundaries_preserve_spaces_and_punctuation() {
+        let coordinate =
+            crate::model::pages::SymbolRef::new("/abs/project::semantic::00ff::advance_signal")
+                .unwrap();
+        let fragments = [
+            DocFragment::Text(Arc::from("Use ")),
+            DocFragment::Link {
+                label: Arc::from("advance_signal"),
+                target: crate::model::pages::RowKey::from(backend_library::symbol_key(
+                    coordinate.as_str(),
+                )),
+                coordinate: Some(coordinate.clone()),
+            },
+            DocFragment::Text(Arc::from(", then ")),
+            DocFragment::Code(Arc::from("wait()")),
+            DocFragment::Text(Arc::from(".")),
+        ];
+        let blocks = blocks(&fragments);
+        let [Block::Para(markup)] = blocks.as_slice() else {
+            panic!("one paragraph")
+        };
+        assert_eq!(
+            markup,
+            &format!(
+                "Use [advance_signal]({}), then `wait()`.",
+                coordinate.as_str()
+            )
+        );
+        assert_eq!(
+            DocFragment::plain_text(&fragments),
+            "Use advance_signal, then wait()."
+        );
+    }
+
+    #[test]
+    fn only_line_boundaries_insert_soft_breaks() {
+        let fragments = [
+            DocFragment::Text(Arc::from("First\nsecond")),
+            DocFragment::Text(Arc::from("!\n\nThird")),
+        ];
+        let blocks = blocks(&fragments);
+        let [Block::Para(first), Block::Para(third)] = blocks.as_slice() else {
+            panic!("two paragraphs")
+        };
+        assert_eq!(first, "First second!");
+        assert_eq!(third, "Third");
+    }
 }
