@@ -584,8 +584,8 @@ impl Targets {
 
     /// The focused target's bounds, when recorded.
     pub(crate) fn focused_bounds(&self) -> Option<Bounds<Pixels>> {
-        let id = self.recall.focused()?;
-        self.bounds.borrow().get(&id).copied()
+        let target = self.current()?;
+        self.bounds.borrow().get(&target.id).copied()
     }
 
     /// The travelling focus bevel for this region: add it as the region's
@@ -595,6 +595,7 @@ impl Targets {
             keys: ["x", "y", "w", "h"]
                 .map(|axis| ElementId::Name(format!("{}.glow-{axis}", self.name).into())),
             bounds: Rc::clone(&self.bounds),
+            targets: self.list.clone(),
             focused: self.recall.focused().filter(|_| self.active),
             heading: Rc::clone(&self.heading),
             fresh: Rc::clone(&self.fresh),
@@ -727,6 +728,7 @@ pub(crate) struct FocusGlow {
     keys: [ElementId; 4],
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     focused: Option<SharedString>,
+    targets: List,
     heading: Rc<Cell<Option<Bounds<Pixels>>>>,
     fresh: Rc<Cell<bool>>,
     motion: Motion,
@@ -734,6 +736,16 @@ pub(crate) struct FocusGlow {
 }
 
 impl FocusGlow {
+    /// Recalled bounds are geometry, not proof that a target is still mounted.
+    /// The weak list also revokes a cached glow when its region is dropped.
+    fn shown_bounds(&self) -> Option<Bounds<Pixels>> {
+        let id = self.focused.as_ref()?;
+        self.targets
+            .with(|targets| targets.iter().any(|target| &target.id == id))?
+            .then(|| self.bounds.borrow().get(id).copied())
+            .flatten()
+    }
+
     /// The bevel was put away (unseen, and at rest), or a new page arrived:
     /// it comes back on its target as a new bevel, never flying in from where
     /// it was last seen (on another page, before a Back). The probe is told
@@ -817,10 +829,7 @@ impl Element for FocusGlow {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
-        let shown = self
-            .focused
-            .as_ref()
-            .and_then(|id| self.bounds.borrow().get(id).copied());
+        let shown = self.shown_bounds();
         let target = match shown {
             Some(target) => {
                 if self.heading.get().is_none() || self.fresh.get() {
@@ -971,6 +980,42 @@ mod tests {
             recall.left_by(&Route::World).as_deref(),
             Some("row"),
             "and the leave survives that clear"
+        );
+    }
+
+    #[test]
+    fn cached_focus_geometry_requires_a_current_target_and_live_region() {
+        let mut targets = Targets::named("shelf");
+        targets.set_active(true);
+        targets.push(target("row", nothing()));
+        targets.focus("row");
+        let at = Bounds::new(point(px(123.0), px(479.0)), size(px(217.0), px(58.0)));
+        targets.bounds.borrow_mut().insert("row".into(), at);
+        let measure = Measure::new(px(528.0), &facet::Facet::default());
+        let cached = targets.glow(&measure);
+        assert_eq!(cached.shown_bounds(), Some(at));
+        assert_eq!(targets.focused_bounds(), Some(at));
+        targets.begin();
+        assert!(
+            cached.shown_bounds().is_none(),
+            "recalled row geometry cannot paint in the collapsed shelf"
+        );
+        assert!(targets.focused_bounds().is_none());
+        targets.push(target("different-row", nothing()));
+        assert!(
+            cached.shown_bounds().is_none(),
+            "the new current row cannot inherit another row's rectangle"
+        );
+        targets.push(target("row", nothing()));
+        assert_eq!(
+            cached.shown_bounds(),
+            Some(at),
+            "a reused prepaint keeps the admitted row's translated geometry"
+        );
+        drop(targets);
+        assert!(
+            cached.shown_bounds().is_none(),
+            "the glow's weak list cannot retain a dead region"
         );
     }
 }
