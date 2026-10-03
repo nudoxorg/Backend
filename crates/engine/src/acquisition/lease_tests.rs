@@ -295,10 +295,11 @@ fn torn_alternate_slot_keeps_previous_lease_recoverable() {
     let root = fresh_root("torn-slot");
     let store = LeaseStore::open(&root).expect("store");
     let key = test_key();
-    let lease = store
-        .acquire(key, Duration::from_millis(120))
+    let mut lease = store
+        .acquire(key, Duration::from_secs(30))
         .expect("acquire")
         .expect("lease");
+    assert!(lease.renew(Duration::from_secs(30)).expect("second generation"));
     let current = store
         .latest_lease(key)
         .expect("read current lease")
