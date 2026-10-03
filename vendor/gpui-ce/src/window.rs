@@ -8369,6 +8369,13 @@ impl Window {
     }
 
     #[cfg(not(target_family = "wasm"))]
+    /// Deliver an accessibility request through the production native action path.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn simulate_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
+        self.handle_a11y_action(request, cx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn handle_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
         // Action requests can arrive after the accessibility tree was committed. Do not trust
         // only the current listener map: built-in Click handling can synthesize pointer events
