@@ -3,7 +3,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -5398,78 +5398,146 @@ fn distinct_coordinate_registry_journal_process_worker() {
     };
     let root = PathBuf::from(root);
     let worker = env::var("BACKEND_ACQUISITION_JOURNAL_WORKER_ID").expect("worker id");
-    let other = if worker == "one" { "two" } else { "one" };
     let coordinate = format!("pkg:cargo/process-{worker}@1.0.0");
-    let archive = format!("archive payload for {worker}").into_bytes();
+    let archive_one = b"archive payload for one".to_vec();
+    let archive_two = b"archive payload for two".to_vec();
     let endpoint = RegistryEndpoint::new(
         RegistryEcosystem::Cargo,
         "http://127.0.0.1:9/process-journal",
     )
     .expect("endpoint");
-    let package = RemotePackage {
-        coordinate: PackageCoordinate::parse(&coordinate).expect("coordinate"),
+    let package_for = |worker: &str, archive: &[u8], provenance: [u8; 32]| RemotePackage {
+        coordinate: PackageCoordinate::parse(&format!("pkg:cargo/process-{worker}@1.0.0"))
+            .expect("coordinate"),
         integrity: transport::ArchiveIntegrity::Canonical(
-            *CapabilityArtifactId::from_value(&archive).as_bytes(),
+            *CapabilityArtifactId::from_value(archive).as_bytes(),
         ),
-        provenance: ProvenanceDigest::from_authenticated_feed(if worker == "one" {
-            [0x11; 32]
-        } else {
-            [0x22; 32]
-        }),
+        provenance: ProvenanceDigest::from_authenticated_feed(provenance),
         facts: test_facts(),
         native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
-        archive_url: Arc::from("http://127.0.0.1:9/process-journal/archive"),
+        archive_url: Arc::from(format!(
+            "http://127.0.0.1:9/process-journal/{worker}/archive"
+        )),
     };
 
-    struct BarrierTransport {
-        package: RemotePackage,
-        archive: Vec<u8>,
-        barrier: PathBuf,
+    // Both processes model the same immutable feed snapshot. A pending intent
+    // belongs to the shared endpoint cursor, not to either coordinate, so a
+    // producer must return the same page and continuation token for that
+    // cursor in both processes.
+    let mut packages = vec![
+        package_for("one", &archive_one, [0x11; 32]),
+        package_for("two", &archive_two, [0x22; 32]),
+    ];
+    packages.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
+
+    struct ProcessTransport {
+        packages: Vec<RemotePackage>,
+        archives: std::collections::BTreeMap<String, Vec<u8>>,
+        sync: PathBuf,
         worker: String,
-        other: String,
     }
-    impl RegistryTransport for BarrierTransport {
+    impl RegistryTransport for ProcessTransport {
         fn fetch_page(
             &mut self,
             request: FeedRequest,
         ) -> Result<TransportResult<FeedPage>, TransportFailure> {
-            write_test_marker(
-                &self.barrier.join(format!("{}.fetch", self.worker)),
-                b"ready",
-            )
-            .map_err(|_| TransportFailure::Configuration)?;
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while !self.barrier.join(format!("{}.fetch", self.other)).is_file() {
-                if std::time::Instant::now() >= deadline {
-                    return Err(TransportFailure::DownloadUnavailable);
-                }
-                thread::sleep(Duration::from_millis(5));
-            }
-            let next_token = if self.worker == "one" {
-                [0x41; 32]
+            let next_sequence = request.cursor.sequence().saturating_add(1);
+            let next_token: [u8; 32] = Sha256::digest(next_sequence.to_be_bytes()).into();
+            let packages = if request.cursor.sequence() == 0 {
+                self.packages.clone()
             } else {
-                [0x42; 32]
+                Vec::new()
             };
+            if request.cursor.sequence() == 0 {
+                let other = if self.worker == "one" { "two" } else { "one" };
+                let mut captured_page = Vec::new();
+                captured_page.extend_from_slice(&request.cursor.sequence().to_be_bytes());
+                captured_page.extend_from_slice(&request.cursor.token());
+                captured_page.extend_from_slice(&next_token);
+                for package in &packages {
+                    captured_page.extend_from_slice(
+                        &u64::try_from(package.coordinate.as_str().len())
+                            .map_err(|_| TransportFailure::Bounds)?
+                            .to_be_bytes(),
+                    );
+                    captured_page.extend_from_slice(package.coordinate.as_str().as_bytes());
+                    captured_page.extend_from_slice(&package.integrity_version());
+                    captured_page.extend_from_slice(&package.provenance.as_bytes());
+                    captured_page.extend_from_slice(&package.facts.version());
+                    let native_identity = package
+                        .native_metadata
+                        .identity()
+                        .map_err(|_| TransportFailure::Configuration)?;
+                    captured_page.extend_from_slice(&native_identity);
+                    for projection in [
+                        serde_json::to_vec(&package.advisory)
+                            .map_err(|_| TransportFailure::Configuration)?,
+                        serde_json::to_vec(&package.dependency_facts)
+                            .map_err(|_| TransportFailure::Configuration)?,
+                    ] {
+                        captured_page.extend_from_slice(
+                            &u64::try_from(projection.len())
+                                .map_err(|_| TransportFailure::Bounds)?
+                                .to_be_bytes(),
+                        );
+                        captured_page.extend_from_slice(&projection);
+                    }
+                }
+                write_test_marker(
+                    &self.sync.join(format!("{}.page-fetch", self.worker)),
+                    &captured_page,
+                )
+                .map_err(|_| TransportFailure::Configuration)?;
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !self.sync.join(format!("{other}.page-fetch")).is_file() {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(TransportFailure::DownloadUnavailable);
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
             Ok(TransportResult::Available(FeedPage {
                 base: request.cursor,
                 next_token,
-                packages: vec![self.package.clone()],
+                packages,
             }))
         }
 
         fn fetch_archive(
             &mut self,
-            _package: &RemotePackage,
+            package: &RemotePackage,
         ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            let archive_marker = self.sync.join(format!(
+                "{}.archive.{}",
+                self.worker,
+                package
+                    .coordinate
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("unknown")
+            ));
+            write_test_marker(&archive_marker, b"started")
+                .map_err(|_| TransportFailure::Configuration)?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !self.sync.join("release-archive").is_file() {
+                if std::time::Instant::now() >= deadline {
+                    return Err(TransportFailure::DownloadUnavailable);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            let Some(archive) = self.archives.get(package.coordinate.as_str()) else {
+                return Err(TransportFailure::Protocol);
+            };
             Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
-                self.archive.clone(),
+                archive.clone(),
             )))
         }
     }
 
-    let sync = root.join("process-barrier");
+    let sync = root.join("process-start");
     fs::create_dir_all(&sync).expect("barrier directory");
     let (owner, _) =
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
@@ -5479,22 +5547,40 @@ fn distinct_coordinate_registry_journal_process_worker() {
             .expect("worker service");
     let request = crate::acquisition::AcquisitionRequest::for_coordinate(
         endpoint.id().as_bytes(),
-        coordinate,
+        coordinate.clone(),
         CanonicalFeedV1::VERSION,
         0,
     )
     .expect("request");
-    let mut transport = BarrierTransport {
-        package,
-        archive,
-        barrier: sync,
-        worker,
-        other: other.to_owned(),
+    let mut transport = ProcessTransport {
+        packages,
+        archives: [
+            ("pkg:cargo/process-one@1.0.0".to_owned(), archive_one),
+            ("pkg:cargo/process-two@1.0.0".to_owned(), archive_two),
+        ]
+        .into_iter()
+        .collect(),
+        sync: sync.clone(),
+        worker: worker.clone(),
     };
-    assert!(matches!(
-        service.acquire(&request, &mut transport),
-        crate::acquisition::AcquisitionOutcome::Hit(_)
-    ));
+    write_test_marker(&sync.join(format!("{worker}.ready")), b"ready")
+        .expect("signal worker ready");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !sync.join("start").is_file() {
+        if std::time::Instant::now() >= deadline {
+            panic!("timed out waiting for process start rendezvous");
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let outcome = service.acquire(&request, &mut transport);
+    let hit = matches!(&outcome, crate::acquisition::AcquisitionOutcome::Hit(_));
+    let completion: &[u8] = if hit { b"hit" } else { b"not-hit" };
+    write_test_marker(&sync.join(format!("{worker}.done")), completion)
+        .expect("signal worker terminal");
+    assert!(
+        hit,
+        "worker {worker} request {coordinate} returned {outcome:?}"
+    );
 }
 
 #[test]
@@ -5616,31 +5702,113 @@ fn cold_registry_open_does_not_truncate_an_active_partial_frame() {
 }
 
 #[test]
-fn distinct_coordinate_processes_serialize_the_shared_registry_journal() {
+fn distinct_coordinate_processes_converge_on_one_shared_page_and_archive_transfer() {
     let root = temporary("registry-journal-processes");
     let executable = env::current_exe().expect("test executable");
+    let sync = root.join("process-start");
     let spawn_worker = |worker: &str| {
         Command::new(&executable)
             .arg("--nocapture")
             .arg("distinct_coordinate_registry_journal_process_worker")
             .env("BACKEND_ACQUISITION_JOURNAL_WORKER_ROOT", &root)
             .env("BACKEND_ACQUISITION_JOURNAL_WORKER_ID", worker)
+            .env(
+                "BACKEND_ACQUISITION_TRANSFER_BUSY_MARKER",
+                sync.join("transfer-busy"),
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn journal worker")
     };
-    let first = spawn_worker("one");
-    let second = spawn_worker("two");
+    let mut first = spawn_worker("one");
+    let mut second = spawn_worker("two");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !sync.join("one.ready").is_file() || !sync.join("two.ready").is_file() {
+        if std::time::Instant::now() >= deadline {
+            let one_ready = sync.join("one.ready").is_file();
+            let two_ready = sync.join("two.ready").is_file();
+            let _ = first.kill();
+            let _ = second.kill();
+            let first = first.wait_with_output().expect("wait for first worker");
+            let second = second.wait_with_output().expect("wait for second worker");
+            panic!(
+                "workers did not reach the start rendezvous (one ready={one_ready}, two ready={two_ready}); first stderr: {}; second stderr: {}",
+                String::from_utf8_lossy(&first.stderr),
+                String::from_utf8_lossy(&second.stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    write_test_marker(&sync.join("start"), b"start").expect("release process rendezvous");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let one_archive = sync.join("one.archive.process-one@1.0.0");
+    let two_archive = sync.join("two.archive.process-one@1.0.0");
+    while !sync.join("one.page-fetch").is_file()
+        || !sync.join("two.page-fetch").is_file()
+        || !sync.join("transfer-busy").is_file()
+        || (!one_archive.is_file() && !two_archive.is_file())
+    {
+        if std::time::Instant::now() >= deadline {
+            let one_page = sync.join("one.page-fetch").is_file();
+            let two_page = sync.join("two.page-fetch").is_file();
+            let busy = sync.join("transfer-busy").is_file();
+            let one_archive = one_archive.is_file();
+            let two_archive = two_archive.is_file();
+            let _ = first.kill();
+            let _ = second.kill();
+            let first = first.wait_with_output().expect("wait for first worker");
+            let second = second.wait_with_output().expect("wait for second worker");
+            panic!(
+                "overlap rendezvous timed out (pages={one_page}/{two_page}, busy={busy}, archives={one_archive}/{two_archive}); first stderr: {}; second stderr: {}",
+                String::from_utf8_lossy(&first.stderr),
+                String::from_utf8_lossy(&second.stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    write_test_marker(&sync.join("release-archive"), b"release")
+        .expect("release the active archive transfer");
     let first = first.wait_with_output().expect("wait for first worker");
     let second = second.wait_with_output().expect("wait for second worker");
     assert!(
         first.status.success(),
-        "first worker failed: {}",
+        "first worker failed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&first.stdout),
         String::from_utf8_lossy(&first.stderr)
     );
     assert!(
         second.status.success(),
-        "second worker failed: {}",
+        "second worker failed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&second.stdout),
         String::from_utf8_lossy(&second.stderr)
+    );
+
+    assert!(sync.join("one.page-fetch").is_file());
+    assert!(sync.join("two.page-fetch").is_file());
+    assert!(sync.join("transfer-busy").is_file());
+    assert_eq!(
+        fs::read(sync.join("one.page-fetch")).expect("first captured page"),
+        fs::read(sync.join("two.page-fetch")).expect("second captured page"),
+        "both processes must capture the same cursor, token, package identities, and facts"
+    );
+    let archive_fetches: Vec<_> = fs::read_dir(&sync)
+        .expect("read archive fetch markers")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".archive."))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let archive_leader = if one_archive.is_file() { "one" } else { "two" };
+    let mut expected_archives = vec![
+        format!("{archive_leader}.archive.process-one@1.0.0"),
+        format!("{archive_leader}.archive.process-two@1.0.0"),
+    ];
+    expected_archives.sort();
+    let mut archive_fetches = archive_fetches;
+    archive_fetches.sort();
+    assert_eq!(
+        archive_fetches, expected_archives,
+        "the page leader stages both archives once; its contender joins the committed page"
     );
 
     let endpoint = RegistryEndpoint::new(
@@ -5651,7 +5819,7 @@ fn distinct_coordinate_processes_serialize_the_shared_registry_journal() {
     let (owner, recovery) =
         RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Offline, limits())
             .expect("cold replay after concurrent processes");
-    assert_eq!(recovery.cursor.sequence(), 2);
+    assert_eq!(recovery.cursor.sequence(), 1);
     assert_eq!(owner.published_packages().len(), 2);
     fs::remove_dir_all(root).expect("cleanup");
 }

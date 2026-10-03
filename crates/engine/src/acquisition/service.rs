@@ -39,6 +39,7 @@ use super::retry::{CircuitBreaker, RetryPolicy};
 use super::telemetry::{AcquisitionTelemetry, Telemetry};
 
 const ACQUISITION_LEASE_TTL: Duration = Duration::from_secs(30);
+const TRANSFER_BUSY_PROGRESS_WINDOW: Duration = Duration::from_secs(5);
 
 /// Compile-time permission for the low-level registry owner journal writers.
 /// The service module alone can construct this in production.
@@ -209,6 +210,185 @@ fn with_product_registry_journal_fence<T>(
             ))
         },
     )
+}
+
+/// Waits for another process to finish the page that owns the shared feed
+/// cursor. Each journal check releases its endpoint lease before sleeping, so
+/// the current page owner can commit progress while a transfer follower waits.
+/// A timeout leaves the source intent pending and lets the caller retry it.
+fn wait_for_registry_cursor_advance(
+    leases: &LeaseStore,
+    owner: &Arc<Mutex<RegistryOwner>>,
+    source: [u8; ID_BYTES],
+    cursor: [u8; ID_BYTES],
+    window: Duration,
+) -> io::Result<bool> {
+    let deadline = std::time::Instant::now() + window;
+    loop {
+        match with_registry_journal_fence(leases, owner, source, |owner, _capability| {
+            Ok(owner.cursor().token() != cursor)
+        }) {
+            Ok(Some(Ok(true))) => return Ok(true),
+            Ok(Some(Ok(false))) | Ok(None) => {}
+            Ok(Some(Err(error))) => return Err(acquisition_error_to_io(error)),
+            Err(error) => return Err(error),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn transfer_contention_retry<T>() -> AcquisitionOutcome<T> {
+    let delay = RetryPolicy::default().delay(0, None);
+    AcquisitionOutcome::RetryAt(RetryAt {
+        at_millis: now_millis().saturating_add(delay.as_millis().min(u128::from(u64::MAX)) as u64),
+        attempt: 0,
+    })
+}
+
+#[cfg(test)]
+fn record_transfer_busy_for_test() {
+    if let Some(path) = std::env::var_os("BACKEND_ACQUISITION_TRANSFER_BUSY_MARKER") {
+        let _ = std::fs::write(path, std::process::id().to_string());
+    }
+}
+
+fn published_package_matches_page(
+    owner: &RegistryOwner,
+    published: &crate::registry::PublishedPackage,
+    candidate: &crate::registry::RemotePackage,
+) -> bool {
+    if published.coordinate != candidate.coordinate
+        || published.upstream_integrity != candidate.integrity_version()
+    {
+        return false;
+    }
+    // Rebuild only the metadata projection using the already-published
+    // immutable object identity. A matching upstream integrity claim plus an
+    // exact metadata digest proves that the overlapping page response is the
+    // same row the peer committed; no second archive download is needed.
+    let mut projection = published.clone();
+    projection.provenance = candidate.provenance;
+    projection.upstream_integrity = candidate.integrity_version();
+    projection.facts = candidate.facts;
+    projection.native_metadata = candidate.native_metadata.clone();
+    projection.advisory = owner.advisory_for(candidate);
+    projection.dependency_facts = candidate.dependency_facts.clone();
+    projection.metadata_evidence_digest() == published.metadata_evidence_digest()
+}
+
+fn concurrent_page_is_committed(
+    owner: &RegistryOwner,
+    page: &crate::registry::FeedPage,
+    expected_effect: crate::effects::EffectKey,
+    original_cursor: [u8; ID_BYTES],
+    request: &AcquisitionRequest,
+) -> bool {
+    if owner.cursor().token() == original_cursor {
+        return false;
+    }
+    let Ok(coordinate) = PackageCoordinate::parse(request.coordinate.as_ref()) else {
+        return false;
+    };
+    let Some(candidate) = page
+        .packages
+        .iter()
+        .find(|candidate| candidate.coordinate == coordinate)
+    else {
+        return false;
+    };
+    let Some(published) = owner.published(&coordinate) else {
+        return false;
+    };
+    if !published_package_matches_page(owner, published, candidate) {
+        return false;
+    }
+    let Some(committed) = owner.last_receipt() else {
+        return false;
+    };
+    committed.effect == expected_effect
+        && committed.base.token() == original_cursor
+        && committed.target == owner.cursor()
+        && committed.packages.iter().any(|row| {
+            row.coordinate == coordinate
+                && row.metadata_evidence_digest() == published.metadata_evidence_digest()
+        })
+}
+
+fn concurrent_page_outcome(
+    owner: &RegistryOwner,
+    page: &crate::registry::FeedPage,
+    expected_effect: crate::effects::EffectKey,
+    original_cursor: [u8; ID_BYTES],
+    base: &SourceSnapshot,
+    request: &AcquisitionRequest,
+    policy_epoch: u64,
+    observed_at: u64,
+    snapshot_cache: &Arc<Mutex<BTreeMap<CatalogSnapshotKey, Arc<SourceSnapshot>>>>,
+    fact_observations: &Arc<Mutex<BTreeMap<Arc<str>, FactObservation>>>,
+    breaker: &CircuitBreaker,
+) -> Option<AcquisitionOutcome<Arc<RegistryAcquisitionResult>>> {
+    if !concurrent_page_is_committed(owner, page, expected_effect, original_cursor, request) {
+        return None;
+    }
+    let coordinate = PackageCoordinate::parse(request.coordinate.as_ref()).ok()?;
+    let published = owner.published(&coordinate)?.clone();
+    let current_epoch = owner.policy_epoch();
+    if current_epoch != policy_epoch {
+        return Some(transfer_contention_retry());
+    }
+    if request
+        .artifact
+        .is_some_and(|expected| expected != published.raw_object)
+    {
+        return Some(AcquisitionOutcome::Corrupt(CorruptReason::Integrity));
+    }
+    breaker.success();
+    remember_fact_observation(
+        &mut fact_observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request.coordinate.as_ref(),
+        observed_at,
+        current_epoch,
+    );
+    let cursor = owner.cursor().token();
+    if matches!(
+        published.facts.standing(),
+        crate::registry::ReleaseStanding::Yanked
+    ) {
+        return Some(AcquisitionOutcome::NegativeFact(NegativeFact {
+            kind: NegativeFactKind::Yanked,
+            authority: request.source,
+            source_proof: cursor,
+            cursor,
+            observed_at_millis: observed_at,
+            expires_at_millis: observed_at.saturating_add(60_000),
+            policy_epoch: current_epoch,
+        }));
+    }
+    if !owner.cached_policy_allows(&published) {
+        return Some(AcquisitionOutcome::NegativeFact(NegativeFact {
+            kind: NegativeFactKind::AdvisoryBlocked,
+            authority: request.source,
+            source_proof: cursor,
+            cursor,
+            observed_at_millis: observed_at,
+            expires_at_millis: observed_at.saturating_add(60_000),
+            policy_epoch: current_epoch,
+        }));
+    }
+    let target = match registry_catalog_snapshot(owner, current_epoch, snapshot_cache) {
+        Ok(target) => target,
+        Err(outcome) => return Some(promote_bytes_outcome(outcome)),
+    };
+    let result = match registry_result(owner, base, target, published, request, current_epoch) {
+        Ok(result) => Arc::new(result),
+        Err(outcome) => return Some(outcome),
+    };
+    Some(AcquisitionOutcome::Hit(result))
 }
 
 fn journal_fence_outcome<T>(source: [u8; ID_BYTES], error: io::Error) -> AcquisitionOutcome<T> {
@@ -597,7 +777,7 @@ impl AcquisitionService {
                 Ok(permit) => permit,
                 Err(open) => return AcquisitionOutcome::CircuitOpen(open),
             };
-            let Some(mut lease) = leases
+            let Some(lease) = leases
                 .acquire(product_key, ACQUISITION_LEASE_TTL)
                 .ok()
                 .flatten()
@@ -606,12 +786,13 @@ impl AcquisitionService {
                     source: request.source,
                 });
             };
+            let mut lease = Some(lease);
             let outcome = (|| {
                 let requested = request.coordinate.as_ref();
                 // A request may lose a reservation to another coordinate's
                 // deterministic commit. Retry from the newly visible cursor; the
                 // winning archive writes remain content-addressed and are reused.
-                for _ in 0..256 {
+                'page_attempt: for _ in 0..256 {
                     match with_registry_journal_fence(&leases, &owner, request.source, |_, _cap| {
                         Ok(())
                     }) {
@@ -808,7 +989,7 @@ impl AcquisitionService {
                         &leases,
                         &owner,
                         request.source,
-                        &mut lease,
+                        lease.as_mut().expect("product lease remains held"),
                         |owner_guard, capability, _, _| owner_guard.begin_intent(&capability),
                     ) {
                         Ok(Some(Ok(intent))) => intent,
@@ -862,7 +1043,7 @@ impl AcquisitionService {
                                 &leases,
                                 &owner,
                                 request.source,
-                                &mut lease,
+                                lease.as_mut().expect("product lease remains held"),
                                 |owner_guard, capability, _, _| {
                                     let package = present_coordinate
                                         .as_ref()
@@ -972,7 +1153,7 @@ impl AcquisitionService {
                                 &leases,
                                 &owner,
                                 request.source,
-                                &mut lease,
+                                lease.as_mut().expect("product lease remains held"),
                                 |owner_guard, capability, _, _| {
                                     owner_guard.settle_reserved(&capability, intent)
                                 },
@@ -1020,6 +1201,7 @@ impl AcquisitionService {
                             ));
                         }
                     };
+                    let page_observed_at = now_millis();
                     if page.base != intent.cursor || page.packages.len() > feed_request.max_items {
                         return AcquisitionOutcome::Rejected(RejectReason::Protocol);
                     }
@@ -1042,7 +1224,7 @@ impl AcquisitionService {
                             &leases,
                             &owner,
                             request.source,
-                            &mut lease,
+                            lease.as_mut().expect("product lease remains held"),
                             |owner_guard, capability, _, _| {
                                 owner_guard.settle_reserved(&capability, intent)
                             },
@@ -1126,6 +1308,97 @@ impl AcquisitionService {
                     for (package, advisory) in downloads {
                         let transfer = match stage.open_transfer(&package) {
                             Ok(transfer) => transfer,
+                            Err(AcquisitionError::TransferBusy) => {
+                                #[cfg(test)]
+                                record_transfer_busy_for_test();
+
+                                // Do not hold this product lease while waiting:
+                                // another process may be completing a distinct
+                                // coordinate's product receipt for the same
+                                // page. The feed cursor itself is the shared
+                                // progress signal, and each bounded poll drops
+                                // its endpoint fence before sleeping.
+                                drop(lease.take().expect("product lease remains held"));
+                                let advanced = match wait_for_registry_cursor_advance(
+                                    &leases,
+                                    &owner,
+                                    request.source,
+                                    intent.cursor.token(),
+                                    TRANSFER_BUSY_PROGRESS_WINDOW,
+                                ) {
+                                    Ok(advanced) => advanced,
+                                    Err(error) => {
+                                        return journal_fence_outcome(request.source, error);
+                                    }
+                                };
+                                if !advanced {
+                                    return transfer_contention_retry();
+                                }
+                                lease = match leases
+                                    .acquire(product_key, ACQUISITION_LEASE_TTL)
+                                    .ok()
+                                    .flatten()
+                                {
+                                    Some(lease) => Some(lease),
+                                    None => return transfer_contention_retry(),
+                                };
+
+                                // The peer commits a complete page atomically.
+                                // If our own overlapping response names the
+                                // requested row and the committed metadata is
+                                // exactly that row under this policy epoch, use
+                                // the concurrent observation instead of
+                                // advancing the same shared feed cursor again.
+                                let joined = with_registry_journal_fence(
+                                    &leases,
+                                    &owner,
+                                    request.source,
+                                    |owner_guard, _capability| {
+                                        Ok(concurrent_page_is_committed(
+                                            owner_guard,
+                                            &page,
+                                            intent.key,
+                                            intent.cursor.token(),
+                                            &request,
+                                        ))
+                                    },
+                                );
+                                match joined {
+                                    Ok(Some(Ok(true))) => {
+                                        let owner_guard = owner
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        if let Some(outcome) = concurrent_page_outcome(
+                                            &owner_guard,
+                                            &page,
+                                            intent.key,
+                                            intent.cursor.token(),
+                                            &base,
+                                            &request,
+                                            policy_epoch,
+                                            page_observed_at,
+                                            &snapshot_cache,
+                                            &fact_observations,
+                                            &breaker,
+                                        ) {
+                                            return outcome;
+                                        }
+                                        continue 'page_attempt;
+                                    }
+                                    Ok(Some(Ok(false))) => continue 'page_attempt,
+                                    Ok(Some(Err(error))) => {
+                                        return promote_bytes_outcome(registry_error_outcome(
+                                            error,
+                                            request.source,
+                                            &breaker,
+                                        ));
+                                    }
+                                    Ok(None) => return transfer_contention_retry(),
+                                    Err(error) => {
+                                        return journal_fence_outcome(request.source, error);
+                                    }
+                                }
+                            }
                             Err(error) => {
                                 return promote_bytes_outcome(registry_error_outcome(
                                     error,
@@ -1191,7 +1464,7 @@ impl AcquisitionService {
                         &leases,
                         &owner,
                         request.source,
-                        &mut lease,
+                        lease.as_mut().expect("product lease remains held"),
                         |owner_guard, capability, _, _| {
                             owner_guard.commit_reserved_page(
                                 &capability,
@@ -1202,7 +1475,57 @@ impl AcquisitionService {
                         },
                     ) {
                         Ok(Some(Ok(_))) => {}
-                        Ok(Some(Err(AcquisitionError::StaleReservation))) => continue,
+                        Ok(Some(Err(AcquisitionError::StaleReservation))) => {
+                            let joined = with_registry_journal_fence(
+                                &leases,
+                                &owner,
+                                request.source,
+                                |owner_guard, _capability| {
+                                    Ok(concurrent_page_is_committed(
+                                        owner_guard,
+                                        &page,
+                                        intent.key,
+                                        intent.cursor.token(),
+                                        &request,
+                                    ))
+                                },
+                            );
+                            match joined {
+                                Ok(Some(Ok(true))) => {
+                                    let owner_guard = owner
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    if let Some(outcome) = concurrent_page_outcome(
+                                        &owner_guard,
+                                        &page,
+                                        intent.key,
+                                        intent.cursor.token(),
+                                        &base,
+                                        &request,
+                                        policy_epoch,
+                                        page_observed_at,
+                                        &snapshot_cache,
+                                        &fact_observations,
+                                        &breaker,
+                                    ) {
+                                        return outcome;
+                                    }
+                                    continue 'page_attempt;
+                                }
+                                Ok(Some(Ok(false))) => continue 'page_attempt,
+                                Ok(Some(Err(error))) => {
+                                    return promote_bytes_outcome(registry_error_outcome(
+                                        error,
+                                        request.source,
+                                        &breaker,
+                                    ));
+                                }
+                                Ok(None) => return transfer_contention_retry(),
+                                Err(error) => {
+                                    return journal_fence_outcome(request.source, error);
+                                }
+                            }
+                        }
                         Ok(Some(Err(error))) => {
                             return promote_bytes_outcome(registry_error_outcome(
                                 error,
@@ -1309,9 +1632,7 @@ impl AcquisitionService {
             let Some(record) = product_record_for_outcome(&request, &outcome, &owner) else {
                 return match outcome {
                     AcquisitionOutcome::Hit(_) | AcquisitionOutcome::NegativeFact(_) => {
-                        AcquisitionOutcome::Unavailable(Unavailable {
-                            source: request.source,
-                        })
+                        transfer_contention_retry()
                     }
                     outcome => outcome,
                 };
@@ -1324,7 +1645,7 @@ impl AcquisitionService {
                 &leases,
                 &owner,
                 request.source,
-                &mut lease,
+                lease.as_mut().expect("product lease remains held"),
                 |owner_guard, _capability, endpoint_fence, product_fence| {
                     if endpoint_fence.key != registry_journal_work_key(request.source)
                         || product_fence.key != product_key
@@ -1339,17 +1660,11 @@ impl AcquisitionService {
             );
             match publication {
                 Ok(Some(Ok(_))) => outcome,
-                Ok(Some(Err(AcquisitionError::StaleReservation))) => {
-                    AcquisitionOutcome::Unavailable(Unavailable {
-                        source: request.source,
-                    })
-                }
+                Ok(Some(Err(AcquisitionError::StaleReservation))) => transfer_contention_retry(),
                 Ok(Some(Err(error))) => {
                     promote_bytes_outcome(registry_error_outcome(error, request.source, &breaker))
                 }
-                Ok(None) => AcquisitionOutcome::Unavailable(Unavailable {
-                    source: request.source,
-                }),
+                Ok(None) => transfer_contention_retry(),
                 Err(error) => journal_fence_outcome(request.source, error),
             }
         })
@@ -1807,6 +2122,7 @@ pub(super) fn registry_error_outcome(
         RegistryAcquisitionError::StaleReservation => {
             AcquisitionOutcome::Unavailable(Unavailable { source })
         }
+        RegistryAcquisitionError::TransferBusy => transfer_contention_retry(),
         RegistryAcquisitionError::InvalidConfiguration
         | RegistryAcquisitionError::InvalidCoordinate
         | RegistryAcquisitionError::Bounds

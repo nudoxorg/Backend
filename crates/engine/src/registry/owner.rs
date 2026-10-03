@@ -243,6 +243,10 @@ pub enum AcquisitionError {
     /// The caller must discard its uncommitted receipt and retry from the
     /// newly visible cursor.
     StaleReservation,
+    /// Another process is currently staging the same immutable archive.
+    /// This is transient contention; the durable source intent remains
+    /// available for a bounded wait or a later retry.
+    TransferBusy,
 }
 impl fmt::Display for AcquisitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -258,6 +262,7 @@ impl fmt::Display for AcquisitionError {
             Self::Injected(_) => "registry acquisition fault injected",
             Self::AdvisoryDenied(_) => "registry acquisition denied by advisory policy",
             Self::StaleReservation => "registry acquisition reservation is stale",
+            Self::TransferBusy => "registry archive transfer is owned by another process",
         })
     }
 }
@@ -1489,9 +1494,8 @@ fn content_store_error(error: ContentStoreError) -> AcquisitionError {
         | ContentStoreError::CorruptObject { .. }
         | ContentStoreError::InvalidArchivePath
         | ContentStoreError::DuplicateArchivePath => AcquisitionError::CorruptJournal,
-        ContentStoreError::TransferNeedsReopen | ContentStoreError::TransferBusy => {
-            AcquisitionError::StaleReservation
-        }
+        ContentStoreError::TransferNeedsReopen => AcquisitionError::StaleReservation,
+        ContentStoreError::TransferBusy => AcquisitionError::TransferBusy,
     }
 }
 
@@ -1525,14 +1529,14 @@ mod immutable_object_tests {
     use super::*;
 
     #[test]
-    fn ambiguous_or_busy_transfer_is_retryable() {
+    fn ambiguous_reopen_and_busy_transfer_keep_distinct_retry_classes() {
         assert!(matches!(
             content_store_error(ContentStoreError::TransferNeedsReopen),
             AcquisitionError::StaleReservation
         ));
         assert!(matches!(
             content_store_error(ContentStoreError::TransferBusy),
-            AcquisitionError::StaleReservation
+            AcquisitionError::TransferBusy
         ));
     }
 
