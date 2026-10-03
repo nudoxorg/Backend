@@ -17,6 +17,172 @@ pub const TRUSTED_COMPILER_POLICY_FILE_NAME: &str = "compiler-worker-trust.v1";
 const MAX_POLICY_BYTES: usize = 512 * 1024;
 const MAX_GRANTS: usize = 4096;
 const MAX_ADDRESS_BYTES: usize = 128;
+const MAX_SCOPE_MISMATCH_DIAGNOSTIC_GRANTS: usize = 64;
+const SCOPE_MISMATCH_FIELD_COUNT: usize = 7;
+const SCOPE_MISMATCH_BIN_COUNT: usize = 1 << SCOPE_MISMATCH_FIELD_COUNT;
+
+/// Exact compiler scope projected from one captured invocation or persisted grant.
+///
+/// This value is only used for strict equality checks and bounded diagnostics. It carries the
+/// same seven fields that the trust policy has always compared; it is not an authorization
+/// claim by itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CompilerTrustScope {
+    namespace_id: [u8; 16],
+    recipe: [u8; 32],
+    profile: LanguageProfile,
+    stage: Stage,
+    toolchain: [u8; 32],
+    environment: [u8; 32],
+    target_platform: [u8; 32],
+}
+
+impl CompilerTrustScope {
+    pub(crate) const fn new(
+        namespace_id: [u8; 16],
+        recipe: [u8; 32],
+        profile: LanguageProfile,
+        stage: Stage,
+        toolchain: [u8; 32],
+        environment: [u8; 32],
+        target_platform: [u8; 32],
+    ) -> Self {
+        Self {
+            namespace_id,
+            recipe,
+            profile,
+            stage,
+            toolchain,
+            environment,
+            target_platform,
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompilerScopeField {
+    Namespace,
+    Recipe,
+    Profile,
+    Stage,
+    Toolchain,
+    Environment,
+    TargetPlatform,
+}
+
+impl CompilerScopeField {
+    const ALL: [Self; SCOPE_MISMATCH_FIELD_COUNT] = [
+        Self::Namespace,
+        Self::Recipe,
+        Self::Profile,
+        Self::Stage,
+        Self::Toolchain,
+        Self::Environment,
+        Self::TargetPlatform,
+    ];
+
+    const fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Namespace => "namespace",
+            Self::Recipe => "recipe",
+            Self::Profile => "profile",
+            Self::Stage => "stage",
+            Self::Toolchain => "toolchain",
+            Self::Environment => "environment",
+            Self::TargetPlatform => "target_platform",
+        }
+    }
+}
+
+/// Closed set of persisted-grant scope fields that differ from one captured invocation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CompilerScopeMismatchFields(u8);
+
+impl CompilerScopeMismatchFields {
+    fn insert(&mut self, field: CompilerScopeField) {
+        self.0 |= field.bit();
+    }
+
+    const fn bin(self) -> usize {
+        self.0 as usize
+    }
+
+    const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn write_labels(self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_empty() {
+            return formatter.write_str("exact");
+        }
+        let mut first = true;
+        for field in CompilerScopeField::ALL {
+            if self.0 & field.bit() == 0 {
+                continue;
+            }
+            if !first {
+                formatter.write_str("+")?;
+            }
+            formatter.write_str(field.label())?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
+/// Fixed-size histogram of scope mismatch field sets across a bounded policy prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CompilerScopeMismatchHistogram {
+    grants_examined: u16,
+    truncated: bool,
+    bins: [u16; SCOPE_MISMATCH_BIN_COUNT],
+}
+
+impl CompilerScopeMismatchHistogram {
+    fn from_grants(grants: &[TrustedCompilerWorkerGrant], scope: &CompilerTrustScope) -> Self {
+        let mut histogram = Self {
+            grants_examined: 0,
+            truncated: false,
+            bins: [0; SCOPE_MISMATCH_BIN_COUNT],
+        };
+        for grant in grants.iter().take(MAX_SCOPE_MISMATCH_DIAGNOSTIC_GRANTS) {
+            histogram.grants_examined = histogram.grants_examined.saturating_add(1);
+            let bin = grant.scope_mismatch_fields(scope).bin();
+            histogram.bins[bin] = histogram.bins[bin].saturating_add(1);
+        }
+        histogram.truncated = grants.len() > usize::from(histogram.grants_examined);
+        histogram
+    }
+}
+
+impl std::fmt::Display for CompilerScopeMismatchHistogram {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "scope_grants_examined={} scope_grants_truncated={} scope_mismatch_bins=[",
+            self.grants_examined,
+            u8::from(self.truncated),
+        )?;
+        let mut first = true;
+        for (mask, count) in (0_u8..).zip(self.bins.iter().copied()) {
+            if count == 0 {
+                continue;
+            }
+            if !first {
+                formatter.write_str(",")?;
+            }
+            CompilerScopeMismatchFields(mask).write_labels(formatter)?;
+            write!(formatter, ":{count}")?;
+            first = false;
+        }
+        formatter.write_str("]")
+    }
+}
 
 /// One owner-approved remote compiler, pinned to an authenticated peer and an
 /// exact execution scope. Package lineage and target are checked against each
@@ -143,25 +309,34 @@ impl TrustedCompilerWorkerGrant {
         key
     }
 
-    fn authorizes(
-        &self,
-        peer: EndpointId,
-        namespace_id: [u8; 16],
-        recipe: [u8; 32],
-        profile: LanguageProfile,
-        stage: Stage,
-        toolchain: [u8; 32],
-        environment: [u8; 32],
-        target_platform: [u8; 32],
-    ) -> bool {
-        self.peer == peer
-            && self.namespace_id == namespace_id
-            && self.recipe == recipe
-            && self.profile == profile
-            && self.stage == stage
-            && self.toolchain == toolchain
-            && self.environment == environment
-            && self.target_platform == target_platform
+    fn scope_mismatch_fields(&self, scope: &CompilerTrustScope) -> CompilerScopeMismatchFields {
+        let mut mismatches = CompilerScopeMismatchFields::default();
+        if self.namespace_id != scope.namespace_id {
+            mismatches.insert(CompilerScopeField::Namespace);
+        }
+        if self.recipe != scope.recipe {
+            mismatches.insert(CompilerScopeField::Recipe);
+        }
+        if self.profile != scope.profile {
+            mismatches.insert(CompilerScopeField::Profile);
+        }
+        if self.stage != scope.stage {
+            mismatches.insert(CompilerScopeField::Stage);
+        }
+        if self.toolchain != scope.toolchain {
+            mismatches.insert(CompilerScopeField::Toolchain);
+        }
+        if self.environment != scope.environment {
+            mismatches.insert(CompilerScopeField::Environment);
+        }
+        if self.target_platform != scope.target_platform {
+            mismatches.insert(CompilerScopeField::TargetPlatform);
+        }
+        mismatches
+    }
+
+    fn authorizes(&self, peer: EndpointId, scope: &CompilerTrustScope) -> bool {
+        self.peer == peer && self.scope_mismatch_fields(scope).is_empty()
     }
 }
 
@@ -260,18 +435,35 @@ impl TrustedCompilerWorkerPolicy {
         environment: [u8; 32],
         target_platform: [u8; 32],
     ) -> bool {
-        self.grants.iter().any(|grant| {
-            grant.authorizes(
-                peer,
-                namespace_id,
-                recipe,
-                profile,
-                stage,
-                toolchain,
-                environment,
-                target_platform,
-            )
-        })
+        let scope = CompilerTrustScope::new(
+            namespace_id,
+            recipe,
+            profile,
+            stage,
+            toolchain,
+            environment,
+            target_platform,
+        );
+        self.authorizes_scope(peer, &scope)
+    }
+
+    /// Checks a peer against a previously projected scope using the same comparator that
+    /// produces mismatch diagnostics.
+    #[must_use]
+    pub(crate) fn authorizes_scope(&self, peer: EndpointId, scope: &CompilerTrustScope) -> bool {
+        self.grants
+            .iter()
+            .any(|grant| grant.authorizes(peer, scope))
+    }
+
+    /// Summarizes which exact trust-scope fields differ, without exposing identities or peers.
+    /// The policy is fixed-size and the diagnostic scan stops after a separate small cap.
+    #[must_use]
+    pub(crate) fn scope_mismatch_histogram(
+        &self,
+        scope: &CompilerTrustScope,
+    ) -> CompilerScopeMismatchHistogram {
+        CompilerScopeMismatchHistogram::from_grants(&self.grants, scope)
     }
 
     /// Atomically writes the canonical policy with owner-only file permissions.
@@ -630,6 +822,154 @@ mod tests {
             [5; 32],
         )
         .expect("exact peer grant")
+    }
+
+    fn scope() -> CompilerTrustScope {
+        CompilerTrustScope::new(
+            [1; 16],
+            [2; 32],
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            [3; 32],
+            [4; 32],
+            [5; 32],
+        )
+    }
+
+    #[test]
+    fn compiler_scope_mismatch_fields_cover_each_exact_grant_field() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_221);
+        let grant = grant(peer(7), address);
+        let baseline = scope();
+        assert_eq!(
+            grant.scope_mismatch_fields(&baseline),
+            CompilerScopeMismatchFields::default()
+        );
+
+        let cases = [
+            (
+                CompilerScopeField::Namespace,
+                CompilerTrustScope {
+                    namespace_id: [9; 16],
+                    ..baseline
+                },
+            ),
+            (
+                CompilerScopeField::Recipe,
+                CompilerTrustScope {
+                    recipe: [9; 32],
+                    ..baseline
+                },
+            ),
+            (
+                CompilerScopeField::Profile,
+                CompilerTrustScope {
+                    profile: LanguageProfile::Rust(RustEdition::Rust2021),
+                    ..baseline
+                },
+            ),
+            (
+                CompilerScopeField::Stage,
+                CompilerTrustScope {
+                    stage: Stage::Parse,
+                    ..baseline
+                },
+            ),
+            (
+                CompilerScopeField::Toolchain,
+                CompilerTrustScope {
+                    toolchain: [9; 32],
+                    ..baseline
+                },
+            ),
+            (
+                CompilerScopeField::Environment,
+                CompilerTrustScope {
+                    environment: [9; 32],
+                    ..baseline
+                },
+            ),
+            (
+                CompilerScopeField::TargetPlatform,
+                CompilerTrustScope {
+                    target_platform: [9; 32],
+                    ..baseline
+                },
+            ),
+        ];
+
+        for (field, candidate) in cases {
+            assert_eq!(
+                grant.scope_mismatch_fields(&candidate),
+                CompilerScopeMismatchFields(field.bit()),
+                "{} must be one independent mismatch bit",
+                field.label(),
+            );
+            assert!(!grant.authorizes(peer(7), &candidate));
+        }
+        assert!(!grant.authorizes(peer(8), &baseline));
+    }
+
+    #[test]
+    fn scope_mismatch_histogram_is_empty_without_grants_and_groups_multiple_rows() {
+        let empty = TrustedCompilerWorkerPolicy::default()
+            .scope_mismatch_histogram(&scope())
+            .to_string();
+        assert_eq!(
+            empty,
+            "scope_grants_examined=0 scope_grants_truncated=0 scope_mismatch_bins=[]"
+        );
+
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_221);
+        let exact = grant(peer(1), address);
+        let mut recipe = grant(peer(2), address);
+        recipe.recipe = [9; 32];
+        let mut profile_environment = grant(peer(3), address);
+        profile_environment.profile = LanguageProfile::Rust(RustEdition::Rust2021);
+        profile_environment.environment = [9; 32];
+        let mut policy = TrustedCompilerWorkerPolicy::default();
+        policy
+            .add(profile_environment)
+            .expect("add profile/environment row");
+        policy.add(recipe).expect("add recipe row");
+        policy.add(exact).expect("add exact row");
+
+        let first = policy.scope_mismatch_histogram(&scope()).to_string();
+        let second = policy.scope_mismatch_histogram(&scope()).to_string();
+        assert_eq!(first, second, "histogram formatting must be deterministic");
+        assert_eq!(
+            first,
+            "scope_grants_examined=3 scope_grants_truncated=0 scope_mismatch_bins=[exact:1,recipe:1,profile+environment:1]"
+        );
+        assert!(!first.contains("0101010101010101"));
+        assert!(!first.contains("peer"));
+    }
+
+    #[test]
+    fn scope_mismatch_histogram_reports_its_scan_cap() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_221);
+        let candidate = CompilerTrustScope {
+            recipe: [9; 32],
+            ..scope()
+        };
+        let mut policy = TrustedCompilerWorkerPolicy::default();
+        for seed in 1..=67_u8 {
+            policy
+                .add(grant(peer(seed), address))
+                .expect("add bounded test grant");
+        }
+
+        let histogram = policy.scope_mismatch_histogram(&candidate);
+        assert_eq!(histogram.grants_examined, 64);
+        assert!(histogram.truncated);
+        assert_eq!(
+            histogram.bins[usize::from(CompilerScopeField::Recipe.bit())],
+            64
+        );
+        assert_eq!(
+            histogram.to_string(),
+            "scope_grants_examined=64 scope_grants_truncated=1 scope_mismatch_bins=[recipe:64]"
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@
 use super::remote_semantic_query::{self, RemoteIndexUsage};
 use crate::cluster_owner::{ClusterOwnerConfig, ClusterOwnerConfigError};
 use crate::compiler_trust::{
-    CompilerTrustError, TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerGrant,
-    TrustedCompilerWorkerPolicy,
+    CompilerTrustError, CompilerTrustScope, TRUSTED_COMPILER_POLICY_FILE_NAME,
+    TrustedCompilerWorkerGrant, TrustedCompilerWorkerPolicy,
 };
 use backend_engine::application::{
     AdmittedRemoteCompilerCandidate, CapturedFullWorkspaceV2, CompilerAssignment,
@@ -3090,23 +3090,27 @@ impl OwnerCompilerClusterRuntime {
         .map_err(|_| ClusterDispatchError::DeadlineExpired)??;
         let trust = self.trusted_workers()?;
         let manifest = capture.manifest();
+        let manifest_scope = CompilerTrustScope::new(
+            namespace_id,
+            manifest.recipe(),
+            manifest.profile(),
+            manifest.stage(),
+            manifest.toolchain(),
+            manifest.environment(),
+            manifest.target_platform(),
+        );
         let applicable_grants = trust
             .grants()
             .iter()
-            .filter(|grant| {
-                trust.authorizes(
-                    grant.peer(),
-                    namespace_id,
-                    manifest.recipe(),
-                    manifest.profile(),
-                    manifest.stage(),
-                    manifest.toolchain(),
-                    manifest.environment(),
-                    manifest.target_platform(),
-                )
-            })
+            .filter(|grant| trust.authorizes_scope(grant.peer(), &manifest_scope))
             .take(MAX_TRUSTED_PROBE_PEERS + 1)
             .collect::<Vec<_>>();
+        if applicable_grants.is_empty() {
+            eprintln!(
+                "locald compiler probe summary: no_exact_trust_grant=1 {}",
+                trust.scope_mismatch_histogram(&manifest_scope),
+            );
+        }
         if applicable_grants.len() > MAX_TRUSTED_PROBE_PEERS {
             return Err(ClusterDispatchError::NoEligibleWorker);
         }
