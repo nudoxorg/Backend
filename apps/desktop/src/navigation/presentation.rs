@@ -1,5 +1,3 @@
-/private/tmp/sol-native-visit-history-3e06/apps/desktop/src/navigation/presentation.rs:
-
 //! Session-local reading intent. Never a resource receipt or input capability.
 //! Cold persistence currently restores routes only, with fresh default intent.
 use super::{BrowseRoute, OrbitRoute, Route};
