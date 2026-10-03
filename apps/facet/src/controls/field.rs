@@ -27,7 +27,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::ty;
 use gpui::{
     App, ElementId, Entity, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement, RenderOnce, SharedString, Styled, Transformation, Window, div, px,
+    MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div, px,
     radians,
 };
 use gpui_component::input::{Input, InputState};
@@ -223,7 +223,7 @@ impl RenderOnce for Field {
             .w_full()
             .children(icon.map(|icon| ui(icon, IconSize::S14, icon_ink).size(measure.icon(14.0))))
             .child(input)
-            .id(id)
+            .id(id.clone())
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         div()
             .flex()
@@ -241,6 +241,9 @@ impl RenderOnce for Field {
                     1.0,
                     crate::probe::TextOverflow::Wrap,
                     div()
+                        .id(ElementId::Name(format!("{id}-fault").into()))
+                        .role(gpui::Role::Status)
+                        .aria_label(reason.clone())
                         .set(ty::SMALL, &measure)
                         .text_color(with_alpha(palette.coral.base.into(), fault))
                         .child(reason),
@@ -479,5 +482,49 @@ impl RenderOnce for Select {
             }
         };
         hover_zone(plate, &touch, chamfer, active)
+    }
+}
+
+#[cfg(test)]
+mod fault_tests {
+    use super::*;
+    use gpui::{AppContext as _, Context, Render, TestAppContext, TextTrace};
+
+    struct Fixture { state: Entity<InputState>, fault: Option<SharedString> }
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let measure = Measure::new(px(480.), &cx.facet());
+            let field = field("source-line", &self.state, &measure);
+            div().w(px(480.)).child(if let Some(reason) = &self.fault { field.fault(reason.clone()) } else { field })
+        }
+    }
+    #[gpui::test]
+    fn current_visible_fault_is_native_status_and_disappears_when_valid(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let _ = crate::fonts::install(cx);
+            crate::set_facet(crate::Facet { reduced_motion: true, ..crate::Facet::default() }, cx);
+            cx.set_global(TextTrace);
+        });
+        let (fixture, cx) = cx.add_window_view(|window, cx| {
+            window.set_a11y_forced(true);
+            let state = cx.new(|cx| InputState::new(window, cx));
+            Fixture { state, fault: Some("Line 90 is outside this file's 12 lines.".into()) }
+        });
+        for reason in [Some("Line 90 is outside this file's 12 lines."), Some("Enter a whole line number."), None] {
+            fixture.update(cx, |fixture, cx| { fixture.fault = reason.map(SharedString::from); cx.notify(); });
+            cx.update(|window, cx| {
+                window.refresh(); window.draw(cx).clear(cx);
+                let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().unwrap()).unwrap();
+                let statuses: Vec<_> = tree["nodes"].as_object().unwrap().values().filter(|node| node["aria"]["role"] == "Status").collect();
+                if let Some(reason) = reason {
+                    assert_eq!(statuses.len(), 1);
+                    assert_eq!(statuses[0]["aria"]["label"], reason);
+                    assert!(window.painted_texts().iter().any(|run| run.text.as_ref() == reason && run.alpha > 0.));
+                } else {
+                    assert!(statuses.is_empty(), "valid input cannot retain a stale fault");
+                }
+            });
+        }
     }
 }
