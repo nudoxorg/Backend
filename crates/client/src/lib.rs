@@ -1218,6 +1218,9 @@ impl Session {
     ///
     /// `Unknown` means that no retained operation was found; it never means
     /// that indexing succeeded. Existing keys are not implicitly restarted.
+    /// If the transport disconnects, a caller may explicitly reconnect this
+    /// same session and repeat only this exact keyed read. This method does not
+    /// reconnect or retry on its own.
     ///
     /// # Errors
     /// Returns an error when request admission, transport, or the typed reply

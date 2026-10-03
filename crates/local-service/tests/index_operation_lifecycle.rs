@@ -12,7 +12,8 @@ use backend_library::{
     PackageReference,
 };
 use backend_local_service::{
-    EmbeddedLocalService, ListenerError, LocalHostVariable, ProcessConfig, ProcessError, RunReport,
+    EmbeddedLocalService, FrameLimits, ListenerError, LocalHostVariable, ProcessConfig,
+    ProcessError, RunReport,
 };
 use std::error::Error;
 use std::fs::{self, OpenOptions};
@@ -213,7 +214,19 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     let first_receipt = receipt.clone();
     let first_observation = IndexOperationObservation::Known(published);
     drop(session);
-    with_phase_context("close initial embedded owner", owner.close())?;
+    let initial_owner_report = with_phase_context("close initial embedded owner", owner.close())?;
+    assert!(
+        initial_owner_report.connections >= 2,
+        "status polling must reconnect after the listener retires its bounded frame stream"
+    );
+    assert!(
+        initial_owner_report.frames > FrameLimits::default().max_frames_per_connection,
+        "the public lifecycle must cross the real per-connection frame boundary"
+    );
+    assert_eq!(
+        initial_owner_report.failures, 0,
+        "the exact keyed status retry must not create listener or owner failures"
+    );
     assert!(
         fs::read(&authority_secret)? == authority_credential,
         "closing the owner must preserve the initialized workspace credential"
@@ -533,28 +546,125 @@ fn wait_for_published(
     mut observation: IndexOperationObservation,
 ) -> Result<backend_library::IndexOperationStatus, PhaseError> {
     let deadline = Instant::now() + Duration::from_secs(660);
+    let initial_status = known_status_for_key(observation, operation_key)?;
+    reject_failed_status(&initial_status)?;
+
+    // Exercise the listener's real per-connection frame cap through the public
+    // Session. Start consumes one frame, so these exact keyed reads guarantee
+    // that the first connection is retired and the next status query must
+    // reconnect this same Session. No Start or other mutation is repeated.
+    let boundary_reads = FrameLimits::default()
+        .max_frames_per_connection
+        .saturating_add(4);
+    for _ in 0..boundary_reads {
+        observation = read_status_with_keyed_reconnect(session, operation_key, deadline)?;
+        let status = status_for_exact_start(observation, &initial_status)?;
+        reject_failed_status(&status)?;
+        observation = IndexOperationObservation::Known(status);
+    }
+
     loop {
-        let IndexOperationObservation::Known(status) = observation else {
-            panic!("accepted operation must retain a known status: {observation:?}");
-        };
+        let status = status_for_exact_start(observation, &initial_status)?;
         match &status.state {
             IndexOperationState::Published(_) => return Ok(status),
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {
-                assert!(
-                    Instant::now() < deadline,
-                    "real Cargo compilation did not reach a terminal receipt"
-                );
+                check_poll_deadline(deadline)?;
                 thread::sleep(Duration::from_millis(50));
-                observation = with_phase_context(
-                    "poll durable operation status while awaiting publication",
-                    session.index_operation_status(operation_key),
-                )?;
+                observation = read_status_with_keyed_reconnect(session, operation_key, deadline)?;
             }
             IndexOperationState::Failed { .. } | IndexOperationState::Unresolved { .. } => {
-                panic!("real Cargo operation did not publish: {status:?}");
+                return Err(PhaseError::message(
+                    "poll durable operation status while awaiting publication",
+                    "the real Cargo operation reached a non-published terminal state".to_owned(),
+                ));
             }
         }
     }
+}
+
+fn read_status_with_keyed_reconnect(
+    session: &mut Session,
+    operation_key: IndexOperationKey,
+    deadline: Instant,
+) -> Result<IndexOperationObservation, PhaseError> {
+    check_poll_deadline(deadline)?;
+    match session.index_operation_status(operation_key) {
+        Ok(observation) => Ok(observation),
+        Err(ClientError::Disconnected(_)) => {
+            check_poll_deadline(deadline)?;
+            with_phase_context(
+                "reconnect the same public Session for keyed status polling",
+                session.reconnect(),
+            )?;
+            check_poll_deadline(deadline)?;
+            with_phase_context(
+                "retry the exact keyed status read once after reconnect",
+                session.index_operation_status(operation_key),
+            )
+        }
+        Err(error) => Err(PhaseError::from_source(
+            "poll durable operation status while awaiting publication",
+            error,
+        )),
+    }
+}
+
+fn known_status_for_key(
+    observation: IndexOperationObservation,
+    operation_key: IndexOperationKey,
+) -> Result<backend_library::IndexOperationStatus, PhaseError> {
+    match observation {
+        IndexOperationObservation::Known(status) if status.operation_key == operation_key => {
+            Ok(status)
+        }
+        _ => Err(PhaseError::message(
+            "validate exact durable operation status",
+            "status reply was unknown, outside the receipt window, or for another key".to_owned(),
+        )),
+    }
+}
+
+fn status_for_exact_start(
+    observation: IndexOperationObservation,
+    expected: &backend_library::IndexOperationStatus,
+) -> Result<backend_library::IndexOperationStatus, PhaseError> {
+    match observation {
+        IndexOperationObservation::Known(status)
+            if status.operation_key == expected.operation_key
+                && status.request_digest == expected.request_digest
+                && status.package == expected.package
+                && status.execution_intent == expected.execution_intent =>
+        {
+            Ok(status)
+        }
+        _ => Err(PhaseError::message(
+            "validate exact durable operation status",
+            "status reply did not match the original key and request binding".to_owned(),
+        )),
+    }
+}
+
+fn reject_failed_status(status: &backend_library::IndexOperationStatus) -> Result<(), PhaseError> {
+    if matches!(
+        &status.state,
+        IndexOperationState::Failed { .. } | IndexOperationState::Unresolved { .. }
+    ) {
+        return Err(PhaseError::message(
+            "poll durable operation status while awaiting publication",
+            "the real Cargo operation reached a non-published terminal state".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_poll_deadline(deadline: Instant) -> Result<(), PhaseError> {
+    if Instant::now() >= deadline {
+        return Err(PhaseError::message(
+            "poll durable operation status while awaiting publication",
+            "the 660-second publication deadline elapsed".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn executable_in_path(name: &str) -> Result<PathBuf, Box<dyn Error>> {
