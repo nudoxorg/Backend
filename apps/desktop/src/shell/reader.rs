@@ -673,6 +673,10 @@ impl Reader {
         }
     }
 
+    /// The test rig enters the same navigation adapter as mounted actions.
+    #[cfg(test)]
+    pub(crate) fn navigation_links(&self) -> Links { self.links.clone() }
+
     pub(crate) fn capture_reading(&self, snapshot: &AppSnapshot) -> Vec<crate::navigation::presentation::ReadingChange> {
         use crate::navigation::presentation::{ReadingChange, ReadingFocus, ReadingOffset, ReadingText};
         if snapshot.page_overlay().is_some() || snapshot.session().preview.is_some()

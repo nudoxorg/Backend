@@ -694,7 +694,9 @@ impl Rig {
 
     /// Queues an intent on the state owner and settles.
     pub(crate) fn go(&mut self, intent: Intent) {
-        self.graph.root.update(self.cx, |root, cx| root.queue(intent, cx));
+        let reader = self.shell.read_with(self.cx, |shell, _| shell.reader_entity());
+        let links = reader.read_with(self.cx, |reader, _| reader.navigation_links());
+        self.cx.update(|_, cx| links.dispatch(intent, cx));
         self.settle();
     }
 
