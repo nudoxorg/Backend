@@ -24,6 +24,15 @@ const PUBLIC_MARKER: &str = "operation_lifecycle_public_marker";
 #[test]
 fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), Box<dyn Error>> {
     let fixture = lifecycle_tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::symlink_metadata(fixture.path())?.permissions().mode() & 0o777,
+            0o700,
+            "the temporary project root must be owner-only before workspace initialization"
+        );
+    }
     let service_workspace = fixture.path().join("service-state");
     let endpoint = fixture.path().join("owner.sock");
     let paths = backend_runtime::WorkspacePaths::discover(
@@ -307,7 +316,12 @@ fn cargo_home() -> Result<PathBuf, Box<dyn Error>> {
 fn lifecycle_tempdir() -> Result<tempfile::TempDir, Box<dyn Error>> {
     #[cfg(unix)]
     {
-        Ok(tempfile::Builder::new().prefix("b-").tempdir_in("/tmp")?)
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut builder = tempfile::Builder::new();
+        builder
+            .prefix("b-")
+            .permissions(fs::Permissions::from_mode(0o700));
+        Ok(builder.tempdir_in("/tmp")?)
     }
     #[cfg(windows)]
     {
