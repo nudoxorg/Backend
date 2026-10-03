@@ -358,13 +358,16 @@ impl Drop for NativeIndexGate { fn drop(&mut self) { self.set(true); } }
 struct NativeIndexClient(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
 impl EngineClient for NativeIndexClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        if let EngineRequest::IndexProject { request, project, basis, .. } = request {
+        if let EngineRequest::IndexProject { request, project, operation, basis, .. } = request {
             let mut ready = self.0.0.lock().expect("gate");
             while !*ready { ready = self.0.1.wait(ready).expect("gate wake"); }
-            let revision = backend_library::Cursor::at(basis.root(), basis.generation().saturating_add(1));
-            Ok(EngineDto::Index { request: *request, basis: *basis,
-                key: crate::core::VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation()),
-                revision, delta: None, project: project.clone(), project_state: None, catalog: None, files_indexed: Some(3) })
+            Ok(EngineDto::IndexOperation {
+                request: *request,
+                basis: *basis,
+                project: project.clone(),
+                operation: operation.clone(),
+                observation: crate::model::index_operation::tests::published(operation),
+            })
         } else { RootOnly.execute(request) }
     }
 }
