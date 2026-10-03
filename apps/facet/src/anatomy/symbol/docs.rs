@@ -2,10 +2,10 @@
 //! Hosts own callback admission; these controls do not invent navigation,
 //! register an alternate text layout, or revive a retained/inert subtree.
 
-use gpui::{
-    Div, ElementId, InteractiveElement as _, ParentElement as _, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _,
-};
+use crate::reading::{self, Intent, ReadingRole};
+use gpui::{Div, ElementId, SharedString, Stateful};
+
+pub use crate::reading::{ControlKind, control};
 
 /// The reading role of words already present in the document.
 #[derive(Clone, Copy)]
@@ -14,22 +14,19 @@ pub enum TextKind {
     Heading,
 }
 
-/// Paint and name one owned string. The builder receives exactly the value
-/// exposed to AccessKit; wrapping and font scaling stay with native layout.
+/// Paint and read the same text leaf. Native words follow its actual layout,
+/// including any clamp or ellipsis supplied by the surrounding builder.
 pub fn text(
     id: impl Into<ElementId>,
     words: impl Into<SharedString>,
     kind: TextKind,
-    paint: impl FnOnce(SharedString) -> Div,
-) -> Stateful<Div> {
-    let words = words.into();
-    paint(words.clone())
-        .id(id)
-        .role(match kind {
-            TextKind::Text => Role::Label,
-            TextKind::Heading => Role::Heading,
-        })
-        .aria_label(words)
+    paint: impl FnOnce(reading::Text) -> Div,
+) -> Div {
+    let role = match kind {
+        TextKind::Text => ReadingRole::Paragraph,
+        TextKind::Heading => ReadingRole::Heading,
+    };
+    paint(reading::text(id, words, Intent::Reading(role)))
 }
 
 /// When a painted control activates. PointerDown is reserved for openers
@@ -58,35 +55,6 @@ impl Activation {
         } else {
             control
         }
-    }
-}
-
-/// The semantics of a real page action.
-#[derive(Clone, Copy)]
-pub enum ControlKind {
-    Button,
-    Link,
-    Disclosure(bool),
-    Filter(bool),
-}
-
-/// Decorate the actual clickable element before its host attaches native
-/// focus. No second control, callback, hitbox, or hidden fallback is added.
-pub fn control(
-    words: impl Into<SharedString>,
-    kind: ControlKind,
-    element: Stateful<Div>,
-) -> Stateful<Div> {
-    let element = element
-        .role(match kind {
-            ControlKind::Link => Role::Link,
-            _ => Role::Button,
-        })
-        .aria_label(words);
-    match kind {
-        ControlKind::Disclosure(open) => element.aria_expanded(open),
-        ControlKind::Filter(chosen) => element.aria_selected(chosen),
-        ControlKind::Button | ControlKind::Link => element,
     }
 }
 

@@ -23,6 +23,7 @@ pub mod chrome;
 pub mod data;
 pub mod overlay;
 pub mod probe;
+pub mod reading;
 pub mod code;
 pub mod graph;
 pub mod hover;

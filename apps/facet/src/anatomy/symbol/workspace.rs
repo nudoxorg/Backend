@@ -70,7 +70,7 @@ fn code_line(env: &Env<'_>, key: &Key, place: &Use) -> AnyElement {
         env.m.role(roles::CODE),
         1.0,
         TextOverflow::Ellipsis,
-        super::docs::text(key.id(), shared, super::docs::TextKind::Text, |words| div().set(roles::CODE, &env.m).text_color(i.ink2).whitespace_nowrap().overflow_hidden().text_ellipsis().min_w_0().w_full().child(StyledText::new(words).with_highlights(highlights))),
+        div().set(roles::CODE, &env.m).text_color(i.ink2).whitespace_nowrap().overflow_hidden().text_ellipsis().min_w_0().w_full().child(crate::reading::styled(key.id(), StyledText::new(shared).with_highlights(highlights), crate::reading::Intent::Reading(crate::reading::ReadingRole::Code))),
     )
     .into_any_element()
 }
