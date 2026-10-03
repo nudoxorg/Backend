@@ -142,7 +142,10 @@ impl RouteDependencies {
                     let content = tree.as_ref().map(|_| vec![key.clone()]).unwrap_or_default();
                     (vec![key], content)
                 }
-                Route::Orbit(_) => (vec![PageKey::Orbit, PageKey::Health], vec![PageKey::Orbit]),
+                // The local shelf and setup belong to the desktop session.
+                // The owner's catalog is an independent section, not a
+                // prerequisite for selecting a folder or recovering startup.
+                Route::Orbit(_) => (vec![PageKey::Orbit, PageKey::Health], Vec::new()),
                 Route::World => (vec![PageKey::Orbit], Vec::new()),
                 Route::Package(package) => {
                     if let Some(context) = &package.cargo {

@@ -427,6 +427,13 @@ pub(crate) fn build(
     window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
+    // Local transient content is independent of the underlying page's read.
+    // A captured failure plate must not consume Settings or Inbox navigation.
+    match overlay {
+        Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, window, cx),
+        Some(Overlay::Inbox) => return inbox::body(ctx),
+        Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
+    }
     if let Some((key, terminal)) = store.content_failure() {
         let shown = match terminal {
             crate::runtime::store::ContentFailure::Fault(error) => state::Shown::<()>::Fault(error),
@@ -437,11 +444,6 @@ pub(crate) fn build(
             _ => key.to_string(),
         };
         return state::not_ready(&shown, key, &what, ctx, cx);
-    }
-    match overlay {
-        Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, window, cx),
-        Some(Overlay::Inbox) => return inbox::body(ctx),
-        Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
     }
     match route {
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),

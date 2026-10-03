@@ -286,3 +286,18 @@ fn required_symbol_fault_wins_over_pending_source_and_optional_package_fault() {
     assert_eq!(selected, &key);
     assert!(matches!(failure, ContentFailure::Fault(error) if error.message() == "declaration revoked"));
 }
+
+#[test]
+fn local_library_and_settings_survive_failed_optional_catalog_reads() {
+    let route = Route::Orbit(crate::navigation::OrbitRoute::Home);
+    let mut store = DataStore::new(Arc::new(at(route.clone())), None);
+    for key in [PageKey::Orbit, PageKey::Health] {
+        let generation = store.pages.begin(&key, root()).expect("optional owner read");
+        store.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Transport, "owner unavailable"))));
+    }
+    for overlay in [None, Some(crate::navigation::Overlay::Settings(crate::navigation::SettingsPage::Appearance)), Some(crate::navigation::Overlay::Inbox)] {
+        let plan = RouteDependencies::new(&route, overlay);
+        assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Ready, "local content cannot wait for the optional index catalog");
+        assert!(crate::shell::bodies::Pages::gather(&store, &plan).content_failure().is_none(), "remote failure replaced the local shell");
+    }
+}
