@@ -15,7 +15,7 @@ use backend_local_service::{EmbeddedLocalService, LocalHostVariable, ProcessConf
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,15 @@ const PUBLIC_MARKER: &str = "operation_lifecycle_public_marker";
 
 #[test]
 fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), Box<dyn Error>> {
-    let fixture = lifecycle_tempdir()?;
+    let mut fixture = FailureFixture::new(lifecycle_tempdir()?);
+    let result = run_public_index_operation_lifecycle(&fixture);
+    if result.is_err() {
+        fixture.preserve_after_failure();
+    }
+    result
+}
+
+fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), Box<dyn Error>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -125,14 +133,26 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
         (LocalHostVariable::NudoxCargoHome, cargo_home()?),
     ];
 
-    let owner = EmbeddedLocalService::start(config.clone())?;
-    let mut session = Session::connect(owner.endpoint())?;
-    let started = session.start_index_operation(
-        operation_key,
-        package.clone(),
-        CompileExecutionIntent::Interactive,
+    let owner = with_phase_context(
+        "start initial embedded owner",
+        EmbeddedLocalService::start(config.clone()),
     )?;
-    let published = wait_for_published(&mut session, operation_key, started)?;
+    let mut session = with_phase_context(
+        "connect initial authenticated public Session",
+        Session::connect(owner.endpoint()),
+    )?;
+    let started = with_phase_context(
+        "submit caller-keyed interactive index operation",
+        session.start_index_operation(
+            operation_key,
+            package.clone(),
+            CompileExecutionIntent::Interactive,
+        ),
+    )?;
+    let published = with_phase_context(
+        "poll initial operation until publication",
+        wait_for_published(&mut session, operation_key, started),
+    )?;
     assert_eq!(published.package, package);
     assert_eq!(
         published.execution_intent,
@@ -152,7 +172,10 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
         "Cargo metadata must keep its generated lock out of the source package"
     );
 
-    let names = session.names(PUBLIC_MARKER, 16)?;
+    let names = with_phase_context(
+        "query the published marker through public Session",
+        session.names(PUBLIC_MARKER, 16),
+    )?;
     let CommandReply::Names(names) = names.reply else {
         panic!("authenticated name query must return the name view");
     };
@@ -164,13 +187,17 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
             .any(|row| row.label == PUBLIC_MARKER && row.kind.is_some()),
         "the public Session must expose the declaration compiled from the real package"
     );
-    let published_root = session.revision()?.root;
+    let published_root = with_phase_context(
+        "read initial published workspace revision",
+        session.revision(),
+    )?
+    .root;
     assert_eq!(published_root.as_bytes(), receipt.view_root());
 
     let first_receipt = receipt.clone();
     let first_observation = IndexOperationObservation::Known(published);
     drop(session);
-    owner.close()?;
+    with_phase_context("close initial embedded owner", owner.close())?;
     assert!(
         fs::read(&authority_secret)? == authority_credential,
         "closing the owner must preserve the initialized workspace credential"
@@ -183,30 +210,49 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
         ))
     })?;
     assert_eq!(restored_key, operation_key);
-    let restarted_owner = EmbeddedLocalService::start(config)?;
+    let restarted_owner = with_phase_context(
+        "restart embedded owner from the same durable workspace paths",
+        EmbeddedLocalService::start(config),
+    )?;
     assert!(
         fs::read(&authority_secret)? == authority_credential,
         "restarting the owner must reuse the same durable workspace credential"
     );
-    let mut restarted_session = Session::connect(restarted_owner.endpoint())?;
+    let mut restarted_session = with_phase_context(
+        "connect authenticated public Session after restart",
+        Session::connect(restarted_owner.endpoint()),
+    )?;
 
-    let after_restart = restarted_session.index_operation_status(restored_key)?;
+    let after_restart = with_phase_context(
+        "read caller-keyed operation status after restart",
+        restarted_session.index_operation_status(restored_key),
+    )?;
     assert_eq!(after_restart, first_observation);
     assert_same_publication_receipt(&after_restart, &first_receipt);
-    let replay = restarted_session.start_index_operation(
-        restored_key,
-        package.clone(),
-        CompileExecutionIntent::Interactive,
+    let replay = with_phase_context(
+        "replay the exact caller-keyed request after restart",
+        restarted_session.start_index_operation(
+            restored_key,
+            package.clone(),
+            CompileExecutionIntent::Interactive,
+        ),
     )?;
     assert_eq!(replay, first_observation);
     assert_same_publication_receipt(&replay, &first_receipt);
-    let status_after_replay = restarted_session.index_operation_status(restored_key)?;
+    let status_after_replay = with_phase_context(
+        "read operation status after exact replay",
+        restarted_session.index_operation_status(restored_key),
+    )?;
     assert_eq!(
         status_after_replay, first_observation,
         "exact replay must retain the original publication receipt"
     );
     assert_same_publication_receipt(&status_after_replay, &first_receipt);
-    let after_replay_root = restarted_session.revision()?.root;
+    let after_replay_root = with_phase_context(
+        "read workspace revision after exact replay",
+        restarted_session.revision(),
+    )?
+    .root;
     assert_eq!(
         after_replay_root.as_bytes(),
         first_receipt.view_root(),
@@ -218,18 +264,36 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
         package,
         CompileExecutionIntent::Background,
     );
-    assert!(matches!(
-        conflict,
+    match conflict {
         Err(ClientError::CommandFailed(CommandFailure::InvalidQuery(detail)))
-            if detail == "index-operation key was reused with another request"
-    ));
-    let status_after_conflict = restarted_session.index_operation_status(restored_key)?;
+            if detail == "index-operation key was reused with another request" => {}
+        Err(error) => {
+            return Err(Box::new(PhaseError::from_source(
+                "submit conflicting request under the persisted key",
+                error,
+            )));
+        }
+        Ok(observation) => {
+            return Err(Box::new(PhaseError::message(
+                "submit conflicting request under the persisted key",
+                format!("expected the typed key-conflict rejection, got {observation:?}"),
+            )));
+        }
+    }
+    let status_after_conflict = with_phase_context(
+        "read operation status after key-conflict rejection",
+        restarted_session.index_operation_status(restored_key),
+    )?;
     assert_eq!(
         status_after_conflict, first_observation,
         "a conflicting replay must leave the published operation untouched"
     );
     assert_same_publication_receipt(&status_after_conflict, &first_receipt);
-    let root_after_conflict = restarted_session.revision()?.root;
+    let root_after_conflict = with_phase_context(
+        "read workspace revision after key-conflict rejection",
+        restarted_session.revision(),
+    )?
+    .root;
     assert_eq!(
         root_after_conflict.as_bytes(),
         first_receipt.view_root(),
@@ -237,8 +301,92 @@ fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), B
     );
 
     drop(restarted_session);
-    restarted_owner.close()?;
+    with_phase_context("close restarted embedded owner", restarted_owner.close())?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct FailureFixture {
+    tempdir: tempfile::TempDir,
+    retained: bool,
+}
+
+impl FailureFixture {
+    fn new(tempdir: tempfile::TempDir) -> Self {
+        Self {
+            tempdir,
+            retained: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.tempdir.path()
+    }
+
+    fn preserve_after_failure(&mut self) {
+        if !self.retained {
+            self.tempdir.disable_cleanup(true);
+            self.retained = true;
+            let _ = writeln!(
+                io::stderr(),
+                "public index-operation failure fixture retained at {}",
+                self.tempdir.path().display()
+            );
+        }
+    }
+}
+
+impl Drop for FailureFixture {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.preserve_after_failure();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PhaseError {
+    phase: &'static str,
+    message: String,
+    source: Option<Box<dyn Error>>,
+}
+
+impl PhaseError {
+    fn from_source<E: Error + 'static>(phase: &'static str, source: E) -> Self {
+        let message = source.to_string();
+        Self {
+            phase,
+            message,
+            source: Some(Box::new(source)),
+        }
+    }
+
+    fn message(phase: &'static str, message: String) -> Self {
+        Self {
+            phase,
+            message,
+            source: None,
+        }
+    }
+}
+
+impl std::fmt::Display for PhaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.phase, self.message)
+    }
+}
+
+impl Error for PhaseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source.as_deref()
+    }
+}
+
+fn with_phase_context<T, E: Error + 'static>(
+    phase: &'static str,
+    result: Result<T, E>,
+) -> Result<T, PhaseError> {
+    result.map_err(|source| PhaseError::from_source(phase, source))
 }
 
 fn assert_same_publication_receipt(
@@ -278,7 +426,10 @@ fn wait_for_published(
                     "real Cargo compilation did not reach a terminal receipt"
                 );
                 thread::sleep(Duration::from_millis(50));
-                observation = session.index_operation_status(operation_key)?;
+                observation = with_phase_context(
+                    "poll durable operation status while awaiting publication",
+                    session.index_operation_status(operation_key),
+                )?;
             }
             IndexOperationState::Failed { .. } | IndexOperationState::Unresolved { .. } => {
                 panic!("real Cargo operation did not publish: {status:?}");
