@@ -509,7 +509,7 @@ impl Default for SemanticVersionFreshness {
 }
 
 impl SemanticVersionRecord {
-    fn admit(&self) -> Result<(), ProductAdmissionError> {
+    pub(crate) fn admit(&self) -> Result<(), ProductAdmissionError> {
         self.profile.profile()?;
         if self.coordinate.package_type().language() != self.profile.profile()?.language()
             || self.artifacts == 0

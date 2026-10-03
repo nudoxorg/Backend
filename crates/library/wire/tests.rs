@@ -970,6 +970,267 @@ fn reply_and_view_dtos_round_trip_every_reply_variant() {
 }
 
 #[test]
+fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_id() {
+    use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, RustEdition};
+    use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
+
+    let source_root = view_state_root(&[]);
+    let basis = Basis::new(source_root, object_version(b"semantic-shape-source"));
+    let symbol = symbol_key("pkg::shape_fixture::call");
+    let base = ViewRoot::empty_checked(
+        view_key(b"semantic-shape-view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+        capability(basis.object),
+    )
+    .expect("checked view root");
+    let prepared = base
+        .prepare(
+            ViewDelta::Upsert {
+                row: Row::new(RowId::Symbol(symbol), basis, "call"),
+            },
+            capability(basis.object),
+        )
+        .expect("prepare visible declaration row");
+    let (root, _) = base.commit(prepared).expect("commit visible row");
+    let coordinate = crate::PackageCoordinate::parse("pkg:cargo/shape-fixture@1.0.0")
+        .expect("fixture package coordinate");
+    let profile = LanguageProfile::Rust(RustEdition::Rust2021);
+    let source = crate::SemanticVersionRecord {
+        package: crate::PackageReference::Purl(coordinate.clone()),
+        coordinate,
+        profile: crate::SemanticLanguageProfile::new(profile),
+        generation: crate::SemanticGenerationId::new([31; 32]),
+        generation_root: [32; 32],
+        dependency_set: [33; 32],
+        manifest: [34; 32],
+        artifacts: 1,
+        semantic_bytes: 4096,
+        complete: true,
+        selected: true,
+        freshness: crate::SemanticVersionFreshness::Current {
+            input_digest: [35; 32],
+        },
+        history_status: Default::default(),
+    };
+    let request = crate::SemanticShapeRequest::new(
+        root.root(),
+        source.clone(),
+        vec![crate::SymbolAddress::selected(symbol)].into_boxed_slice(),
+        crate::SemanticShapeBudget::new(4096, crate::MAX_SEMANTIC_SHAPE_BYTES as u32)
+            .expect("hard limits are valid"),
+    )
+    .expect("shape request");
+
+    // The payload preserves exact compiler atom spellings through the complete
+    // reply protocol, including JSON escapes. One optional edge below the
+    // object reaches the same hard depth limit as the callable chain.
+    let atom_texts = ["", " ", "\0", "λ雪", " padded "]
+        .map(|value| crate::SourceAtomText::new(value).expect("exact bounded atom"));
+    let property_keys = [
+        crate::SemanticPropertyKey::Named(atom_texts[0].clone()),
+        crate::SemanticPropertyKey::Private(atom_texts[1].clone()),
+        crate::SemanticPropertyKey::Numeric(atom_texts[2].clone()),
+        crate::SemanticPropertyKey::Named(atom_texts[3].clone()),
+        crate::SemanticPropertyKey::Private(atom_texts[4].clone()),
+    ];
+    let mut object_members = property_keys
+        .into_iter()
+        .zip(atom_texts.iter().cloned())
+        .map(|(key, value)| crate::SemanticObjectMember::Property {
+            key,
+            ty: crate::SemanticTypeFact::Known(crate::SemanticTypeExpr::Literal(
+                crate::SemanticLiteral::String(value),
+            )),
+            optional: false,
+            readonly: false,
+        })
+        .collect::<Vec<_>>();
+    object_members.push(crate::SemanticObjectMember::Property {
+        key: crate::SemanticPropertyKey::Named(
+            crate::SourceAtomText::new("deep").expect("exact bounded key"),
+        ),
+        ty: crate::SemanticTypeFact::Known(crate::SemanticTypeExpr::Optional(Box::new(
+            crate::SemanticTypeFact::Unavailable(crate::SemanticTypeUnavailable::DepthBudget),
+        ))),
+        optional: false,
+        readonly: false,
+    });
+    let mut nested = crate::SemanticTypeFact::Known(crate::SemanticTypeExpr::Object(
+        object_members.into_boxed_slice(),
+    ));
+    for _ in 0..crate::MAX_SEMANTIC_SHAPE_DEPTH - 2 {
+        nested = crate::SemanticTypeFact::Known(crate::SemanticTypeExpr::Function(Box::new(
+            crate::SemanticCallableShape {
+                parameters: vec![crate::SemanticTypeElement {
+                    label: None,
+                    kind: backend_semantic::ir::TupleElementKind::Required,
+                    ty: nested,
+                }]
+                .into_boxed_slice(),
+                results: Box::new([]),
+                abi: None,
+                variadic: backend_semantic::ir::FunctionVariadicForm::None,
+                unsafe_: false,
+            },
+        )));
+    }
+    let image_identity =
+        ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
+            b"semantic shape exact image fixture",
+        );
+    let origin = crate::SemanticShapeSourceOrigin {
+        source: crate::SemanticShapeSelection::from_selected(&source)
+            .expect("selected source witness"),
+        selection_root: [36; 32],
+        image: Some(crate::SemanticShapeImageOrigin {
+            image: crate::interface::SemanticImageAuthority {
+                identity: image_identity,
+                byte_len: 512,
+            },
+            profile,
+        }),
+    };
+    let batch = crate::SemanticShapeBatch {
+        basis: request.basis(),
+        entries: vec![crate::SemanticShapeEntry {
+            symbol: crate::SymbolAddress::selected(symbol),
+            identity: Some(crate::SemanticDeclarationIdentity {
+                family: [37; 16],
+                variant: [38; 16],
+            }),
+            origin: Some(origin.clone()),
+            fact: crate::SemanticShapeFact::Available {
+                shape: crate::SemanticDeclarationShape::Typed(nested),
+                language: crate::SemanticShapeLanguageFacts::CommonOnly { profile },
+            },
+        }]
+        .into_boxed_slice(),
+    };
+    batch.admit_against(&request).expect("bounded shape batch");
+
+    let source_key = crate::semantic_shape_source_key(&origin);
+    let batch_key = crate::semantic_shape_batch_key(&batch).expect("shape batch commitment");
+    let certificate = certificate(&root)
+        .with_claim(WireClaim::KeyCommitment {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+        })
+        .with_claim(WireClaim::KeyBytes {
+            schema: WireSchema::SemanticShapeSource,
+            id: encode_id(source_key.as_bytes()),
+            value: crate::semantic_shape_source_preimage(&origin).into_boxed_slice(),
+        })
+        .with_claim(WireClaim::KeyCommitment {
+            schema: WireSchema::SemanticShapeBatch,
+            id: encode_id(batch_key.as_bytes()),
+        });
+    let command = CommandDto::new(44, Command::SemanticShapes(request));
+    let reply = ReplyDto::new(44, CommandReply::SemanticShapes(batch.clone()))
+        .with_certificate(certificate);
+    let encoded = serde_json::to_vec(&reply).expect("encode complete reply DTO");
+    let decoded = crate::decode_reply_body(&encoded).expect("decode complete reply DTO");
+    admit_reply(&command, &decoded).expect("admit exact request and reply");
+    let CommandReply::SemanticShapes(decoded_batch) = decoded.reply else {
+        panic!("semantic shape reply changed variant");
+    };
+    assert_eq!(decoded_batch, batch);
+    assert_eq!(
+        decoded_batch.entries[0]
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.image)
+            .map(|image| image.image.identity),
+        Some(image_identity),
+        "wire decoding must preserve the exact raw artifact ID, not hash it again"
+    );
+
+    let mut wrong_language = batch.clone();
+    let crate::SemanticShapeFact::Available { shape, .. } = wrong_language.entries[0].fact.clone()
+    else {
+        panic!("fixture shape is available");
+    };
+    wrong_language.entries[0].fact = crate::SemanticShapeFact::Available {
+        shape,
+        language: crate::SemanticShapeLanguageFacts::CommonOnly {
+            profile: LanguageProfile::Java(JavaRelease::Java17),
+        },
+    };
+    let wrong_language_key =
+        crate::semantic_shape_batch_key(&wrong_language).expect("changed language payload key");
+    let wrong_language_certificate = certificate(&root)
+        .with_claim(WireClaim::KeyCommitment {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+        })
+        .with_claim(WireClaim::KeyBytes {
+            schema: WireSchema::SemanticShapeSource,
+            id: encode_id(source_key.as_bytes()),
+            value: crate::semantic_shape_source_preimage(&origin).into_boxed_slice(),
+        })
+        .with_claim(WireClaim::KeyCommitment {
+            schema: WireSchema::SemanticShapeBatch,
+            id: encode_id(wrong_language_key.as_bytes()),
+        });
+    let wrong_language_reply = ReplyDto::new(44, CommandReply::SemanticShapes(wrong_language))
+        .with_certificate(wrong_language_certificate);
+    let wrong_language_encoded =
+        serde_json::to_vec(&wrong_language_reply).expect("encode profile mismatch fixture");
+    let wrong_language_decoded =
+        crate::decode_reply_body(&wrong_language_encoded).expect("wire attestation is valid");
+    assert!(
+        admit_reply(&command, &wrong_language_decoded).is_err(),
+        "exact request admission must reject an otherwise valid payload attested for another language profile"
+    );
+
+    fn mutate_depth_terminal(value: &mut serde_json::Value) -> bool {
+        if value.get("state").and_then(serde_json::Value::as_str) == Some("unavailable")
+            && value.get("data").and_then(serde_json::Value::as_str) == Some("depth_budget")
+        {
+            value["data"] = serde_json::json!("node_budget");
+            return true;
+        }
+        match value {
+            serde_json::Value::Array(items) => items.iter_mut().any(mutate_depth_terminal),
+            serde_json::Value::Object(fields) => fields.values_mut().any(mutate_depth_terminal),
+            _ => false,
+        }
+    }
+
+    let mut mutated_fact: serde_json::Value =
+        serde_json::from_slice(&encoded).expect("reply envelope JSON");
+    let original_json: serde_json::Value =
+        serde_json::from_slice(&encoded).expect("reply envelope JSON");
+    assert!(mutate_depth_terminal(
+        &mut mutated_fact["reply"]["data"]["entries"][0]["fact"]
+    ));
+    assert_ne!(
+        mutated_fact, original_json,
+        "mutation must change a valid nested shape fact"
+    );
+    let mutated_fact = serde_json::to_vec(&mutated_fact).expect("encode fact mutation");
+    assert!(
+        crate::decode_reply_body(&mutated_fact).is_err(),
+        "a full reply decode must reject a changed type fact with the original certificate"
+    );
+
+    let mut malformed: serde_json::Value =
+        serde_json::from_slice(&encoded).expect("reply envelope JSON");
+    let image_id = malformed["reply"]["data"]["entries"][0]["origin"]["image"]["image_identity"]
+        .as_str()
+        .expect("image identity string");
+    let mut raw_id = crate::decode_id(image_id).expect("well-formed image ID");
+    raw_id[0] ^= 0x80;
+    malformed["reply"]["data"]["entries"][0]["origin"]["image"]["image_identity"] =
+        serde_json::Value::String(encode_id(&raw_id));
+    let malformed = serde_json::to_vec(&malformed).expect("encode malformed reply");
+    assert!(
+        crate::decode_reply_body(&malformed).is_err(),
+        "a full reply decode must reject an image ID with the wrong authority bytes"
+    );
+}
+
+#[test]
 fn search_reply_round_trips_semantic_lane_status_without_rewriting_lexical_rows() {
     let (_, _, replies) = reply_round_trip_fixtures();
     let snapshot = replies

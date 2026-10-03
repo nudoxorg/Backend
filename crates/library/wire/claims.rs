@@ -48,6 +48,10 @@ pub enum WireSchema {
     Name,
     /// Outline query version.
     Outline,
+    /// Exact selected semantic-image provenance bundle.
+    SemanticShapeSource,
+    /// Exact owner-projected semantic-shape batch payload.
+    SemanticShapeBatch,
     /// Visible view relation root/delta.
     ViewRelation,
 }

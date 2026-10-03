@@ -506,10 +506,20 @@ pub const COMMANDS: [CommandSpec; 51] = [
     },
 ];
 
-/// Finds one registry row.
+/// Finds one shared command row or internal owner-command description.
 #[must_use]
 pub fn command_spec(id: CommandId) -> CommandSpec {
     let index = match id {
+        CommandId::SemanticShapes => {
+            return CommandSpec {
+                id,
+                name: "semantic-shapes",
+                title: "Semantic Shapes",
+                description: "Read bounded compiler-owned callable and member shapes for selected declarations.",
+                mutation: CommandMutation::Read,
+                domain: CommandDomain::Library,
+            };
+        }
         CommandId::Advisory => 0,
         CommandId::Packages => 1,
         CommandId::Add => 2,

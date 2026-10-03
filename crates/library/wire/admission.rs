@@ -208,6 +208,16 @@ pub fn admit_reply_with_capability(
         CommandReply::GraphQueryPage(page) => {
             admit_graph_query_page(&request.command, page)?;
         }
+        CommandReply::SemanticShapes(batch) => {
+            let Command::SemanticShapes(shape_request) = &request.command else {
+                return Err(ReplyAdmissionError::Protocol(
+                    "semantic-shape reply does not match its command".to_owned(),
+                ));
+            };
+            batch
+                .admit_against(shape_request)
+                .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+        }
         CommandReply::Revision(_)
         | CommandReply::Error(_)
         | CommandReply::Failed(_)
@@ -342,6 +352,9 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
                     add_graph_value_bound(&mut bound, value);
                 }
             }
+        }
+        CommandReply::SemanticShapes(_) => {
+            add_bound(&mut bound, crate::MAX_SEMANTIC_SHAPE_BYTES);
         }
         CommandReply::Surface(reply) => {
             add_bound(&mut bound, reply.encoded_size_bound());
@@ -525,6 +538,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             CommandReply::ProjectionPage(_),
         )
         | (Command::GraphQuery(_), CommandReply::GraphQueryPage(_)) => true,
+        (Command::SemanticShapes(_), CommandReply::SemanticShapes(_)) => true,
         (Command::Surface(command), CommandReply::Surface(reply)) => {
             reply
                 .admit(command.id())
@@ -630,6 +644,7 @@ fn command_basis(command: &Command) -> Option<ViewRevision> {
         | Command::OutlinePage { page, .. }
         | Command::GraphPage { page, .. } => Some(page.basis()),
         Command::GraphQuery(query) => Some(query.page().basis()),
+        Command::SemanticShapes(request) => Some(request.basis()),
         _ => None,
     }
 }

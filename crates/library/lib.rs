@@ -39,6 +39,7 @@ pub mod protocol;
 mod registry_forge;
 mod registry_native;
 mod rich_graph;
+mod semantic_shape;
 mod source_atom;
 mod surface;
 mod view;
@@ -77,14 +78,15 @@ pub use backend_version::{
 pub use canonical::{
     ActorKey, BranchKey, DocumentSchema, DocumentVersion, Frontier, IntentId, IntentSchema, LogKey,
     LogSchema, NameSchema, NameVersion, ObjectSchema, OutlineSchema, OutlineVersion,
-    PROTOCOL_SCHEMA, PackageKey, SemanticObject, SymbolKey, ViewDeltaId, ViewRecipeId,
-    ViewRecipeSchema, ViewRelation, ViewStateRoot, ViewVersion, ViewVersionSchema, actor_key,
-    admit_delta_against, admit_delta_transition, admit_intent_value, admit_key_against,
-    admit_key_value, admit_root_against, admit_root_bytes, admit_version_against,
-    admit_version_value, branch_key, decode_id, empty_view_relation_preimage, encode_id, intent_id,
-    log_key, object_version, package_key, relation_row_key, symbol_key, view_identity_bytes,
-    view_key, view_state_root, view_version, view_version_preimage, wire_delta, wire_intent,
-    wire_key, wire_root, wire_version,
+    PROTOCOL_SCHEMA, PackageKey, SemanticObject, SemanticShapeBatchSchema,
+    SemanticShapeSourceSchema, SymbolKey, ViewDeltaId, ViewRecipeId, ViewRecipeSchema,
+    ViewRelation, ViewStateRoot, ViewVersion, ViewVersionSchema, actor_key, admit_delta_against,
+    admit_delta_transition, admit_intent_value, admit_key_against, admit_key_value,
+    admit_root_against, admit_root_bytes, admit_version_against, admit_version_value, branch_key,
+    decode_id, empty_view_relation_preimage, encode_id, intent_id, log_key, object_version,
+    package_key, relation_row_key, symbol_key, view_identity_bytes, view_key, view_state_root,
+    view_version, view_version_preimage, wire_delta, wire_intent, wire_key, wire_root,
+    wire_version,
 };
 pub use capability::{
     CapabilityAuthority, CapabilityFamily, CapabilityId, CapabilityInventory,
@@ -191,6 +193,17 @@ pub use rich_graph::{
     RichGraphError, RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision,
     RichGraphSnapshot,
 };
+pub use semantic_shape::{
+    MAX_SEMANTIC_SHAPE_BATCH, MAX_SEMANTIC_SHAPE_BYTES, MAX_SEMANTIC_SHAPE_DEPTH,
+    MAX_SEMANTIC_SHAPE_NODES, SemanticArrayShape, SemanticCallableShape, SemanticDeclarationShape,
+    SemanticLiteral, SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary,
+    SemanticShapeBatch, SemanticShapeBudget, SemanticShapeEntry, SemanticShapeError,
+    SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
+    SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection,
+    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
+    SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
+    semantic_shape_source_preimage,
+};
 pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
     ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,
@@ -236,6 +249,7 @@ pub use wire::{
     decode_command_body_for_owner, decode_compact_view_event, decode_reply_body,
     decode_reply_body_with_verifier, encode_command_body, encode_compact_subscription,
     encode_compact_view_event, encode_view_root_descriptor, reply_memory_bound,
+    semantic_shape_batch_key,
 };
 
 /// Returns the current command/reply/event wire schema version.

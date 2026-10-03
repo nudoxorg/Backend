@@ -5,6 +5,8 @@
 //! DTO surface.
 
 mod admission;
+#[cfg(test)]
+mod claim_index_tests;
 mod claims;
 mod codec;
 mod command;
@@ -21,8 +23,6 @@ mod reply_page;
 mod subscription;
 mod subscription_snapshot;
 #[cfg(test)]
-mod claim_index_tests;
-#[cfg(test)]
 mod tests;
 
 pub use admission::{
@@ -36,6 +36,7 @@ pub use codec::{
 };
 pub use command::{CommandDto, ReplyDto, ViewDto};
 pub use event_dto::EventDto;
+pub use reply::semantic_shape_batch_key;
 pub use subscription::{SubscriptionDto, encode_compact_subscription};
 pub use subscription_snapshot::{
     SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto, encode_view_root_descriptor,
@@ -63,5 +64,5 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 11 adds strict Add execution intent.
-pub const DTO_VERSION: u16 = 11;
+/// Current transport DTO version; version 13 binds shape facts to the reply certificate.
+pub const DTO_VERSION: u16 = 13;

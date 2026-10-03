@@ -11,7 +11,9 @@ use std::fmt;
 ///
 /// This type deliberately does not normalize text: empty and whitespace-only
 /// values and embedded NUL are valid atom contents. Its boxed string keeps
-/// retained capacity proportional to the admitted byte length.
+/// retained capacity proportional to the admitted byte length. A transport
+/// must enforce its outer frame bound before serde parses or allocates JSON
+/// strings; this visitor bounds the retained typed value.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct SourceAtomText(Box<str>);
@@ -47,7 +49,7 @@ impl<'de> Deserialize<'de> for SourceAtomText {
     {
         struct SourceAtomTextVisitor;
 
-        impl Visitor<'_> for SourceAtomTextVisitor {
+        impl<'de> Visitor<'de> for SourceAtomTextVisitor {
             type Value = SourceAtomText;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -61,7 +63,7 @@ impl<'de> Deserialize<'de> for SourceAtomText {
                 SourceAtomText::new(value).map_err(E::custom)
             }
 
-            fn visit_borrowed_str<E>(self, value: &'_ str) -> Result<Self::Value, E>
+            fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
             where
                 E: de::Error,
             {

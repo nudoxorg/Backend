@@ -83,12 +83,90 @@ pub(crate) fn reply_certificate(
         CommandReply::GraphQueryPage(page) => {
             Some(graph_query_certificate(command, page, owner_root, base)?)
         }
+        CommandReply::SemanticShapes(batch) => Some(semantic_shape_certificate(
+            command, batch, owner_root, base,
+        )?),
         CommandReply::Added(_)
         | CommandReply::Removed(_)
         | CommandReply::Error(_)
         | CommandReply::Failed(_)
         | CommandReply::Surface(_) => base,
     };
+    Ok(certificate)
+}
+
+fn semantic_shape_certificate(
+    command: &Command,
+    batch: &backend_engine::SemanticShapeBatch,
+    owner_root: &ViewRoot,
+    base: Option<WireCertificate>,
+) -> Result<WireCertificate, BuiltinModelError> {
+    let Command::SemanticShapes(request) = command else {
+        return Err(BuiltinModelError(
+            "semantic-shape reply does not match its command".to_owned(),
+        ));
+    };
+    let summary = batch
+        .admit_with_summary(request)
+        .map_err(|error| BuiltinModelError(format!("semantic shape reply admission: {error}")))?;
+    if !batch.basis.matches(owner_root.root()) {
+        return Err(BuiltinModelError(
+            "semantic-shape reply belongs to another visible view root".to_owned(),
+        ));
+    }
+
+    let mut symbols = std::collections::BTreeSet::new();
+    for entry in &batch.entries {
+        if let Some(symbol) = entry.symbol.resolve(owner_root) {
+            if owner_root.row_ref(RowId::Symbol(symbol)).is_some() {
+                symbols.insert(symbol);
+            }
+        }
+    }
+    for address in summary.nominal_symbols() {
+        if let Some(symbol) = address.resolve(owner_root) {
+            if owner_root.row_ref(RowId::Symbol(symbol)).is_some() {
+                symbols.insert(symbol);
+            }
+        }
+    }
+    let rows = symbols
+        .iter()
+        .filter_map(|symbol| owner_root.row_ref(RowId::Symbol(*symbol)));
+    let mut certificate =
+        view_commitment_direct_rows_certificate(owner_root, b"library-view-v1", None, rows, base)?;
+    for symbol in &symbols {
+        add_finished_claim(
+            &mut certificate,
+            WireClaim::KeyCommitment {
+                schema: backend_engine::WireSchema::Symbol,
+                id: backend_engine::encode_id(symbol.as_bytes()),
+            },
+        );
+    }
+    let batch_key = backend_engine::semantic_shape_batch_key(batch)
+        .map_err(|error| BuiltinModelError(format!("encode semantic shape commitment: {error}")))?;
+    add_finished_claim(
+        &mut certificate,
+        WireClaim::KeyCommitment {
+            schema: backend_engine::WireSchema::SemanticShapeBatch,
+            id: backend_engine::encode_id(batch_key.as_bytes()),
+        },
+    );
+    for entry in &batch.entries {
+        if let Some(origin) = &entry.origin {
+            let preimage = backend_engine::semantic_shape_source_preimage(origin);
+            let key = backend_engine::semantic_shape_source_key(origin);
+            add_finished_claim(
+                &mut certificate,
+                WireClaim::KeyBytes {
+                    schema: backend_engine::WireSchema::SemanticShapeSource,
+                    id: backend_engine::encode_id(key.as_bytes()),
+                    value: preimage.into_boxed_slice(),
+                },
+            );
+        }
+    }
     Ok(certificate)
 }
 
@@ -353,6 +431,7 @@ fn view_certificate(
         basis_root,
         root.row_refs(),
         false,
+        true,
         base,
     )
 }
@@ -364,7 +443,17 @@ fn view_commitment_certificate<'a>(
     rows: impl IntoIterator<Item = &'a backend_engine::Row>,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    view_certificate_with_rows(root, recipe_preimage, basis_root, rows, true, base)
+    view_certificate_with_rows(root, recipe_preimage, basis_root, rows, true, true, base)
+}
+
+fn view_commitment_direct_rows_certificate<'a>(
+    root: &ViewRoot,
+    recipe_preimage: &[u8],
+    basis_root: Option<&ViewRoot>,
+    rows: impl IntoIterator<Item = &'a backend_engine::Row>,
+    base: Option<WireCertificate>,
+) -> Result<WireCertificate, BuiltinModelError> {
+    view_certificate_with_rows(root, recipe_preimage, basis_root, rows, true, false, base)
 }
 
 fn view_certificate_with_rows<'a>(
@@ -373,6 +462,7 @@ fn view_certificate_with_rows<'a>(
     basis_root: Option<&ViewRoot>,
     rows: impl IntoIterator<Item = &'a backend_engine::Row>,
     commitment_only: bool,
+    include_relationship_rows: bool,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
     let mut certificate = ClaimBuilder::from_claims(
@@ -478,7 +568,15 @@ fn view_certificate_with_rows<'a>(
             value: "library".to_owned(),
         },
     );
-    add_row_certificate_claims_for_rows(&mut certificate, basis_root.unwrap_or(root), rows);
+    if include_relationship_rows {
+        add_row_certificate_claims_for_rows(&mut certificate, basis_root.unwrap_or(root), rows);
+    } else {
+        add_direct_row_certificate_claims_for_rows(
+            &mut certificate,
+            basis_root.unwrap_or(root),
+            rows,
+        );
+    }
     Ok(certificate.finish())
 }
 
@@ -784,6 +882,59 @@ fn row_claim_seed(row: &backend_engine::Row) -> RowClaimSeed {
     }
 }
 
+/// Certifies only the rows directly named by a semantic shape result and
+/// their owning packages. The shape reply carries no parent or outgoing-link
+/// facts, so copying those unrelated row proofs would add unbounded closure
+/// payload without strengthening any returned shape claim.
+fn add_direct_row_certificate_claims_for_rows<'a>(
+    certificate: &mut ClaimBuilder,
+    root: &ViewRoot,
+    rows: impl IntoIterator<Item = &'a backend_engine::Row>,
+) {
+    let mut seen_packages = std::collections::HashSet::new();
+    let mut seen_symbols = std::collections::HashSet::new();
+    for row in rows {
+        match row.id {
+            RowId::Package(package) => {
+                if seen_packages.insert(package) {
+                    add_package_row_claim(
+                        certificate,
+                        package,
+                        &row.label,
+                        row.identity_preimage()
+                            .map(backend_engine::RowIdentityPreimage::as_str),
+                    );
+                }
+            }
+            RowId::Symbol(symbol) => {
+                if seen_symbols.insert(symbol) {
+                    add_symbol_row_claim(
+                        certificate,
+                        symbol,
+                        &row.label,
+                        row.identity_preimage()
+                            .map(backend_engine::RowIdentityPreimage::as_str),
+                    );
+                }
+                if let Some(package) = row.package
+                    && seen_packages.insert(package)
+                    && let Some(package_row) = root.row_ref(RowId::Package(package))
+                {
+                    add_package_row_claim(
+                        certificate,
+                        package,
+                        &package_row.label,
+                        package_row
+                            .identity_preimage()
+                            .map(backend_engine::RowIdentityPreimage::as_str),
+                    );
+                }
+            }
+            RowId::Object(_) => {}
+        }
+    }
+}
+
 fn add_row_certificate_claims_for_rows<'a>(
     certificate: &mut ClaimBuilder,
     root: &ViewRoot,
@@ -1069,9 +1220,16 @@ mod tests {
         ]);
 
         let borrowed = view_certificate(&root, b"library-view-v1", None, None).expect("borrowed");
-        let owned =
-            view_certificate_with_rows(&root, b"library-view-v1", None, root.rows(), false, None)
-                .expect("owned");
+        let owned = view_certificate_with_rows(
+            &root,
+            b"library-view-v1",
+            None,
+            root.rows(),
+            false,
+            true,
+            None,
+        )
+        .expect("owned");
         assert_eq!(borrowed.claims, owned.claims);
         assert_eq!(
             row_claims(&root, root.row_refs()),
@@ -1093,6 +1251,45 @@ mod tests {
                 id,
             } if id == &backend_engine::encode_id(missing_parent.as_bytes())
         )));
+    }
+
+    #[test]
+    fn shape_row_certificate_carries_only_direct_shape_and_package_identities() {
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let basis = template.basis();
+        let package = backend_engine::package_key("shape-certificate-pkg");
+        let parent = backend_engine::symbol_key("shape-parent");
+        let child = backend_engine::symbol_key("shape-child");
+        let unrelated = backend_engine::symbol_key("shape-unrelated-link");
+        let root = checked_root(vec![
+            backend_engine::Row::new(RowId::Package(package), basis, "shape-certificate-pkg"),
+            backend_engine::Row::in_package(RowId::Symbol(parent), basis, package, "parent"),
+            backend_engine::Row::in_package(RowId::Symbol(unrelated), basis, package, "unrelated"),
+            backend_engine::Row::in_package(RowId::Symbol(child), basis, package, "child")
+                .with_parent(parent)
+                .with_document(vec![backend_engine::Fragment::Link {
+                    label: "unrelated".to_owned(),
+                    target: unrelated,
+                }]),
+        ]);
+        let child_row = root.row_ref(RowId::Symbol(child)).expect("child row");
+        let certificate = view_commitment_direct_rows_certificate(
+            &root,
+            b"library-view-v1",
+            None,
+            std::slice::from_ref(child_row),
+            None,
+        )
+        .expect("direct shape certificate");
+        assert!(certificate.claims.iter().any(|claim| matches!(
+            claim,
+            WireClaim::RowIdentity { schema, id, .. }
+                if *schema == backend_engine::WireSchema::Symbol
+                    && id == &backend_engine::encode_id(child.as_bytes())
+        )));
+        assert!(claim_mentions(&certificate.claims, package.as_bytes()));
+        assert!(!claim_mentions(&certificate.claims, parent.as_bytes()));
+        assert!(!claim_mentions(&certificate.claims, unrelated.as_bytes()));
     }
 
     #[test]

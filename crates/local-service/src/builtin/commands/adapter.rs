@@ -24,6 +24,7 @@ use super::index_operation::{
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
 };
+use super::semantic_shapes::execute_semantic_shapes;
 use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationKey, ProductSemanticPublicationRecord};
 use backend_library::CompileExecutionIntent;
@@ -259,6 +260,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Related(_)
         | Command::GraphPage { .. }
         | Command::GraphQuery(_)
+        | Command::SemanticShapes(_)
         | Command::Health
         | Command::Revision => true,
         Command::Surface(surface) => matches!(
@@ -2432,6 +2434,23 @@ impl CommandAdapter {
                 &request,
                 certificate,
             ),
+            Command::SemanticShapes(request) => {
+                let published_roots = self
+                    .published
+                    .as_ref()
+                    .map(|roots| (roots.source, roots.semantic));
+                let reply = execute_semantic_shapes(
+                    daemon,
+                    &self.compiler,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &self.semantic_authority,
+                    published_roots,
+                    &request,
+                )?;
+                let command = Command::SemanticShapes(request);
+                Self::certify(daemon, &command, reply, certificate)
+            }
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),
         }

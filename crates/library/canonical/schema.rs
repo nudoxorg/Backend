@@ -153,6 +153,39 @@ impl Schema for OutlineSchema {
     }
 }
 
+/// Canonical identity of one exact selected semantic-image provenance bundle.
+///
+/// The preimage commits selected semantic version identity, current input
+/// freshness, the durable workspace-selection root, and the exact reopened
+/// image artifact/extent. Derived history status is not selection authority.
+pub struct SemanticShapeSourceSchema;
+impl Schema for SemanticShapeSourceSchema {
+    const DOMAIN: u8 = 0x10;
+    const TYPE: u16 = 13;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
+/// Canonical identity of one complete owner-projected semantic-shape batch.
+///
+/// This commitment binds the returned type facts to the reply certificate so
+/// mutation between owner projection and client admission is detected. It is
+/// an owner-attested payload commitment, not an independent derivation proof
+/// from the compiler image bytes.
+pub struct SemanticShapeBatchSchema;
+impl Schema for SemanticShapeBatchSchema {
+    const DOMAIN: u8 = 0x10;
+    const TYPE: u16 = 14;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
 /// Canonical ordered relation containing complete visible view rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewRelation;

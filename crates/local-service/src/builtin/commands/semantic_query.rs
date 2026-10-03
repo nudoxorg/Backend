@@ -102,7 +102,7 @@ fn package_reference_label(
 /// When the indexed project label is that package reference, the read opens
 /// at the package's ordering lower bound and stops at the next package.
 /// A label that is not a package reference still pages the whole relation.
-fn for_package_publications(
+pub(super) fn for_package_publications(
     relation: &backend_engine::workspace::WorkspaceRelationHandle<BuiltinSemanticRelation>,
     package: backend_engine::PackageKey,
     sources: &super::super::IndexedSources,
@@ -312,7 +312,7 @@ fn package_indexed_in_sources(
         .any(|project| project.package == package)
 }
 
-fn semantic_entity_for_symbol(
+pub(super) fn semantic_entity_for_symbol(
     image: &backend_semantic::ir::SemanticImageView<'_>,
     package: backend_engine::PackageKey,
     symbol: backend_engine::SymbolKey,
@@ -831,19 +831,31 @@ fn project_opened_reference_facts(
         }
         // A name-matched call is placed where it is in the file, or not at
         // all (`view_build::structural_file_span`).
-        let source = match (caller_row.source.captured(), caller_row.excerpt.text(), root) {
-            (Some(location), Some(excerpt), Some(root)) => view_build::structural_call_span(excerpt, &target_name)
-                .and_then(|span| view_build::structural_file_span(root, location, excerpt, span, &mut files))
-                .map(|(start, end)| {
-                    Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
-                        file: backend_engine::ProductText::new(location.path()).map_err(|error| {
-                            BuiltinModelError(format!("structural references path: {error:?}"))
-                        })?,
-                        start,
-                        end,
+        let source = match (
+            caller_row.source.captured(),
+            caller_row.excerpt.text(),
+            root,
+        ) {
+            (Some(location), Some(excerpt), Some(root)) => {
+                view_build::structural_call_span(excerpt, &target_name)
+                    .and_then(|span| {
+                        view_build::structural_file_span(root, location, excerpt, span, &mut files)
                     })
-                })
-                .transpose()?,
+                    .map(|(start, end)| {
+                        Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
+                            file: backend_engine::ProductText::new(location.path()).map_err(
+                                |error| {
+                                    BuiltinModelError(format!(
+                                        "structural references path: {error:?}"
+                                    ))
+                                },
+                            )?,
+                            start,
+                            end,
+                        })
+                    })
+                    .transpose()?
+            }
             _ => None,
         };
         facts.push(backend_engine::ReferenceFact {
@@ -983,7 +995,10 @@ pub(super) fn execute_references(
     } else {
         Vec::new()
     };
-    let root = sources.projects.get(&package.to_bytes()).map(|project| std::path::PathBuf::from(&project.label));
+    let root = sources
+        .projects
+        .get(&package.to_bytes())
+        .map(|project| std::path::PathBuf::from(&project.label));
     let facts = project_opened_reference_facts(
         &opened,
         view,

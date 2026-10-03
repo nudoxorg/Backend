@@ -93,6 +93,8 @@ pub enum CommandId {
     Graph,
     /// Execute one bounded structured graph query.
     GraphQuery,
+    /// Read compiler-owned callable and member shapes for selected declarations.
+    SemanticShapes,
     /// Read one declaration's captured source.
     Source,
     /// Read symbols related to one declaration.
@@ -951,6 +953,8 @@ pub enum Command {
     },
     /// Execute or resume one structured graph query at an immutable revision.
     GraphQuery(crate::GraphQueryRequest),
+    /// Read compiler-owned callable and member shapes at one exact view root.
+    SemanticShapes(crate::SemanticShapeRequest),
     /// Execute one daemon-owned durable product-surface operation.
     Surface(crate::SurfaceCommand),
     /// Read truthful health/coverage state.
@@ -977,6 +981,7 @@ impl Command {
             Self::Graph(_) | Self::GraphPage { .. } => CommandId::Graph,
             Self::Related(_) => CommandId::Related,
             Self::GraphQuery(_) => CommandId::GraphQuery,
+            Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::Surface(command) => command.id(),
             Self::Health => CommandId::Health,
             Self::Revision => CommandId::Revision,
@@ -1035,6 +1040,8 @@ pub enum CommandReply {
     Graph(ViewSnapshot),
     /// Bounded structured graph-query rows and terminal.
     GraphQueryPage(crate::GraphQueryPage),
+    /// Root-pinned compiler-owned declaration shapes.
+    SemanticShapes(crate::SemanticShapeBatch),
     /// Result from one durable product-surface owner.
     Surface(crate::SurfaceReply),
     /// Health/coverage view.

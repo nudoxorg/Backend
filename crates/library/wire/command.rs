@@ -19,6 +19,8 @@ mod graph_query_wire;
 mod page_wire;
 #[path = "command/read_manifest_wire.rs"]
 mod read_manifest_wire;
+#[path = "command/semantic_shape_wire.rs"]
+mod semantic_shape_wire;
 pub(crate) use cursor_wire::{
     cursor_from_wire, cursor_from_wire_with_capability, cursor_to_wire, frontier_from_wire,
     frontier_from_wire_with_capability, frontier_to_wire,
@@ -33,6 +35,10 @@ use page_wire::{
     PackagePageWire, PageRequestWire, SymbolPageWire, page_request_from_wire, page_request_to_wire,
 };
 use read_manifest_wire::{ReadManifestWire, read_manifest_from_wire, read_manifest_to_wire};
+use semantic_shape_wire::{
+    SemanticShapeRequestWire, request_from_wire as semantic_shape_request_from_wire,
+    request_to_wire as semantic_shape_request_to_wire,
+};
 
 /// Transport-neutral command DTO with explicit operation and protocol identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -559,6 +565,7 @@ enum CommandWire {
     Related(GraphNeighborhoodQueryWire),
     GraphPage(SymbolPageWire),
     GraphQuery(GraphQueryRequestWire),
+    SemanticShapes(SemanticShapeRequestWire),
     Surface(crate::SurfaceCommand),
     Health(EmptyWire),
     Revision(EmptyWire),
@@ -772,6 +779,9 @@ fn command_to_wire(command: &Command) -> CommandWire {
             page: page_request_to_wire(*page),
         }),
         Command::GraphQuery(request) => CommandWire::GraphQuery(graph_request_to_wire(request)),
+        Command::SemanticShapes(request) => {
+            CommandWire::SemanticShapes(semantic_shape_request_to_wire(request))
+        }
         Command::Surface(command) => CommandWire::Surface(command.clone()),
         Command::Health => CommandWire::Health(EmptyWire {}),
         Command::Revision => CommandWire::Revision(EmptyWire {}),
@@ -843,6 +853,9 @@ fn command_from_wire(
             value,
             required_certificate(certificate)?,
         )?)),
+        CommandWire::SemanticShapes(value) => Ok(Command::SemanticShapes(
+            semantic_shape_request_from_wire(value, required_certificate(certificate)?)?,
+        )),
         CommandWire::Surface(value) => {
             value.admit().map_err(|error| error.to_string())?;
             Ok(Command::Surface(value))

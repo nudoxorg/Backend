@@ -40,12 +40,13 @@ use backend_library::{
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
     GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
     IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexOperationKey,
-    IndexOperationObservation, IndexProgressPage, IndexStartResult,
-    NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest, PageTerminal, Query,
-    QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
-    SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress,
-    SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim, WireSchema,
-    encode_id, package_key, symbol_key,
+    IndexOperationObservation, IndexProgressPage, IndexStartResult, NameQuery, OutlineQuery,
+    PackageReference, PageContinuation, PageRequest, PageTerminal, Query, QueryLimit,
+    ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
+    SemanticLanguageProfile, SemanticShapeBatch, SemanticShapeBudget, SemanticShapeRequest,
+    SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey,
+    ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim, WireSchema, encode_id,
+    package_key, symbol_key,
 };
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
@@ -56,7 +57,10 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::path::Path;
 #[cfg(any(unix, windows))]
-use std::sync::{Arc, Mutex, PoisonError, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 /// A bounded cancellation handle for one local transport connection.
@@ -83,7 +87,9 @@ mod transport_interrupt_tests {
     #[test]
     fn interrupt_releases_a_blocked_local_read() {
         let (mut reader, _owner) = std::os::unix::net::UnixStream::pair().expect("socket pair");
-        reader.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
+        reader
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read deadline");
         let interrupt = TransportInterrupt::new(&reader).expect("clone exact socket");
         let waiting = std::thread::spawn(move || {
             let mut byte = [0_u8; 1];
@@ -93,38 +99,54 @@ mod transport_interrupt_tests {
         interrupt.interrupt();
         let result = waiting.join().expect("join released read");
         assert!(matches!(result, Ok(0) | Err(_)));
-        assert!(started.elapsed() < Duration::from_secs(1), "socket cancellation waited for its read deadline");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "socket cancellation waited for its read deadline"
+        );
     }
 
     #[test]
     fn interrupted_handle_closes_a_replacement_socket_too() {
         let (old, _old_owner) = std::os::unix::net::UnixStream::pair().expect("old socket pair");
-        let (mut replacement, _new_owner) = std::os::unix::net::UnixStream::pair().expect("new socket pair");
-        replacement.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
+        let (mut replacement, _new_owner) =
+            std::os::unix::net::UnixStream::pair().expect("new socket pair");
+        replacement
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read deadline");
         let interrupt = TransportInterrupt::new(&old).expect("clone old socket");
         interrupt.interrupt();
-        interrupt.replace(&replacement).expect("replace cancelled socket");
+        interrupt
+            .replace(&replacement)
+            .expect("replace cancelled socket");
         let mut byte = [0_u8; 1];
         let started = Instant::now();
         let result = replacement.read(&mut byte);
         assert!(matches!(result, Ok(0) | Err(_)));
-        assert!(started.elapsed() < Duration::from_secs(1), "replacement survived cancellation");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "replacement survived cancellation"
+        );
     }
 }
 
 #[cfg(any(unix, windows))]
 impl TransportInterrupt {
     fn new(stream: &backend_replication::LocalStream) -> Result<Self, ClientError> {
-        stream.try_clone()
-            .map(|stream| Self(Arc::new(InterruptState {
-                stream: Mutex::new(stream),
-                interrupted: AtomicBool::new(false),
-            })))
+        stream
+            .try_clone()
+            .map(|stream| {
+                Self(Arc::new(InterruptState {
+                    stream: Mutex::new(stream),
+                    interrupted: AtomicBool::new(false),
+                }))
+            })
             .map_err(|error| ClientError::Io(error.to_string()))
     }
 
     fn replace(&self, stream: &backend_replication::LocalStream) -> Result<(), ClientError> {
-        let replacement = stream.try_clone().map_err(|error| ClientError::Io(error.to_string()))?;
+        let replacement = stream
+            .try_clone()
+            .map_err(|error| ClientError::Io(error.to_string()))?;
         let mut current = self.0.stream.lock().unwrap_or_else(PoisonError::into_inner);
         *current = replacement;
         if self.0.interrupted.load(Ordering::Acquire) {
@@ -569,7 +591,11 @@ impl Session {
     ) -> Result<Self, ClientError> {
         let endpoint = path.as_ref().to_path_buf();
         Ok(Self {
-            transport: Box::new(UnixCommandTransport::connect_with_timeouts(&endpoint, connect_timeout, io_timeout)?),
+            transport: Box::new(UnixCommandTransport::connect_with_timeouts(
+                &endpoint,
+                connect_timeout,
+                io_timeout,
+            )?),
             endpoint,
             next_request_id: 1,
             continuations: BTreeMap::new(),
@@ -1354,6 +1380,48 @@ impl Session {
                 "semantic version selection reply changed shape".to_owned(),
             )),
         }
+    }
+
+    /// Reads compiler-owned declaration shapes from one exact selected semantic
+    /// generation, with the request and reply pinned to the current view root.
+    /// The caller's budget can only tighten the shared product limits. Symbols
+    /// must be keys already admitted from this product view; the owner resolves
+    /// each one again before opening the selected compiler image.
+    ///
+    /// # Errors
+    /// Returns an error when the selected generation, view, symbols, response
+    /// budget, transport, or proof fails admission.
+    pub fn semantic_shapes(
+        &mut self,
+        source: SemanticVersionRecord,
+        symbols: &[SymbolKey],
+        budget: SemanticShapeBudget,
+    ) -> Result<SemanticShapeBatch, ClientError> {
+        if symbols.is_empty() || symbols.len() > backend_library::MAX_SEMANTIC_SHAPE_BATCH {
+            return Err(ClientError::Protocol(
+                backend_library::SemanticShapeError::BatchBound.to_string(),
+            ));
+        }
+        let revision = self.revision()?;
+        let addresses = symbols
+            .iter()
+            .copied()
+            .map(SymbolAddress::selected)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let request = SemanticShapeRequest::new(revision.root, source, addresses, budget)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let certificate = symbols
+            .iter()
+            .copied()
+            .fold(revision.certificate, selected_symbol_certificate);
+        let reply = self.send_success(Command::SemanticShapes(request), Some(certificate))?;
+        let CommandReply::SemanticShapes(batch) = reply.reply else {
+            return Err(ClientError::Protocol(
+                "semantic-shape reply changed shape".to_owned(),
+            ));
+        };
+        Ok(batch)
     }
 
     fn send(

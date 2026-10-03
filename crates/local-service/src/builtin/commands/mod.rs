@@ -7,6 +7,7 @@ mod graph;
 mod index;
 mod index_operation;
 mod semantic_query;
+mod semantic_shapes;
 mod snapshot;
 
 pub(in crate::builtin) use adapter::{CommandAdapter, Executed, commit_builtin_intent};

@@ -9,7 +9,8 @@ use backend_client::{ClientError, Session};
 use backend_library::{
     CommandFailure, CommandReply, CompileExecutionIntent, IndexOperationKey,
     IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
-    PackageReference,
+    PackageReference, RowId, SemanticDeclarationShape, SemanticShapeBudget, SemanticTypeExpr,
+    SemanticTypeFact,
 };
 use backend_local_service::{
     EmbeddedLocalService, FrameLimits, ListenerError, LocalHostVariable, ProcessConfig,
@@ -87,7 +88,9 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     )?;
     fs::write(
         package_root.join("src/lib.rs"),
-        format!("pub mod child;\npub fn {PUBLIC_MARKER}() -> u32 {{ child::answer() }}\n"),
+        format!(
+            "pub mod child;\npub struct MorningSignal {{ pub pulse: u32 }}\npub fn cadence8(take: MorningSignal) -> MorningSignal {{ take }}\npub fn {PUBLIC_MARKER}() -> u32 {{ child::answer() }}\n"
+        ),
     )?;
     fs::write(
         package_root.join("src/child.rs"),
@@ -209,6 +212,126 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
             .any(|(label, kind)| label.ends_with(&marker_suffix) && kind.is_some()),
         "the public Session did not return the real declaration at its qualified terminal coordinate; returned rows: {returned_rows:?}"
     );
+
+    let cadence = selected_symbol_by_name(&mut session, "cadence8")?;
+    let signal = selected_symbol_by_name(&mut session, "MorningSignal")?;
+    let selected_source = session
+        .semantic_versions(package.clone())?
+        .into_vec()
+        .into_iter()
+        .find(|record| record.selected && record.complete && record.profile.name() == Some("rust"))
+        .ok_or_else(|| io::Error::other("fixture has no selected complete Rust semantic image"))?;
+    let shape_budget = SemanticShapeBudget::new(4096, 256 * 1024)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let changed_freshness = match selected_source.freshness {
+        backend_library::SemanticVersionFreshness::Current { input_digest } => {
+            backend_library::SemanticVersionFreshness::Historical {
+                selected_input: input_digest,
+                latest_input: if input_digest == [0; 32] {
+                    [1; 32]
+                } else {
+                    [0; 32]
+                },
+            }
+        }
+        backend_library::SemanticVersionFreshness::Historical { .. } => {
+            backend_library::SemanticVersionFreshness::Unverified
+        }
+        backend_library::SemanticVersionFreshness::Unverified => {
+            backend_library::SemanticVersionFreshness::Current {
+                input_digest: [0; 32],
+            }
+        }
+    };
+    let mut stale_source = selected_source.clone();
+    stale_source.freshness = changed_freshness;
+    if session
+        .semantic_shapes(stale_source, &[cadence, signal], shape_budget)
+        .is_ok()
+    {
+        return Err(io::Error::other(
+            "semantic shapes accepted a source record with stale freshness",
+        )
+        .into());
+    }
+    let mut replaced_source = selected_source.clone();
+    let mut replaced_generation = replaced_source.generation.to_bytes();
+    replaced_generation[0] ^= 0xff;
+    replaced_source.generation = backend_library::SemanticGenerationId::new(replaced_generation);
+    if session
+        .semantic_shapes(replaced_source, &[cadence, signal], shape_budget)
+        .is_ok()
+    {
+        return Err(io::Error::other(
+            "semantic shapes accepted a generation no longer selected by the owner",
+        )
+        .into());
+    }
+    let shapes = session.semantic_shapes(selected_source, &[cadence, signal], shape_budget)?;
+    assert_eq!(shapes.entries.len(), 2);
+    let cadence_shape = &shapes.entries[0];
+    let signal_shape = &shapes.entries[1];
+    assert!(cadence_shape.identity.is_some());
+    assert!(signal_shape.identity.is_some());
+    let backend_library::SemanticShapeFact::Available { shape, .. } = &cadence_shape.fact else {
+        return Err(io::Error::other("cadence8 did not return an available compiler shape").into());
+    };
+    let SemanticDeclarationShape::Callable(callable) = shape else {
+        return Err(io::Error::other("cadence8 did not return a callable shape").into());
+    };
+    assert_eq!(callable.parameters.len(), 1);
+    assert_eq!(callable.results.len(), 1);
+    assert_eq!(
+        callable.parameters[0]
+            .label
+            .as_ref()
+            .map(|label| label.as_str()),
+        Some("take")
+    );
+    let SemanticTypeFact::Known(SemanticTypeExpr::Nominal {
+        declaration: parameter_type,
+        symbol: Some(_),
+    }) = &callable.parameters[0].ty
+    else {
+        return Err(
+            io::Error::other("cadence8 parameter lost its nominal compiler identity").into(),
+        );
+    };
+    let SemanticTypeFact::Known(SemanticTypeExpr::Nominal {
+        declaration: result_type,
+        symbol: Some(_),
+    }) = &callable.results[0].ty
+    else {
+        return Err(io::Error::other("cadence8 result lost its nominal compiler identity").into());
+    };
+    assert_eq!(parameter_type, result_type);
+    let backend_library::SemanticShapeFact::Available { shape, .. } = &signal_shape.fact else {
+        return Err(
+            io::Error::other("MorningSignal did not return an available compiler shape").into(),
+        );
+    };
+    let SemanticDeclarationShape::Aggregate(members) = shape else {
+        return Err(
+            io::Error::other("MorningSignal did not return an aggregate member shape").into(),
+        );
+    };
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].name.as_str(), "pulse");
+    assert!(matches!(
+        &members[0].ty,
+        SemanticTypeFact::Known(SemanticTypeExpr::Builtin(_))
+    ));
+    assert!(matches!(
+        &members[0].language,
+        backend_library::SemanticShapeLanguageFacts::Partial {
+            profile: backend_semantic::vocabulary::LanguageProfile::Rust(_),
+            facts: backend_library::SemanticShapeLanguageFact::RustOwnership(_),
+        } | backend_library::SemanticShapeLanguageFacts::Unavailable {
+            profile: backend_semantic::vocabulary::LanguageProfile::Rust(_),
+        } | backend_library::SemanticShapeLanguageFacts::CommonOnly {
+            profile: backend_semantic::vocabulary::LanguageProfile::Rust(_),
+        }
+    ));
     let published_root = with_phase_context(
         "read initial published workspace revision",
         session.revision(),
@@ -337,6 +460,26 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     drop(restarted_session);
     with_phase_context("close restarted embedded owner", restarted_owner.close())?;
     Ok(())
+}
+
+fn selected_symbol_by_name(
+    session: &mut Session,
+    name: &str,
+) -> Result<backend_library::SymbolKey, Box<dyn Error>> {
+    let reply = session.names(name, 16)?;
+    let CommandReply::Names(snapshot) = reply.reply else {
+        return Err(io::Error::other("name lookup returned another reply shape").into());
+    };
+    snapshot
+        .root
+        .rows()
+        .iter()
+        .find(|row| row.label == name)
+        .and_then(|row| match row.id {
+            RowId::Symbol(symbol) => Some(symbol),
+            RowId::Package(_) | RowId::Object(_) => None,
+        })
+        .ok_or_else(|| io::Error::other(format!("name lookup did not return {name}")).into())
 }
 
 #[derive(Debug)]

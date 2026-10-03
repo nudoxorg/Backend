@@ -370,7 +370,8 @@ impl CommandGrammar {
             | CommandId::IndexAwait
             | CommandId::IndexCancel
             | CommandId::IndexProgress
-            | CommandId::PackageGraphPage => false,
+            | CommandId::PackageGraphPage
+            | CommandId::SemanticShapes => false,
         }
     }
 

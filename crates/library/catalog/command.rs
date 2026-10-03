@@ -77,6 +77,11 @@ impl Library {
                     "structured graph queries require an execution owner".to_owned(),
                 )))
             }
+            Command::SemanticShapes(_) => {
+                Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
+                    "semantic shapes require a compiler execution owner".to_owned(),
+                )))
+            }
             Command::Health => Ok(CommandReply::Readiness(crate::HealthReport::from_root(
                 &self.view,
                 self.cursor,

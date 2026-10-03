@@ -16,6 +16,8 @@ use super::reply_graph_query::{
 use super::reply_page::{
     PageTerminalWire, ProjectionPageWire, page_from_wire as projection_page_from_wire,
 };
+#[path = "reply_semantic_shape.rs"]
+mod reply_semantic_shape;
 use super::{
     CoverageWire, CursorWire, DTO_VERSION, EmptyWire, FreshnessWire, FrontierWire, HealthWire,
     ReplyDto, WireCertificate, WireSchema, coverage_from_wire, coverage_to_wire, cursor_from_wire,
@@ -33,6 +35,11 @@ use crate::{
     SemanticSearchStatus, ViewRoot, ViewSnapshot,
 };
 use backend_version::ProducerObservationVerifier;
+pub use reply_semantic_shape::semantic_shape_batch_key;
+use reply_semantic_shape::{
+    SemanticShapeBatchWire, admit_shape_wire_tree, semantic_shape_batch_from_wire,
+    semantic_shape_batch_to_wire,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +71,7 @@ pub(crate) enum ReplyWire {
     Search(SnapshotWire),
     Graph(SnapshotWire),
     GraphQueryPage(GraphQueryPageWire),
+    SemanticShapes(SemanticShapeBatchWire),
     Surface(crate::SurfaceReply),
     Health(ViewRootWire),
     Readiness(HealthWire),
@@ -220,7 +228,7 @@ impl Serialize for ReplyDto {
                 "semantic search status attached to a non-search reply",
             ));
         }
-        let reply = reply_to_wire(&self.reply);
+        let reply = reply_to_wire(&self.reply).map_err(serde::ser::Error::custom)?;
         ReplyEnvelope {
             version: DTO_VERSION,
             request_id: self.request_id,
@@ -298,8 +306,8 @@ impl<'de> Deserialize<'de> for ReplyDto {
     }
 }
 
-pub(crate) fn reply_to_wire(reply: &CommandReply) -> ReplyWire {
-    match reply {
+pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
+    Ok(match reply {
         CommandReply::Packages(snapshot) => ReplyWire::Packages(snapshot_to_wire(snapshot)),
         CommandReply::ProjectionPage(page) => ReplyWire::ProjectionPage(ProjectionPageWire {
             snapshot: snapshot_to_wire(&page.snapshot),
@@ -328,6 +336,11 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> ReplyWire {
         CommandReply::Graph(snapshot) => ReplyWire::Graph(snapshot_to_wire(snapshot)),
         CommandReply::GraphQueryPage(page) => {
             ReplyWire::GraphQueryPage(graph_query_page_to_wire(page))
+        }
+        CommandReply::SemanticShapes(batch) => {
+            let wire = semantic_shape_batch_to_wire(batch)?;
+            admit_shape_wire_tree(&wire)?;
+            ReplyWire::SemanticShapes(wire)
         }
         CommandReply::Surface(reply) => ReplyWire::Surface(reply.clone()),
         CommandReply::Health(root) => ReplyWire::Health(view_root_to_wire(root)),
@@ -358,7 +371,7 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> ReplyWire {
             message: message.clone(),
         }),
         CommandReply::Failed(failure) => ReplyWire::Failed(command_failure_to_wire(failure)),
-    }
+    })
 }
 
 pub(crate) fn reply_from_wire(
@@ -433,6 +446,9 @@ fn reply_from_wire_with_admission<A: CoverageAdmission>(
         )?),
         ReplyWire::GraphQueryPage(value) => {
             CommandReply::GraphQueryPage(graph_query_page_from_wire(value, certificate, admission)?)
+        }
+        ReplyWire::SemanticShapes(value) => {
+            CommandReply::SemanticShapes(semantic_shape_batch_from_wire(value, certificate)?)
         }
         ReplyWire::Surface(value) => CommandReply::Surface(value),
         ReplyWire::Health(value) => CommandReply::Health(view_root_from_wire_with_admission(
