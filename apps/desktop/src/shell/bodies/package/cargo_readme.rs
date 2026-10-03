@@ -15,36 +15,200 @@ use crate::shell::markdown::FollowMarkdownLink;
 use crate::shell::reader::Reader;
 use facet::{Set as _, Space, tokens::ty};
 use gpui::{
-    App, AppContext as _, Context, ElementId, Global, InteractiveElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    App, Context, ElementId, InteractiveElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
+const MAX_PAGING_VISITS: usize = 8;
+
+/// Reader-owned neutral presentation memory. No producer object, read lease,
+/// callback, or source bytes are retained here; prepared navigation stays shared.
 #[derive(Default)]
-struct Cache(Option<(backend_library::CargoPackageReadmeOriginV1, Rc<ShownPages>)>);
-impl Global for Cache {}
+pub(crate) struct PagingMemory {
+    visits: VecDeque<PagingVisit>,
+}
+
+struct PagingVisit {
+    window: WindowId,
+    place: u64,
+    document: Arc<str>,
+    rows: Rc<ShownPages>,
+}
+
+/// The actual rendering window supplied by Reader, rather than App-global UI
+/// state. Cloning this handle does not grant any content/action admission.
+#[derive(Clone)]
+pub(crate) struct PagingScope {
+    window: WindowId,
+    memory: Rc<RefCell<PagingMemory>>,
+}
+
+impl PagingScope {
+    pub(crate) fn new(window: WindowId, memory: Rc<RefCell<PagingMemory>>) -> Self {
+        Self { window, memory }
+    }
+
+    fn for_document(
+        &self,
+        place: u64,
+        document: &CargoReadmeDocument,
+        active: bool,
+    ) -> Rc<ShownPages> {
+        self.memory
+            .borrow_mut()
+            .for_document(self.window, place, document, active)
+    }
+}
+
+#[derive(Default)]
 struct ShownPages {
     links: Cell<CargoReadmeNavigationPage>,
     headings: Cell<CargoReadmeNavigationPage>,
     restored: RefCell<Option<SharedString>>,
 }
-impl Cache {
-    fn for_document(&mut self, document: &CargoReadmeDocument) -> Rc<ShownPages> {
-        if let Some((origin, rows)) = &self.0
-            && origin == &document.origin
-        {
-            return Rc::clone(rows);
+impl PagingMemory {
+    fn for_document(
+        &mut self,
+        window: WindowId,
+        place: u64,
+        document: &CargoReadmeDocument,
+        active: bool,
+    ) -> Rc<ShownPages> {
+        if let Some(at) = self.visits.iter().position(|visit| {
+            visit.window == window
+                && visit.place == place
+                && visit.document.as_ref() == document.identity()
+        }) {
+            if active && at + 1 < self.visits.len() {
+                if let Some(visit) = self.visits.remove(at) {
+                    let rows = Rc::clone(&visit.rows);
+                    self.visits.push_back(visit);
+                    return rows;
+                }
+            }
+            return Rc::clone(&self.visits[at].rows);
         }
-        let rows = Rc::new(ShownPages {
-            links: Cell::default(),
-            headings: Cell::default(),
-            restored: RefCell::default(),
-        });
-        // Neutral disclosure state only: this cache never holds read admission.
-        self.0 = Some((document.origin.clone(), Rc::clone(&rows)));
+        let rows = Rc::new(ShownPages::default());
+        if active {
+            if self.visits.len() >= MAX_PAGING_VISITS {
+                self.visits.pop_front();
+            }
+            self.visits.push_back(PagingVisit {
+                window,
+                place,
+                document: Arc::from(document.identity()),
+                rows: Rc::clone(&rows),
+            });
+        }
         rows
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn document() -> Arc<CargoReadmeDocument> {
+        let contents = (0..96)
+            .map(|at| format!("[Link {at}](https://example.com/{at})\n\n"))
+            .collect::<String>();
+        let (_, value) =
+            crate::runtime::cargo_readme_reads::tests::fixture_with_contents(&contents);
+        let crate::model::pages::PageValue::Browse(BrowseValue::CargoReadme(model)) = value else {
+            panic!("README model");
+        };
+        let CargoReadmeState::Read(document) = &model.state else {
+            panic!("complete README");
+        };
+        Arc::clone(document)
+    }
+
+    #[test]
+    fn window_and_reader_visit_paging_remain_independent_for_shared_document() {
+        // Synthetic window IDs test neutral UI storage, not native/owner acceptance.
+        // Sharing a memory instance deliberately exercises the stronger boundary.
+        let memory = Rc::new(RefCell::new(PagingMemory::default()));
+        let first = PagingScope::new(WindowId::from(1), Rc::clone(&memory));
+        let second = PagingScope::new(WindowId::from(2), Rc::clone(&memory));
+        let document = document();
+        let first_rows = first.for_document(7, &document, true);
+        first_rows
+            .links
+            .set(CargoReadmeNavigationPage::containing(64));
+        *first_rows.restored.borrow_mut() = Some("first window focus".into());
+        let second_rows = second.for_document(7, &document, true);
+        assert!(!Rc::ptr_eq(&first_rows, &second_rows));
+        assert_eq!(
+            second_rows.links.get().range(document.link_count()).start,
+            0
+        );
+        assert!(second_rows.restored.borrow().is_none());
+        assert!(Rc::ptr_eq(
+            &first_rows,
+            &first.for_document(7, &document, true)
+        ));
+        let next_visit = first.for_document(8, &document, true);
+        assert!(!Rc::ptr_eq(&first_rows, &next_visit));
+        assert_eq!(next_visit.links.get().range(document.link_count()).start, 0);
+        assert_eq!(
+            first_rows.links.get().range(document.link_count()).start,
+            64
+        );
+    }
+
+    #[test]
+    fn changed_document_origin_or_content_never_restores_old_paging_state() {
+        let memory = Rc::new(RefCell::new(PagingMemory::default()));
+        let scope = PagingScope::new(WindowId::from(1), memory);
+        let document = document();
+        let rows = scope.for_document(7, &document, true);
+        rows.links.set(CargoReadmeNavigationPage::containing(64));
+        let mut origin = document.origin.clone();
+        let contents: Arc<str> = Arc::from(format!("{}\nchanged bytes", document.source));
+        origin.content_digest = *blake3::hash(contents.as_bytes()).as_bytes();
+        let changed =
+            CargoReadmeDocument::prepare(origin, contents, &|| false).expect("prepared new bytes");
+        let changed_rows = scope.for_document(7, &changed, true);
+        assert!(!Rc::ptr_eq(&rows, &changed_rows));
+        assert_eq!(
+            changed_rows.links.get().range(changed.link_count()).start,
+            0
+        );
+        let mut origin = document.origin.clone();
+        origin.path = backend_library::CargoPackageSourcePathV1::new("README-other.md")
+            .expect("typed relative path");
+        let changed = CargoReadmeDocument::prepare(origin, Arc::clone(&document.source), &|| false)
+            .expect("prepared different origin");
+        assert!(!Rc::ptr_eq(&rows, &scope.for_document(7, &changed, true)));
+    }
+
+    #[test]
+    fn neutral_paging_retention_is_bounded_and_passive_plates_do_not_renew_it() {
+        let document = document();
+        let mut memory = PagingMemory::default();
+        let window = WindowId::from(1);
+        let first = memory.for_document(window, 0, &document, true);
+        for place in 1..MAX_PAGING_VISITS as u64 {
+            memory.for_document(window, place, &document, true);
+        }
+        let passive = memory.for_document(window, 0, &document, false);
+        assert!(Rc::ptr_eq(&first, &passive));
+        for place in 100..164 {
+            memory.for_document(window, place, &document, false);
+        }
+        assert_eq!(memory.visits.len(), MAX_PAGING_VISITS);
+        memory.for_document(window, MAX_PAGING_VISITS as u64, &document, true);
+        assert_eq!(memory.visits.len(), MAX_PAGING_VISITS);
+        assert!(!memory.visits.iter().any(|visit| visit.place == 0));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_document(window, 0, &document, true)
+        ));
     }
 }
 
@@ -158,7 +322,9 @@ fn document_leaf(
 ) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let rows = cx.default_global::<Cache>().for_document(&document);
+    let rows = ctx
+        .readme_paging
+        .for_document(ctx.place_key, &document, ctx.active);
     let paint_place = ctx.place_key;
     let paint_stamp = dependency.1;
     let painted = document.paint(paint_place, paint_stamp);

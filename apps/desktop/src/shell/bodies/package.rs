@@ -67,7 +67,7 @@ mod data;
 mod fluid;
 mod folio;
 mod readme_links;
-mod cargo_readme;
+pub(super) mod cargo_readme;
 mod target;
 use target::PageTarget;
 #[cfg(test)]

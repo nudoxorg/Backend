@@ -13,6 +13,9 @@ pub(crate) mod graph;
 mod inbox;
 mod orbit;
 mod package;
+pub(crate) use package::cargo_readme::{
+    PagingMemory as ReadmePagingMemory, PagingScope as ReadmePagingScope,
+};
 mod retained;
 mod settings;
 mod source;
@@ -130,6 +133,8 @@ pub(crate) struct Ctx<'a> {
     pub source_paging: std::rc::Rc<std::cell::RefCell<Option<PagingState>>>,
     /// Exact tree disclosure and virtual-list scroll state retained across Back.
     pub library_state: std::rc::Rc<std::cell::RefCell<facet::browse::library::State>>,
+    /// Window/visit-scoped README disclosure state owned by this Reader.
+    pub readme_paging: ReadmePagingScope,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.

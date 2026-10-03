@@ -443,6 +443,8 @@ pub(crate) struct Reader {
     empty_source_paging: Rc<RefCell<Option<bodies::PagingState>>>,
     /// Bounded Library disclosure and virtual-list scroll state for exact trees.
     library_state: LibraryStateMemory,
+    /// Bounded neutral README pagination for this Reader's window and visits.
+    readme_paging: Rc<RefCell<bodies::ReadmePagingMemory>>,
     /// Applied only after the destination content can paint.
     pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
@@ -530,6 +532,7 @@ impl Reader {
             source_paging: SourcePagingMemory::default(),
             empty_source_paging: Rc::new(RefCell::new(None)),
             library_state: LibraryStateMemory::default(),
+            readme_paging: Rc::new(RefCell::new(bodies::ReadmePagingMemory::default())),
             pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
@@ -2323,6 +2326,10 @@ impl Reader {
                 source_generation,
                 source_paging,
                 library_state,
+                readme_paging: bodies::ReadmePagingScope::new(
+                    window.window_handle().window_id(),
+                    Rc::clone(&self.readme_paging),
+                ),
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,
