@@ -460,16 +460,22 @@ fn painted_item_caption_owns_native_selection_and_rejects_unpainted_changes(cx: 
     let allowed = Rc::new(Cell::new(true));
     let (graph, cx) = cx.add_window_view(|window, cx| {
         let mut graph = GraphView::with_scene(scene.clone(), Start::Focus(0), window, cx);
+        assert!(!graph.paint_receipt().expect("constructed scene").was_painted(), "construction is not native paint");
         let allowed = allowed.clone();
         graph.on_interaction_admission(Rc::new(move |_, _| allowed.get())); graph
     });
     let receipt = graph.read_with(cx, |graph, _| graph.paint_receipt().expect("scene"));
-    assert!(!receipt.was_painted(), "construction/prepaint is not native paint");
     settle(cx);
     assert!(receipt.was_painted());
     for delta in [0.0, 24.0] {
         if delta != 0.0 {
+            let old_at = graph.read_with(cx, |graph, _| graph.painted_labels.as_ref().expect("prior paint").nodes.iter().find(|label| label.node == 0 && label.selected).expect("prior caption").bounds.center());
             graph.update(cx, |graph, cx| { let mut camera = graph.camera().expect("camera"); camera.x += delta; camera.w *= 1.1; graph.rig.as_mut().expect("rig").set(camera); cx.notify(); });
+            let focused = cx.update(|window, cx| window.focused(cx));
+            cx.simulate_mouse_down(old_at, gpui::MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_up(old_at, gpui::MouseButton::Left, gpui::Modifiers::none());
+            assert_eq!(cx.update(|window, cx| window.focused(cx)), focused, "old camera bounds cannot acquire input before actual replacement paint");
+            assert!(graph.read_with(cx, |graph, _| graph.drag.is_none()));
             draw(cx);
         }
         let at = graph.read_with(cx, |graph, cx| {
