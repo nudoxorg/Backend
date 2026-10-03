@@ -546,7 +546,7 @@ fn wait_for_published(
     mut observation: IndexOperationObservation,
 ) -> Result<backend_library::IndexOperationStatus, PhaseError> {
     let deadline = Instant::now() + Duration::from_secs(660);
-    let initial_status = known_status_for_key(observation, operation_key)?;
+    let initial_status = known_status_for_key(observation.clone(), operation_key)?;
     reject_failed_status(&initial_status)?;
 
     // Exercise the listener's real per-connection frame cap through the public
