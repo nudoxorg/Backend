@@ -554,6 +554,8 @@ impl ProductState {
             | SurfaceCommand::CargoPackageReadmeLink { .. }
             | SurfaceCommand::AdvisoryRefresh
             | SurfaceCommand::IndexStart { .. }
+            | SurfaceCommand::IndexOperationStart { .. }
+            | SurfaceCommand::IndexOperationStatus { .. }
             | SurfaceCommand::IndexAwait { .. }
             | SurfaceCommand::IndexProgress { .. }
             | SurfaceCommand::IndexCancel { .. } => {

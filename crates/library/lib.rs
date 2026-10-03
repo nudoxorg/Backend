@@ -188,6 +188,9 @@ pub use surface::{
     ForgePackageRecord, ForgePackageRegistryEvidence, ForgeRepositoryMetadataRecord,
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
     IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal, IndexJobTicket,
+    IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
+    IndexOperationPublicationReceipt, IndexOperationState, IndexOperationStatus,
+    IndexOperationUnresolvedReason,
     IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
     IndexStartResult, MAX_INDEX_PROGRESS_EVENTS, MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS,
     MAX_PRODUCT_TEXT_BYTES, PackageCoordinate, PackageReference, ProductAdmissionError,
@@ -206,6 +209,7 @@ pub use surface::{
     SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan,
     SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceCommand,
     SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
+    index_operation_request_digest,
 };
 pub use view::{
     Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,

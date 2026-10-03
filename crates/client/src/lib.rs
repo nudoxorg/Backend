@@ -35,7 +35,8 @@ use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
     GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
-    IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexProgressPage, IndexStartResult,
+    IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexOperationKey,
+    IndexOperationObservation, IndexProgressPage, IndexStartResult,
     NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest, PageTerminal, Query,
     QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
     SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress,
@@ -1177,6 +1178,54 @@ impl Session {
             SurfaceReply::IndexStarted(result) => Ok(result),
             _ => Err(ClientError::Protocol(
                 "index start reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Starts or replays one index operation under a caller-persisted key.
+    ///
+    /// Persist `operation_key` before calling this method. If the transport is
+    /// interrupted, query [`Self::index_operation_status`] with the same key;
+    /// this method never invents a replacement key or retries another
+    /// operation on the caller's behalf.
+    ///
+    /// # Errors
+    /// Returns an error when request admission, transport, or the typed reply
+    /// shape fails.
+    pub fn start_index_operation(
+        &mut self,
+        operation_key: IndexOperationKey,
+        package: PackageReference,
+        execution_intent: CompileExecutionIntent,
+    ) -> Result<IndexOperationObservation, ClientError> {
+        match self.surface(SurfaceCommand::IndexOperationStart {
+            operation_key,
+            package,
+            execution_intent,
+        })? {
+            SurfaceReply::IndexOperationStarted(observation) => Ok(observation),
+            _ => Err(ClientError::Protocol(
+                "durable index start reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Reads durable status for one exact caller-owned index operation key.
+    ///
+    /// `Unknown` means that no retained operation was found; it never means
+    /// that indexing succeeded. Existing keys are not implicitly restarted.
+    ///
+    /// # Errors
+    /// Returns an error when request admission, transport, or the typed reply
+    /// shape fails.
+    pub fn index_operation_status(
+        &mut self,
+        operation_key: IndexOperationKey,
+    ) -> Result<IndexOperationObservation, ClientError> {
+        match self.surface(SurfaceCommand::IndexOperationStatus { operation_key })? {
+            SurfaceReply::IndexOperationStatus(observation) => Ok(observation),
+            _ => Err(ClientError::Protocol(
+                "durable index status reply changed shape".to_owned(),
             )),
         }
     }

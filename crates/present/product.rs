@@ -527,6 +527,8 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::IndexStarted(result) => {
             index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
         }
+        SurfaceReply::IndexOperationStarted(observation)
+        | SurfaceReply::IndexOperationStatus(observation) => index_operation_view(observation),
         SurfaceReply::IndexTerminal(terminal) => index_terminal_view(terminal)
             .with_index_job(IndexJobProjection::Terminal(terminal.clone())),
         SurfaceReply::IndexProgress(observation) => index_observation_view(observation)
@@ -535,6 +537,46 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             .with_index_job(IndexJobProjection::Cancellation(receipt.clone())),
         _ => return None,
     })
+}
+
+fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {
+    use backend_library::IndexOperationObservation as O;
+    match observation {
+        O::Unknown { operation_key } => ProductView::rows(
+            "index-operation",
+            vec![ProductRecord::new(
+                "index operation key is unknown".to_owned(),
+                Some(operation_key.to_hex()),
+                vec!["unknown does not mean published".to_owned()],
+            )],
+        ),
+        O::Known(status) => {
+            let state = match &status.state {
+                backend_library::IndexOperationState::Accepted => "accepted".to_owned(),
+                backend_library::IndexOperationState::Active { stage, .. } => {
+                    format!("active at {}", index_stage(*stage))
+                }
+                backend_library::IndexOperationState::Published(receipt) => {
+                    let _published_root = receipt.view_root();
+                    "published".to_owned()
+                }
+                backend_library::IndexOperationState::Failed { detail, .. } => {
+                    format!("failed: {}", detail.as_str())
+                }
+                backend_library::IndexOperationState::Unresolved { detail, .. } => {
+                    format!("unresolved: {}", detail.as_str())
+                }
+            };
+            ProductView::rows(
+                "index-operation",
+                vec![ProductRecord::new(
+                    format!("index operation {state}"),
+                    Some(status.operation_key.to_hex()),
+                    vec![format!("package {}", status.package.as_str())],
+                )],
+            )
+        }
+    }
 }
 
 fn index_start_view(result: &IndexStartResult) -> ProductView {

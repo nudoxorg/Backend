@@ -9,6 +9,7 @@ pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, Registry
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::num::NonZeroU64;
+use std::{fmt, str::FromStr};
 
 /// Largest user-authored operand retained by the product service.
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
@@ -584,6 +585,474 @@ impl IndexJobTicket {
     }
 }
 
+/// Caller-owned, durable identity for one requested index operation.
+///
+/// The caller must persist this key before sending an operation start. Unlike
+/// [`IndexJobTicket`], it is stable across owner restarts and can be queried
+/// without retaining a process-local ticket.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct IndexOperationKey([u8; 32]);
+
+impl IndexOperationKey {
+    /// Admits one nonzero operation key.
+    ///
+    /// # Errors
+    /// Returns [`ProductAdmissionError::IndexOperationKey`] for the reserved
+    /// all-zero key.
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, ProductAdmissionError> {
+        if bytes.iter().all(|byte| *byte == 0) {
+            return Err(ProductAdmissionError::IndexOperationKey);
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Returns the exact key bytes for durable caller storage.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Copies the exact key bytes.
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Parses the canonical lowercase 64-character hexadecimal form.
+    ///
+    /// # Errors
+    /// Returns [`ProductAdmissionError::IndexOperationKey`] for uppercase,
+    /// malformed, wrong-length, or reserved all-zero values.
+    pub fn parse_hex(value: &str) -> Result<Self, ProductAdmissionError> {
+        if value.len() != 64 || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return Err(ProductAdmissionError::IndexOperationKey);
+        }
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = hex_nibble(pair[0]).ok_or(ProductAdmissionError::IndexOperationKey)?;
+            let low = hex_nibble(pair[1]).ok_or(ProductAdmissionError::IndexOperationKey)?;
+            bytes[index] = (high << 4) | low;
+        }
+        Self::from_bytes(bytes)
+    }
+
+    /// Returns the canonical lowercase hexadecimal form.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        let mut value = String::with_capacity(64);
+        for byte in self.0 {
+            use fmt::Write as _;
+            let _ = write!(value, "{byte:02x}");
+        }
+        value
+    }
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+impl TryFrom<[u8; 32]> for IndexOperationKey {
+    type Error = ProductAdmissionError;
+
+    fn try_from(value: [u8; 32]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl TryFrom<String> for IndexOperationKey {
+    type Error = ProductAdmissionError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse_hex(&value)
+    }
+}
+
+impl From<IndexOperationKey> for [u8; 32] {
+    fn from(value: IndexOperationKey) -> Self {
+        value.0
+    }
+}
+
+impl From<IndexOperationKey> for String {
+    fn from(value: IndexOperationKey) -> Self {
+        value.to_hex()
+    }
+}
+
+impl fmt::Display for IndexOperationKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for IndexOperationKey {
+    type Err = ProductAdmissionError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse_hex(value)
+    }
+}
+
+/// Durable receipt for the exact workspace and product view published by an
+/// index operation. The view rows remain available through the normal paged
+/// view API; this compact receipt binds that view to the committed intent.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationPublicationReceipt {
+    /// Content identity of the admitted workspace intent.
+    #[serde(with = "hex_32")]
+    request_identity: [u8; 32],
+    /// Identity of the checked workspace commit that selected the intent.
+    #[serde(with = "hex_32")]
+    commit_identity: [u8; 32],
+    /// Root selected by the workspace owner.
+    #[serde(with = "hex_32")]
+    workspace_root: [u8; 32],
+    /// Sequence selected by the workspace owner.
+    workspace_sequence: u64,
+    /// Exact immutable product-view row root after publication.
+    #[serde(with = "hex_32")]
+    view_root: [u8; 32],
+    /// Exact immutable product-view version after publication.
+    #[serde(with = "hex_32")]
+    view_version: [u8; 32],
+    /// Exact product-view recipe after publication.
+    #[serde(with = "hex_32")]
+    view_recipe: [u8; 32],
+    /// Authenticated control-cursor bytes for this published view revision.
+    revision_cursor: Box<[u8]>,
+}
+
+impl IndexOperationPublicationReceipt {
+    /// Constructs a receipt from the exact view and cursor held by the owner
+    /// after publication.
+    ///
+    /// # Errors
+    /// Returns [`ProductAdmissionError::IndexOperationShape`] when an identity
+    /// is reserved, the workspace revision is invalid, or the cursor does not
+    /// encode this exact published view.
+    pub fn from_published_view(
+        request_identity: [u8; 32],
+        commit_identity: [u8; 32],
+        workspace_root: [u8; 32],
+        workspace_sequence: u64,
+        view: &crate::ViewRoot,
+        cursor: crate::Cursor,
+    ) -> Result<Self, ProductAdmissionError> {
+        let expected_cursor = crate::Cursor::for_view_root(view);
+        if cursor != expected_cursor || cursor.query_offset() != 0 {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Self::from_checked_parts(
+            request_identity,
+            commit_identity,
+            workspace_root,
+            workspace_sequence,
+            *view.root().as_bytes(),
+            *view.version().as_bytes(),
+            *view.recipe().as_bytes(),
+            cursor.encode_control(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_checked_parts(
+        request_identity: [u8; 32],
+        commit_identity: [u8; 32],
+        workspace_root: [u8; 32],
+        workspace_sequence: u64,
+        view_root: [u8; 32],
+        view_version: [u8; 32],
+        view_recipe: [u8; 32],
+        revision_cursor: Box<[u8]>,
+    ) -> Result<Self, ProductAdmissionError> {
+        let matches = |offset: usize, expected: &[u8; 32]| {
+            revision_cursor
+                .get(offset..offset.saturating_add(32))
+                .is_some_and(|value| value == expected)
+        };
+        if [
+            request_identity,
+            commit_identity,
+            workspace_root,
+            view_root,
+            view_version,
+            view_recipe,
+        ]
+        .iter()
+        .any(|identity| identity.iter().all(|byte| *byte == 0))
+            || workspace_sequence == 0
+            || revision_cursor.len() != crate::cursor::CURSOR_CONTROL_BYTES
+            || revision_cursor.get(..2)
+                != Some(crate::cursor::CURSOR_SCHEMA.to_be_bytes().as_slice())
+            || !matches(2, &view_recipe)
+            || !matches(34, &view_version)
+            || !matches(132, &view_root)
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(Self {
+            request_identity,
+            commit_identity,
+            workspace_root,
+            workspace_sequence,
+            view_root,
+            view_version,
+            view_recipe,
+            revision_cursor,
+        })
+    }
+
+    /// Returns the committed workspace request identity.
+    #[must_use]
+    pub const fn request_identity(&self) -> &[u8; 32] {
+        &self.request_identity
+    }
+
+    /// Returns the exact checked commit identity.
+    #[must_use]
+    pub const fn commit_identity(&self) -> &[u8; 32] {
+        &self.commit_identity
+    }
+
+    /// Returns the selected workspace root.
+    #[must_use]
+    pub const fn workspace_root(&self) -> &[u8; 32] {
+        &self.workspace_root
+    }
+
+    /// Returns the selected workspace sequence.
+    #[must_use]
+    pub const fn workspace_sequence(&self) -> u64 {
+        self.workspace_sequence
+    }
+
+    /// Returns the exact product view row root.
+    #[must_use]
+    pub const fn view_root(&self) -> &[u8; 32] {
+        &self.view_root
+    }
+
+    /// Returns the exact immutable view version.
+    #[must_use]
+    pub const fn view_version(&self) -> &[u8; 32] {
+        &self.view_version
+    }
+
+    /// Returns the exact product view recipe identity.
+    #[must_use]
+    pub const fn view_recipe(&self) -> &[u8; 32] {
+        &self.view_recipe
+    }
+
+    /// Returns the fixed-width authenticated cursor bytes.
+    #[must_use]
+    pub fn revision_cursor(&self) -> &[u8] {
+        &self.revision_cursor
+    }
+}
+
+/// Durable state retained for one caller-owned index operation key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum IndexOperationState {
+    /// The owner durably accepted the request before starting work.
+    Accepted,
+    /// The owner is currently working on this exact operation.
+    Active {
+        /// Current process-local cancellation and progress ticket.
+        ticket: IndexJobTicket,
+        /// Current coarse work stage.
+        stage: IndexJobStage,
+    },
+    /// The admitted workspace intent and its derived product view were durably published.
+    Published(IndexOperationPublicationReceipt),
+    /// The operation ended without publishing its requested mutation.
+    Failed {
+        /// Stable terminal failure category.
+        reason: IndexOperationFailureReason,
+        /// Bounded explanatory detail.
+        detail: ProductText,
+    },
+    /// The retained evidence cannot prove whether the exact publication completed.
+    Unresolved {
+        /// Stable reason the owner cannot prove a terminal result.
+        reason: IndexOperationUnresolvedReason,
+        /// Bounded explanatory detail.
+        detail: ProductText,
+    },
+}
+
+/// Why an operation ended without publishing its requested mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexOperationFailureReason {
+    /// The exact operation was cancelled before commit.
+    Cancelled,
+    /// Source, compiler, or semantic admission refused the operation.
+    Refused,
+    /// The owner could not complete the operation before commit.
+    WorkerFailed,
+    /// The bounded durable operation ledger could not admit a new key.
+    LedgerFull,
+}
+
+/// Why a retained operation lacks enough evidence for a terminal answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexOperationUnresolvedReason {
+    /// The owner restarted after recording the expected commit but before it
+    /// could prove the resulting view publication.
+    RestartedDuringPublication,
+    /// The selected workspace is neither the recorded base nor the exact
+    /// request identity recorded before commit.
+    WorkspaceEvidenceMismatch,
+    /// The product view does not match the exact selected workspace head.
+    ViewEvidenceMismatch,
+    /// Durable terminal-receipt persistence failed after publication.
+    ReceiptPersistenceFailed,
+}
+
+/// Exact durable index-operation status for one caller-owned key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationStatus {
+    /// Caller-owned durable operation identity.
+    pub operation_key: IndexOperationKey,
+    /// Hash of the canonical package and execution request.
+    #[serde(with = "hex_32")]
+    pub request_digest: [u8; 32],
+    /// Exact package requested by the caller.
+    pub package: PackageReference,
+    /// Requested compiler execution class.
+    pub execution_intent: crate::CompileExecutionIntent,
+    /// Current or terminal evidence for this operation.
+    pub state: IndexOperationState,
+}
+
+/// Keyed lookup result; absence is explicitly not success.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum IndexOperationObservation {
+    /// The exact key was accepted and has retained evidence.
+    Known(IndexOperationStatus),
+    /// No retained operation has this key. The caller must not infer success.
+    Unknown {
+        /// Key that was queried.
+        operation_key: IndexOperationKey,
+    },
+}
+
+impl IndexOperationObservation {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        match self {
+            Self::Unknown { .. } => Ok(()),
+            Self::Known(status) => {
+                match &status.state {
+                    IndexOperationState::Active { ticket, .. }
+                        if ticket.package() != &status.package =>
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                    IndexOperationState::Published(receipt)
+                        if IndexOperationPublicationReceipt::from_checked_parts(
+                            *receipt.request_identity(),
+                            *receipt.commit_identity(),
+                            *receipt.workspace_root(),
+                            receipt.workspace_sequence(),
+                            *receipt.view_root(),
+                            *receipt.view_version(),
+                            *receipt.view_recipe(),
+                            receipt.revision_cursor().to_vec().into_boxed_slice(),
+                        )
+                        .is_err() =>
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                    _ => {}
+                }
+                if status.request_digest
+                    != index_operation_request_digest(&status.package, status.execution_intent)
+                {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Canonical request digest shared by the client and durable owner.
+#[must_use]
+pub fn index_operation_request_digest(
+    package: &PackageReference,
+    execution_intent: crate::CompileExecutionIntent,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.library.index-operation-request.v1\0");
+    hasher.update(&[match package {
+        PackageReference::Purl(_) => 1,
+        PackageReference::Local(_) => 2,
+    }]);
+    let bytes = package.as_str().as_bytes();
+    hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(bytes);
+    hasher.update(&[match execution_intent {
+        crate::CompileExecutionIntent::Interactive => 1,
+        crate::CompileExecutionIntent::Background => 2,
+    }]);
+    *hasher.finalize().as_bytes()
+}
+
+mod hex_32 {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub(super) fn serialize<S>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut hex = String::with_capacity(64);
+        for byte in value {
+            use core::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        serializer.serialize_str(&hex)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value.len() != 64 || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return Err(de::Error::custom(
+                "identity must be 64 lowercase hex characters",
+            ));
+        }
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = nibble(pair[0]).ok_or_else(|| de::Error::custom("invalid hex identity"))?;
+            let low = nibble(pair[1]).ok_or_else(|| de::Error::custom("invalid hex identity"))?;
+            bytes[index] = (high << 4) | low;
+        }
+        Ok(bytes)
+    }
+
+    fn nibble(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        }
+    }
+}
+
 /// Coarse owner progress for one index job.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1036,6 +1505,20 @@ pub enum SurfaceCommand {
         /// Requested compiler execution class.
         execution_intent: crate::CompileExecutionIntent,
     },
+    /// Start or replay one operation under a caller-persisted durable key.
+    IndexOperationStart {
+        /// Durable identity created and persisted by the caller before dispatch.
+        operation_key: IndexOperationKey,
+        /// Local project directory or pinned package coordinate.
+        package: PackageReference,
+        /// Requested compiler execution class.
+        execution_intent: crate::CompileExecutionIntent,
+    },
+    /// Read durable status for one exact caller-owned operation key.
+    IndexOperationStatus {
+        /// Durable identity originally supplied to [`Self::IndexOperationStart`].
+        operation_key: IndexOperationKey,
+    },
     /// Wait for the terminal receipt of one exact index job.
     IndexAwait {
         /// Owner-issued job and package identity.
@@ -1098,6 +1581,8 @@ impl SurfaceCommand {
             Self::CargoPackageReadme { .. } => CommandId::CargoPackageReadme,
             Self::CargoPackageReadmeLink { .. } => CommandId::CargoPackageReadmeLink,
             Self::IndexStart { .. } => CommandId::IndexStart,
+            Self::IndexOperationStart { .. } => CommandId::IndexStart,
+            Self::IndexOperationStatus { .. } => CommandId::IndexProgress,
             Self::IndexAwait { .. } => CommandId::IndexAwait,
             Self::IndexProgress { .. } => CommandId::IndexProgress,
             Self::IndexCancel { .. } => CommandId::IndexCancel,
@@ -2368,6 +2853,10 @@ pub enum SurfaceReply {
     SemanticVersions(Box<[SemanticVersionRecord]>),
     /// Immediate status returned after an index start request.
     IndexStarted(IndexStartResult),
+    /// Immediate status for a start or replay using a durable operation key.
+    IndexOperationStarted(IndexOperationObservation),
+    /// Durable status read by caller-owned operation key.
+    IndexOperationStatus(IndexOperationObservation),
     /// Terminal receipt returned by an index waiter.
     IndexTerminal(IndexJobTerminal),
     /// Bounded typed progress facts returned for one exact index job.
@@ -2451,6 +2940,8 @@ impl SurfaceReply {
             Self::PackageVersions(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) => CommandId::SemanticVersions,
             Self::IndexStarted(_) => CommandId::IndexStart,
+            Self::IndexOperationStarted(_) => CommandId::IndexStart,
+            Self::IndexOperationStatus(_) => CommandId::IndexProgress,
             Self::IndexTerminal(_) => CommandId::IndexAwait,
             Self::IndexProgress(_) => CommandId::IndexProgress,
             Self::IndexCancellation(_) => CommandId::IndexCancel,
@@ -2544,6 +3035,10 @@ impl SurfaceReply {
                 1
             }
             Self::IndexStarted(_) | Self::IndexTerminal(_) => 1,
+            Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
+                observation.admit()?;
+                1
+            }
             Self::IndexCancellation(receipt) => {
                 receipt.admit()?;
                 1
@@ -2741,6 +3236,10 @@ impl SurfaceReply {
                 .saturating_add(serialized_json_size(&record.history_status)),
             Self::IndexStarted(result) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
+            Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
+                fixed_record_bound()
+                    .saturating_add(serde_json::to_vec(observation).map_or(0, |bytes| bytes.len()))
+            }
             Self::IndexTerminal(terminal) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(terminal).map_or(0, |bytes| bytes.len())),
             Self::IndexProgress(page) => fixed_record_bound()
@@ -3038,6 +3537,10 @@ pub enum ProductAdmissionError {
     IndexProgressShape,
     /// An index cancellation terminal receipt belongs to a different ticket.
     IndexCancelTicketMismatch,
+    /// A durable operation key is reserved, malformed, or has invalid evidence.
+    IndexOperationKey,
+    /// A durable operation receipt contradicts its package, revision, or publication evidence.
+    IndexOperationShape,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -3080,6 +3583,8 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::IndexCancelTicketMismatch => {
                 "index cancellation terminal receipt has a different ticket"
             }
+            Self::IndexOperationKey => "index operation key is malformed or reserved",
+            Self::IndexOperationShape => "index operation status has inconsistent evidence",
         })
     }
 }
@@ -3087,6 +3592,26 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn operation_receipt_view() -> crate::ViewRoot {
+        let root = crate::view_state_root(&[]);
+        let basis = crate::Basis::new(root, crate::object_version(b"index-operation-source"));
+        let frontier = crate::canonical::Frontier::new(
+            crate::branch_key("main"),
+            crate::log_key("library"),
+            crate::cursor::CURSOR_SCHEMA,
+            root,
+            0,
+        );
+        crate::ViewRoot::new_incomplete(
+            crate::view_key(b"index-operation-test-view"),
+            basis,
+            frontier,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("incomplete test view")
+    }
 
     #[test]
     fn partial_registry_metadata_survives_wire_and_admission_with_zero_observed_rows() {
@@ -3101,6 +3626,94 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("partial wire decode");
         assert_eq!(decoded, reply);
         assert!(reply.encoded_size_bound() >= encoded.len());
+    }
+
+    #[test]
+    fn durable_index_operation_key_and_receipt_use_checked_hex_identities() {
+        let key = IndexOperationKey::from_bytes([0x0a; 32]).expect("operation key");
+        let key_hex = "0a".repeat(32);
+        assert_eq!(key.to_hex(), key_hex);
+        assert_eq!(IndexOperationKey::parse_hex(&key_hex), Ok(key));
+        assert!(IndexOperationKey::parse_hex(&key_hex.to_uppercase()).is_err());
+        assert!(IndexOperationKey::from_bytes([0; 32]).is_err());
+        assert_eq!(
+            serde_json::to_string(&key).expect("key json"),
+            format!("\"{key_hex}\"")
+        );
+        assert!(
+            serde_json::from_str::<IndexOperationKey>(&format!("\"{}\"", "00".repeat(32))).is_err()
+        );
+
+        let view = operation_receipt_view();
+        let cursor = crate::Cursor::for_view_root(&view);
+        let receipt = IndexOperationPublicationReceipt::from_published_view(
+            [1; 32], [2; 32], [3; 32], 1, &view, cursor,
+        )
+        .expect("checked publication receipt");
+        let status = IndexOperationStatus {
+            operation_key: key,
+            request_digest: index_operation_request_digest(
+                &PackageReference::parse("/workspace/demo").expect("package"),
+                crate::CompileExecutionIntent::Interactive,
+            ),
+            package: PackageReference::parse("/workspace/demo").expect("package"),
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+            state: IndexOperationState::Published(receipt),
+        };
+        let observation = IndexOperationObservation::Known(status);
+        observation.admit().expect("operation status admission");
+        let encoded = serde_json::to_vec(&observation).expect("operation status json");
+        let decoded: IndexOperationObservation =
+            serde_json::from_slice(&encoded).expect("operation status decode");
+        assert_eq!(decoded, observation);
+        assert!(
+            encoded
+                .windows(key_hex.len())
+                .any(|window| window == key_hex.as_bytes())
+        );
+
+        let command = SurfaceCommand::IndexOperationStart {
+            operation_key: key,
+            package: PackageReference::parse("/workspace/demo").expect("package"),
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+        };
+        assert_eq!(command.id(), CommandId::IndexStart);
+        let encoded = serde_json::to_vec(&command).expect("operation start json");
+        let decoded: SurfaceCommand =
+            serde_json::from_slice(&encoded).expect("operation start decode");
+        assert_eq!(decoded, command);
+        let lookup = SurfaceCommand::IndexOperationStatus { operation_key: key };
+        assert_eq!(lookup.id(), CommandId::IndexProgress);
+        assert_eq!(
+            serde_json::from_slice::<SurfaceCommand>(
+                &serde_json::to_vec(&lookup).expect("operation status request")
+            )
+            .expect("operation status request decode"),
+            lookup
+        );
+    }
+
+    #[test]
+    fn operation_receipt_rejects_unbound_root_or_unbounded_cursor() {
+        let view = operation_receipt_view();
+        let cursor = crate::Cursor::for_view_root(&view);
+        assert!(
+            IndexOperationPublicationReceipt::from_published_view(
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                1,
+                &view,
+                crate::Cursor::new(),
+            )
+            .is_err()
+        );
+        assert!(
+            IndexOperationPublicationReceipt::from_published_view(
+                [0; 32], [2; 32], [3; 32], 1, &view, cursor,
+            )
+            .is_err()
+        );
     }
 
     #[test]
