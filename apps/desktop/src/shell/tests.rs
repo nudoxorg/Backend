@@ -2661,6 +2661,25 @@ fn graph_titlebar_page_and_code_open_visible_b_instead_of_route_a(cx: &mut TestA
 }
 
 #[gpui::test]
+fn graph_titlebar_rejects_a_captured_view_action_after_selection_changes(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let captured = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
+        .expect("B's mounted native Page action");
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+    rig.settle();
+    rig.cx.update(|window, cx| captured(window, cx));
+    rig.settle();
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Graph), "B's retired action cannot open A or B after selection changes");
+    let current = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx))
+        .expect("A's current Page action");
+    rig.cx.simulate_click(current.center(), Modifiers::default());
+    rig.settle();
+    assert_eq!(rig.route(), page_route("RelationLabel"), "the current selected A still opens its own Page");
+}
+
+#[gpui::test]
 fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
@@ -2673,11 +2692,25 @@ fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppCo
         assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
     }
     rig.go(Intent::Navigate(Route::World));
-    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("world page button");
-    rig.cx.simulate_click(bounds.center(), Modifiers::default());
+    let guidance = "Choose a graph symbol to open Page or Code.";
+    assert!(native_bounds_id(&mut rig, "view-page", "Label", &format!("Page unavailable: {guidance}"), false).is_some());
+    assert!(native_bounds_id(&mut rig, "view-code", "Label", &format!("Code unavailable: {guidance}"), false).is_some());
+    assert!(native_bounds_id(&mut rig, "view-page", "Button", "Show Page view", true).is_none());
+    assert!(native_bounds_id(&mut rig, "view-code", "Button", "Show Code view", true).is_none());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).is_none());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none());
+    assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.to_string().contains("Choose a graph symbol"))),
+        "the recovery is painted as text, not only an accessibility label");
+    for key in ["ctrl-3", "ctrl-4", "cmd-."] {
+        rig.keys(key);
+        rig.settle();
+        assert_eq!(rig.route(), Route::World, "{key} has no old symbol route to open");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string())), Some(guidance.to_owned()));
+    }
+    rig.go(Intent::SetView(View::Page));
     rig.settle();
     assert_eq!(rig.route(), Route::World);
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("Choose a graph symbol"));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string())), Some(guidance.to_owned()));
 }
 
 #[gpui::test]

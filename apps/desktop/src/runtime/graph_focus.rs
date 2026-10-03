@@ -44,6 +44,59 @@ impl PartialEq for GraphFocus {
 
 impl Eq for GraphFocus {}
 
+/// Whether the current graph visit has a selected node for a Page/Code
+/// action. Its indexed coordinate is retained when known; the map's guarded
+/// resolver still decides whether a source identity or exact search opens it.
+/// The route that entered the graph is never a replacement for this choice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum GraphViewEligibility {
+    Covered,
+    OutsideGraph,
+    Selected { node: u32, indexed: Option<(PackageRef, SymbolRef)> },
+    ChooseSymbol,
+}
+
+impl GraphViewEligibility {
+    pub(crate) fn from_current(snapshot: &AppSnapshot, focus: Option<&GraphFocus>) -> Self {
+        if snapshot.overlay().is_some() || snapshot.page_overlay().is_some() {
+            return Self::Covered;
+        }
+        if !matches!(snapshot.route(), Route::World | Route::Symbol(crate::navigation::SymbolRoute { view: View::Graph, .. })) {
+            return Self::OutsideGraph;
+        }
+        match focus.filter(|focus| focus.active(snapshot)) {
+            Some(GraphFocus { node, indexed, .. }) => Self::Selected {
+                node: *node,
+                indexed: indexed.clone(),
+            },
+            None => Self::ChooseSymbol,
+        }
+    }
+
+    pub(crate) const fn can_open(&self) -> bool {
+        matches!(self, Self::Selected { .. })
+    }
+
+    pub(crate) const fn allows(&self, view: View) -> bool {
+        !matches!(self, Self::Covered)
+            && (matches!(view, View::Graph) || matches!(self, Self::OutsideGraph | Self::Selected { .. }))
+    }
+
+    pub(crate) const fn guidance(&self) -> Option<&'static str> {
+        match self {
+            Self::ChooseSymbol => Some("Choose a graph symbol to open Page or Code."),
+            Self::Covered | Self::OutsideGraph | Self::Selected { .. } => None,
+        }
+    }
+
+    pub(crate) const fn brief_guidance(&self) -> Option<&'static str> {
+        match self {
+            Self::ChooseSymbol => Some("Choose a graph symbol"),
+            Self::Covered | Self::OutsideGraph | Self::Selected { .. } => None,
+        }
+    }
+}
+
 impl GraphFocus {
     pub(crate) fn active(&self, snapshot: &AppSnapshot) -> bool {
         snapshot.overlay().is_none()
@@ -147,6 +200,9 @@ mod tests {
         };
 
         assert!(focus.active(&snapshot(observed)));
+        assert_eq!(GraphViewEligibility::from_current(&snapshot(observed), None), GraphViewEligibility::ChooseSymbol);
+        assert_eq!(GraphViewEligibility::from_current(&snapshot(observed), Some(&focus)),
+            GraphViewEligibility::Selected { node: 1, indexed: None });
         assert_eq!(focus, GraphFocus { root: observed, ..focus.clone() });
         let changed = root("changed", 3, 9, 2);
         assert_ne!(focus, GraphFocus { root: changed, ..focus.clone() });
@@ -159,6 +215,8 @@ mod tests {
         assert_eq!(notice, Notice { root: observed, ..notice.clone() });
         assert_ne!(notice, Notice { root: changed, ..notice.clone() });
         assert!(!focus.active(&snapshot(changed)));
+        assert_eq!(GraphViewEligibility::from_current(&snapshot(changed), Some(&focus)), GraphViewEligibility::ChooseSymbol,
+            "an old-root selection cannot enable Page or Code");
         assert!(!focus.active(&snapshot(root("same", 4, 9, 2))));
         assert!(!focus.active(&snapshot(root("same", 3, 10, 2))));
     }

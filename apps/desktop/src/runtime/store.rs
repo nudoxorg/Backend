@@ -421,6 +421,11 @@ impl DataStore {
             .filter(|focus| focus.active(&self.snapshot))
     }
 
+    /// One visit-scoped answer shared by graph view controls and commands.
+    pub(crate) fn graph_view_eligibility(&self) -> super::graph_focus::GraphViewEligibility {
+        super::graph_focus::GraphViewEligibility::from_current(&self.snapshot, self.graph_focus())
+    }
+
     /// The current notice, when its visit and root are still the one showing.
     pub(crate) fn notice(&self) -> Option<&super::graph_focus::Notice> {
         self.notice

@@ -209,6 +209,7 @@ impl Map {
                         && request.attachment.as_ref().is_some_and(|attachment| {
                             map.links.store.read(cx).admits_owner_attachment(attachment)
                         })
+                        && map.links.store.read(cx).graph_view_eligibility() == request.selection
                         && map.visible
                     {
                         map.open_current(request.target, window, cx);

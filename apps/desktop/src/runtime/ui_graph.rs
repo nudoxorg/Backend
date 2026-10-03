@@ -82,6 +82,8 @@ impl ConnectionProbeLatch {
 pub(crate) struct GraphViewRequest {
     pub target: GraphDestination,
     pub route: Route,
+    /// The selected node, including its typed indexed address when known.
+    pub selection: super::graph_focus::GraphViewEligibility,
     /// Full observation metadata retained for diagnostics.
     pub root: crate::core::VersionedRoot,
     pub authority: ProducerAuthority,
@@ -517,14 +519,30 @@ impl UiRootEntity {
                     && matches!(self.snapshot().route(), Route::World | Route::Symbol(crate::navigation::SymbolRoute { view: View::Graph, .. })) => {
                 let snapshot = self.snapshot();
                 self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
-                cx.emit(GraphViewRequest {
-                    target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
-                    route: snapshot.route().clone(),
-                    root: snapshot.key(),
-                    authority: snapshot.key().authority(),
-                    attachment: self.store.as_ref().and_then(|store| store.read(cx).current_owner_attachment()),
-                    sequence: self.graph_view_generation,
-                });
+                if let Some(store) = &self.store {
+                    let (selection, attachment) = store.read_with(cx, |store, _| {
+                        (store.graph_view_eligibility(), store.current_owner_attachment())
+                    });
+                    if selection.can_open() {
+                        cx.emit(GraphViewRequest {
+                            target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
+                            route: snapshot.route().clone(),
+                            selection,
+                            root: snapshot.key(),
+                            authority: snapshot.key().authority(),
+                            attachment,
+                            sequence: self.graph_view_generation,
+                        });
+                    } else if let Some(message) = selection.guidance() {
+                        let notice = super::graph_focus::Notice {
+                            visit: snapshot.route().clone(),
+                            root: snapshot.key(),
+                            message: message.into(),
+                            retry: None,
+                        };
+                        store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                    }
+                }
             }
             // The world, then the ask the graph flies once it shows.
             Intent::Tour(package) => {

@@ -348,6 +348,11 @@ impl Shell {
         self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(_, bounds)| bounds)
     }
 
+    #[cfg(test)]
+    pub(crate) fn titlebar_target_action(&self, id: &str, cx: &App) -> Option<super::focus::Act> {
+        self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(target, _)| target.act)
+    }
+
     /// The reader's own targets: a clone still shares its focus and
     /// left-by state (see [`super::focus::Targets`]), so a test can drive
     /// them the same way a click does.
@@ -1131,6 +1136,17 @@ impl Shell {
         if !self.mode_input_allowed(cx) { return false; }
         let snapshot = self.links.snapshot(cx);
         if super::bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
+            let eligibility = self.links.store.read(cx).graph_view_eligibility();
+            if let Some(message) = eligibility.guidance() {
+                let notice = crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: message.into(),
+                    retry: None,
+                };
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                return true;
+            }
             self.reader.update(cx, |reader, cx| reader.open_graph_current(target, window, cx));
             return true;
         }
@@ -1142,9 +1158,13 @@ impl Shell {
         let snapshot = self.links.snapshot(cx);
         let local_navigation = matches!(snapshot.route(), Route::Orbit(_) | Route::Package(_) | Route::World);
         if if local_navigation { !self.local_navigation_allowed(cx) } else { !self.mode_input_allowed(cx) } { return; }
-        if self.reader.read(cx).graph_focused(cx) && self.open_graph_view(OpenView::Page, window, cx) { return; }
+        if super::bodies::graph::is_graph(snapshot.route())
+            && (self.reader.read(cx).graph_focused(cx) || matches!(snapshot.route(), Route::Symbol(_)))
+        {
+            self.open_graph_view(OpenView::Page, window, cx);
+            return;
+        }
         let intent = match snapshot.route() {
-            Route::Symbol(route) if route.view == View::Graph => Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view")),
             Route::Symbol(_) => Intent::SetView(View::Graph),
             Route::World => Intent::Back,
             Route::CargoSource(_) => return,

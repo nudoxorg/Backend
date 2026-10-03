@@ -52,6 +52,7 @@ const LONG_PRESS: Duration = Duration::from_millis(400);
 struct JumpVisit {
     route: Route,
     subject: jump::JumpSubject,
+    graph_selection: crate::runtime::graph_focus::GraphViewEligibility,
     attachment: Option<crate::runtime::store::OwnerAttachment>,
     overlay: Option<Overlay>,
     root: VersionedRoot,
@@ -62,6 +63,7 @@ impl JumpVisit {
         Self {
             route: snapshot.route().clone(),
             subject: jump::bar_subject(snapshot, store),
+            graph_selection: store.graph_view_eligibility(),
             attachment: store.current_owner_attachment(),
             overlay: snapshot.overlay(),
             root: snapshot.key(),
@@ -75,6 +77,7 @@ impl JumpVisit {
             && snapshot.overlay() == self.overlay
             && snapshot.key().same_authority(self.root)
             && jump::bar_subject(&snapshot, store) == self.subject
+            && store.graph_view_eligibility() == self.graph_selection
             && store.current_owner_attachment() == self.attachment
     }
 }
@@ -118,7 +121,8 @@ impl JumpAction {
                 if visit.current(links, cx)
                     && visit.subject.page_route().is_some()
                     && links.snapshot(cx).overlay().is_none()
-                    && links.snapshot(cx).page_overlay().is_none() => match view {
+                    && links.snapshot(cx).page_overlay().is_none()
+                    && links.store.read(cx).graph_view_eligibility().allows(*view) => match view {
                 View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
                 View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
                 View::Graph => {
@@ -257,7 +261,7 @@ impl Render for Titlebar {
         );
         // The altimeter's slot is the view switch (§8.4): Graph · Page · Code,
         // only the active view named. Below 760 it gives way to the bar.
-        if let Some(active) = jump::bar_subject(&snapshot, self.links.store.read(cx)).page_route().and_then(view_of)
+        if let Some(active) = view_of(snapshot.route())
             && bar.mode == Bar::Full
             && snapshot.overlay().is_none()
             && snapshot.page_overlay().is_none()
@@ -780,9 +784,13 @@ impl Titlebar {
     fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool, cx: &App) -> AnyElement {
         let mut row = div().flex().items_center().gap(measure.space(Space::Hair));
         let snapshot = self.links.snapshot(cx);
-        let visit = JumpVisit::at(&snapshot, self.links.store.read(cx));
+        let (visit, eligibility) = {
+            let store = self.links.store.read(cx);
+            (JumpVisit::at(&snapshot, store), store.graph_view_eligibility())
+        };
         for view in [View::Graph, View::Page, View::Code] {
             let on = view == active;
+            let available = eligibility.allows(view);
             let id: SharedString = format!("view-{}", view.as_str()).into();
             let name = match view {
                 View::Graph => "Graph",
@@ -798,7 +806,7 @@ impl Titlebar {
                 View::Graph => super::keys::cap(super::keys::Command::Graph),
                 View::Page | View::Code => super::keys::cap(super::keys::Command::CodePage),
             };
-            let ink = if on { palette.ink0 } else { palette.ink3 };
+            let ink = if on { palette.ink0 } else if available { palette.ink3 } else { palette.ink4 };
             let mut face = div()
                 .id(id.clone())
                 .relative()
@@ -815,6 +823,10 @@ impl Titlebar {
                 row = row.child(face.role(gpui::Role::Label).aria_label(format!("{name} view selected")));
                 continue;
             }
+            if !available {
+                row = row.child(face.role(gpui::Role::Label).aria_label(format!("{name} unavailable: {}", eligibility.guidance().unwrap_or_default())));
+                continue;
+            }
             let act = jump_act(JumpAction::View { visit: visit.clone(), view }, &self.links, &self.targets);
             let click_act = Rc::clone(&act);
             let key_act = Rc::clone(&act);
@@ -829,6 +841,9 @@ impl Titlebar {
                 .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
             if keys { face = face.children(keycap(true, cap, measure)); }
             row = row.child(self.targets.track(id, face));
+        }
+        if let Some(guidance) = eligibility.brief_guidance() {
+            row = row.child(text(ty::CAPTION, measure, palette.ink3).child(guidance));
         }
         row.into_any_element()
     }
