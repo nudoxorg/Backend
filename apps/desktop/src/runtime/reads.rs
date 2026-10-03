@@ -3145,6 +3145,32 @@ mod tests {
     }
 
     #[test]
+    fn bounded_read_a_running_prefetch_uses_latest_visible_selection_at_landing() {
+        let harness = harness(1);
+        assert!(harness.pool.submit(job("slow-visible", 77, Priority::Prefetch)));
+        assert_eq!(harness.started().1, "slow-visible");
+        for round in 0..12 {
+            let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Prefetch).expect("prefetch admission");
+            harness.pool.shared.publish(ReadOutcome {
+                key: key(&format!("earlier-{round}")), generation: Generation::new(round),
+                worker: 0, priority: Priority::Prefetch, complete: true,
+                result: Ok(PageValue::Health(health())), _residency: permit,
+            });
+        }
+        let visible = BTreeSet::from([key("slow-visible")]);
+        assert!(!harness.pool.promote(&key("slow-visible")), "running work needs no queue mutation");
+        harness.release("slow-visible");
+        crate::runtime::wait::until("visible prefetch completed after focus changed", || {
+            harness.pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).len() == 13
+        });
+        let batch = harness.pool.drain_for(&visible);
+        assert_eq!(batch[0].key, key("slow-visible"));
+        assert_eq!(batch[0].generation, Generation::new(77));
+        assert_eq!(batch[0].priority, Priority::Prefetch);
+        assert_eq!(batch[1].key, key("earlier-0"));
+    }
+
+    #[test]
     fn bounded_read_large_source_and_late_generation_keep_exact_page_admission() {
         use crate::core::VersionedRoot;
         use crate::model::pages::{DeclRef, Known, Landing, PageStore, SourceOrigin, SourceText, SourceView};
