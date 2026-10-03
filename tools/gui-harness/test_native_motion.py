@@ -45,6 +45,60 @@ class NativeMotionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown plan fields"):
                 motion.require_plan(self.plan(directory, accidental_route_seed=True))
 
+    def test_plan_snapshot_binds_parsed_bytes_and_detects_source_mutation(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source_path = self.plan(directory)
+            source, raw = motion.plan_file_observation(source_path)
+            resolved = motion.require_plan(source_path, raw)
+            source_copy = motion.write_once_readonly(directory / "source-plan.snapshot.json", raw)
+            resolved_path = directory / "resolved-plan.json"
+            resolved_observation = motion.write_once_readonly(
+                resolved_path, (json.dumps(resolved, indent=2) + "\n").encode())
+            before, before_receipt = motion.plan_phase_receipt(
+                directory, "prelaunch", source, source_copy, resolved_observation)
+            self.assertEqual(before["state"], "Stable")
+            self.assertEqual(source["sha256"], source_copy["sha256"])
+            self.assertNotEqual(source["sha256"], resolved_observation["sha256"])
+            self.assertEqual(before_receipt["nlink"], 1)
+            self.assertEqual((directory / "PLAN-PRELAUNCH.json").stat().st_mode & 0o222, 0)
+            with self.assertRaises(FileExistsError):
+                motion.write_once_readonly(directory / "PLAN-PRELAUNCH.json", b"replacement")
+
+            source_path.write_text(json.dumps(dict(json.loads(raw), name="changed after parsing")))
+            self.assertEqual(resolved["name"], json.loads(raw)["name"])
+            after, _ = motion.plan_phase_receipt(directory, "postlaunch", source,
+                                                 source_copy, resolved_observation)
+            self.assertEqual(after["state"], "Changed")
+            self.assertEqual(after["checks"]["source"]["state"], "Changed")
+            self.assertEqual(after["checks"]["source_copy"]["state"], "Stable")
+            self.assertEqual(after["checks"]["resolved"]["state"], "Stable")
+            receipt_path = directory / "PLAN-PRELAUNCH.json"
+            receipt_path.chmod(0o644)
+            receipt_path.write_text('{"substituted":true}\n')
+            self.assertEqual(motion.plan_snapshot_check(before_receipt)["state"], "Changed")
+
+    def test_resolved_plan_mutation_is_detected_and_active_capture_is_unqualified(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source_path = self.plan(directory)
+            source, raw = motion.plan_file_observation(source_path)
+            plan = motion.require_plan(source_path, raw)
+            source_copy = motion.write_once_readonly(directory / "source-plan.snapshot.json", raw)
+            resolved_path = directory / "resolved-plan.json"
+            resolved = motion.write_once_readonly(resolved_path, (json.dumps(plan) + "\n").encode())
+            before, _ = motion.plan_phase_receipt(directory, "prelaunch", source, source_copy, resolved)
+            self.assertEqual(before["state"], "Stable")
+            resolved_path.chmod(0o644)
+            resolved_path.write_text('{"substituted":true}\n')
+            after, _ = motion.plan_phase_receipt(directory, "postlaunch", source, source_copy, resolved)
+            self.assertEqual(after["checks"]["source"]["state"], "Stable")
+            self.assertEqual(after["checks"]["resolved"]["state"], "Changed")
+            self.assertEqual(after["state"], "Changed")
+            self.assertFalse(motion.plan_consumption_qualification(plan)["launch_admissible"])
+            self.assertFalse(motion.plan_consumption_qualification(plan)["exact_bytes_attested"])
+            self.assertTrue(motion.plan_consumption_qualification(dict(plan, actions=[]))["launch_admissible"])
+
     def test_swift_source_binds_optional_screen_output_selector(self):
         # SCStreamOutput's frame callback is optional. A wrong Swift external
         # label compiles but never receives pixels, so compile-time references

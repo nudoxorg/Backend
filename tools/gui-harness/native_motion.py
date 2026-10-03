@@ -46,6 +46,7 @@ import plistlib
 import re
 import signal
 import shlex
+import stat
 from pathlib import Path
 import shutil
 import statistics
@@ -62,6 +63,7 @@ MAX_INPUT_BYTES = 2_000_000_000
 MAX_AX_SAMPLE_AGE_MS = 150
 MAX_CLOCK_RESIDUAL_MS = 50
 MAX_CALLBACK_OFFSET_MS = 100
+MAX_PLAN_BYTES = 1_000_000
 
 
 def sha256(path: Path) -> str:
@@ -70,6 +72,77 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def plan_file_observation(path: Path) -> tuple[dict[str, Any], bytes]:
+    """Read one regular file and bind its raw bytes to its file identity."""
+    path = path.resolve(strict=True)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_PLAN_BYTES:
+            raise ValueError(f"plan must be a regular file <= {MAX_PLAN_BYTES} bytes: {path}")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(MAX_PLAN_BYTES + 1)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    path_after = path.stat()
+    def identity(row: os.stat_result) -> tuple[int, ...]:
+        return (row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns,
+                row.st_ctime_ns, row.st_nlink)
+    if len(raw) != before.st_size or identity(before) != identity(after) or identity(after) != identity(path_after):
+        raise ValueError(f"plan changed during one file observation: {path}")
+    return ({"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+             "device": after.st_dev, "inode": after.st_ino, "mtime_ns": after.st_mtime_ns,
+             "ctime_ns": after.st_ctime_ns, "nlink": after.st_nlink}, raw)
+
+
+def write_once_readonly(path: Path, raw: bytes) -> dict[str, Any]:
+    """Create a fresh evidence file; later checks still detect possible edits."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(raw)
+            stream.flush()
+        os.fsync(fd)
+        os.fchmod(fd, 0o444)
+    finally:
+        os.close(fd)
+    observed, written = plan_file_observation(path)
+    if written != raw or observed["nlink"] != 1:
+        raise RuntimeError(f"fresh plan evidence changed after write: {path}")
+    return observed
+
+
+def plan_snapshot_check(expected: dict[str, Any]) -> dict[str, Any]:
+    """A point-in-time check, not proof of which bytes another process read."""
+    try:
+        observed, _ = plan_file_observation(Path(expected["path"]))
+        return {"state": "Stable" if observed == expected else "Changed", "observed": observed}
+    except (OSError, ValueError) as error:
+        return {"state": "Unavailable", "error": str(error)}
+
+
+def plan_phase_receipt(out: Path, phase: str, source: dict[str, Any],
+                       source_copy: dict[str, Any], resolved: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    checks = {"source": plan_snapshot_check(source), "source_copy": plan_snapshot_check(source_copy),
+              "resolved": plan_snapshot_check(resolved)}
+    row = {"schema": 1, "phase": phase,
+           "state": "Stable" if all(check["state"] == "Stable" for check in checks.values()) else "Changed",
+           "expected": {"source": source, "source_copy": source_copy, "resolved": resolved}, "checks": checks,
+           "observed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    receipt = write_once_readonly(out / f"PLAN-{phase.upper()}.json",
+                                  (json.dumps(row, indent=2, sort_keys=True) + "\n").encode())
+    return row, receipt
+
+
+def plan_consumption_qualification(plan: dict[str, Any]) -> dict[str, Any]:
+    # native_motion.swift currently decodes Data(contentsOf: planPath) but
+    # emits no digest of that Data. Observed actions and window metadata are
+    # insufficient to identify the exact consumed bytes.
+    return {"state": "UnverifiedByCurrentRecorder", "exact_bytes_attested": False,
+            "launch_admissible": not bool(plan["actions"])}
 
 
 def git(root: Path, *args: str) -> str:
@@ -187,8 +260,10 @@ def process_executable(pid: int) -> Path:
     return Path(os.fsdecode(buffer.value)).resolve()
 
 
-def require_plan(path: Path) -> dict[str, Any]:
-    plan = json.loads(path.read_text())
+def require_plan(path: Path, raw_bytes: bytes | None = None) -> dict[str, Any]:
+    # A runner passes its one observed byte snapshot here. Standalone callers
+    # can still validate a plan path without preparing a capture.
+    plan = json.loads(raw_bytes if raw_bytes is not None else path.read_bytes())
     if not isinstance(plan, dict) or plan.get("schema") != 1:
         raise ValueError("plan must have schema 1")
     allowed_plan = {"schema", "name", "duration_ms", "max_frames", "window_id", "expected_window_frame_pt", "capture_fps",
@@ -1000,7 +1075,8 @@ def run(args: argparse.Namespace) -> Path:
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"output directory must be empty to prevent stale frame evidence: {out}")
     out.mkdir(parents=True, exist_ok=True)
-    plan = require_plan(args.plan)
+    source_plan, source_plan_bytes = plan_file_observation(args.plan)
+    plan = require_plan(args.plan, source_plan_bytes)
     if symlink_in_artifact_path(args.binary):
         raise ValueError("capture executable must be an owned regular file, not a symlink")
     expected = args.binary.resolve(strict=True)
@@ -1023,7 +1099,8 @@ def run(args: argparse.Namespace) -> Path:
         "live_owner_index_admission": "unverified; pair with a production owner/read receipt",
         "name": plan["name"], "case": plan["case"], "pid": args.pid, "binary": {"path": str(expected), "sha256": sha256(expected)},
         "bundle": bundle,
-        "plan": {"path": str(args.plan.resolve()), "sha256": sha256(args.plan.resolve())},
+        "plan": {"path": source_plan["path"], "sha256": source_plan["sha256"],
+                 "source_snapshot": source_plan},
         "tool": tool,
         "source": source, "inputs": inputs, "binary_source_admission": admission,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1041,26 +1118,68 @@ def run(args: argparse.Namespace) -> Path:
     manifest["recorder_sha256"] = sha256(recorder)
     launch_bundle = (require_launch_bundle(args.launch_bundle, recorder, manifest["recorder_identity"], plan)
                      if args.launch_bundle else None)
+    source_plan_copy = write_once_readonly(out / "source-plan.snapshot.json", source_plan_bytes)
+    if source_plan_copy["sha256"] != source_plan["sha256"]:
+        raise RuntimeError("original plan snapshot differs from parsed plan bytes")
+    manifest["plan"]["source_copy_snapshot"] = source_plan_copy
     plan_path = out / "resolved-plan.json"
-    plan_path.write_text(json.dumps(plan, indent=2) + "\n")
-    if launch_bundle:
-        launch = launch_services_wait(launch_bundle, args.pid, plan_path, out,
-                                      timeout_seconds=plan["duration_ms"] / 1000 + 15)
-        manifest["launcher"] = launch
-        manifest["recorder_exit"] = None  # `open -W` never reports the app's exit status.
-        (out / "recorder.log").write_bytes((out / "recorder.stderr").read_bytes())
-        recorder_finished, preflight, launch_failures = launch_services_completion(
-            out, launch, recorder, manifest["recorder_identity"], args.pid, plan)
-        manifest["launcher"]["completion_failures"] = launch_failures
-        if preflight is not None:
-            manifest["preflight"] = preflight
-    else:
-        result = subprocess.run([str(recorder), str(args.pid), str(plan_path), str(out)],
-                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                timeout=plan["duration_ms"] / 1000 + 15)
-        (out / "recorder.log").write_text(result.stdout)
-        manifest["recorder_exit"] = result.returncode
-        recorder_finished = result.returncode == 0
+    resolved_plan = write_once_readonly(plan_path, (json.dumps(plan, indent=2) + "\n").encode())
+    manifest["plan"]["resolved_snapshot"] = resolved_plan
+    snapshot = {"schema": 1, "state": "PreparedNotProvenConsumed", "source": source_plan,
+                "source_copy": source_plan_copy,
+                "resolved": resolved_plan, "recorder_read_sha256": None}
+    manifest["plan"]["snapshot_receipt"] = write_once_readonly(
+        out / "PLAN-SNAPSHOT.json", (json.dumps(snapshot, indent=2, sort_keys=True) + "\n").encode())
+    before, before_receipt = plan_phase_receipt(out, "prelaunch", source_plan,
+                                                source_plan_copy, resolved_plan)
+    manifest["plan"]["prelaunch_receipt"] = before_receipt
+    manifest["plan"]["prelaunch_receipt_checks"] = {
+        "snapshot": plan_snapshot_check(manifest["plan"]["snapshot_receipt"]),
+        "prelaunch": plan_snapshot_check(before_receipt)}
+    if before["state"] != "Stable" or any(
+            check["state"] != "Stable" for check in manifest["plan"]["prelaunch_receipt_checks"].values()):
+        manifest["plan"]["state"] = "ChangedBeforeLaunch"
+        (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        raise RuntimeError("plan source or resolved bytes changed before recorder launch; see CAPTURE.json")
+    manifest["plan"]["recorder_consumption"] = plan_consumption_qualification(plan)
+    if not manifest["plan"]["recorder_consumption"]["launch_admissible"]:
+        manifest["plan"]["state"] = "ActiveLaunchBlockedWithoutConsumedBytesAttestation"
+        (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        raise RuntimeError("active plan needs exact Swift-consumed bytes attestation before native input; see CAPTURE.json")
+    (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    recorder_finished = False
+    try:
+        if launch_bundle:
+            launch = launch_services_wait(launch_bundle, args.pid, plan_path, out,
+                                          timeout_seconds=plan["duration_ms"] / 1000 + 15)
+            manifest["launcher"] = launch
+            manifest["recorder_exit"] = None  # `open -W` never reports the app's exit status.
+            (out / "recorder.log").write_bytes((out / "recorder.stderr").read_bytes())
+            recorder_finished, preflight, launch_failures = launch_services_completion(
+                out, launch, recorder, manifest["recorder_identity"], args.pid, plan)
+            manifest["launcher"]["completion_failures"] = launch_failures
+            if preflight is not None:
+                manifest["preflight"] = preflight
+        else:
+            result = subprocess.run([str(recorder), str(args.pid), str(plan_path), str(out)],
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=plan["duration_ms"] / 1000 + 15)
+            (out / "recorder.log").write_text(result.stdout)
+            manifest["recorder_exit"] = result.returncode
+            recorder_finished = result.returncode == 0
+    finally:
+        after, after_receipt = plan_phase_receipt(out, "postlaunch", source_plan,
+                                                  source_plan_copy, resolved_plan)
+        manifest["plan"]["postlaunch_receipt"] = after_receipt
+        manifest["plan"]["postlaunch_receipt_checks"] = {
+            "snapshot": plan_snapshot_check(manifest["plan"]["snapshot_receipt"]),
+            "prelaunch": plan_snapshot_check(before_receipt),
+            "postlaunch": plan_snapshot_check(after_receipt)}
+        postlaunch_stable = after["state"] == "Stable" and all(
+            check["state"] == "Stable" for check in manifest["plan"]["postlaunch_receipt_checks"].values())
+        manifest["plan"]["state"] = "StableAtChecks" if postlaunch_stable else "ChangedDuringLaunch"
+        (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    recorder_finished = recorder_finished and postlaunch_stable
     try:
         manifest["recorder_identity_stable"] = recorder_identity(recorder) == manifest["recorder_identity"]
     except (ValueError, OSError) as exc:
@@ -1069,7 +1188,7 @@ def run(args: argparse.Namespace) -> Path:
     if not recorder_finished or not manifest["recorder_identity_stable"]:
         manifest["failed_recorder_evidence"] = failed_recorder_evidence(out)
         (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        raise RuntimeError(f"native recorder did not prove completion; see {out / 'CAPTURE.json'}")
+        raise RuntimeError(f"native recorder or plan snapshots did not prove completion; see {out / 'CAPTURE.json'}")
     frames = read_jsonl(out / "frames.jsonl")
     if not frames or any(f["index"] != i for i, f in enumerate(frames)):
         raise ValueError("native frames missing or out of order")
@@ -1110,12 +1229,24 @@ def run(args: argparse.Namespace) -> Path:
         manifest["analysis"]["failures"].append("macOS Accessibility permission absent; AX proof unavailable")
     if admission["state"] != "VerifiedBuildReceipt":
         manifest["analysis"]["failures"].append("UnprovenBinarySource: " + "; ".join(admission["reasons"]))
+    # The current signed Swift recorder opens resolved-plan.json by path and
+    # reports no hash of the exact bytes it decoded. Stable Python checks
+    # cannot prove away a substitution during that other process's read.
+    if not manifest["plan"]["recorder_consumption"]["launch_admissible"]:
+        manifest["analysis"]["failures"].append("RecorderPlanConsumptionUnverified: active plan bytes were not attested by the Swift recorder")
     manifest["passed_native_checks"] = not manifest["analysis"]["failures"]
     stable = process_executable(args.pid) == expected and sha256(expected) == manifest["binary"]["sha256"]
     stable = stable and source_identity(source_root) == source and tool_identity() == tool
     stable = stable and manifest["recorder_identity_stable"]
     stable = stable and bundle_identity(expected) == bundle
-    stable = stable and sha256(args.plan.resolve()) == manifest["plan"]["sha256"]
+    final_plan_checks = {"source": plan_snapshot_check(source_plan),
+                         "source_copy": plan_snapshot_check(source_plan_copy),
+                         "resolved": plan_snapshot_check(resolved_plan),
+                         "snapshot_receipt": plan_snapshot_check(manifest["plan"]["snapshot_receipt"]),
+                         "prelaunch_receipt": plan_snapshot_check(before_receipt),
+                         "postlaunch_receipt": plan_snapshot_check(after_receipt)}
+    manifest["plan"]["final_checks"] = final_plan_checks
+    stable = stable and all(check["state"] == "Stable" for check in final_plan_checks.values())
     if args.compiler_receipt:
         stable = stable and sha256(args.compiler_receipt.resolve()) == admission["receipt_sha256"]
         stable = stable and compiler_admission(args.compiler_receipt, expected, source, args.preservation_receipt) == admission
@@ -1124,7 +1255,7 @@ def run(args: argparse.Namespace) -> Path:
         stable = stable and sha256(args.owner_receipt.resolve()) == manifest["owner_receipt"]["sha256"]
     manifest["capture_inputs_stable"] = stable
     if not stable:
-        manifest["analysis"]["failures"].append("binary/recorder/candidate source/tool/selected input or owner receipt changed during capture")
+        manifest["analysis"]["failures"].append("binary/recorder/candidate source/tool/plan snapshots/selected input or owner receipt changed during capture")
         manifest["passed_native_checks"] = False
     manifest["completed_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
