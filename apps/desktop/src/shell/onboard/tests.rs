@@ -39,6 +39,13 @@ fn first_run(cx: &mut TestAppContext, width: f32) -> Rig {
     rig_with_reads(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 900.0, ReadPool::start(2, |_| NothingYet).expect("pool"))
 }
 
+/// Mount the same focus-independent action listeners as host launch. Native
+/// menu dispatch must still work when no Shell focus handle is in the current
+/// rendered dispatch path.
+fn install_local_native_menu_actions(rig: &mut Rig) {
+    rig.cx.cx.update(|cx| crate::host::menus::install_local_actions(&rig.graph, cx));
+}
+
 /// A folder this test owns, holding a Rust manifest, under a scratch parent.
 fn project(tag: &str) -> (PathBuf, PathBuf) {
     let nonce = std::time::SystemTime::now()
@@ -437,6 +444,7 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
 #[gpui::test]
 fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
+    install_local_native_menu_actions(&mut rig);
     let shell = rig.shell.clone();
     rig.cx.update(|window, cx| {
         window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
@@ -487,6 +495,7 @@ fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(c
 #[gpui::test]
 fn native_menu_settings_replaces_an_unmounted_focus_receiver_before_first_tab(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
+    install_local_native_menu_actions(&mut rig);
     let shell = rig.shell.clone();
     rig.cx.update(|window, cx| {
         window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
@@ -502,6 +511,9 @@ fn native_menu_settings_replaces_an_unmounted_focus_receiver_before_first_tab(cx
         handle.focus(window, cx);
         handle
     });
+
+    assert!(rig.cx.cx.update(|cx| cx.is_action_available(&crate::shell::OpenSettingsAction)),
+        "the native menu action remains available with an unmounted focused handle");
 
     // App dispatch matches a native Settings menu callback: no Window is
     // borrowed by the caller, and the old handle remains Some but unmounted.
