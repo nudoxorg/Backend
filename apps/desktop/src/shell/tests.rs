@@ -764,6 +764,9 @@ fn native_bounds_at(
     label: &str,
     click: bool,
 ) -> Option<gpui::Bounds<gpui::Pixels>> {
+    // GPUI's debug tree records the Debug form of the typed ElementId.
+    // Comparing a bare name would silently miss a mounted native control.
+    let debug_id = element_id.map(|id| format!("{:?}", gpui::ElementId::Name(id.into())));
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.repaint();
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
@@ -771,7 +774,7 @@ fn native_bounds_at(
     let mut matching = tree["nodes"].as_object().expect("native nodes").values().filter(|node| {
         node["aria"]["role"].as_str() == Some(role)
             && node["aria"]["label"].as_str() == Some(label)
-            && element_id.is_none_or(|id| node["element_id"].as_str() == Some(id))
+            && debug_id.as_deref().is_none_or(|id| node["element_id"].as_str() == Some(id))
     });
     let node = matching.next()?;
     assert!(matching.next().is_none(), "more than one native {role} named {label} at {element_id:?}");
