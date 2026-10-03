@@ -5,7 +5,7 @@ use crate::anatomy::symbol::view::{Block, Kind, Lang, Uses};
 use crate::anatomy::symbol::{self, Chrome, Facts, Fixed, Ui, View};
 use crate::{ActiveFacet as _, Facet, Measure, set_facet};
 use gpui::{
-    AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext,
+    AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, TestAppContext,
     VisualTestContext, Window, div, px,
 };
 
@@ -44,7 +44,7 @@ impl Render for Document {
             page
         };
         let _ = window;
-        div().size_full().overflow_y_scroll().child(page)
+        div().id("document-scroll").size_full().overflow_y_scroll().child(page)
     }
 }
 

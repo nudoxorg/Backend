@@ -9,7 +9,7 @@ use crate::{
 };
 use gpui::{
     AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding,
-    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ParentElement, Render, Styled, TestAppContext,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ParentElement, Render, StatefulInteractiveElement, Styled, TestAppContext,
     VisualTestContext, Window, actions, div, point, px,
 };
 use std::{cell::Cell, rc::Rc};
