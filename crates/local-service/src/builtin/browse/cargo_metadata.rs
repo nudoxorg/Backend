@@ -3059,8 +3059,12 @@ mod tests {
             json.get("resolve")
                 .is_some_and(|resolve| !resolve.is_null())
         );
-        let graph = metadata_input(&first.metadata, &first.host, first.lockfile.as_deref())
-            .expect("resolved lockless dependency graph");
+        let graph = backend_library::browse::metadata_input(
+            &first.metadata,
+            &first.host,
+            first.lockfile.as_deref(),
+        )
+        .expect("resolved lockless dependency graph");
         let helper = graph
             .packages
             .iter()

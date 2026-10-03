@@ -5664,7 +5664,8 @@ mod tests {
                 workspace.join("Cargo.toml"),
                 workspace.join("src/lib.rs"),
             ];
-            if target.is_file() {
+            let has_auto_bin = target.is_file();
+            if has_auto_bin {
                 watched.push(target);
             }
             let file_witness =
@@ -5674,7 +5675,7 @@ mod tests {
             input.source = TreeSource::Cargo {
                 host: format!("fresh-read-{read_count}"),
             };
-            input.packages[0].has_bin = target.is_file();
+            input.packages[0].has_bin = has_auto_bin;
             Ok(CargoProjectRead::TestMetadata(project_input_read_for_test(
                 input,
                 watched,
@@ -5833,9 +5834,9 @@ mod tests {
             .expect("fresh Cargo metadata notices the new glob member");
         assert!(
             after_member
-                .packages
+                .members
                 .iter()
-                .any(|package| package.name == "cache-new-member" && package.member)
+                .any(|member| member.name == "cache-new-member")
         );
         assert_eq!(cache.counters.tree_input_allocations, 2);
         assert!(!workspace.join("Cargo.lock").exists());
@@ -5872,9 +5873,9 @@ mod tests {
             .expect("fresh Cargo metadata reports custom target");
         assert!(
             with_target
-                .packages
+                .members
                 .iter()
-                .any(|package| package.name == "cache-app" && package.has_bin)
+                .any(|member| member.name == "cache-app" && member.has_bin)
         );
         let app_root = PathBuf::from(&with_target.root);
         let entry = cache
@@ -5893,9 +5894,9 @@ mod tests {
             .expect("fresh Cargo metadata confirms unchanged target row");
         assert!(
             after_target_edit
-                .packages
+                .members
                 .iter()
-                .any(|package| package.name == "cache-app" && package.has_bin)
+                .any(|member| member.name == "cache-app" && member.has_bin)
         );
         assert_eq!(cache.counters.cache_hits, 2);
         assert_eq!(cache.counters.tree_input_allocations, 4);
