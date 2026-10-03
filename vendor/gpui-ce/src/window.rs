@@ -9071,6 +9071,7 @@ mod tests {
             let renders = renders.clone();
             move |_, _| CountedView(renders)
         });
+        cx.run_until_parked();
         let platform = cx.test_window(window.into());
         platform.queue_presentation_result(DrawResult::Deferred);
         let rendered = renders.get();
@@ -9111,6 +9112,7 @@ mod tests {
             let renders = renders.clone();
             move |_, _| CountedView(renders)
         });
+        cx.run_until_parked();
         let platform = cx.test_window(window.into());
         platform.queue_presentation_result(DrawResult::Failed);
         cx.update_window(window.into(), |_, window, _| {

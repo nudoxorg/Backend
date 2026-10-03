@@ -173,7 +173,8 @@ impl TestWindow {
 
     /// Drives the same frame callback the native platform owns.
     pub(crate) fn simulate_frame(&self, options: RequestFrameOptions) {
-        let Some(mut callback) = self.0.lock().request_frame_callback.take() else {
+        let callback = self.0.lock().request_frame_callback.take();
+        let Some(mut callback) = callback else {
             return;
         };
         callback(options);
