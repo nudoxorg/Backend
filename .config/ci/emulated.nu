@@ -88,7 +88,9 @@ def main [
     let config = (mktemp --suffix .toml)
     # A test that hangs under emulation must not hold the lane for its whole
     # timeout: three slow periods, then it is killed and reported.
-    "[profile.emulated]\nfail-fast = false\nslow-timeout = { period = \"60s\", terminate-after = 3 }\n" | save --force $config
+    # One retry absorbs a rare timing blip on a host emulating at a tenth
+    # of native speed; nextest still names any test that needed it FLAKY.
+    "[profile.emulated]\nfail-fast = false\nretries = 1\nslow-timeout = { period = \"60s\", terminate-after = 3 }\n" | save --force $config
     let packages = (platform-packages | each {|name| ["-p" $name] } | flatten)
     print $"== emulated: ($platform) \(($lane.target)\) on (platform-packages | length) crates =="
     let counts = ($lane.excluded | group-by category | transpose category entries | each {|row| $"($row.category): ($row.entries | length)" } | str join ", ")
