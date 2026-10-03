@@ -129,7 +129,8 @@ fn stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_
     draw(cx);
     click_ax(cx, node);
     assert_eq!(calls.get(), 2, "fresh native AX activates once");
-    cx.simulate_keystrokes("enter space");
+    crate::test_input::native_press(cx, "enter");
+    crate::test_input::native_press(cx, "space");
     assert_eq!(
         calls.get(),
         4,
@@ -140,7 +141,8 @@ fn stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_
     current.set(false);
     cx.simulate_mouse_up(at, MouseButton::Left, gpui::Modifiers::none());
     click_ax(cx, node);
-    cx.simulate_keystrokes("enter space");
+    crate::test_input::native_press(cx, "enter");
+    crate::test_input::native_press(cx, "space");
     assert_eq!(
         calls.get(),
         4,

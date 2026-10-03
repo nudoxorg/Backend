@@ -32,6 +32,9 @@ pub mod browse;
 pub mod marks;
 pub mod folio;
 
+#[cfg(test)]
+pub(crate) mod test_input;
+
 #[cfg(feature = "gallery")]
 pub mod gallery;
 
