@@ -390,6 +390,17 @@ impl Targets {
     /// Attach a real GPUI focus handle to a target already in this frame's
     /// list. Reorders preserve the handle; unmounted rows are discarded at
     /// the end of the frame so old inventory pages cannot own input.
+    /// An actual control declared during render may build its native leaf in
+    /// RenderOnce later. Mark its existing owner now, before finish_native,
+    /// so the same mounted key does not lose focus on every parent repaint.
+    pub(crate) fn reuse_native_handle(&self, id: &SharedString) -> Option<FocusHandle> {
+        let mut native = self.native.borrow_mut();
+        let frame = native.frame;
+        let (handle, seen) = native.handles.get_mut(id)?;
+        *seen = frame;
+        Some(handle.clone())
+    }
+
     pub(crate) fn native_handle(&self, id: &SharedString, cx: &mut App) -> FocusHandle {
         let mut native = self.native.borrow_mut();
         let frame = native.frame;
@@ -1052,6 +1063,41 @@ mod tests {
         assert!(
             cached.shown_bounds().is_none(),
             "cached geometry cannot admit a retired painted target"
+        );
+    }
+
+    #[gpui::test]
+    fn lazy_native_control_reuses_its_owner_before_frame_retirement(cx: &mut gpui::TestAppContext) {
+        let mut rig = crate::shell::tests::rig(cx, None, 1440.0, 900.0);
+        rig.settle();
+        let targets = Targets::named("lazy-native-control");
+        let id: SharedString = "owned-control".into();
+        targets.begin();
+        targets.push(target("owned-control", nothing()));
+        let original = rig.cx.update(|window, cx| {
+            let handle = targets.native_handle(&id, cx);
+            window.focus(&handle, cx);
+            handle
+        });
+        targets.finish_native();
+        targets.begin();
+        targets.push(target("owned-control", nothing()));
+        // The host declares the control before Reader retires unseen handles;
+        // the child RenderOnce then receives this very same native owner.
+        let reused = targets
+            .reuse_native_handle(&id)
+            .expect("same current control");
+        targets.finish_native();
+        assert_eq!(reused, original);
+        assert!(
+            rig.cx.update(|window, _| reused.is_focused(window)),
+            "a parent repaint does not churn the child's native focus generation"
+        );
+        targets.begin();
+        targets.finish_native();
+        assert!(
+            targets.reuse_native_handle(&id).is_none(),
+            "an undeclared control does not retain native input ownership"
         );
     }
 }

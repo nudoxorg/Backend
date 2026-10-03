@@ -220,6 +220,39 @@ impl Host for ShellHost<'_> {
         gpui::IntoElement::into_any_element(self.targets.track(id, element))
     }
 
+    fn target_control(
+        &self,
+        key: &Key,
+        label: SharedString,
+        act: Act,
+        control: gpui::Stateful<gpui::Div>,
+    ) -> AnyElement {
+        let id = key.text();
+        let act = self.action(act);
+        let handle = self
+            .active
+            .then(|| self.targets.reuse_native_handle(&id))
+            .flatten();
+        if self.active {
+            self.targets.push(Target {
+                id: id.clone(),
+                label,
+                act: act.clone(),
+                peek: None,
+                source: None,
+            });
+        }
+        gpui::IntoElement::into_any_element(NativeTargetControl {
+            id,
+            control,
+            targets: self.targets.clone(),
+            handle,
+            act,
+            admit: self.admit.clone(),
+            active: self.active,
+        })
+    }
+
     fn reveal(&self, section: Sec) -> Act {
         let (spots, scroll) = (self.spots(), self.scroll.clone());
         self.action(Rc::new(move |_, _| {
@@ -246,6 +279,45 @@ impl Host for ShellHost<'_> {
         } else {
             facet::motion::Flow::new("s6-inert")
         }
+    }
+}
+
+/// The semantic Div supplied by FACET remains the native control; this
+/// adapter adds its existing Reader focus owner at normal GPUI construction.
+#[derive(gpui::IntoElement)]
+struct NativeTargetControl {
+    id: SharedString,
+    control: gpui::Stateful<gpui::Div>,
+    targets: Targets,
+    handle: Option<gpui::FocusHandle>,
+    act: Act,
+    admit: Rc<dyn Fn(&mut gpui::App) -> bool>,
+    active: bool,
+}
+
+impl gpui::RenderOnce for NativeTargetControl {
+    fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
+        use gpui::{InteractiveElement as _, IntoElement as _, StatefulInteractiveElement as _};
+        let control = if self.active {
+            let handle = self
+                .handle
+                .unwrap_or_else(|| self.targets.native_handle(&self.id, cx));
+            let admit = self.admit;
+            let control = self.control.capture_any_mouse_down(move |_, window, cx| {
+                // Capture precedes GPUI's bubble-phase automatic focus transfer.
+                if !admit(cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            });
+            let act = self.act;
+            facet::controls::button::native_button(control, &handle, move |window, cx| {
+                act(window, cx)
+            })
+        } else {
+            self.control.a11y_inert(true)
+        };
+        self.targets.track(self.id, control.into_any_element())
     }
 }
 
