@@ -534,7 +534,7 @@ mod tests {
         gate.publish(OwnerState::Failed("The fixture owner could not answer this read.".into()));
         rig.settle();
         native_tree(&mut rig);
-        let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", true).expect("native failed-owner retry");
+        let retry = crate::shell::tests::native_bounds_id(&mut rig, "status-retry", "Button", "Try again", true).expect("native failed-owner retry");
         rig.cx.simulate_event(gpui::MouseDownEvent { position: retry.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
         // Same words and same producer root are not the same retry capability.
         // Let the native pointer-up use its previously mounted listener.
@@ -544,7 +544,7 @@ mod tests {
         assert!(matches!(gate.state(), OwnerState::Failed(_)), "an old native listener cannot restart a later failure");
         rig.settle();
         native_tree(&mut rig);
-        let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", true).expect("fresh native retry");
+        let retry = crate::shell::tests::native_bounds_id(&mut rig, "status-retry", "Button", "Try again", true).expect("fresh native retry");
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
         rig.draw();
         assert!(matches!(gate.state(), OwnerState::Starting), "a fresh native click consumes the current retry capability");
@@ -555,7 +555,7 @@ mod tests {
         let node = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"].as_str() == Some("Try again")).expect("disabled native retry");
         assert_eq!(node["aria"]["disabled"].as_bool(), Some(true));
         assert!(!node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
-        let retry = crate::shell::tests::native_bounds(&mut rig, "Button", "Try again", false).expect("visible disabled retry");
+        let retry = crate::shell::tests::native_bounds_id(&mut rig, "status-retry", "Button", "Try again", false).expect("visible disabled retry");
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
         assert!(matches!(gate.state(), OwnerState::Failed(_)), "disabled native retry cannot invent a start");
     }

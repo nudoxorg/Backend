@@ -743,7 +743,7 @@ fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut 
                     let labels = shelf_native_labels(&mut rig);
                     assert!(labels.iter().any(|label| label == expected), "{width}px/{percent}%: {labels:?}");
                     assert!(!labels.iter().any(|label| label == "The library rests on nothing." || label == "No project of yours uses the library yet."));
-                    let bounds = rig.cx.debug_bounds("shelf-note-0").expect("painted relation note");
+                    let bounds = super::tests::native_bounds(&mut rig, "Label", expected, false).expect("painted relation note");
                     assert!(bounds.left() >= px(0.0) && bounds.right() <= px(width) && bounds.bottom() <= px(900.0), "note outside native window at {width}px/{percent}%: {bounds:?}");
                     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
                     assert!(ledger.texts.iter().any(|text| text.content == expected), "a native note must actually paint");

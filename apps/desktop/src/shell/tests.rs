@@ -742,6 +742,28 @@ pub(crate) fn native_bounds(
     label: &str,
     click: bool,
 ) -> Option<gpui::Bounds<gpui::Pixels>> {
+    native_bounds_at(rig, None, role, label, click)
+}
+
+/// Selects a particular mounted control when two independent native nodes
+/// intentionally say the same words (for example a hand mark and its card).
+pub(crate) fn native_bounds_id(
+    rig: &mut Rig,
+    element_id: &str,
+    role: &str,
+    label: &str,
+    click: bool,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    native_bounds_at(rig, Some(element_id), role, label, click)
+}
+
+fn native_bounds_at(
+    rig: &mut Rig,
+    element_id: Option<&str>,
+    role: &str,
+    label: &str,
+    click: bool,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.repaint();
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
@@ -749,9 +771,10 @@ pub(crate) fn native_bounds(
     let mut matching = tree["nodes"].as_object().expect("native nodes").values().filter(|node| {
         node["aria"]["role"].as_str() == Some(role)
             && node["aria"]["label"].as_str() == Some(label)
+            && element_id.is_none_or(|id| node["element_id"].as_str() == Some(id))
     });
     let node = matching.next()?;
-    assert!(matching.next().is_none(), "more than one native {role} named {label}");
+    assert!(matching.next().is_none(), "more than one native {role} named {label} at {element_id:?}");
     if click {
         assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))),
             "native {role} named {label} has no Click action: {node}");

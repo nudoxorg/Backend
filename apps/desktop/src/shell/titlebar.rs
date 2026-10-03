@@ -1039,16 +1039,17 @@ mod auxiliary_subject_tests {
     }
 
     #[gpui::test]
-    fn native_back_closes_settings_with_no_content_history_and_keeps_keyboard_alive(cx: &mut TestAppContext) {
+    fn native_back_closes_settings_without_consuming_content_history_and_keeps_keyboard_alive(cx: &mut TestAppContext) {
         let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
         native(&mut rig);
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.is_empty()));
+        let history = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.clone());
         let route = rig.route();
         rig.keys("cmd-,");
         click_target(&mut rig, "jump-back", false);
         assert_eq!(overlay(&mut rig), None);
         assert_eq!(rig.route(), route);
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.is_empty()));
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.clone()), history,
+            "closing Settings cannot consume content history");
         rig.keys("cmd-k");
         assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));
     }

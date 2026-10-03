@@ -305,9 +305,7 @@ fn native_hand_tab_and_shift_tab_follow_card_order_and_escape_keeps_dispatch(
     rig.go(crate::navigation::Intent::Navigate(
         crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Home),
     ));
-    let open = rig
-        .cx
-        .debug_bounds("hand-open")
+    let open = super::tests::native_bounds_id(&mut rig, "hand-open", "Button", "Open hand", true)
         .expect("painted native hand opener");
     rig.cx.simulate_click(open.center(), Modifiers::none());
     rig.settle();
@@ -330,7 +328,8 @@ fn native_hand_tab_and_shift_tab_follow_card_order_and_escape_keeps_dispatch(
         focused_label(&mut rig).as_deref(),
         Some("Open relation_label from hand")
     );
-    rig.keys("enter");
+    rig.native_press("enter");
+    rig.settle();
     assert_eq!(
         rig.route(),
         page_route("relation_label"),
