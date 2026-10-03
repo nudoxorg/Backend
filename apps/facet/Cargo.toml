@@ -60,6 +60,7 @@ gpui_platform = { workspace = true, features = ["wgpu"], optional = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+gpui_component = { workspace = true, features = ["headless"] }
 
 [lints]
 workspace = true

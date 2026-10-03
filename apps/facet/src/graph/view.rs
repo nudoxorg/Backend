@@ -81,6 +81,9 @@ struct NativeControlScope { navigation: u64, declarations: u64, coverage: u64 }
 #[derive(Clone, Copy)]
 struct NativeFrameControls { resources_enabled: bool }
 
+#[derive(Debug)]
+enum NativeFocusDenial { MissingPaint, LocalVisit, Viewport, Camera, ControlVisit, Selection, PaintedVisit, ResourceLease }
+
 struct PaintedLabels {
     view: View,
     camera: Camera,
@@ -406,13 +409,13 @@ impl GraphView {
             declarations_open: false,
             declaration_page: 0,
             declaration_epoch: 0,
-            declaration_focus: (0..35).map(|_| cx.focus_handle()).collect(),
+            declaration_focus: (0..35).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             declaration_scroll: ScrollHandle::new(),
             status: None,
             status_open: false,
             status_epoch: 0,
             status_scroll: ScrollHandle::new(),
-            status_focus: cx.focus_handle(),
+            status_focus: cx.focus_handle().tab_stop(true),
             on_peek_action: None,
             _subscriptions: vec![subscription],
         }
@@ -474,14 +477,16 @@ impl GraphView {
     /// Stable authored handles, restricted to the actually mounted native
     /// ancestry and the exact current painted control/camera scope. This
     /// bridges a host's Reader focus walk without inventing another target list.
-    fn native_focus_order(&self, window: &Window, cx: &App) -> Option<Vec<FocusHandle>> {
-        let painted = self.painted_labels.as_ref()?;
-        if !self.admits_local_focus(cx) || self.view != Some(painted.view)
-            || self.camera() != Some(painted.camera) || self.native_scope() != painted.native_scope
-            || self.state.focus != painted.focus
-            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx)) { return None; }
+    fn native_focus_order(&self, window: &Window, cx: &App) -> Result<Vec<FocusHandle>, NativeFocusDenial> {
+        let painted = self.painted_labels.as_ref().ok_or(NativeFocusDenial::MissingPaint)?;
+        if !self.admits_local_focus(cx) { return Err(NativeFocusDenial::LocalVisit); }
+        if self.view != Some(painted.view) { return Err(NativeFocusDenial::Viewport); }
+        if self.camera() != Some(painted.camera) { return Err(NativeFocusDenial::Camera); }
+        if self.native_scope() != painted.native_scope { return Err(NativeFocusDenial::ControlVisit); }
+        if self.state.focus != painted.focus { return Err(NativeFocusDenial::Selection); }
+        if painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx)) { return Err(NativeFocusDenial::PaintedVisit); }
         if painted.controls.resources_enabled && (!self.admits_native_interaction(cx)
-            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx))) { return None; }
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx))) { return Err(NativeFocusDenial::ResourceLease); }
         let mut handles = vec![self.find.read(cx).focus_handle(cx)];
         if painted.controls.resources_enabled && !self.state.find_open {
             handles.push(self.declaration_focus[32].clone());
@@ -495,7 +500,17 @@ impl GraphView {
         }
         if painted.controls.resources_enabled { handles.push(self.status_focus.clone()); }
         handles.retain(|handle| self.focus_handle.contains(handle, window));
-        Some(handles)
+        Ok(handles)
+    }
+
+    /// Passive native failure evidence; this never changes focus or admission.
+    #[cfg(debug_assertions)]
+    pub fn native_focus_diagnostic(&self, window: &Window, cx: &App) -> String {
+        let order = self.native_focus_order(window, cx).map(|handles| handles.into_iter()
+            .map(|handle| format!("{handle:?}: focused={}, tab_stop={}", handle.is_focused(window), handle.tab_stop)).collect::<Vec<_>>());
+        format!("order={order:?}; physical_graph={}, find={}, local={}, resource={}, painted_resources={:?}; scope={:?}/{:?}",
+            self.owns_native_focus(window, cx), self.find_focused(window, cx), self.admits_local_focus(cx), self.admits_native_interaction(cx),
+            self.painted_labels.as_ref().map(|painted| painted.controls.resources_enabled), self.native_scope(), self.painted_labels.as_ref().map(|painted| painted.native_scope))
     }
 
     /// Physical focus bookkeeping grants no resource capability. The host
@@ -519,7 +534,7 @@ impl GraphView {
 
     /// Focus an existing current native stop, or the graph's mounted entry.
     pub fn focus_native_current(&self, window: &mut Window, cx: &mut App) -> bool {
-        let Some(order) = self.native_focus_order(window, cx) else { return false; };
+        let Ok(order) = self.native_focus_order(window, cx) else { return false; };
         let next = order.iter().find(|handle| handle.is_focused(window)).or_else(|| self.native_entry(&order));
         let Some(next) = next else { return false; };
         if !self.admits_native_focus(next, cx) { return false; }
@@ -529,7 +544,7 @@ impl GraphView {
     /// Step only inside this bounded mounted region. A real edge returns to
     /// the host's existing zone walk; rows reveal through their own scroller.
     pub fn step_native(&self, forward: bool, window: &mut Window, cx: &mut App) -> NativeFocusStep {
-        let Some(order) = self.native_focus_order(window, cx) else { return NativeFocusStep::Denied; };
+        let Ok(order) = self.native_focus_order(window, cx) else { return NativeFocusStep::Denied; };
         let current = order.iter().position(|handle| handle.is_focused(window));
         let next = match current {
             Some(at) if forward => at.checked_add(1).and_then(|at| order.get(at)),
@@ -2306,8 +2321,21 @@ impl Render for GraphView {
         let controls = NativeFrameControls { resources_enabled: self.admits_control_render(cx) };
         let find_admission = self.interaction_admission.clone();
         let key_admission = find_admission.clone();
+        let pointer_admission = find_admission.clone();
         let root = div().id("graph").role(gpui::Role::Group).aria_label("Graph").key_context("Graph").track_focus(&self.focus_handle)
             .relative().size_full().overflow_hidden().bg(palette.g0.hsla())
+            .capture_any_mouse_down(cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                let local = pointer_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx)) && this.admits_local_focus(cx);
+                let canvas = !this.over_chrome(f32::from(event.position.x), f32::from(event.position.y));
+                if !local || (canvas && (pointer_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx))
+                    || !this.admits_native_interaction(cx)
+                    || !this.admits_painted_pointer(f32::from(event.position.x), f32::from(event.position.y), cx))) {
+                    // track_focus otherwise installs GPUI's default bubble
+                    // focus before Canvas's denied semantic callback returns.
+                    // Local chrome keeps its own input/disclosure admission.
+                    window.prevent_default(); cx.stop_propagation();
+                }
+            }))
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 if find_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx)) && this.admits_local_focus(cx) {
                     if event.keystroke.key == "enter" && find_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) {
@@ -2362,7 +2390,7 @@ impl GraphView {
             .child(MeasuredChrome::new("graph-find-bounds", div().relative().w_full()
                 .capture_any_mouse_down(cx.listener(move |this, _, window, cx| {
                     if find_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx))
-                        || this.native_focus_order(window, cx).is_none() {
+                        || this.native_focus_order(window, cx).is_err() {
                         window.prevent_default(); cx.stop_propagation();
                     }
                 }))
@@ -2904,6 +2932,40 @@ mod tests {
         for _ in 0..n {
             frame(cx);
         }
+    }
+
+    #[gpui::test]
+    fn component_root_native_tab_reaches_supplied_graph_controls(cx: &mut TestAppContext) {
+        use gpui::AppContext;
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let mut graph = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = GraphView::with_scene(scene.clone(), Start::World, window, cx);
+                view.set_status("Observed graph".into(), Some("Observed declaration and relation coverage".into()), cx);
+                view
+            });
+            graph = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let graph = graph.expect("mounted graph");
+        cx.update(|window, _| window.set_a11y_forced(true));
+        frames(cx, 30);
+        // No manufactured focus: the real component Root enters its first
+        // native text stop, then the Input Tab action walks Graph's controls.
+        cx.simulate_keystrokes("tab"); frames(cx, 2);
+        assert!(cx.update(|window, cx| graph.read(cx).find_focused(window, cx)));
+        cx.simulate_keystrokes("tab"); frames(cx, 2);
+        cx.update(|window, cx| {
+            let focused = window.focused(cx).expect("native coverage focus");
+            assert!(focused.tab_stop, "a supplied control declares its native tab policy on the handle");
+            assert!(graph.read(cx).status_focus.is_focused(window), "Input Tab reaches actual coverage focus");
+            assert!(window.a11y_tree().expect("native coverage").nodes.iter().any(|(_, node)| node.label() == Some("Graph coverage") && node.supports_action(gpui::AccessibleAction::Click)));
+        });
+        cx.simulate_keystrokes("shift-tab"); frames(cx, 2);
+        assert!(cx.update(|window, cx| graph.read(cx).declaration_focus[32].is_focused(window)), "blur restores the real chooser, preserving its native identity");
     }
 
     #[gpui::test]

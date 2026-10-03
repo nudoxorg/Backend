@@ -808,6 +808,14 @@ impl Reader {
         Ok(self.map.as_ref().and_then(|map| map.read(cx).native_graph()))
     }
 
+    #[cfg(debug_assertions)]
+    pub(crate) fn graph_native_diagnostic(&self, cx: &App) -> String {
+        let snapshot = self.links.snapshot(cx);
+        format!("graph_visit={:?}; input={}, settled={}, route_equal={}, overlay={}, page_overlay={}",
+            self.graph_native_view(cx).map(|graph| graph.map(|graph| graph.entity_id())), self.native_input_allowed(), self.native_motion_settled(),
+            self.route == *snapshot.route(), snapshot.overlay().is_some(), snapshot.page_overlay().is_some())
+    }
+
     /// Move through the mounted native controls in the Reader's existing
     /// target order. Only a current boundary leaves Tab to the Shell zone
     /// walk; a denied Graph step consumes the key without moving focus.

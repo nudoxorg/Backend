@@ -398,6 +398,18 @@ fn real_canary_shape_has_native_exact_selection_at_each_text_scale(cx: &mut Test
     }
 }
 
+fn graph_native_evidence(rig: &mut Rig) -> String {
+    #[cfg(debug_assertions)]
+    {
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
+        return rig.cx.update(|window, cx| format!("focus={:?}; {}; graph={}", window.focused(cx),
+            reader.read(cx).graph_native_diagnostic(cx), graph.as_ref().map_or_else(|| "not mounted".into(), |graph| graph.read(cx).native_focus_diagnostic(window, cx))));
+    }
+    #[cfg(not(debug_assertions))]
+    { let _ = rig; "native diagnostic requires debug assertions".into() }
+}
+
 fn graph_native_inventory(rig: &mut Rig) -> (Option<String>, Vec<serde_json::Value>) {
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
     let tree: serde_json::Value = serde_json::from_str(&json).expect("tree");
@@ -469,8 +481,13 @@ fn graph_find_uses_guarded_component_tab_and_stays_locally_editable(cx: &mut Tes
     rig.keys("shift-tab");
     let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
     assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "Shift-Tab reaches the real local text engine");
+    let before = graph_native_evidence(&mut rig);
+    let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let observed = actions.clone();
+    let _keys = rig.cx.update(|_, cx| cx.observe_keystrokes(move |event, _, _| observed.borrow_mut().push(format!("{event:?}"))));
     rig.keys("tab");
-    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some("Graph coverage"), "Input's existing component Tab reaches the same actual native order");
+    let after = graph_native_evidence(&mut rig);
+    assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some("Graph coverage"), "Input's existing component Tab reaches the same actual native order; before={before}; after={after}; dispatched={:?}", actions.borrow());
     rig.keys("shift-tab");
     assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some("Declarations"), "blur restores the collapsed chooser in its authored order");
     rig.keys("shift-tab");
@@ -506,8 +523,10 @@ fn freshly_painted_owner_failed_graph_has_local_find_and_real_native_boundaries(
             assert!(!node.supports_action(gpui::AccessibleAction::Click), "{label} cannot advertise an activation");
         }
     });
+    let before = graph_native_evidence(&mut rig);
     rig.keys("tab");
-    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "the first enabled stop is the actual local editor");
+    let after = graph_native_evidence(&mut rig);
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "the first enabled stop is the actual local editor; before={before}; after={after}");
     rig.cx.simulate_input("cadence"); rig.draw();
     assert!(rig.cx.update(|window, _| window.a11y_tree().expect("local edit").nodes.iter().any(|(_, node)| node.value() == Some("cadence"))));
     rig.native_press("enter");
@@ -740,10 +759,13 @@ fn stale_painted_graph_marker_cannot_take_focus_on_owner_replacement(cx: &mut Te
     tab_to_graph_control(&mut rig, "Declarations");
     let focused = rig.cx.update(|window, cx| window.focused(cx));
     let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let before = graph_native_evidence(&mut rig);
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // No App update, watcher poll or frame between renewal and this Down.
     rig.cx.simulate_mouse_down(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
-    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "revoked paint cannot focus Graph before semantic admission");
+    let after = graph_native_evidence(&mut rig);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "revoked paint cannot focus Graph before semantic admission; before={before}; after={after}");
     rig.cx.simulate_mouse_up(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
     assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
     rig.repaint(); rig.settle();
