@@ -28,5 +28,13 @@ futures-executor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+allocation-counter.workspace = true
+
+[[bench]]
+name = "ir-delta"
+path = "benches/ir_delta.rs"
+harness = false
+
 [lints]
 workspace = true

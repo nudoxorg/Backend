@@ -917,6 +917,7 @@ name = "backend-compatibility-tests"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-engine",
  "backend-frontend-clang",
  "backend-frontend-csharp",
  "backend-frontend-go",
@@ -1502,6 +1503,7 @@ dependencies = [
 name = "backend-performance-tests"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "backend-cli",
  "backend-client",
  "backend-compile",
@@ -1581,14 +1583,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
- "backend-engine",
  "backend-flow",
- "backend-frontend-clang",
- "backend-frontend-go",
- "backend-frontend-java",
- "backend-frontend-python",
- "backend-frontend-rust",
- "backend-frontend-typescript",
  "backend-version",
  "blake3",
  "futures-executor",

@@ -28,6 +28,15 @@ The integration suite covers:
 - durable tree-CAS point reads, cold reopen path work, one-row publication
   node/byte deltas, and filesystem-level reuse accounting.
 
+The real-IR delta benchmark builds and reopens a semantic image, then compares
+`SemanticDiff` with an independent owned-map oracle. Its source-derived engine
+staging-size measurement and deterministic locality model are documented in
+[`ir-delta.md`](ir-delta.md). Run the opt-in Rust harness with:
+
+```console
+IR_DELTA_ROWS=8192 IR_DELTA_SAMPLES=20 IR_DELTA_WARMUPS=3 IR_DELTA_REPEATS=10 cargo bench -p backend-performance-tests --bench ir-delta
+```
+
 Run the structural suite with:
 
 ```console
