@@ -25,7 +25,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
     }
     match intent {
         Intent::SetReading { visit, change } => {
-            if next.session().reading.current.id == visit && next.session().preview.is_none() && next.page_overlay().is_none() {
+            if next.session().reading.current.id == visit && next.session().preview.is_none() && next.overlay().is_none() {
                 let mut session = next.session().clone();
                 if session.reading.current.presentation.apply(change) { next = next.with_session(session); }
             }
@@ -769,6 +769,29 @@ mod tests {
         assert!(returned.session().preview.is_none());
         let navigated = reduce(&returned, Intent::Navigate(Route::World)).snapshot;
         assert_eq!(navigated.session().back.last(), Some(origin.route()));
+    }
+
+    #[test]
+    fn ask_without_preview_and_add_cover_deny_underlay_reading_deltas() {
+        use crate::navigation::presentation::{ReadingChange, ShelfLens};
+        let origin = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let visit = origin.session().reading.current.id;
+        let ask = reduce(&origin, Intent::OpenCommandPalette).snapshot;
+        assert!(ask.session().preview.is_none());
+        assert!(ask.page_overlay().is_none(), "Ask still paints the ordinary page beneath it");
+        let add = reduce(&ask, Intent::OpenAddProject).snapshot;
+        assert!(add.session().overlay_is_covered(Overlay::CommandPalette));
+        for covered in [&ask, &add] {
+            let denied = reduce(covered, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) });
+            assert_eq!(&denied.snapshot, covered, "painted underlay is not an input owner");
+            assert!(denied.effects.is_empty());
+        }
+        let ask_again = reduce(&add, Intent::DismissOverlay).snapshot;
+        let uncovered = reduce(&ask_again, Intent::DismissOverlay).snapshot;
+        assert_eq!(uncovered.session().reading.current.id, visit);
+        let admitted = reduce(&uncovered, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) });
+        assert_eq!(admitted.snapshot.session().reading.current.presentation.controls().shelf.lens, ShelfLens::UsedBy);
+        assert!(admitted.effects.is_empty());
     }
 
 }
