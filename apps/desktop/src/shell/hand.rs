@@ -89,7 +89,7 @@ fn control(
                 act(window, cx);
             }
         },
-    )
+    ).key_context("HandControl")
 }
 
 /// A card's identity on the Mark rung (its Presence key).
