@@ -25,7 +25,7 @@ use facet::icons::{self, KindSize};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable as _, InteractiveElement, KeyDownEvent, Role,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement, Role,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Task, Window, ScrollHandle, div, px,
 };
@@ -120,9 +120,18 @@ struct Choice {
 enum SubmitRefusal { NoMatch, Unavailable(SharedString), NoDestination(SharedString) }
 impl SubmitRefusal {
     fn words(&self) -> SharedString {
-        match self { Self::NoMatch => "No result matches this query.".into(),
+        match self { Self::NoMatch => "No result matches this query. Try a declaration name or different words.".into(),
             Self::Unavailable(words) | Self::NoDestination(words) => words.clone() }
     }
+}
+
+/// Only an admitted destination can commit navigation. Refusals stay with
+/// the exact draft; events from earlier drafts or covered editors are inert.
+enum SubmissionOutcome {
+    Navigate(Route),
+    CommitPreview,
+    Refused(SubmitRefusal),
+    Superseded,
 }
 
 /// The query surface.
@@ -364,45 +373,57 @@ impl Ask {
     }
 
     /// ↵: keeps the place the walk is showing, or opens the chosen row.
-    /// Dead end #14: a row with no place does not silently do nothing — the
-    /// Notice says there is nowhere to go.
+    /// A refused destination stays in this query and explains why it cannot
+    /// navigate; only a verified destination commits the current visit.
     pub(crate) fn choose(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.draft.query().is_some_and(|query| !current_input_query(&self.input, query, cx)) {
+        if self.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
+            || self.draft.query().is_some_and(|query| !current_input_query(&self.input, query, cx)) {
             return;
         }
         let choices = self.choices(cx);
-        let Some(choice) = choices.get(self.selected) else {
-            if self.draft.query().is_some() {
-                self.refusal = Some(self.read_status(cx).0.map_or(SubmitRefusal::NoMatch, SubmitRefusal::Unavailable));
-                cx.notify();
-            }
-            return;
+        let outcome = match choices.get(self.selected) {
+            None => self.empty_submission(cx),
+            Some(choice) => match choice.route.clone() {
+                Some(route) => {
+                    let admitted = self.draft.query().is_some_and(|query| current_row_route(&self.links, query, &route, cx));
+                    if !admitted { stale_submission() }
+                    else if self.links.snapshot(cx).session().preview.is_some() && self.walked && self.links.snapshot(cx).route() == &route {
+                        SubmissionOutcome::CommitPreview
+                    } else { SubmissionOutcome::Navigate(route) }
+                }
+                None => SubmissionOutcome::Refused(SubmitRefusal::NoDestination(choice.unavailable.clone()
+                    .unwrap_or_else(|| format!("{} has no page yet", choice.name).into()))),
+            },
         };
-        let previewing = self.links.snapshot(cx).session().preview.is_some();
-        match choice.route.clone() {
-            Some(route) if !self.draft.query().is_some_and(|query| current_row_route(&self.links, query, &route, cx)) => {
-                self.refusal = Some(SubmitRefusal::Unavailable("That search result is no longer verified by the current index. Search again.".into()));
-                cx.notify();
-            }
-            Some(route) if previewing && self.walked && self.links.snapshot(cx).route() == &route => {
+        self.complete_submission(outcome, cx);
+    }
+
+    fn empty_submission(&self, cx: &App) -> SubmissionOutcome {
+        if self.draft.query().is_none() { return SubmissionOutcome::Superseded; }
+        SubmissionOutcome::Refused(self.read_status(cx).0.map_or(SubmitRefusal::NoMatch, SubmitRefusal::Unavailable))
+    }
+
+    fn complete_submission(&mut self, outcome: SubmissionOutcome, cx: &mut Context<Self>) {
+        match outcome {
+            SubmissionOutcome::Navigate(route) => self.links.dispatch(Intent::Navigate(route), cx),
+            SubmissionOutcome::CommitPreview => {
                 self.links.dispatch(Intent::CommitPreview, cx);
                 self.links.dispatch(Intent::DismissOverlay, cx);
             }
-            Some(route) => self.links.dispatch(Intent::Navigate(route), cx),
-            None => {
-                let words = choice.unavailable.clone().unwrap_or_else(|| format!("{} has no page yet", choice.name).into());
-                self.refusal = Some(SubmitRefusal::NoDestination(words));
-                cx.notify();
-            }
+            SubmissionOutcome::Refused(reason) => { self.refusal = Some(reason); cx.notify(); }
+            SubmissionOutcome::Superseded => {}
         }
     }
 
     /// ⌘↵ opens Find only while this exact query has a current served page.
-    fn choose_all(&self, cx: &mut Context<Self>) {
-        if self.choices(cx).is_empty() { return; }
-        if let (Some(query), Some(route)) = (self.draft.query(), self.all_results(cx)) {
-            follow_all(&self.links, &self.input, query, &route, self.revision.get(), &self.revision, cx);
-        }
+    fn choose_all(&mut self, cx: &mut Context<Self>) {
+        if self.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette) { return; }
+        let outcome = match (self.draft.query(), self.all_results(cx)) {
+            (Some(query), Some(route)) if !self.choices(cx).is_empty() =>
+                follow_all(&self.links, &self.input, query, &route, self.revision.get(), &self.revision, cx),
+            _ => self.empty_submission(cx),
+        };
+        self.complete_submission(outcome, cx);
     }
 
     /// The route for "every result, as a page" (⌘↵).
@@ -621,32 +642,19 @@ fn current_input_query(input: &Entity<InputState>, query: &SearchQuery, cx: &App
         .ok().as_ref() == Some(query)
 }
 
-fn search_notice(links: &Links, message: SharedString, cx: &mut App) {
-    let snapshot = links.snapshot(cx);
-    let notice = crate::runtime::graph_focus::Notice {
-        visit: snapshot.route().clone(),
-        root: snapshot.key(),
-        message: std::sync::Arc::<str>::from(message.as_ref()),
-        retry: None,
-    };
-    links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
-}
-
-fn stale_search_notice(links: &Links, cx: &mut App) {
-    search_notice(links, "That search result is no longer verified by the current index. Search again.".into(), cx);
+fn stale_submission() -> SubmissionOutcome {
+    SubmissionOutcome::Refused(SubmitRefusal::Unavailable(
+        "That search result is no longer verified by the current index. Search again.".into()))
 }
 
 fn follow_row(links: &Links, input: &Entity<InputState>, query: &SearchQuery, route: &Route,
-    revision: u64, current_revision: &Cell<u64>, cx: &mut App) {
+    revision: u64, current_revision: &Cell<u64>, cx: &App) -> SubmissionOutcome {
     if current_revision.get() != revision || links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
         || !current_input_query(input, query, cx) {
-        return;
+        return SubmissionOutcome::Superseded;
     }
-    if current_row_route(links, query, route, cx) {
-        links.dispatch(Intent::Navigate(route.clone()), cx);
-    } else {
-        stale_search_notice(links, cx);
-    }
+    if current_row_route(links, query, route, cx) { SubmissionOutcome::Navigate(route.clone()) }
+    else { stale_submission() }
 }
 
 fn current_row_route(links: &Links, query: &SearchQuery, route: &Route, cx: &App) -> bool {
@@ -655,16 +663,13 @@ fn current_row_route(links: &Links, query: &SearchQuery, route: &Route, cx: &App
 }
 
 fn follow_all(links: &Links, input: &Entity<InputState>, query: &SearchQuery, route: &Route,
-    revision: u64, current_revision: &Cell<u64>, cx: &mut App) {
+    revision: u64, current_revision: &Cell<u64>, cx: &App) -> SubmissionOutcome {
     if current_revision.get() != revision || links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
         || !current_input_query(input, query, cx) {
-        return;
+        return SubmissionOutcome::Superseded;
     }
-    if current_search(links, query, cx, |_| true) {
-        links.dispatch(Intent::Navigate(route.clone()), cx);
-    } else {
-        stale_search_notice(links, cx);
-    }
+    if current_search(links, query, cx, |_| true) { SubmissionOutcome::Navigate(route.clone()) }
+    else { stale_submission() }
 }
 
 /// Where `query` sits in `name`, ignoring case: a whole-word query first,
@@ -804,7 +809,7 @@ impl Ask {
                 };
                 list = list.child(group_head(words, count, &measure, palette));
             }
-            list = list.child(self.row(index, choice, &measure, palette));
+            list = list.child(self.row(index, choice, &measure, palette, cx));
         }
         if choices.is_empty() && self.draft.query().is_some() && read_status.is_none() {
             // Never an empty plate: what the search is doing, or why it
@@ -819,28 +824,14 @@ impl Ask {
             let revision = self.revision.get();
             let current_revision = self.revision.clone();
             list = list.child(
-                div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
+                native_search_control(div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
                     .role(Role::Link).aria_label("Open every search result as a page")
-                    .track_focus(&self.all_focus).tab_stop(true)
                     .h(measure.row() + measure.space(Space::Snug)).px(measure.space(Space::Gutter)).mt(measure.space(Space::Tight))
                     .border_t_1().border_color(palette.line1.hsla())
                     .hover(|style| style.bg(palette.tint)).focus_visible(|style| style.bg(palette.tint)).cursor_pointer()
-                    .child(text(ty::SMALL, &measure, palette.ink2).child("every result, as a page"))
-                    .on_click({
-                        let route = route.clone();
-                        let query = query.clone();
-                        let links = links.clone();
-                        let input = input.clone();
-                        let current_revision = current_revision.clone();
-                        move |_: &ClickEvent, _, cx| follow_all(&links, &input, &query, &route, revision, &current_revision, cx)
-                    })
-                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.keystroke.modifiers.modified() && !event.is_held
-                        {
-                            follow_all(&links, &input, &query, &route, revision, &current_revision, cx);
-                            cx.stop_propagation();
-                        }
+                    .child(text(ty::SMALL, &measure, palette.ink2).child("every result, as a page")),
+                    &self.all_focus, cx.weak_entity(), move |cx| {
+                        follow_all(&links, &input, &query, &route, revision, &current_revision, cx)
                     }),
             );
         }
@@ -854,7 +845,7 @@ impl Ask {
             .into_any_element()
     }
 
-    fn row(&self, index: usize, choice: &Choice, measure: &Measure, palette: &facet::Palette) -> AnyElement {
+    fn row(&self, index: usize, choice: &Choice, measure: &Measure, palette: &facet::Palette, cx: &Context<Self>) -> AnyElement {
         let on = index == self.selected && (self.walked || index == 0);
         let has_place = choice.route.is_some();
         let ink = if on { palette.ink0.hsla() } else { super::kit::link_ink(has_place, palette) };
@@ -884,6 +875,7 @@ impl Ask {
         ).into();
         let mut row = div()
             .id(id)
+            .debug_selector(|| "ask-result-row".to_owned())
             .relative()
             .flex()
             .items_center()
@@ -928,27 +920,37 @@ impl Ask {
             let current_revision = self.revision.clone();
             let handle = self.row_focus.iter().find(|(known, occurrence, _)| known == &route && *occurrence == choice.route_occurrence)
                 .map(|(_, _, handle)| handle).expect("every mounted route has a focus handle");
-            row = row.track_focus(handle).tab_stop(true).focus_visible(|style| style.bg(palette.tint))
-                .cursor_pointer().hover(|style| style.bg(palette.tint))
-                .on_click({
-                    let route = route.clone();
-                    let query = query.clone();
-                    let links = links.clone();
-                    let input = input.clone();
-                    let current_revision = current_revision.clone();
-                    move |_: &ClickEvent, _, cx| follow_row(&links, &input, &query, &route, revision, &current_revision, cx)
-                })
-                .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                        && !event.keystroke.modifiers.modified() && !event.is_held
-                    {
-                        follow_row(&links, &input, &query, &route, revision, &current_revision, cx);
-                        cx.stop_propagation();
+            row = native_search_control(row.focus_visible(|style| style.bg(palette.tint))
+                .cursor_pointer().hover(|style| style.bg(palette.tint)), handle, cx.weak_entity(), move |cx| {
+                    follow_row(&links, &input, &query, &route, revision, &current_revision, cx)
+                });
+        } else {
+            let weak = cx.weak_entity();
+            let revision = self.revision.get();
+            let input = self.input.clone();
+            let query = self.draft.query().cloned();
+            let refusal = choice.unavailable.clone().unwrap_or_else(|| format!("{} has no page yet", choice.name).into());
+            row = row.on_click(move |_, _, cx| {
+                let _ = weak.update(cx, |ask, cx| {
+                    if ask.revision.get() == revision && ask.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette)
+                        && query.as_ref().is_some_and(|query| current_input_query(&input, query, cx)) {
+                        ask.complete_submission(SubmissionOutcome::Refused(SubmitRefusal::NoDestination(refusal.clone())), cx);
                     }
                 });
+            });
         }
         row.into_any_element()
     }
+}
+
+fn native_search_control(
+    element: gpui::Stateful<gpui::Div>, focus: &FocusHandle, owner: gpui::WeakEntity<Ask>,
+    admission: impl Fn(&App) -> SubmissionOutcome + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    facet::controls::button::native_button(element, focus, move |_, cx| {
+        let outcome = admission(cx);
+        let _ = owner.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
+    })
 }
 
 fn group_head(words: String, count: usize, measure: &Measure, palette: &facet::Palette) -> AnyElement {
@@ -1061,10 +1063,14 @@ mod tests {
         assert!(ledger.texts.iter().any(|text| text.region.as_deref() == Some("ask")
             && text.content == "Search query is too long (maximum 256 characters)."));
         rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
-        rig.cx.update(|_, cx| super::follow_row(&links, &input, &query, &route,
-            old_revision, &current_revision, cx));
-        rig.cx.update(|_, cx| super::follow_all(&links, &input, &query, &all_route,
-            old_revision, &current_revision, cx));
+        rig.cx.update(|_, cx| {
+            let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, cx);
+            ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
+        });
+        rig.cx.update(|_, cx| {
+            let outcome = super::follow_all(&links, &input, &query, &all_route, old_revision, &current_revision, cx);
+            ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
+        });
         assert_eq!(rig.route(), committed, "rejected input and a retained row cannot navigate");
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
             Some(crate::navigation::Overlay::CommandPalette), "rejection stays in the editor");
@@ -1073,10 +1079,14 @@ mod tests {
         rig.frame(120);
         rig.settle();
         assert!(!ask.read_with(rig.cx, |ask, cx| ask.choices(cx).is_empty()));
-        rig.cx.update(|_, cx| super::follow_row(&links, &input, &query, &route,
-            old_revision, &current_revision, cx));
-        rig.cx.update(|_, cx| super::follow_all(&links, &input, &query, &all_route,
-            old_revision, &current_revision, cx));
+        rig.cx.update(|_, cx| {
+            let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, cx);
+            ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
+        });
+        rig.cx.update(|_, cx| {
+            let outcome = super::follow_all(&links, &input, &query, &all_route, old_revision, &current_revision, cx);
+            ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
+        });
         assert_eq!(rig.route(), committed, "a callback from the old draft stays inert after the same query returns");
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
             Some(crate::navigation::Overlay::CommandPalette));
@@ -1404,6 +1414,123 @@ mod tests {
             && text.content.contains("fixture search owner disconnected")), "the refusal is painted inside Ask");
         rig.cx.simulate_input("X"); rig.settle();
         assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()), "editing retires the old submission refusal");
+    }
+
+
+    struct EmptySearch;
+    impl PageReader for EmptySearch {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            if let ReadRequest::Search(query) | ReadRequest::SearchMore { query, .. } = request {
+                return Ok(PageValue::Search(SearchPage {
+                    query: Arc::clone(&query.text), rows: Arc::from([]),
+                    coverage: backend_present::CoverageLine::new(&[], Some(0)).with_semantic_search_status(backend_library::SemanticSearchStatus::Unavailable { reason: backend_library::SemanticSearchReason::Unconfigured }), next: None,
+                }));
+            }
+            Fixture.read(request, context)
+        }
+    }
+
+    fn native_ask(rig: &mut crate::shell::tests::Rig) {
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+            facet::probe::enable(cx);
+        });
+        rig.settle();
+        rig.keys("cmd-k");
+    }
+
+    fn assert_refusal(rig: &mut crate::shell::tests::Rig, draft: &str, words: &str) {
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(crate::navigation::Overlay::CommandPalette));
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), draft);
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native Ask tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
+            node["aria"]["role"].as_str() == Some("Status") && node["aria"]["label"].as_str().is_some_and(|label| label.contains(words))),
+            "the active query exposes actionable refusal words to native accessibility");
+        assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)), "the retained editor keeps native focus");
+    }
+
+    #[gpui::test]
+    fn actual_empty_search_enter_and_all_results_keep_exact_draft_until_escape(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| EmptySearch).expect("empty search reader"));
+        native_ask(&mut rig);
+        let route = rig.route();
+        let draft = "How does compilation work";
+        rig.cx.simulate_input(draft);
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        assert!(ask.read_with(rig.cx, |ask, cx| {
+            let (resource, root, serving) = ask.search_resource(cx).expect("actual search resource");
+            crate::core::admit_resource(&resource, root, serving).current_value().is_some_and(|page| page.rows.is_empty())
+        }), "the actual worker delivered an admitted empty page");
+        for key in ["enter", "cmd-enter"] {
+            rig.keys(key);
+            assert_eq!(rig.route(), route);
+            assert_refusal(&mut rig, draft, "Try a declaration name or different words");
+        }
+        rig.keys("escape");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None, "intentional Escape still cancels");
+        rig.keys("cmd-k");
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        assert!(input.read_with(rig.cx, |input, _| input.value().is_empty()), "only a new query visit clears the old draft");
+    }
+
+    #[gpui::test]
+    fn actual_enter_denies_a_nonserving_owner_without_losing_the_draft(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("index attachment retired".into()), cx));
+        rig.settle();
+        rig.keys("enter");
+        assert_eq!(rig.route(), route);
+        assert_refusal(&mut rig, "RelationLabel", "index attachment retired");
+    }
+
+    #[gpui::test]
+    fn actual_pointer_release_on_a_postpaint_stale_row_refuses_inside_ask(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1, "one actual painted fixture row");
+        let bounds = rig.cx.debug_bounds("ask-result-row").expect("actual painted row bounds");
+        rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+        // Retire producer authority between the painted press and release;
+        // retain the actual old dispatch frame until its native callback fires.
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("postpaint attachment retired".into()), cx));
+        rig.cx.simulate_event(gpui::MouseUpEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_refusal(&mut rig, "RelationLabel", "no longer verified by the current index");
+    }
+
+
+    #[gpui::test]
+    fn actual_pointer_on_a_nonaddressable_result_keeps_local_refusal(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| NoPlaceSearch).expect("nonaddressable search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("mystery");
+        rig.settle();
+        let route = rig.route();
+        let bounds = rig.cx.debug_bounds("ask-result-row").expect("painted nonaddressable result");
+        rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_refusal(&mut rig, "mystery", "Mystery has no page yet");
     }
 
 }
