@@ -499,7 +499,8 @@ class NativeMotionTests(unittest.TestCase):
             child.wait(timeout=3)
             other = subprocess.Popen(["/bin/sleep", "0.1"])
             try:
-                self.assertNotEqual(other.pid, child.pid)
+                # The first watch is already latched regardless of what PID
+                # the kernel assigns this unrelated later process.
                 self.assertTrue(watcher.wait(0.0))
             finally:
                 other.wait(timeout=3)
