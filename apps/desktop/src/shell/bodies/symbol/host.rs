@@ -305,7 +305,7 @@ struct NativeTargetControl {
 impl gpui::RenderOnce for NativeTargetControl {
     fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         use gpui::{IntoElement as _, StatefulInteractiveElement as _};
-        let control = if self.active {
+        let control: gpui::AnyElement = if self.active {
             let handle = self
                 .handle
                 .unwrap_or_else(|| self.targets.native_handle(&self.id, cx));
@@ -322,11 +322,15 @@ impl gpui::RenderOnce for NativeTargetControl {
                         act(window, cx);
                     }
                 },
-            )
+            ).into_any_element()
         } else {
-            self.control.a11y_inert(true)
+            gpui::inert(
+                format!("inert-symbol-control-{}", self.id),
+                "This retained declaration control does not own input",
+                self.control,
+            ).into_any_element()
         };
-        self.targets.track(self.id, control.into_any_element())
+        self.targets.track(self.id, control)
     }
 }
 

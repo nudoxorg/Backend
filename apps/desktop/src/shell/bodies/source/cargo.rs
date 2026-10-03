@@ -166,7 +166,8 @@ pub(in crate::shell::bodies) fn body(
     leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
     let paint = DocumentIdentity::cargo_source(&cargo.file, &page.content_digest)
         .for_visit(ctx.place_key, file_stamp);
-    leaves.push(Leaf::new(code(&page.source, route, paint, ctx, window, cx)));
+    let source_guard = ctx.native_dependency_guard((PageKey::CargoSource(cargo.file.clone()), file_stamp), cx);
+    leaves.push(Leaf::new(code(&page.source, route, paint, &source_guard, ctx, window, cx)));
     if let CargoSourceTarget::ReadmeLink(link) = &route.target
         && link.fragment().is_some()
         && link.source_line().is_none()
@@ -268,6 +269,7 @@ fn code(
     source: &SourceText,
     route: &CargoSourceRoute,
     paint: DocumentPaintIdentity,
+    source_guard: &Rc<dyn Fn(&mut App) -> bool>,
     ctx: &mut Ctx<'_>,
     window: &mut Window,
     cx: &mut Context<Reader>,
@@ -309,6 +311,7 @@ fn code(
     let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
         Pager::new(memory, first, last, recall, reveal, row_id, window, cx)
     });
+    *pager.read(cx).admission.borrow_mut() = Some(Rc::clone(source_guard));
     let cursor = paging
         .borrow()
         .as_ref()
@@ -348,7 +351,7 @@ fn code(
     }
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     column = column.child(pager_controls(
-        "top", &pager, cursor, &page, source, ctx, cx,
+        "top", &pager, cursor, &page, source, source_guard, ctx, cx,
     ));
     if cursor.line > range.first || cursor.byte > 0 {
         column = column.child(quiet(
@@ -481,7 +484,7 @@ fn code(
             palette,
         ));
         column = column.child(pager_controls(
-            "bottom", &pager, cursor, &page, source, ctx, cx,
+            "bottom", &pager, cursor, &page, source, source_guard, ctx, cx,
         ));
     }
     column.into_any_element()

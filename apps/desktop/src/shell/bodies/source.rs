@@ -806,6 +806,7 @@ fn code(
                 .into_any_element()
             };
             let mut visual_row = div()
+                    .id(format!("source-visual-row-{number}-{piece_index}"))
                     .flex()
                     .items_start()
                     .gap(gap)
