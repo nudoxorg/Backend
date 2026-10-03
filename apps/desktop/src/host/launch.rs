@@ -253,6 +253,7 @@ fn restored_snapshot(
         .with_session(SessionState {
             route: restored.route,
             overlay: restored.overlay,
+            overlay_underlays: Default::default(),
             back: restored.back,
             forward: restored.forward,
             selected: restored.selected,
