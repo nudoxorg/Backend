@@ -412,6 +412,114 @@ class NativeMotionTests(unittest.TestCase):
         self.assertEqual(policy.handle({"kind": "stopped", "held": False}), "StopAck")
         self.assertTrue(policy.cancel_ack)
 
+    def test_supervised_message_deadline_cannot_be_extended_by_byte_trickle(self):
+        class Clock:
+            now = 100.0
+            def monotonic(self):
+                return self.now
+        clock = Clock()
+        class Trickle:
+            timeout = None
+            def settimeout(self, value):
+                self.timeout = value
+            def recv(self, size):
+                delay = 0.08
+                if self.timeout < delay:
+                    clock.now += self.timeout
+                    raise socket.timeout("next byte arrives too late")
+                clock.now += delay
+                return b"x"  # Every byte arrives before a reset timeout.
+        channel = motion.supervision.LineChannel(Trickle())
+        with patch.object(motion.supervision.time, "monotonic", clock.monotonic):
+            with self.assertRaisesRegex(motion.supervision.ProtocolError, "partial native control"):
+                channel.receive(0.20)
+            with self.assertRaisesRegex(motion.supervision.ProtocolError, "partial native control"):
+                channel.receive(0.20)  # A second call cannot reset this line.
+        self.assertAlmostEqual(clock.now, 100.20, places=5)
+
+    def test_supervised_late_permit_line_is_cancelled_before_policy_handles_it(self):
+        class Clock:
+            now = 0.0
+            def monotonic(self):
+                return self.now
+        clock = Clock()
+        class DelayedChannel:
+            def __init__(self, connection):
+                self.replies = []
+                self.buffer = bytearray()
+            def receive(self, timeout):
+                if not self.replies:
+                    return {"schema": 1, "kind": "Hello"}
+                if len(self.replies) == 1:
+                    clock.now = 11.0  # Complete Permit after deadline 10.
+                    return {"schema": 1, "kind": "permit", "index": 0,
+                            "action_kind": "key", "held": False}
+                return {"schema": 1, "kind": "stopped", "held": False}
+            def send(self, **fields):
+                self.replies.append(fields["kind"])
+        channel = DelayedChannel(None)
+        with patch.object(motion.supervision, "LineChannel", return_value=channel), \
+             patch.object(motion.supervision.time, "monotonic", clock.monotonic):
+            result = motion.supervision.serve(None,
+                motion.supervision.ControlPolicy([{"kind": "key"}]),
+                10.0, lambda row: self.assertEqual(row["kind"], "Hello"))
+        self.assertEqual(channel.replies, ["Arm", "Cancel", "StopAck"])
+        self.assertTrue(result["cancel_ack"])
+
+    def test_swift_rechecks_after_late_reply_and_blocking_target_resolution(self):
+        # Source contract until the next reviewed/signed recorder can exercise
+        # these negative cases natively; the Python controller race is tested
+        # above with a delayed Permit line.
+        source = (HERE / "native_motion.swift").read_text()
+        permit = source[source.index("func permit(index:"):source.index("func done(index:")]
+        self.assertLess(permit.index('let reply = try exchange(["kind": "permit"'),
+                        permit.index("try requirePostingDeadline()\n        switch reply"))
+        send = source[source.index("func send(_ action:"):source.index("@main struct NativeMotion")]
+        self.assertLess(send.index("try control?.requirePostingDeadline()"),
+                        send.index("down.postToPid(pid)"))
+        pointer = send[send.index('case "move", "click"'):]
+        self.assertLess(pointer.index("pointHitsSelectedWindow(point"),
+                        pointer.index("try control?.requirePostingDeadline()"))
+        self.assertLess(pointer.index("try control?.requirePostingDeadline()"),
+                        pointer.index("move.post(tap:"))
+        resize = send[send.index('case "resize":'):]
+        self.assertLess(resize.index("try control?.requirePostingDeadline()"),
+                        resize.index("AXUIElementSetAttributeValue(window"))
+
+    def test_kernel_exit_watch_is_bound_to_registered_child_lifetime(self):
+        # This child performs no GUI or recorder work. It tests the actual
+        # macOS kqueue NOTE_EXIT path instead of a mocked process-status row.
+        child = subprocess.Popen(["/bin/sleep", "2"])
+        watcher = None
+        try:
+            watcher = motion.supervision.ExactProcessExit(child.pid)
+            self.assertFalse(watcher.wait(0.01))
+            self.assertIsNone(child.poll())
+            self.assertTrue(watcher.wait(3.0))
+            child.wait(timeout=3)
+            other = subprocess.Popen(["/bin/sleep", "0.1"])
+            try:
+                self.assertNotEqual(other.pid, child.pid)
+                self.assertTrue(watcher.wait(0.0))
+            finally:
+                other.wait(timeout=3)
+        finally:
+            if watcher is not None:
+                watcher.close()
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=3)
+
+    def test_socket_eof_is_separate_from_stop_and_exit_receipts(self):
+        a, b = socket.socketpair()
+        try:
+            self.assertFalse(motion.supervision.peer_eof_after_exit(a))
+            b.close()
+            self.assertTrue(motion.supervision.peer_eof_after_exit(a))
+        finally:
+            a.close()
+            b.close()
+
     def test_supervised_hello_mismatch_never_arms(self):
         driver, recorder = socket.socketpair()
         recorder.settimeout(1)

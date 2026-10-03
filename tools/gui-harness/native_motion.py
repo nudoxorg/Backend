@@ -815,6 +815,7 @@ def launch_services_supervised(bundle: Path, pid: int, plan_path: Path, out: Pat
     native = None
     failures: list[str] = []
     exact_exit = False
+    socket_eof = False
     launcher_output = ""
     launcher_exit = None
     try:
@@ -868,6 +869,10 @@ def launch_services_supervised(bundle: Path, pid: int, plan_path: Path, out: Pat
         exact_exit = watcher.wait(3.0)
         if not exact_exit:
             failures.append("kernel NOTE_EXIT absent for exact armed recorder")
+        elif connection is not None:
+            socket_eof = supervision.peer_eof_after_exit(connection)
+            if not socket_eof:
+                failures.append("control socket EOF absent after exact recorder exit")
         if process is not None:
             try:
                 launcher_output, _ = process.communicate(timeout=2.0)
@@ -880,6 +885,8 @@ def launch_services_supervised(bundle: Path, pid: int, plan_path: Path, out: Pat
         if watcher is not None:
             try:
                 exact_exit = watcher.wait(2.0)
+                if exact_exit and connection is not None:
+                    socket_eof = supervision.peer_eof_after_exit(connection)
             except OSError as watch_error:
                 failures.append(f"kernel exit watch failed: {watch_error}")
         if process is not None and process.poll() is not None:
@@ -939,7 +946,7 @@ def launch_services_supervised(bundle: Path, pid: int, plan_path: Path, out: Pat
         failures.append("native stop acknowledgment does not bind released exact recorder")
     if native is not None and native["cancel_requested"] and not native["cancel_ack"]:
         failures.append("native cancellation was not acknowledged")
-    ownership_release = native_stopped and exact_exit and not failures
+    ownership_release = native_stopped and exact_exit and socket_eof and not failures
     if not ownership_release:
         failures.append("exclusive input ownership unresolved until native stop and exact kernel exit")
     logs = {name: ({"path": str(out / name), "size": (out / name).stat().st_size,
@@ -948,7 +955,8 @@ def launch_services_supervised(bundle: Path, pid: int, plan_path: Path, out: Pat
     receipt = {"schema": 1, "kind": "native-motion-supervision-v1",
                "state": "StoppedVerified" if ownership_release else "Unresolved",
                "recorder_pid": recorder_pid, "peer_pid_verified": recorder_pid is not None,
-               "exact_process_exit": exact_exit, "native_stop_ack": native_stopped,
+               "exact_process_exit": exact_exit, "control_socket_eof_observed": socket_eof,
+               "native_stop_ack": native_stopped,
                "held_unreleased": bool(native and native["held_unreleased"]),
                "input_ownership_release_admitted": ownership_release,
                "native": native, "native_stop_receipt": stop_receipt, "failures": failures,

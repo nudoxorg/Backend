@@ -30,21 +30,38 @@ class LineChannel:
     def __init__(self, connection: socket.socket):
         self.connection = connection
         self.buffer = bytearray()
+        self.message_deadline: float | None = None
 
     def receive(self, timeout: float) -> dict[str, Any]:
-        self.connection.settimeout(timeout)
+        # One deadline for the complete line. A peer may not extend a permit
+        # window indefinitely by sending one byte before each recv timeout.
+        candidate = time.monotonic() + timeout
+        self.message_deadline = min(self.message_deadline, candidate) if self.message_deadline is not None else candidate
+        deadline = self.message_deadline
         while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if self.buffer:
+                    raise ProtocolError("partial native control message exceeded its first-byte deadline")
+                self.message_deadline = None
+                raise socket.timeout("native control message deadline elapsed")
+            self.connection.settimeout(remaining)
             try:
                 block = self.connection.recv(1024)
-            except socket.timeout:
+            except socket.timeout as error:
+                if self.buffer and time.monotonic() >= deadline:
+                    raise ProtocolError("partial native control message exceeded its first-byte deadline") from error
                 raise
             if not block:
                 raise EOFError("native control channel closed")
             self.buffer.extend(block)
             if len(self.buffer) > MAX_MESSAGE:
                 raise ProtocolError("native control message exceeds 4096 bytes")
+        if time.monotonic() >= deadline:
+            raise ProtocolError("native control message completed after its first-byte deadline")
         line, _, rest = self.buffer.partition(b"\n")
         self.buffer = bytearray(rest)
+        self.message_deadline = None
         try:
             row = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -175,11 +192,30 @@ def peer_pid(connection: socket.socket) -> int:
     return struct.unpack("i", raw)[0]
 
 
+def peer_eof_after_exit(connection: socket.socket) -> bool:
+    """A separate bounded transport observation after kernel NOTE_EXIT."""
+    previous = connection.gettimeout()
+    try:
+        connection.settimeout(0.5)
+        return connection.recv(1) == b""
+    except socket.timeout:
+        return False
+    finally:
+        connection.settimeout(previous)
+
+
 def serve(connection: socket.socket, policy: ControlPolicy, deadline: float,
           accepted: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
     channel = LineChannel(connection)
-    hello = channel.receive(max(0.1, deadline - time.monotonic()))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("native control deadline elapsed before Hello")
+    hello = channel.receive(remaining)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("native control Hello arrived after deadline")
     accepted(hello)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("native identity admission exceeded deadline")
     channel.send(kind="Arm")
     transcript: list[dict[str, Any]] = []
     while True:
@@ -192,11 +228,17 @@ def serve(connection: socket.socket, policy: ControlPolicy, deadline: float,
             if remaining < -2.0:
                 raise TimeoutError("native recorder did not acknowledge cancellation")
             continue
+        # The line may complete after the deadline, including on the same
+        # recv that supplies its newline. Decide cancellation before Permit.
+        if time.monotonic() >= deadline:
+            policy.cancel()
         reply = policy.handle(row)
         transcript.append({"request": {key: value for key, value in row.items() if key != "nonce"},
                            "reply": reply})
         channel.send(kind=reply)
         if row["kind"] == "stopped":
+            if channel.buffer:
+                raise ProtocolError("native control bytes followed Stopped")
             break
     return {"state": policy.state, "cancel_requested": policy.cancel_requested,
             "cancel_ack": policy.cancel_ack, "stop_ack": policy.stopped and not policy.held,

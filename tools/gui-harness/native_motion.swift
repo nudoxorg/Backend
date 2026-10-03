@@ -174,13 +174,30 @@ final class NativeControl {
             }
         }
         var line = Data()
+        let replyDeadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
         while line.count < 4096 {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < replyDeadline else {
+                throw NSError(domain: "native-motion", code: 25,
+                    userInfo: [NSLocalizedDescriptionKey: "controller reply exceeded one monotonic message deadline"])
+            }
+            let remainingUS = max(UInt64(1), (replyDeadline - now + 999) / 1_000)
+            var remainingTimeout = timeval(tv_sec: Int(remainingUS / 1_000_000),
+                                           tv_usec: Int32(remainingUS % 1_000_000))
+            guard Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &remainingTimeout,
+                      socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
             var byte: UInt8 = 0
             let count = Darwin.recv(fd, &byte, 1, 0)
             guard count == 1 else { throw NSError(domain: "native-motion", code: 25,
                 userInfo: [NSLocalizedDescriptionKey: "controller channel closed or timed out"] ) }
             if byte == 10 { break }
             line.append(byte)
+        }
+        guard DispatchTime.now().uptimeNanoseconds < replyDeadline else {
+            throw NSError(domain: "native-motion", code: 25,
+                userInfo: [NSLocalizedDescriptionKey: "controller reply completed after message deadline"])
         }
         guard line.count < 4096,
               let row = try JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -191,12 +208,18 @@ final class NativeControl {
         return kind
     }
 
-    func checkpoint(held: Bool) throws -> ControlDirective {
+    func requirePostingDeadline() throws {
         guard DispatchTime.now().uptimeNanoseconds < deadlineHostNS else {
             throw NSError(domain: "native-motion", code: 26,
                 userInfo: [NSLocalizedDescriptionKey: "recorder monotonic posting deadline elapsed"])
         }
-        switch try exchange(["kind": "check", "held": held]) {
+    }
+
+    func checkpoint(held: Bool) throws -> ControlDirective {
+        try requirePostingDeadline()
+        let reply = try exchange(["kind": "check", "held": held])
+        try requirePostingDeadline()
+        switch reply {
         case "Continue": return .proceed
         case "HeldAwaitRelease": return .heldAwaitRelease
         case "Cancel": return .cancel
@@ -205,11 +228,11 @@ final class NativeControl {
     }
 
     func permit(index: Int, action: Action, held: Bool) throws -> ControlDirective {
-        guard DispatchTime.now().uptimeNanoseconds < deadlineHostNS else {
-            throw NSError(domain: "native-motion", code: 26)
-        }
-        switch try exchange(["kind": "permit", "index": index,
-                             "action_kind": action.kind, "held": held]) {
+        try requirePostingDeadline()
+        let reply = try exchange(["kind": "permit", "index": index,
+                                  "action_kind": action.kind, "held": held])
+        try requirePostingDeadline()
+        switch reply {
         case "Permit": return .proceed
         case "PermitRelease":
             guard action.kind == "mouse_up" && held else {
@@ -529,7 +552,7 @@ func flags(_ modifiers: [String]?) throws -> CGEventFlags {
     }
     return value
 }
-func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
+func send(_ action: Action, pid: pid_t, windowID: CGWindowID, control: NativeControl?,
           heldPoint: inout CGPoint?) throws -> [String: Any] {
     if action.kind != "probe" && NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
         return readOnly("target PID is not frontmost")
@@ -553,6 +576,14 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keycode), keyDown: false)!
         let modifierFlags = try flags(action.modifiers)
         down.flags = modifierFlags; up.flags = modifierFlags
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let currentBounds = selectedWindowBounds(pid: pid, windowID: windowID),
+              sameSelectedAXWindow(focusedWindow, windowID: windowID, bounds: currentBounds) else {
+            return readOnly("keyboard target changed before native post")
+        }
+        // The paired Down/Up is one admitted posting group: never strand a
+        // key Down by stopping between the two events at a deadline edge.
+        try control?.requirePostingDeadline()
         down.postToPid(pid); up.postToPid(pid)
         return ["keycode": keycode, "modifiers": action.modifiers ?? [], "disposition": "Posted"]
     case "move", "click", "click_ax", "mouse_down", "mouse_up":
@@ -584,6 +615,12 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         let move = CGEvent(mouseEventSource: source,
                            mouseType: heldPoint == nil ? .mouseMoved : .leftMouseDragged,
                            mouseCursorPosition: point, mouseButton: .left)!
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+            return readOnly("pointer target lost foreground before native post")
+        }
+        // AX target resolution and window-list lookup can block. A Permit
+        // received earlier cannot carry a posting operation past its clock.
+        try control?.requirePostingDeadline()
         move.post(tap: .cghidEventTap)
         if action.kind == "click" || action.kind == "click_ax" {
             guard heldPoint == nil else { throw NSError(domain: "native-motion", code: 9) }
@@ -616,8 +653,17 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         guard let selectedBounds, sameSelectedAXWindow(window, windowID: windowID, bounds: selectedBounds) else {
             return readOnly("focused AX window does not match selected PID/SCWindow")
         }
-        guard let value = AXValueCreate(.cgSize, &size),
-              AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value) == .success else {
+        guard let value = AXValueCreate(.cgSize, &size) else {
+            throw NSError(domain: "native-motion", code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "AX window resize value rejected"])
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let currentBounds = selectedWindowBounds(pid: pid, windowID: windowID),
+              sameSelectedAXWindow(window, windowID: windowID, bounds: currentBounds) else {
+            return readOnly("resize target changed before AX mutation")
+        }
+        try control?.requirePostingDeadline()
+        guard AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value) == .success else {
             throw NSError(domain: "native-motion", code: 6, userInfo: [NSLocalizedDescriptionKey: "AX window resize rejected"])
         }
         return ["window_before_pt": before, "requested_size_pt": ["width": width, "height": height],
@@ -938,6 +984,7 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
                     }
                 }
                 let delivered = try send(action, pid: pid, windowID: window.windowID,
+                                         control: control,
                                          heldPoint: &heldPoint)
                 completedPermit = true
                 try control?.done(index: index, action: action, held: heldPoint != nil,
