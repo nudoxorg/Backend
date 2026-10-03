@@ -225,6 +225,7 @@ impl Host for ShellHost<'_> {
         key: &Key,
         label: SharedString,
         act: Act,
+        activation: facet::anatomy::symbol::docs::Activation,
         control: gpui::Stateful<gpui::Div>,
     ) -> AnyElement {
         let id = key.text();
@@ -248,6 +249,7 @@ impl Host for ShellHost<'_> {
             targets: self.targets.clone(),
             handle,
             act,
+            activation,
             admit: self.admit.clone(),
             active: self.active,
         })
@@ -291,6 +293,7 @@ struct NativeTargetControl {
     targets: Targets,
     handle: Option<gpui::FocusHandle>,
     act: Act,
+    activation: facet::anatomy::symbol::docs::Activation,
     admit: Rc<dyn Fn(&mut gpui::App) -> bool>,
     active: bool,
 }
@@ -310,10 +313,18 @@ impl gpui::RenderOnce for NativeTargetControl {
                     cx.stop_propagation();
                 }
             });
+            let activation = self.activation;
+            let control = activation.pointer_down(control, self.act.clone());
             let act = self.act;
-            facet::controls::button::native_button(control, &handle, move |window, cx| {
-                act(window, cx)
-            })
+            facet::controls::button::native_button_with_event(
+                control,
+                &handle,
+                move |event, window, cx| {
+                    if activation.admits_click(event) {
+                        act(window, cx);
+                    }
+                },
+            )
         } else {
             self.control.a11y_inert(true)
         };
