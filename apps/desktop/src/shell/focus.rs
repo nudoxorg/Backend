@@ -15,9 +15,10 @@ use facet::motion::{Motion, spec};
 use facet::paint::{Bevel, CutPaint, Edge, paint_cut};
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
-    ClickEvent, FocusHandle, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
-    MouseExitEvent, MouseMoveEvent, Pixels, SharedString, StatefulInteractiveElement, Style, Window, div, point, px, size,
+    AnyElement, App, Bounds, ClickEvent, DispatchPhase, Element, ElementId, FocusHandle,
+    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
+    LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, StatefulInteractiveElement,
+    Style, Window, div, point, px, size,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -48,12 +49,20 @@ pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
 /// A native leaf reports itself. Only a logical selection represented by
 /// its focused ancestor may advertise an active descendant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FocusRepresentative { Native, Descendant, None }
+pub(crate) enum FocusRepresentative {
+    Native,
+    Descendant,
+    None,
+}
 impl FocusRepresentative {
     pub(crate) fn for_leaf(selected: bool, handle: &FocusHandle, window: &Window) -> Self {
-        if handle.is_focused(window) { Self::Native }
-        else if selected { Self::Descendant }
-        else { Self::None }
+        if handle.is_focused(window) {
+            Self::Native
+        } else if selected {
+            Self::Descendant
+        } else {
+            Self::None
+        }
     }
 }
 
@@ -287,7 +296,9 @@ impl Targets {
     /// Registers one target in walk order.
     pub(crate) fn push(&self, target: Target) {
         if let Some(source) = &target.source {
-            self.sources.borrow_mut().insert(target.id.clone(), source.clone());
+            self.sources
+                .borrow_mut()
+                .insert(target.id.clone(), source.clone());
         }
         let _ = self.list.with(|list| list.push(target));
     }
@@ -362,7 +373,6 @@ impl Targets {
         self.active
     }
 
-
     /// Forgets the focused target (a new page starts unfocused).
     pub(crate) fn clear_focus(&self) {
         self.recall.clear_focus();
@@ -383,7 +393,9 @@ impl Targets {
     pub(crate) fn native_handle(&self, id: &SharedString, cx: &mut App) -> FocusHandle {
         let mut native = self.native.borrow_mut();
         let frame = native.frame;
-        let (handle, seen) = native.handles.entry(id.clone())
+        let (handle, seen) = native
+            .handles
+            .entry(id.clone())
             .or_insert_with(|| (cx.focus_handle().tab_stop(true), frame));
         *seen = frame;
         handle.clone()
@@ -404,9 +416,18 @@ impl Targets {
 
     fn native_order(&self) -> Vec<(SharedString, FocusHandle)> {
         let native = self.native.borrow();
-        self.list.with(|list| list.iter().filter_map(|target| native.handles.get(&target.id)
-            .filter(|(_, seen)| *seen == native.frame)
-            .map(|(handle, _)| (target.id.clone(), handle.clone()))).collect())
+        self.list
+            .with(|list| {
+                list.iter()
+                    .filter_map(|target| {
+                        native
+                            .handles
+                            .get(&target.id)
+                            .filter(|(_, seen)| *seen == native.frame)
+                            .map(|(handle, _)| (target.id.clone(), handle.clone()))
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -417,32 +438,45 @@ impl Targets {
         // AccessKit and input controls can change GPUI focus without walking
         // our logical target list. The mounted handle is the input origin;
         // Recall follows it, never the other way around.
-        let current = order.iter().position(|(_, handle)| handle.is_focused(window));
-        if let Some(at) = current { self.focus(order[at].0.clone()); }
+        let current = order
+            .iter()
+            .position(|(_, handle)| handle.is_focused(window));
+        if let Some(at) = current {
+            self.focus(order[at].0.clone());
+        }
         let next = match current {
             Some(at) if forward => at.checked_add(1).filter(|at| *at < order.len()),
             Some(at) => at.checked_sub(1),
             None if forward => (!order.is_empty()).then_some(0),
             None => order.len().checked_sub(1),
         };
-        let Some((id, handle)) = next.and_then(|at| order.get(at)) else { return false };
+        let Some((id, handle)) = next.and_then(|at| order.get(at)) else {
+            return false;
+        };
         self.focus(id.clone());
         handle.focus(window, cx);
         true
     }
 
     pub(crate) fn focus_native(&self, id: &str, window: &mut Window, cx: &mut App) -> bool {
-        let Some((_, handle)) = self.native_order().into_iter().find(|(key, _)| key == id) else { return false };
+        let Some((_, handle)) = self.native_order().into_iter().find(|(key, _)| key == id) else {
+            return false;
+        };
         handle.focus(window, cx);
         true
     }
 
     pub(crate) fn contains_native_handle(&self, handle: &FocusHandle) -> bool {
-        self.native_order().iter().any(|(_, mounted)| mounted == handle)
+        self.native_order()
+            .iter()
+            .any(|(_, mounted)| mounted == handle)
     }
 
     pub(crate) fn native_focused(&self, window: &Window) -> Option<SharedString> {
-        self.native_order().into_iter().find(|(_, handle)| handle.is_focused(window)).map(|(id, _)| id)
+        self.native_order()
+            .into_iter()
+            .find(|(_, handle)| handle.is_focused(window))
+            .map(|(id, _)| id)
     }
 
     #[cfg(test)]
@@ -452,8 +486,11 @@ impl Targets {
 
     #[cfg(test)]
     pub(crate) fn focused_native_is_live(&self, window: &Window) -> bool {
-        self.focused().is_some_and(|id| self.native_order().into_iter()
-            .any(|(key, handle)| key == id && handle.is_focused(window)))
+        self.focused().is_some_and(|id| {
+            self.native_order()
+                .into_iter()
+                .any(|(key, handle)| key == id && handle.is_focused(window))
+        })
     }
 
     /// Focuses `id` (a pointer click keeps the keyboard where the pointer
@@ -504,7 +541,10 @@ impl Targets {
         let focused = self.recall.focused();
         let landed = self.list.with(|list| {
             let last = list.len().checked_sub(1)?;
-            let next = match focused.as_ref().and_then(|id| list.iter().position(|target| &target.id == id)) {
+            let next = match focused
+                .as_ref()
+                .and_then(|id| list.iter().position(|target| &target.id == id))
+            {
                 Some(index) => index.saturating_add_signed(delta).min(last),
                 None if delta >= 0 => 0,
                 None => last,
@@ -520,14 +560,20 @@ impl Targets {
     /// The focused target, if it is still on screen.
     pub(crate) fn current(&self) -> Option<Target> {
         let id = self.recall.focused()?;
-        self.list.with(|list| list.iter().find(|target| target.id == id).cloned()).flatten()
+        self.list
+            .with(|list| list.iter().find(|target| target.id == id).cloned())
+            .flatten()
     }
 
     /// Every target with its last recorded bounds (hint mode).
     pub(crate) fn placed(&self) -> Vec<(Target, Bounds<Pixels>)> {
         let bounds = self.bounds.borrow();
         self.list
-            .with(|list| list.iter().filter_map(|target| bounds.get(&target.id).map(|at| (target.clone(), *at))).collect())
+            .with(|list| {
+                list.iter()
+                    .filter_map(|target| bounds.get(&target.id).map(|at| (target.clone(), *at)))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -546,7 +592,8 @@ impl Targets {
     /// last child.
     pub(crate) fn glow(&self, measure: &Measure) -> FocusGlow {
         FocusGlow {
-            keys: ["x", "y", "w", "h"].map(|axis| ElementId::Name(format!("{}.glow-{axis}", self.name).into())),
+            keys: ["x", "y", "w", "h"]
+                .map(|axis| ElementId::Name(format!("{}.glow-{axis}", self.name).into())),
             bounds: Rc::clone(&self.bounds),
             focused: self.recall.focused().filter(|_| self.active),
             heading: Rc::clone(&self.heading),
@@ -631,7 +678,9 @@ impl Element for Tracked {
             window,
         );
         self.child.prepaint(window, cx);
-        self.source.as_ref().map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))
+        self.source
+            .as_ref()
+            .map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -690,11 +739,20 @@ impl FocusGlow {
     /// it was last seen (on another page, before a Back). The probe is told
     /// it is a designed start, not a step from that old place.
     fn born(&self, target: Bounds<Pixels>, cx: &mut App) {
-        let values = [target.origin.x, target.origin.y, target.size.width, target.size.height].map(f32::from);
+        let values = [
+            target.origin.x,
+            target.origin.y,
+            target.size.width,
+            target.size.height,
+        ]
+        .map(f32::from);
         for (key, value) in self.keys.iter().zip(values) {
             self.motion.set(key.clone(), value);
             if facet::probe::enabled(cx) {
-                let at_ms = facet::motion::now(cx).saturating_duration_since(facet::motion::epoch(cx)).as_secs_f64() * 1000.0;
+                let at_ms = facet::motion::now(cx)
+                    .saturating_duration_since(facet::motion::epoch(cx))
+                    .as_secs_f64()
+                    * 1000.0;
                 facet::probe::record_track(cx, || facet::probe::TrackSample {
                     key: key.to_string(),
                     kind: facet::probe::TrackKind::Snap,
@@ -775,10 +833,18 @@ impl Element for FocusGlow {
             None => self.heading.get()?,
         };
         let [kx, ky, kw, kh] = self.keys.clone();
-        let x = self.motion.animate(kx, f32::from(target.origin.x), spec::FOLLOW, window, cx);
-        let y = self.motion.animate(ky, f32::from(target.origin.y), spec::FOLLOW, window, cx);
-        let w = self.motion.animate(kw, f32::from(target.size.width), spec::FOLLOW, window, cx);
-        let h = self.motion.animate(kh, f32::from(target.size.height), spec::FOLLOW, window, cx);
+        let x = self
+            .motion
+            .animate(kx, f32::from(target.origin.x), spec::FOLLOW, window, cx);
+        let y = self
+            .motion
+            .animate(ky, f32::from(target.origin.y), spec::FOLLOW, window, cx);
+        let w = self
+            .motion
+            .animate(kw, f32::from(target.size.width), spec::FOLLOW, window, cx);
+        let h = self
+            .motion
+            .animate(kh, f32::from(target.size.height), spec::FOLLOW, window, cx);
         let rect = Bounds::new(point(px(x), px(y)), size(px(w.max(0.0)), px(h.max(0.0))));
         if shown.is_none() {
             // Unseen: once the spring itself is at rest (not merely drawn at
@@ -818,7 +884,13 @@ mod tests {
     use super::*;
 
     fn target(id: &'static str, act: Act) -> Target {
-        Target { id: id.into(), label: id.into(), act, peek: None, source: None }
+        Target {
+            id: id.into(),
+            label: id.into(),
+            act,
+            peek: None,
+            source: None,
+        }
     }
 
     fn nothing() -> Act {
@@ -837,9 +909,15 @@ mod tests {
         let held = targets.clone();
         targets.push(target("row", Rc::new(move |_, _| held.focus("row"))));
         let probe = targets.list_probe();
-        assert!(probe.upgrade().is_some(), "the region's list is alive while the region is");
+        assert!(
+            probe.upgrade().is_some(),
+            "the region's list is alive while the region is"
+        );
         drop(targets);
-        assert!(probe.upgrade().is_none(), "the action's clone kept the region's list alive: a cycle");
+        assert!(
+            probe.upgrade().is_none(),
+            "the action's clone kept the region's list alive: a cycle"
+        );
     }
 
     #[test]
@@ -849,7 +927,11 @@ mod tests {
         clone.push(target("a", nothing()));
         targets.push(target("b", nothing()));
         assert!(clone.walk(1), "J from nothing lands on the first target");
-        assert_eq!(targets.focused().as_deref(), Some("a"), "focus is shared between the clones");
+        assert_eq!(
+            targets.focused().as_deref(),
+            Some("a"),
+            "focus is shared between the clones"
+        );
         assert!(clone.walk(1));
         assert_eq!(targets.current().map(|found| found.id), Some("b".into()));
         assert!(!clone.walk(1), "the end of the list clamps");
@@ -881,7 +963,14 @@ mod tests {
         recall.remember_leave(Route::World, "row");
         assert_eq!(targets.left_by(&Route::World).as_deref(), Some("row"));
         targets.clear_focus();
-        assert!(recall.focused().is_none(), "a new page starts unfocused, through either handle");
-        assert_eq!(recall.left_by(&Route::World).as_deref(), Some("row"), "and the leave survives that clear");
+        assert!(
+            recall.focused().is_none(),
+            "a new page starts unfocused, through either handle"
+        );
+        assert_eq!(
+            recall.left_by(&Route::World).as_deref(),
+            Some("row"),
+            "and the leave survives that clear"
+        );
     }
 }
