@@ -196,13 +196,18 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     let CommandReply::Names(names) = names.reply else {
         panic!("authenticated name query must return the name view");
     };
+    let marker_suffix = format!("::{PUBLIC_MARKER}");
+    let returned_rows = names
+        .root
+        .rows()
+        .iter()
+        .map(|row| (row.label.as_str(), row.kind.as_ref()))
+        .collect::<Vec<_>>();
     assert!(
-        names
-            .root
-            .rows()
+        returned_rows
             .iter()
-            .any(|row| row.label == PUBLIC_MARKER && row.kind.is_some()),
-        "the public Session must expose the declaration compiled from the real package"
+            .any(|(label, kind)| label.ends_with(&marker_suffix) && kind.is_some()),
+        "the public Session did not return the real declaration at its qualified terminal coordinate; returned rows: {returned_rows:?}"
     );
     let published_root = with_phase_context(
         "read initial published workspace revision",
