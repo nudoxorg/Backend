@@ -114,3 +114,90 @@ fn observation_only_bump_preserves_current_selected_read_and_fresh_queue_can_bin
         assert!(matches!(PersistentState::project(&schedule.root.read(cx).snapshot()).route, PersistedRoute::CargoSource { request_binding: Some(binding), .. } if binding == schedule.context.request_binding()));
     });
 }
+
+struct ReadmeSchedule {
+    base: Schedule,
+    place: Route,
+    target: Route,
+    key: PageKey,
+}
+
+impl ReadmeSchedule {
+    fn new(cx: &mut TestAppContext) -> Self {
+        let base = Schedule::new(cx);
+        let (selected, value) = crate::runtime::cargo_readme_reads::tests::fixture_value();
+        assert_eq!(selected.context, base.context);
+        assert_eq!(selected.package.as_str(), base.source.package.as_str());
+        let PageValue::Browse(BrowseValue::CargoReadme(model)) = &value else { panic!("README fixture"); };
+        let crate::model::browse::CargoReadmeState::Read(document) = &model.state else { panic!("Markdown"); };
+        let link = crate::navigation::CargoReadmeLinkAddress::new(document.origin.clone(), "../src/lib.rs#L7").expect("exact relative source address");
+        let target = Route::CargoSource(CargoSourceRoute::readme_link(selected.context.clone(), base.source.package.clone(), link, Some(7)).expect("scope-preserving target"));
+        let place = Route::Package(crate::navigation::PackageRoute { cargo: Some(selected.context.clone()), project: None,
+            package: base.source.package.clone(), lane: crate::navigation::PackageLane::Overview, selected: None, at: None });
+        let key = PageKey::Browse(BrowseKey::CargoReadme(selected));
+        cx.update(|cx| {
+            base.root.update(cx, |root, cx| root.dispatch(Intent::Navigate(place.clone()), cx));
+            base.store.update(cx, |store, _| force_land(store, &key, value));
+            assert!(RouteDependencies::new(&place, None).current_cargo_readme(base.store.read(cx)).is_some());
+        });
+        Self { base, place, target, key }
+    }
+
+    fn queue(&self, cx: &mut gpui::App) {
+        let dependency = RouteDependencies::new(&self.place, None).current_cargo_readme(self.base.store.read(cx)).expect("selected current README").native_dependency();
+        self.base.root.update(cx, |root, cx| root.queue_read(Intent::Navigate(self.target.clone()), dependency, cx));
+    }
+}
+
+#[gpui::test]
+fn readme_queued_source_refuses_replaced_attachment_or_digest_even_when_new_reads_are_current(cx: &mut TestAppContext) {
+    for replace_owner in [false, true] {
+        let schedule = ReadmeSchedule::new(cx);
+        cx.update(|cx| {
+            schedule.queue(cx);
+            let reduced = schedule.base.root.read(cx).reduced();
+            if replace_owner {
+                schedule.base.gate.publish(OwnerState::Starting);
+                schedule.base.gate.publish(OwnerState::Ready { key: authority(), mode: ServiceMode::Embedded });
+                schedule.base.store.update(cx, |store, cx| {
+                    store.owner_ready(cx);
+                    force_land(store, &schedule.base.key, PageValue::Browse(BrowseValue::Tree(Arc::new(schedule.base.tree.clone()))));
+                });
+            }
+            let (_, fresh) = crate::runtime::cargo_readme_reads::tests::fixture_with_contents("# New origin\n\n[Current file](../src/current.rs#L2)\n");
+            schedule.base.store.update(cx, |store, _| force_land(store, &schedule.key, fresh));
+            assert!(RouteDependencies::new(&schedule.place, None).current_cargo_readme(schedule.base.store.read(cx)).is_some());
+            schedule.base.flush(cx);
+            let root = schedule.base.root.read(cx);
+            assert_eq!(root.snapshot().route(), &schedule.place);
+            assert_eq!(root.reduced(), reduced, "fresh README bytes cannot lend the predecessor's queued source address their stamp or attachment");
+            assert!(matches!(PersistentState::project(&root.snapshot()).route, PersistedRoute::Package { cargo: Some(_), .. }));
+        });
+    }
+}
+
+#[gpui::test]
+fn readme_queue_rechecks_selected_tree_and_observation_only_bumps_keep_exact_scope(cx: &mut TestAppContext) {
+    let changed = ReadmeSchedule::new(cx);
+    cx.update(|cx| {
+        changed.queue(cx);
+        let stamp = changed.base.store.read(cx).stamp(&changed.key);
+        let mut tree = changed.base.tree.clone(); tree.source_packages = Arc::new(BTreeSet::new());
+        changed.base.store.update(cx, |store, _| force_land(store, &changed.base.key, PageValue::Browse(BrowseValue::Tree(Arc::new(tree)))));
+        assert_eq!(changed.base.store.read(cx).stamp(&changed.key), stamp);
+        changed.base.flush(cx);
+        assert_eq!(changed.base.root.read(cx).snapshot().route(), &changed.place, "README stamp alone is not the local Tree receipt used by the queued action");
+    });
+    let current = ReadmeSchedule::new(cx);
+    cx.update(|cx| {
+        current.queue(cx);
+        current.base.root.update(cx, |root, cx| root.dispatch_runtime(Intent::OwnerReady { key: authority().observed_at(77), mode: ServiceMode::Embedded }, cx));
+        current.base.flush(cx);
+        let root = current.base.root.read(cx);
+        assert_eq!(root.snapshot().route(), &current.target);
+        let PersistedRoute::CargoReadmeLink { browse, origin, href, line, .. } = PersistentState::project(&root.snapshot()).route else { panic!("scoped durable source target"); };
+        assert_eq!(browse.request_binding, current.base.context.request_binding());
+        assert_eq!(origin.root_scope, backend_library::CargoPackageReadmeRootScopeV1::EffectiveWorkspace);
+        assert_eq!(href, "../src/lib.rs#L7"); assert_eq!(line, Some(7));
+    });
+}

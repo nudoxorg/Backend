@@ -1,8 +1,13 @@
 //! The exact visible resources and admitted Cargo observations of one route.
 
 use super::{CargoReadAdmission, DataStore, OwnerAttachment, route_package, route_symbol};
-use crate::core::{ErrorValue, FaultCode, LocalProjectId, ReadPhase, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, VersionedRoot, admit_resource};
-use crate::model::browse::{BrowseKey, BrowseValue, CargoReadmeKey, CargoReadmeModel, CargoSourceInventoryKey, TreeModel};
+use crate::core::{
+    ErrorValue, FaultCode, LocalProjectId, ReadPhase, Resource, ResourceAdmission,
+    ResourceTerminal, UnavailableReason, VersionedRoot, admit_resource,
+};
+use crate::model::browse::{
+    BrowseKey, BrowseValue, CargoReadmeKey, CargoReadmeModel, CargoSourceInventoryKey, TreeModel,
+};
 use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{CargoBrowseContext, Overlay, Route, View};
 use std::sync::Arc;
@@ -21,18 +26,32 @@ pub(crate) struct RouteReadLease {
 impl RouteReadLease {
     pub(crate) fn capture(store: &DataStore, dependency: (PageKey, Stamp)) -> Option<Self> {
         let snapshot = store.snapshot();
-        let lease = Self { route: snapshot.route().clone(), overlay: snapshot.overlay(), root: snapshot.key(),
-            attachment: store.current_owner_attachment(), dependency };
+        let lease = Self {
+            route: snapshot.route().clone(),
+            overlay: snapshot.overlay(),
+            root: snapshot.key(),
+            attachment: store.current_owner_attachment(),
+            dependency,
+        };
         lease.admits(store).then_some(lease)
     }
 
     pub(crate) fn admits(&self, store: &DataStore) -> bool {
         let snapshot = store.snapshot();
-        snapshot.route() == &self.route && snapshot.overlay() == self.overlay
-            && self.root.same_authority(snapshot.key()) && store.owner_serving()
+        snapshot.route() == &self.route
+            && snapshot.overlay() == self.overlay
+            && self.root.same_authority(snapshot.key())
+            && store.owner_serving()
             && store.current_owner_attachment() == self.attachment
-            && self.attachment.as_ref().is_none_or(|attachment| store.admits_owner_attachment(attachment))
-            && RouteDependencies::new(&self.route, self.overlay).admits_native_stamp(store, self.root, &self.dependency)
+            && self
+                .attachment
+                .as_ref()
+                .is_none_or(|attachment| store.admits_owner_attachment(attachment))
+            && RouteDependencies::new(&self.route, self.overlay).admits_native_stamp(
+                store,
+                self.root,
+                &self.dependency,
+            )
     }
 }
 
@@ -53,8 +72,12 @@ pub(crate) struct CurrentTreeRead {
 }
 
 impl CurrentTreeRead {
-    pub(crate) fn model(&self) -> &TreeModel { &self.model }
-    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) { (self.dependency.clone(), self.stamp) }
+    pub(crate) fn model(&self) -> &TreeModel {
+        &self.model
+    }
+    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) {
+        (self.dependency.clone(), self.stamp)
+    }
 }
 
 /// An exact package observation projected from this route's admitted resource.
@@ -67,9 +90,15 @@ pub(crate) struct CurrentCargoPackage {
 }
 
 impl CurrentCargoPackage {
-    pub(crate) fn context(&self) -> &CargoBrowseContext { &self.context }
-    pub(crate) fn package(&self) -> &PackageRef { &self.package }
-    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) { (self.dependency.clone(), self.stamp) }
+    pub(crate) fn context(&self) -> &CargoBrowseContext {
+        &self.context
+    }
+    pub(crate) fn package(&self) -> &PackageRef {
+        &self.package
+    }
+    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) {
+        (self.dependency.clone(), self.stamp)
+    }
 }
 
 /// A transient projection of the selected current owner README observation.
@@ -80,8 +109,12 @@ pub(crate) struct CurrentCargoReadme {
 }
 
 impl CurrentCargoReadme {
-    pub(crate) fn model(&self) -> &CargoReadmeModel { &self.model }
-    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) { (self.dependency.clone(), self.stamp) }
+    pub(crate) fn model(&self) -> &CargoReadmeModel {
+        &self.model
+    }
+    pub(crate) fn native_dependency(&self) -> (PageKey, Stamp) {
+        (self.dependency.clone(), self.stamp)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +146,10 @@ enum DependencyAdmission {
 pub(crate) enum ContentAdmission {
     Ready,
     Pending,
-    Terminal { key: PageKey, failure: ContentFailure },
+    Terminal {
+        key: PageKey,
+        failure: ContentFailure,
+    },
 }
 
 impl ContentAdmission {
@@ -150,7 +186,11 @@ impl RouteDependencies {
                 Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => {
                     let key = PageKey::Browse(browse.into());
                     if let crate::navigation::BrowseRoute::Tree(project) = browse {
-                        tree = Some(TreeDependency { requested_project: project.clone(), expected: None, package: None });
+                        tree = Some(TreeDependency {
+                            requested_project: project.clone(),
+                            expected: None,
+                            package: None,
+                        });
                     }
                     // Find owns its editing surface even before its reply.
                     let content = tree.as_ref().map(|_| vec![key.clone()]).unwrap_or_default();
@@ -163,76 +203,158 @@ impl RouteDependencies {
                 Route::World => (vec![PageKey::Orbit], Vec::new()),
                 Route::Package(package) => {
                     if let Some(context) = &package.cargo {
-                        let key = PageKey::Browse(BrowseKey::Tree(context.requested_project().clone()));
-                        tree = Some(TreeDependency { requested_project: context.requested_project().clone(), expected: Some(context.clone()), package: route_package(route) });
-                        let mut keys = route_package(route).map(PageKey::Package).into_iter().collect::<Vec<_>>();
+                        let key =
+                            PageKey::Browse(BrowseKey::Tree(context.requested_project().clone()));
+                        tree = Some(TreeDependency {
+                            requested_project: context.requested_project().clone(),
+                            expected: Some(context.clone()),
+                            package: route_package(route),
+                        });
+                        let mut keys = route_package(route)
+                            .map(PageKey::Package)
+                            .into_iter()
+                            .collect::<Vec<_>>();
                         keys.push(key.clone());
+                        let mut content = vec![key];
                         if let Some(package) = route_package(route) {
-                            let selected = CargoReadmeKey { context: context.clone(), package };
-                            keys.push(PageKey::Browse(BrowseKey::CargoReadme(selected.clone())));
+                            let selected = CargoReadmeKey {
+                                context: context.clone(),
+                                package,
+                            };
+                            let key = PageKey::Browse(BrowseKey::CargoReadme(selected.clone()));
+                            keys.push(key.clone());
+                            content.push(key);
                             readme = Some(selected);
                         }
-                        (keys, vec![key])
+                        (keys, content)
                     } else {
-                        let keys = route_package(route).map(PageKey::Package).into_iter().collect::<Vec<_>>();
+                        let keys = route_package(route)
+                            .map(PageKey::Package)
+                            .into_iter()
+                            .collect::<Vec<_>>();
                         (keys.clone(), keys)
                     }
                 }
                 Route::CargoSource(source) => {
                     if let Some(context) = source.browse.context() {
-                        PackageRef::parse(source.package.as_str()).ok().map(|package| {
-                            let pair = CargoSourceDependencies {
-                                file: CargoSourceKey { context: context.clone(), package: package.clone(), target: source.target.clone() },
-                                inventory: CargoSourceInventoryKey { context: context.clone(), package },
-                            };
-                            let file = PageKey::CargoSource(pair.file.clone());
-                            let keys = vec![file.clone(), PageKey::Browse(BrowseKey::CargoSourceInventory(pair.inventory.clone()))];
-                            cargo = Some(pair);
-                            (keys, vec![file])
-                        }).unwrap_or_default()
+                        PackageRef::parse(source.package.as_str())
+                            .ok()
+                            .map(|package| {
+                                let pair = CargoSourceDependencies {
+                                    file: CargoSourceKey {
+                                        context: context.clone(),
+                                        package: package.clone(),
+                                        target: source.target.clone(),
+                                    },
+                                    inventory: CargoSourceInventoryKey {
+                                        context: context.clone(),
+                                        package,
+                                    },
+                                };
+                                let file = PageKey::CargoSource(pair.file.clone());
+                                let keys = vec![
+                                    file.clone(),
+                                    PageKey::Browse(BrowseKey::CargoSourceInventory(
+                                        pair.inventory.clone(),
+                                    )),
+                                ];
+                                cargo = Some(pair);
+                                (keys, vec![file])
+                            })
+                            .unwrap_or_default()
                     } else {
                         let project = source.browse.requested_project().clone();
                         let key = PageKey::Browse(BrowseKey::Tree(project.clone()));
-                        tree = Some(TreeDependency { requested_project: project, expected: None, package: PackageRef::parse(source.package.as_str()).ok() });
+                        tree = Some(TreeDependency {
+                            requested_project: project,
+                            expected: None,
+                            package: PackageRef::parse(source.package.as_str()).ok(),
+                        });
                         (vec![key.clone()], vec![key])
                     }
                 }
                 Route::Symbol(symbol) => {
-                    let keys = route_symbol(route).map(|id| match symbol.view {
-                        View::Code => vec![PageKey::Source(id.clone()), PageKey::Symbol(id)],
-                        View::Page | View::Graph => vec![PageKey::Symbol(id)],
-                    }).unwrap_or_default();
+                    let keys = route_symbol(route)
+                        .map(|id| match symbol.view {
+                            View::Code => vec![PageKey::Source(id.clone()), PageKey::Symbol(id)],
+                            View::Page | View::Graph => vec![PageKey::Symbol(id)],
+                        })
+                        .unwrap_or_default();
                     (keys.clone(), keys)
                 }
             },
         };
         for key in Self::chrome_keys(route) {
-            if !keys.contains(&key) { keys.push(key); }
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
         }
-        Self { keys, content, cargo, tree, readme }
+        Self {
+            keys,
+            content,
+            cargo,
+            tree,
+            readme,
+        }
     }
 
     /// The titlebar consumes the same route mapping as the owner renewal plan.
     pub(crate) fn chrome_keys(route: &Route) -> Vec<PageKey> {
-        if matches!(route, Route::CargoSource(source) if source.browse.context().is_none()) { return Vec::new(); }
-        route_symbol(route).map(PageKey::Symbol).into_iter()
-            .chain(route_package(route).map(PageKey::Package)).collect()
+        if matches!(route, Route::CargoSource(source) if source.browse.context().is_none()) {
+            return Vec::new();
+        }
+        route_symbol(route)
+            .map(PageKey::Symbol)
+            .into_iter()
+            .chain(route_package(route).map(PageKey::Package))
+            .collect()
     }
 
-    pub(crate) fn keys(&self) -> &[PageKey] { &self.keys }
-    pub(crate) fn into_keys(self) -> Vec<PageKey> { self.keys }
-    pub(crate) fn cargo(&self) -> Option<&CargoSourceDependencies> { self.cargo.as_ref() }
-    pub(crate) fn readme(&self) -> Option<&CargoReadmeKey> { self.readme.as_ref() }
+    pub(crate) fn keys(&self) -> &[PageKey] {
+        &self.keys
+    }
+    pub(crate) fn into_keys(self) -> Vec<PageKey> {
+        self.keys
+    }
+    pub(crate) fn cargo(&self) -> Option<&CargoSourceDependencies> {
+        self.cargo.as_ref()
+    }
+    pub(crate) fn readme(&self) -> Option<&CargoReadmeKey> {
+        self.readme.as_ref()
+    }
 
     pub(crate) fn current_cargo_readme(&self, store: &DataStore) -> Option<CurrentCargoReadme> {
         let selected = self.readme.as_ref()?;
+        let package = self.current_cargo_package(store, &selected.package)?;
+        if package.context() != &selected.context {
+            return None;
+        }
         let browse = BrowseKey::CargoReadme(selected.clone());
         let dependency = PageKey::Browse(browse.clone());
         let resource = store.pages().browse(&browse);
-        if store.cargo_read_admission(&dependency, &resource) != CargoReadAdmission::Current { return None; }
-        let BrowseValue::CargoReadme(model) = resource.loaded_value()? else { return None; };
-        if model.package != selected.package || model.request_binding != selected.context.request_binding() { return None; }
-        Some(CurrentCargoReadme { model: Arc::clone(model), stamp: store.stamp(&dependency), dependency })
+        if store.cargo_read_admission(&dependency, &resource) != CargoReadAdmission::Current {
+            return None;
+        }
+        let BrowseValue::CargoReadme(model) = resource.loaded_value()? else {
+            return None;
+        };
+        if model.package != selected.package
+            || model.request_binding != selected.context.request_binding()
+        {
+            return None;
+        }
+        if let crate::model::browse::CargoReadmeState::Read(document) = &model.state
+            && (!document.origin.has_admissible_shape()
+                || &document.origin.package != selected.package.reference()
+                || document.origin.request_binding != selected.context.request_binding())
+        {
+            return None;
+        }
+        Some(CurrentCargoReadme {
+            model: Arc::clone(model),
+            stamp: store.stamp(&dependency),
+            dependency,
+        })
     }
 
     pub(crate) fn current_tree(&self, store: &DataStore) -> Option<CurrentTreeRead> {
@@ -240,71 +362,192 @@ impl RouteDependencies {
         let key = BrowseKey::Tree(selected.requested_project.clone());
         let resource = store.pages().browse(&key);
         let admission = admit_resource(&resource, store.snapshot().key(), store.owner_serving());
-        let BrowseValue::Tree(model) = admission.current_value()? else { return None };
+        let BrowseValue::Tree(model) = admission.current_value()? else {
+            return None;
+        };
         let context = model.request_binding.and_then(|binding| {
-            binding.matches_effective_workspace_root(&model.root).then_some(())?;
+            binding
+                .matches_effective_workspace_root(&model.root)
+                .then_some(())?;
             CargoBrowseContext::from_binding_address(selected.requested_project.clone(), binding)
         });
-        if selected.expected.as_ref().is_some_and(|expected| context.as_ref() != Some(expected)) { return None; }
+        if selected
+            .expected
+            .as_ref()
+            .is_some_and(|expected| context.as_ref() != Some(expected))
+        {
+            return None;
+        }
         let dependency = PageKey::Browse(key);
-        Some(CurrentTreeRead { model: Arc::clone(model), context, stamp: store.stamp(&dependency), dependency })
+        Some(CurrentTreeRead {
+            model: Arc::clone(model),
+            context,
+            stamp: store.stamp(&dependency),
+            dependency,
+        })
     }
 
-    pub(crate) fn current_cargo_package(&self, store: &DataStore, package: &PackageRef) -> Option<CurrentCargoPackage> {
+    pub(crate) fn current_cargo_package(
+        &self,
+        store: &DataStore,
+        package: &PackageRef,
+    ) -> Option<CurrentCargoPackage> {
         if let Some(cargo) = &self.cargo {
-            if &cargo.file.package != package { return None; }
+            if &cargo.file.package != package {
+                return None;
+            }
             let dependency = PageKey::CargoSource(cargo.file.clone());
             let resource = store.cargo_source(&cargo.file);
-            if store.cargo_read_admission(&dependency, &resource) != CargoReadAdmission::Current { return None; }
+            if store.cargo_read_admission(&dependency, &resource) != CargoReadAdmission::Current {
+                return None;
+            }
             let page = resource.loaded_value()?;
-            if &page.package != package || page.request_binding != cargo.file.context.request_binding() || page.target != cargo.file.target { return None; }
-            return Some(CurrentCargoPackage { context: cargo.file.context.clone(), package: package.clone(), stamp: store.stamp(&dependency), dependency });
+            if &page.package != package
+                || page.request_binding != cargo.file.context.request_binding()
+                || page.target != cargo.file.target
+            {
+                return None;
+            }
+            return Some(CurrentCargoPackage {
+                context: cargo.file.context.clone(),
+                package: package.clone(),
+                stamp: store.stamp(&dependency),
+                dependency,
+            });
         }
-        if self.tree.as_ref()?.package.as_ref().is_some_and(|selected| selected != package) { return None; }
+        if self
+            .tree
+            .as_ref()?
+            .package
+            .as_ref()
+            .is_some_and(|selected| selected != package)
+        {
+            return None;
+        }
         let tree = self.current_tree(store)?;
-        if !tree.model.source_packages.contains(package) { return None; }
-        Some(CurrentCargoPackage { context: tree.context?, package: package.clone(), dependency: tree.dependency, stamp: tree.stamp })
+        if !tree.model.source_packages.contains(package) {
+            return None;
+        }
+        Some(CurrentCargoPackage {
+            context: tree.context?,
+            package: package.clone(),
+            dependency: tree.dependency,
+            stamp: tree.stamp,
+        })
     }
 
     /// One bounded mounted action's exact read slot. Inventory controls use
     /// the independent path receipt rather than the file's bytes.
-    pub(crate) fn native_stamp(&self, store: &DataStore, inventory: bool) -> Option<(PageKey, Stamp)> {
+    pub(crate) fn native_stamp(
+        &self,
+        store: &DataStore,
+        inventory: bool,
+    ) -> Option<(PageKey, Stamp)> {
         let key = if inventory {
-            self.keys.iter().find(|key| matches!(key, PageKey::Browse(BrowseKey::CargoSourceInventory(_))))
+            self.keys
+                .iter()
+                .find(|key| matches!(key, PageKey::Browse(BrowseKey::CargoSourceInventory(_))))
         } else {
             self.keys.iter().find(|key| !matches!(key, PageKey::Health))
         }?;
         Some((key.clone(), store.stamp(key)))
     }
 
-    pub(crate) fn admits_native_stamp(&self, store: &DataStore, root: VersionedRoot, expected: &(PageKey, Stamp)) -> bool {
+    pub(crate) fn admits_native_stamp(
+        &self,
+        store: &DataStore,
+        root: VersionedRoot,
+        expected: &(PageKey, Stamp),
+    ) -> bool {
         let (key, stamp) = expected;
         self.keys.contains(key) && store.stamp(key) == *stamp && self.current_key(store, root, key)
     }
 
     fn current_key(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> bool {
-        matches!(self.key_admission(store, root, key), DependencyAdmission::Ready)
+        matches!(
+            self.key_admission(store, root, key),
+            DependencyAdmission::Ready
+        )
     }
 
-    fn key_admission(&self, store: &DataStore, root: VersionedRoot, key: &PageKey) -> DependencyAdmission {
+    fn key_admission(
+        &self,
+        store: &DataStore,
+        root: VersionedRoot,
+        key: &PageKey,
+    ) -> DependencyAdmission {
         match key {
             PageKey::Orbit => resource_admission(&store.orbit(), root, store.owner_serving()),
-            PageKey::Package(package) => resource_admission(&store.package(package), root, store.owner_serving()),
-            PageKey::Browse(browse @ (BrowseKey::CargoSourceInventory(_) | BrowseKey::CargoReadme(_))) => cargo_admission(store, root, key, &store.pages().browse(browse)),
-            PageKey::Browse(BrowseKey::Tree(project)) if self.tree.as_ref().is_some_and(|tree| &tree.requested_project == project && tree.expected.is_some()) => {
-                let selected = resource_admission(&store.pages().browse(&BrowseKey::Tree(project.clone())), root, store.owner_serving());
-                if matches!(selected, DependencyAdmission::Ready) && self.current_tree(store).is_none() {
+            PageKey::Package(package) => {
+                resource_admission(&store.package(package), root, store.owner_serving())
+            }
+            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => {
+                cargo_admission(store, root, key, &store.pages().browse(browse))
+            }
+            PageKey::Browse(BrowseKey::CargoReadme(selected)) => {
+                let tree_key = PageKey::Browse(BrowseKey::Tree(
+                    selected.context.requested_project().clone(),
+                ));
+                let tree = self.key_admission(store, root, &tree_key);
+                if !matches!(tree, DependencyAdmission::Ready) {
+                    return tree;
+                }
+                let admitted = cargo_admission(
+                    store,
+                    root,
+                    key,
+                    &store
+                        .pages()
+                        .browse(&BrowseKey::CargoReadme(selected.clone())),
+                );
+                if matches!(admitted, DependencyAdmission::Ready)
+                    && (self.readme.as_ref() != Some(selected)
+                        || self.current_cargo_readme(store).is_none())
+                {
+                    DependencyAdmission::Terminal(ContentFailure::Fault(ErrorValue::new(
+                        FaultCode::Protocol,
+                        "The current README reply does not admit this selected Cargo package and Library observation.",
+                    )))
+                } else {
+                    admitted
+                }
+            }
+            PageKey::Browse(BrowseKey::Tree(project))
+                if self.tree.as_ref().is_some_and(|tree| {
+                    &tree.requested_project == project && tree.expected.is_some()
+                }) =>
+            {
+                let selected = resource_admission(
+                    &store.pages().browse(&BrowseKey::Tree(project.clone())),
+                    root,
+                    store.owner_serving(),
+                );
+                if matches!(selected, DependencyAdmission::Ready)
+                    && self.current_tree(store).is_none()
+                {
                     DependencyAdmission::Terminal(ContentFailure::Fault(ErrorValue::new(
                         FaultCode::Protocol,
                         "The current Library tree does not admit this saved Cargo source binding. Open its Library to select the current package observation.",
                     )))
-                } else { selected }
+                } else {
+                    selected
+                }
             }
-            PageKey::Browse(browse) => resource_admission(&store.pages().browse(browse), root, store.owner_serving()),
-            PageKey::CargoSource(file) => cargo_admission(store, root, key, &store.cargo_source(file)),
-            PageKey::Source(symbol) => resource_admission(&store.source(symbol), root, store.owner_serving()),
-            PageKey::Symbol(symbol) => resource_admission(&store.symbol(symbol), root, store.owner_serving()),
-            PageKey::Search(query) => resource_admission(&store.search(query), root, store.owner_serving()),
+            PageKey::Browse(browse) => {
+                resource_admission(&store.pages().browse(browse), root, store.owner_serving())
+            }
+            PageKey::CargoSource(file) => {
+                cargo_admission(store, root, key, &store.cargo_source(file))
+            }
+            PageKey::Source(symbol) => {
+                resource_admission(&store.source(symbol), root, store.owner_serving())
+            }
+            PageKey::Symbol(symbol) => {
+                resource_admission(&store.symbol(symbol), root, store.owner_serving())
+            }
+            PageKey::Search(query) => {
+                resource_admission(&store.search(query), root, store.owner_serving())
+            }
             PageKey::Health => resource_admission(&store.health(), root, store.owner_serving()),
         }
     }
@@ -315,10 +558,19 @@ impl RouteDependencies {
             match self.key_admission(store, store.snapshot().key(), key) {
                 DependencyAdmission::Ready => {}
                 DependencyAdmission::Pending => pending = true,
-                DependencyAdmission::Terminal(failure) => return ContentAdmission::Terminal { key: key.clone(), failure },
+                DependencyAdmission::Terminal(failure) => {
+                    return ContentAdmission::Terminal {
+                        key: key.clone(),
+                        failure,
+                    };
+                }
             }
         }
-        if pending { ContentAdmission::Pending } else { ContentAdmission::Ready }
+        if pending {
+            ContentAdmission::Pending
+        } else {
+            ContentAdmission::Ready
+        }
     }
 
     pub(crate) fn content_phase(&self, store: &DataStore) -> ReadPhase {
@@ -330,21 +582,47 @@ impl RouteDependencies {
     }
 }
 
-fn resource_admission<T>(resource: &Resource<T>, root: VersionedRoot, serving: bool) -> DependencyAdmission {
+fn resource_admission<T>(
+    resource: &Resource<T>,
+    root: VersionedRoot,
+    serving: bool,
+) -> DependencyAdmission {
     match admit_resource(resource, root, serving) {
         ResourceAdmission::Current(_) => DependencyAdmission::Ready,
-        ResourceAdmission::Pending(_) | ResourceAdmission::Retained { .. } => DependencyAdmission::Pending,
-        ResourceAdmission::Failed { terminal: ResourceTerminal::Fault(error), .. } => DependencyAdmission::Terminal(ContentFailure::Fault(error.clone())),
-        ResourceAdmission::Failed { terminal: ResourceTerminal::Unavailable(reason), .. } => DependencyAdmission::Terminal(ContentFailure::Unavailable(reason.clone())),
-        ResourceAdmission::Failed { terminal: ResourceTerminal::Complete | ResourceTerminal::Partial, .. } => DependencyAdmission::Pending,
+        ResourceAdmission::Pending(_) | ResourceAdmission::Retained { .. } => {
+            DependencyAdmission::Pending
+        }
+        ResourceAdmission::Failed {
+            terminal: ResourceTerminal::Fault(error),
+            ..
+        } => DependencyAdmission::Terminal(ContentFailure::Fault(error.clone())),
+        ResourceAdmission::Failed {
+            terminal: ResourceTerminal::Unavailable(reason),
+            ..
+        } => DependencyAdmission::Terminal(ContentFailure::Unavailable(reason.clone())),
+        ResourceAdmission::Failed {
+            terminal: ResourceTerminal::Complete | ResourceTerminal::Partial,
+            ..
+        } => DependencyAdmission::Pending,
     }
 }
 
-fn cargo_admission<T>(store: &DataStore, root: VersionedRoot, key: &PageKey, resource: &Resource<T>) -> DependencyAdmission {
+fn cargo_admission<T>(
+    store: &DataStore,
+    root: VersionedRoot,
+    key: &PageKey,
+    resource: &Resource<T>,
+) -> DependencyAdmission {
     match store.cargo_read_admission(key, resource) {
-        CargoReadAdmission::Current if root.same_authority(store.snapshot().key()) => DependencyAdmission::Ready,
+        CargoReadAdmission::Current if root.same_authority(store.snapshot().key()) => {
+            DependencyAdmission::Ready
+        }
         CargoReadAdmission::Current | CargoReadAdmission::Checking => DependencyAdmission::Pending,
-        CargoReadAdmission::Fault(error) => DependencyAdmission::Terminal(ContentFailure::Fault(error)),
-        CargoReadAdmission::Unavailable(reason) => DependencyAdmission::Terminal(ContentFailure::Unavailable(reason)),
+        CargoReadAdmission::Fault(error) => {
+            DependencyAdmission::Terminal(ContentFailure::Fault(error))
+        }
+        CargoReadAdmission::Unavailable(reason) => {
+            DependencyAdmission::Terminal(ContentFailure::Unavailable(reason))
+        }
     }
 }

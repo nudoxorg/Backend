@@ -193,6 +193,15 @@ pub(crate) mod tests {
         (key, value)
     }
 
+    pub(crate) fn fixture_with_contents(contents: &str) -> (CargoReadmeKey, PageValue) {
+        let (_, key, mut result) = fixture();
+        let CargoPackageReadmeResultV1::Read { readme, .. } = &mut result else { panic!("fixture read"); };
+        readme.contents = contents.into();
+        readme.content_digest = *blake3::hash(contents.as_bytes()).as_bytes();
+        let value = readme_page(&key, result).expect("fresh shape-valid owner projection");
+        (key, value)
+    }
+
     #[test]
     fn exact_owner_readme_and_absence_do_not_borrow_missing_or_other_package_bindings() {
         let (_, key, result) = fixture();
@@ -253,6 +262,7 @@ pub(crate) mod tests {
         final_reply: CargoPackageReadmeResultV1,
         requests: Vec<CargoPackageReadmeRequestV1>,
         trees: usize,
+        cancel_after_tree: Option<crate::runtime::CancellationToken>,
     }
     impl Engine for Cold {
         fn revision(&mut self) -> Result<backend_library::ViewStateRoot, backend_client::ClientError> { Err(backend_client::ClientError::Protocol("unused".into())) }
@@ -267,6 +277,7 @@ pub(crate) mod tests {
                 }
                 SurfaceCommand::ProjectTree { root } => {
                     assert_eq!(root.as_str(), "/fixture/workspace/member"); self.trees += 1;
+                    if let Some(cancel) = &self.cancel_after_tree { cancel.cancel(); }
                     Ok(SurfaceReply::ProjectTree(self.tree.clone()))
                 }
                 _ => Err(backend_client::ClientError::Protocol("unexpected surface".into())),
@@ -280,17 +291,49 @@ pub(crate) mod tests {
         let cancel = crate::runtime::actor::CancellationToken::new();
         let outlines = super::super::reads::OutlineCache::default();
         let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
-        let mut cold = Cold { tree: tree.clone(), final_reply: result.clone(), requests: Vec::new(), trees: 0 };
+        let mut cold = Cold { tree: tree.clone(), final_reply: result.clone(), requests: Vec::new(), trees: 0, cancel_after_tree: None };
         assert!(matches!(compose(&mut cold, &key, &context), Ok(PageValue::Browse(BrowseValue::CargoReadme(_)))));
         assert_eq!(cold.trees, 1); assert_eq!(cold.requests.len(), 2); assert_eq!(cold.requests[0], cold.requests[1]);
         assert_eq!(cold.requests[0].expected_workspace_root_digest, Some(key.context.request_binding().effective_workspace_root_digest));
         let mut changed = tree.clone(); let mut binding = key.context.request_binding(); binding.requested_root_digest = [4; 32]; changed.request_binding = Some(binding);
-        let mut cold = Cold { tree: changed, final_reply: result, requests: Vec::new(), trees: 0 };
+        let mut cold = Cold { tree: changed, final_reply: result, requests: Vec::new(), trees: 0, cancel_after_tree: None };
         assert!(matches!(compose(&mut cold, &key, &context), Err(ReadFailure::Fault(_))));
         assert_eq!(cold.requests.len(), 1, "a different tree binding cannot trigger the second README request");
         let final_reply = CargoPackageReadmeResultV1::Unavailable { package: Some(key.package.reference().clone()), request_binding: None, reason: CargoPackageReadmeFailureV1::AuthorityUnavailable };
-        let mut cold = Cold { tree, final_reply, requests: Vec::new(), trees: 0 };
+        let mut cold = Cold { tree, final_reply, requests: Vec::new(), trees: 0, cancel_after_tree: None };
         assert!(matches!(compose(&mut cold, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol));
         assert_eq!(cold.requests.len(), 2); assert_eq!(cold.trees, 1, "an unbound final reply cannot loop or become absence");
+    }
+
+    #[test]
+    fn cold_tree_retry_stops_at_exact_terminal_unavailable_or_withdrawal() {
+        let (tree, key, result) = fixture();
+        let cancel = crate::runtime::CancellationToken::new();
+        let outlines = super::super::reads::OutlineCache::default();
+        let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
+        let terminal = CargoPackageReadmeResultV1::Unavailable { package: Some(key.package.reference().clone()),
+            request_binding: Some(key.context.request_binding()), reason: CargoPackageReadmeFailureV1::SelectedFileUnavailable };
+        let mut cold = Cold { tree: tree.clone(), final_reply: terminal, requests: Vec::new(), trees: 0, cancel_after_tree: None };
+        assert!(matches!(compose(&mut cold, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+        assert_eq!(cold.trees, 1); assert_eq!(cold.requests.len(), 2);
+        assert_eq!(cold.requests[0], cold.requests[1], "terminal unavailability neither changes the selector nor asks for another cold observation");
+
+        let mut cold = Cold { tree, final_reply: result, requests: Vec::new(), trees: 0, cancel_after_tree: Some(cancel.clone()) };
+        assert!(matches!(compose(&mut cold, &key, &context), Err(ReadFailure::Cancelled)));
+        assert_eq!(cold.trees, 1); assert_eq!(cold.requests.len(), 1, "withdrawal after Tree must precede the identical retry and Markdown projection");
+    }
+
+    #[test]
+    fn altered_readme_digest_or_saved_origin_cannot_mint_current_file_bytes() {
+        let (_, key, mut result) = fixture();
+        let CargoPackageReadmeResultV1::Read { readme, .. } = &mut result else { panic!("fixture read"); };
+        readme.content_digest = [8; 32];
+        assert!(matches!(readme_page(&key, result), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol));
+        let (_, key, result) = fixture();
+        let mut origin = CargoPackageReadmeOriginV1::from_result(&result).expect("origin");
+        origin.content_digest = [8; 32];
+        let link = CargoReadmeLinkAddress::new(origin.clone(), "../src/lib.rs#L7").expect("saved untrusted address");
+        let source = CargoSourceKey { context: key.context, package: key.package, target: CargoSourceTarget::ReadmeLink(link) };
+        assert!(matches!(link_page(&source, CargoPackageReadmeLinkResultV1::Stale { origin }), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing), "an owner refusal of the exact saved origin yields no current bytes");
     }
 }
