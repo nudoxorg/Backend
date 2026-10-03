@@ -68,6 +68,9 @@ pub struct WorkspaceProject {
     /// surface is unavailable. This is cleared on terminal owner response and
     /// is never used as durable identity.
     pub request: Option<RequestId>,
+    /// Exact durable caller key and payload, retained until its owner outcome
+    /// is known. A missing claim on an old interrupted row cannot be invented.
+    pub operation: Option<super::index_operation::IndexOperationClaim>,
     /// Bounded error text suitable for a diagnostic row.
     pub error: Option<Arc<str>>,
     /// Whether this row was opened recently.
@@ -109,6 +112,7 @@ impl WorkspaceProject {
             progress: None,
             files_indexed: None,
             request: None,
+            operation: None,
             error: None,
             recent: true,
         }

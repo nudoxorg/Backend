@@ -3,6 +3,7 @@
 pub mod browse;
 pub(crate) mod document_identity;
 pub mod hand;
+pub mod index_operation;
 pub mod local_package;
 pub mod pages;
 pub mod persistence;
@@ -14,6 +15,7 @@ pub mod source_facts;
 pub mod viewport;
 pub mod workspace;
 
+pub use index_operation::IndexOperationClaim;
 pub use local_package::{
     CargoFailure, DependencyKind, LocalDependency, LocalFeature, LocalPackage, LocalPackageLoader,
     LocalPackageSource, ReadmeBlock,

@@ -65,6 +65,9 @@ pub struct PersistedShelfItem {
     /// Bounded error from the last index attempt.
     #[serde(default)]
     pub error: Option<String>,
+    /// Exact caller key and payload saved before the first owner send.
+    #[serde(default)]
+    pub operation: Option<super::index_operation::IndexOperationClaim>,
 }
 
 /// Serializable project lifecycle vocabulary.
@@ -890,6 +893,7 @@ impl PersistentState {
                         files_indexed: project.and_then(|project| project.files_indexed),
                         error: project
                             .and_then(|project| project.error.as_ref().map(ToString::to_string)),
+                        operation: project.and_then(|project| project.operation.clone()),
                     })
                 }
                 crate::core::ResourceIdentity::Package(_)
@@ -1223,7 +1227,8 @@ impl PersistentState {
                 // Folder disappearance does not prove an in-flight owner
                 // operation stopped. Keep its exact recovery path visible
                 // even when the source is also temporarily unavailable.
-                let unresolved = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling | PersistedProjectPhase::Unconfirmed);
+                let unresolved = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling | PersistedProjectPhase::Unconfirmed)
+                    || (item.operation.is_some() && item.phase == PersistedProjectPhase::Queued);
                 let phase = if unresolved {
                     ProjectPhase::Unconfirmed
                 } else if !path.is_dir() {
@@ -1237,13 +1242,14 @@ impl PersistentState {
                     .unwrap_or_else(|| id.as_str())
                     .into();
                 Some(WorkspaceProject {
-                    id,
+                    id: id.clone(),
                     path: display_path,
                     label: item.label.clone().into(),
                     phase,
                     progress: (!unresolved).then_some(item.progress).flatten().map(|progress| progress.min(100)),
                     files_indexed: (!unresolved).then_some(item.files_indexed).flatten(),
                     request: None,
+                    operation: item.operation.as_ref().filter(|operation| operation.belongs_to(&id)).cloned(),
                     error: if unresolved && item.error.is_none() {
                         Some(Arc::from("This index request was interrupted. Check its exact owner operation before starting another."))
                     } else {
@@ -1351,6 +1357,7 @@ impl PersistentState {
                         files_indexed: None,
                         request: None,
                         error: None,
+                        operation: None,
                         recent: true,
                     });
                 }
@@ -1482,6 +1489,38 @@ mod tests {
     }
 
     #[test]
+    fn prepared_operation_key_is_saved_and_cold_restart_retains_exact_reconciliation_claim() {
+        let root = fixture("durable-index-operation");
+        let project = LocalProjectId::from_path(&root).expect("project");
+        let store = PersistentState::at(root.join("desktop.json"));
+        let snapshot = crate::navigation::reduce(&AppSnapshot::empty(crate::core::VersionedRoot::unserved()),
+            crate::navigation::Intent::AddProject { project: project.clone() }).snapshot;
+        let operation = crate::model::index_operation::tests::claim(&project, 0x72);
+        let mut workspace = snapshot.workspace().clone();
+        let mut rows = workspace.projects.to_vec();
+        rows[0].operation = Some(operation.clone());
+        workspace.projects = rows.into();
+        let snapshot = snapshot.with_workspace(workspace);
+        let projected = PersistentState::project(&snapshot);
+        store.save(&projected).expect("pre-send durable claim");
+        let loaded = store.load().expect("cold state");
+        assert_eq!(loaded.shelf[0].operation.as_ref(), Some(&operation));
+        let restored = store.cold_workspace(&loaded);
+        assert_eq!(restored.projects[0].phase, ProjectPhase::Unconfirmed,
+            "a crash after preflight cannot prove whether transport started");
+        assert_eq!(restored.projects[0].operation.as_ref(), Some(&operation));
+        assert_eq!(restored.projects[0].request, None, "an ephemeral request is never durable identity");
+
+        let mut mismatched = loaded;
+        let other = LocalProjectId::new("/fixture/other-operation").expect("other project");
+        mismatched.shelf[0].operation = Some(crate::model::index_operation::tests::claim(&other, 0x73));
+        let restored = store.cold_workspace(&mismatched);
+        assert_eq!(restored.projects[0].phase, ProjectPhase::Unconfirmed);
+        assert_eq!(restored.projects[0].operation, None, "wrong package claim cannot reconcile this row");
+        fs::remove_dir_all(root).expect("remove durable operation fixture");
+    }
+
+    #[test]
     fn queued_local_admission_survives_restart_without_becoming_an_uncertain_mutation() {
         let root = fixture("queued-admission");
         let project = LocalProjectId::from_path(&root).expect("local project");
@@ -1521,6 +1560,7 @@ mod tests {
                 progress: None,
                 files_indexed: None,
                 error: None,
+                operation: None,
             }],
             route: PersistedRoute::Settings,
             settings_page: Some("appearance".to_owned()),
@@ -1557,6 +1597,7 @@ mod tests {
                     progress: None,
                     files_indexed: None,
                     error: None,
+                    operation: None,
                 },
                 PersistedShelfItem {
                     local_path: "/tmp/nudox-duplicate-project".to_owned(),
@@ -1567,6 +1608,7 @@ mod tests {
                     progress: None,
                     files_indexed: None,
                     error: None,
+                    operation: None,
                 },
             ],
             active_project: Some("/tmp/nudox-duplicate-project".to_owned()),
@@ -1603,6 +1645,7 @@ mod tests {
                         progress: Some(41),
                         files_indexed: Some(100),
                         error: None,
+                        operation: None,
                     }
                 })
                 .collect(),
@@ -1634,6 +1677,7 @@ mod tests {
                 progress: None,
                 files_indexed: None,
                 error: None,
+                operation: None,
             }],
             active_project: Some(active.to_owned()),
             ..PersistedDesktopState::default()
@@ -2101,6 +2145,7 @@ mod tests {
             progress: None,
             files_indexed: None,
             error: None,
+            operation: None,
         });
         assert!(store.save(&oversized).is_err(), "encoding must stop at the same byte budget as reads");
         assert_eq!(store.load().expect("last admitted state"), current);
