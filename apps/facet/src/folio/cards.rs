@@ -14,7 +14,7 @@ use super::text::{key, one, wrap};
 use crate::controls::button::{Handler, wire};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::icons::{Kind, KindSize, kind_mark};
-use crate::marks::badges::{Badge as BadgeFacts, Glyph, Ink, Item, Lang as BadgeLang, Reading, Shape, badge, read};
+use crate::marks::badges::{Badge as BadgeFacts, Glyph, Ink, Item, Lang as BadgeLang, Reading, badge, read};
 use crate::measure::{Measure, Space};
 use crate::motion::spec;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
@@ -82,22 +82,11 @@ impl CardFacts {
     /// A card from a reading already made.
     #[must_use]
     pub fn from_reading(name: &str, kind: Option<Kind>, lang: BadgeLang, reading: &Reading, doc: Option<&str>) -> Self {
-        let kind = kind.unwrap_or(match reading.shape {
-            Shape::Function => Kind::Function,
-            Shape::Macro => Kind::Macro,
-            Shape::Contract => Kind::Trait,
-            Shape::Alias => Kind::Type,
-            Shape::Struct => Kind::Struct,
-            Shape::Enum => Kind::Enum,
-            Shape::Union => Kind::Union,
-            Shape::Constant | Shape::Static => Kind::Constant,
-            Shape::Module => Kind::Module,
-            Shape::Item => Kind::Unknown,
-        });
+        let presentation = reading.kind_presentation(kind, lang);
         Self {
             name: name.to_owned().into(),
-            kind,
-            word: reading.shape.word(lang).into(),
+            kind: presentation.kind(),
+            word: presentation.word().into(),
             doc: doc.map(str::trim).filter(|doc| !doc.is_empty()).map(|doc| SharedString::from(doc.to_owned())),
             badges: reading.badges.clone(),
             yours: Use::Elsewhere,

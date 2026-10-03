@@ -212,6 +212,52 @@ fn an_undocumented_card_says_so_and_a_card_in_the_past_names_what_happened(cx: &
 }
 
 #[gpui::test]
+fn same_name_variable_and_constant_cards_paint_their_own_kind_words(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let measure = cx.facet().measure(px(900.0));
+        let variable = Rc::new(CardFacts::of(
+            &Item::new("signal", Lang::Rust).kind(Some(crate::icons::Kind::Variable)),
+            None,
+        ));
+        let constant = Rc::new(CardFacts::of(
+            &Item::new("signal", Lang::Rust).kind(Some(crate::icons::Kind::Constant)),
+            None,
+        ));
+        div()
+            .flex()
+            .gap(px(12.0))
+            .child(symbol_card("variable-card", variable, &measure).width(px(300.0)))
+            .child(symbol_card("constant-card", constant, &measure).width(px(300.0)))
+            .into_any_element()
+    });
+    let frame = ledger(cx);
+    assert!(
+        frame
+            .texts
+            .iter()
+            .any(|text| text.key.contains("variable-card") && text.content == "variable")
+    );
+    assert!(
+        !frame
+            .texts
+            .iter()
+            .any(|text| text.key.contains("variable-card") && text.content == "const")
+    );
+    assert!(
+        frame
+            .texts
+            .iter()
+            .any(|text| text.key.contains("constant-card") && text.content == "const")
+    );
+    assert!(
+        !frame
+            .texts
+            .iter()
+            .any(|text| text.key.contains("constant-card") && text.content == "variable")
+    );
+}
+
+#[gpui::test]
 fn resting_on_a_badge_floats_its_meaning_and_moves_nothing(cx: &mut TestAppContext) {
     let (cx, _) = open(cx, |_, cx, _| {
         let m = cx.facet().measure(px(400.0));

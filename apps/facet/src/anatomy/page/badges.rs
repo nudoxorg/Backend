@@ -64,8 +64,7 @@ const fn icon_kind(kind: DeclKind) -> Option<crate::icons::Kind> {
 pub fn kind_word(plan: &PagePlan) -> &'static str {
     let hero = &plan.hero;
     let item = Item::new(&hero.name, badge_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
-    let word = badges::read(&item).word;
-    if hero.kind == DeclKind::Method && word == "fn" { "method" } else { word }
+    badges::read(&item).word
 }
 
 /// The badges the page's facts make, in reading order.

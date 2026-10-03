@@ -98,7 +98,7 @@ impl Badge {
     }
 }
 
-/// What a declaration is, in the reader's words rather than the compiler's.
+/// The source grammar's coarse shape, or its captured-kind fallback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Shape {
     /// A function or method.
@@ -123,6 +123,8 @@ pub enum Shape {
     Module,
     /// Nothing more is known.
     Item,
+    /// A variable, distinct from a constant or static.
+    Variable,
 }
 
 impl Shape {
@@ -152,6 +154,7 @@ impl Shape {
             Self::Static => "static",
             Self::Module => "module",
             Self::Item => "item",
+            Self::Variable => "variable",
         }
     }
 
@@ -162,7 +165,7 @@ impl Shape {
             Self::Function | Self::Macro => Family::Callable,
             Self::Contract => Family::Contract,
             Self::Alias | Self::Struct | Self::Enum | Self::Union => Family::Type,
-            Self::Constant | Self::Static => Family::Value,
+            Self::Constant | Self::Static | Self::Variable => Family::Value,
             Self::Module | Self::Item => Family::Namespace,
         }
     }
@@ -179,9 +182,51 @@ impl Shape {
             Kind::Trait | Kind::Interface => Self::Contract,
             Kind::Function | Kind::Method | Kind::Constructor => Self::Function,
             Kind::Macro => Self::Macro,
-            Kind::Constant | Kind::Field | Kind::Property | Kind::Variable | Kind::Variant => Self::Constant,
+            Kind::Constant | Kind::Field | Kind::Property | Kind::Variant => Self::Constant,
+            Kind::Variable => Self::Variable,
             Kind::Unknown => Self::Item,
         }
+    }
+
+    /// The fallback mark for an unclassified declaration's source shape.
+    /// A captured kind takes precedence through [`Reading::kind_presentation`].
+    #[must_use]
+    pub const fn icon_kind(self) -> Kind {
+        match self {
+            Self::Function => Kind::Function,
+            Self::Macro => Kind::Macro,
+            Self::Contract => Kind::Trait,
+            Self::Alias => Kind::Type,
+            Self::Struct => Kind::Struct,
+            Self::Enum => Kind::Enum,
+            Self::Union => Kind::Union,
+            Self::Constant | Self::Static => Kind::Constant,
+            Self::Module => Kind::Module,
+            Self::Item => Kind::Unknown,
+            Self::Variable => Kind::Variable,
+        }
+    }
+}
+
+/// One transient projection of the declaration's mark and kind word.
+/// This is presentation only; it carries no source or navigation capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KindPresentation {
+    kind: Kind,
+    word: &'static str,
+}
+
+impl KindPresentation {
+    /// The exact captured mark, or the source-shape fallback.
+    #[must_use]
+    pub const fn kind(self) -> Kind {
+        self.kind
+    }
+
+    /// The declaration word chosen by the shared kind grammar.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        self.word
     }
 }
 
@@ -228,7 +273,7 @@ impl<'a> Item<'a> {
 /// What a signature reads to.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reading {
-    /// What it is.
+    /// Its source shape or captured-kind fallback; not an indexed identity.
     pub shape: Shape,
     /// The kind word (`fn`, `struct`, `trait`, ...).
     pub word: &'static str,
@@ -237,6 +282,48 @@ pub struct Reading {
 }
 
 impl Reading {
+    /// The captured declaration kind selects its own word. Source text may
+    /// describe a callable value, but cannot rename a typed variable or field.
+    /// Only an absent kind uses the source grammar's coarser classification.
+    #[must_use]
+    pub const fn kind_presentation(&self, captured: Option<Kind>, lang: Lang) -> KindPresentation {
+        let Some(kind) = captured else {
+            return KindPresentation {
+                kind: self.shape.icon_kind(),
+                word: self.shape.word(lang),
+            };
+        };
+        let word = match kind {
+            Kind::Module => "module",
+            Kind::Package => "package",
+            Kind::Import => "import",
+            Kind::Unknown => "item",
+            Kind::Struct => "struct",
+            Kind::Class => "class",
+            Kind::Enum => "enum",
+            Kind::Union => "union",
+            Kind::Type => "alias",
+            Kind::Trait => "trait",
+            Kind::Interface => "interface",
+            Kind::Function => Shape::Function.word(lang),
+            Kind::Method => "method",
+            Kind::Constructor => "constructor",
+            Kind::Macro => "macro",
+            Kind::Constant => {
+                if matches!(self.shape, Shape::Static) {
+                    "static"
+                } else {
+                    "const"
+                }
+            }
+            Kind::Field => "field",
+            Kind::Property => "property",
+            Kind::Variable => "variable",
+            Kind::Variant => "variant",
+        };
+        KindPresentation { kind, word }
+    }
+
     /// The words of every badge, in order.
     #[must_use]
     pub fn words(&self) -> Vec<&str> {
@@ -278,15 +365,15 @@ pub fn read(item: &Item<'_>) -> Reading {
             badges: Vec::new(),
         },
     };
-    // The index's kind outranks a guess from the text when they disagree
-    // about the family (a `Function` row never reads as a struct).
+    // Keep a captured kind's fallback when the source grammar recognizes
+    // no shape. The declaration word is selected separately below.
     if let Some(hinted) = hinted
         && text.is_some()
         && reading.shape == Shape::Item
     {
         reading.shape = hinted;
-        reading.word = hinted.word(item.lang);
     }
+    reading.word = reading.kind_presentation(item.kind, item.lang).word();
     reading
 }
 
@@ -441,3 +528,5 @@ const fn is_word_byte(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod kind_tests;
