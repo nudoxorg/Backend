@@ -3995,9 +3995,14 @@ mod tests {
             ));
         }
         assert_eq!(adapter.waiting.len(), MAX_WAITING_COMMANDS);
-        let refused = adapter
-            .execute_or_defer(daemon, &remove_body(700, package, &label), 20_000)
-            .expect_err("the full mutation queue refuses the next command");
+        let refused = match adapter.execute_or_defer(
+            daemon,
+            &remove_body(700, package, &label),
+            20_000,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the full mutation queue must refuse the next command"),
+        };
         assert!(refused.0.contains("mutation queue is full"));
         assert_eq!(adapter.waiting.len(), MAX_WAITING_COMMANDS);
         assert_eq!(owner_cursor(daemon), before, "refusal precedes admission");
