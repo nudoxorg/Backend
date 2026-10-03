@@ -3603,10 +3603,14 @@ mod tests {
             let root = TempTree::new();
             let workspace = root.0.join("workspace");
             fs::create_dir_all(&workspace).expect("workspace directory");
+            // Commands admit a local directory under its physical identity.
+            // Seed the same identity even when the OS temp path is a symlink.
+            let workspace = workspace.canonicalize().expect("physical workspace directory");
             let project = workspace.join("project");
             fs::create_dir_all(&project).expect("project directory");
             let label = project.to_str().expect("UTF-8 fixture path").to_owned();
             let package = backend_engine::package_key(&label);
+            assert_eq!(project.canonicalize().expect("physical seed project"), project);
 
             let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
             let dispatcher =
@@ -3750,6 +3754,7 @@ mod tests {
         fn add_target(&self) -> (backend_engine::PackageKey, String) {
             let path = self.root.0.join("workspace").join("add-target");
             fs::create_dir_all(&path).expect("empty Add target directory");
+            let path = path.canonicalize().expect("physical Add target directory");
             let label = path.to_str().expect("UTF-8 fixture path").to_owned();
             (backend_engine::package_key(&label), label)
         }
