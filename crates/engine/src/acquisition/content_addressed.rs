@@ -2362,10 +2362,17 @@ mod tests {
     };
 
     fn root(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "nudox-content-addressed-{label}-{}",
-            std::process::id()
-        ))
+        // Store roots are canonicalized by `ContentAddressedStore::open`, and
+        // publication hooks require source files to live under that exact
+        // canonical root. On macOS, `temp_dir()` can be `/tmp` while the same
+        // directory is reported as `/private/tmp`; pin the fixture path to
+        // the filesystem's canonical spelling before deriving any children.
+        fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temporary directory")
+            .join(format!(
+                "nudox-content-addressed-{label}-{}",
+                std::process::id()
+            ))
     }
 
     fn clean(path: &Path) {
