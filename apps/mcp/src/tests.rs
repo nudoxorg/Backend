@@ -327,17 +327,27 @@ fn mcp_admission_bounds_requests_and_replies() {
 }
 
 /// Local-endpoint fixtures that behave identically on Unix sockets and on the
-/// Windows `AF_UNIX` sockets `backend_platform::local` provides, so no transport
+/// Windows `AF_UNIX` sockets `backend_replication` provides, so no transport
 /// test needs a platform branch of its own.
+///
+/// A connected pair is an unnamed socketpair on Unix, which has no `sun_path`
+/// to overrun under a deep temporary directory. A named endpoint is only
+/// needed by the tests that dial one by path, and those do not run on macOS.
 #[cfg(any(unix, windows))]
 mod endpoint {
-    use backend_replication::{LocalListener, LocalStream};
+    #[cfg(not(target_os = "macos"))]
+    use backend_replication::LocalListener;
+    use backend_replication::LocalStream;
+    #[cfg(not(target_os = "macos"))]
     use std::path::{Path, PathBuf};
+    #[cfg(not(target_os = "macos"))]
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[cfg(not(target_os = "macos"))]
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     /// A path no other test in this process, and no earlier process, is using.
+    #[cfg(not(target_os = "macos"))]
     pub(super) fn scratch(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "bmcp-{label}-{}-{}.sock",
@@ -348,6 +358,7 @@ mod endpoint {
 
     /// Binds an endpoint whose permissions satisfy peer authentication: the
     /// current user alone may use it.
+    #[cfg(not(target_os = "macos"))]
     pub(super) fn bind_private(path: &Path) -> LocalListener {
         let listener = LocalListener::bind(path).expect("bind local endpoint");
         #[cfg(unix)]
@@ -363,6 +374,13 @@ mod endpoint {
     }
 
     /// A connected `(server, client)` pair that has not been authenticated.
+    #[cfg(unix)]
+    pub(super) fn pair() -> (LocalStream, LocalStream) {
+        LocalStream::pair().expect("create a socketpair")
+    }
+
+    /// A connected `(server, client)` pair that has not been authenticated.
+    #[cfg(windows)]
     pub(super) fn pair() -> (LocalStream, LocalStream) {
         let path = scratch("pair");
         let listener = LocalListener::bind(&path).expect("bind pair endpoint");

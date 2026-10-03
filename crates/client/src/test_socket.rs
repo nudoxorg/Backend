@@ -1,18 +1,29 @@
 //! Connected local stream pairs for tests, on every platform with local
 //! sockets.
 //!
-//! `UnixStream::pair` does not exist on Windows. A named AF_UNIX listener
-//! does, and the platform's `LocalStream`/`LocalListener` expose it with the
-//! same method names on Unix and Windows, so a pair is a listener, a connect
-//! and an accept.
+//! Unix has `UnixStream::pair`, an unnamed socketpair with no filesystem
+//! entry and so no `sun_path` limit to overrun under a deep temporary
+//! directory. Windows has none, but a named AF_UNIX listener does exist
+//! there, and the platform's `LocalStream`/`LocalListener` expose it with the
+//! same method names, so a pair is a listener, a connect and an accept.
 
-use backend_replication::{LocalListener, LocalStream};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use backend_replication::LocalStream;
 
 /// Returns the two ends of one connected local stream.
+#[cfg(unix)]
 #[allow(clippy::expect_used)]
 pub(crate) fn local_pair() -> (LocalStream, LocalStream) {
+    LocalStream::pair().expect("create a socketpair")
+}
+
+/// Returns the two ends of one connected local stream.
+#[cfg(windows)]
+#[allow(clippy::expect_used)]
+pub(crate) fn local_pair() -> (LocalStream, LocalStream) {
+    use backend_replication::LocalListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     static PAIRS: AtomicUsize = AtomicUsize::new(0);
     let path: PathBuf = std::env::temp_dir().join(format!(
         "nxc-{}-{}.sock",
