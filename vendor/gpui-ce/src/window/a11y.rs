@@ -240,6 +240,42 @@ impl A11y {
         A11ySuppression { depth }
     }
 
+    /// Resolve against the final native owner, after all child renders and
+    /// prepaint handoffs. Shared handles are legitimate only along one semantic
+    /// ancestry chain; its innermost owner represents the control. Sibling
+    /// claims are ambiguous and reported without choosing an arbitrary node.
+    pub(crate) fn publish_native_focus(&mut self, focus: Option<FocusId>) {
+        let mut candidates: Vec<_> = self.focus_ids.iter().filter_map(|(node, id)|
+            (Some(*id) == focus && self.nodes.has_node(*node)
+                && !self.nodes.is_node_inert(*node)).then_some(*node)).collect();
+        candidates.sort_by_key(|id| id.0);
+        let representative = candidates.iter().copied().find(|candidate|
+            candidates.iter().all(|other| candidate == other || self.nodes.descends_from(*candidate, *other)));
+        let resolution = match representative {
+            Some(node) => NativeFocusResolution::Semantic(node),
+            None if candidates.is_empty() => NativeFocusResolution::NoSemanticOwner,
+            None => NativeFocusResolution::Ambiguous,
+        };
+        match resolution {
+            NativeFocusResolution::Semantic(node) => self.set_focus(node),
+            NativeFocusResolution::Ambiguous => log::warn!("a11y: ambiguous native focus representatives for {focus:?}: {candidates:?}; reporting window focus"),
+            NativeFocusResolution::NoSemanticOwner => {
+                if let Some(focus) = focus { self.note_focus_without_node(focus, "it has no current non-inert semantic owner"); }
+            }
+        }
+        let claims = std::mem::take(&mut self.nodes.pending_active_descendants);
+        if let Some(owner) = representative {
+            for node in claims {
+                if node == owner {
+                    if cfg!(debug_assertions) { panic!("set_active_descendant called on the focused node"); }
+                    log::warn!("a11y: set_active_descendant called on the focused node ({node:?})");
+                } else if self.nodes.descends_from(node, owner) && !self.nodes.is_node_inert(node) {
+                    self.nodes.set_active_descendant(node);
+                }
+            }
+        }
+    }
+
     pub(crate) fn set_focusable(&mut self, node_id: NodeId, focus_id: FocusId) {
         self.focus_ids.insert(node_id, focus_id);
     }
@@ -287,6 +323,10 @@ impl A11y {
             } else {
                 log::warn!("a11y: set_active_descendant called on the focused node ({node_id:?})");
             }
+            return;
+        }
+        if self.nodes.focus.is_none() && self.nodes.has_node(node_id) {
+            self.nodes.pending_active_descendants.push(node_id);
             return;
         }
         if self.nodes.has_node(node_id) && self.nodes.focus_is_ancestor_of_current() {
@@ -415,6 +455,13 @@ impl<'a> A11ySubtreeBuilder<'a> {
     }
 }
 
+#[derive(Debug)]
+enum NativeFocusResolution {
+    Semantic(NodeId),
+    NoSemanticOwner,
+    Ambiguous,
+}
+
 pub(crate) struct A11yNodeBuilder {
     ids_stack: SmallVec<[NodeId; 16]>,
     nodes_stack: SmallVec<[accesskit::Node; 16]>,
@@ -433,6 +480,8 @@ pub(crate) struct A11yNodeBuilder {
     /// Nodes rendered beneath an inert boundary. Kept through finalization so
     /// parent callbacks cannot reattach an active-descendant path into them.
     inert_nodes: FxHashSet<NodeId>,
+    parents: FxHashMap<NodeId, NodeId>,
+    pending_active_descendants: Vec<NodeId>,
     #[cfg(debug_assertions)]
     node_info: FxHashMap<NodeId, debug::NodeDebugInfo>,
 }
@@ -447,9 +496,22 @@ impl A11yNodeBuilder {
             focus: None,
             active_descendant: None,
             inert_nodes: FxHashSet::default(),
+            parents: FxHashMap::default(),
+            pending_active_descendants: Vec::new(),
             #[cfg(debug_assertions)]
             node_info: FxHashMap::default(),
         }
+    }
+
+    fn descends_from(&self, mut node: NodeId, ancestor: NodeId) -> bool {
+        // Parent links come only from successfully inserted current-frame
+        // nodes; the bound also makes a malformed cycle fail closed.
+        for _ in 0..self.parents.len() {
+            let Some(parent) = self.parents.get(&node).copied() else { return false; };
+            if parent == ancestor { return true; }
+            node = parent;
+        }
+        false
     }
 
     /// Records provenance for a node already pushed this frame. Debug builds only.
@@ -484,6 +546,7 @@ impl A11yNodeBuilder {
 
         if let Some(parent) = self.nodes_stack.last_mut() {
             parent.push_child(id);
+            if let Some(parent_id) = self.ids_stack.last() { self.parents.insert(id, *parent_id); }
         }
         self.ids_stack.push(id);
         self.nodes_stack.push(node);
@@ -502,6 +565,7 @@ impl A11yNodeBuilder {
 
         if let Some(parent) = self.nodes_stack.last_mut() {
             parent.push_child(id);
+            if let Some(parent_id) = self.ids_stack.last() { self.parents.insert(id, *parent_id); }
         }
         self.all_nodes.push((id, node));
         true
@@ -576,6 +640,8 @@ impl A11yNodeBuilder {
         self.focus = None;
         self.active_descendant = None;
         self.inert_nodes.clear();
+        self.parents.clear();
+        self.pending_active_descendants.clear();
     }
 
     /// Returns whether a node with the given ID has been pushed in this frame.
@@ -1080,4 +1146,58 @@ mod tests {
         let update = a11y.end_frame(Default::default());
         assert_eq!(update.focus, a);
     }
+    #[test]
+    fn final_native_focus_shared_handle_requires_one_ancestry_chain() {
+        let mut a11y = new_a11y();
+        let parent = NodeId(1); let leaf = NodeId(2);
+        assert!(a11y.nodes.push(parent, test_node()));
+        a11y.set_focusable(parent, FocusId::default());
+        assert!(a11y.nodes.push(leaf, test_node()));
+        a11y.set_focusable(leaf, FocusId::default());
+        a11y.nodes.pop(); a11y.nodes.pop();
+        a11y.publish_native_focus(Some(FocusId::default()));
+        assert_eq!(a11y.end_frame(Default::default()).focus, leaf);
+    }
+
+    #[test]
+    fn sibling_semantic_owners_are_ambiguous_without_a_debug_abort_or_arbitrary_winner() {
+        let mut a11y = new_a11y();
+        for id in [NodeId(1), NodeId(2)] {
+            assert!(a11y.nodes.push(id, test_node()));
+            a11y.set_focusable(id, FocusId::default()); a11y.nodes.pop();
+        }
+        a11y.publish_native_focus(Some(FocusId::default()));
+        let update = a11y.end_frame(Default::default());
+        assert_eq!(update.focus, ROOT_NODE_ID);
+        assert!(update.nodes.iter().any(|(id, _)| *id == NodeId(1)));
+        assert!(update.nodes.iter().any(|(id, _)| *id == NodeId(2)));
+    }
+
+    #[test]
+    fn final_focus_preserves_managed_descendant_and_excludes_inert_claims() {
+        let mut a11y = new_a11y();
+        let parent = NodeId(1); let child = NodeId(2); let inert = NodeId(3);
+        assert!(a11y.nodes.push(parent, test_node()));
+        a11y.set_focusable(parent, FocusId::default());
+        assert!(a11y.nodes.push(child, test_node()));
+        a11y.set_active_descendant(child); a11y.nodes.pop(); a11y.nodes.pop();
+        assert!(a11y.nodes.push(inert, test_node()));
+        a11y.set_focusable(inert, FocusId::default()); a11y.nodes.mark_current_inert(); a11y.nodes.pop();
+        a11y.publish_native_focus(Some(FocusId::default()));
+        assert_eq!(a11y.end_frame(Default::default()).focus, child);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "set_active_descendant called on the focused node"))]
+    fn deferred_focus_keeps_the_active_descendant_self_relation_diagnostic() {
+        let mut a11y = new_a11y();
+        let node = NodeId(1);
+        assert!(a11y.nodes.push(node, test_node()));
+        a11y.set_focusable(node, FocusId::default());
+        a11y.set_active_descendant(node); a11y.nodes.pop();
+        a11y.publish_native_focus(Some(FocusId::default()));
+        let update = a11y.end_frame(Default::default());
+        assert_eq!(update.focus, node);
+    }
+
 }

@@ -343,3 +343,77 @@ fn what_the_window_says_about_this_launch_is_said_once_and_goes_when_dismissed(c
         rig.said()
     );
 }
+
+
+/// A real actor reply is held while the native submit/closing frame paints.
+/// The guard releases it on every panic path, before the rig is dropped.
+struct NativeIndexGate(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+impl NativeIndexGate {
+    fn set(&self, ready: bool) {
+        *self.0.0.lock().expect("gate") = ready;
+        self.0.1.notify_all();
+    }
+}
+impl Drop for NativeIndexGate { fn drop(&mut self) { self.set(true); } }
+struct NativeIndexClient(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+impl EngineClient for NativeIndexClient {
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        if let EngineRequest::IndexProject { request, project, basis, .. } = request {
+            let mut ready = self.0.0.lock().expect("gate");
+            while !*ready { ready = self.0.1.wait(ready).expect("gate wake"); }
+            let revision = backend_library::Cursor::at(basis.root(), basis.generation().saturating_add(1));
+            Ok(EngineDto::Index { request: *request, basis: *basis,
+                key: crate::core::VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation()),
+                revision, delta: None, project: project.clone(), project_state: None, catalog: None, files_indexed: Some(3) })
+        } else { RootOnly.execute(request) }
+    }
+}
+
+#[gpui::test]
+fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_and_ready(cx: &mut TestAppContext) {
+    for pointer in [false, true] {
+        let (first_parent, _) = project("native-first");
+        let (second_parent, second_folder) = project("native-second");
+        let gate = Arc::new((std::sync::Mutex::new(true), std::sync::Condvar::new()));
+        let mut rig = rig_with_engine(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0,
+            ReadPool::start(2, |_| NothingYet).expect("pool"), NativeIndexClient(Arc::clone(&gate)));
+        let release = NativeIndexGate(gate);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+        });
+        rig.settle();
+        rig.keys("cmd-o"); type_in(&mut rig, &format!("{}/toml_pin", first_parent.display()));
+        rig.keys("enter");
+        assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
+        release.set(false);
+        rig.keys("cmd-o"); type_in(&mut rig, &format!("{}/toml_pin", second_parent.display()));
+        assert!(drawn(&mut rig).iter().any(|line| line == "toml_pin · a Rust project (Cargo.toml)"), "actual folder preview painted");
+        let field = rig.cx.update(|window, cx| super::field(window, cx)).expect("mounted input");
+        assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)));
+        if pointer {
+            let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced dialog AX");
+            let tree: serde_json::Value = serde_json::from_str(&json).expect("AX JSON");
+            let node = tree["nodes"].as_object().expect("AX nodes").values().find(|node|
+                node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Add")).expect("actual native Add button");
+            let b = &node["bounds"];
+            let at = gpui::point(gpui::px((b["x"].as_f64().expect("x") + b["width"].as_f64().expect("width") / 2.0) as f32),
+                gpui::px((b["y"].as_f64().expect("y") + b["height"].as_f64().expect("height") / 2.0) as f32));
+            rig.cx.simulate_click(at, gpui::Modifiers::none());
+        } else { rig.cx.simulate_keystrokes("enter"); }
+        rig.frame(16);
+        assert_eq!(overlay(&mut rig), None);
+        assert_eq!(phases(&mut rig), [ProjectPhase::Ready, ProjectPhase::Indexing]);
+        assert!(!rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)), "retiring editor is not the native owner");
+        assert!(rig.cx.update(|window, _| window.debug_a11y_tree_json()).is_some(), "pending transition publishes a complete native tree without duplicate-focus abort");
+        release.set(true); rig.settle();
+        assert_eq!(phases(&mut rig), [ProjectPhase::Ready, ProjectPhase::Ready]);
+        assert_eq!(snapshot(&mut rig).workspace().active.as_ref(), Some(&crate::core::LocalProjectId::from_path(&second_folder).expect("identity")));
+        rig.keys("cmd-o");
+        assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "native keyboard remains usable after ready publication");
+        rig.keys("escape");
+        std::fs::remove_dir_all(first_parent).expect("clean first fixture");
+        std::fs::remove_dir_all(second_parent).expect("clean second fixture");
+    }
+}

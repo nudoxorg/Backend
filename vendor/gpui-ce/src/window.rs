@@ -4332,6 +4332,7 @@ impl Window {
                 tab_stop_count: self.next_frame.tab_stops.tab_stop_count(),
             };
             // clear the builder state regardless
+            self.a11y.publish_native_focus(self.focus);
             let tree_update = self.a11y.end_frame(frame_info);
 
             if should_send_a11y_update {

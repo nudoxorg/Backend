@@ -2295,9 +2295,8 @@ impl Interactivity {
                 if let Some(global_id) = global_id {
                     let node_id = global_id.accesskit_node_id();
                     window.a11y.set_focusable(node_id, focus_handle.id);
-                    if focus_handle.is_focused(window) {
-                        window.a11y.set_focus(node_id);
-                    }
+                    // Final frame focus is resolved once, after any child
+                    // render/prepaint native handoff has completed.
                 } else if focus_handle.is_focused(window) {
                     // Focusable, but with no element id it can't have an
                     // accessibility node, so screen readers fall back to the
@@ -5100,4 +5099,47 @@ mod tests {
 
         assert_eq!(focused, Some(item_b.id));
     }
+
+    struct LateNativeFocus {
+        parent: FocusHandle,
+        row: FocusHandle,
+        calls: Rc<std::cell::Cell<usize>>,
+    }
+    impl Render for LateNativeFocus {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let row = self.row.clone(); let calls = self.calls.clone();
+            div().id("late-parent").role(Role::Group).aria_label("Previous native owner")
+                .track_focus(&self.parent).size_full()
+                .child(crate::uniform_list("late-focus-list", 1, move |range, window, cx| {
+                    let at = calls.get(); calls.set(at + 1);
+                    // The first call measures a row during layout. The actual
+                    // visible range renders during UniformList prepaint, after
+                    // the parent has registered its old focus ownership.
+                    if at > 0 { row.focus(window, cx); }
+                    range.map(|_| div().id("late-row").role(Role::Button)
+                        .aria_label("Final native owner").track_focus(&row).h(px(30.0))).collect::<Vec<_>>()
+                }).h(px(100.0)))
+        }
+    }
+
+    #[gpui::test]
+    fn native_handoff_during_lazy_row_prepaint_publishes_only_the_final_owner(cx: &mut TestAppContext) {
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let observed = calls.clone();
+        let (view, cx) = cx.add_window_view(move |_, cx| LateNativeFocus {
+            parent: cx.focus_handle(), row: cx.focus_handle(), calls,
+        });
+        let parent = view.read(cx).parent.clone();
+        let row = view.read(cx).row.clone();
+        cx.update(|window, cx| {
+            window.set_a11y_forced(true); parent.focus(window, cx);
+            observed.set(0); window.refresh(); window.draw(cx).clear(cx);
+        });
+        assert!(observed.get() > 1, "the real lazy range rendered after its measurement");
+        assert!(cx.update(|window, _| row.is_focused(window)));
+        let update = cx.update(|window, _| window.a11y.last_tree_update().cloned()).expect("forced tree");
+        let focused = update.nodes.iter().find(|(id, _)| *id == update.focus).expect("final semantic focus node");
+        assert_eq!(focused.1.label(), Some("Final native owner"));
+    }
+
 }
