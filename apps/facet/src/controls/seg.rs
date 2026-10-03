@@ -32,6 +32,7 @@ use gpui::{
     ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
     div, px,
 };
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -75,6 +76,22 @@ struct Choice {
 }
 
 type Select = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+type Admission = Rc<dyn Fn(&mut App) -> bool>;
+
+/// The pointer down owns its admission predicate through pointer up, even
+/// when a rerender installs a fresh predicate for the same control identity.
+enum PointerAdmission {
+    Unscoped,
+    Scoped(Admission),
+}
+impl PointerAdmission {
+    fn admits(self, cx: &mut App) -> bool {
+        match self {
+            Self::Unscoped => true,
+            Self::Scoped(admit) => admit(cx),
+        }
+    }
+}
 
 /// A segmented control: `seg("lens", &measure).label("Map").label("Readme").selected(1)`.
 #[derive(IntoElement)]
@@ -89,6 +106,7 @@ pub struct Seg {
     look: Look,
     measure: Measure,
     on_select: Option<Select>,
+    admit: Option<Admission>,
 }
 
 /// An empty segmented control sized for `measure`.
@@ -105,6 +123,7 @@ pub fn seg(id: impl Into<ElementId>, measure: &Measure) -> Seg {
         look: Look::LIVE,
         measure: *measure,
         on_select: None,
+        admit: None,
     }
 }
 
@@ -200,6 +219,14 @@ impl Seg {
     #[must_use]
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Rc::new(handler));
+        self
+    }
+
+    /// Live input ownership, checked before native focus and every activation.
+    /// The owner must keep this predicate idempotent and revoke stale scopes.
+    #[must_use]
+    pub fn admit(mut self, admit: Rc<dyn Fn(&mut App) -> bool>) -> Self {
+        self.admit = Some(admit);
         self
     }
 
@@ -359,6 +386,13 @@ impl RenderOnce for Seg {
         let touch = Touch::read(&self.id, self.look, active, window, cx);
         let motion = touch.motion.clone();
         let id = self.id.clone();
+        let pointer = window.use_keyed_state(track(&id, "pointer-admission"), cx, |_, _| {
+            Rc::new(RefCell::new(None::<PointerAdmission>))
+        });
+        let pointer = pointer.read(cx).clone();
+        if !active {
+            pointer.borrow_mut().take();
+        }
         let count = self.choices.len().max(1);
         let selected = self.selected.min(count - 1);
         let group_label = self.aria_label.clone().unwrap_or_else(|| self
@@ -580,6 +614,20 @@ impl RenderOnce for Seg {
                 } else {
                     item.focusable().tab_index(-1)
                 };
+                let admit = self.admit.clone();
+                let down = pointer.clone();
+                item = item.capture_any_mouse_down(move |event, _, cx| {
+                    if admit.as_ref().is_some_and(|admit| !admit(cx)) {
+                        down.borrow_mut().take();
+                        cx.prevent_default();
+                        cx.stop_propagation();
+                    } else if event.button == MouseButton::Left {
+                        *down.borrow_mut() = Some(match &admit {
+                            Some(admit) => PointerAdmission::Scoped(admit.clone()),
+                            None => PointerAdmission::Unscoped,
+                        });
+                    }
+                });
                 let entity = touch.entity.clone();
                 item = item.on_hover(move |inside, _window, cx: &mut App| {
                     let now = entity.read(cx).hot_item;
@@ -593,18 +641,36 @@ impl RenderOnce for Seg {
                     let accessible_select = select.clone();
                     let accessible_focus = touch.focus.clone();
                     let pointer_focus = touch.focus.clone();
+                    let accessible_admit = self.admit.clone();
+                    let pointer_admit = self.admit.clone();
+                    let pointer = pointer.clone();
+                    let key_admit = self.admit.clone();
                     item = item
-                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| { window.focus(&accessible_focus, cx); accessible_select(index, window, cx); })
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| {
+                            if accessible_admit.as_ref().is_none_or(|admit| admit(cx)) {
+                                window.focus(&accessible_focus, cx);
+                                accessible_select(index, window, cx);
+                            }
+                        })
                         .on_key_down({
                             let select = select.clone();
                             move |event, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    select(index, window, cx);
+                                    if key_admit.as_ref().is_none_or(|admit| admit(cx)) {
+                                        select(index, window, cx);
+                                    }
                                     cx.stop_propagation();
                                 }
                             }
                         })
-                        .on_click(move |_, window, cx| { window.focus(&pointer_focus, cx); select(index, window, cx); });
+                        .on_click(move |_, window, cx| {
+                            let down = pointer.borrow_mut().take();
+                            if down.is_some_and(|down| down.admits(cx))
+                                && pointer_admit.as_ref().is_none_or(|admit| admit(cx)) {
+                                window.focus(&pointer_focus, cx);
+                                select(index, window, cx);
+                            }
+                        });
                 }
             }
             row = row.child(item);
@@ -645,6 +711,7 @@ impl RenderOnce for Seg {
         let well = if active {
             let entity = touch.entity.clone();
             let select = self.on_select.clone();
+            let admit = self.admit.clone();
             well.cursor_pointer()
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
@@ -671,6 +738,10 @@ impl RenderOnce for Seg {
                         _ => None,
                     };
                     if let Some(next) = next {
+                        if admit.as_ref().is_some_and(|admit| !admit(cx)) {
+                            cx.stop_propagation();
+                            return;
+                        }
                         key_press(&entity, window, cx);
                         if next != selected
                             && let Some(select) = &select

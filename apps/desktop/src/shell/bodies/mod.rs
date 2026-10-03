@@ -181,6 +181,45 @@ impl Ctx<'_> {
         std::rc::Rc::new(move |window, app| { if guard(app) { action(window, app); } })
     }
 
+    /// Setup controls require the exact painted visit AND the transient input
+    /// generation that exposed them. This predicate is idempotent so native
+    /// controls can check before focus on MouseDown and again before activation.
+    pub(crate) fn native_local_guard(
+        &self,
+        cx: &mut Context<Reader>,
+    ) -> Rc<dyn Fn(&mut gpui::App) -> bool> {
+        let shell = self.links.shell.clone();
+        let scope = shell
+            .upgrade()
+            .and_then(|shell| shell.read(cx).page_input_scope(cx));
+        let reader = cx.weak_entity();
+        let place = self.place_key;
+        let snapshot = self.links.snapshot(cx);
+        let route = snapshot.route().clone();
+        let overlay = snapshot.overlay();
+        let root = snapshot.key();
+        Rc::new(move |app| {
+            let Some(scope) = scope else { return false };
+            shell
+                .upgrade()
+                .is_some_and(|shell| shell.read(app).admits_page_input_scope(scope, app))
+                && reader.upgrade().is_some_and(|reader| {
+                    let reader = reader.read(app);
+                    reader.native_input_for(&route, overlay)
+                        && reader.admits_native_visit(
+                            place,
+                            &route,
+                            overlay,
+                            root,
+                            &super::reader::NativeActionLease::LocalUi,
+                            None,
+                            None,
+                            app,
+                        )
+                })
+        })
+    }
+
     pub(crate) fn native_dependency_guard(&self, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut Context<Reader>) -> std::rc::Rc<dyn Fn(&mut gpui::App) -> bool> {
         self.native_guard_with_inventory(None, Some(dependency), NativeActionKind::Resource, cx)
     }

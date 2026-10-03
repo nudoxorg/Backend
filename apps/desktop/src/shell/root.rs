@@ -50,6 +50,12 @@ use gpui::{
 /// 1000), so a card opened over the drawer still shows above it.
 const DRAWER_PRIORITY: usize = 100;
 
+/// A page control's lease on the Shell's current transient input owner.
+/// Cover and dismissal both advance the existing generation: an old listener
+/// cannot become live again just because its page reappears.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PageInputScope(u64);
+
 /// Exact return claim for a covered native input owner. The model's top
 /// overlay remains the authority; this stores only native focus and its visit.
 #[derive(Clone)]
@@ -1260,6 +1266,18 @@ impl Shell {
         !self.drawer_departing && !self.ask_presentation.blocks_background_input(self.ask_open)
     }
 
+    pub(crate) fn page_input_scope(&self, cx: &App) -> Option<PageInputScope> {
+        if self.page_input_allowed(cx) {
+            self.transient_generation.map(PageInputScope)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn admits_page_input_scope(&self, scope: PageInputScope, cx: &App) -> bool {
+        self.page_input_scope(cx) == Some(scope)
+    }
+
     fn page_input_allowed(&self, cx: &App) -> bool {
         self.background_input_allowed() && !self.ask_open && !self.shelf_over_open
             && !matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject))
@@ -1971,10 +1989,15 @@ impl Render for Shell {
                         .child(
                             div()
                                 .id("shelf-scrim")
+                                .occlude()
                                 .absolute()
                                 .inset_0()
                                 .bg(palette.veil.alpha(opened))
                                 .on_click(cx.listener(|shell, _, _, cx| {
+                                    // Consume the closing gesture while its hitbox still
+                                    // owns this frame; dismissal never grants the underlay
+                                    // another activation from this same MouseUp.
+                                    cx.stop_propagation();
                                     shell.advance_transient_generation();
                                     shell.shelf_over_open = false;
                                     cx.notify();

@@ -372,3 +372,164 @@ fn actual_conflicting_hint_letters_narrow_the_current_hint_owner(cx: &mut TestAp
         rig.keys("escape");
     }
 }
+
+fn native_radio_point(rig: &mut Rig, label: &str) -> gpui::Point<gpui::Pixels> {
+    for offset in [0.0, -350.0, -700.0, -1050.0, -1400.0, -1750.0, -2100.0] {
+        rig.shell.read_with(rig.cx, |shell, cx| {
+            shell.set_source_reader_scroll_offset(point(px(0.0), px(offset)), cx)
+        });
+        rig.repaint();
+        let found = rig.cx.update(|window, _| {
+            let tree: serde_json::Value =
+                serde_json::from_str(&window.debug_a11y_tree_json().expect("forced native AX"))
+                    .expect("AX JSON");
+            tree["nodes"]
+                .as_object()
+                .expect("nodes")
+                .values()
+                .find_map(|node| {
+                    if node["aria"]["role"].as_str() != Some("RadioButton")
+                        || node["aria"]["label"].as_str() != Some(label)
+                    {
+                        return None;
+                    }
+                    let b = &node["bounds"];
+                    let at = point(
+                        px((b["x"].as_f64()? + b["width"].as_f64()? / 2.0) as f32),
+                        px((b["y"].as_f64()? + b["height"].as_f64()? / 2.0) as f32),
+                    );
+                    window.bounds().contains(&at).then_some(at)
+                })
+        });
+        if let Some(at) = found {
+            return at;
+        }
+    }
+    panic!("native visible radio {label:?} missing");
+}
+
+#[gpui::test]
+fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &mut TestAppContext) {
+    use crate::model::MotionPreference;
+    let mut dimmed_full_gestures = 0;
+    for width in [500.0, 360.0] {
+        for percent in [100, 200] {
+            let mut rig = rig(cx, Some(page_route("RelationLabel")), width, 960.0);
+            enable(&mut rig);
+            rig.keys("cmd-,");
+            // Set the size through the actual mounted native option; no seeded
+            // Settings route or direct callback stands in for the gesture.
+            let size = native_radio_point(&mut rig, &format!("{percent}%"));
+            rig.cx.simulate_click(size, Modifiers::none());
+            rig.settle();
+            let full = native_radio_point(&mut rig, "Full");
+            let origin = overlay(&mut rig);
+            let route = rig.route();
+            let motion = |rig: &mut Rig| {
+                rig.graph
+                    .store
+                    .read_with(rig.cx, |store, _| store.snapshot().settings().motion)
+            };
+            assert_eq!(motion(&mut rig), MotionPreference::System);
+            rig.keys("cmd-\\");
+            let drawer = rig.shell.read_with(rig.cx, |shell, _| {
+                shell.frame().expect("painted drawer frame").drawer
+            });
+            let at = if full.x > drawer {
+                dimmed_full_gestures += 1;
+                full
+            } else {
+                point(px(width - 4.0), full.y)
+            };
+            rig.cx
+                .simulate_mouse_down(at, gpui::MouseButton::Left, Modifiers::none());
+            let covered_focus = rig.cx.update(|window, cx| window.focused(cx));
+            rig.draw();
+            let focused_role = rig.cx.update(|window, _| {
+                let tree: serde_json::Value = serde_json::from_str(
+                    &window.debug_a11y_tree_json().expect("forced covered AX"),
+                )
+                .expect("AX JSON");
+                let focused = tree["gpui_focus"].as_str().expect("native cover owner");
+                tree["nodes"][focused]["aria"]["role"]
+                    .as_str()
+                    .map(str::to_owned)
+            });
+            assert_ne!(
+                focused_role.as_deref(),
+                Some("RadioButton"),
+                "a dimmed native radio cannot take focus"
+            );
+            assert!(
+                rig.shell
+                    .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+            );
+            rig.cx
+                .simulate_mouse_up(at, gpui::MouseButton::Left, Modifiers::none());
+            rig.settle();
+            assert_eq!(
+                motion(&mut rig),
+                MotionPreference::System,
+                "the closing backdrop gesture must not select Full at {width}/{percent}"
+            );
+            assert!(
+                !rig.shell
+                    .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+            );
+            assert_eq!(overlay(&mut rig), origin);
+            assert_eq!(rig.route(), route);
+            assert!(
+                covered_focus.is_some(),
+                "the drawer kept a native dispatch owner"
+            );
+            rig.keys("cmd-\\");
+            rig.cx
+                .simulate_mouse_down(at, gpui::MouseButton::Left, Modifiers::none());
+            let inside = point(px(8.0), at.y);
+            rig.cx
+                .simulate_mouse_move(inside, Some(gpui::MouseButton::Left), Modifiers::none());
+            rig.cx
+                .simulate_mouse_up(inside, gpui::MouseButton::Left, Modifiers::none());
+            rig.settle();
+            assert!(
+                rig.shell
+                    .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true)),
+                "a drag off the backdrop is not a backdrop click"
+            );
+            assert_eq!(motion(&mut rig), MotionPreference::System);
+            rig.keys("escape");
+            assert_eq!(
+                overlay(&mut rig),
+                origin,
+                "Escape closes only the current drawer"
+            );
+            // A down from the uncovered page must not survive a complete cover
+            // and dismissal, even when the same keyed radio mounts again.
+            let full = native_radio_point(&mut rig, "Full");
+            rig.cx
+                .simulate_mouse_down(full, gpui::MouseButton::Left, Modifiers::none());
+            rig.keys("cmd-\\");
+            rig.keys("escape");
+            rig.cx
+                .simulate_mouse_up(full, gpui::MouseButton::Left, Modifiers::none());
+            rig.settle();
+            assert_eq!(
+                motion(&mut rig),
+                MotionPreference::System,
+                "an interrupted old down has no revived lease"
+            );
+            let full = native_radio_point(&mut rig, "Full");
+            rig.cx.simulate_click(full, Modifiers::none());
+            rig.settle();
+            assert_eq!(
+                motion(&mut rig),
+                MotionPreference::Full,
+                "a fresh uncovered gesture remains actionable"
+            );
+        }
+    }
+    assert!(
+        dimmed_full_gestures > 0,
+        "at least one gesture must hit the actual dimmed Full label outside the drawer"
+    );
+}

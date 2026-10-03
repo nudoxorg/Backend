@@ -39,7 +39,7 @@ pub(super) fn body(
         SettingsPage::Diagnostics => diagnostics(snapshot, ctx),
         SettingsPage::Connections => connections(snapshot, ctx),
         SettingsPage::Agents => agents(snapshot, ctx),
-        SettingsPage::Privacy => privacy(snapshot, ctx),
+        SettingsPage::Privacy => privacy(snapshot, ctx, cx),
         SettingsPage::Editor => editor(ctx),
         SettingsPage::Appearance => appearance(snapshot, ctx, window, cx),
     }
@@ -75,7 +75,7 @@ fn appearance(
         },
         &measure,
     )
-    .aria_label("Theme").disabled(!ctx.active)
+    .aria_label("Theme").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
     .on_select(move |index, _, cx| {
         let appearance = match index {
             0 => AppearancePreference::System,
@@ -94,7 +94,7 @@ fn appearance(
     );
     leaves.push(setting("Theme", theme.into_any_element(), ctx));
     let links = ctx.links.clone();
-    let contrast = facet::controls::seg("set-contrast", &measure).aria_label("Contrast").disabled(!ctx.active)
+    let contrast = facet::controls::seg("set-contrast", &measure).aria_label("Contrast").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
         .label("Normal")
         .label("High")
         .selected(usize::from(settings.contrast == ContrastPreference::High))
@@ -117,7 +117,7 @@ fn appearance(
         },
         &measure,
     )
-    .aria_label("Density").disabled(!ctx.active)
+    .aria_label("Density").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
     .on_select(move |index, _, cx| {
         let density = match index {
             0 => DensityPreference::Comfortable,
@@ -134,7 +134,7 @@ fn appearance(
         .position(|percent| *percent == current_percent)
         .unwrap_or(2);
     let links = ctx.links.clone();
-    let mut text_size = facet::controls::seg("set-text-size", &measure).aria_label("Text size").disabled(!ctx.active);
+    let mut text_size = facet::controls::seg("set-text-size", &measure).aria_label("Text size").disabled(!ctx.active).admit(ctx.native_local_guard(cx));
     for percent in ZoomPreference::LADDER {
         text_size = text_size.label(format!("{percent}%"));
     }
@@ -155,7 +155,7 @@ fn appearance(
     let text_note = ctx.say("Relative to the operating system’s text scale; remembered per display.");
     leaves.push(Leaf::new(quiet(text_note, &measure, palette)));
     let links = ctx.links.clone();
-    let motion = facet::controls::seg("set-motion", &measure).aria_label("Motion").disabled(!ctx.active)
+    let motion = facet::controls::seg("set-motion", &measure).aria_label("Motion").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
         .label("System")
         .label("Full")
         .label("Reduced")
@@ -771,7 +771,7 @@ fn editor(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves
 }
 
-fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
     let mut leaves = vec![title("Privacy & local data", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
@@ -781,7 +781,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(Leaf::new(quiet(mode_note, &measure, palette)));
 
     let links = ctx.links.clone();
-    let network = facet::controls::seg("set-privacy", &measure).aria_label("Network policy").disabled(!ctx.active)
+    let network = facet::controls::seg("set-privacy", &measure).aria_label("Network policy").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
         .label("Local only")
         .label("Registry metadata")
         .selected(usize::from(settings.privacy == PrivacyPreference::RegistryMetadata))
@@ -798,7 +798,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(setting("Network policy", network.into_any_element(), ctx));
 
     let links = ctx.links.clone();
-    let advisories = facet::controls::seg("set-advisories", &measure).aria_label("Advisory refresh").disabled(!ctx.active)
+    let advisories = facet::controls::seg("set-advisories", &measure).aria_label("Advisory refresh").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
         .label("Refresh feeds")
         .label("Pause feeds")
         .selected(usize::from(!settings.advisories))
@@ -812,7 +812,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     ));
 
     let links = ctx.links.clone();
-    let cache = facet::controls::seg("set-registry-cache", &measure).aria_label("Registry result cache").disabled(!ctx.active)
+    let cache = facet::controls::seg("set-registry-cache", &measure).aria_label("Registry result cache").disabled(!ctx.active).admit(ctx.native_local_guard(cx))
         .label("Reuse results")
         .label("Always refresh")
         .selected(usize::from(!settings.cache_enabled))
