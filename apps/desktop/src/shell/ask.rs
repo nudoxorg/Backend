@@ -1298,9 +1298,9 @@ mod tests {
     }
 
     /// Dead end #14: an Ask row with no place does not move the page on
-    /// ⏎, and the Notice says why instead of doing nothing silently.
+    /// ⏎, and the active query says why while preserving its draft.
     #[gpui::test]
-    fn a_row_with_no_place_speaks_through_the_notice_on_enter(cx: &mut TestAppContext) {
+    fn a_row_with_no_place_keeps_its_draft_and_speaks_inside_ask_on_enter(cx: &mut TestAppContext) {
         let pool = ReadPool::start(2, |_| NoPlaceSearch).expect("pool");
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
         rig.keys("cmd-k");
@@ -1326,12 +1326,15 @@ mod tests {
         let mystery = ledger.texts.iter().find(|text| text.content == "Mystery").unwrap_or_else(|| panic!("the row is painted: {:?}", ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>()));
         assert_eq!(mystery.region.as_deref(), Some("ask"), "Ask's row is in Ask's region");
         let route_before = rig.route();
-        rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
+        rig.keys("enter");
         assert_eq!(rig.route(), route_before, "a row with no place does not move the page");
         let (ask_open, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
-        assert!(!ask_open, "Ask closes so the Notice (a page-foot fixture) is visible");
-        let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
-        assert_eq!(message.as_deref(), Some("Mystery has no page yet"));
+        assert!(ask_open, "a refused destination preserves the active query");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+        rig.repaint();
+        let refused = rig.cx.update(|_, cx| facet::probe::take(cx));
+        assert!(refused.texts.iter().any(|text| text.region.as_deref() == Some("ask")
+            && text.content == "Mystery has no page yet"), "the refusal is actually painted in the retained query");
     }
 
     struct FailedSearch;
