@@ -41,7 +41,9 @@ let
             ${workspaceRoot + "/frontends/python/src/legacy/checker.rs"} \
             ${workspaceRoot + "/frontends/csharp/src/legacy/oracle.rs"} \
             ${workspaceRoot + "/tests/fleet/src/lib.rs"} \
-            ${workspaceRoot + "/tests/fleet/run-fleet.sh"}
+            ${workspaceRoot + "/tests/fleet/run-fleet.sh"} \
+            ${workspaceRoot + "/crates/compile/src/supervisor.rs"} \
+            ${workspaceRoot + "/crates/compile/src/tests.rs"}
           mkdir -p "$out/share"
           printf '%s\n' validated > "$out/share/local-host-runtime-contract"
         ''

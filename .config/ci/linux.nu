@@ -123,7 +123,7 @@ def main [
     #
     # The owner's Rust authority also needs a Cargo home, which the dev shell
     # cannot name because it is per-user.
-    let cargo_home = ($env.CARGO_HOME? | default ($nu.home-path | path join ".cargo"))
+    let cargo_home = ($env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo"))
     let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"}
         | merge (if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} })
     let tests = (with-env $test_env {
