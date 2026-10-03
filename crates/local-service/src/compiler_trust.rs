@@ -335,7 +335,7 @@ impl TrustedCompilerWorkerGrant {
         mismatches
     }
 
-    fn authorizes(&self, peer: EndpointId, scope: &CompilerTrustScope) -> bool {
+    pub(crate) fn authorizes(&self, peer: EndpointId, scope: &CompilerTrustScope) -> bool {
         self.peer == peer && self.scope_mismatch_fields(scope).is_empty()
     }
 }
@@ -385,6 +385,18 @@ impl TrustedCompilerWorkerPolicy {
     #[must_use]
     pub fn grants(&self) -> &[TrustedCompilerWorkerGrant] {
         &self.grants
+    }
+
+    /// Iterates only grant rows that independently authorize the complete scope.
+    /// Unlike `authorizes_scope`, this preserves row identity for callers that perform work per
+    /// persisted grant instead of merely asking whether any grant authorizes a peer.
+    pub(crate) fn grants_authorizing_scope(
+        &self,
+        scope: &CompilerTrustScope,
+    ) -> impl Iterator<Item = &TrustedCompilerWorkerGrant> {
+        self.grants
+            .iter()
+            .filter(move |grant| grant.authorizes(grant.peer, scope))
     }
 
     /// Adds one grant. A peer cannot be silently rebound to a different
@@ -908,6 +920,26 @@ mod tests {
             assert!(!grant.authorizes(peer(7), &candidate));
         }
         assert!(!grant.authorizes(peer(8), &baseline));
+    }
+
+    #[test]
+    fn exact_grant_row_filter_excludes_same_peer_stale_scope_once() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_221);
+        let worker = peer(7);
+        let mut stale = grant(worker, address);
+        stale.recipe = [9; 32];
+        let exact = grant(worker, address);
+        let mut policy = TrustedCompilerWorkerPolicy::default();
+        policy.add(stale).expect("add stale same-peer scope");
+        policy
+            .add(exact.clone())
+            .expect("add exact same-peer scope");
+
+        let selected = policy
+            .grants_authorizing_scope(&scope())
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected, [&exact]);
     }
 
     #[test]

@@ -120,6 +120,185 @@ const LOCAL_COST_PRIOR_MILLIS_PER_ARTIFACT: u64 = 5_000;
 type PendingCostProbeKey = ([u8; 16], [u8; 16], u64, [u8; 32]);
 type PendingCostProbeMap = Arc<Mutex<HashMap<PendingCostProbeKey, PendingRemoteCostProbe>>>;
 
+const MAX_PROBE_FAILURE_DETAIL_BYTES: usize = 192;
+const MAX_PROBE_FAILURE_DIAGNOSTICS: usize = MAX_TRUSTED_PROBE_PEERS + 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeFailureClass {
+    Timeout,
+    Iroh,
+    Protocol,
+    Refusal,
+    Io,
+    OtherTransport,
+}
+
+impl ProbeFailureClass {
+    const ALL: [Self; 6] = [
+        Self::Timeout,
+        Self::Iroh,
+        Self::Protocol,
+        Self::Refusal,
+        Self::Io,
+        Self::OtherTransport,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Timeout => 0,
+            Self::Iroh => 1,
+            Self::Protocol => 2,
+            Self::Refusal => 3,
+            Self::Io => 4,
+            Self::OtherTransport => 5,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Iroh => "iroh",
+            Self::Protocol => "protocol",
+            Self::Refusal => "refusal",
+            Self::Io => "io",
+            Self::OtherTransport => "other_transport",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProbeFailureDiagnostic {
+    class: ProbeFailureClass,
+    detail: Option<String>,
+}
+
+impl ProbeFailureDiagnostic {
+    fn new(class: ProbeFailureClass, detail: Option<&str>) -> Self {
+        Self {
+            class,
+            detail: detail.and_then(bounded_probe_failure_detail),
+        }
+    }
+
+    fn from_connect_error(error: TransportError) -> Self {
+        let (class, detail) = match error {
+            TransportError::Io(error) => {
+                (ProbeFailureClass::Io, Some(format!("{:?}", error.kind())))
+            }
+            TransportError::Iroh(detail) => (ProbeFailureClass::Iroh, Some(detail)),
+            TransportError::Rejected(code) => {
+                (ProbeFailureClass::Refusal, Some(format!("{code:?}")))
+            }
+            TransportError::ControlRejected(code) => {
+                (ProbeFailureClass::Refusal, Some(format!("{code:?}")))
+            }
+            TransportError::Frame(_)
+            | TransportError::InvalidScope
+            | TransportError::ObjectTooLarge
+            | TransportError::BlobHashMismatch
+            | TransportError::CheckpointInvalid
+            | TransportError::CheckpointScopeMismatch
+            | TransportError::IncompleteTransfer
+            | TransportError::FileLengthMismatch => (ProbeFailureClass::Protocol, None),
+            TransportError::ObjectUnavailable => (ProbeFailureClass::Refusal, None),
+            TransportError::Bao(_) | TransportError::FileLock | TransportError::Store(_) => {
+                (ProbeFailureClass::OtherTransport, None)
+            }
+        };
+        Self {
+            class,
+            detail: detail.and_then(|detail| bounded_probe_failure_detail(&detail)),
+        }
+    }
+}
+
+fn bounded_probe_failure_detail(detail: &str) -> Option<String> {
+    let mut bounded = String::with_capacity(detail.len().min(MAX_PROBE_FAILURE_DETAIL_BYTES));
+    for character in detail.chars() {
+        // The value is log-only. Remove control and bidi formatting characters, and quote/backslash
+        // delimiters, so a peer or platform error cannot create another log line or field.
+        let character = if character.is_control()
+            || matches!(
+                character,
+                '\\'
+                    | '"'
+                    | '\u{061c}'
+                    | '\u{200e}'
+                    | '\u{200f}'
+                    | '\u{2028}'..='\u{202e}'
+                    | '\u{2066}'..='\u{2069}'
+            ) {
+            ' '
+        } else {
+            character
+        };
+        if bounded.len().saturating_add(character.len_utf8()) > MAX_PROBE_FAILURE_DETAIL_BYTES {
+            break;
+        }
+        bounded.push(character);
+    }
+    let bounded = bounded.trim();
+    (!bounded.is_empty()).then(|| bounded.to_owned())
+}
+
+#[derive(Default)]
+struct ProbeFailureSummary {
+    failures: usize,
+    by_class: [usize; 6],
+    first: Option<ProbeFailureDiagnostic>,
+    truncated: bool,
+}
+
+impl ProbeFailureSummary {
+    fn record(&mut self, diagnostic: ProbeFailureDiagnostic) {
+        if self.failures >= MAX_PROBE_FAILURE_DIAGNOSTICS {
+            self.truncated = true;
+            return;
+        }
+        self.failures = self
+            .failures
+            .saturating_add(1)
+            .min(MAX_PROBE_FAILURE_DIAGNOSTICS);
+        let count = &mut self.by_class[diagnostic.class.index()];
+        *count = count.saturating_add(1).min(MAX_PROBE_FAILURE_DIAGNOSTICS);
+        if self.first.is_none() {
+            self.first = Some(diagnostic);
+        }
+    }
+
+    fn record_timeout(&mut self) {
+        self.record(ProbeFailureDiagnostic::new(
+            ProbeFailureClass::Timeout,
+            Some("probe deadline elapsed"),
+        ));
+    }
+
+    fn render(&self, exact_grants: usize, candidates: usize) -> String {
+        let mut output = format!(
+            "locald compiler probe outcome summary: exact_grants={exact_grants} candidates={candidates} failures={} truncated={}",
+            self.failures.min(MAX_PROBE_FAILURE_DIAGNOSTICS),
+            u8::from(self.truncated),
+        );
+        for class in ProbeFailureClass::ALL {
+            use std::fmt::Write as _;
+            let _ = write!(
+                output,
+                " {}={}",
+                class.label(),
+                self.by_class[class.index()].min(MAX_PROBE_FAILURE_DIAGNOSTICS),
+            );
+        }
+        if let Some(first) = &self.first {
+            use std::fmt::Write as _;
+            let _ = write!(output, " first_class={}", first.class.label());
+            if let Some(detail) = &first.detail {
+                let _ = write!(output, " first_detail=\"{detail}\"");
+            }
+        }
+        output
+    }
+}
+
 #[path = "cluster_dispatch/no_result_retirement.rs"]
 mod no_result_retirement;
 use no_result_retirement::{NoResultRetirementJournal, RetirementTarget};
@@ -153,6 +332,8 @@ pub(crate) enum ClusterDispatchError {
     NotConfigured,
     /// A peer answered the wrong exact work scope or failed live probe admission.
     ProbeRejected,
+    /// Opening the direct probe connection failed with a bounded log-only diagnostic.
+    ProbeConnectFailure(ProbeFailureDiagnostic),
     /// No currently trusted and reachable compiler can admit this exact work.
     NoEligibleWorker,
     /// The exact scheduler assignment was cancelled, stale, or exceeded its fence.
@@ -198,6 +379,11 @@ impl fmt::Display for ClusterDispatchError {
             Self::ProbeRejected => {
                 formatter.write_str("compiler peer probe failed exact admission")
             }
+            Self::ProbeConnectFailure(diagnostic) => write!(
+                formatter,
+                "compiler probe connection failed ({})",
+                diagnostic.class.label(),
+            ),
             Self::NoEligibleWorker => {
                 formatter.write_str("no live trusted compiler worker can admit this work")
             }
@@ -3100,9 +3286,7 @@ impl OwnerCompilerClusterRuntime {
             manifest.target_platform(),
         );
         let applicable_grants = trust
-            .grants()
-            .iter()
-            .filter(|grant| trust.authorizes_scope(grant.peer(), &manifest_scope))
+            .grants_authorizing_scope(&manifest_scope)
             .take(MAX_TRUSTED_PROBE_PEERS + 1)
             .collect::<Vec<_>>();
         if applicable_grants.is_empty() {
@@ -3114,6 +3298,7 @@ impl OwnerCompilerClusterRuntime {
         if applicable_grants.len() > MAX_TRUSTED_PROBE_PEERS {
             return Err(ClusterDispatchError::NoEligibleWorker);
         }
+        let exact_grant_count = applicable_grants.len();
         let mut probes = FuturesUnordered::new();
         for grant in applicable_grants {
             probes.push(self.probe_trusted_worker(
@@ -3128,12 +3313,16 @@ impl OwnerCompilerClusterRuntime {
                 deadline_unix_ms,
             ));
         }
+        let mut failure_summary = ProbeFailureSummary::default();
         let outcomes =
             match collect_probe_outcomes(probes, deadline_unix_ms, PROBE_CANDIDATE_SETTLE_WINDOW)
                 .await
             {
                 Ok(outcomes) => outcomes,
-                Err(ClusterDispatchError::DeadlineExpired) => Vec::new(),
+                Err(ClusterDispatchError::DeadlineExpired) => {
+                    failure_summary.record_timeout();
+                    Vec::new()
+                }
                 Err(error) => return Err(error),
             };
         let mut candidates = Vec::new();
@@ -3141,10 +3330,23 @@ impl OwnerCompilerClusterRuntime {
         for outcome in outcomes {
             match outcome {
                 Ok(Some(candidate)) => candidates.push(candidate),
-                Ok(None)
-                | Err(ClusterDispatchError::ProbeRejected)
-                | Err(ClusterDispatchError::Transport(_))
-                | Err(ClusterDispatchError::DeadlineExpired) => {}
+                Ok(None) => {}
+                Err(ClusterDispatchError::ProbeConnectFailure(diagnostic)) => {
+                    failure_summary.record(diagnostic);
+                }
+                Err(ClusterDispatchError::ProbeRejected) => {
+                    failure_summary.record(ProbeFailureDiagnostic::new(
+                        ProbeFailureClass::Protocol,
+                        Some("probe admission rejected"),
+                    ))
+                }
+                Err(ClusterDispatchError::Transport(_)) => {
+                    failure_summary.record(ProbeFailureDiagnostic::new(
+                        ProbeFailureClass::OtherTransport,
+                        Some("probe transport operation failed"),
+                    ))
+                }
+                Err(ClusterDispatchError::DeadlineExpired) => failure_summary.record_timeout(),
                 Err(error) => {
                     first_failure.get_or_insert(error);
                 }
@@ -3155,6 +3357,10 @@ impl OwnerCompilerClusterRuntime {
         // route from another peer. Preserve the first substantive error only when no route
         // survived the concurrent probe batch.
         if candidates.is_empty() {
+            eprintln!(
+                "{}",
+                failure_summary.render(exact_grant_count, candidates.len()),
+            );
             if let Some(error) = first_failure {
                 return Err(error);
             }
@@ -3497,8 +3703,7 @@ impl OwnerCompilerClusterRuntime {
     {
         let manifest = capture.manifest();
         let worker_id = grant.peer();
-        if !self.trusted_workers()?.authorizes(
-            worker_id,
+        let current_grant_scope = CompilerTrustScope::new(
             namespace_id,
             manifest.recipe(),
             manifest.profile(),
@@ -3506,7 +3711,13 @@ impl OwnerCompilerClusterRuntime {
             manifest.toolchain(),
             manifest.environment(),
             manifest.target_platform(),
-        ) {
+        );
+        let current_policy = self.trusted_workers()?;
+        if !current_policy
+            .grants()
+            .iter()
+            .any(|current| current == grant && current.authorizes(worker_id, &current_grant_scope))
+        {
             return Ok(None);
         }
         let peer = CompilerPeerId::new(*worker_id.as_bytes())
@@ -3573,8 +3784,17 @@ impl OwnerCompilerClusterRuntime {
             connect_probe(&self.endpoint, worker_address, worker_id, scope),
         )
         .await
-        .map_err(|_| ClusterDispatchError::DeadlineExpired)?
-        .map_err(|error| ClusterDispatchError::ProbeRejected)?;
+        .map_err(|_| {
+            ClusterDispatchError::ProbeConnectFailure(ProbeFailureDiagnostic::new(
+                ProbeFailureClass::Timeout,
+                Some("direct probe connection timed out"),
+            ))
+        })?
+        .map_err(|error| {
+            ClusterDispatchError::ProbeConnectFailure(ProbeFailureDiagnostic::from_connect_error(
+                error,
+            ))
+        })?;
         if channel.peer() != worker_id || channel.scope() != Some(scope) {
             return Err(ClusterDispatchError::ProbeRejected);
         }
@@ -5968,6 +6188,125 @@ mod route_cost_tests {
         VerifiedCompilerInput, VerifiedCompilerNodeCapacity, VerifierAcceptedFullWorkspaceInput,
     };
     use backend_version::{CompilationTargetDomain, CompileRecipeDomain, ContentId, GenerationId};
+
+    #[test]
+    fn probe_connect_diagnostic_classifies_every_transport_error_without_raw_payloads() {
+        use backend_engine::cluster_transport::{ControlRejectCode, RejectCode};
+
+        let cases = [
+            (
+                TransportError::Io(io::Error::other("private io text")),
+                ProbeFailureClass::Io,
+            ),
+            (
+                TransportError::Iroh("connection refused".to_owned()),
+                ProbeFailureClass::Iroh,
+            ),
+            (
+                TransportError::Rejected(RejectCode::InvalidCapability),
+                ProbeFailureClass::Refusal,
+            ),
+            (
+                TransportError::Frame("private frame bytes".to_owned()),
+                ProbeFailureClass::Protocol,
+            ),
+            (
+                TransportError::Bao("private bao detail".to_owned()),
+                ProbeFailureClass::OtherTransport,
+            ),
+            (TransportError::InvalidScope, ProbeFailureClass::Protocol),
+            (TransportError::ObjectTooLarge, ProbeFailureClass::Protocol),
+            (
+                TransportError::BlobHashMismatch,
+                ProbeFailureClass::Protocol,
+            ),
+            (
+                TransportError::CheckpointInvalid,
+                ProbeFailureClass::Protocol,
+            ),
+            (
+                TransportError::CheckpointScopeMismatch,
+                ProbeFailureClass::Protocol,
+            ),
+            (
+                TransportError::IncompleteTransfer,
+                ProbeFailureClass::Protocol,
+            ),
+            (TransportError::FileLock, ProbeFailureClass::OtherTransport),
+            (
+                TransportError::FileLengthMismatch,
+                ProbeFailureClass::Protocol,
+            ),
+            (
+                TransportError::ObjectUnavailable,
+                ProbeFailureClass::Refusal,
+            ),
+            (
+                TransportError::Store("private store detail".to_owned()),
+                ProbeFailureClass::OtherTransport,
+            ),
+            (
+                TransportError::ControlRejected(ControlRejectCode::PeerNotAllowed),
+                ProbeFailureClass::Refusal,
+            ),
+        ];
+
+        for (error, expected_class) in cases {
+            let diagnostic = ProbeFailureDiagnostic::from_connect_error(error);
+            assert_eq!(diagnostic.class, expected_class);
+            assert!(
+                diagnostic
+                    .detail
+                    .as_deref()
+                    .is_none_or(|detail| detail.len() <= MAX_PROBE_FAILURE_DETAIL_BYTES)
+            );
+        }
+
+        let iroh = ProbeFailureDiagnostic::from_connect_error(TransportError::Iroh(
+            "connection refused".to_owned(),
+        ));
+        assert_eq!(iroh.class, ProbeFailureClass::Iroh);
+        assert_eq!(iroh.detail.as_deref(), Some("connection refused"));
+
+        let frame = ProbeFailureDiagnostic::from_connect_error(TransportError::Frame(
+            "secret frame payload".to_owned(),
+        ));
+        assert_eq!(frame.detail, None);
+        let store = ProbeFailureDiagnostic::from_connect_error(TransportError::Store(
+            "secret store path".to_owned(),
+        ));
+        assert_eq!(store.detail, None);
+    }
+
+    #[test]
+    fn probe_failure_details_and_summary_are_bounded_and_log_safe() {
+        let detail = format!("\"line\n\\{}", "é".repeat(200));
+        let diagnostic = ProbeFailureDiagnostic::new(ProbeFailureClass::Iroh, Some(&detail));
+        let stored = diagnostic.detail.expect("bounded Iroh detail");
+        assert!(stored.len() <= MAX_PROBE_FAILURE_DETAIL_BYTES);
+        assert!(!stored.chars().any(char::is_control));
+        assert!(
+            !stored
+                .chars()
+                .any(|character| matches!(character, '"' | '\\'))
+        );
+
+        let mut summary = ProbeFailureSummary::default();
+        summary.record(ProbeFailureDiagnostic::new(
+            ProbeFailureClass::Iroh,
+            Some("first failure"),
+        ));
+        for _ in 1..=MAX_PROBE_FAILURE_DIAGNOSTICS {
+            summary.record_timeout();
+        }
+        let rendered = summary.render(64, 0);
+        assert!(summary.truncated);
+        assert_eq!(summary.failures, MAX_PROBE_FAILURE_DIAGNOSTICS);
+        assert!(rendered.contains("iroh=1"));
+        assert!(rendered.contains("timeout=64"));
+        assert!(rendered.contains("first_detail=\"first failure\""));
+        assert!(!rendered.contains("private"));
+    }
 
     struct AcceptCapture;
 
