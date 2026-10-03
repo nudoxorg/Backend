@@ -1109,8 +1109,20 @@ fn mounted_package_licence_uses_its_reader_native_focus_for_return_and_space(
     assert_eq!(tree["accesskit_focus"].as_str(), Some(node_id.as_str()),
         "the exact mounted button, not a Shell glow or window fallback, owns focus");
 
-    rig.native_press("enter");
+    let nav = rig.cx.update(|_, cx| super::folio::licence_choice_probe(cx))
+        .expect("mounted licence controller");
+    let enter = gpui::Keystroke::parse("enter").expect("native activation key");
+    rig.cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: enter.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    assert_eq!(rig.cx.update(|_, cx| nav.choice(cx)), facet::folio::crest::DisclosureChoice::Auto,
+        "native KeyDown alone must not activate the stamp");
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke: enter.clone() });
     assert!(!native_licence_expanded(&mut rig), "Return closes the focused disclosure once");
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+    assert!(!native_licence_expanded(&mut rig), "an unmatched second KeyUp must not activate again");
     assert!(!has(&painted(&mut rig), "licence-line"),
         "the closed native state also removes the painted detail");
     rig.native_press("space");
@@ -1125,48 +1137,67 @@ fn covered_package_licence_cannot_complete_a_native_press_from_the_old_visit(
 ) {
     use crate::navigation::{Overlay, SettingsPage};
 
-    let mut rig = rig(cx, None, 1440.0, 900.0);
-    read_and_open(&mut rig);
-    let shell = rig.shell.clone();
-    rig.cx.update(|window, cx| {
-        window.replace_root(cx, |window, cx| {
-            gpui_component::Root::new(shell, window, cx).bordered(false)
+    fn after_cover(cx: &mut TestAppContext, release_while_covered: bool) -> bool {
+        let mut rig = rig(cx, None, 1440.0, 900.0);
+        read_and_open(&mut rig);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| {
+                gpui_component::Root::new(shell, window, cx).bordered(false)
+            });
+            window.set_a11y_forced(true);
         });
-        window.set_a11y_forced(true);
-    });
-    rig.settle();
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-    let mut reached = false;
-    for _ in 0..64 {
-        rig.keys("tab");
-        reached = rig.cx.update(|window, _| {
-            targets.native_focused(window).as_deref() == Some("pkg-licence")
-        });
-        if reached { break; }
-    }
-    assert!(reached, "native Tab reaches the Licence control before the interrupted press");
-    assert!(native_licence_expanded(&mut rig));
-    rig.native_press("enter");
-    assert!(!native_licence_expanded(&mut rig), "the explicit closed choice survives focus loss");
+        rig.settle();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let mut reached = false;
+        for _ in 0..64 {
+            rig.keys("tab");
+            reached = rig.cx.update(|window, _| {
+                targets.native_focused(window).as_deref() == Some("pkg-licence")
+            });
+            if reached { break; }
+        }
+        assert!(reached, "native Tab reaches Licence before the interrupted press");
+        assert!(native_licence_expanded(&mut rig));
+        rig.native_press("enter");
+        assert!(!native_licence_expanded(&mut rig), "an explicit choice closed Licence");
+        let old_nav = rig.cx.update(|_, cx| super::folio::licence_choice_probe(cx))
+            .expect("mounted package disclosure controller");
+        assert_eq!(rig.cx.update(|_, cx| old_nav.choice(cx)),
+            facet::folio::crest::DisclosureChoice::Closed);
 
-    let keystroke = gpui::Keystroke::parse("enter").expect("native activation key");
-    rig.cx.simulate_event(gpui::KeyDownEvent {
-        keystroke: keystroke.clone(),
-        is_held: false,
-        prefer_character_input: false,
-    });
-    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
-        Some(Overlay::Settings(SettingsPage::Appearance)));
-    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke });
-    rig.go(Intent::DismissOverlay);
-    rig.frame(500);
-    rig.cx.update(|window, cx| {
-        assert!(targets.focus_native("pkg-licence", window, cx));
-        targets.focus("pkg-licence");
-    });
-    assert!(!native_licence_expanded(&mut rig),
-        "a covered key release must not flip the old Licence choice open");
+        let keystroke = gpui::Keystroke::parse("enter").expect("native activation key");
+        rig.cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        let focus_after_down = rig.cx.update(|window, _| targets.native_focused(window));
+        assert_eq!(focus_after_down.as_deref(), Some("pkg-licence"));
+        rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::Settings(SettingsPage::Appearance)));
+        let focus_under_settings = rig.cx.update(|window, _| targets.native_focused(window));
+        assert!(focus_under_settings.is_none(), "Settings retired the old native focus");
+        if release_while_covered {
+            rig.cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        }
+        assert_eq!(rig.cx.update(|_, cx| old_nav.choice(cx)),
+            facet::folio::crest::DisclosureChoice::Closed,
+            "a covered KeyUp must not mutate the old visit's explicit choice");
+        rig.go(Intent::DismissOverlay);
+        rig.frame(500);
+        rig.cx.update(|window, cx| {
+            assert!(targets.focus_native("pkg-licence", window, cx));
+            targets.focus("pkg-licence");
+        });
+        native_licence_expanded(&mut rig)
+    }
+
+    let without_release = after_cover(cx, false);
+    let covered_release = after_cover(cx, true);
+    assert_eq!(covered_release, without_release,
+        "a covered KeyUp must not change the remounted control's native state");
 }
 
 #[gpui::test]
@@ -1183,6 +1214,16 @@ fn licence_native_shell_native_uses_one_resolved_disclosure(cx: &mut TestAppCont
     // Reader target so `j` proves the forward shell path back to the stamp.
     walk_back_to(&mut rig, "pkg-module-glyph", 64);
     walk_to(&mut rig, "pkg-licence", 6);
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
+        Some("pkg-licence"), "the walk first reached the real mounted native control");
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| shell.update(cx, |shell, cx|
+        shell.take_zone(crate::shell::focus::Zone::Reader, window, cx)));
+    assert_eq!(targets.focused().as_deref(), Some("pkg-licence"),
+        "the Shell hand must retain the same logical Licence target");
+    let native_before_enter = rig.cx.update(|window, _| targets.native_focused(window));
+    assert!(native_before_enter.is_none(), "the Shell hand, not the native stamp, owns this Enter");
     rig.keys("enter");
     assert!(native_licence_expanded(&mut rig), "shell Target must reopen the same Stamp state");
     click(&mut rig, at);
