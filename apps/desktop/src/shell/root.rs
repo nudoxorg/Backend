@@ -12,6 +12,7 @@ use super::bodies::graph::OpenView;
 use super::facet_sync::{Surroundings, facet_for};
 use super::system;
 use facet::overlay::float;
+use gpui_component::FocusTrapElement as _;
 use super::focus::{Target, Zone};
 use super::frame::{Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Step};
@@ -49,6 +50,20 @@ use gpui::{
 /// 1000), so a card opened over the drawer still shows above it.
 const DRAWER_PRIORITY: usize = 100;
 
+/// Exact return claim for a covered native input owner. The model's top
+/// overlay remains the authority; this stores only native focus and its visit.
+#[derive(Clone)]
+pub(crate) struct TransientFocusReturn {
+    focus: Option<FocusHandle>,
+    zone: Zone,
+    route: Route,
+    overlay: Option<Overlay>,
+    root: crate::core::VersionedRoot,
+    attachment: Option<crate::runtime::store::OwnerAttachment>,
+    drawer: bool,
+    generation: Option<u64>,
+}
+
 /// How many times each region rendered (isolation tests, the harness).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RenderCounts {
@@ -73,6 +88,7 @@ pub struct Shell {
     links: Links,
     graph: UiEntityGraph,
     focus: FocusHandle,
+    drawer_focus: FocusHandle,
     titlebar: Entity<Titlebar>,
     shelf: Entity<Shelf>,
     /// The full shelf opened over the reader on a narrow window.
@@ -89,6 +105,11 @@ pub struct Shell {
     /// The card the keyboard stands on in the open hand (shown order).
     hand_at: usize,
     shelf_over_open: bool,
+    drawer_return: Option<TransientFocusReturn>,
+    drawer_departing: bool,
+    ask_return: Option<TransientFocusReturn>,
+    pending_transient_return: Option<TransientFocusReturn>,
+    transient_generation: Option<u64>,
     /// The shelf's width the person has dragged it to, at 100 % text.
     shelf_width: Pixels,
     /// The shell's layout modes (the shelf beside the page, a spine, or a
@@ -210,6 +231,7 @@ impl Shell {
                 store: graph.store.clone(),
             },
             focus,
+            drawer_focus: cx.focus_handle(),
             titlebar,
             shelf,
             shelf_over,
@@ -223,6 +245,11 @@ impl Shell {
             hand_open: false,
             hand_at: 0,
             shelf_over_open: false,
+            drawer_return: None,
+            drawer_departing: false,
+            ask_return: None,
+            pending_transient_return: None,
+            transient_generation: Some(0),
             shelf_width: geo::SHELF,
             modes: Modes::new(),
             zone: Zone::Reader,
@@ -387,6 +414,7 @@ impl Shell {
     pub fn focus_state(&self, cx: &App) -> (Zone, Option<SharedString>) {
         let focused = match self.zone {
             Zone::Titlebar => self.titlebar.read(cx).targets.focused(),
+            Zone::Shelf if self.shelf_over_open => self.shelf_over.read(cx).targets.focused(),
             Zone::Shelf => self.shelf.read(cx).targets.focused(),
             Zone::Reader => self.reader.read(cx).targets.focused(),
             Zone::Pins => self.pins.read(cx).targets.focused(),
@@ -414,6 +442,11 @@ impl Shell {
     #[must_use]
     pub fn transients(&self) -> (bool, bool, bool) {
         (self.ask_open, self.peeking.is_some(), self.hints.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hint_codes(&self) -> Vec<String> {
+        self.hints.as_ref().map_or_else(Vec::new, |hints| hints.visible().map(|(hint, _)| hint.code.clone()).collect())
     }
 
     /// What the shell's own chrome is doing, in words: the keyboard's zone
@@ -525,6 +558,7 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => {
+                self.advance_transient_generation();
                 if self.links.snapshot(cx).overlay().is_some() {
                     self.reader
                         .update(cx, |reader, _| reader.cancel_native_return());
@@ -532,7 +566,16 @@ impl Shell {
                 self.sync_overlay(window, cx);
             }
             StoreEvent::Snapshot(Branch::Route) => {
+                self.advance_transient_generation();
+                self.pending_transient_return = None;
                 let snapshot = self.links.snapshot(cx);
+                // Ask preview routes are covered visits, not committed
+                // navigation. Keep the origin receipt until the preview
+                // reducer restores it; committed departure revokes it.
+                if snapshot.session().preview.is_none() {
+                    if self.drawer_return.as_ref().is_some_and(|saved| &saved.route != snapshot.route()) { self.drawer_return = None; }
+                    if self.ask_return.as_ref().is_some_and(|saved| &saved.route != snapshot.route()) { self.ask_return = None; }
+                }
                 let route = snapshot.route().clone();
                 // A preview changes the Reader while Ask retains keyboard ownership.
                 if snapshot.overlay() != Some(Overlay::CommandPalette)
@@ -581,22 +624,118 @@ impl Shell {
     }
 
     fn sync_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        super::onboard::sync(&self.links, window, cx);
-        let wants_ask = self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette);
-        if wants_ask == self.ask_open {
-            return;
+        let snapshot = self.links.snapshot(cx);
+        let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
+        let opening = wants_ask && !self.ask_open;
+        let fresh_ask = opening && self.ask_return.is_none();
+        if wants_ask != self.ask_open {
+            self.ask_open = wants_ask;
+            self.ask_results_mounted = false;
+            if wants_ask {
+                if self.ask_return.is_none() {
+                    self.ask_return = Some(self.capture_transient_return(snapshot.session().covered_overlay(), window, cx));
+                }
+                let focused = window.focused(cx);
+                self.reader.update(cx, |reader, cx| reader.begin_find_focus_return(focused, cx));
+            } else {
+                // Retire the old Ask owner before a newly opened dialog
+                // captures focus; never overwrite that dialog's focus later.
+                self.focus.focus(window, cx);
+            }
         }
-        self.ask_open = wants_ask;
-        self.ask_results_mounted = false;
+        let before = self.capture_transient_return(snapshot.session().covered_overlay(), window, cx);
+        let dialog_return = super::onboard::sync(&self.links, before, window, cx);
         if wants_ask {
-            let focused = window.focused(cx);
-            self.reader.update(cx, |reader, cx| reader.begin_find_focus_return(focused, cx));
-            self.ask.update(cx, |ask, cx| ask.opened(window, cx));
-        } else {
-            self.focus.focus(window, cx);
+            if fresh_ask {
+                self.ask.update(cx, |ask, cx| ask.opened(window, cx));
+            } else if opening {
+                let input = self.ask.read(cx).input().clone();
+                input.update(cx, |input, cx| input.focus(window, cx));
+            }
+        } else if !snapshot.session().overlay_is_covered(Overlay::CommandPalette) {
+            if let Some(saved) = self.ask_return.take() {
+                if saved.overlay == snapshot.overlay() { self.queue_transient_return(saved, window, cx); }
+            }
         }
+        if let Some(saved) = dialog_return { self.queue_transient_return(saved, window, cx); }
         cx.notify();
     }
+
+    pub(crate) fn capture_transient_return(&self, overlay: Option<Overlay>, window: &Window, cx: &App) -> TransientFocusReturn {
+        let snapshot = self.links.snapshot(cx);
+        TransientFocusReturn { focus: window.focused(cx), zone: self.zone,
+            route: snapshot.route().clone(), overlay, root: snapshot.key(),
+            attachment: self.links.store.read(cx).current_owner_attachment(), drawer: self.shelf_over_open, generation: self.transient_generation }
+    }
+
+    pub(crate) fn queue_transient_return(&mut self, mut saved: TransientFocusReturn, window: &mut Window, cx: &mut Context<Self>) {
+        // A dismissed native subtree cannot remain the keyboard dispatch
+        // owner while its underlay waits for its first uncovered paint.
+        if !matches!(saved.overlay, Some(Overlay::CommandPalette | Overlay::AddProject)) {
+            if saved.drawer { self.drawer_focus.focus(window, cx); }
+            else { self.focus.focus(window, cx); }
+        }
+        saved.generation = self.transient_generation;
+        self.pending_transient_return = Some(saved);
+        cx.notify();
+    }
+
+    fn advance_transient_generation(&mut self) {
+        self.transient_generation = self.transient_generation.and_then(|generation| generation.checked_add(1));
+        self.pending_transient_return = None;
+    }
+
+    fn return_identity_current(&self, saved: &TransientFocusReturn, cx: &App) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        snapshot.route() == &saved.route && snapshot.overlay() == saved.overlay
+            && snapshot.key() == saved.root
+            && self.links.store.read(cx).current_owner_attachment() == saved.attachment
+            && self.shelf_over_open == saved.drawer
+            && saved.generation.is_some() && saved.generation == self.transient_generation
+    }
+
+    fn flush_transient_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(saved) = self.pending_transient_return.take() else { return; };
+        if !self.return_identity_current(&saved, cx) { return; }
+        if self.drawer_departing || (!self.ask_open && !self.background_input_allowed()) {
+            self.pending_transient_return = Some(saved);
+            return;
+        }
+        let expected = window.focused(cx);
+        let weak = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let _ = weak.update(cx, |shell, cx| {
+                if !shell.return_identity_current(&saved, cx) || shell.drawer_departing || (!shell.ask_open && !shell.background_input_allowed()) || window.focused(cx) != expected { return; }
+                shell.set_zone(saved.zone, cx);
+                if saved.overlay == Some(Overlay::CommandPalette) {
+                    let input = shell.ask.read(cx).input().clone();
+                    input.update(cx, |input, cx| input.focus(window, cx));
+                } else if saved.overlay == Some(Overlay::AddProject) {
+                    super::onboard::focus_current(window, cx);
+                } else if let Some(handle) = saved.focus {
+                    let mounted = match saved.zone {
+                        Zone::Titlebar => shell.titlebar.read(cx).targets.contains_native_handle(&handle),
+                        Zone::Shelf if saved.drawer => shell.shelf_over.read(cx).targets.contains_native_handle(&handle),
+                        Zone::Shelf => shell.shelf.read(cx).targets.contains_native_handle(&handle),
+                        Zone::Reader => shell.reader.read(cx).targets.contains_native_handle(&handle),
+                        Zone::Pins => shell.pins.read(cx).targets.contains_native_handle(&handle),
+                    };
+                    if mounted { handle.focus(window, cx); }
+                }
+                // The old handle may no longer be mounted or may still be
+                // inert; keep a valid shell owner rather than a dead field.
+                if window.focused(cx).is_none() { shell.focus.focus(window, cx); }
+            });
+        });
+    }
+
+    pub(crate) fn shelf_input_owner(&self, overlay: bool) -> bool {
+        !self.ask_open && self.background_input_allowed()
+            && if overlay { self.shelf_over_open } else {
+                !self.shelf_over_open && self.frame.is_some_and(|frame| frame.shelf == ShelfMode::Shelf)
+            }
+    }
+
 
     // ── actions ────────────────────────────────────────────────────────
 
@@ -718,6 +857,7 @@ impl Shell {
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the
     /// full shelf opens over the reader instead.
     pub(crate) fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
+        self.advance_transient_generation();
         if self.frame.is_some_and(|frame| frame.shelf_overlays) {
             self.shelf_over_open = !self.shelf_over_open;
             cx.notify();
@@ -749,6 +889,7 @@ impl Shell {
     fn with_zone<R>(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut super::focus::Targets) -> R) -> R {
         match self.zone {
             Zone::Titlebar => self.titlebar.update(cx, |region, _| f(&mut region.targets)),
+            Zone::Shelf if self.shelf_over_open => self.shelf_over.update(cx, |region, _| f(&mut region.targets)),
             Zone::Shelf => self.shelf.update(cx, |region, _| f(&mut region.targets)),
             Zone::Reader => self.reader.update(cx, |region, _| f(&mut region.targets)),
             Zone::Pins => self.pins.update(cx, |region, _| f(&mut region.targets)),
@@ -758,9 +899,11 @@ impl Shell {
     fn notify_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
         match zone {
             Zone::Titlebar => self.titlebar.update(cx, |_, cx| cx.notify()),
+            Zone::Shelf if self.shelf_over_open => self.shelf_over.update(cx, |region, cx| {
+                region.reveal_focused(); cx.notify();
+            }),
             Zone::Shelf => self.shelf.update(cx, |region, cx| {
-                region.reveal_focused();
-                cx.notify();
+                region.reveal_focused(); cx.notify();
             }),
             Zone::Reader => self.reader.update(cx, |region, cx| {
                 region.reveal_focused();
@@ -809,6 +952,12 @@ impl Shell {
 
     /// Tab: the next zone takes the keyboard.
     pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_transient_return = None;
+        if self.shelf_over_open {
+            self.zone = Zone::Shelf;
+            if forward { window.focus_next(cx); } else { window.focus_prev(cx); }
+            return;
+        }
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
         self.adopt_reader_native_zone(window, cx);
         if self.zone == Zone::Reader
@@ -825,7 +974,12 @@ impl Shell {
             zones[(at + zones.len() - 1) % zones.len()]
         };
         self.set_zone(next, cx);
-        if next != Zone::Reader
+        if next == Zone::Titlebar {
+            // Titlebar FACET controls own real tab stops; hand the first
+            // native stop input instead of leaving the dispatch root focused.
+            self.focus.focus(window, cx);
+            if forward { window.focus_next(cx); } else { window.focus_prev(cx); }
+        } else if next != Zone::Reader
             || !self.reader.read(cx).focus_native_current(window, cx)
         {
             self.focus.focus(window, cx);
@@ -835,7 +989,7 @@ impl Shell {
     /// The mounted native handle is the input origin even when a pointer or
     /// accessibility client moved it without a Shell zone action.
     fn adopt_reader_native_zone(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.ask_open || !self.background_input_allowed() || super::titlebar::menu_open(window, cx) {
+        if self.ask_open || self.shelf_over_open || self.links.snapshot(cx).overlay() == Some(Overlay::AddProject) || !self.background_input_allowed() || super::titlebar::menu_open(window, cx) {
             return;
         }
         if let Some(changed) = self.reader.read(cx).adopt_mounted_native_focus(window, cx) {
@@ -850,7 +1004,8 @@ impl Shell {
     /// not leave keyboard dispatch attached to the retired row.
     pub(crate) fn take_zone(&mut self, zone: Zone, window: &mut Window, cx: &mut Context<Self>) {
         self.set_zone(zone, cx);
-        self.focus.focus(window, cx);
+        if zone == Zone::Shelf && self.shelf_over_open { self.drawer_focus.focus(window, cx); }
+        else { self.focus.focus(window, cx); }
     }
 
     /// Updates the active targets inside the persistent keyboard owner.
@@ -1027,10 +1182,12 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.advance_transient_generation();
         if event.keystroke.key == "tab" {
             self.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
         }
-        if self.ask_presentation.blocks_background_input(self.ask_open) {
+        if self.ask_presentation.blocks_background_input(self.ask_open)
+            && self.links.snapshot(cx).overlay() != Some(Overlay::AddProject) {
             // The exit's painted plate still covers the page. The shell's
             // key context gates its actions; this also stops raw child keys.
             // A new Ask and the platform's close shortcuts stay available.
@@ -1086,7 +1243,12 @@ impl Shell {
     }
 
     fn background_input_allowed(&self) -> bool {
-        !self.ask_presentation.blocks_background_input(self.ask_open)
+        !self.drawer_departing && !self.ask_presentation.blocks_background_input(self.ask_open)
+    }
+
+    fn page_input_allowed(&self, cx: &App) -> bool {
+        self.background_input_allowed() && !self.ask_open && !self.shelf_over_open
+            && !matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject))
     }
 
     fn with_background_input(&mut self, action: impl FnOnce(&mut Self)) {
@@ -1129,6 +1291,14 @@ impl Shell {
     }
 
     /// Esc: the topmost transient closes, one per press.
+    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let overlay = self.links.snapshot(cx).overlay();
+        if super::titlebar::menu_open(window, cx)
+            || self.shelf_over_open && !matches!(overlay, Some(Overlay::CommandPalette | Overlay::AddProject)) {
+            self.escape(window, cx);
+        } else { self.links.dispatch(Intent::Back, cx); }
+    }
+
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.hints.take().is_some() {
             cx.notify();
@@ -1142,19 +1312,28 @@ impl Shell {
             return;
         }
         self.peeking = None;
+        if matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject)) {
+            self.links.dispatch(Intent::DismissOverlay, cx);
+            return;
+        }
+        if self.shelf_over_open {
+            self.advance_transient_generation();
+            self.shelf_over_open = false;
+            cx.notify();
+            return;
+        }
         if self.hand_open {
+            self.advance_transient_generation();
             self.hand_open = false;
+            // A native card leaves with its layer. Keep keyboard dispatch on
+            // the live shell rather than the now-retired card handle.
+            self.focus.focus(window, cx);
             cx.notify();
             return;
         }
         let overlay = self.links.snapshot(cx).overlay();
         if overlay.is_some() {
             self.links.dispatch(Intent::DismissOverlay, cx);
-            return;
-        }
-        if self.shelf_over_open {
-            self.shelf_over_open = false;
-            cx.notify();
             return;
         }
         // The page folds what it has open (a module) before it leaves the past.
@@ -1519,8 +1698,33 @@ impl Render for Shell {
             }
         });
         let over = frame.shelf_overlays && self.shelf_over_open;
+        if over && self.drawer_return.is_none() && !self.ask_open {
+            let mut saved = self.capture_transient_return(snapshot.overlay(), window, cx);
+            saved.drawer = false;
+            self.drawer_return = Some(saved);
+            self.reader.update(cx, |reader, _| reader.targets.set_active(false));
+            self.shelf.update(cx, |shelf, _| shelf.targets.set_active(false));
+            self.zone = Zone::Shelf;
+            self.shelf_over.update(cx, |shelf, cx| {
+                shelf.targets.set_active(true);
+                if shelf.targets.focused().is_none() { shelf.targets.walk(1); }
+                cx.notify();
+            });
+            self.drawer_focus.focus(window, cx);
+        }
         let drawer = f32::from(frame.drawer);
         let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
+
+        self.drawer_departing = !over && over_x > -drawer + 0.5;
+        if !over && !self.drawer_departing {
+            if let Some(saved) = self.drawer_return.take() {
+                self.shelf_over.update(cx, |shelf, _| shelf.targets.set_active(false));
+                // Switch the logical zone before restoring its native handle.
+                self.zone = saved.zone;
+                self.with_zone(cx, |targets| targets.set_active(true));
+                self.queue_transient_return(saved, window, cx);
+            }
+        }
 
         let ask_scene = self.ask_presentation.sample(
             self.ask_open,
@@ -1534,7 +1738,8 @@ impl Render for Shell {
             cx,
         );
         self.ask_results_mounted = ask_scene.live_results;
-        let background_input_allowed = !self.ask_open && self.background_input_allowed();
+        let background_input_allowed = !self.ask_open && !over && self.background_input_allowed()
+            && snapshot.overlay() != Some(Overlay::AddProject);
         self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background_input_allowed, cx));
 
         let mut context = KeyContext::new_with_defaults();
@@ -1543,10 +1748,11 @@ impl Render for Shell {
             // The modal owns Tab, arrows, and result activation. Leave shell
             // shortcuts available while its plain zone bindings step aside.
             context.add("Ask");
-        } else if self.ask_presentation.blocks_background_input(false) {
+        } else if self.ask_presentation.blocks_background_input(false)
+            && snapshot.overlay() != Some(Overlay::AddProject) {
             context.add("AskLeaving");
         }
-        if background_input_allowed
+        if background_input_allowed && !over
             && (matches!(snapshot.overlay(), Some(Overlay::Settings(_)))
                 || snapshot.overlay().is_none() && matches!(snapshot.route(), Route::Orbit(
                     crate::navigation::OrbitRoute::Browse(
@@ -1555,6 +1761,8 @@ impl Render for Shell {
                 ))) {
             context.add("NativeFolio");
         }
+        if over { context.add("Drawer"); }
+        if snapshot.overlay() == Some(Overlay::AddProject) { context.add("NativeDialog"); }
         if self.hints.is_some() {
             context.add("hints");
         }
@@ -1593,7 +1801,8 @@ impl Render for Shell {
             }));
         // Keep the page's native controls out until its pixels reappear from
         // beneath the last painted plate, including Ask's inert exit.
-        let body: AnyElement = if ask_scene.visible() {
+        let body: AnyElement = if ask_scene.visible() || over || self.drawer_departing
+            || snapshot.overlay() == Some(Overlay::AddProject) {
             a11y_inert(body).into_any_element()
         } else {
             body.into_any_element()
@@ -1622,9 +1831,11 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.with_background_input(|shell| shell.peel(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.with_background_input(|shell| shell.hint_mode(cx))))
             .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(cx)))
-            .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::Back, cx))))
-            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::Forward, cx))))
-            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::ZoomOut, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Back, window, cx| {
+                if shell.links.snapshot(cx).overlay() == Some(Overlay::AddProject) || shell.background_input_allowed() { shell.back(window, cx); }
+            }))
+            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| { if shell.page_input_allowed(cx) { shell.links.dispatch(Intent::Forward, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| { if shell.page_input_allowed(cx) { shell.links.dispatch(Intent::ZoomOut, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| shell.with_background_input(|shell| {
                 shell.zen = !shell.zen;
                 cx.notify();
@@ -1636,26 +1847,28 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::FolioNext, window, cx| shell.with_background_input(|shell| shell.folio_tab(false, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::FolioPrev, window, cx| shell.with_background_input(|shell| shell.folio_tab(true, window, cx))))
-            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.with_background_input(|shell| shell.escape(window, cx))))
-            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Orbit, window, cx))))
-            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Package, window, cx))))
-            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Page, window, cx))))
-            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Source, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| {
+                if shell.links.snapshot(cx).overlay() == Some(Overlay::AddProject) || shell.background_input_allowed() { shell.escape(window, cx); }
+            }))
+            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| { if shell.page_input_allowed(cx) { shell.depth(RouteDepth::Orbit, window, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| { if shell.page_input_allowed(cx) { shell.depth(RouteDepth::Package, window, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| { if shell.page_input_allowed(cx) { shell.depth(RouteDepth::Page, window, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| { if shell.page_input_allowed(cx) { shell.depth(RouteDepth::Source, window, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.with_background_input(|shell| shell.toggle_graph(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.with_background_input(|shell| shell.code_page(window, cx))))
             .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.with_background_input(|shell| shell.open_anatomy(open, cx))))
             .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::In, cx))))
             .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Out, cx))))
             .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Reset, cx))))
-            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.with_background_input(|shell| shell.hold(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| { if shell.page_input_allowed(cx) { shell.hold(window, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.with_background_input(|shell| shell.toggle_hand(cx))))
-            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.with_background_input(|shell| shell.hand_card(0, cx))))
-            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.with_background_input(|shell| shell.hand_card(1, cx))))
-            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| shell.with_background_input(|shell| shell.hand_card(2, cx))))
-            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.with_background_input(|shell| shell.hand_card(3, cx))))
-            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.with_background_input(|shell| shell.hand_card(4, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(0, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(1, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(2, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(3, cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(4, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.with_background_input(|shell| shell.copy_address(cx))))
-            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.with_background_input(|shell| shell.tour(cx))))
+            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| { if shell.page_input_allowed(cx) { shell.tour(cx); } }))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| shell.with_background_input(|shell| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             })))
@@ -1667,6 +1880,7 @@ impl Render for Shell {
                 shell.key_down(event, window, cx);
             }))
             .capture_any_mouse_down(cx.listener(|shell, _, _, cx| {
+                shell.advance_transient_generation();
                 shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
             }))
             .child(ground())
@@ -1710,7 +1924,9 @@ impl Render for Shell {
             // below the float layer's cards (`float::PRIORITY`).
             let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
             let shelf_body = measured(&self.shelf_over, StyleRefinement::default().size_full());
-            let shelf_body: AnyElement = if over {
+            let shelf_body: AnyElement = if over && !self.ask_open
+                && snapshot.overlay() != Some(Overlay::AddProject)
+                && self.background_input_allowed() {
                 shelf_body.into_any_element()
             } else {
                 a11y_inert(shelf_body).into_any_element()
@@ -1731,6 +1947,7 @@ impl Render for Shell {
                                 .inset_0()
                                 .bg(palette.veil.alpha(opened))
                                 .on_click(cx.listener(|shell, _, _, cx| {
+                                    shell.advance_transient_generation();
                                     shell.shelf_over_open = false;
                                     cx.notify();
                                 })),
@@ -1738,13 +1955,19 @@ impl Render for Shell {
                         .child(
                             div()
                                 .id("shelf-drawer")
+                                .role(gpui::Role::Dialog)
+                                .aria_label("Library shelf")
+                                .track_focus(&self.drawer_focus)
+                                .occlude()
+                                .on_click(|_, _, cx| cx.stop_propagation())
                                 .absolute()
                                 .top_0()
                                 .bottom_0()
                                 .left(px(over_x))
                                 .w(frame.drawer)
                                 .bg(palette.g2)
-                                .child(shelf_body),
+                                .child(shelf_body)
+                                .focus_trap("shelf-drawer-trap", &self.drawer_focus),
                         ),
                 )
                 .with_priority(DRAWER_PRIORITY),
@@ -1803,7 +2026,9 @@ impl Render for Shell {
             ];
             super::side::twin::rings(&regions, window.mouse_position(), cx)
         });
-        root.children(self.ask_layer(&frame, status_height, ask_scene, cx))
+        self.flush_transient_return(window, cx);
+        root.children(self.ask_layer(&frame, status_height, ask_scene, cx)
+            .map(|ask| gpui::deferred(ask).with_priority(DRAWER_PRIORITY + 1)))
             .children(self.hint_layer(cx))
             .children(twins)
             .child(float)
@@ -1838,4 +2063,26 @@ pub(crate) fn held_route(held: &crate::model::hand::Held) -> Option<Route> {
             at: None,
         }),
     })
+}
+
+#[cfg(test)]
+mod transient_return_admission_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn a_return_claim_needs_the_current_attachment_and_input_generation(cx: &mut gpui::TestAppContext) {
+        let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0, 900.0);
+        let shell = rig.shell.clone();
+        let saved = rig.cx.update(|window, cx| shell.read(cx).capture_transient_return(None, window, cx));
+        assert!(shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)));
+        let mut absent_attachment = saved.clone();
+        assert!(absent_attachment.attachment.is_some(), "the painted test owner has a serving attachment");
+        absent_attachment.attachment = None;
+        assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&absent_attachment, cx)), "a missing/revoked attachment cannot inherit a serving owner's focus claim");
+        let mut exhausted_generation = saved.clone();
+        exhausted_generation.generation = None;
+        assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&exhausted_generation, cx)));
+        shell.update(rig.cx, |shell, _| shell.advance_transient_generation());
+        assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)), "a subsequent native input generation retires the old return");
+    }
 }

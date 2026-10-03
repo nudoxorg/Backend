@@ -266,9 +266,9 @@ fn binding_context(key: &Key) -> String {
     let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
     let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
-    if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask && !hints"); }
+    if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask && !hints && !NativeDialog && !Drawer && !HandControl"); }
     if matches!(key.command, Command::NextZone | Command::PrevZone) {
-        context.push_str(" && !NativeFolio");
+        context.push_str(" && !NativeFolio && !HandControl");
     }
     if graph_owns { context.push_str(" && !Graph"); }
     if menu_owns { context.push_str(" && !Menu"); }
@@ -337,13 +337,13 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && Ask")),
         KeyBinding::new("tab", AskNext, Some("NudoxShell && AskLeaving")),
         KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && AskLeaving")),
-        KeyBinding::new("tab", FolioNext, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving")),
-        KeyBinding::new("shift-tab", FolioPrev, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving")),
+        KeyBinding::new("tab", FolioNext, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving && !HandControl")),
+        KeyBinding::new("shift-tab", FolioPrev, Some("NudoxShell && NativeFolio && !Ask && !AskLeaving && !HandControl")),
     ]);
     // gpui-component's Root owns a generic Tab action. Bind the same Shell
     // walk at the deeper native-control context so a mounted Library or
     // Reader control keeps Tab/Shift-Tab in its actual surface first.
-    let native_context = format!("{CONTEXT} && {NATIVE_CONTROL} && !Input && !Menu && !Ask && !AskLeaving && !NativeFolio");
+    let native_context = format!("{CONTEXT} && {NATIVE_CONTROL} && !Input && !Menu && !Ask && !AskLeaving && !NativeFolio && !NativeDialog && !Drawer && !HandControl");
     bindings.push(KeyBinding::new("tab", NextZone, Some(&native_context)));
     bindings.push(KeyBinding::new("shift-tab", PrevZone, Some(&native_context)));
     bindings

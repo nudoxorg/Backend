@@ -75,6 +75,8 @@ mod shelf_tests;
 #[cfg(test)]
 mod settings_focus_tests;
 #[cfg(test)]
+mod transient_input_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};

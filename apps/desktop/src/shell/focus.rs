@@ -419,6 +419,10 @@ impl Targets {
         true
     }
 
+    pub(crate) fn contains_native_handle(&self, handle: &FocusHandle) -> bool {
+        self.native_order().iter().any(|(_, mounted)| mounted == handle)
+    }
+
     pub(crate) fn native_focused(&self, window: &Window) -> Option<SharedString> {
         self.native_order().into_iter().find(|(_, handle)| handle.is_focused(window)).map(|(id, _)| id)
     }

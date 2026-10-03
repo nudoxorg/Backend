@@ -101,6 +101,7 @@ struct BookKey {
 pub(crate) struct Shelf {
     core: RegionCore,
     links: Links,
+    overlay_surface: bool,
     pub(crate) targets: Targets,
     hover: HoverIntent,
     /// Where the sidebar is (following the reader, or hoisted).
@@ -167,6 +168,7 @@ impl Shelf {
                 ],
             ),
             links,
+            overlay_surface: name == "shelf-over",
             targets: Targets::named(name),
             hover: HoverIntent::default(),
             crumbs: Crumbs::following(&route),
@@ -488,7 +490,7 @@ impl Shelf {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        const OWN_THE_LETTERS: [&str; 5] = ["Input", "Menu", "Graph", "BrowseCompare", "hints"];
+        const OWN_THE_LETTERS: [&str; 6] = ["Input", "Menu", "Graph", "BrowseCompare", "hints", facet::controls::button::NATIVE_CONTROL];
         if !self.targets.is_active() {
             return false;
         }
@@ -500,14 +502,12 @@ impl Shelf {
             .iter()
             .any(|context| OWN_THE_LETTERS.iter().any(|name| context.contains(name)));
         let snapshot = self.links.snapshot(cx);
-        let on_screen = self
-            .links
-            .shell
-            .upgrade()
-            .and_then(|shell| shell.read(cx).frame())
-            .is_some_and(|frame| frame.shelf == super::ShelfMode::Shelf);
+        let on_screen = self.links.shell.upgrade()
+            .is_some_and(|shell| shell.read(cx).shelf_input_owner(self.overlay_surface));
         let _ = window;
-        in_shell && !elsewhere && on_screen && snapshot.overlay().is_none()
+        in_shell && !elsewhere && on_screen
+            && (self.overlay_surface || snapshot.overlay().is_none())
+            && !matches!(snapshot.overlay(), Some(crate::navigation::Overlay::CommandPalette | crate::navigation::Overlay::AddProject))
     }
 
     /// One key of the sidebar's. Returns whether it was used.

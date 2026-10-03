@@ -40,8 +40,17 @@ impl Shelf {
     /// is being updated by the click that asks.
     fn take_keyboard(&self, window: &Window, cx: &mut Context<Self>) {
         let links = self.links.clone();
+        let snapshot = links.snapshot(cx);
+        let drawer = self.overlay_surface;
+        let attachment = links.store.read(cx).current_owner_attachment();
         window.defer(cx, move |window, cx| {
-            links.shell(cx, |shell, cx| shell.take_zone(Zone::Shelf, window, cx));
+            let current = links.snapshot(cx);
+            if current.route() != snapshot.route() || current.overlay() != snapshot.overlay()
+                || !current.key().same_authority(snapshot.key())
+                || links.store.read(cx).current_owner_attachment() != attachment { return; }
+            links.shell(cx, |shell, cx| {
+                if shell.shelf_input_owner(drawer) { shell.take_zone(Zone::Shelf, window, cx); }
+            });
         });
     }
 
@@ -85,7 +94,7 @@ impl Shelf {
         if let Some(counts) = head.counts {
             column = column
                 .child(self.lens_strip(counts, measure, palette, cx))
-                .child(self.narrow_line(measure, palette));
+                .child(self.narrow_line(measure, palette, cx));
         }
         let count = self.rows.len();
         let row_measure = *measure;
@@ -503,10 +512,14 @@ impl Shelf {
     /// No field: what you type narrows the scope. The line says so until you
     /// do, then shows the words and how much of the scope matched ("9 of 191");
     /// with one of your crates chosen it says what it is narrowed to.
-    fn narrow_line(&self, measure: &Measure, palette: &Palette) -> AnyElement {
+    fn narrow_line(&self, measure: &Measure, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let height = measure.row() + measure.space(Space::Tight);
         let line = div()
             .id("shelf-narrow")
+            .on_click(cx.listener(|shelf, _, window, cx| {
+                shelf.take_keyboard(window, cx);
+                cx.stop_propagation();
+            }))
             .h(height)
             .px(measure.space(Space::Roomy))
             .flex()
@@ -670,7 +683,9 @@ impl Shelf {
         if FocusRepresentative::for_leaf(item.does != Do::Nothing && self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
             element = element.aria_active_descendant();
         }
-        if item.does != Do::Nothing { element = element.track_focus(&handle); }
+        if item.does != Do::Nothing {
+            element = element.track_focus(&handle);
+        }
         if let Some(sub) = item
             .sub
             .as_ref()

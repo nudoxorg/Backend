@@ -14,10 +14,11 @@ pub(crate) mod library;
 mod path;
 
 use super::region::Links;
-use crate::navigation::{Overlay, Route};
+use crate::navigation::Overlay;
+use super::root::TransientFocusReturn;
 use add::Form;
 use facet::overlay::dialog::{self, Dialog};
-use gpui::{App, AppContext as _, Entity, FocusHandle, Global, IntoElement as _, Window, WindowId};
+use gpui::{App, AppContext as _, Entity, Global, IntoElement as _, Window, WindowId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -29,7 +30,7 @@ struct Mounted {
     /// What held focus when the dialog opened: the dialog puts it back when
     /// it closes, and so does [`sync`], because the field inside it goes
     /// away holding focus otherwise (the shell's keys then reach nothing).
-    restore: Option<(FocusHandle, Route)>,
+    restore: Option<TransientFocusReturn>,
 }
 
 #[derive(Default)]
@@ -39,7 +40,7 @@ impl Global for PerWindow {}
 
 /// Makes the dialog agree with the snapshot's overlay. Called by the shell
 /// whenever the overlay changes.
-pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
+pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Window, cx: &mut App) -> Option<TransientFocusReturn> {
     let wants = links.snapshot(cx).overlay() == Some(Overlay::AddProject);
     let id = window.window_handle().window_id();
     let open = dialog::is_open(window, cx);
@@ -54,9 +55,8 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
                     content
                 }
             };
-            let before = window.focused(cx);
-            let route = links.snapshot(cx).route().clone();
-            content.update(cx, |add, cx| add.opened(window, cx));
+            let fresh = cx.default_global::<PerWindow>().0.get(&id).is_none_or(|mounted| mounted.restore.is_none());
+            if fresh { content.update(cx, |add, cx| add.opened(window, cx)); }
             let shown = content.clone();
             dialog::open(
                 Dialog {
@@ -77,32 +77,42 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
             );
             if let Some(mounted) = cx.default_global::<PerWindow>().0.get_mut(&id) {
                 mounted.ours = true;
-                mounted.restore = before.map(|handle| (handle, route));
+                if fresh { mounted.restore = Some(before); }
             }
             let input = content.read(cx).input().clone();
             input.update(cx, |input, cx| input.focus(window, cx));
         }
         (false, true) => {
             dialog::close(window, cx);
+            let covered = links.snapshot(cx).session().overlay_is_covered(Overlay::AddProject);
             let (restore, content) = cx.default_global::<PerWindow>().0.get_mut(&id).map_or((None, None), |mounted| {
                 mounted.ours = false;
-                (mounted.restore.take(), Some(mounted.content.clone()))
+                (if covered { None } else { mounted.restore.take() }, Some(mounted.content.clone()))
             });
             let landed = content.is_some_and(|content| content.read(cx).landed());
-            // Back to what held it on Esc or Cancel, unless the place
-            // changed under the dialog. An add lands a new project on the
-            // Library: focus goes to no control (the keyboard ring does not
-            // come back on "Add a folder", as if nothing had happened), and
-            // the next key starts from the page's first target (D6).
-            match restore {
-                _ if landed => window.blur(),
-                Some((handle, route)) if links.snapshot(cx).route() == &route => window.focus(&handle, cx),
-                Some(_) => {}
-                None => window.blur(),
+            // Covered forms retain their text and return receipt. A real
+            // dismissal returns through the Shell's current-visit gate after
+            // the underlay paints, for both Escape and pointer Cancel.
+            if landed { window.blur(); } else if !covered { return restore; }
+        }
+        (false, false) => {
+            if !links.snapshot(cx).session().overlay_is_covered(Overlay::AddProject) {
+                if let Some(mounted) = cx.default_global::<PerWindow>().0.get_mut(&id) { mounted.restore = None; }
             }
         }
-        (true, true) | (false, false) => {}
+        (true, true) => {}
     }
+    None
+}
+
+/// Focus only the currently mounted Add owner, never a retained covered form.
+pub(crate) fn focus_current(window: &mut Window, cx: &mut App) -> bool {
+    let id = window.window_handle().window_id();
+    let Some(content) = cx.default_global::<PerWindow>().0.get(&id)
+        .filter(|mounted| mounted.ours).map(|mounted| mounted.content.clone()) else { return false; };
+    let input = content.read(cx).input().clone();
+    input.update(cx, |input, cx| input.focus(window, cx));
+    true
 }
 
 /// The dialog's text field, once it has been opened in this window.

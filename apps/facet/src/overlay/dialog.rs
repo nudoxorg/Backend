@@ -22,6 +22,7 @@ use gpui::{
     AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement, StatefulInteractiveElement,
     KeyDownEvent, MouseButton, ParentElement, SharedString, Styled, Window, WindowId, div, px,
 };
+use gpui_component::FocusTrapElement as _;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -317,7 +318,7 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
             .opacity(t),
         );
     // The scrim occludes the page: tell the lints what is under it.
-    Some(crate::probe::veil("dialog-scrim", scrim).into_any_element())
+    Some(crate::probe::veil("dialog-scrim", scrim.focus_trap("facet-dialog-trap", &focus)).into_any_element())
 }
 
 #[cfg(test)]
@@ -357,6 +358,7 @@ mod tests {
     }
 
     fn page(cx: &mut TestAppContext) -> (FocusHandle, &mut VisualTestContext) {
+        cx.update(gpui_component::init);
         let (view, cx) = cx.add_window_view(|_, cx| Page {
             trigger: cx.focus_handle(),
         });
