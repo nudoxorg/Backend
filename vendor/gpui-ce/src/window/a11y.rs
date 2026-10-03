@@ -887,8 +887,10 @@ fn make_node_inert(node: &mut accesskit::Node) {
 mod tests {
     // Import specific items rather than glob-importing `super`, which would pull
     // in gpui's own `test` attribute macro and shadow the standard one.
-    use super::{A11y, A11yNodeBuilder, ROOT_NODE_ID};
-    use crate::{Bounds, FocusId, point, px, size};
+    use super::{A11y, A11yNodeBuilder, NativeFocusFrameContext, ROOT_NODE_ID};
+    #[cfg(debug_assertions)]
+    use super::debug;
+    use crate::{Bounds, FocusId, WindowId, point, px, size};
     use accesskit::{NodeId, Role};
     use std::sync::{Arc, atomic::AtomicBool};
 

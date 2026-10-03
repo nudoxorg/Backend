@@ -4316,6 +4316,7 @@ impl ScrollHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use accesskit::Role;
     use crate::{
         AnyWindowHandle, AppContext as _, Context, InputEvent, Keystroke, MouseMoveEvent,
         TestAppContext, canvas, util::FluentBuilder as _,
@@ -5130,8 +5131,7 @@ mod tests {
         let (view, cx) = cx.add_window_view(move |_, cx| LateNativeFocus {
             parent: cx.focus_handle(), row: cx.focus_handle(), calls,
         });
-        let parent = view.read(cx).parent.clone();
-        let row = view.read(cx).row.clone();
+        let (parent, row) = view.read_with(cx, |view, _| (view.parent.clone(), view.row.clone()));
         cx.update(|window, cx| {
             window.set_a11y_forced(true); parent.focus(window, cx);
             observed.set(0); window.refresh(); window.draw(cx).clear(cx);
