@@ -234,11 +234,13 @@ mod tests {
         fs::write(root.join("target"), b"state").expect("target");
         std::os::unix::fs::symlink("target", root.join("link")).expect("symlink");
         assert!(read_regular_bounded(&root.join("link"), 4096).is_err());
-        let status = std::process::Command::new("/usr/bin/mkfifo")
-            .arg(root.join("fifo"))
-            .status()
-            .expect("mkfifo");
-        assert!(status.success());
+        // Made directly, not by /usr/bin/mkfifo: NixOS has no FHS /usr/bin.
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            root.join("fifo"),
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .expect("mkfifo");
         let start = std::time::Instant::now();
         assert!(read_regular_bounded(&root.join("fifo"), 4096).is_err());
         assert!(

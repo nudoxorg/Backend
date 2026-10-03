@@ -305,7 +305,7 @@ fn a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them() {
 }
 
 /// A C# project. The owner has no C# authority unless `NUDOX_ROSLYN_HELPER`
-/// names one, and the development shell does not, so its compile is refused
+/// names one, and the test clears it for its own owner, so its compile is refused
 /// (`Unavailable { language: CSharp, stage: LowerIr }`) after its source has
 /// been scanned and its frontier committed.
 fn refused_project(root: &Path) -> PathBuf {
@@ -325,11 +325,15 @@ fn refused_project(root: &Path) -> PathBuf {
 }
 
 #[test]
+#[allow(
+    unsafe_code,
+    reason = "nextest runs each test in its own process, so no other thread reads the environment"
+)]
 fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
-    assert!(
-        std::env::var_os("NUDOX_ROSLYN_HELPER").is_none(),
-        "this test needs an owner with no C# authority: unset NUDOX_ROSLYN_HELPER"
-    );
+    // The development shells now name a Roslyn helper; this owner must have
+    // no C# authority, so clear it before the embedded owner reads it.
+    // SAFETY: this test's process runs no other thread yet (see the allow).
+    unsafe { std::env::remove_var("NUDOX_ROSLYN_HELPER") };
     let root = scratch("refused");
     super::private_dir(&root).expect("private scratch root");
     let project = refused_project(&root);

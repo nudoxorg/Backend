@@ -445,10 +445,21 @@ fn run_cli(project: &Path, workspace: &Path, args: &[&str]) -> String {
     text
 }
 
+/// Writes the package manifest the owner's Rust authority resolves a project
+/// from; it refuses a source tree without one (`MissingManifest`).
+fn write_manifest(root: &Path, name: &str) {
+    std::fs::write(
+        root.join("Cargo.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n"),
+    )
+    .expect("write fixture manifest");
+}
+
 /// Writes a project whose source is dense enough to outgrow one canonical node.
 fn write_dense_project(root: &Path) {
     let source = root.join("src");
     std::fs::create_dir_all(&source).expect("create fixture source directory");
+    write_manifest(root, "lifecycle-dense");
     for file in 0..DURABLE_FILES {
         let mut text = String::new();
         for declaration in 0..DURABLE_DECLARATIONS_PER_FILE {
@@ -593,6 +604,7 @@ fn json_string(text: &str, field: &str) -> Option<String> {
 fn write_small_project(root: &Path) {
     let source = root.join("src");
     std::fs::create_dir_all(&source).expect("create fixture source directory");
+    write_manifest(root, "lifecycle-small");
     std::fs::write(
         source.join("lib.rs"),
         "//! Idempotence fixture.\npub fn stable_marker() -> u8 {\n    7\n}\n",

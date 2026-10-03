@@ -80,6 +80,23 @@ def print-captured-failures []: nothing -> nothing {
     }
 }
 
+# Fetches the registry releases the desktop registry and journey tests expect
+# to find unpacked in the Cargo cache. Best effort: a failure here shows up
+# as those tests' own failures, with their own messages.
+def warm-registry-cache []: nothing -> nothing {
+    for manifest in ["frontends/rust/fixtures/toml_pin/Cargo.toml" "apps/desktop/tests/fixtures/browse_tree/Cargo.toml"] {
+        run-external "cargo" "fetch" "--locked" "--manifest-path" $manifest
+    }
+    # Releases named by tests but pinned by no fixture lockfile.
+    let scratch = (mktemp --directory)
+    mkdir ($scratch | path join "src")
+    "" | save ($scratch | path join "src" "lib.rs")
+    "[package]\nname = \"nudox-registry-cache-warmup\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\ntoml = \"=0.5.11\"\nanyhow = \"=1.0.104\"\n\n[workspace]\n"
+        | save ($scratch | path join "Cargo.toml")
+    run-external "cargo" "fetch" "--manifest-path" ($scratch | path join "Cargo.toml")
+    rm --recursive --force $scratch
+}
+
 # Runs one named step, streaming its output, and returns whether it passed.
 def step [name: string, body: closure]: nothing -> bool {
     print $"== linux: ($name) =="
@@ -126,6 +143,11 @@ def main [
     let cargo_home = ($env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo"))
     let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"}
         | merge (if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} })
+    # Desktop registry and journey tests read real releases from this
+    # machine's Cargo cache, as they do on a developer's Mac. A fresh CI
+    # container has none, so fetch (download and unpack) them first: what
+    # the two fixture projects pin, plus the releases tests name directly.
+    step "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
     let tests = (with-env $test_env {
         step "backend test pr" {|| run-external "sh" "-c" "umask 077 && exec backend test pr" }
     })
