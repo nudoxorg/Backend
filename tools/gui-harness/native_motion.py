@@ -24,6 +24,13 @@ Compile the recorder separately with `swiftc -parse-as-library -O
 The plan's action times are relative to the first captured native frame. Native
 keycodes are macOS virtual keycodes; click coordinates are global screen points.
 No route, index, owner gate, or component state is injected by this tool.
+
+For a copied executable or relocated frozen checkout, also pass
+`--preservation-receipt copy.json`. Schema 1 binds the original compiler
+receipt SHA, build_cwd, compiled_artifact_path/SHA to the capture
+source path/HEAD/tree/Cargo.lock SHA and copied artifact path/SHA. A copied
+.app also binds its Info.plist path/SHA and CFBundleIdentifier. The original
+compiler receipt is never rewritten; a symlink or hard link is not a copy.
 """
 from __future__ import annotations
 
@@ -33,6 +40,7 @@ import hashlib
 import json
 import math
 import os
+import plistlib
 import shlex
 from pathlib import Path
 import shutil
@@ -47,6 +55,9 @@ SWIFT = Path(__file__).with_name("native_motion.swift")
 MAX_DURATION_MS = 30_000
 MAX_FRAMES = 1_800
 MAX_INPUT_BYTES = 2_000_000_000
+MAX_AX_SAMPLE_AGE_MS = 150
+MAX_CLOCK_RESIDUAL_MS = 50
+MAX_CALLBACK_OFFSET_MS = 100
 
 
 def sha256(path: Path) -> str:
@@ -79,6 +90,36 @@ def tool_identity() -> dict[str, str]:
             "tree": git(ROOT, "rev-parse", "HEAD^{tree}"),
             "status_porcelain": git(ROOT, "status", "--porcelain"),
             "python_sha256": sha256(Path(__file__)), "swift_sha256": sha256(SWIFT)}
+
+
+def symlink_in_artifact_path(path: Path) -> bool:
+    """Reject bundle-internal links without treating macOS /var as an artifact link."""
+    bundle = next((parent for parent in path.parents if parent.suffix == ".app"), None)
+    if bundle is None:
+        return path.is_symlink()
+    current = path
+    while current != bundle:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return bundle.is_symlink()
+
+
+def bundle_identity(binary: Path) -> dict[str, str] | None:
+    binary = binary.resolve(strict=True)
+    bundle = next((parent for parent in binary.parents if parent.suffix == ".app"), None)
+    if bundle is None:
+        return None
+    info = bundle / "Contents" / "Info.plist"
+    if not info.is_file() or symlink_in_artifact_path(info):
+        raise ValueError(f"copied app bundle lacks Info.plist: {bundle}")
+    data = plistlib.loads(info.read_bytes())
+    identifier = data.get("CFBundleIdentifier")
+    executable = data.get("CFBundleExecutable")
+    if not isinstance(identifier, str) or not identifier or executable != binary.name:
+        raise ValueError(f"app bundle identity or executable name is invalid: {bundle}")
+    return {"path": str(bundle), "info_path": str(info), "info_sha256": sha256(info),
+            "identifier": identifier}
 
 
 def process_executable(pid: int) -> Path:
@@ -228,6 +269,65 @@ def changed_fraction(first: Path, second: Path) -> float:
     return sum(histogram[9:]) / (a.width * a.height)
 
 
+def clock_alignment(frames: list[dict[str, Any]], actions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Measure the SC PTS to monotonic host-clock offset, including callback jitter."""
+    offsets = []
+    first_pts = frames[0].get("pts_seconds")
+    if not isinstance(first_pts, (int, float)) or not math.isfinite(first_pts):
+        return {"covered": False, "reason": "first ScreenCaptureKit PTS is absent"}
+    for frame in frames:
+        host = frame.get("host_capture_ns")
+        pts = frame.get("pts_seconds")
+        if (type(host) is not int or not isinstance(pts, (int, float)) or not math.isfinite(pts)
+                or abs(frame["time_ms"] - (pts - first_pts) * 1000) > 1):
+            return {"covered": False, "reason": "frame host time/PTS pair is absent or inconsistent"}
+        offsets.append(host / 1_000_000 - pts * 1000)
+    for action in actions:
+        if action.get("phase") == "action":
+            start, end = action.get("dispatch_host_ns"), action.get("posted_host_ns")
+            if type(start) is not int or type(end) is not int or end < start:
+                return {"covered": False, "reason": "native input dispatch/post host interval is absent or invalid"}
+    offset = statistics.median(offsets)
+    residual = max(abs(value - offset) for value in offsets)
+    offset_low, offset_high = min(offsets), max(offsets)
+    covered = residual <= MAX_CLOCK_RESIDUAL_MS and -5 <= offset_low <= offset_high <= MAX_CALLBACK_OFFSET_MS
+    return {"covered": covered,
+            "reason": None if covered else "SC PTS/host callback offset or residual exceeds bound",
+            "offset_host_minus_pts_ms": offset, "first_pts_seconds": first_pts,
+            "offset_range_ms": [offset_low, offset_high], "max_residual_ms": residual,
+            "residual_bound_ms": MAX_CLOCK_RESIDUAL_MS, "callback_offset_bound_ms": MAX_CALLBACK_OFFSET_MS,
+            "frame_pairs": len(offsets)}
+
+
+def aligned_action_ms(action: dict[str, Any], clock: dict[str, Any]) -> float:
+    return round(action["dispatch_host_ns"] / 1_000_000
+                 - clock["offset_host_minus_pts_ms"] - clock["first_pts_seconds"] * 1000, 6)
+
+
+def action_time_bounds(action: dict[str, Any], clock: dict[str, Any]) -> tuple[float, float]:
+    dispatch_ms = action["dispatch_host_ns"] / 1_000_000
+    posted_ms = action["posted_host_ns"] / 1_000_000
+    low, high = clock["offset_range_ms"]
+    first_pts_ms = clock["first_pts_seconds"] * 1000
+    return round(dispatch_ms - high - first_pts_ms, 6), round(posted_ms - low - first_pts_ms, 6)
+
+
+def fresh_ax(snapshot: dict[str, Any], before_host_ns: int, after_host_ns: int | None = None) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    start = snapshot.get("sample_start_host_ns")
+    end = snapshot.get("sample_end_host_ns")
+    return (type(start) is int and type(end) is int and start <= end <= before_host_ns
+            and (after_host_ns is None or start >= after_host_ns)
+            and (before_host_ns - end) / 1_000_000 <= MAX_AX_SAMPLE_AGE_MS
+            and (end - start) / 1_000_000 <= MAX_AX_SAMPLE_AGE_MS)
+
+
+def ax_has_title(snapshot: dict[str, Any], title: str) -> bool:
+    focused = snapshot.get("focused") or {}
+    return title in {focused.get("title"), focused.get("description")}
+
+
 def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[str, Any]], plan: dict[str, Any]) -> dict[str, Any]:
     """One-frame-at-a-time pixel/geometry/AX analysis; no RGBA frame list."""
     from PIL import Image, ImageChops, ImageStat
@@ -240,22 +340,30 @@ def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[s
     previous = None
     previous_size = None
     previous_focus = None
+    fresh_ax_frames = 0
+    clock = clock_alignment(frames, actions)
+    failures = []
+    if not clock["covered"]:
+        failures.append("native frame/input clock alignment uncovered: " + clock["reason"])
     for frame in frames:
         with Image.open(out / frame["file"]) as opened:
             current = opened.convert("RGB")
         size = current.size
         if size != (frame["width_px"], frame["height_px"]):
             raise ValueError(f"PNG {frame['file']} differs from recorded native pixel dimensions")
+        ax = frame.get("ax") or {}
+        ax_current = fresh_ax(ax, frame.get("host_capture_ns", -1)) if clock["covered"] else False
+        fresh_ax_frames += int(ax_current)
         if previous_size != size:
             sizes.append({"at_ms": frame["time_ms"], "size_px": list(size),
-                          "ax_window_bounds_pt": frame.get("ax", {}).get("window", {}).get("bounds_pt")})
+                          "ax_window_bounds_pt": (ax.get("window") or {}).get("bounds_pt") if ax_current else None})
             previous_size = size
-        window_node = frame.get("ax", {}).get("window") or {}
+        window_node = (ax.get("window") or {}) if ax_current else {}
         window_rect = window_node.get("bounds_pt")
         if window_rect != previous_window:
             window_geometry.append({"at_ms": frame["time_ms"], "window": window_node})
             previous_window = window_rect
-        focused = frame.get("ax", {}).get("focused") or {}
+        focused = (ax.get("focused") or {}) if ax_current else {}
         focus_rect = focused.get("bounds_pt")
         if focus_rect and window_rect:
             overlap = (focus_rect["x"] < window_rect["x"] + window_rect["width"] and
@@ -266,7 +374,8 @@ def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[s
                 focus_outside_window.append({"at_ms": frame["time_ms"], "focused": focused, "window": window_node})
         focus_key = (focused.get("role"), focused.get("title"), focused.get("description"))
         if focus_key != previous_focus:
-            focus.append({"at_ms": frame["time_ms"], "focused": focused})
+            focus.append({"at_ms": frame["time_ms"], "focused": focused,
+                          "ax_sample_end_host_ns": ax.get("sample_end_host_ns") if ax_current else None})
             previous_focus = focus_key
         if previous is not None:
             if previous.size == size:
@@ -281,73 +390,120 @@ def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[s
         previous = current
     actual_actions = [event for event in actions if event.get("phase") == "action"]
     action_results = []
-    failures = []
-    for requested, actual in zip(plan["actions"], actual_actions):
-        at = actual["actual_ms"]
-        baseline = max((frame for frame in frames if frame["time_ms"] <= at),
-                       key=lambda frame: frame["time_ms"], default=frames[0])
+    coverage_findings = []
+    for index, (requested, actual) in enumerate(zip(plan["actions"], actual_actions)):
+        at = aligned_action_ms(actual, clock) if clock["covered"] else actual["actual_ms"]
+        action_low, action_high = action_time_bounds(actual, clock) if clock["covered"] else (at, at)
+        next_mutation = next((action_time_bounds(event, clock)[0] if clock["covered"] else event["actual_ms"]
+                              for event in actual_actions[index + 1:] if event.get("kind") != "probe"), None)
+        visual_deadline = requested.get("expect_visual_ms")
+        end = min(plan["duration_ms"], action_low + visual_deadline if visual_deadline is not None else plan["duration_ms"],
+                  next_mutation if next_mutation is not None else float("inf"))
+        before = [frame for frame in frames if frame["time_ms"] <= action_low]
+        baseline = max(before, key=lambda frame: frame["time_ms"]) if before else None
+        observed = [frame for frame in frames if action_high < frame["time_ms"] < end]
+        baseline_fresh = baseline is not None and action_low - baseline["time_ms"] <= plan["max_frame_gap_ms"]
+        tail_fresh = bool(observed) and end - observed[-1]["time_ms"] <= plan["max_frame_gap_ms"]
+        interval_times = ([baseline["time_ms"]] if baseline is not None else []) + [frame["time_ms"] for frame in observed]
+        gaps_covered = all(b - a <= plan["max_frame_gap_ms"] for a, b in zip(interval_times, interval_times[1:]))
+        visual_covered = clock["covered"] and baseline_fresh and tail_fresh and gaps_covered
         min_fraction = requested.get("min_visual_fraction", 0.005)
         first_change = None
         first_fraction = None
-        for frame in frames:
-            if frame["time_ms"] <= at:
-                continue
-            fraction = changed_fraction(out / baseline["file"], out / frame["file"])
-            if fraction >= min_fraction:
-                first_change = frame["time_ms"]
-                first_fraction = fraction
-                break
-        focus_after = [entry for entry in focus if entry["at_ms"] >= at]
+        read_only = actual.get("posted", {}).get("disposition") == "ReadOnlyOutOfScope"
+        if clock["covered"] and baseline_fresh and not read_only:
+            for frame in observed:
+                fraction = changed_fraction(out / baseline["file"], out / frame["file"])
+                if fraction >= min_fraction:
+                    first_change = frame["time_ms"]
+                    first_fraction = fraction
+                    break
         expected_title = requested.get("expect_focus_title")
-        first_focus = next((entry["at_ms"] for entry in focus_after
-                            if expected_title in {entry["focused"].get("title"), entry["focused"].get("description")}), None) if expected_title else None
+        dispatch_host = actual.get("dispatch_host_ns", -1)
+        before_ax = actual.get("before") or {}
+        first_focus = None
+        focus_already_present = bool(expected_title and fresh_ax(before_ax, dispatch_host)
+                                     and ax_has_title(before_ax, expected_title))
+        if focus_already_present:
+            first_focus = at
+        elif expected_title and clock["covered"]:
+            first_focus = next((frame["time_ms"] for frame in observed
+                                if fresh_ax(frame.get("ax") or {}, frame["host_capture_ns"], dispatch_host)
+                                and ax_has_title(frame["ax"], expected_title)), None)
+        if read_only:
+            failures.append(f"{actual['label']}: read-only out-of-scope native input: {actual['posted'].get('reason')}")
         resize_bounds = actual.get("posted", {}).get("window_after_pt", {}) if requested["kind"] == "resize" else None
         if resize_bounds is not None:
             if abs(resize_bounds.get("width", -10000) - requested["width"]) > 3 or abs(resize_bounds.get("height", -10000) - requested["height"]) > 3:
                 failures.append(f"{actual['label']}: AX window did not reach requested size")
         expected_ax = requested.get("expect_ax_title")
-        ax_nodes = actual.get("posted", {}).get("ax", {}).get("tree", [])
+        probe_ax = actual.get("posted", {}).get("ax") or {}
+        probe_fresh = fresh_ax(probe_ax, actual.get("posted_host_ns", -1), dispatch_host)
+        if requested["kind"] == "probe" and not probe_fresh:
+            failures.append(f"{actual['label']}: AX probe sample is absent or stale")
+        ax_nodes = probe_ax.get("tree", []) if probe_fresh else []
         ax_found = any(expected_ax in {node.get("title"), node.get("description")} for node in ax_nodes) if expected_ax else None
         if expected_ax and not ax_found:
-            failures.append(f"{actual['label']}: AX tree did not contain {expected_ax!r}")
+            failures.append(f"{actual['label']}: fresh AX probe did not contain {expected_ax!r}")
         selected_title = requested.get("expect_ax_selected_title")
         selected_found = any(selected_title in {node.get("title"), node.get("description")} and node.get("selected") is True
                              for node in ax_nodes) if selected_title else None
         if selected_title and not selected_found:
-            failures.append(f"{actual['label']}: AX tree did not select {selected_title!r}")
-        visual_deadline = requested.get("expect_visual_ms")
-        prior_trees = [(0, event.get("ax", {}).get("tree")) for event in actions if event.get("phase") == "initial"]
+            failures.append(f"{actual['label']}: fresh AX probe did not select {selected_title!r}")
+        prior_trees = [(0, event.get("ax", {}).get("tree")) for event in actions
+                       if event.get("phase") == "initial"
+                       and fresh_ax(event.get("ax") or {}, dispatch_host)]
         prior_trees += [(event.get("actual_ms", -1), event.get("posted", {}).get("ax", {}).get("tree"))
-                        for event in actions if event.get("phase") == "action" and event.get("kind") == "probe" and event.get("actual_ms", 1e12) < at]
+                        for event in actions if event.get("phase") == "action" and event.get("kind") == "probe"
+                        and event.get("dispatch_host_ns", 1e20) < dispatch_host
+                        and fresh_ax(event.get("posted", {}).get("ax") or {}, dispatch_host)]
         baseline_tree = max(prior_trees, default=(0, None), key=lambda pair: pair[0])[1]
         probes = [event for event in actions if event.get("phase") == "action" and event.get("kind") == "probe"
-                  and event.get("actual_ms", -1) >= at and (visual_deadline is None or event.get("actual_ms", 1e12) <= at + visual_deadline)]
+                  and event.get("dispatch_host_ns", -1) >= dispatch_host
+                  and (not clock["covered"] or aligned_action_ms(event, clock) < end)
+                  and fresh_ax(event.get("posted", {}).get("ax") or {},
+                               event.get("posted_host_ns", -1), event.get("dispatch_host_ns", -1))]
         ax_changed = any(event.get("posted", {}).get("ax", {}).get("tree") != baseline_tree for event in probes) if baseline_tree is not None else None
-        ax_pixel_divergence = bool(ax_changed and visual_deadline is not None and (first_change is None or first_change > at + visual_deadline))
-        if visual_deadline is not None and (first_change is None or first_change > at + visual_deadline):
-            failures.append(f"{actual['label']}: no native pixel change within {visual_deadline} ms")
+        ax_pixel_divergence = bool(ax_changed and visual_deadline is not None and visual_covered and first_change is None)
+        if visual_deadline is not None and first_change is None and not read_only:
+            if visual_covered:
+                failures.append(f"{actual['label']}: no native pixel change within attributable response interval")
+            else:
+                reason = f"{actual['label']}: native frame/clock coverage does not span attributable response interval"
+                coverage_findings.append(reason)
+                failures.append(reason)
         if expected_title and first_focus is None:
             failures.append(f"{actual['label']}: AX focus never became {expected_title!r}")
         action_results.append({"label": actual["label"], "kind": actual["kind"], "posted_at_ms": at,
+                               "action_pts_bounds_ms": [action_low, action_high],
+                               "response_interval_end_ms": end, "next_mutation_ms": next_mutation,
+                               "visual_coverage": "covered" if visual_covered else "uncovered",
                                "first_visual_change_ms": first_change, "visual_latency_ms": None if first_change is None else first_change - at,
                                "first_visual_fraction": first_fraction, "min_visual_fraction": min_fraction,
                                "expected_focus_title": expected_title, "first_expected_focus_ms": first_focus,
+                               "expected_focus_already_present": focus_already_present,
                                "expected_ax_title": expected_ax, "ax_found": ax_found,
                                "expected_ax_selected_title": selected_title, "ax_selected_found": selected_found,
                                "resize_window_after_pt": resize_bounds, "ax_tree_changed": ax_changed,
                                "ax_pixel_divergence": ax_pixel_divergence})
     if len(actual_actions) != len(plan["actions"]):
         failures.append("not every timed native action has a successful posted event")
+    if fresh_ax_frames == 0:
+        failures.append("native frame AX samples are absent or stale")
     gaps = [b["time_ms"] - a["time_ms"] for a, b in zip(frames, frames[1:])]
     max_gap = max(gaps, default=0)
     if max_gap > plan["max_frame_gap_ms"]:
-        failures.append(f"native frame gap {max_gap:.2f} ms exceeds {plan['max_frame_gap_ms']} ms")
+        reason = f"native SC frame coverage gap {max_gap:.2f} ms exceeds {plan['max_frame_gap_ms']} ms; no GUI jank inference"
+        coverage_findings.append(reason)
+        failures.append(reason)
     if frames[-1]["time_ms"] < plan["duration_ms"] - plan["max_frame_gap_ms"]:
         failures.append("native frames stopped before the requested capture tail")
     jump_candidates = [change for change in changes if change["mean_rgb_delta"] is not None
                        and change["mean_rgb_delta"] > 30]
     return {"frame_count": len(frames), "last_frame_ms": frames[-1]["time_ms"],
             "max_frame_gap_ms": max_gap, "size_changes": sizes, "window_geometry_changes": window_geometry,
+            "clock_alignment": clock, "coverage_findings": coverage_findings,
+            "fresh_ax_frame_count": fresh_ax_frames,
             "focus_changes": focus, "focus_outside_window": focus_outside_window,
             "pixel_changes": changes, "visual_jump_candidates": jump_candidates,
             "actions": action_results, "failures": failures}
@@ -425,11 +581,14 @@ def encode(out: Path, frames: list[dict[str, Any]], timing: dict[str, Any], ffmp
             "last_frame_hold_ms": timing["median_interval_ms"]}
 
 
-def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str, str]) -> dict[str, Any]:
+def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str, str],
+                       preservation_path: Path | None = None) -> dict[str, Any]:
     """Admit only the root build's completed, source-bound compiler receipt."""
     if receipt_path is None:
         return {"state": "UnprovenBinarySource", "reasons": ["no compiler receipt supplied"]}
+    symlink = symlink_in_artifact_path(binary)
     binary = binary.resolve(strict=True)
+    bundle = bundle_identity(binary)
     path = receipt_path.resolve(strict=True)
     receipt = json.loads(path.read_text())
     reasons = []
@@ -439,20 +598,24 @@ def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str
         reasons.append("receipt HEAD/tree differs from capture checkout")
     if receipt.get("lock_sha256") != source["cargo_lock_sha256"]:
         reasons.append("receipt Cargo.lock digest differs")
-    if receipt.get("exit_status") != 0 or receipt.get("frozen_preserved") is not True or receipt.get("capacity_abort") is not False:
+    if type(receipt.get("exit_status")) is not int or receipt["exit_status"] != 0 or receipt.get("frozen_preserved") is not True or receipt.get("capacity_abort") is not False:
         reasons.append("compiler run did not finish successfully on a frozen source")
-    if receipt.get("census_valid") is not True or type(receipt.get("maximum_local_cargo")) is not int or receipt["maximum_local_cargo"] > receipt.get("local_cargo_cap", -1):
+    maximum = receipt.get("maximum_local_cargo")
+    cap = receipt.get("local_cargo_cap")
+    if receipt.get("census_valid") is not True or type(maximum) is not int or type(cap) is not int or maximum < 0 or cap < 1 or maximum > cap:
         reasons.append("compiler process census/cap is invalid")
     if not isinstance(receipt.get("rustc_version"), str) or "rustc " not in receipt["rustc_version"]:
         reasons.append("rustc toolchain identity missing")
-    if receipt.get("build_cwd") != source["path"]:
-        reasons.append("actual compiler working directory differs")
+    if symlink or not binary.is_file():
+        reasons.append("capture binary must be a regular copied artifact, not a symlink")
+    if preservation_path is not None and binary.stat().st_nlink != 1:
+        reasons.append("preserved capture binary must not be hard-linked to a mutable build artifact")
     command_path = path.with_name("command.sh")
     command = command_path.read_text() if command_path.is_file() else ""
     if not command or hashlib.sha256(command.encode()).hexdigest() != receipt.get("command_sha256"):
         reasons.append("compiler command.sh digest differs")
     argv = receipt.get("build_argv")
-    if not isinstance(argv, list) or len(argv) < 3 or argv[-1] != command or not all(isinstance(part, str) for part in argv):
+    if not isinstance(argv, list) or len(argv) != 3 or argv[1] != "-c" or argv[2] != command or not all(isinstance(part, str) for part in argv):
         reasons.append("actual compiler argv does not contain the recorded command")
     raw_log = path.with_name("raw.log")
     if not raw_log.is_file() or sha256(raw_log) != receipt.get("raw_log_sha256"):
@@ -465,13 +628,47 @@ def compiler_admission(receipt_path: Path | None, binary: Path, source: dict[str
     if len(saved) != 1 or not saved[0].is_file() or sha256(saved[0]) != receipt.get("development_environment_sha256"):
         reasons.append("saved build environment digest differs")
     binaries = receipt.get("binaries")
-    matched = False
-    if isinstance(binaries, dict):
-        matched = any(Path(name).resolve() == binary and value == sha256(binary) for name, value in binaries.items())
-    if not matched:
+    binary_sha = sha256(binary)
+    matches = [(name, value) for name, value in binaries.items()
+               if isinstance(name, str) and value == binary_sha] if isinstance(binaries, dict) else []
+    preservation = None
+    preservation_sha = None
+    if preservation_path is not None:
+        preservation_path = preservation_path.resolve(strict=True)
+        preservation_sha = sha256(preservation_path)
+        preservation = json.loads(preservation_path.read_text())
+    compiled_path = None
+    if preservation is not None:
+        compiled_path = preservation.get("compiled_artifact_path")
+        if (preservation.get("schema") != 1
+                or preservation.get("compiler_receipt_sha256") != sha256(path)
+                or preservation.get("build_cwd") != receipt.get("build_cwd")
+                or preservation.get("capture_source_path") != source["path"]
+                or preservation.get("source_head") != source["head"]
+                or preservation.get("source_tree") != source["tree"]
+                or preservation.get("cargo_lock_sha256") != source["cargo_lock_sha256"]
+                or preservation.get("capture_artifact_path") != str(binary)
+                or preservation.get("capture_artifact_sha256") != binary_sha
+                or preservation.get("compiled_artifact_sha256") != binary_sha
+                or (bundle is not None and
+                    (preservation.get("capture_bundle_info_path") != bundle["info_path"]
+                     or preservation.get("capture_bundle_info_sha256") != bundle["info_sha256"]
+                     or preservation.get("capture_bundle_identifier") != bundle["identifier"]))
+                or (compiled_path, binary_sha) not in matches):
+            reasons.append("preservation receipt does not bind this source and copied compiler artifact")
+    elif receipt.get("build_cwd") != source["path"] or not any(Path(name).resolve() == binary for name, _ in matches):
+        reasons.append("distinct source or copied binary requires a hash-bound preservation receipt")
+    if not matches:
         reasons.append("binary SHA is not the one produced by this compiler run")
     return {"state": "VerifiedBuildReceipt" if not reasons else "UnprovenBinarySource",
             "reasons": reasons, "receipt_path": str(path), "receipt_sha256": sha256(path),
+            "build_cwd": receipt.get("build_cwd"), "compiled_artifact_path": compiled_path or
+                (next((name for name, _ in matches if Path(name).resolve() == binary), None)),
+            "capture_source_path": source["path"], "capture_artifact_path": str(binary),
+            "capture_artifact_sha256": binary_sha,
+            "capture_bundle": bundle,
+            "preservation_receipt_path": str(preservation_path) if preservation_path else None,
+            "preservation_receipt_sha256": preservation_sha,
             "command_sha256": receipt.get("command_sha256"), "raw_log_sha256": receipt.get("raw_log_sha256")}
 
 
@@ -486,7 +683,10 @@ def run(args: argparse.Namespace) -> Path:
         raise ValueError(f"output directory must be empty to prevent stale frame evidence: {out}")
     out.mkdir(parents=True, exist_ok=True)
     plan = require_plan(args.plan)
+    if symlink_in_artifact_path(args.binary):
+        raise ValueError("capture executable must be an owned regular file, not a symlink")
     expected = args.binary.resolve(strict=True)
+    bundle = bundle_identity(expected)
     actual = process_executable(args.pid)
     if actual != expected:
         raise ValueError(f"PID {args.pid} runs {actual}, not {expected}")
@@ -500,10 +700,11 @@ def run(args: argparse.Namespace) -> Path:
     tool = tool_identity()
     if tool["status_porcelain"]:
         raise ValueError("native recorder tool checkout is not frozen clean")
-    admission = compiler_admission(args.compiler_receipt, expected, source)
+    admission = compiler_admission(args.compiler_receipt, expected, source, args.preservation_receipt)
     manifest: dict[str, Any] = {"schema": 1, "class": "native_window_compositor_and_ax",
         "live_owner_index_admission": "unverified; pair with a production owner/read receipt",
         "name": plan["name"], "case": plan["case"], "pid": args.pid, "binary": {"path": str(expected), "sha256": sha256(expected)},
+        "bundle": bundle,
         "plan": {"path": str(args.plan.resolve()), "sha256": sha256(args.plan.resolve())},
         "tool": tool,
         "source": source, "inputs": inputs, "binary_source_admission": admission,
@@ -545,11 +746,16 @@ def run(args: argparse.Namespace) -> Path:
             raise ValueError(f"missing frame {path}")
         actual_files.append({"file": frame["file"], "at_ms": frame["time_ms"],
                              "size_px": [frame["width_px"], frame["height_px"]], "sha256": sha256(path),
+                             "pts_seconds": frame.get("pts_seconds"), "host_capture_ns": frame.get("host_capture_ns"),
+                             "ax_sample_start_host_ns": frame.get("ax", {}).get("sample_start_host_ns"),
+                             "ax_sample_end_host_ns": frame.get("ax", {}).get("sample_end_host_ns"),
                              "focused": frame.get("ax", {}).get("focused")})
     result_row = read_jsonl(out / "result.jsonl")[0]
     if result_row["captured_frames"] != len(frames) or result_row.get("stream_failure"):
         raise ValueError("native stream failed or frame count mismatched")
     manifest["window"] = read_jsonl(out / "window.jsonl")[0]
+    if bundle and manifest["window"].get("bundle_identifier") != bundle["identifier"]:
+        raise ValueError("running PID bundle identifier differs from the copied bundle Info.plist")
     if plan.get("expected_reduce_motion") is not None and manifest["window"]["reduce_motion"] != plan["expected_reduce_motion"]:
         raise ValueError("macOS reduce-motion state did not match this capture plan")
     manifest["actions"] = read_jsonl(out / "actions.jsonl")
@@ -572,10 +778,11 @@ def run(args: argparse.Namespace) -> Path:
     manifest["passed_native_checks"] = not manifest["analysis"]["failures"]
     stable = process_executable(args.pid) == expected and sha256(expected) == manifest["binary"]["sha256"]
     stable = stable and source_identity(source_root) == source and tool_identity() == tool
+    stable = stable and bundle_identity(expected) == bundle
     stable = stable and sha256(args.plan.resolve()) == manifest["plan"]["sha256"]
     if args.compiler_receipt:
         stable = stable and sha256(args.compiler_receipt.resolve()) == admission["receipt_sha256"]
-        stable = stable and compiler_admission(args.compiler_receipt, expected, source)["state"] == admission["state"]
+        stable = stable and compiler_admission(args.compiler_receipt, expected, source, args.preservation_receipt) == admission
     stable = stable and all(sha256(Path(item["path"])) == item["sha256"] for item in inputs)
     if args.owner_receipt:
         stable = stable and sha256(args.owner_receipt.resolve()) == manifest["owner_receipt"]["sha256"]
@@ -599,6 +806,7 @@ def main() -> int:
     parser.add_argument("--input", type=Path, action="append", default=[], help="immutable live input file to hash; repeat")
     parser.add_argument("--owner-receipt", type=Path, help="independent production owner/read evidence to hash, not inferred from pixels")
     parser.add_argument("--compiler-receipt", type=Path, help="completed frozen-source build receipt; absent/mismatch is UnprovenBinarySource")
+    parser.add_argument("--preservation-receipt", type=Path, help="hash-bound copy/source receipt required when candidate checkout or executable path differs from the original build")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--recorder", type=Path, help="precompiled Swift recorder; otherwise swiftc compiles into --out")
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")

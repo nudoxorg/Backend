@@ -101,6 +101,13 @@ func axSnapshot(pid: pid_t, full: Bool) -> [String: Any] {
     }
     return result
 }
+func timedAXSnapshot(pid: pid_t, full: Bool) -> [String: Any] {
+    let start = DispatchTime.now().uptimeNanoseconds
+    var result = axSnapshot(pid: pid, full: full)
+    result["sample_start_host_ns"] = start
+    result["sample_end_host_ns"] = DispatchTime.now().uptimeNanoseconds
+    return result
+}
 
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private let lock = NSLock()
@@ -125,6 +132,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         lock.lock(); failure = error.localizedDescription; lock.unlock()
     }
     func stream(_ stream: SCStream, sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        let hostCaptureNS = DispatchTime.now().uptimeNanoseconds
         guard type == .screen, CMSampleBufferIsValid(sampleBuffer),
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         // Serialize the encode/write path. ScreenCaptureKit may call us on
@@ -134,7 +142,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard count < maxFrames else { dropped += 1; return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid else { dropped += 1; return }
-        if firstPTS == nil { firstPTS = pts; firstFrameTime = DispatchTime.now().uptimeNanoseconds }
+        if firstPTS == nil { firstPTS = pts; firstFrameTime = hostCaptureNS }
         let relativeMs = max(0, CMTimeGetSeconds(CMTimeSubtract(pts, firstPTS!)) * 1000)
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
@@ -148,7 +156,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         do {
             try png.write(to: frameDir.appendingPathComponent(file), options: .atomic)
             let row: [String: Any] = ["index": count, "time_ms": relativeMs,
-                "pts_seconds": CMTimeGetSeconds(pts), "width_px": width,
+                "pts_seconds": CMTimeGetSeconds(pts), "host_capture_ns": hostCaptureNS, "width_px": width,
                 "height_px": height, "file": "frames/" + file, "ax": lastFocus]
             frames.write(jsonLine(row))
             count += 1
@@ -158,13 +166,66 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     // sampler queue so a slow accessibility tree never holds the SCStream
     // callback or changes the recorded presentation cadence.
     func sampleAX() {
-        let sampled = axSnapshot(pid: pid, full: false)
+        let sampled = timedAXSnapshot(pid: pid, full: false)
         lock.lock(); lastFocus = sampled; lock.unlock()
     }
     func status() -> (Int, Int, String?, UInt64?) {
         lock.lock(); defer { lock.unlock() }
         return (count, dropped, failure, firstFrameTime)
     }
+}
+
+func selectedWindowBounds(pid: pid_t, windowID: CGWindowID) -> CGRect? {
+    guard let rows = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
+          let row = rows.first,
+          (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+          (row[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true,
+          let bounds = row[kCGWindowBounds as String] as? [String: NSNumber],
+          let x = bounds["X"]?.doubleValue, let y = bounds["Y"]?.doubleValue,
+          let width = bounds["Width"]?.doubleValue, let height = bounds["Height"]?.doubleValue,
+          width > 0, height > 0 else { return nil }
+    return CGRect(x: x, y: y, width: width, height: height)
+}
+func inside(_ point: CGPoint, _ rect: CGRect) -> Bool {
+    point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY
+}
+func pointHitsSelectedWindow(_ point: CGPoint, pid: pid_t, windowID: CGWindowID) -> Bool {
+    guard let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+        return false
+    }
+    for row in rows {
+        guard let bounds = row[kCGWindowBounds as String] as? [String: NSNumber],
+              let x = bounds["X"]?.doubleValue, let y = bounds["Y"]?.doubleValue,
+              let width = bounds["Width"]?.doubleValue, let height = bounds["Height"]?.doubleValue,
+              inside(point, CGRect(x: x, y: y, width: width, height: height)) else { continue }
+        return (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID &&
+            (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+    }
+    return false
+}
+func sameSelectedAXWindow(_ window: AXUIElement, windowID: CGWindowID, bounds: CGRect) -> Bool {
+    if let number = axValue(window, "AXWindowNumber") as? NSNumber {
+        return number.uint32Value == windowID
+    }
+    guard let rect = axRect(window) else { return false }
+    return abs(rect["x", default: .infinity] - bounds.minX) <= 2 &&
+        abs(rect["y", default: .infinity] - bounds.minY) <= 2 &&
+        abs(rect["width", default: .infinity] - bounds.width) <= 2 &&
+        abs(rect["height", default: .infinity] - bounds.height) <= 2
+}
+func targetBelongsToSelectedWindow(_ target: AXUIElement, windowID: CGWindowID, bounds: CGRect) -> Bool {
+    var current = target
+    for _ in 0..<20 {
+        if axString(current, kAXRoleAttribute) == (kAXWindowRole as String) {
+            return sameSelectedAXWindow(current, windowID: windowID, bounds: bounds)
+        }
+        guard let parent = axElement(current, kAXParentAttribute) else { return false }
+        current = parent
+    }
+    return false
+}
+func readOnly(_ reason: String) -> [String: Any] {
+    ["disposition": "ReadOnlyOutOfScope", "reason": reason]
 }
 
 func findAX(pid: pid_t, title: String, role: String?) throws -> AXUIElement {
@@ -202,29 +263,41 @@ func flags(_ modifiers: [String]?) throws -> CGEventFlags {
     }
     return value
 }
-func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
+func send(_ action: Action, pid: pid_t, windowID: CGWindowID) throws -> [String: Any] {
     if action.kind != "probe" && NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
-        throw NSError(domain: "native-motion", code: 17,
-            userInfo: [NSLocalizedDescriptionKey: "target app is not frontmost at native input"])
+        return readOnly("target PID is not frontmost")
+    }
+    let selectedBounds = selectedWindowBounds(pid: pid, windowID: windowID)
+    if action.kind != "probe" && selectedBounds == nil {
+        return readOnly("selected PID/SCWindow is no longer visible")
     }
     switch action.kind {
     case "probe":
-        return ["ax": axSnapshot(pid: pid, full: true)]
+        return ["ax": timedAXSnapshot(pid: pid, full: true), "disposition": "ReadOnlyProbe"]
     case "key":
         guard let keycode = action.keycode, (0...127).contains(keycode) else { throw NSError(domain: "native-motion", code: 2) }
+        let app = AXUIElementCreateApplication(pid)
+        guard let selectedBounds, let focusedWindow = axElement(app, kAXFocusedWindowAttribute),
+              sameSelectedAXWindow(focusedWindow, windowID: windowID, bounds: selectedBounds) else {
+            return readOnly("keyboard focus is outside the selected PID/SCWindow")
+        }
         let source = CGEventSource(stateID: .hidSystemState)
         let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keycode), keyDown: true)!
         let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keycode), keyDown: false)!
         let modifierFlags = try flags(action.modifiers)
         down.flags = modifierFlags; up.flags = modifierFlags
         down.postToPid(pid); up.postToPid(pid)
-        return ["keycode": keycode, "modifiers": action.modifiers ?? []]
+        return ["keycode": keycode, "modifiers": action.modifiers ?? [], "disposition": "Posted"]
     case "move", "click", "click_ax":
         let point: CGPoint
         var targetEvidence: [String: Any] = [:]
         if action.kind == "click_ax" {
             guard let title = action.title else { throw NSError(domain: "native-motion", code: 3) }
             let target = try findAX(pid: pid, title: title, role: action.role)
+            guard let selectedBounds,
+                  targetBelongsToSelectedWindow(target, windowID: windowID, bounds: selectedBounds) else {
+                return readOnly("AX target belongs to another app window")
+            }
             guard let rect = axRect(target), let x = rect["x"], let y = rect["y"],
                   let width = rect["width"], let height = rect["height"], width > 0, height > 0 else {
                 throw NSError(domain: "native-motion", code: 3,
@@ -236,6 +309,10 @@ func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
             guard let x = action.x, let y = action.y else { throw NSError(domain: "native-motion", code: 3) }
             point = CGPoint(x: x, y: y) // Global screen points, recorded verbatim.
         }
+        guard let selectedBounds, inside(point, selectedBounds),
+              pointHitsSelectedWindow(point, pid: pid, windowID: windowID) else {
+            return readOnly("pointer point is outside the selected PID/SCWindow")
+        }
         let source = CGEventSource(stateID: .hidSystemState)
         let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!
         move.post(tap: .cghidEventTap)
@@ -244,6 +321,9 @@ func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
             CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
         }
         targetEvidence["global_point_pt"] = ["x": point.x, "y": point.y]
+        targetEvidence["selected_window_bounds_pt"] = ["x": selectedBounds.minX, "y": selectedBounds.minY,
+            "width": selectedBounds.width, "height": selectedBounds.height]
+        targetEvidence["disposition"] = "Posted"
         return targetEvidence
     case "resize":
         guard let width = action.width, let height = action.height, width >= 320, height >= 240 else {
@@ -251,16 +331,19 @@ func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
         }
         let app = AXUIElementCreateApplication(pid)
         guard let window = axElement(app, kAXFocusedWindowAttribute) else {
-            throw NSError(domain: "native-motion", code: 5, userInfo: [NSLocalizedDescriptionKey: "no focused AX window"])
+            return readOnly("no focused AX window for selected PID")
         }
         var size = CGSize(width: width, height: height)
         let before = axRect(window) ?? [:]
+        guard let selectedBounds, sameSelectedAXWindow(window, windowID: windowID, bounds: selectedBounds) else {
+            return readOnly("focused AX window does not match selected PID/SCWindow")
+        }
         guard let value = AXValueCreate(.cgSize, &size),
               AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value) == .success else {
             throw NSError(domain: "native-motion", code: 6, userInfo: [NSLocalizedDescriptionKey: "AX window resize rejected"])
         }
         return ["window_before_pt": before, "requested_size_pt": ["width": width, "height": height],
-                "window_after_pt": axRect(window) ?? [:]]
+                "window_after_pt": axRect(window) ?? [:], "disposition": "Posted"]
     default: throw NSError(domain: "native-motion", code: 7)
     }
 }
@@ -355,6 +438,7 @@ func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
         try stream.addStreamOutput(recorder, type: .screen, sampleHandlerQueue: DispatchQueue(label: "native-motion.capture"))
         let metadata: [String: Any] = ["pid": pid, "window_id": window.windowID,
             "window_title": window.title ?? "", "window_frame_pt": ["x": frame.origin.x, "y": frame.origin.y, "width": frame.width, "height": frame.height],
+            "bundle_identifier": NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "",
             "requested_width_px": config.width, "requested_height_px": config.height,
             "capture_scope": scope, "display_id": display.map { $0.displayID as Any } ?? NSNull(),
             "display_frame_pt": display.map { ["x": $0.frame.origin.x, "y": $0.frame.origin.y,
@@ -379,19 +463,24 @@ func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
         axSampler.setEventHandler { recorder.sampleAX() }
         axSampler.resume()
         defer { axSampler.cancel() }
-        actions.write(jsonLine(["phase": "initial", "at_ms": 0, "ax": axSnapshot(pid: pid, full: true)]))
+        actions.write(jsonLine(["phase": "initial", "at_ms": 0, "ax": timedAXSnapshot(pid: pid, full: true)]))
         for action in plan.actions.sorted(by: { $0.at_ms < $1.at_ms }) {
             let target = started + UInt64(action.at_ms) * 1_000_000
             let now = DispatchTime.now().uptimeNanoseconds
             if target > now { try await Task.sleep(nanoseconds: target - now) }
-            let before = axSnapshot(pid: pid, full: false)
-            let actualMs = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            let before = timedAXSnapshot(pid: pid, full: false)
+            let dispatchHostNS = DispatchTime.now().uptimeNanoseconds
+            let actualMs = Double(dispatchHostNS - started) / 1_000_000
             do {
-                let delivered = try send(action, pid: pid)
+                let delivered = try send(action, pid: pid, windowID: window.windowID)
+                let postedHostNS = DispatchTime.now().uptimeNanoseconds
                 actions.write(jsonLine(["phase": "action", "label": action.label, "kind": action.kind,
-                    "requested_ms": action.at_ms, "actual_ms": actualMs, "before": before, "posted": delivered]))
+                    "requested_ms": action.at_ms, "actual_ms": actualMs,
+                    "dispatch_host_ns": dispatchHostNS, "posted_host_ns": postedHostNS,
+                    "before": before, "posted": delivered]))
             } catch {
-                actions.write(jsonLine(["phase": "action_failed", "label": action.label, "actual_ms": actualMs, "error": String(describing: error)]))
+                actions.write(jsonLine(["phase": "action_failed", "label": action.label, "actual_ms": actualMs,
+                    "dispatch_host_ns": dispatchHostNS, "error": String(describing: error)]))
                 throw error
             }
         }
@@ -399,7 +488,7 @@ func send(_ action: Action, pid: pid_t) throws -> [String: Any] {
         let now = DispatchTime.now().uptimeNanoseconds
         if end > now { try await Task.sleep(nanoseconds: end - now) }
         try await stream.stopCapture()
-        actions.write(jsonLine(["phase": "final", "at_ms": plan.duration_ms, "ax": axSnapshot(pid: pid, full: true),
+        actions.write(jsonLine(["phase": "final", "at_ms": plan.duration_ms, "ax": timedAXSnapshot(pid: pid, full: true),
             "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion]))
         let (count, dropped, failure, _) = recorder.status()
         try jsonLine(["captured_frames": count, "dropped_frames": dropped, "stream_failure": failure.map { $0 as Any } ?? NSNull()])

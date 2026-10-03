@@ -35,6 +35,13 @@ def assess(catalog: dict, manifests: list[dict]) -> dict:
             problems.append("wrong capture evidence class")
         if not manifest.get("passed_native_checks"):
             problems.append("native AX, action, pixel or frame coverage failed")
+        if manifest.get("capture_inputs_stable") is not True:
+            problems.append("capture binary/source/tool evidence changed or was not checked")
+        if manifest.get("analysis", {}).get("clock_alignment", {}).get("covered") is not True:
+            problems.append("native frame/input clock alignment is uncovered")
+        ax_frames = manifest.get("analysis", {}).get("fresh_ax_frame_count")
+        if type(ax_frames) is not int or ax_frames < 1:
+            problems.append("paired native AX samples are absent")
         if manifest.get("binary_source_admission", {}).get("state") != "VerifiedBuildReceipt":
             problems.append("UnprovenBinarySource")
         if required["live_index"] and (not manifest.get("inputs") or not manifest.get("owner_receipt")):
