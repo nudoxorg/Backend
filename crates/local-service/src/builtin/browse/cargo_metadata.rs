@@ -1306,7 +1306,7 @@ fn cargo_selected_lockfile_path_with_override(
     if let Some(value) = environment {
         let value = value
             .to_str()
-            .map_err(|_| "CARGO_RESOLVER_LOCKFILE_PATH is not UTF-8".to_owned())?;
+            .ok_or_else(|| "CARGO_RESOLVER_LOCKFILE_PATH is not UTF-8".to_owned())?;
         let path = PathBuf::from(value);
         validate_cargo_lockfile_path(&path)?;
         return Ok(path);
@@ -1650,6 +1650,23 @@ mod tests {
             .expect("environment override is unambiguous"),
             environment_path,
             "the Cargo environment override takes precedence over file values"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lockfile_environment_override_rejects_non_utf8_without_fallback() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let non_utf8 = std::ffi::OsStr::from_bytes(b"\xff");
+        let result = cargo_selected_lockfile_path_with_override(
+            Path::new("/request"),
+            Path::new("/workspace"),
+            Some(non_utf8),
+        );
+        assert_eq!(
+            result.expect_err("non-UTF-8 selected lock path must refuse"),
+            "CARGO_RESOLVER_LOCKFILE_PATH is not UTF-8"
         );
     }
 
