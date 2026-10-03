@@ -4,7 +4,7 @@ This extends the [2 October exhaustive checkpoint](../checkpoint-2026-10-02/READ
 
 ## Current continuation
 
-The [22:20 UTC continuation](CONTINUATION-2220.md) supersedes the present-tense status below, including the [20:38 UTC continuation](CONTINUATION-2038.md). It records the later composed source, actual runtime gates, native-evidence qualifications, compiler role and shape contracts, and the remote local-fallback outcome. The [19:27 brief](CONTINUATION-1927.md) and [17:20 brief](CONTINUATION-1720.md) remain historical evidence. The campaign remains active.
+The [23:25 UTC continuation](CONTINUATION-2325.md) supersedes the present-tense status below and the [22:20 UTC continuation](CONTINUATION-2220.md). It records the reviewed composition, actual GUI16-pass/7-failure and backend2-pass/2-failure gates, preserved capacity breach, next frozen candidates, source-fact and IR binding work, and remaining native/remote/closure acceptance. The [20:38 brief](CONTINUATION-2038.md), [19:27 brief](CONTINUATION-1927.md) and [17:20 brief](CONTINUATION-1720.md) remain historical evidence. The campaign remains active.
 
 ## Earlier checkpoint: 13:40 UTC
 
