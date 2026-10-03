@@ -157,10 +157,16 @@ fn row_names(rig: &mut Rig) -> Vec<String> {
 /// The sidebar takes the keyboard (the reader had it).
 fn into_the_sidebar(rig: &mut Rig) {
     let zone = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0;
-    if zone(rig) != super::focus::Zone::Shelf {
+    let reader_stops = rig.shell.read_with(rig.cx, |shell, cx| {
+        shell.reader_targets(cx).list_probe().upgrade().map_or(0, |list| list.borrow().len())
+    });
+    // Shift-Tab first walks the Reader's mounted native stops, then crosses
+    // zones. Bound the walk by that exact list and the Shell's zone count.
+    for _ in 0..reader_stops + super::focus::Zone::ALL.len() {
+        if zone(rig) == super::focus::Zone::Shelf { break; }
         rig.keys("shift-tab");
     }
-    assert_eq!(zone(rig), super::focus::Zone::Shelf, "shift-tab from the reader lands on the shelf");
+    assert_eq!(zone(rig), super::focus::Zone::Shelf, "native Shift-Tab walk reaches the shelf after the Reader's mounted stops");
 }
 
 /// RIG evidence (fixture reads): the sidebar's four lenses, the package intro

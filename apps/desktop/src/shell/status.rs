@@ -593,7 +593,12 @@ mod tests {
         gate.disable_restart();
         rig.settle();
         let tree = native_tree(&mut rig);
-        let node = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"].as_str() == Some("Try again")).expect("disabled native retry");
+        let retry_id = format!("{:?}", gpui::ElementId::Name("status-retry".into()));
+        let node = tree["nodes"].as_object().expect("nodes").values().find(|node|
+            node["element_id"].as_str() == Some(retry_id.as_str())
+                && node["aria"]["role"].as_str() == Some("Button")
+                && node["aria"]["label"].as_str() == Some("Try again")
+        ).expect("disabled native retry button");
         assert_eq!(node["aria"]["disabled"].as_bool(), Some(true));
         assert!(!node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
         let retry = crate::shell::tests::native_bounds_id(&mut rig, "status-retry", "Button", "Try again", false).expect("visible disabled retry");

@@ -1127,11 +1127,24 @@ fn covered_package_licence_cannot_complete_a_native_press_from_the_old_visit(
 
     let mut rig = rig(cx, None, 1440.0, 900.0);
     read_and_open(&mut rig);
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let shell = rig.shell.clone();
     rig.cx.update(|window, cx| {
-        assert!(targets.focus_native("pkg-licence", window, cx));
-        targets.focus("pkg-licence");
+        window.replace_root(cx, |window, cx| {
+            gpui_component::Root::new(shell, window, cx).bordered(false)
+        });
+        window.set_a11y_forced(true);
     });
+    rig.settle();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let mut reached = false;
+    for _ in 0..64 {
+        rig.keys("tab");
+        reached = rig.cx.update(|window, _| {
+            targets.native_focused(window).as_deref() == Some("pkg-licence")
+        });
+        if reached { break; }
+    }
+    assert!(reached, "native Tab reaches the Licence control before the interrupted press");
     assert!(native_licence_expanded(&mut rig));
     rig.native_press("enter");
     assert!(!native_licence_expanded(&mut rig), "the explicit closed choice survives focus loss");
@@ -1166,6 +1179,9 @@ fn licence_native_shell_native_uses_one_resolved_disclosure(cx: &mut TestAppCont
     assert!(native_licence_expanded(&mut rig), "hover opened the actual Stamp");
     click(&mut rig, at);
     assert!(!native_licence_expanded(&mut rig), "native Click must close hover-open details");
+    // The pointer left native focus on Licence; first walk to an earlier
+    // Reader target so `j` proves the forward shell path back to the stamp.
+    walk_back_to(&mut rig, "pkg-module-glyph", 64);
     walk_to(&mut rig, "pkg-licence", 6);
     rig.keys("enter");
     assert!(native_licence_expanded(&mut rig), "shell Target must reopen the same Stamp state");
