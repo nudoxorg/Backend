@@ -204,7 +204,9 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
             kept.push(Row::Note("Nothing here matches.".into()));
         }
         listing.rows = kept;
-        listing.matched = Some(Matched { shown, of });
+        // A note-only scope does not contain a completed list of names. Keep
+        // its gap visible without painting a misleading "0 of 0" reading.
+        listing.matched = (of > 0).then_some(Matched { shown, of });
     }
     if let Ok(search) = SearchQuery::new(query, SearchQuery::DEFAULT_LIMIT) {
         let mut widen = Item::new(
@@ -1142,6 +1144,7 @@ mod tests {
                     let said = words(&held);
                     assert!(!said.iter().any(|words| words == empty), "{said:?}");
                     assert!(said.iter().any(|words| words.contains(note)), "{said:?}");
+                    assert_eq!(held.matched, None, "unknown note-only scopes cannot expose a zero total");
                 }
             }
         }
