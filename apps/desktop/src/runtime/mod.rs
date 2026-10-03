@@ -21,6 +21,7 @@ pub mod mapping;
 pub(crate) mod offload;
 pub(crate) mod owner;
 pub mod page_mapping;
+pub(crate) mod persistence_writer;
 pub(crate) mod releases;
 pub mod reads;
 pub(crate) mod snapshot;

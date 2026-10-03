@@ -15,7 +15,8 @@ use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
 use crate::model::{AppSnapshot, ConnectionStatus, PersistentState};
 use crate::navigation::{FolderPickerOutcome, Intent, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use super::persistence_writer::{PersistenceWriter, WriteRevision, WriteFailure, WriteAck, WriteReceiver};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -101,11 +102,23 @@ impl QueuedIntent {
     fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
+struct IndexPreflight {
+    intent: Intent,
+    attachment: OwnerAttachment,
+    revision: WriteRevision,
+    _task: Option<Task<()>>,
+}
+
 /// The complete UI-thread state owner for one desktop window.
 pub struct UiRootEntity {
     runtime: DesktopRuntime,
     pending: Vec<QueuedIntent>,
     persistence: Option<PersistentState>,
+    persistence_writer: Option<PersistenceWriter>,
+    persistence_wake: Option<Task<()>>,
+    persistence_outcome: Option<WriteRevision>,
+    index_preflights: BTreeMap<crate::core::LocalProjectId, IndexPreflight>,
+    quitting: bool,
     bootstrap: Option<(crate::host::bootstrap::Binding, Arc<AppSnapshot>)>,
     folder_picker_task: Option<Task<()>>,
     /// One bounded cadence task for accepted/active durable operation reads.
@@ -140,6 +153,11 @@ impl UiRootEntity {
             // catalog or a second, view-owned bootstrap path.
             pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
             persistence,
+            persistence_writer: None,
+            persistence_wake: None,
+            persistence_outcome: None,
+            index_preflights: BTreeMap::new(),
+            quitting: false,
             bootstrap: None,
             folder_picker_task: None,
             index_poll: None,
@@ -195,7 +213,7 @@ impl UiRootEntity {
     /// Returns whether engine work is in flight or waiting to be drained.
     #[must_use]
     pub fn has_pending_work(&self) -> bool {
-        self.runtime.has_pending_work()
+        self.runtime.has_pending_work() || !self.index_preflights.is_empty()
     }
 
     /// [`Self::has_pending_work`] apart from indexing (journey harness).
@@ -268,32 +286,151 @@ impl UiRootEntity {
     /// failed save leaves the folder unsent. Persistence already belongs to
     /// this root, and the exact owner lease is checked again after publication.
     fn dispatch_index(&mut self, intent: Intent, attachment: OwnerAttachment, cx: &mut Context<Self>) {
-        let Some(persistence) = &self.persistence else {
-            if let Intent::IndexProject { project, basis, .. } = &intent {
-                let events = self.runtime.reject_unsent_index(project, *basis,
-                    "The index request cannot start because its durable operation key cannot be saved. The folder remains on your shelf.".into());
-                self.apply_events(events, cx);
-            }
+        let Intent::IndexProject { project, .. } = &intent else { return; };
+        let project = project.clone();
+        if self.quitting || self.index_preflights.contains_key(&project) { return; }
+        if self.index_preflights.len() >= super::persistence_writer::MAX_INDEX_PREFLIGHTS {
+            self.reject_index_preflight(&intent, &attachment, "Several index requests are already waiting to be saved. Nothing was sent for this folder; try again after they settle.".into(), cx);
             return;
+        }
+        if let Err(error) = self.ensure_persistence_writer(cx) {
+            self.reject_index_preflight(&intent, &attachment, error.message, cx);
+            return;
+        }
+        let submitted = crate::navigation::reduce(&self.snapshot(), intent.clone()).snapshot;
+        let claims = self.pending_claims(&submitted);
+        let writer = self.persistence_writer.as_ref().expect("writer admitted");
+        let saved = writer.barrier(move || overlay_claims(PersistentState::project(&submitted), claims));
+        let (revision, acknowledgment) = match saved {
+            Ok(saved) => saved,
+            Err(error) => { self.reject_index_preflight(&intent, &attachment, error.message, cx); return; }
         };
-        {
-            let submitted = crate::navigation::reduce(&self.snapshot(), intent.clone()).snapshot;
-            if let Err(error) = persistence.save(&PersistentState::project(&submitted)) {
-                if let Intent::IndexProject { project, basis, .. } = intent {
-                    let message: Arc<str> = format!("The folder is still on your shelf, but its index request could not be saved: {error}")
-                        .chars().filter(|character| !character.is_control()).take(240).collect::<String>().into();
-                    // The exact attachment still owns this synchronous preflight.
-                    if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) {
-                        let events = self.runtime.reject_unsent_index(&project, basis, message);
-                        self.apply_events(events, cx);
-                    }
-                }
-                return;
+        self.index_preflights.insert(project.clone(), IndexPreflight { intent, attachment, revision, _task: None });
+        let completed_project = project.clone();
+        let task = cx.spawn(async move |root, cx| {
+            let saved = acknowledgment.recv().await.unwrap_or_else(|_| Err(WriteFailure { message: "The local state writer closed before confirming this index request. Nothing was sent.".into() }));
+            let _ = root.update(cx, |root, cx| root.complete_index_preflight(completed_project, revision, saved, cx));
+        });
+        if let Some(preflight) = self.index_preflights.get_mut(&project) { preflight._task = Some(task); }
+    }
+
+    fn complete_index_preflight(&mut self, project: crate::core::LocalProjectId, revision: WriteRevision, result: Result<WriteAck, WriteFailure>, cx: &mut Context<Self>) {
+        if self.quitting || !self.index_preflights.get(&project).is_some_and(|pending| pending.revision == revision)
+            || !self.persistence_writer.as_ref().is_some_and(|writer| writer.accepts(revision)) { return; }
+        let Some(pending) = self.index_preflights.remove(&project) else { return; };
+        let Intent::IndexProject { basis, operation, request, .. } = &pending.intent else { return; };
+        let live = self.snapshot().key().same_authority(*basis)
+            && self.snapshot().workspace().projects.iter().any(|row| row.id == project
+                && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none() && row.operation.is_none())
+            && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&pending.attachment));
+        let result = result.and_then(|ack| {
+            if ack.revision != revision || !ack.state.shelf.iter().any(|row| row.local_path == project.as_str()
+                && row.phase == crate::model::PersistedProjectPhase::Indexing
+                && row.native_path.as_ref() == project.native_wire().ok().as_ref()
+                && row.operation.as_ref().is_some_and(|saved| saved == operation && saved.belongs_to(&project))) {
+                return Err(WriteFailure { message: "The saved state did not confirm this exact index operation. Nothing was sent.".into() });
             }
+            Ok(ack)
+        });
+        self.record_persistence_outcome(revision, result.as_ref().map(|_| ()).map_err(Clone::clone), cx);
+        if !live {
+            // A removed/cancelled row is never resurrected. A still-unsent row
+            // gets an explicit local refusal, without an owner terminal claim.
+            let current_basis = self.snapshot().key();
+            let events = self.runtime.reject_unsent_index(&project, current_basis,
+                "The index owner changed while this request was being saved. Nothing was sent; retry when the owner is available.".into());
+            self.apply_events(events, cx);
+            return;
         }
-        if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) {
-            self.dispatch(intent, cx);
+        match result {
+            Ok(_) => {
+                // The saved claim is the authorization; request identity is
+                // still the exact root-owned request captured before saving.
+                debug_assert!(matches!(&pending.intent, Intent::IndexProject { request: current, .. } if current == request));
+                self.dispatch_runtime(pending.intent, cx);
+            }
+            Err(error) => self.reject_index_preflight(&pending.intent, &pending.attachment, error.message, cx),
         }
+    }
+
+    fn reject_index_preflight(&mut self, intent: &Intent, attachment: &OwnerAttachment, message: Arc<str>, cx: &mut Context<Self>) {
+        if let Intent::IndexProject { project, basis, .. } = intent
+            && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(attachment)) {
+            let message = format!("The folder remains on your shelf, but this index request could not be saved: {message}")
+                .chars().filter(|c| !c.is_control()).take(300).collect::<String>().into();
+            let events = self.runtime.reject_unsent_index(project, *basis, message);
+            self.apply_events(events, cx);
+        }
+    }
+
+    fn pending_claims(&self, snapshot: &AppSnapshot) -> Vec<(crate::core::LocalProjectId, crate::model::IndexOperationClaim)> {
+        self.index_preflights.values().filter_map(|pending| {
+            let Intent::IndexProject { project, operation, .. } = &pending.intent else { return None; };
+            snapshot.workspace().projects.iter().any(|row| row.id == *project && row.phase == crate::model::ProjectPhase::Indexing
+                && row.request.is_none() && row.operation.is_none()).then(|| (project.clone(), operation.clone()))
+        }).collect()
+    }
+
+    fn ensure_persistence_writer(&mut self, cx: &mut Context<Self>) -> Result<(), WriteFailure> {
+        let persistence = self.persistence.as_ref().ok_or_else(|| WriteFailure { message: "The index request cannot start because its durable operation key cannot be saved. The folder remains on your shelf.".into() })?;
+        if let Some(writer) = &self.persistence_writer {
+            if writer.path() != persistence.path() { return Err(WriteFailure { message: "The local state path changed while this window was open. Nothing was sent.".into() }); }
+        } else { self.persistence_writer = Some(PersistenceWriter::start(persistence.clone())?); }
+        self.attach_persistence_wake(cx);
+        Ok(())
+    }
+
+    fn attach_persistence_wake(&mut self, cx: &mut Context<Self>) {
+        if self.persistence_wake.is_some() { return; }
+        let Some(mut wake) = self.persistence_writer.as_mut().and_then(PersistenceWriter::take_wake) else { return; };
+        self.persistence_wake = Some(cx.spawn(async move |root, cx| {
+            while wake.wait().await.is_some() {
+                if root.update(cx, |root, cx| {
+                    if let Some((revision, result)) = root.persistence_writer.as_ref().and_then(PersistenceWriter::take_outcome) {
+                        root.record_persistence_outcome(revision, result, cx);
+                    }
+                }).is_err() { break; }
+            }
+        }));
+    }
+
+    fn persist_snapshot(&mut self, snapshot: &AppSnapshot, cx: &mut Context<Self>) {
+        if self.persistence.is_none() || self.quitting { return; }
+        if let Err(error) = self.ensure_persistence_writer(cx) {
+            self.runtime.set_persistence_fault(Some(error.message));
+            self.publish_snapshot(cx);
+            return;
+        }
+        let state = overlay_claims(PersistentState::project(snapshot), self.pending_claims(snapshot));
+        if let Err(error) = self.persistence_writer.as_ref().expect("writer admitted").ordinary(state) {
+            self.runtime.set_persistence_fault(Some(error.message));
+            self.publish_snapshot(cx);
+        }
+    }
+
+    fn record_persistence_outcome(&mut self, revision: WriteRevision, result: Result<(), WriteFailure>, cx: &mut Context<Self>) {
+        if !self.persistence_writer.as_ref().is_some_and(|writer| writer.accepts(revision))
+            || self.persistence_outcome.is_some_and(|last| last > revision) { return; }
+        self.persistence_outcome = Some(revision);
+        self.runtime.set_persistence_fault(result.err().map(|error| error.message));
+        self.publish_snapshot(cx);
+    }
+
+    fn finish_persistence(&mut self, cx: &mut Context<Self>) -> Option<WriteReceiver> {
+        self.quitting = true;
+        self.pending.clear();
+        self.index_poll = None;
+        let events = self.runtime.poll();
+        self.apply_events(events, cx);
+        if self.persistence.is_none() { return None; }
+        if let Err(error) = self.ensure_persistence_writer(cx) {
+            self.runtime.set_persistence_fault(Some(error.message));
+            return None;
+        }
+        let state = overlay_claims(PersistentState::project(&self.snapshot()), self.pending_claims(&self.snapshot()));
+        let writer = self.persistence_writer.as_ref().expect("writer admitted");
+        let _ = writer.ordinary(state);
+        Some(writer.finish())
     }
 
     /// Hands the current snapshot to the store, which emits one typed event
@@ -361,8 +498,18 @@ impl UiRootEntity {
 
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if matches!(&intent, Intent::IndexProject { .. }) {
+            if let Some(attachment) = self.store.as_ref().and_then(|store| store.read(cx).current_owner_attachment()) {
+                self.dispatch_index(intent, attachment, cx);
+            }
+            return;
+        }
         if let Intent::ResolveCargoBrowse { expected, context } = &intent
             && self.cargo_resolution_dependency(expected, context, cx).is_none() { return; }
+        match &intent {
+            Intent::RemoveProject(project) | Intent::CancelIndex(project) | Intent::RetryIndex(project) => { self.index_preflights.remove(project); }
+            _ => {}
+        }
         self.reduced = self.reduced.saturating_add(1);
         match intent {
             Intent::SetView(view @ (View::Page | View::Code))
@@ -463,13 +610,8 @@ impl UiRootEntity {
             if let Some(bound) = binding.get() {
                 self.runtime.admit_bootstrap(bound, &origin);
                 self.persistence = bound.persistence.clone();
-                // Save local actions that occurred while paths were unavailable
-                // before deferred admissions can cross the actor boundary.
-                if let Some(persistence) = &self.persistence {
-                    if let Err(error) = persistence.save(&PersistentState::project(&self.snapshot())) {
-                        eprintln!("backend-desktop: save recovered local session: {error}");
-                    }
-                }
+                // Preserve local decisions through the same ordered writer.
+                self.persist_snapshot(&self.snapshot(), cx);
             } else { self.bootstrap = Some((binding, origin)); }
         }
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
@@ -576,6 +718,8 @@ impl UiRootEntity {
     }
 
     fn schedule_pending_indexes(&mut self, cx: &mut Context<Self>) {
+        let queued = self.pending.iter().filter(|intent| matches!(intent, QueuedIntent::Index { .. })).count();
+        let available = super::persistence_writer::MAX_INDEX_PREFLIGHTS.saturating_sub(self.index_preflights.len().saturating_add(queued));
         let projects = self
             .snapshot()
             .workspace()
@@ -586,7 +730,9 @@ impl UiRootEntity {
                     && project.request.is_none()
                     && project.operation.is_none()
                     && !self.index_intent_pending(&project.id)
+                    && !self.index_preflights.contains_key(&project.id)
             })
+            .take(available)
             .map(|project| project.id.clone())
             .collect::<Vec<_>>();
         for project in projects {
@@ -595,7 +741,7 @@ impl UiRootEntity {
     }
 
     fn schedule_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
-        if self.index_intent_pending(&project)
+        if self.quitting || self.index_preflights.contains_key(&project) || self.index_intent_pending(&project)
             || !self.snapshot().workspace().projects.iter().any(|item| item.id == project && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none() && item.operation.is_none())
         {
             return;
@@ -622,6 +768,7 @@ impl UiRootEntity {
     }
 
     fn schedule_index_check(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
+        if self.quitting || self.index_preflights.contains_key(&project) { return; }
         if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
         let snapshot = self.snapshot();
         let Some(row) = snapshot.workspace().projects.iter().find(|row| row.id == project && row.request.is_none()) else { return; };
@@ -636,7 +783,7 @@ impl UiRootEntity {
     }
 
     fn schedule_operation_observation(&mut self, cx: &mut Context<Self>) {
-        if self.index_poll.is_some() || !self.store.as_ref().is_some_and(|store| store.read(cx).owner_serving()) { return; }
+        if self.quitting || self.index_poll.is_some() || !self.store.as_ref().is_some_and(|store| store.read(cx).owner_serving()) { return; }
         if !self.snapshot().workspace().projects.iter().any(|row| row.request.is_none()
             && row.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::needs_observation)) { return; }
         self.index_poll = Some(cx.spawn(async move |root, cx| {
@@ -667,10 +814,10 @@ impl UiRootEntity {
                 // next route. Late startup/index replies must not move Home
                 // into an arbitrary first package or add navigation history.
                 RuntimeEvent::SnapshotChanged(_) => {}
-                RuntimeEvent::PersistRequested(snapshot) => {
-                    if let Some(persistence) = &self.persistence {
-                        let _ = persistence.save(&PersistentState::project(&snapshot));
-                    }
+                RuntimeEvent::PersistRequested(_) => {
+                    // Ordinary events mark the current root dirty; an older
+                    // event snapshot cannot overwrite newer durable evidence.
+                    self.persist_snapshot(&self.snapshot(), cx);
                 }
                 RuntimeEvent::RequestCompleted { request, outcome } => {
                     if let Some(intent) = self.connection_probe.finish(request, outcome) {
@@ -704,10 +851,23 @@ impl UiRootEntity {
 
 }
 
+fn overlay_claims(mut state: crate::model::PersistedDesktopState, claims: Vec<(crate::core::LocalProjectId, crate::model::IndexOperationClaim)>) -> crate::model::PersistedDesktopState {
+    for (project, operation) in claims {
+        if let Some(row) = state.shelf.iter_mut().find(|row| row.local_path == project.as_str()) {
+            row.operation = Some(operation);
+            row.phase = crate::model::PersistedProjectPhase::Indexing;
+        }
+    }
+    state
+}
+
+
 #[cfg(test)]
 mod cargo_queue_tests;
 #[cfg(test)]
 mod local_index_queue_tests;
+#[cfg(test)]
+mod durable_writer_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();
@@ -831,6 +991,29 @@ impl UiEntityGraph {
         if let Some(gate) = gate {
             super::owner::watch(gate, &root, &store, cx);
         }
+        let quitting = root.clone();
+        cx.on_app_quit(move |cx| {
+            let saved = quitting.update(cx, |root, cx| root.finish_persistence(cx));
+            let deadline = cx.background_executor().timer(std::time::Duration::from_secs(5));
+            async move {
+                use std::future::Future as _;
+                let Some(saved) = saved else { return; };
+                let mut saved = std::pin::pin!(saved.recv());
+                let mut deadline = std::pin::pin!(deadline);
+                let result = std::future::poll_fn(|cx| {
+                    if let std::task::Poll::Ready(result) = saved.as_mut().poll(cx) {
+                        return std::task::Poll::Ready(match result {
+                            Ok(Ok(_)) => None,
+                            Ok(Err(error)) => Some(error),
+                            Err(_) => Some(WriteFailure { message: "The local writer closed before confirming the latest changes. Previously saved state remains available.".into() }),
+                        });
+                    }
+                    if deadline.as_mut().poll(cx).is_ready() { return std::task::Poll::Ready(Some(WriteFailure { message: "Saving the latest changes did not finish before close. Previously saved operation claims remain available for recovery.".into() })); }
+                    std::task::Poll::Pending
+                }).await;
+                if let Some(error) = result { eprintln!("backend-desktop: {}", error.message); }
+            }
+        }).detach();
         Self { root, store }
     }
 }

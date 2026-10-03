@@ -136,6 +136,10 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<
                 "Your saved layout could not be opened, so this launch started fresh.".to_owned(),
                 format!("{path} said: {why}. Nudox will not write over it."),
             ),
+            Note::StateNotSaved { why } => (
+                "Saving your latest changes could not be confirmed.".to_owned(),
+                format!("{why} Keep this window open and check local storage access before trying again."),
+            ),
             Note::LibraryRebuilding { kept_at } => (
                 "Your library was built by an earlier version and is being rebuilt.".to_owned(),
                 format!("The earlier index is kept at {kept_at}; nothing was deleted."),

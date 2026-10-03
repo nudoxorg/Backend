@@ -120,7 +120,7 @@ fn failed_or_starting_owner_keeps_local_admissions_unsent_and_ready_resumes_once
                 "repeated scheduling coalesces the exact project"
             );
             root.flush_pending(cx);
-            assert!(root.snapshot().workspace().projects[0].request.is_some());
+            assert_eq!(root.index_preflights.len(), 1, "the exact request waits for a durable acknowledgment");
         });
     });
 }
@@ -144,8 +144,8 @@ fn queued_index_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppConte
             root.schedule_pending_indexes(cx);
             root.flush_pending(cx);
             assert!(
-                root.snapshot().workspace().projects[0].request.is_some(),
-                "fresh attachment admits fresh scheduling"
+                root.index_preflights.contains_key(&schedule.project),
+                "fresh attachment admits a new durable barrier"
             );
         });
     });
@@ -201,24 +201,25 @@ fn a_queued_request_is_saved_as_submitted_before_entering_the_actor(cx: &mut Tes
     let persistence = PersistentState::at(directory.join("desktop.json"));
     cx.update(|cx| {
         schedule.root.update(cx, |root, cx| {
-            persistence
-                .save(&PersistentState::project(&root.snapshot()))
-                .expect("save queued admission");
-            assert_eq!(
-                persistence.load().expect("queued state").shelf[0].phase,
-                crate::model::PersistedProjectPhase::Queued
-            );
+            persistence.save(&PersistentState::project(&root.snapshot())).expect("save queued admission");
+            assert_eq!(persistence.load().expect("queued state").shelf[0].phase, crate::model::PersistedProjectPhase::Queued);
             root.persistence = Some(persistence.clone());
             root.schedule_pending_indexes(cx);
             root.flush_pending(cx);
-            assert!(root.snapshot().workspace().projects[0].request.is_some());
-            let written = persistence.load().expect("submitted state");
-            assert_eq!(written.shelf[0].phase, crate::model::PersistedProjectPhase::Indexing);
-            assert_eq!(written.shelf[0].operation, root.snapshot().workspace().projects[0].operation,
-                "the exact caller key and payload are durable before the actor can run");
-            assert!(written.shelf[0].operation.is_some());
+            assert_eq!(root.index_preflights.len(), 1);
+            assert!(root.snapshot().workspace().projects[0].request.is_none(), "saving asynchronously is not transport admission");
         });
     });
+    crate::runtime::wait::until("the asynchronous durable barrier completed", || {
+        cx.run_until_parked();
+        schedule.root.read_with(cx, |root, _| root.index_preflights.is_empty())
+    });
+    let written = persistence.load().expect("saved exact claim");
+    assert!(written.shelf[0].operation.is_some());
+    schedule.root.read_with(cx, |root, _| assert_eq!(written.shelf[0].operation.as_ref().map(|claim| claim.key),
+        root.snapshot().workspace().projects[0].operation.as_ref().map(|claim| claim.key)));
+    let finished = schedule.root.update(cx, |root, cx| root.finish_persistence(cx)).expect("writer finish");
+    crate::runtime::wait::until_some("state writer drained", || finished.try_recv().ok()).expect("synchronized state");
     std::fs::remove_dir_all(directory).expect("remove persistence directory");
 }
 
@@ -237,23 +238,23 @@ fn failed_durable_admission_never_submits_an_index_or_requeues_it_forever(cx: &m
             root.persistence = Some(PersistentState::at(path.clone()));
             root.schedule_pending_indexes(cx);
             root.flush_pending(cx);
-            assert!(!root.has_pending_work());
-            let snapshot = root.snapshot();
-            assert_eq!(snapshot.workspace().projects[0].phase, ProjectPhase::Failed);
-            assert_eq!(snapshot.workspace().projects[0].request, None);
-            assert!(
-                snapshot.workspace().projects[0]
-                    .error
-                    .as_deref()
-                    .expect("local admission failure")
-                    .contains("could not be saved")
-            );
-            assert!(
-                root.pending.is_empty(),
-                "local failure does not reschedule the same unsent operation"
-            );
+            assert_eq!(root.index_preflights.len(), 1);
         });
     });
+    crate::runtime::wait::until("failed durable barrier completed", || {
+        cx.run_until_parked();
+        schedule.root.read_with(cx, |root, _| root.index_preflights.is_empty())
+    });
+    schedule.root.read_with(cx, |root, _| {
+        assert!(!root.has_pending_work());
+        let snapshot = root.snapshot();
+        assert_eq!(snapshot.workspace().projects[0].phase, ProjectPhase::Failed);
+        assert_eq!(snapshot.workspace().projects[0].request, None);
+        assert!(snapshot.workspace().projects[0].error.as_deref().expect("local admission failure").contains("could not be saved"));
+        assert!(root.pending.is_empty(), "failure does not reschedule the unsent operation");
+    });
+    let finished = schedule.root.update(cx, |root, cx| root.finish_persistence(cx)).expect("writer finish");
+    assert!(crate::runtime::wait::until_some("failed writer drained", || finished.try_recv().ok()).is_err());
     std::fs::remove_dir_all(directory).expect("remove persistence directory");
 }
 

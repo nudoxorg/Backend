@@ -122,6 +122,16 @@ impl DesktopRuntime {
         vec![RuntimeEvent::SnapshotChanged(self.snapshot.clone()), RuntimeEvent::PersistRequested(self.snapshot.clone())]
     }
 
+    /// A local writer diagnostic is ephemeral; it never changes producer
+    /// authority, operation evidence, or the durable projection itself.
+    pub(crate) fn set_persistence_fault(&mut self, why: Option<Arc<str>>) {
+        let mut workspace = self.snapshot.workspace().clone();
+        let mut notes = workspace.notes.iter().filter(|note| !matches!(note, crate::model::Note::StateNotSaved { .. })).cloned().collect::<Vec<_>>();
+        if let Some(why) = why { notes.push(crate::model::Note::StateNotSaved { why }); }
+        workspace.notes = notes.into();
+        self.snapshot = Arc::new(self.snapshot.with_workspace(workspace));
+    }
+
     /// Returns the next request identity without touching the engine.
     pub fn allocate_request(&mut self) -> RequestId {
         let request = RequestId::from_authority(self.snapshot.key(), self.next_request);

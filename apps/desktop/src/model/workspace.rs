@@ -169,6 +169,9 @@ pub enum Note {
         /// What the operating system said.
         why: Arc<str>,
     },
+    /// The latest local changes could not be synchronized. The previous
+    /// saved session and operation claims remain available for recovery.
+    StateNotSaved { why: Arc<str> },
     /// The index an earlier version wrote was set aside, and the projects on
     /// the shelf are being indexed again.
     LibraryRebuilding {
