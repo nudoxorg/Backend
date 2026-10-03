@@ -9131,7 +9131,7 @@ mod tests {
             ));
         })
         .unwrap();
-        platform.simulate_frame(RequestFrameOptions::default());
+        cx.run_until_parked();
         assert_eq!(platform.presentation_attempts(), previous_submissions + 1);
     }
 
