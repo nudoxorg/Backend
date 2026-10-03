@@ -1965,9 +1965,13 @@ mod tests {
             let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
             let frame = targets.hint_frame();
             if let Some(previous) = before_frame {
-                assert_ne!(frame, previous, "a structural shelf change builds a new Reader target frame");
+                if frame != previous {
+                    assert!(!targets.admits_hint("source-line-500", previous),
+                        "a prior Reader target frame cannot claim the current row");
+                }
             }
             before_frame = Some(frame);
+            assert!(targets.admits_hint("source-line-500", frame), "the current frame owns this source row");
             assert!(rig.cx.update(|window, cx| targets.focus_native("source-line-500", window, cx)),
                 "the current row has a native owner");
             let row = targets.bounds_of("source-line-500").expect("current painted source row");
