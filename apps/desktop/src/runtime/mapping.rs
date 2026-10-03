@@ -526,7 +526,7 @@ mod tests {
             &operation,
             backend_library::IndexOperationState::Failed {
                 reason: backend_library::IndexOperationFailureReason::Cancelled,
-                detail: "owner confirmed cancellation before publication".to_owned(),
+                detail: backend_library::ProductText::from_static("owner confirmed cancellation before publication"),
             },
         );
         let received = map_event(&submitted, operation_event(

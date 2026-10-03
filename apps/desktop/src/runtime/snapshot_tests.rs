@@ -9,6 +9,7 @@ use crate::runtime::actor::CancellationToken;
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest};
 use crate::shell::tests::{Fixture, PACKAGE, dossier, page, symbol};
 use backend_library::DeclarationKind;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
