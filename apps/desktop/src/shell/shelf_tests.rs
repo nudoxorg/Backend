@@ -781,3 +781,28 @@ fn native_owner_loss_and_replacement_immediately_revoke_observed_empty_shelf_fac
         }
     }
 }
+
+#[gpui::test]
+fn native_used_by_lens_is_visit_local_and_forward_restores_the_mounted_tab(cx: &mut TestAppContext) {
+    use crate::navigation::presentation::ShelfLens;
+    let mut rig = open(cx);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    click_text(&mut rig, "Used by");
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    assert_eq!(before.presentation.controls().shelf.lens, ShelfLens::UsedBy);
+    let selected = super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native Used by tab");
+    assert!(selected.size.width > px(0.0));
+    rig.go(Intent::Navigate(Route::World));
+    rig.keys("cmd-[");
+    assert_eq!(rig.route(), toml());
+    assert!(shelf_texts(&mut rig).iter().any(|text| text.0 == "toml_pin"), "Back restores actual dependent rows");
+    rig.keys("cmd-]");
+    rig.keys("cmd-[");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
+    assert!(shelf_texts(&mut rig).iter().any(|text| text.0 == "toml_pin"), "Forward/Back preserves Used by, not Contents");
+    rig.go(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Home)));
+    rig.go(Intent::Navigate(toml()));
+    assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.presentation.controls().shelf.lens), ShelfLens::Contents,
+        "a fresh visit to the same package has independent intent");
+}

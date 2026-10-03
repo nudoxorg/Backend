@@ -97,6 +97,15 @@ struct BookKey {
     to: Option<SharedString>,
 }
 
+fn shelf_lens(lens: crate::navigation::presentation::ShelfLens) -> Lens {
+    use crate::navigation::presentation::ShelfLens as P;
+    match lens { P::Contents => Lens::Contents, P::Versions => Lens::Versions, P::RestsOn => Lens::RestsOn, P::UsedBy => Lens::UsedBy }
+}
+fn shelf_presentation_lens(lens: Lens) -> crate::navigation::presentation::ShelfLens {
+    use crate::navigation::presentation::ShelfLens as P;
+    match lens { Lens::Contents => P::Contents, Lens::Versions => P::Versions, Lens::RestsOn => P::RestsOn, Lens::UsedBy => P::UsedBy }
+}
+
 /// The shelf region.
 pub(crate) struct Shelf {
     core: RegionCore,
@@ -108,6 +117,7 @@ pub(crate) struct Shelf {
     crumbs: Crumbs,
     /// The place `crumbs` last followed.
     followed: Place,
+    reading_visit: crate::navigation::presentation::VisitId,
     /// The lens on the scope, and the book it was chosen in: a new book
     /// opens on its contents, the same book keeps the lens across its pages
     /// and across the releases it is read at.
@@ -162,6 +172,7 @@ impl Shelf {
                 store,
                 &[
                     Branch::Route,
+                    Branch::Reading,
                     Branch::Overlay,
                     Branch::Workspace,
                     Branch::GraphFocus,
@@ -173,11 +184,12 @@ impl Shelf {
             hover: HoverIntent::default(),
             crumbs: Crumbs::following(&route),
             followed: Place::of(&route),
-            lens: Lens::Contents,
+            reading_visit: store.snapshot().session().reading.current.id,
+            lens: shelf_lens(store.snapshot().session().reading.current.presentation.controls().shelf.lens),
             lens_book: Place::of(&route).book,
-            folds: Folds::default(),
-            narrow: Narrow::default(),
-            via: None,
+            folds: Folds::from_reading(&store.snapshot().session().reading.current.presentation.controls().shelf),
+            narrow: Narrow::from_text(store.snapshot().session().reading.current.presentation.controls().shelf.narrow.as_ref().map_or("", |text| text.as_str())),
+            via: store.snapshot().session().reading.current.presentation.controls().shelf.via.as_ref().map(|via| WorkspaceCrate::new(via.as_str().to_owned())),
             chord: Chord::Idle,
             chord_timer: None,
             keys: None,
@@ -405,7 +417,10 @@ impl Shelf {
     }
 
     fn flip(&mut self, id: RowId, cx: &mut Context<Self>) {
-        self.folds.flip(id);
+        self.folds.flip(id.clone());
+        if let Some(key) = crate::navigation::presentation::ReadingText::new(id.key().to_string()) {
+            self.reading_change(crate::navigation::presentation::ReadingChange::ShelfFold(key), cx);
+        }
         cx.notify();
     }
 
@@ -418,8 +433,21 @@ impl Shelf {
 
     /// The list is a different list now: back to its top.
     fn list_changed(&mut self, cx: &mut Context<Self>) {
+        use crate::navigation::presentation::{ReadingChange, ReadingText};
+        self.reading_change(ReadingChange::ShelfLens(shelf_presentation_lens(self.lens)), cx);
+        self.reading_change(ReadingChange::ShelfFilter {
+            narrow: (!self.narrow.is_empty()).then(|| ReadingText::new(self.narrow.query())).flatten(),
+            via: self.via.as_ref().and_then(|via| ReadingText::new(via.as_str())),
+        }, cx);
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
+    }
+
+    fn reading_change(&self, change: crate::navigation::presentation::ReadingChange, cx: &mut Context<Self>) {
+        let snapshot = self.links.snapshot(cx);
+        if snapshot.overlay().is_none() && snapshot.session().preview.is_none() {
+            self.links.dispatch(Intent::SetReading { visit: snapshot.session().reading.current.id, change }, cx);
+        }
     }
 
     /// Scopes the sidebar into `scope` (browsing: the reader does not move).
@@ -795,17 +823,25 @@ impl Shelf {
                     .and_then(|dossier| dossier.outline.known()),
             );
         }
-        if place.book != self.followed.book {
-            self.lens = Lens::Contents;
-            self.lens_book = place.book.clone();
+        let reading = &snapshot.session().reading.current.presentation.controls().shelf;
+        let visit = snapshot.session().reading.current.id;
+        if self.reading_visit != visit {
+            let (x, y) = reading.offset.pixels();
+            self.scroll.0.borrow().base_handle.set_offset(gpui::point(px(x), px(y)));
+            self.targets.clear_focus();
+            if let Some(crate::navigation::presentation::ReadingFocus::Shelf(key)) = &snapshot.session().reading.current.presentation.controls().focus {
+                self.targets.focus(gpui::SharedString::from(key.as_str().to_owned()));
+            }
+            self.reading_visit = visit;
         }
-        if place != self.followed {
-            // A new place starts with only its own group open, unnarrowed.
-            self.folds.clear();
-            self.narrow.clear();
-            self.via = None;
-            self.reveal = true;
-        }
+        self.lens = shelf_lens(reading.lens);
+        self.lens_book = place.book.clone();
+        self.folds = Folds::from_reading(reading);
+        self.narrow = Narrow::from_text(reading.narrow.as_ref().map_or("", |query| query.as_str()));
+        self.via = reading.via.as_ref().map(|via| WorkspaceCrate::new(via.as_str().to_owned()));
+        // History restores its exact position; the current row must not
+        // override that offset with the fresh-navigation centering rule.
+        if place != self.followed { self.reveal = reading.offset == Default::default(); }
         self.followed = place;
     }
 }
@@ -852,7 +888,7 @@ impl Region for Shelf {
     }
 
     fn observe(&mut self, event: &crate::runtime::store::StoreEvent, store: &DataStore) {
-        if event.is_branch(Branch::Route) {
+        if event.is_branch(Branch::Route) || event.is_branch(Branch::Reading) {
             self.follow(store);
         }
     }
@@ -891,7 +927,7 @@ impl Render for Shelf {
                 self.targets.push(Target {
                     id: item.key.clone(),
                     label: item.name.clone(),
-                    act: act(&weak, item.does.clone()),
+                    act: act(&weak, item.does.clone(), snapshot.session().reading.current.id),
                     peek: item.warm.clone(),
                     source: item.source.clone(),
                 });
@@ -959,6 +995,28 @@ impl Render for Shelf {
                     .child(self.spine_column(&measure, palette, window, cx)),
             );
         }
+        let visit = snapshot.session().reading.current.id;
+        let remembered = snapshot.session().reading.current.presentation.controls().shelf.offset;
+        let scroll = self.scroll.0.borrow().base_handle.clone();
+        let links = self.links.clone();
+        let targets = self.targets.clone();
+        let overlay_surface = self.overlay_surface;
+        root = root.on_children_prepainted(move |_, _, cx| {
+            if links.snapshot(cx).overlay().is_some()
+                || !links.shell.upgrade().is_some_and(|shell| shell.read(cx).shelf_input_owner(overlay_surface)) { return; }
+            let actual = scroll.offset();
+            if let Some(offset) = crate::navigation::presentation::ReadingOffset::new(f32::from(actual.x), f32::from(actual.y))
+                && offset != remembered {
+                links.dispatch(Intent::SetReading { visit, change: crate::navigation::presentation::ReadingChange::ShelfOffset(offset) }, cx);
+            }
+            if targets.is_active() && let Some(key) = targets.focused()
+                && let Some(key) = crate::navigation::presentation::ReadingText::new(key.to_string()) {
+                let focus = crate::navigation::presentation::ReadingFocus::Shelf(key);
+                if links.snapshot(cx).session().reading.current.presentation.controls().focus.as_ref() != Some(&focus) {
+                    links.dispatch(Intent::SetReading { visit, change: crate::navigation::presentation::ReadingChange::Focus(Some(focus)) }, cx);
+                }
+            }
+        });
         let _ = window;
         // The travelling bevel outlines a row; in the spine there are no rows
         // (its bounds are the last the rows had).
@@ -999,10 +1057,12 @@ impl Shelf {
 }
 
 /// What a target does when activated: whatever its row does.
-fn act(shelf: &gpui::WeakEntity<Shelf>, does: Do) -> Act {
+fn act(shelf: &gpui::WeakEntity<Shelf>, does: Do, visit: crate::navigation::presentation::VisitId) -> Act {
     let shelf = shelf.clone();
     Rc::new(move |_: &mut Window, cx: &mut App| {
-        let _ = shelf.update(cx, |shelf, cx| shelf.perform(&does, cx));
+        let _ = shelf.update(cx, |shelf, cx| {
+            if shelf.links.snapshot(cx).session().reading.current.id == visit { shelf.perform(&does, cx); }
+        });
     })
 }
 

@@ -186,22 +186,35 @@ impl Presentation {
     pub fn valid(&self) -> bool { self.page <= 4096 && self.selected.as_ref().is_none_or(|(name, _)| name.len() <= 1024 && !name.chars().any(char::is_control)) }
 }
 
-struct State { selected: Option<(SharedString, Kind)>, family: Option<Family>, scope: Option<Scope>, page: usize, facts: bool, more_overloads: bool, reveal: KeyboardReveal, focus: FocusHandle, focus_claimed: bool }
+struct State { presentation: Presentation, on_change: Option<Rc<dyn Fn(Presentation, &mut App)>>, reveal: KeyboardReveal, focus: FocusHandle, focus_claimed: bool }
 
 impl State {
     fn new(scroll: ScrollHandle, cx: &mut gpui::Context<Self>) -> Self {
-        Self { selected: None, family: None, scope: None, page: 0, facts: false, more_overloads: false, reveal: KeyboardReveal::new(scroll), focus: cx.focus_handle(), focus_claimed: false }
+        Self { presentation: Default::default(), on_change: None, reveal: KeyboardReveal::new(scroll), focus: cx.focus_handle(), focus_claimed: false }
     }
+    fn changed(&self, cx: &mut gpui::Context<Self>) {
+        if let Some(change) = &self.on_change { change(self.presentation.clone(), cx); }
+        cx.notify();
+    }
+
 }
 
 /// Build a comparison from real package evidence.
 #[must_use]
 pub fn compare(id: impl Into<ElementId>, model: Arc<Model>, actions: Actions, measure: &Measure) -> Compare {
-    Compare { id: id.into(), model, actions, measure: *measure, #[cfg(test)] test_state: None }
+    Compare { id: id.into(), model, actions, measure: *measure, presentation: None, on_change: None, #[cfg(test)] test_state: None }
 }
 
 #[derive(IntoElement)]
-pub struct Compare { id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
+pub struct Compare { id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, presentation: Option<Presentation>, on_change: Option<Rc<dyn Fn(Presentation, &mut App)>>, #[cfg(test)] test_state: Option<Entity<State>> }
+impl Compare {
+    /// Restores bounded pure intent while current evidence and actions stay fresh.
+    #[must_use]
+    pub fn presentation(mut self, presentation: Presentation, on_change: impl Fn(Presentation, &mut App) + 'static) -> Self {
+        if presentation.valid() { self.presentation = Some(presentation); }
+        self.on_change = Some(Rc::new(on_change)); self
+    }
+}
 
 impl RenderOnce for Compare {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -211,6 +224,10 @@ impl RenderOnce for Compare {
         let state = self.test_state.unwrap_or_else(|| window.use_keyed_state(child(&self.id, "state"), cx, |_, cx| State::new(self.actions.scroll.clone(), cx)));
         #[cfg(not(test))]
         let state = window.use_keyed_state(child(&self.id, "state"), cx, |_, cx| State::new(self.actions.scroll.clone(), cx));
+        state.update(cx, |state, _| {
+            if let Some(presentation) = &self.presentation { state.presentation = presentation.clone(); }
+            state.on_change = self.on_change.clone();
+        });
         let claim = state.update(cx, |state, _| {
             if !self.actions.active { state.focus_claimed = false; None }
             else if state.focus_claimed { None }
@@ -253,37 +270,40 @@ impl RenderOnce for Compare {
                     .child(button(child(&key, "open"), "Explore", &column_m).aria_label(format!("Explore {}", candidate.origin)).ghost().size(Control::Small).disabled(!self.actions.active).on_click(move |window, cx| open(package.clone(), window, cx)))
                     .child(button(child(&key, "remove"), "Remove", &column_m).aria_label(format!("Remove {} from comparison", candidate.origin)).ghost().size(Control::Small).disabled(!self.actions.active || count <= 2)
                         .on_click(move |window, cx| remove(remove_key.clone(), window, cx))));
-            if let Some(coverage) = &candidate.coverage { head = head.child(words(child(&key, "coverage"), coverage.clone(), ty::CAPTION, p.ink2, &column_m)); }
+            if let Some(coverage) = &candidate.coverage {
+                head = head.child(div().id(child(&key, "coverage-native")).role(gpui::Role::StaticText).aria_label(coverage.clone())
+                    .child(words(child(&key, "coverage"), coverage.clone(), ty::CAPTION, p.ink2, &column_m)));
+            }
             heads = heads.child(head);
         }
         // Headers participate in normal flow. No translucent sticky band can
         // cut a scrolling signature into legible fragments.
         page = page.child(heads).child(words(child(&self.id, "claim"), "An aligned name is evidence of a recorded declaration, not compatibility. ◆ recorded  — absent from a complete outline  · partial  ? unread", ty::CAPTION, p.ink2, &m));
-        let scope = state.read(cx).scope.unwrap_or(Scope::All);
+        let scope = state.read(cx).presentation.scope.unwrap_or(Scope::All);
         let mut filters = div().flex().flex_wrap().gap(m.space(Space::Base));
         for (at, (choice, name)) in [(Scope::All, "All names"), (Scope::Shared, "Shared names"), (Scope::Distinct, "Different names")].into_iter().enumerate() {
             let selected = state.clone();
             filters = filters.child(button(child(&self.id, format!("scope-{at}")), name, &m).size(Control::Small)
                 .intent(if choice == scope { crate::controls::button::Intent::Edge } else { crate::controls::button::Intent::Ghost })
-                .on_click(move |_, cx| selected.update(cx, |state, cx| { state.scope = Some(choice); state.page = 0; cx.notify(); })));
+                .on_click(move |_, cx| selected.update(cx, |state, cx| { state.presentation.scope = Some(choice); state.presentation.page = 0; state.changed(cx); })));
         }
-        if let Some(filter) = state.read(cx).family {
+        if let Some(filter) = state.read(cx).presentation.family {
             let clear = state.clone();
             filters = filters.child(button(child(&self.id, "clear-family"), format!("{} ×", filter.words()), &m).ghost().size(Control::Small)
-                .on_click(move |_, cx| clear.update(cx, |state, cx| { state.family = None; state.page = 0; cx.notify(); })));
+                .on_click(move |_, cx| clear.update(cx, |state, cx| { state.presentation.family = None; state.presentation.page = 0; state.changed(cx); })));
         }
         page = page.child(filters);
         let visible = alignments.iter().filter(|row| {
-            state.read(cx).family.is_none_or(|selected| family(row.kind) == selected) && match scope {
+            state.read(cx).presentation.family.is_none_or(|selected| family(row.kind) == selected) && match scope {
                 Scope::All => true, Scope::Shared => row.present() == count,
                 Scope::Distinct => row.differs(),
             }
         }).collect::<Vec<_>>();
-        let (offset, shown) = page_span(visible.len(), state.read(cx).page);
+        let (offset, shown) = page_span(visible.len(), state.read(cx).presentation.page);
         let page_rows = &visible[offset..offset + shown];
         // Keep the remembered identity across filters and pages, but inspect
         // only a row actually shown now. Returning restores the old focus.
-        let selected = state.read(cx).selected.clone();
+        let selected = state.read(cx).presentation.selected.clone();
         let chosen = chosen_visible(page_rows, selected.as_ref());
         let modes = Modes::keyed(child(&self.id, "modes"), window, cx);
         let split = modes.settle(&COMPARE, m.fluid_room());
@@ -292,19 +312,19 @@ impl RenderOnce for Compare {
         let rows_m = if beside { m.within(m.width() - px(detail_width) - m.space(Space::Section)) } else { m };
         let detail_m = if beside { m.within(px(detail_width)) } else { m };
         let flow = Flow::scoped(format!("compare-{:?}", self.id), cx);
-        flow.epoch((split.epoch, beside, state.read(cx).family, scope, state.read(cx).page));
+        flow.epoch((split.epoch, beside, state.read(cx).presentation.family, scope, state.read(cx).presentation.page));
         let keys = page_rows.iter().map(|row| (row.name.clone(), row.kind)).collect::<Vec<_>>();
         let keyboard = state.clone();
         page = page.on_key_down(move |event, _, cx| {
             let delta = match event.keystroke.key.as_str() { "down" | "j" => 1_isize, "up" | "k" => -1, _ => return };
             keyboard.update(cx, |state, cx| {
-                let at = state.selected.as_ref().and_then(|selected| keys.iter().position(|key| key == selected));
+                let at = state.presentation.selected.as_ref().and_then(|selected| keys.iter().position(|key| key == selected));
                 let next = at.map_or(0, |at| at.saturating_add_signed(delta).min(keys.len().saturating_sub(1)));
-                if let Some(key) = keys.get(next) && state.selected.as_ref() != Some(key) {
-                    state.selected = Some(key.clone());
+                if let Some(key) = keys.get(next) && state.presentation.selected.as_ref() != Some(key) {
+                    state.presentation.selected = Some(key.clone());
                     state.reveal.request();
                 }
-                cx.notify();
+                state.changed(cx);
             });
             cx.stop_propagation();
         });
@@ -325,10 +345,10 @@ impl RenderOnce for Compare {
             let next = state.clone();
             rows = rows.child(div().flex().flex_wrap().gap(m.space(Space::Roomy))
                 .child(button(child(&self.id, "previous"), "Previous names", &rows_m).ghost().disabled(offset == 0)
-                    .on_click(move |_, cx| previous.update(cx, |state, cx| { state.page = state.page.saturating_sub(1); cx.notify(); })))
+                    .on_click(move |_, cx| previous.update(cx, |state, cx| { state.presentation.page = state.presentation.page.saturating_sub(1); state.changed(cx); })))
                 .child(words(child(&self.id, "page-reading"), format!("{}–{} of {} recorded names", offset + 1, offset + shown, visible.len()), ty::CAPTION, p.ink2, &rows_m))
                 .child(button(child(&self.id, "next"), "Next names", &rows_m).ghost().disabled(offset + shown >= visible.len())
-                    .on_click(move |_, cx| next.update(cx, |state, cx| { state.page += 1; cx.notify(); }))));
+                    .on_click(move |_, cx| next.update(cx, |state, cx| { state.presentation.page += 1; state.changed(cx); }))));
         }
         let mut comparison = if beside { div().flex().items_start().gap(m.space(Space::Section)) } else { div().flex().flex_col().gap(m.space(Space::Wide)) };
         comparison = comparison.child(rows);
@@ -342,9 +362,9 @@ impl RenderOnce for Compare {
         }
         page = page.child(comparison);
         let facts = state.clone();
-        page = page.child(button(child(&self.id, "facts-toggle"), if state.read(cx).facts { "Hide package facts" } else { "Compare package facts" }, &m).ghost().icon(Icon::Seal)
-            .on_click(move |_, cx| facts.update(cx, |state, cx| { state.facts = !state.facts; cx.notify(); })));
-        if state.read(cx).facts {
+        page = page.child(button(child(&self.id, "facts-toggle"), if state.read(cx).presentation.facts { "Hide package facts" } else { "Compare package facts" }, &m).ghost().icon(Icon::Seal)
+            .on_click(move |_, cx| facts.update(cx, |state, cx| { state.presentation.facts = !state.presentation.facts; state.changed(cx); })));
+        if state.read(cx).presentation.facts {
             let mut facts = div().flex().flex_wrap().items_start().gap(gap);
             for (at, candidate) in self.model.candidates.iter().enumerate() {
                 let mut column = div().id(child(&self.id, format!("facts-{at}"))).role(gpui::Role::Group)
@@ -352,6 +372,10 @@ impl RenderOnce for Compare {
                     .w(column_m.width()).flex().flex_col().gap(m.space(Space::Roomy))
                     .child(words(child(&self.id, format!("facts-{at}-name")), candidate.name.clone(), ty::HEAD, p.ink0, &column_m))
                     .child(words_ellipsis(child(&self.id, format!("facts-{at}-origin")), candidate.origin.clone(), ty::CAPTION, p.ink2, &column_m));
+                if let Some(coverage) = &candidate.coverage {
+                    column = column.child(div().id(child(&self.id, format!("facts-{at}-coverage-native"))).role(gpui::Role::StaticText).aria_label(coverage.clone())
+                        .child(words(child(&self.id, format!("facts-{at}-coverage")), coverage.clone(), ty::CAPTION, p.ink2, &column_m)));
+                }
                 if let Some(description) = &candidate.description { column = column.child(words(child(&self.id, format!("facts-{at}-description")), description.clone(), ty::LEDE, p.ink2, &column_m)); }
                 for (fact, (label, value)) in candidate.facts.iter().enumerate() {
                     column = column.child(div().id(child(&self.id, format!("facts-{at}-{fact}"))).role(gpui::Role::Group)
@@ -376,7 +400,7 @@ fn silhouette(id: &ElementId, candidate: &Candidate, counts: &[usize; 4], state:
         let label = count.map_or_else(|| "unread".to_owned(), |count| format!("{count} {}", family_.words()));
         let selected = state.clone();
         strip = strip.child(button(child(id, format!("family-{at}")), label, m).ghost().size(Control::Small).icon(family_.icon())
-            .disabled(count.is_none()).on_click(move |_, cx| selected.update(cx, |state, cx| { state.family = if state.family == Some(family_) { None } else { Some(family_) }; state.page = 0; cx.notify(); })));
+            .disabled(count.is_none()).on_click(move |_, cx| selected.update(cx, |state, cx| { state.presentation.family = if state.presentation.family == Some(family_) { None } else { Some(family_) }; state.presentation.page = 0; state.changed(cx); })));
     }
     strip.into_any_element()
 }
@@ -401,7 +425,7 @@ fn aligned_row(id: &ElementId, row: &Alignment, active: bool, model: &Model, sta
         .child(div().flex_1().min_w_0().child(words_ellipsis(child(id, "name"), row.name.clone(), ty::MONO_ROW, if active { p.ink0 } else { p.ink1 }, m)))
         .child(constellation)
         .child(words(child(id, "presence"), label, ty::CAPTION, p.ink2, m))
-        .on_click(move |_, _, cx| select.update(cx, |state, cx| { state.selected = Some(selection.clone()); state.more_overloads = false; cx.notify(); }))
+        .on_click(move |_, _, cx| select.update(cx, |state, cx| { state.presentation.selected = Some(selection.clone()); state.presentation.more_overloads = false; state.changed(cx); }))
         .into_any_element()
 }
 
@@ -422,7 +446,7 @@ fn operation_detail(id: &ElementId, row: &Alignment, model: &Model, state: &Enti
             let text = if candidate.operations.is_none() { "Declarations not read" } else if candidate.complete { "No declaration with this name and kind in the indexed outline" } else { "Not found in the portion read" };
             column = column.child(words(child(&candidate_id, "gap"), text, ty::CAPTION, p.ink2, &column_m));
         } else if let Some(operations) = &candidate.operations {
-            let shown = if state.read(cx).more_overloads { 4 } else { 1 };
+            let shown = if state.read(cx).presentation.more_overloads { 4 } else { 1 };
             for (variant, index) in row.slots[at].iter().take(shown).enumerate() {
                 let operation = &operations[*index];
                 let operation_id = child(&candidate_id, format!("variant-{variant}"));
@@ -448,10 +472,10 @@ fn operation_detail(id: &ElementId, row: &Alignment, model: &Model, state: &Enti
                 column = column.child(actions_row);
             }
             if row.slots[at].len() > shown {
-                if !state.read(cx).more_overloads {
+                if !state.read(cx).presentation.more_overloads {
                     let reveal = state.clone();
                     column = column.child(button(child(&candidate_id, "more-overloads"), more_declarations(row.slots[at].len() - 1), &column_m).ghost().size(Control::Small)
-                        .on_click(move |_, cx| reveal.update(cx, |state, cx| { state.more_overloads = true; cx.notify(); })));
+                        .on_click(move |_, cx| reveal.update(cx, |state, cx| { state.presentation.more_overloads = true; state.changed(cx); })));
                 } else {
                     column = column.child(words(child(&candidate_id, "bounded-overloads"), format!("{} further declarations; explore the package for the full outline", row.slots[at].len() - shown), ty::CAPTION, p.ink2, &column_m));
                 }
@@ -482,7 +506,7 @@ mod tests {
             let id: ElementId = "mounted-compare".into();
             let measure = Measure::new(px(620.0), &cx.facet());
             div().id("mounted-compare-scroll").w(px(620.0)).h(px(240.0)).overflow_y_scroll().track_scroll(&self.scroll)
-                .child(Compare { id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, test_state: Some(self.state.clone()) })
+                .child(Compare { id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, presentation: None, on_change: None, test_state: Some(self.state.clone()) })
         }
     }
 
@@ -522,15 +546,15 @@ mod tests {
         draw(cx);
         let state = host.read_with(cx, |host, _| host.state.clone());
         assert_eq!(scroll.offset().y, px(0.0));
-        state.update(cx, |state, cx| { state.selected = Some(("function_17".into(), Kind::Function)); cx.notify(); });
+        state.update(cx, |state, cx| { state.presentation.selected = Some(("function_17".into(), Kind::Function)); state.changed(cx); });
         draw(cx);
         assert_eq!(scroll.offset().y, px(0.0));
-        state.update(cx, |state, cx| { state.selected = None; cx.notify(); });
+        state.update(cx, |state, cx| { state.presentation.selected = None; state.changed(cx); });
         draw(cx);
         for at in 0..18 {
             cx.simulate_keystrokes("down");
             draw(cx); draw(cx);
-            assert_eq!(state.read_with(cx, |state, _| state.selected.clone()), Some((format!("function_{at:02}").into(), Kind::Function)),
+            assert_eq!(state.read_with(cx, |state, _| state.presentation.selected.clone()), Some((format!("function_{at:02}").into(), Kind::Function)),
                 "native Compare key event must select the next recorded row");
             assert_alignment_visible(cx, &scroll, &format!("function_{at:02}"));
         }
@@ -539,7 +563,7 @@ mod tests {
         for at in (0..17).rev() {
             cx.simulate_keystrokes("up");
             draw(cx); draw(cx);
-            assert_eq!(state.read_with(cx, |state, _| state.selected.clone()), Some((format!("function_{at:02}").into(), Kind::Function)));
+            assert_eq!(state.read_with(cx, |state, _| state.presentation.selected.clone()), Some((format!("function_{at:02}").into(), Kind::Function)));
             assert_alignment_visible(cx, &scroll, &format!("function_{at:02}"));
         }
         assert!(scroll.offset().y > below, "walking back upward must reveal an earlier row from a pre-scrolled viewport");
@@ -580,12 +604,12 @@ mod tests {
     }
     #[gpui::test]
     fn mounted_compare_names_both_source_addresses_and_fact_columns_in_native_tree(cx: &mut TestAppContext) {
-        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); crate::probe::enable(cx); });
         let scroll = ScrollHandle::new();
         let candidate = |key: &str, origin: &str, fact: &str| Candidate {
             key: key.into(), name: "base16ct".into(), origin: origin.into(), version: Some("1.0.0".into()),
             description: None, facts: vec![("Source fact".into(), fact.into())],
-            operations: None, complete: false, coverage: None,
+            operations: None, complete: false, coverage: Some("Package record unread · Indexed declarations unread".into()),
         };
         let model = Arc::new(Model::new(vec![
             candidate("/source/base16ct", "Local source · /source/base16ct", "manifest"),
@@ -596,10 +620,12 @@ mod tests {
         let (_, cx) = cx.add_window_view(|window, cx| {
             window.set_a11y_forced(true);
             let state = cx.new(|cx| State::new(scroll.clone(), cx));
-            state.update(cx, |state, _| state.facts = true);
+            state.update(cx, |state, _| state.presentation.facts = true);
             MountedCompare { state, scroll, model, actions }
         });
         draw(cx);
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert!(ledger.texts.iter().any(|text| text.content == "Package record unread · Indexed declarations unread"), "unread coverage is painted, never an empty-results claim");
         let json = cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Compare tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
         let labels = tree["nodes"].as_object().expect("native nodes").values()
@@ -610,6 +636,7 @@ mod tests {
             "Package facts for base16ct: Local source · /source/base16ct",
             "Package facts for base16ct: Registry release · pkg:cargo/base16ct@1.0.0",
             "Source fact: manifest", "Source fact: registry",
+            "Package record unread · Indexed declarations unread",
         ] {
             assert!(labels.contains(&expected), "native Compare omitted {expected}: {labels:?}");
         }

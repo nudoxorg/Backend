@@ -350,19 +350,22 @@ impl Row {
 /// that differs from whether it is open on its own (it holds the page you
 /// are on, or a match).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Folds(HashSet<RowId>);
+pub(crate) struct Folds(HashSet<crate::navigation::presentation::ReadingText>);
 
 impl Folds {
+    pub(crate) fn from_reading(reading: &crate::navigation::presentation::ShelfReading) -> Self {
+        Self(reading.folds().cloned().collect())
+    }
+
     /// Whether the group `id` is open, given whether it is by default.
     pub(crate) fn is_open(&self, id: &RowId, by_default: bool) -> bool {
-        by_default != self.0.contains(id)
+        by_default != crate::navigation::presentation::ReadingText::new(id.key().to_string()).is_some_and(|key| self.0.contains(&key))
     }
 
     /// Flips a group.
     pub(crate) fn flip(&mut self, id: RowId) {
-        if !self.0.remove(&id) {
-            self.0.insert(id);
-        }
+        let Some(key) = crate::navigation::presentation::ReadingText::new(id.key().to_string()) else { return };
+        if !self.0.remove(&key) && self.0.len() < crate::navigation::presentation::MAX_READING_FOLDS { self.0.insert(key); }
     }
 
     /// Forgets every flip (a new place starts with only its own open).

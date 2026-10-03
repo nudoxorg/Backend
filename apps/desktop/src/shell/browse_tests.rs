@@ -396,7 +396,7 @@ fn find_callback(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute) -> sup
     let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     super::FindActionSource {
         links: crate::shell::region::Links {
-            root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(),
+            root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(), reader: Default::default(),
         },
         route: route.clone(), key: BrowseKey::from(route), root,
         visit: browse_visit(rig),
@@ -570,7 +570,7 @@ fn compare_callback(rig: &mut crate::shell::tests::Rig, selection: &CompareSet) 
     let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     super::CompareActionSource {
         links: crate::shell::region::Links {
-            root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(),
+            root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(), reader: Default::default(),
         },
         selection: selection.clone(), root,
         visit: browse_visit(rig),
@@ -713,4 +713,41 @@ fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and
     let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("compare".into(), "new root".into())]), 9);
     rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
     invoke(&mut rig, &current);
+}
+
+#[gpui::test]
+fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_actions(cx: &mut TestAppContext) {
+    use crate::navigation::{Intent, presentation::ReadingPresentation};
+    use gpui::{Modifiers, point, px};
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(route.clone()), 1440.0, 1400.0);
+    rig.cx.update(|window, cx| { window.set_a11y_forced(true); facet::probe::enable(cx); });
+    land_compare(&mut rig, &selection, true, true);
+    rig.settle();
+    for suffix in ["scope-1", "facts-toggle"] {
+        rig.repaint();
+        let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+        let target = ledger.targets.iter().find(|target| target.key.ends_with(suffix))
+            .unwrap_or_else(|| panic!("native Compare control {suffix} absent: {:?}", ledger.targets));
+        let at = point(px(target.bounds.x + target.bounds.width / 2.0), px(target.bounds.y + target.bounds.height / 2.0));
+        rig.cx.simulate_click(at, Modifiers::none());
+        rig.settle();
+    }
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
+    assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Shared));
+    assert!(comparison.facts, "actual native facts toggle changes visit intent");
+    assert!(rig.said().iter().any(|words| words.contains("Source")), "expanded facts paint");
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.keys("cmd-[");
+    assert_eq!(rig.route(), route);
+    let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    assert_eq!(restored.id, before.id);
+    assert_eq!(restored.presentation, before.presentation);
+    assert!(rig.said().iter().any(|words| words == "Hide package facts"), "Back remounts expanded native facts panel");
+    rig.keys("cmd-]");
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
+    rig.keys("cmd-[");
+    assert!(rig.said().iter().any(|words| words == "Hide package facts"));
 }

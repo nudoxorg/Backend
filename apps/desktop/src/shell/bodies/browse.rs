@@ -97,12 +97,21 @@ pub(super) fn body(
             if compare.packages.iter().map(|package| &package.package).eq(selection.packages().iter())) => {
             let model = Arc::clone(&compare.prepared);
             let actions = compare_actions(route, ctx, cx);
+            let snapshot = ctx.links.snapshot(cx);
+            let visit = snapshot.session().reading.current.id;
+            let presentation = match &snapshot.session().reading.current.presentation {
+                crate::navigation::presentation::ReadingPresentation::Compare { comparison, .. } => comparison.clone(),
+                _ => Default::default(),
+            };
+            let guard = ctx.native_local_guard(cx);
+            let links = ctx.links.clone();
             vec![Leaf::new(facet::browse::compare::compare(
-                "compare",
-                model,
-                actions,
-                &ctx.measure,
-            ))]
+                "compare", model, actions, &ctx.measure,
+            ).presentation(presentation, move |presentation, cx| {
+                if guard(cx) {
+                    links.dispatch(Intent::SetReading { visit, change: crate::navigation::presentation::ReadingChange::Comparison(presentation) }, cx);
+                }
+            }))]
         }
         Shown::Ready(_) => vec![Leaf::new(crate::shell::kit::quiet(
             "The browse reply belongs to another exact destination; its rows cannot be shown here.",

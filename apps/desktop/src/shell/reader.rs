@@ -437,8 +437,6 @@ pub(crate) struct Reader {
     pub(crate) targets: Targets,
     hover: HoverIntent,
     scroll: ScrollHandle,
-    /// Recent viewport offsets keyed by exact route and overlay.
-    scroll_memory: Vec<RouteScroll>,
     /// Bounded source cursor/history memory keyed by exact code route and owner revision.
     source_paging: SourcePagingMemory,
     /// Shared empty handle for non-code bodies; they never write paging state.
@@ -517,7 +515,7 @@ impl Reader {
         Self {
             core: RegionCore::new(
                 store,
-                &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
+                &[Branch::Root, Branch::Route, Branch::Reading, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
             ask_geometry: None,
             ask_background_input_allowed: true,
@@ -527,7 +525,6 @@ impl Reader {
             targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
-            scroll_memory: Vec::new(),
             source_paging: SourcePagingMemory::default(),
             empty_source_paging: Rc::new(RefCell::new(None)),
             library_state: LibraryStateMemory::default(),
@@ -555,6 +552,7 @@ impl Reader {
             in_flight: std::cell::RefCell::default(),
             places: vec![Place {
                 key: 0,
+                visit: snapshot.session().reading.current.id,
                 route: snapshot.route().clone(),
                 overlay: snapshot.page_overlay(),
                 way: Way::Across,
@@ -668,8 +666,30 @@ impl Reader {
     pub(crate) fn set_lens(&mut self, lens: Lens, cx: &mut Context<Self>) {
         if self.lens != lens {
             self.lens = lens;
+            let snapshot = self.links.snapshot(cx);
+            self.links.dispatch(crate::navigation::Intent::SetReading { visit: snapshot.session().reading.current.id,
+                change: crate::navigation::presentation::ReadingChange::ReaderLens(presentation_lens(lens)) }, cx);
             cx.notify();
         }
+    }
+
+    pub(crate) fn capture_reading(&self, snapshot: &AppSnapshot) -> Vec<crate::navigation::presentation::ReadingChange> {
+        use crate::navigation::presentation::{ReadingChange, ReadingFocus, ReadingOffset, ReadingText};
+        if snapshot.page_overlay().is_some() || snapshot.session().preview.is_some()
+            || self.route != *snapshot.route() || !self.native_input_for(snapshot.route(), None)
+            || self.places.last().is_none_or(|place| place.visit != snapshot.session().reading.current.id) { return Vec::new(); }
+        let mut changes = Vec::new();
+        let offset = self.scroll.offset();
+        if let Some(offset) = ReadingOffset::new(f32::from(offset.x), f32::from(offset.y)) {
+            changes.push(ReadingChange::ReaderOffset(offset));
+        }
+        changes.push(ReadingChange::ReaderLens(presentation_lens(self.lens)));
+        if let Some(key) = self.targets.leaving_focus(snapshot.route()) {
+            if let Some(key) = ReadingText::new(key.to_string()) {
+                changes.push(ReadingChange::Focus(Some(ReadingFocus::Reader(key))));
+            }
+        }
+        changes
     }
 
     /// The disclosure of `symbol`, made when there is none.
@@ -1042,7 +1062,7 @@ impl Reader {
         self.scroll.set_offset(offset);
     }
 
-    fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
+    fn arrive(&mut self, next: &Route, overlay: Option<Overlay>, reading: &crate::navigation::presentation::ReadingVisit) {
         // The first Tree departure records the opened release. A later
         // departure from its returning visit abandons that pending focus,
         // even when no virtual row mounted to schedule a deferred callback.
@@ -1056,9 +1076,6 @@ impl Reader {
         // from A to C, not a skeleton for B leaving and one for C arriving.
         // Drop each unpainted place (the first one, before any frame, stays:
         // there is nothing older) and arrive from the last one painted.
-        if let Some(current) = self.places.last().filter(|place| Some(place.key) == self.painted) {
-            self.remember_scroll(current.route.clone(), current.overlay, self.scroll.offset());
-        }
         let collapsed = drop_unpainted(&mut self.places, self.painted);
         if collapsed && let Some(last) = self.places.last() {
             self.route = last.route.clone();
@@ -1104,6 +1121,7 @@ impl Reader {
         self.last_way = Some(way);
         self.places.push(Place {
             key: self.descents,
+            visit: reading.id,
             route: next.clone(),
             overlay,
             way,
@@ -1116,46 +1134,14 @@ impl Reader {
             hop: hop_forward,
         });
         if !view_switch {
-            self.lens = Lens::Reference;
+            self.lens = if overlay.is_none() { reader_lens(reading.presentation.controls().lens) } else { Lens::Reference };
         }
-        // Back puts the parent where it was, so its opened row takes
-        // precedence. Other visits restore this exact route's recent offset.
-        let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
-        let opened = back
-            .and_then(|_| self.places.iter().rev().nth(1))
-            .and_then(|leaving| leaving.opened.clone().flatten());
-        let restored = opened
-            .map(|origin| origin.scroll)
-            .or_else(|| self.saved_scroll(next, overlay));
-        self.pending_scroll_restore = Some((
-            self.descents,
-            restored.unwrap_or(point(px(0.0), px(0.0))),
-        ));
+        let (x, y) = if overlay.is_none() { reading.presentation.controls().offset.pixels() } else { (0.0, 0.0) };
+        self.pending_scroll_restore = Some((self.descents, point(px(x), px(y))));
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
         self.native_return = None;
         self.find_focus_return = None;
-    }
-
-    fn remember_scroll(&mut self, route: Route, overlay: Option<Overlay>, offset: Point<Pixels>) {
-        self.scroll_memory
-            .retain(|saved| saved.route != route || saved.overlay != overlay);
-        self.scroll_memory.push(RouteScroll { route, overlay, offset });
-        if self.scroll_memory.len() > MAX_ROUTE_SCROLL_MEMORY {
-            let excess = self.scroll_memory.len() - MAX_ROUTE_SCROLL_MEMORY;
-            self.scroll_memory.drain(..excess);
-        }
-    }
-
-    fn saved_scroll(&mut self, route: &Route, overlay: Option<Overlay>) -> Option<Point<Pixels>> {
-        let index = self
-            .scroll_memory
-            .iter()
-            .position(|saved| saved.route == *route && saved.overlay == overlay)?;
-        let saved = self.scroll_memory.remove(index);
-        let offset = saved.offset;
-        self.scroll_memory.push(saved);
-        Some(offset)
     }
 
     /// Which plate move a place change plays, and what it needs from the
@@ -1753,9 +1739,19 @@ fn drop_unpainted(places: &mut Vec<Place>, painted: Option<u64>) -> bool {
 }
 
 /// One page the reader shows (or is still showing on its way out).
+fn reader_lens(lens: crate::navigation::presentation::ReaderLens) -> Lens {
+    use crate::navigation::presentation::ReaderLens as P;
+    match lens { P::Reference => Lens::Reference, P::Relations => Lens::Relations, P::Usage => Lens::Usage, P::History => Lens::History }
+}
+fn presentation_lens(lens: Lens) -> crate::navigation::presentation::ReaderLens {
+    use crate::navigation::presentation::ReaderLens as P;
+    match lens { Lens::Reference => P::Reference, Lens::Relations => P::Relations, Lens::Usage => P::Usage, Lens::History => P::History }
+}
+
 #[derive(Clone)]
 struct Place {
     key: u64,
+    visit: crate::navigation::presentation::VisitId,
     route: Route,
     overlay: Option<Overlay>,
     way: Way,
@@ -1818,7 +1814,6 @@ mod settings_return_tests {
     }
 }
 
-const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
 const MAX_SOURCE_PAGING_MEMORY: usize = 32;
 const MAX_LIBRARY_STATE_MEMORY: usize = 8;
 
@@ -2075,13 +2070,6 @@ mod source_paging_memory_tests {
     }
 }
 
-#[derive(Clone)]
-struct RouteScroll {
-    route: Route,
-    overlay: Option<Overlay>,
-    offset: Point<Pixels>,
-}
-
 /// The reader's column geometry for one frame.
 #[derive(Clone, Copy)]
 struct Layout {
@@ -2111,11 +2099,14 @@ impl Region for Reader {
     }
 
     fn observe(&mut self, event: &StoreEvent, store: &DataStore) {
-        if event.is_branch(Branch::Route) || event.is_branch(Branch::Overlay) {
+        if event.is_branch(Branch::Route) || event.is_branch(Branch::Overlay) || event.is_branch(Branch::Reading) {
             let snapshot = store.snapshot();
             let overlay = snapshot.page_overlay();
-            if *snapshot.route() != self.route || overlay != self.overlay {
-                if overlay == self.overlay && (find_refinement(&self.route, snapshot.route()) || cargo_binding_refinement(&self.route, snapshot.route())) {
+            self.targets.bind_reading(snapshot.route().clone(), snapshot.session().reading.current.id, snapshot.session().reading.current.presentation.controls().focus.clone());
+            if overlay.is_none() { self.lens = reader_lens(snapshot.session().reading.current.presentation.controls().lens); }
+            if *snapshot.route() != self.route || overlay != self.overlay
+                || self.places.last().is_some_and(|place| place.visit != snapshot.session().reading.current.id) {
+                if overlay == self.overlay && self.places.last().is_some_and(|place| place.visit == snapshot.session().reading.current.id) && (find_refinement(&self.route, snapshot.route()) || cargo_binding_refinement(&self.route, snapshot.route())) {
                     // Typing refines one place. Keeping its keyed surface
                     // holds the live input and selection while results reflow.
                     self.route = snapshot.route().clone();
@@ -2138,7 +2129,7 @@ impl Region for Reader {
                         });
                 }
                 let departure = if closing_settings { self.settings_departure.take() } else { None };
-                self.arrive(snapshot.route(), overlay);
+                self.arrive(snapshot.route(), overlay, &snapshot.session().reading.current);
                 self.pending_settings_focus = if closing_settings && overlay.is_none() {
                     Some(SettingsReturn {
                         place: self.descents,
@@ -2489,6 +2480,7 @@ impl Render for Reader {
                 scroll: self.scroll.clone(),
                 frame: Rc::clone(&self.frame),
                 land: Vec::new(),
+                reading: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
             let mut root = div().relative().size_full()
@@ -2650,6 +2642,8 @@ impl Render for Reader {
             scroll: self.scroll.clone(),
             frame: Rc::clone(&self.frame),
             land,
+            reading: (!waiting && self.pending_scroll_restore.is_none() && self.native_input_for(snapshot.route(), snapshot.page_overlay()) && snapshot.page_overlay().is_none())
+                .then(|| (snapshot.session().reading.current.id, snapshot.session().reading.current.presentation.controls().offset, self.links.clone())),
             child: scroller.into_any_element(),
         });
         let scroller = scroller.into_any_element();
@@ -2876,6 +2870,7 @@ struct Reveal {
     frame: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The page's flows, landed when a reflow scrolls to the focus.
     land: Vec<facet::motion::Flow>,
+    reading: Option<(crate::navigation::presentation::VisitId, crate::navigation::presentation::ReadingOffset, Links)>,
     child: gpui::AnyElement,
 }
 
@@ -2945,6 +2940,22 @@ impl gpui::Element for Reveal {
             }
         }
         self.child.prepaint(window, cx);
+        if let Some((visit, remembered, links)) = &self.reading {
+            let actual = self.scroll.offset();
+            if let Some(offset) = crate::navigation::presentation::ReadingOffset::new(f32::from(actual.x), f32::from(actual.y))
+                && offset != *remembered {
+                links.dispatch(crate::navigation::Intent::SetReading { visit: *visit,
+                    change: crate::navigation::presentation::ReadingChange::ReaderOffset(offset) }, cx);
+            }
+            if self.targets.is_active() && let Some(key) = self.targets.focused()
+                && let Some(key) = crate::navigation::presentation::ReadingText::new(key.to_string()) {
+                let focus = crate::navigation::presentation::ReadingFocus::Reader(key);
+                if links.snapshot(cx).session().reading.current.presentation.controls().focus.as_ref() != Some(&focus) {
+                    links.dispatch(crate::navigation::Intent::SetReading { visit: *visit,
+                        change: crate::navigation::presentation::ReadingChange::Focus(Some(focus)) }, cx);
+                }
+            }
+        }
     }
 
     fn paint(
@@ -3012,7 +3023,7 @@ mod transit_tests {
 
     /// A place in the reader's list, for the list's own rules.
     fn place(key: u64, route: Route) -> super::Place {
-        super::Place { key, route, overlay: None, way: super::Way::Across, lens: super::Lens::Reference, from: None, opened: None, hop: false }
+        super::Place { key, visit: Default::default(), route, overlay: None, way: super::Way::Across, lens: super::Lens::Reference, from: None, opened: None, hop: false }
     }
 
     /// Three routes in one turn (A painted, then B, then C, no frame between)

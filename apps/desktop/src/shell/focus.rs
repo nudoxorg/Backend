@@ -107,12 +107,12 @@ pub(crate) struct Target {
 #[derive(Clone, Default)]
 pub(crate) struct Recall {
     focused: Rc<RefCell<Option<SharedString>>>,
-    /// Which target a route was left by (a click, not a key walk): keyed on
-    /// the exact route, so Back landing on it again can put the keyboard
-    /// back on the row that led away from it. `Reader::arrive` clears
-    /// `focused` on every arrival ("a new page starts unfocused"), so this
-    /// lives apart from it and survives that clear.
-    left_by: Rc<RefCell<HashMap<Route, SharedString>>>,
+    /// One live departing target, consumed into the current visit before
+    /// navigation. This is transition evidence, never a second route history.
+    left_by: Rc<RefCell<Option<(Route, SharedString)>>>,
+    /// Pure current-visit focus projection; history lives only in SessionState.
+    reading_return: Rc<RefCell<Option<(Route, Option<crate::navigation::presentation::ReadingFocus>)>>>,
+    reading_visit: Rc<Cell<Option<crate::navigation::presentation::VisitId>>>,
 }
 
 impl Recall {
@@ -123,7 +123,9 @@ impl Recall {
 
     /// Focuses `id` (as [`Targets::focus`]).
     pub(crate) fn focus(&self, id: impl Into<SharedString>) {
-        *self.focused.borrow_mut() = Some(id.into());
+        let id = id.into();
+        if self.left_by.borrow().as_ref().is_some_and(|(_, leaving)| leaving != &id) { self.left_by.borrow_mut().take(); }
+        *self.focused.borrow_mut() = Some(id);
     }
 
     /// Forgets the focused target (a new page starts unfocused).
@@ -133,13 +135,24 @@ impl Recall {
 
     /// Remembers that activating `id` left `route` (as [`Targets::remember_leave`]).
     pub(crate) fn remember_leave(&self, route: Route, id: impl Into<SharedString>) {
-        self.left_by.borrow_mut().insert(route, id.into());
+        let id = id.into();
+        if crate::navigation::presentation::ReadingText::new(id.to_string()).is_some() {
+            self.focus(id.clone());
+            *self.left_by.borrow_mut() = Some((route, id));
+        }
     }
 
     /// The target `route` was left by, when a click (not a key walk) is what
     /// left it.
     pub(crate) fn left_by(&self, route: &Route) -> Option<SharedString> {
-        self.left_by.borrow().get(route).cloned()
+        if let Some((bound, focus)) = self.reading_return.borrow().as_ref()
+            && bound == route {
+            return match focus {
+                Some(crate::navigation::presentation::ReadingFocus::Reader(key)) => Some(key.as_str().to_owned().into()),
+                _ => None,
+            };
+        }
+        self.left_by.borrow().as_ref().filter(|(left, _)| left == route).map(|(_, id)| id.clone())
     }
 }
 
@@ -322,6 +335,11 @@ impl Targets {
         }
     }
 
+    pub(crate) fn bind_reading(&self, route: Route, visit: crate::navigation::presentation::VisitId, focus: Option<crate::navigation::presentation::ReadingFocus>) {
+        if self.recall.reading_visit.replace(Some(visit)) != Some(visit) { self.recall.left_by.borrow_mut().take(); }
+        *self.recall.reading_return.borrow_mut() = Some((route, focus));
+    }
+
     /// The focused target's id.
     pub(crate) fn focused(&self) -> Option<SharedString> {
         self.recall.focused()
@@ -472,6 +490,12 @@ impl Targets {
     pub(crate) fn left_by(&self, route: &Route) -> Option<SharedString> {
         self.recall.left_by(route)
     }
+
+    /// Only the live leaving gesture, never a route-keyed history lookup.
+    pub(crate) fn leaving_focus(&self, route: &Route) -> Option<SharedString> {
+        self.recall.left_by.borrow().as_ref().filter(|(left, _)| left == route).map(|(_, id)| id.clone())
+    }
+
 
     /// Moves focus `delta` targets along the last rendered list, clamping at
     /// the ends. With nothing focused, J lands on the first and K on the last.
@@ -833,6 +857,19 @@ mod tests {
         drop(targets);
         assert!(!clone.walk(1));
         assert!(clone.current().is_none());
+    }
+
+    #[test]
+    fn current_visit_focus_projection_does_not_borrow_an_older_same_route_departure() {
+        use crate::navigation::presentation::{ReadingFocus, ReadingText, VisitId};
+        let targets = Targets::named("reader");
+        targets.remember_leave(Route::World, "old-row");
+        targets.bind_reading(Route::World, VisitId::default(), None);
+        assert!(targets.left_by(&Route::World).is_none());
+        targets.bind_reading(Route::World, VisitId::default(), Some(ReadingFocus::Reader(ReadingText::new("saved-row").expect("bounded key"))));
+        assert_eq!(targets.left_by(&Route::World).as_deref(), Some("saved-row"));
+        targets.bind_reading(Route::World, VisitId::default(), Some(ReadingFocus::Shelf(ReadingText::new("shelf-row").expect("bounded key"))));
+        assert!(targets.left_by(&Route::World).is_none(), "a Shelf claim cannot regain Reader focus");
     }
 
     #[test]

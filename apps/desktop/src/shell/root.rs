@@ -170,11 +170,13 @@ impl Shell {
             root: graph.root.downgrade(),
             store: graph.store.clone(),
             shell: cx.entity().downgrade(),
+            reader: Default::default(),
         };
         let titlebar = new_region(&links, cx, |store| Titlebar::new(links.clone(), store));
         let shelf = new_region(&links, cx, |store| Shelf::new("shelf", links.clone(), store));
         let shelf_over = new_region(&links, cx, |store| Shelf::new("shelf-over", links.clone(), store));
         let reader = new_region(&links, cx, |store| Reader::new(links.clone(), store));
+        *links.reader.borrow_mut() = Some(reader.downgrade());
         let status = new_region(&links, cx, |store| Status::new(links.clone(), store));
         let pins = new_region(&links, cx, |store| Pins::new(links.clone(), store));
         let ask_links = links.clone();

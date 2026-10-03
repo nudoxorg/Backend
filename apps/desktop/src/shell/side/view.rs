@@ -46,6 +46,7 @@ impl Shelf {
         window.defer(cx, move |window, cx| {
             let current = links.snapshot(cx);
             if current.route() != snapshot.route() || current.overlay() != snapshot.overlay()
+                || current.session().reading.current.id != snapshot.session().reading.current.id
                 || !current.key().same_authority(snapshot.key())
                 || links.store.read(cx).current_owner_attachment() != attachment { return; }
             links.shell(cx, |shell, cx| {
@@ -497,7 +498,9 @@ impl Shelf {
             // A tab is a control a person points at (the keyboard reaches
             // lenses by their `G` chords, not by walking): published as a
             // target, not a stop on the walk.
+            let visit = self.reading_visit;
             let tab = tab.on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
                 shelf.take_keyboard(window, cx);
                 shelf.perform(&Do::Lens(lens), cx);
             }));
@@ -737,8 +740,10 @@ impl Shelf {
             // can also be a door on the page, and one key may have only one
             // owner per frame. The row for the page you are on opens nothing.
             let opens = item.source.clone().filter(|_| !item.current);
+            let visit = self.reading_visit;
             element =
                 element.on_click(cx.listener(move |shelf, event: &ClickEvent, window, cx| {
+                    if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
                     shelf.take_keyboard(window, cx);
                     shelf.targets.focus(id.clone());
                     // A double-click scopes into the row: browsing, not going.

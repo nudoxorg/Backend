@@ -14,6 +14,8 @@ use gpui::{
     WeakEntity, Window, px,
 };
 use std::sync::Arc;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 /// What every region keeps: the width it was laid out at, its watch, and a
 /// render counter the isolation tests read.
@@ -331,19 +333,65 @@ pub(crate) struct Links {
     pub(crate) root: WeakEntity<UiRootEntity>,
     pub(crate) store: Entity<DataStore>,
     pub(crate) shell: WeakEntity<super::Shell>,
+    /// One weak live Reader reference, shared by links created before it mounts.
+    pub(crate) reader: Rc<RefCell<Option<WeakEntity<super::reader::Reader>>>>,
 }
 
 impl Links {
     /// Queues one typed intent on the state owner.
     pub(crate) fn dispatch(&self, intent: Intent, cx: &mut App) {
         if let Some(root) = self.root.upgrade() {
+            self.capture_departure(&intent, &root, cx);
             root.update(cx, |root, cx| root.queue(intent, cx));
         }
     }
 
+    /// Capture current painted scalar intent before queued navigation. No handles
+    /// or resource receipts enter history; the Reader only lends its live values.
+    fn capture_departure(&self, intent: &Intent, root: &Entity<UiRootEntity>, cx: &mut App) {
+        if matches!(
+            intent,
+            Intent::Navigate(_)
+                | Intent::Back
+                | Intent::Forward
+                | Intent::ZoomOut
+                | Intent::SetView(_)
+                | Intent::SetRelease(_)
+                | Intent::Tour(_)
+                | Intent::Preview(_)
+                | Intent::CommitPreview
+                | Intent::OpenSettings(_)
+                | Intent::OpenCommandPalette
+                | Intent::OpenInbox
+                | Intent::OpenAddProject
+        ) {
+            let reader = self
+                .reader
+                .borrow()
+                .clone()
+                .and_then(|reader| reader.upgrade());
+            if let Some(reader) = reader {
+                let snapshot = self.snapshot(cx);
+                let visit = snapshot.session().reading.current.id;
+                let changes = reader.read(cx).capture_reading(&snapshot);
+                for change in changes {
+                    root.update(cx, |root, cx| {
+                        root.queue(Intent::SetReading { visit, change }, cx)
+                    });
+                }
+            }
+        }
+    }
+
     /// Read-backed navigation keeps its selected receipt through deferred flush.
-    pub(crate) fn dispatch_read(&self, intent: Intent, dependency: (PageKey, crate::model::pages::Stamp), cx: &mut App) {
+    pub(crate) fn dispatch_read(
+        &self,
+        intent: Intent,
+        dependency: (PageKey, crate::model::pages::Stamp),
+        cx: &mut App,
+    ) {
         if let Some(root) = self.root.upgrade() {
+            self.capture_departure(&intent, &root, cx);
             root.update(cx, |root, cx| root.queue_read(intent, dependency, cx));
         }
     }
@@ -354,7 +402,11 @@ impl Links {
     }
 
     /// Runs `f` on the shell, when it is still alive.
-    pub(crate) fn shell(&self, cx: &mut App, f: impl FnOnce(&mut super::Shell, &mut Context<super::Shell>)) {
+    pub(crate) fn shell(
+        &self,
+        cx: &mut App,
+        f: impl FnOnce(&mut super::Shell, &mut Context<super::Shell>),
+    ) {
         if let Some(shell) = self.shell.upgrade() {
             shell.update(cx, f);
         }
@@ -367,7 +419,8 @@ impl Links {
 
     /// The pointer left a link before it was followed: drop its prefetch.
     pub(crate) fn cancel_prefetch(&self, key: &PageKey, cx: &mut App) {
-        self.store.update(cx, |store, cx| store.cancel_prefetch(key, cx));
+        self.store
+            .update(cx, |store, cx| store.cancel_prefetch(key, cx));
     }
 
     /// Asks for a page again after a fault.

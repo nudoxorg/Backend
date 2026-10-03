@@ -19,6 +19,10 @@ pub(crate) struct Narrow {
 }
 
 impl Narrow {
+    pub(crate) fn from_text(text: &str) -> Self {
+        Self { query: crate::navigation::presentation::ReadingText::new(text).map_or_else(String::new, |text| text.as_str().to_owned()) }
+    }
+
     /// The words.
     pub(crate) fn query(&self) -> &str {
         &self.query
@@ -32,7 +36,8 @@ impl Narrow {
     /// Types one character. Whitespace never starts or extends a query:
     /// Space is the peek's key.
     pub(crate) fn push(&mut self, character: char) {
-        if !character.is_whitespace() && !character.is_control() {
+        if !character.is_whitespace() && !character.is_control()
+            && self.query.len() + character.len_utf8() <= crate::navigation::presentation::MAX_READING_TEXT {
             self.query.push(character);
         }
     }
@@ -107,6 +112,16 @@ pub(crate) fn find_fold(name: &str, query: &str) -> Option<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_narrowing_and_restored_narrowing_share_the_same_utf8_bound() {
+        let mut narrow = Narrow::default();
+        for _ in 0..600 { narrow.push('é'); }
+        assert_eq!(narrow.query().len(), crate::navigation::presentation::MAX_READING_TEXT);
+        assert_eq!(Narrow::from_text(narrow.query()).query(), narrow.query());
+        assert!(Narrow::from_text(&"x".repeat(1025)).is_empty());
+        assert!(Narrow::from_text("bad\nquery").is_empty());
+    }
 
     #[test]
     fn typing_builds_a_query_and_backspace_takes_it_apart_and_space_is_never_part_of_it() {
