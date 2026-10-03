@@ -191,6 +191,7 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::Dependencies { .. }
         | SurfaceCommand::Owner { .. }
         | SurfaceCommand::IndexSearch { .. }
+        | SurfaceCommand::IndexOperationStatus { .. }
         | SurfaceCommand::IndexProgress { .. }
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
@@ -296,9 +297,9 @@ impl<E: Endpoint> Product for Reconnecting<E> {
 mod tests {
     use super::*;
     use backend_library::{
-        Basis, CommandReply, Coverage, Freshness, Frontier, Intent, Lane, PageTerminal,
-        ProjectionPage, Reason, ViewRoot, ViewSnapshot, object_version, package_key, view_key,
-        view_state_root,
+        Basis, CommandReply, CompileExecutionIntent, Coverage, Freshness, Frontier,
+        IndexOperationKey, IndexOperationObservation, Intent, Lane, PageTerminal, ProjectionPage,
+        Reason, ViewRoot, ViewSnapshot, object_version, package_key, view_key, view_state_root,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -405,6 +406,12 @@ mod tests {
                 SurfaceCommand::Subscriptions => {
                     self.record("subscriptions")?;
                     Ok(SurfaceReply::Subscriptions(Box::new([])))
+                }
+                SurfaceCommand::IndexOperationStatus { operation_key } => {
+                    self.record("operation-status")?;
+                    Ok(SurfaceReply::IndexOperationStatus(
+                        IndexOperationObservation::Unknown { operation_key },
+                    ))
                 }
                 SurfaceCommand::Subscribe { .. } => {
                     self.record("subscribe")?;
@@ -863,6 +870,10 @@ mod tests {
                 "live:subscriptions".to_owned(),
             ],
             vec![
+                "dead:operation-status".to_owned(),
+                "live:operation-status".to_owned(),
+            ],
+            vec![
                 "dead:outline-page".to_owned(),
                 "live:outline-page".to_owned(),
             ],
@@ -886,6 +897,14 @@ mod tests {
                     handle
                         .surface(SurfaceCommand::Subscriptions)
                         .expect("a read surface command recovers"),
+                ),
+                "dead:operation-status" => drop(
+                    handle
+                        .surface(SurfaceCommand::IndexOperationStatus {
+                            operation_key: IndexOperationKey::from_bytes([7; 32])
+                                .expect("operation key"),
+                        })
+                        .expect("durable operation status is a repeatable read"),
                 ),
                 _ => drop(
                     handle
@@ -1034,6 +1053,9 @@ mod tests {
                 ),
                 after_sequence: 0,
             },
+            SurfaceCommand::IndexOperationStatus {
+                operation_key: IndexOperationKey::from_bytes([7; 32]).expect("operation key"),
+            },
         ];
         for command in reads {
             assert_eq!(
@@ -1054,6 +1076,16 @@ mod tests {
                 project: None,
             }),
             Repeatable::No
+        );
+        assert_eq!(
+            surface_is_repeatable(&SurfaceCommand::IndexOperationStart {
+                operation_key: IndexOperationKey::from_bytes([8; 32]).expect("operation key"),
+                package: backend_library::PackageReference::parse("serde")
+                    .expect("package reference"),
+                execution_intent: CompileExecutionIntent::Interactive,
+            }),
+            Repeatable::No,
+            "a start mutation must not become retryable with its status read"
         );
     }
 
