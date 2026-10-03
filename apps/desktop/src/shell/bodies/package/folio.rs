@@ -21,7 +21,7 @@ use facet::folio::flight::{Marks, Stone, flight, progress};
 use facet::folio::heads::{Finding, heads, open_sheet};
 use facet::folio::module::module as module_view;
 use facet::folio::rail::rail;
-use facet::folio::shingles::{ModuleFacts, ShingleFacts, Spot, shingles};
+use facet::folio::shingles::{ModuleFacts, ShingleFacts, Spot};
 use facet::folio::state::{Extent, Fold, Time, Use};
 use facet::folio::text::{key, one};
 use facet::folio::ticker::{TickerFacts, ticker};
@@ -1056,7 +1056,7 @@ impl RenderOnce for Folio {
                     .iter()
                     .map(|m| m.items.iter().map(|i| i.name.clone()).collect())
                     .collect();
-                let geometry = facet::folio::shingles::measured(&modules, &measure, window);
+                let measured = facet::folio::shingles::measured(modules.clone(), &measure, window);
                 // The region the keyboard stands on reads itself, as a hovered one does.
                 let standing = facts.modules.iter().position(|m| {
                     self.targets
@@ -1064,8 +1064,7 @@ impl RenderOnce for Folio {
                 });
                 let carry_state = nav.clone();
                 let carry_names = names.clone();
-                let map = shingles(key(&self.id, "shingles"), modules.clone(), &measure)
-                    .geometry(geometry.clone())
+                let map = measured.clone().shingles(key(&self.id, "shingles"))
                     .time(if facts.past.is_some() {
                         Time::Past
                     } else {
@@ -1093,7 +1092,7 @@ impl RenderOnce for Folio {
                             cx.notify();
                         });
                     });
-                self.with_doors(map, &nav, &geometry)
+                self.with_doors(map, &nav, measured.layout())
             }
             Some(open) => self.open_module(open, &nav_value, &nav, &measure, carried),
         };

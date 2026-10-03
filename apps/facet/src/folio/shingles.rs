@@ -395,10 +395,49 @@ fn wrapped_line_count(text: &str, role: TypeRole, width: f32, window: &Window) -
         .max(1)
 }
 
-/// Measures one immutable map layout for both its native paint element and
-/// the host's keyboard targets.
+/// A measured map owns the exact immutable facts and container measure used
+/// by its native glyph layout. Its layout view positions host targets; its
+/// consuming builder paints those same facts, without a detached geometry setter.
+/// A caller cannot replace the facts inside an already measured bundle:
+///
+/// ```compile_fail
+/// use facet::folio::shingles::{MeasuredMap, ModuleFacts};
+/// use std::rc::Rc;
+/// fn rebind(map: MeasuredMap, different: Rc<[ModuleFacts]>) -> MeasuredMap {
+///     MeasuredMap { modules: different, ..map }
+/// }
+/// ```
+#[derive(Clone)]
+pub struct MeasuredMap {
+    modules: Rc<[ModuleFacts]>,
+    measure: Measure,
+    layout: Rc<Layout>,
+}
+
+impl MeasuredMap {
+    /// Read-only geometry for the host's native region targets.
+    #[must_use]
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    /// Build the painted map from exactly the measured facts and measure.
+    #[must_use]
+    pub fn shingles(self, id: impl Into<ElementId>) -> Shingles {
+        let mut map = shingles(id, self.modules, &self.measure);
+        map.geometry = Some(self.layout);
+        map
+    }
+}
+
+/// Measure the immutable map once for native paint and host target placement.
 #[must_use]
-pub fn measured(modules: &[ModuleFacts], measure: &Measure, window: &Window) -> Rc<Layout> {
+pub fn measured(modules: Rc<[ModuleFacts]>, measure: &Measure, window: &Window) -> MeasuredMap {
+    let layout = measure_layout(&modules, measure, window);
+    MeasuredMap { modules, measure: *measure, layout }
+}
+
+fn measure_layout(modules: &[ModuleFacts], measure: &Measure, window: &Window) -> Rc<Layout> {
     let k = measure.scale() * (0.94 + 0.42 * measure.t());
     let sizes: Vec<(usize, usize)> = modules
         .iter()
@@ -545,14 +584,6 @@ impl Shingles {
         self
     }
 
-    /// Reuses the measured geometry that also positions the host's keyboard targets.
-    /// Measure this value from the same current modules and container measure.
-    #[must_use]
-    pub fn geometry(mut self, geometry: Rc<Layout>) -> Self {
-        self.geometry = Some(geometry);
-        self
-    }
-
     /// Called when a region, or a shingle in it, is clicked (or Enter walks
     /// onto it).
     #[must_use]
@@ -573,9 +604,8 @@ impl Shingles {
     fn layout(&self, window: &Window) -> Rc<Layout> {
         self.geometry
             .as_ref()
-            .filter(|layout| layout.labels.is_some())
             .cloned()
-            .unwrap_or_else(|| measured(&self.modules, &self.measure, window))
+            .unwrap_or_else(|| measure_layout(&self.modules, &self.measure, window))
     }
 
     fn foot(&self, window: &Window) -> f32 {

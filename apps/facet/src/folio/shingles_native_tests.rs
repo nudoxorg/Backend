@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 struct Board {
     modules: Rc<[ModuleFacts]>,
     width: f32,
-    layout: Option<Rc<Layout>>,
+    measured: Option<MeasuredMap>,
     observed: Rc<RefCell<Option<Rc<Layout>>>>,
     lit: bool,
     covered: bool,
@@ -19,17 +19,20 @@ struct Board {
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let measure = Measure::new(px(self.width), &cx.facet());
-        let layout = self
-            .layout
-            .get_or_insert_with(|| measured(&self.modules, &measure, window))
+        let measured = self
+            .measured
+            .get_or_insert_with(|| measured(self.modules.clone(), &measure, window))
             .clone();
+        let layout = measured.layout.clone();
+        let modules = measured.modules.clone();
+        let width = measured.measure.width();
         *self.observed.borrow_mut() = Some(layout.clone());
-        let map = shingles("measured-map", self.modules.clone(), &measure)
-            .geometry(layout.clone())
+        let map = measured
+            .shingles("measured-map")
             .rest(self.lit.then_some(Spot::Region(0)));
         // This is the host contract: the native leaves use the same Rc as
         // the painted map, with no separate text or region measurement.
-        let mut body = div().relative().w(px(self.width)).child(map);
+        let mut body = div().relative().w(width).child(map);
         for (i, bounds) in layout.region_bounds().iter().enumerate() {
             let calls = self.calls.clone();
             let focus = cx.focus_handle();
@@ -42,7 +45,7 @@ impl Render for Board {
                     .w(bounds.size.width)
                     .h(bounds.size.height)
                     .role(gpui::Role::Button)
-                    .aria_label(self.modules[i].name.clone()),
+                    .aria_label(modules[i].name.clone()),
                 &focus,
                 move |_, _| calls.set(calls.get() + 1),
             );
@@ -145,7 +148,7 @@ fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut 
         Board {
             modules: modules(&["lib", "cadence"], 1),
             width: 500.,
-            layout: None,
+            measured: None,
             observed: observed.clone(),
             lit: false,
             covered: false,
@@ -174,7 +177,7 @@ fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut 
             {
                 board.update(cx, |board, cx| {
                     board.width = width;
-                    board.layout = None;
+                    board.measured = None;
                     cx.notify();
                 });
                 draw(cx);
@@ -234,7 +237,7 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
         Board {
             modules: modules(&[], 0),
             width: 360.,
-            layout: None,
+            measured: None,
             observed: observed.clone(),
             lit: false,
             covered: false,
@@ -264,7 +267,7 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
                 board.update(cx, |board, cx| {
                     board.modules = modules(&words, count);
                     board.width = width;
-                    board.layout = None;
+                    board.measured = None;
                     cx.notify();
                 });
                 draw(cx);
@@ -305,7 +308,7 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
     board.update(cx, |board, cx| {
         board.covered = false;
         board.modules = modules(&["new_owner"], 1);
-        board.layout = None;
+        board.measured = None;
         cx.notify();
     });
     draw(cx);
@@ -338,6 +341,78 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
                 .iter()
                 .any(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("lib")),
             "replacement cannot expose the old native region"
+        )
+    });
+}
+
+#[gpui::test]
+fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    let observed = Rc::new(RefCell::new(None));
+    let (board, cx) = cx.add_window_view(|window, _| {
+        window.set_a11y_forced(true);
+        Board {
+            modules: modules(&["lib"], 1),
+            width: 360.,
+            measured: None,
+            observed: observed.clone(),
+            lit: false,
+            covered: false,
+            calls: Rc::new(Cell::new(0)),
+        }
+    });
+    cx.simulate_resize(size(px(1000.), px(1200.)));
+    draw(cx);
+    let retained = observed.borrow().as_ref().unwrap().clone();
+    assert_painted(cx, &retained, &["lib"]);
+    // Changing pending inputs does not provide a way to rebind facts or
+    // font/container measure inside an already measured immutable bundle.
+    // This checks coherence only; the host still owns current-page admission.
+    board.update(cx, |board, cx| {
+        board.modules = modules(&["new_café_日本語"], 60);
+        board.width = 500.;
+        cx.notify();
+    });
+    cx.update(|_, cx| {
+        crate::set_facet(
+            crate::Facet {
+                text_scale: 2.,
+                reduced_motion: true,
+                ..crate::Facet::default()
+            },
+            cx,
+        )
+    });
+    draw(cx);
+    assert!(Rc::ptr_eq(&retained, observed.borrow().as_ref().unwrap()));
+    assert_painted(cx, &retained, &["lib"]);
+    cx.update(|window, _| {
+        assert!(
+            !window
+                .painted_texts()
+                .iter()
+                .any(|run| run.text.as_ref() == "new_café_日本語")
+        )
+    });
+    // The only replacement path measures the complete new input together.
+    board.update(cx, |board, cx| {
+        board.measured = None;
+        cx.notify();
+    });
+    draw(cx);
+    let fresh = observed.borrow().as_ref().unwrap().clone();
+    assert!(!Rc::ptr_eq(&retained, &fresh));
+    assert_eq!(fresh.width, 500.);
+    assert!(fresh.labels.as_ref().unwrap().role.size > retained.labels.as_ref().unwrap().role.size);
+    assert_painted(cx, &fresh, &["new_café_日本語"]);
+    cx.update(|window, _| {
+        assert!(
+            !window
+                .painted_texts()
+                .iter()
+                .any(|run| run.text.as_ref() == "lib")
         )
     });
 }
