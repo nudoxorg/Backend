@@ -2063,7 +2063,7 @@ fn cargo_binding_refinement(previous: &Route, next: &Route) -> bool {
     next.browse.context().cloned().and_then(|context| previous.resolve_context(context)).as_ref() == Some(next)
 }
 
-fn find_refinement(previous: &Route, next: &Route) -> bool {
+pub(super) fn find_refinement(previous: &Route, next: &Route) -> bool {
     let find = |route: &Route| matches!(route,
         Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_))));
     find(previous) && find(next)

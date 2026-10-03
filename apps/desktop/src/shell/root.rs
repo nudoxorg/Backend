@@ -87,6 +87,9 @@ pub struct RenderCounts {
 pub struct Shell {
     links: Links,
     graph: UiEntityGraph,
+    /// Last route observed by this window. A Find query refinement changes
+    /// the route while keeping the same mounted native editor.
+    observed_route: Route,
     focus: FocusHandle,
     drawer_focus: FocusHandle,
     titlebar: Entity<Titlebar>,
@@ -211,6 +214,7 @@ impl Shell {
         let twins = cx.observe_global::<super::side::twin::Lit>(|_, cx| cx.notify());
         let reduced_motion = system::watch_reduced_motion();
         let system_reduced_motion = reduced_motion.initial();
+        let observed_route = links.snapshot(cx).route().clone();
         let motion_changes = reduced_motion.changes();
         cx.spawn(async move |shell, cx| {
             while let Ok(system) = motion_changes.recv().await {
@@ -230,6 +234,7 @@ impl Shell {
                 root: graph.root.clone(),
                 store: graph.store.clone(),
             },
+            observed_route,
             focus,
             drawer_focus: cx.focus_handle(),
             titlebar,
@@ -569,6 +574,10 @@ impl Shell {
                 self.advance_transient_generation();
                 self.pending_transient_return = None;
                 let snapshot = self.links.snapshot(cx);
+                let route = snapshot.route().clone();
+                let keeps_native_editor = super::reader::find_refinement(&self.observed_route, &route)
+                    && snapshot.overlay().is_none();
+                self.observed_route = route.clone();
                 // Ask preview routes are covered visits, not committed
                 // navigation. Keep the origin receipt until the preview
                 // reducer restores it; committed departure revokes it.
@@ -576,10 +585,10 @@ impl Shell {
                     if self.drawer_return.as_ref().is_some_and(|saved| &saved.route != snapshot.route()) { self.drawer_return = None; }
                     if self.ask_return.as_ref().is_some_and(|saved| &saved.route != snapshot.route()) { self.ask_return = None; }
                 }
-                let route = snapshot.route().clone();
                 // A preview changes the Reader while Ask retains keyboard ownership.
                 if snapshot.overlay() != Some(Overlay::CommandPalette)
                     && !super::bodies::graph::is_graph(&route)
+                    && !keeps_native_editor
                 {
                     self.focus.focus(window, cx);
                 }
