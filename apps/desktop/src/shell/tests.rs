@@ -1504,6 +1504,33 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     assert!(matches!(gate.state(), OwnerState::Starting), "native Retry asks the failed owner to restart");
 }
 
+#[gpui::test]
+fn unserved_owner_package_address_cannot_paint_unread_facts_as_absence(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    rig.draw();
+    let package = PackageRef::parse("pkg:cargo/thiserror@2.0.0").expect("catalogued release address");
+    let route = crate::shell::kit::package_route(&package).expect("package route");
+    rig.go(Intent::Navigate(route));
+    rig.repaint();
+    let (paint, ax) = rig.cx.update(|window, _| {
+        (window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
+         window.debug_a11y_tree_json().expect("native unserved package tree"))
+    });
+    assert!(paint.iter().any(|text| text.contains("The indexed package could not be read")),
+        "the unserved address has its own honest failed pane: {paint:?}");
+    assert!(!paint.iter().any(|text| text == "no licence declared" || text.contains("unavailable for this package ecosystem")));
+    assert!(!ax.contains("Toggle licence details"), "no current package facts mounted: {ax}");
+}
+
 /// A local page must own the first submitted body frame. Accessibility is
 /// built from the new Reader tree even while an opening plate can still
 /// expose the previous page's pixels; inspect both native outputs together.

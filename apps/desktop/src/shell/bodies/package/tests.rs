@@ -253,6 +253,74 @@ fn a_page_whose_source_is_missing_says_so_instead_of_inventing_facts(cx: &mut Te
 
 struct NonCargoPackage;
 
+struct LicenceEvidencePackage { unread_record: bool }
+
+impl crate::runtime::reads::PageReader for LicenceEvidencePackage {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        use crate::model::pages::{GapReason, Known, LicenseDeclaration, PageValue};
+        if !matches!(request, crate::runtime::reads::ReadRequest::Package(_)) {
+            return crate::shell::tests::Fixture.read(request, context);
+        }
+        let mut about = dossier();
+        if self.unread_record {
+            about.record = Known::unknown(GapReason::NotRecorded, "library record not found");
+            about.outline = Known::unknown(GapReason::NotRecorded, "indexed declarations not found");
+        } else if let Known::Known(record) = &mut about.record {
+            record.license = Known::Known(LicenseDeclaration::DeclaredAbsent);
+        }
+        Ok(PageValue::Package(about))
+    }
+}
+
+fn mounted_licence_case(cx: &mut TestAppContext, unread_record: bool) -> (Vec<String>, String) {
+    use crate::runtime::reads::ReadPool;
+    let pool = ReadPool::start(1, move |_| LicenceEvidencePackage { unread_record }).expect("page reader");
+    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        facet::probe::enable(cx);
+        window.set_a11y_forced(true);
+    });
+    let ledger = painted(&mut rig);
+    let mut words = said(&ledger, "licence-verdict");
+    let (paint, ax) = rig.cx.update(|window, _| {
+        (window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
+         window.debug_a11y_tree_json().expect("mounted package native AccessKit tree"))
+    });
+    words.extend(paint);
+    let tree: serde_json::Value = serde_json::from_str(&ax).expect("native package tree JSON");
+    let stamp = tree["nodes"].as_object().expect("native nodes").values()
+        .find(|node| node["aria"]["label"].as_str() == Some("Toggle licence details"))
+        .expect("mounted licence native button");
+    assert_eq!(stamp["aria"]["role"].as_str(), Some("Button"));
+    (words, stamp["aria"]["description"].as_str().expect("native licence evidence description").to_owned())
+}
+
+#[gpui::test]
+fn unread_package_record_never_paints_or_announces_declared_absence(cx: &mut TestAppContext) {
+    let (paint, ax) = mounted_licence_case(cx, true);
+    assert!(paint.iter().any(|word| word == "Licence unknown"));
+    assert!(paint.iter().any(|word| word == "licence not read"));
+    assert!(!paint.iter().any(|word| word == "no licence declared"));
+    assert!(ax.contains("Licence unknown") && ax.contains("package record has not been read"));
+    assert!(!ax.contains("No licence"));
+    assert!(paint.iter().any(|word| word.contains("source ecosystem")),
+        "unread record must not claim an unsupported ecosystem: {paint:?}");
+}
+
+#[gpui::test]
+fn verified_declared_absence_still_paints_and_announces_no_licence(cx: &mut TestAppContext) {
+    let (paint, ax) = mounted_licence_case(cx, false);
+    assert!(paint.iter().any(|word| word == "No licence"));
+    assert!(paint.iter().any(|word| word == "no licence declared"));
+    assert!(ax.contains("No licence"));
+    assert!(!paint.iter().any(|word| word == "licence not read"));
+}
+
 impl crate::runtime::reads::PageReader for NonCargoPackage {
     fn read(
         &mut self,
