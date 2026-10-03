@@ -1324,8 +1324,8 @@ fn _palette(_: &Palette, _: &Measure) {}
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        capability_state_words, capability_words, connection_words, find_mcp_binary, health_notice,
-        locald_companion, mcp_config,
+        capability_state_words, capability_words, connection_explanation, connection_words,
+        find_mcp_binary, health_notice, locald_companion, mcp_config,
     };
     use crate::core::{FaultCode, Resource, ResourceTerminal, UnavailableReason};
     use crate::model::pages::{HealthModel, PageValue, ReadFailure};
