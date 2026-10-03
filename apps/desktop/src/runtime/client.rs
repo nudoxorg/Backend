@@ -367,7 +367,7 @@ impl LocalEngineClient {
                     if let Some(gate) = &self.gate {
                         gate.wait_cancelled(&cancel)
                             .map_err(owner_fault)?;
-                        if gate.ready_epoch() != self.attached_epoch {
+                        if gate.ready_attachment() != self.attached_epoch {
                             return Err(EngineFault::Superseded);
                         }
                     }
@@ -440,7 +440,7 @@ impl EngineClient for LocalEngineClient {
             // An attached owner may restart under the same root. Discard
             // sockets admitted by its prior serving generation before this
             // request can use them.
-            let epoch = gate.ready_epoch();
+            let epoch = gate.ready_attachment();
             if self.attached_epoch != epoch {
                 self.session = None;
                 self.subscription = None;

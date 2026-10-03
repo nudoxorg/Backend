@@ -116,7 +116,7 @@ pub(super) fn bounded_output(
 }
 
 pub(super) fn bounded_output_cancelled(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     max_output: usize,
     cancelled: &dyn Fn() -> bool,
@@ -125,8 +125,24 @@ pub(super) fn bounded_output_cancelled(
     // An arbitrary public timeout must never panic after the child starts.
     // Reject an unrepresentable deadline before creating a process or pipe.
     let deadline = Instant::now().checked_add(timeout).ok_or(CargoFailure::Timeout)?;
-    #[cfg(windows)]
-    return Err(CargoFailure::UnsupportedCapture);
+    #[cfg(unix)]
+    return unix_bounded_output(command, deadline, max_output, cancelled);
+    #[cfg(not(unix))]
+    {
+        let _ = (command, deadline, max_output);
+        Err(CargoFailure::UnsupportedCapture)
+    }
+}
+
+/// The non-blocking pipe loop behind [`bounded_output_cancelled`]; its pipe
+/// and process-group helpers exist only on Unix.
+#[cfg(unix)]
+fn unix_bounded_output(
+    mut command: Command,
+    deadline: Instant,
+    max_output: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, CargoFailure> {
     #[cfg(target_os = "macos")]
     backend_platform::macos_process::configure_process_session(&mut command);
     #[cfg(all(unix, not(target_os = "macos")))]

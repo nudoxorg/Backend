@@ -10,7 +10,7 @@ use crate::shell::bodies::{Ctx, Leaf, Pages};
 use crate::shell::focus::{Target, native_control};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
-use facet::{Space, tokens::ty};
+use facet::{Set as _, Space, tokens::ty};
 use gpui::{
     App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, div, px,
@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 mod inventory;
 
-pub(super) fn body(
+pub(crate) fn body(
     route: &CargoSourceRoute,
     store: &Pages,
     ctx: &mut Ctx<'_>,

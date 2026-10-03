@@ -285,7 +285,7 @@ impl OwnerGate {
     }
 
     /// Current serving attachment, independent of publication wakes.
-    pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
+    pub(crate) fn ready_attachment(&self) -> Option<Epoch> {
         let inner = self.lock();
         (!inner.closed
             && !inner.observation_suspended
@@ -887,7 +887,7 @@ mod publication_tests {
             VersionedRoot::from_revision(1, cursor, 0),
             ServiceMode::Attached,
         );
-        let attachment = gate.ready_epoch().expect("serving attachment");
+        let attachment = gate.ready_attachment().expect("serving attachment");
         (gate, attachment, cursor)
     }
 
@@ -911,7 +911,7 @@ mod publication_tests {
                 first.capability().expect("complete source"),
             )
             .expect("prepared external delta");
-        let (second, _) = first.commit(prepared).expect("committed external delta");
+        let (second, _) = ViewRoot::clone(&first).commit(prepared).expect("committed external delta");
         let second = Arc::new(second);
         let published = Cursor::for_view_root_at(&second, 1);
         assert_eq!(
@@ -975,7 +975,7 @@ mod publication_tests {
             key: VersionedRoot::from_revision(1, cursor, 0),
             mode: ServiceMode::Attached,
         });
-        let new = gate.ready_epoch().expect("new attachment");
+        let new = gate.ready_attachment().expect("new attachment");
         assert_ne!(old, new);
         assert_eq!(
             gate.publish_view(old, Arc::clone(&root), cursor),

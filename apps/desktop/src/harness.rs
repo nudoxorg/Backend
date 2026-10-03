@@ -1415,6 +1415,11 @@ fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
                 ("release", route.at.as_ref().map_or(Json::Null, |at| Json::str(at.as_str()))),
                 ("line", Json::opt(route.line)),
             ]),
+            Route::CargoSource(route) => Json::obj([
+                ("kind", Json::str("cargo-source")), ("package", Json::str(route.package.as_str())),
+                ("file", Json::str(route.file.as_str())),
+                ("line", Json::opt(route.line)),
+            ]),
         }
     }
     let Some(booted) = cx.try_global::<Booted>() else { return Json::Null };

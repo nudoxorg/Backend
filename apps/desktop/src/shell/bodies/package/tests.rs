@@ -712,6 +712,7 @@ fn local_toml_named_root() -> PathBuf {
 fn route_for_package(package: &PackageRef) -> crate::navigation::Route {
     crate::navigation::Route::Package(crate::navigation::PackageRoute {
         project: None,
+        cargo: None,
         package: crate::core::PackageId::new(package.as_str()).expect("package route"),
         lane: crate::navigation::PackageLane::Overview,
         selected: None,

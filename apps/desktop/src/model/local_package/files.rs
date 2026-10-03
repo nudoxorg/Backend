@@ -105,14 +105,11 @@ fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     left.dev() == right.dev() && left.ino() == right.ino()
 }
 
-#[cfg(windows)]
-fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
-}
-
-#[cfg(not(any(unix, windows)))]
+/// std's Windows file ID accessors are unstable (`windows_by_handle`) and
+/// metadata alone carries no identity, so Windows offers no editor hint until
+/// the callers pass the opened handle (backend-platform's
+/// `revision_for_file` reads volume and file ID from it).
+#[cfg(not(unix))]
 fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     false
 }
