@@ -28,7 +28,8 @@ pub(crate) async fn yield_turn() {
             cx.waker().wake_by_ref();
             Poll::Pending
         }
-    }).await;
+    })
+    .await;
 }
 
 #[derive(Debug, Default)]
@@ -201,22 +202,32 @@ mod tests {
         let foreground = cx.foreground_executor().clone();
         let recorded = Rc::clone(&events);
         let executor = foreground.clone();
-        foreground.spawn(async move {
-            let (sender, mut receiver) = wake_channel();
-            sender.wake();
-            for batch in 0..3 {
-                assert!(receiver.wait().await.is_some());
-                recorded.borrow_mut().push(batch);
-                if batch == 0 {
-                    let probe = Rc::clone(&recorded);
-                    executor.spawn(async move { probe.borrow_mut().push(99); }).detach();
-                }
+        foreground
+            .spawn(async move {
+                let (sender, mut receiver) = wake_channel();
                 sender.wake();
-                yield_turn().await;
-            }
-        }).detach();
+                for batch in 0..3 {
+                    assert!(receiver.wait().await.is_some());
+                    recorded.borrow_mut().push(batch);
+                    if batch == 0 {
+                        let probe = Rc::clone(&recorded);
+                        executor
+                            .spawn(async move {
+                                probe.borrow_mut().push(99);
+                            })
+                            .detach();
+                    }
+                    sender.wake();
+                    yield_turn().await;
+                }
+            })
+            .detach();
         cx.run_until_parked();
-        assert_eq!(&*events.borrow(), &[0, 99, 1, 2], "the real foreground executor polls the unrelated task before the next ready batch");
+        assert_eq!(
+            &*events.borrow(),
+            &[0, 99, 1, 2],
+            "the real foreground executor polls the unrelated task before the next ready batch"
+        );
     }
 
     #[test]

@@ -29,22 +29,22 @@ use crate::host::registry::{RegistryPackageIdentity, RegistrySource};
 use crate::model::browse::{BrowseValue, CargoSourceInventoryKey, CargoSourceInventoryModel};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    CargoSourceKey, CargoSourcePage, Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
-    SearchQuery, SymbolRef, VerifiedRegistryRelease,
+    CargoSourceKey, CargoSourcePage, Gap, GapReason, Generation, PackageRef, PageKey, PageValue,
+    ReadFailure, SearchContinuation, SearchQuery, SymbolRef, VerifiedRegistryRelease,
 };
 use backend_client::{ClientError, Session};
 use backend_library::{
-    CargoPackageSourceFileResultV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
-    CargoPackageSourceSemanticStatusV1, CargoPackageSourceInventoryResultV1,
-    CargoPackageSourceInventoryFailureV1, CargoPackageSourceRequestV1,
-    CommandFailure, CommandReply, HealthReport, PageContinuation, PageTerminal, ProductText,
-    ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
+    CargoPackageSourceFileResultV1, CargoPackageSourceInventoryFailureV1,
+    CargoPackageSourceInventoryResultV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
+    CargoPackageSourceRequestV1, CargoPackageSourceSemanticStatusV1, CommandFailure, CommandReply,
+    HealthReport, PageContinuation, PageTerminal, ProductText, ReplyDto, Row, SurfaceCommand,
+    SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
 use backend_present::{Engine, Probe};
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -300,9 +300,11 @@ impl ReadPermit {
             Priority::Normal => MAX_ADMITTED_READS,
             Priority::Prefetch => MAX_PREFETCH_ADMISSION,
         };
-        count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-            (used < limit).then_some(used + 1)
-        }).ok()?;
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                (used < limit).then_some(used + 1)
+            })
+            .ok()?;
         Some(Arc::new(Self(Arc::clone(count))))
     }
 }
@@ -321,7 +323,9 @@ struct AdmittedRead {
 
 impl std::ops::Deref for AdmittedRead {
     type Target = ReadJob;
-    fn deref(&self) -> &ReadJob { &self.job }
+    fn deref(&self) -> &ReadJob {
+        &self.job
+    }
 }
 
 /// The job one worker is running: its key, generation, and token.
@@ -384,7 +388,9 @@ impl Shared {
         if !outcome.complete && results.iter().any(|queued| same(queued) && queued.complete) {
             return;
         }
-        let old = results.iter().position(|queued| same(queued) && !queued.complete)
+        let old = results
+            .iter()
+            .position(|queued| same(queued) && !queued.complete)
             .and_then(|at| results.remove(at));
         results.push_back(outcome);
         drop(results);
@@ -392,7 +398,6 @@ impl Shared {
         drop(old);
         self.wake.wake();
     }
-
 }
 
 /// A fixed pool of read workers.
@@ -553,15 +558,23 @@ impl ReadPool {
             } else {
                 Priority::Normal
             };
-            let at = results.iter().position(|outcome| {
-                let normal = outcome.priority == Priority::Normal || visible.contains(&outcome.key);
-                normal == (preferred == Priority::Normal)
-            }).unwrap_or(0);
-            if let Some(outcome) = results.remove(at) { batch.push(outcome); }
+            let at = results
+                .iter()
+                .position(|outcome| {
+                    let normal =
+                        outcome.priority == Priority::Normal || visible.contains(&outcome.key);
+                    normal == (preferred == Priority::Normal)
+                })
+                .unwrap_or(0);
+            if let Some(outcome) = results.remove(at) {
+                batch.push(outcome);
+            }
         }
         let remaining = !results.is_empty();
         drop(results);
-        if remaining { self.shared.wake.wake(); }
+        if remaining {
+            self.shared.wake.wake();
+        }
         batch
     }
 
@@ -813,7 +826,11 @@ impl SessionEngine {
                     })?;
                     ready_epoch = gate.attached_ready_epoch();
                 }
-                match Session::connect_with_timeouts(&self.endpoint, Duration::from_secs(1), Duration::from_secs(30)) {
+                match Session::connect_with_timeouts(
+                    &self.endpoint,
+                    Duration::from_secs(1),
+                    Duration::from_secs(30),
+                ) {
                     Ok(session) => {
                         self.session = Some(session);
                         self.session_epoch = ready_epoch;
@@ -843,18 +860,24 @@ impl SessionEngine {
             let interrupt = session.interrupt_handle().ok_or_else(|| {
                 ClientError::Io("the local read connection cannot be interrupted safely".to_owned())
             })?;
-            let _wake = cancel.as_ref().map(|cancel| cancel.on_cancel(move || interrupt.interrupt()));
+            let _wake = cancel
+                .as_ref()
+                .map(|cancel| cancel.on_cancel(move || interrupt.interrupt()));
             if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
                 self.session = None;
                 self.session_epoch = None;
-                return Err(ClientError::Io("read was cancelled before sending".to_owned()));
+                return Err(ClientError::Io(
+                    "read was cancelled before sending".to_owned(),
+                ));
             }
             let result = operation(session);
             drop(_wake);
             if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
                 self.session = None;
                 self.session_epoch = None;
-                return Err(ClientError::Io("read was cancelled during transport".to_owned()));
+                return Err(ClientError::Io(
+                    "read was cancelled during transport".to_owned(),
+                ));
             }
             match result {
                 Err(error) if attempt == 0 && transport_break(&error) => {
@@ -1519,7 +1542,10 @@ fn compose_cargo_source(
 ) -> Result<PageValue, ReadFailure> {
     check(context.cancel)?;
     let path = CargoPackageSourcePathV1::new(key.file.as_str()).map_err(|_| {
-        ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "invalid Cargo source file address"))
+        ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Protocol,
+            "invalid Cargo source file address",
+        ))
     })?;
     let reply = request_cargo_source_file(engine, key, &path)?;
     check(context.cancel)?;
@@ -1563,9 +1589,19 @@ fn request_cargo_source_file(
         .map_err(|error| failure(&error))
 }
 
-fn cargo_source_request(context: &crate::navigation::CargoBrowseContext, package: &PackageRef) -> Result<CargoPackageSourceRequestV1, ReadFailure> {
-    let request = CargoPackageSourceRequestV1::from_tree(package.reference().clone(), context.request_binding());
-    if request.has_admissible_shape() { Ok(request) } else { Err(shape("Cargo source request selector")) }
+fn cargo_source_request(
+    context: &crate::navigation::CargoBrowseContext,
+    package: &PackageRef,
+) -> Result<CargoPackageSourceRequestV1, ReadFailure> {
+    let request = CargoPackageSourceRequestV1::from_tree(
+        package.reference().clone(),
+        context.request_binding(),
+    );
+    if request.has_admissible_shape() {
+        Ok(request)
+    } else {
+        Err(shape("Cargo source request selector"))
+    }
 }
 
 fn rehydrate_cargo_source_authority(
@@ -1575,14 +1611,20 @@ fn rehydrate_cargo_source_authority(
     cancel: &CancellationToken,
 ) -> Result<(), ReadFailure> {
     check(cancel)?;
-    let root = browse.requested_project().service_coordinate().map_err(|_| {
+    let root = browse
+        .requested_project()
+        .service_coordinate()
+        .map_err(|_| {
+            ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Protocol,
+                "This project path cannot be sent to the Cargo owner.",
+            ))
+        })?;
+    let root = ProductText::new(root).map_err(|_| {
         ReadFailure::Fault(ErrorValue::new(
             FaultCode::Protocol,
-            "This project path cannot be sent to the Cargo owner.",
+            "Invalid Cargo project address.",
         ))
-    })?;
-    let root = ProductText::new(root).map_err(|_| {
-        ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "Invalid Cargo project address."))
     })?;
     let reply = engine
         .surface(SurfaceCommand::ProjectTree { root })
@@ -1618,72 +1660,120 @@ fn cargo_source_page(
     validate_cargo_file_reply(key, &result)?;
     match result {
         CargoPackageSourceFileResultV1::Read {
-            authority, request_binding, content_digest, contents,
-            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed, ..
+            authority,
+            request_binding,
+            content_digest,
+            contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+            ..
         } => {
-                let text = crate::model::pages::SourceText::new(
-                    Arc::from(contents),
-                    1,
-                    crate::model::pages::SourceOrigin::LocalFile,
-                    true,
-                )
-                .map_err(|_| shape("Cargo source line range"))?;
-                Ok(PageValue::CargoSource(CargoSourcePage {
-                    package: key.package.clone(),
-                    request_binding,
-                    file: key.file.clone(),
-                    source: text,
-                    content_digest,
-                    source_revision: authority.source_revision(),
-                }))
+            let text = crate::model::pages::SourceText::new(
+                Arc::from(contents),
+                1,
+                crate::model::pages::SourceOrigin::LocalFile,
+                true,
+            )
+            .map_err(|_| shape("Cargo source line range"))?;
+            Ok(PageValue::CargoSource(CargoSourcePage {
+                package: key.package.clone(),
+                request_binding,
+                file: key.file.clone(),
+                source: text,
+                content_digest,
+                source_revision: authority.source_revision(),
+            }))
         }
         CargoPackageSourceFileResultV1::Stale { .. } => Err(ReadFailure::Fault(ErrorValue::new(
-                FaultCode::Missing,
-                "The Cargo source changed. Reopen the project tree to get its current files.",
-            ))),
+            FaultCode::Missing,
+            "The Cargo source changed. Reopen the project tree to get its current files.",
+        ))),
         CargoPackageSourceFileResultV1::Unavailable { reason, .. } => {
-                let (code, message) = cargo_source_failure(reason);
-                Err(ReadFailure::Fault(ErrorValue::new(code, message)))
-            }
+            let (code, message) = cargo_source_failure(reason);
+            Err(ReadFailure::Fault(ErrorValue::new(code, message)))
+        }
     }
 }
 
 /// A valid submitted selector must be echoed even on a negative reply. A
 /// missing selector is not a current owner observation for this request.
-fn validate_cargo_file_reply(key: &CargoSourceKey, result: &CargoPackageSourceFileResultV1) -> Result<(), ReadFailure> {
-    if !result.has_admissible_shape() { return Err(shape("Cargo source file proof")); }
+fn validate_cargo_file_reply(
+    key: &CargoSourceKey,
+    result: &CargoPackageSourceFileResultV1,
+) -> Result<(), ReadFailure> {
+    if !result.has_admissible_shape() {
+        return Err(shape("Cargo source file proof"));
+    }
     let exact = match result {
-        CargoPackageSourceFileResultV1::Read { package, request_binding, path, .. } =>
-            package == key.package.reference() && *request_binding == key.context.request_binding() && path.as_str() == key.file.as_str(),
-        CargoPackageSourceFileResultV1::Stale { package, request_binding } =>
-            package == key.package.reference() && *request_binding == key.context.request_binding(),
-        CargoPackageSourceFileResultV1::Unavailable { package, request_binding, .. } =>
-            package.as_ref() == Some(key.package.reference()) && *request_binding == Some(key.context.request_binding()),
+        CargoPackageSourceFileResultV1::Read {
+            package,
+            request_binding,
+            path,
+            ..
+        } => {
+            package == key.package.reference()
+                && *request_binding == key.context.request_binding()
+                && path.as_str() == key.file.as_str()
+        }
+        CargoPackageSourceFileResultV1::Stale {
+            package,
+            request_binding,
+        } => {
+            package == key.package.reference() && *request_binding == key.context.request_binding()
+        }
+        CargoPackageSourceFileResultV1::Unavailable {
+            package,
+            request_binding,
+            ..
+        } => {
+            package.as_ref() == Some(key.package.reference())
+                && *request_binding == Some(key.context.request_binding())
+        }
     };
-    if exact { Ok(()) } else { Err(shape("Cargo source address mismatch")) }
+    if exact {
+        Ok(())
+    } else {
+        Err(shape("Cargo source address mismatch"))
+    }
 }
 
 fn cargo_source_failure(reason: CargoPackageSourceReadFailureV1) -> (FaultCode, &'static str) {
     use CargoPackageSourceReadFailureV1 as Reason;
     match reason {
-        Reason::InvalidPackageReference | Reason::InvalidRelativePath =>
-            (FaultCode::Protocol, "This Cargo source address is invalid."),
-        Reason::AuthorityUnavailable =>
-            (FaultCode::Missing, "This Cargo package has no current source receipt. Reopen its project tree."),
-        Reason::SourceObservationUnavailable =>
-            (FaultCode::Missing, "The Cargo source observation could not be revalidated completely. Reopen its project tree."),
-        Reason::StaleAuthority =>
-            (FaultCode::Missing, "The Cargo source changed. Reopen its project tree."),
-        Reason::PackageRootUnavailable =>
-            (FaultCode::Missing, "The admitted Cargo source folder is no longer available."),
-        Reason::UnsupportedFileKind =>
-            (FaultCode::Unsupported, "This file kind is not available in the Cargo source reader."),
-        Reason::FileUnavailable =>
-            (FaultCode::Missing, "This source file is absent or cannot be read safely."),
-        Reason::FileTooLarge =>
-            (FaultCode::Unsupported, "This source file is too large for the bounded reader."),
-        Reason::NotUtf8Text =>
-            (FaultCode::Unsupported, "This source file is not UTF-8 text."),
+        Reason::InvalidPackageReference | Reason::InvalidRelativePath => {
+            (FaultCode::Protocol, "This Cargo source address is invalid.")
+        }
+        Reason::AuthorityUnavailable => (
+            FaultCode::Missing,
+            "This Cargo package has no current source receipt. Reopen its project tree.",
+        ),
+        Reason::SourceObservationUnavailable => (
+            FaultCode::Missing,
+            "The Cargo source observation could not be revalidated completely. Reopen its project tree.",
+        ),
+        Reason::StaleAuthority => (
+            FaultCode::Missing,
+            "The Cargo source changed. Reopen its project tree.",
+        ),
+        Reason::PackageRootUnavailable => (
+            FaultCode::Missing,
+            "The admitted Cargo source folder is no longer available.",
+        ),
+        Reason::UnsupportedFileKind => (
+            FaultCode::Unsupported,
+            "This file kind is not available in the Cargo source reader.",
+        ),
+        Reason::FileUnavailable => (
+            FaultCode::Missing,
+            "This source file is absent or cannot be read safely.",
+        ),
+        Reason::FileTooLarge => (
+            FaultCode::Unsupported,
+            "This source file is too large for the bounded reader.",
+        ),
+        Reason::NotUtf8Text => (
+            FaultCode::Unsupported,
+            "This source file is not UTF-8 text.",
+        ),
     }
 }
 
@@ -1738,55 +1828,85 @@ fn cargo_source_inventory_page(
     validate_cargo_inventory_reply(key, &result)?;
     match result {
         CargoPackageSourceInventoryResultV1::Listed(inventory) => {
-                let paths = inventory
-                    .paths
-                    .iter()
-                    .map(|path| {
-                        crate::navigation::CargoSourcePath::new(path.as_str())
-                            .ok_or_else(|| shape("Cargo source inventory path"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(PageValue::Browse(BrowseValue::CargoSourceInventory(Arc::new(
-                    CargoSourceInventoryModel {
-                        package: key.package.clone(),
-                        request_binding: inventory.request_binding,
-                        paths: paths.into(),
-                        coverage: inventory.coverage,
-                        source_revision: inventory.authority.source_revision(),
-                    },
-                ))))
+            let paths = inventory
+                .paths
+                .iter()
+                .map(|path| {
+                    crate::navigation::CargoSourcePath::new(path.as_str())
+                        .ok_or_else(|| shape("Cargo source inventory path"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PageValue::Browse(BrowseValue::CargoSourceInventory(
+                Arc::new(CargoSourceInventoryModel {
+                    package: key.package.clone(),
+                    request_binding: inventory.request_binding,
+                    paths: paths.into(),
+                    coverage: inventory.coverage,
+                    source_revision: inventory.authority.source_revision(),
+                }),
+            )))
         }
-        CargoPackageSourceInventoryResultV1::Stale { .. } => Err(ReadFailure::Fault(ErrorValue::new(
+        CargoPackageSourceInventoryResultV1::Stale { .. } => {
+            Err(ReadFailure::Fault(ErrorValue::new(
                 FaultCode::Missing,
                 "The Cargo source changed. Reopen the project tree for its current files.",
-            ))),
+            )))
+        }
         CargoPackageSourceInventoryResultV1::Unavailable { reason, .. } => {
-                let message = match reason {
-                    CargoPackageSourceInventoryFailureV1::AuthorityUnavailable =>
-                        "This Cargo package has no current source receipt. Reopen its project tree.",
-                    CargoPackageSourceInventoryFailureV1::StaleAuthority =>
-                        "The Cargo source changed. Reopen its project tree.",
-                    CargoPackageSourceInventoryFailureV1::PackageRootUnavailable =>
-                        "The admitted Cargo source folder is no longer available.",
-                    CargoPackageSourceInventoryFailureV1::DirectoryUnavailable =>
-                        "The owner could not safely list this Cargo source folder.",
-                };
-                Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, message)))
-            }
+            let message = match reason {
+                CargoPackageSourceInventoryFailureV1::AuthorityUnavailable => {
+                    "This Cargo package has no current source receipt. Reopen its project tree."
+                }
+                CargoPackageSourceInventoryFailureV1::StaleAuthority => {
+                    "The Cargo source changed. Reopen its project tree."
+                }
+                CargoPackageSourceInventoryFailureV1::PackageRootUnavailable => {
+                    "The admitted Cargo source folder is no longer available."
+                }
+                CargoPackageSourceInventoryFailureV1::DirectoryUnavailable => {
+                    "The owner could not safely list this Cargo source folder."
+                }
+            };
+            Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Missing,
+                message,
+            )))
+        }
     }
 }
 
-fn validate_cargo_inventory_reply(key: &CargoSourceInventoryKey, result: &CargoPackageSourceInventoryResultV1) -> Result<(), ReadFailure> {
-    if !result.has_admissible_shape() { return Err(shape("Cargo source inventory proof")); }
+fn validate_cargo_inventory_reply(
+    key: &CargoSourceInventoryKey,
+    result: &CargoPackageSourceInventoryResultV1,
+) -> Result<(), ReadFailure> {
+    if !result.has_admissible_shape() {
+        return Err(shape("Cargo source inventory proof"));
+    }
     let exact = match result {
-        CargoPackageSourceInventoryResultV1::Listed(inventory) =>
-            inventory.package == *key.package.reference() && inventory.request_binding == key.context.request_binding(),
-        CargoPackageSourceInventoryResultV1::Stale { package, request_binding } =>
-            package == key.package.reference() && *request_binding == key.context.request_binding(),
-        CargoPackageSourceInventoryResultV1::Unavailable { package, request_binding, .. } =>
-            package.as_ref() == Some(key.package.reference()) && *request_binding == Some(key.context.request_binding()),
+        CargoPackageSourceInventoryResultV1::Listed(inventory) => {
+            inventory.package == *key.package.reference()
+                && inventory.request_binding == key.context.request_binding()
+        }
+        CargoPackageSourceInventoryResultV1::Stale {
+            package,
+            request_binding,
+        } => {
+            package == key.package.reference() && *request_binding == key.context.request_binding()
+        }
+        CargoPackageSourceInventoryResultV1::Unavailable {
+            package,
+            request_binding,
+            ..
+        } => {
+            package.as_ref() == Some(key.package.reference())
+                && *request_binding == Some(key.context.request_binding())
+        }
     };
-    if exact { Ok(()) } else { Err(shape("Cargo source inventory address mismatch")) }
+    if exact {
+        Ok(())
+    } else {
+        Err(shape("Cargo source inventory address mismatch"))
+    }
 }
 
 fn compose_package(
@@ -1998,15 +2118,13 @@ fn compose_orbit(
     if let (Err(error), Err(_), Err(_), Err(_)) = (&packages, &projects, &explore, &tree) {
         return Err(failure(error));
     }
-    let verified_registry_releases = match (
-        packages.as_ref().ok(),
-        crate::host::registry::composed(),
-    ) {
-        (Some(snapshot), Some(composition)) => {
-            verified_registry_releases(snapshot.root.rows(), &composition, context.cancel)?
-        }
-        _ => std::collections::HashMap::new(),
-    };
+    let verified_registry_releases =
+        match (packages.as_ref().ok(), crate::host::registry::composed()) {
+            (Some(snapshot), Some(composition)) => {
+                verified_registry_releases(snapshot.root.rows(), &composition, context.cancel)?
+            }
+            _ => std::collections::HashMap::new(),
+        };
     check(context.cancel)?;
     Ok(PageValue::Orbit(page_mapping::orbit_model(
         &page_mapping::OrbitInputs {
@@ -2081,9 +2199,9 @@ mod tests {
     use crate::host::registry::{
         Availability, CrateName, Published, RegistryPackageIdentity, SourceError, SourceTree,
     };
-    use crate::model::release::Release;
     use crate::model::ServiceMode;
     use crate::model::pages::{HealthModel, IngestModel};
+    use crate::model::release::Release;
     use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
     use backend_library::{Basis, Row, RowId, object_version, package_key, view_state_root};
     use std::sync::mpsc;
@@ -2135,7 +2253,10 @@ mod tests {
     fn package_row(label: &str) -> Row {
         Row::new(
             RowId::Package(package_key(label)),
-            Basis::new(view_state_root(&[]), object_version(b"orbit-registry-proof")),
+            Basis::new(
+                view_state_root(&[]),
+                object_version(b"orbit-registry-proof"),
+            ),
             label,
         )
     }
@@ -2201,14 +2322,9 @@ mod tests {
             release.purl()
         ))
         .expect("origin-qualified exact purl");
-        let admitted_root = PackageRef::parse(root.to_str().expect("source path"))
-            .expect("source package");
-        assert!(proof.matches(
-            &admitted_root,
-            &purl,
-            "opaque-test-authority",
-            43,
-        ));
+        let admitted_root =
+            PackageRef::parse(root.to_str().expect("source path")).expect("source package");
+        assert!(proof.matches(&admitted_root, &purl, "opaque-test-authority", 43,));
         assert!(
             !proof.matches(
                 &admitted_root,
@@ -2237,18 +2353,8 @@ mod tests {
             "opaque-test-authority",
             43,
         ));
-        assert!(!proof.matches(
-            &admitted_root,
-            &purl,
-            "different-authority",
-            43,
-        ));
-        assert!(!proof.matches(
-            &admitted_root,
-            &purl,
-            "opaque-test-authority",
-            44,
-        ));
+        assert!(!proof.matches(&admitted_root, &purl, "different-authority", 43,));
+        assert!(!proof.matches(&admitted_root, &purl, "opaque-test-authority", 44,));
         assert!(
             !indexed.contains_key(
                 &PackageRef::parse(other.to_str().expect("other path")).expect("package")
@@ -2288,14 +2394,12 @@ mod tests {
             &CancellationToken::new(),
         )
         .expect("the fixture is not cancelled");
-        let app_package = PackageRef::parse(app_root.to_str().expect("app source path"))
-            .expect("app package");
+        let app_package =
+            PackageRef::parse(app_root.to_str().expect("app source path")).expect("app package");
         assert!(
-            app_indexed
-                .get(&app_package)
-                .is_some_and(|proof| {
-                    proof.matches(&app_package, &purl, "opaque-test-authority", 44)
-                }),
+            app_indexed.get(&app_package).is_some_and(|proof| {
+                proof.matches(&app_package, &purl, "opaque-test-authority", 44)
+            }),
             "the exact app-owned cache layout can be admitted by its current registry source"
         );
 
@@ -2312,62 +2416,117 @@ mod tests {
     #[test]
     fn cargo_source_reply_requires_current_exact_file_proof_and_marks_semantics_unindexed() {
         use backend_library::CargoPackageSourceAuthorityStateV1;
-        const METADATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"));
-        let input = backend_library::browse::metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", None, [7; 32])
-            .expect("Cargo metadata fixture");
-        let row = input.packages.iter().find(|row| row.name == "serde" && row.version == "1.0.219")
+        const METADATA: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
+        ));
+        let input = backend_library::browse::metadata_input_with_stable_source_witness(
+            METADATA,
+            "aarch64-apple-darwin",
+            None,
+            [7; 32],
+        )
+        .expect("Cargo metadata fixture");
+        let row = input
+            .packages
+            .iter()
+            .find(|row| row.name == "serde" && row.version == "1.0.219")
             .expect("resolved package");
-        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
-            else { panic!("resolved metadata must carry exact authority") };
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
+            panic!("resolved metadata must carry exact authority")
+        };
         let reference = authority.package_reference().expect("qualified package");
         let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("relative file");
         let project = crate::core::LocalProjectId::new("/tmp/nudox-source-reply").expect("project");
-        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(project.service_coordinate().expect("coordinate")), &input.root).expect("fixture binding");
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            Path::new(project.service_coordinate().expect("coordinate")),
+            &input.root,
+        )
+        .expect("fixture binding");
         let key = CargoSourceKey {
-            context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding).expect("bound address"),
+            context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding)
+                .expect("bound address"),
             package: PackageRef::from_reference(reference.clone()),
             file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path"),
         };
         let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
         let digest = *blake3::hash(contents.as_bytes()).as_bytes();
         let reply = CargoPackageSourceFileResultV1::Read {
-            package: reference.clone(), authority: authority.clone(), request_binding: binding, path: path.clone(),
-            content_digest: digest, contents: contents.clone(),
+            package: reference.clone(),
+            authority: authority.clone(),
+            request_binding: binding,
+            path: path.clone(),
+            content_digest: digest,
+            contents: contents.clone(),
             semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
         };
         let PageValue::CargoSource(page) = cargo_source_page(&key, reply).expect("verified reply")
-            else { panic!("Cargo file page") };
+        else {
+            panic!("Cargo file page")
+        };
         assert_eq!(page.package, key.package);
         assert_eq!(page.file, key.file);
         assert_eq!(page.content_digest, digest);
         assert_eq!(page.source.text(), contents.as_ref());
-        assert_eq!(page.source.coverage(), crate::model::pages::SourceCoverage::Unverified);
+        assert_eq!(
+            page.source.coverage(),
+            crate::model::pages::SourceCoverage::Unverified
+        );
 
         let forged = CargoPackageSourceFileResultV1::Read {
-            package: reference.clone(), authority: authority.clone(), request_binding: binding, path: path.clone(),
-            content_digest: [0; 32], contents,
+            package: reference.clone(),
+            authority: authority.clone(),
+            request_binding: binding,
+            path: path.clone(),
+            content_digest: [0; 32],
+            contents,
             semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
         };
-        assert!(cargo_source_page(&key, forged).is_err(), "a display address cannot authenticate file bytes");
+        assert!(
+            cargo_source_page(&key, forged).is_err(),
+            "a display address cannot authenticate file bytes"
+        );
         let mut unrelated = binding;
         unrelated.requested_root_digest = [3; 32];
         for negative in [
-            CargoPackageSourceFileResultV1::Stale { package: reference.clone(), request_binding: unrelated },
-            CargoPackageSourceFileResultV1::Unavailable { package: Some(reference.clone()), request_binding: Some(unrelated), reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable },
-            CargoPackageSourceFileResultV1::Unavailable { package: Some(reference.clone()), request_binding: None, reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable },
-            CargoPackageSourceFileResultV1::Unavailable { package: None, request_binding: Some(binding), reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable },
+            CargoPackageSourceFileResultV1::Stale {
+                package: reference.clone(),
+                request_binding: unrelated,
+            },
+            CargoPackageSourceFileResultV1::Unavailable {
+                package: Some(reference.clone()),
+                request_binding: Some(unrelated),
+                reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+            },
+            CargoPackageSourceFileResultV1::Unavailable {
+                package: Some(reference.clone()),
+                request_binding: None,
+                reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+            },
+            CargoPackageSourceFileResultV1::Unavailable {
+                package: None,
+                request_binding: Some(binding),
+                reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+            },
         ] {
-            assert!(matches!(cargo_source_page(&key, negative), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol), "a negative reply must echo the exact submitted package and complete binding");
+            assert!(
+                matches!(cargo_source_page(&key, negative), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol),
+                "a negative reply must echo the exact submitted package and complete binding"
+            );
         }
-        assert!(matches!(cargo_source_page(&key, CargoPackageSourceFileResultV1::Stale { package: reference, request_binding: binding }),
-            Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+        assert!(
+            matches!(cargo_source_page(&key, CargoPackageSourceFileResultV1::Stale { package: reference, request_binding: binding }),
+            Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing)
+        );
     }
 
     #[test]
     fn cold_cargo_file_rehydrates_only_the_tree_containing_its_exact_authority() {
         use backend_advisory::{AdvisoryAuthority, normalize_package};
         use backend_library::CargoPackageSourceAuthorityStateV1;
-        use backend_library::browse::{ProjectTree, build_tree, metadata_input_with_stable_source_witness};
+        use backend_library::browse::{
+            ProjectTree, build_tree, metadata_input_with_stable_source_witness,
+        };
 
         const METADATA: &[u8] = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2377,20 +2536,31 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
         ));
-        let input = metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", Some(LOCKFILE), [7; 32])
-            .expect("Cargo metadata fixture");
+        let input = metadata_input_with_stable_source_witness(
+            METADATA,
+            "aarch64-apple-darwin",
+            Some(LOCKFILE),
+            [7; 32],
+        )
+        .expect("Cargo metadata fixture");
         let advisories = AdvisoryAuthority::new(1);
         let observe = |name: &str, version: &str| {
             let package = normalize_package("cargo", name).expect("identity");
             advisories.observe(&package, version, false, false, 0, false)
         };
         let mut tree = build_tree(&input, &observe);
-        let requested_project = LocalProjectId::new("/workspace/backend/member").expect("requested member");
-        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(requested_project.service_coordinate().expect("coordinate")), &tree.root).expect("owner fixture binding");
+        let requested_project =
+            LocalProjectId::new("/workspace/backend/member").expect("requested member");
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            Path::new(requested_project.service_coordinate().expect("coordinate")),
+            &tree.root,
+        )
+        .expect("owner fixture binding");
         tree.request_binding = Some(binding);
         let row = tree.package("serde", "1.0.219").expect("exact row");
-        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
-            else { panic!("metadata receipt") };
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
+            panic!("metadata receipt")
+        };
         let package = authority.package_reference().expect("qualified package");
         let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("path");
         let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
@@ -2421,7 +2591,9 @@ mod tests {
             }
             fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
                 match command {
-                    SurfaceCommand::CargoPackageSourceFile { request, .. } if self.seen.is_empty() => {
+                    SurfaceCommand::CargoPackageSourceFile { request, .. }
+                        if self.seen.is_empty() =>
+                    {
                         self.seen.push("file");
                         Ok(SurfaceReply::CargoPackageSourceFile(
                             CargoPackageSourceFileResultV1::Unavailable {
@@ -2439,7 +2611,10 @@ mod tests {
                     SurfaceCommand::CargoPackageSourceFile { request, path } => {
                         assert_eq!(path.as_str(), "Cargo.toml");
                         self.seen.push("file");
-                        if let CargoPackageSourceFileResultV1::Read { package: current, .. } = &self.current {
+                        if let CargoPackageSourceFileResultV1::Read {
+                            package: current, ..
+                        } = &self.current
+                        {
                             assert_eq!(&request.package, current);
                             assert_eq!(Some(request.request_binding), self.tree.request_binding);
                         }
@@ -2451,31 +2626,71 @@ mod tests {
         }
 
         let key = CargoSourceKey {
-            context: crate::navigation::CargoBrowseContext::from_binding_address(requested_project, binding).expect("bound member"),
+            context: crate::navigation::CargoBrowseContext::from_binding_address(
+                requested_project,
+                binding,
+            )
+            .expect("bound member"),
             package: PackageRef::from_reference(package),
             file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("path"),
         };
         let cancel = CancellationToken::new();
         let outlines = OutlineCache::default();
-        let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
-        let mut engine = ColdEngine { tree, current, seen: Vec::new() };
-        assert!(matches!(compose_cargo_source(&mut engine, &key, &context), Ok(PageValue::CargoSource(_))));
+        let context = ReadContext {
+            worker: 0,
+            cancel: &cancel,
+            outlines: &outlines,
+            progress: None,
+        };
+        let mut engine = ColdEngine {
+            tree,
+            current,
+            seen: Vec::new(),
+        };
+        assert!(matches!(
+            compose_cargo_source(&mut engine, &key, &context),
+            Ok(PageValue::CargoSource(_))
+        ));
         assert_eq!(engine.seen, ["file", "tree", "file"]);
 
         let mut changed_tree = engine.tree.clone();
-        changed_tree.request_binding.as_mut().expect("binding").requested_root_digest = [4; 32];
-        let mut changed = ColdEngine { tree: changed_tree, current: engine.current.clone(), seen: Vec::new() };
-        assert!(matches!(compose_cargo_source(&mut changed, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
-        assert_eq!(changed.seen, ["file", "tree"], "a different requested Tree binding cannot trigger a retry");
+        changed_tree
+            .request_binding
+            .as_mut()
+            .expect("binding")
+            .requested_root_digest = [4; 32];
+        let mut changed = ColdEngine {
+            tree: changed_tree,
+            current: engine.current.clone(),
+            seen: Vec::new(),
+        };
+        assert!(
+            matches!(compose_cargo_source(&mut changed, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing)
+        );
+        assert_eq!(
+            changed.seen,
+            ["file", "tree"],
+            "a different requested Tree binding cannot trigger a retry"
+        );
 
         let other = CargoSourceKey {
             package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 .expect("other authority"),
             ..key
         };
-        let mut engine = ColdEngine { tree: engine.tree, current: engine.current, seen: Vec::new() };
-        assert!(matches!(compose_cargo_source(&mut engine, &other, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
-        assert_eq!(engine.seen, ["file", "tree"], "an unrelated tree cannot trigger a file retry");
+        let mut engine = ColdEngine {
+            tree: engine.tree,
+            current: engine.current,
+            seen: Vec::new(),
+        };
+        assert!(
+            matches!(compose_cargo_source(&mut engine, &other, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing)
+        );
+        assert_eq!(
+            engine.seen,
+            ["file", "tree"],
+            "an unrelated tree cannot trigger a file retry"
+        );
     }
 
     #[test]
@@ -2489,17 +2704,30 @@ mod tests {
             "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
         ));
         let input = backend_library::browse::metadata_input_with_stable_source_witness(
-            METADATA, "aarch64-apple-darwin", None, [7; 32],
-        ).expect("Cargo metadata fixture");
-        let row = input.packages.iter().find(|row| row.name == "serde" && row.version == "1.0.219")
+            METADATA,
+            "aarch64-apple-darwin",
+            None,
+            [7; 32],
+        )
+        .expect("Cargo metadata fixture");
+        let row = input
+            .packages
+            .iter()
+            .find(|row| row.name == "serde" && row.version == "1.0.219")
             .expect("resolved package");
-        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
-            else { panic!("source receipt") };
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
+            panic!("source receipt")
+        };
         let package = authority.package_reference().expect("qualified package");
         let project = LocalProjectId::new("/workspace/backend/member").expect("requested member");
-        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(project.service_coordinate().expect("coordinate")), &input.root).expect("owner fixture binding");
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            Path::new(project.service_coordinate().expect("coordinate")),
+            &input.root,
+        )
+        .expect("owner fixture binding");
         let key = CargoSourceInventoryKey {
-            context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding).expect("bound member"),
+            context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding)
+                .expect("bound member"),
             package: PackageRef::from_reference(package.clone()),
         };
         let paths = ["Cargo.toml", "src/lib.rs"]
@@ -2517,34 +2745,68 @@ mod tests {
             },
         };
         let PageValue::Browse(BrowseValue::CargoSourceInventory(model)) =
-            cargo_source_inventory_page(&key, CargoPackageSourceInventoryResultV1::Listed(inventory.clone()))
-                .expect("exact inventory")
-        else { panic!("inventory page") };
-        assert_eq!(model.paths.iter().map(|path| path.as_str()).collect::<Vec<_>>(), ["Cargo.toml", "src/lib.rs"]);
+            cargo_source_inventory_page(
+                &key,
+                CargoPackageSourceInventoryResultV1::Listed(inventory.clone()),
+            )
+            .expect("exact inventory")
+        else {
+            panic!("inventory page")
+        };
+        assert_eq!(
+            model
+                .paths
+                .iter()
+                .map(|path| path.as_str())
+                .collect::<Vec<_>>(),
+            ["Cargo.toml", "src/lib.rs"]
+        );
         assert_eq!(model.coverage, inventory.coverage);
         assert_eq!(model.source_revision, authority.source_revision());
 
         let mut unrelated = binding;
         unrelated.requested_root_digest = [3; 32];
         for negative in [
-            CargoPackageSourceInventoryResultV1::Stale { package: package.clone(), request_binding: unrelated },
-            CargoPackageSourceInventoryResultV1::Unavailable { package: Some(package.clone()), request_binding: Some(unrelated), reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable },
-            CargoPackageSourceInventoryResultV1::Unavailable { package: Some(package.clone()), request_binding: None, reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable },
+            CargoPackageSourceInventoryResultV1::Stale {
+                package: package.clone(),
+                request_binding: unrelated,
+            },
+            CargoPackageSourceInventoryResultV1::Unavailable {
+                package: Some(package.clone()),
+                request_binding: Some(unrelated),
+                reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+            },
+            CargoPackageSourceInventoryResultV1::Unavailable {
+                package: Some(package.clone()),
+                request_binding: None,
+                reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+            },
         ] {
-            assert!(matches!(cargo_source_inventory_page(&key, negative), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol));
+            assert!(
+                matches!(cargo_source_inventory_page(&key, negative), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol)
+            );
         }
 
         let mut wrong = inventory.clone();
         wrong.paths.swap(0, 1);
-        assert!(cargo_source_inventory_page(&key, CargoPackageSourceInventoryResultV1::Listed(wrong)).is_err(),
-            "a wire list with unverified ordering is not a navigable file index");
+        assert!(
+            cargo_source_inventory_page(&key, CargoPackageSourceInventoryResultV1::Listed(wrong))
+                .is_err(),
+            "a wire list with unverified ordering is not a navigable file index"
+        );
         let other = CargoSourceInventoryKey {
             package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 .expect("other source"),
             ..key
         };
-        assert!(cargo_source_inventory_page(&other, CargoPackageSourceInventoryResultV1::Listed(inventory)).is_err(),
-            "paths from a different source cannot be lent to this route");
+        assert!(
+            cargo_source_inventory_page(
+                &other,
+                CargoPackageSourceInventoryResultV1::Listed(inventory)
+            )
+            .is_err(),
+            "paths from a different source cannot be lent to this route"
+        );
     }
 
     #[test]
@@ -2585,21 +2847,28 @@ mod tests {
         let path = std::path::PathBuf::from(format!(
             "/tmp/nudox-page-interrupt-{}-{}.sock",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
         ));
         let listener = UnixListener::bind(&path).expect("private socket");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("private endpoint");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("private endpoint");
         let (entered, received) = mpsc::channel();
         let (release, released) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("accepted client");
             let mut frame_length = [0_u8; 4];
-            socket.read_exact(&mut frame_length).expect("client sent request");
+            socket
+                .read_exact(&mut frame_length)
+                .expect("client sent request");
             entered.send(()).expect("request reached server");
             let _ = released.recv_timeout(Duration::from_secs(3));
         });
         let worker_path = path.clone();
-        let pool = ReadPool::start(1, move |_| SessionReader::connect(&worker_path)).expect("read pool");
+        let pool =
+            ReadPool::start(1, move |_| SessionReader::connect(&worker_path)).expect("read pool");
         assert!(pool.submit(ReadJob {
             key: PageKey::Health,
             request: ReadRequest::Health,
@@ -2608,10 +2877,14 @@ mod tests {
             cancel: CancellationToken::new(),
             affinity: None,
         }));
-        received.recv_timeout(Duration::from_secs(2)).expect("page read entered socket");
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("page read entered socket");
         let (closed, finished) = mpsc::channel();
         std::thread::spawn(move || closed.send(drop(pool)).expect("pool closed"));
-        finished.recv_timeout(Duration::from_secs(1)).expect("active socket read held pool shutdown");
+        finished
+            .recv_timeout(Duration::from_secs(1))
+            .expect("active socket read held pool shutdown");
         release.send(()).expect("release server");
         server.join().expect("server stopped");
         std::fs::remove_file(path).expect("remove endpoint");
@@ -2995,29 +3268,68 @@ mod tests {
     fn bounded_read_completed_reads_and_drained_clones_hold_admission_until_drop() {
         let harness = harness(2);
         for round in 0..MAX_ADMITTED_READS {
-            assert!(harness.pool.submit(job(&format!("fast-{round}"), round as u64, Priority::Normal)));
+            assert!(harness.pool.submit(job(
+                &format!("fast-{round}"),
+                round as u64,
+                Priority::Normal
+            )));
         }
-        for _ in 0..MAX_ADMITTED_READS { harness.started(); }
+        for _ in 0..MAX_ADMITTED_READS {
+            harness.started();
+        }
         crate::runtime::wait::until("all results published without a UI consumer", || {
-            harness.pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).len() == MAX_ADMITTED_READS
+            harness
+                .pool
+                .shared
+                .results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+                == MAX_ADMITTED_READS
         });
         assert!(!harness.pool.submit(job("overflow", 100, Priority::Normal)));
-        assert_eq!(harness.pool.shared.admitted.load(Ordering::Acquire), MAX_ADMITTED_READS);
+        assert_eq!(
+            harness.pool.shared.admitted.load(Ordering::Acquire),
+            MAX_ADMITTED_READS
+        );
         let batch = harness.pool.drain();
         assert_eq!(batch.len(), LANDING_BUDGET);
-        assert!(!harness.pool.submit(job("still-full", 101, Priority::Normal)), "draining is not landing/dropping");
+        assert!(
+            !harness
+                .pool
+                .submit(job("still-full", 101, Priority::Normal)),
+            "draining is not landing/dropping"
+        );
         let held = batch[0].clone();
         drop(batch);
-        assert_eq!(harness.pool.shared.admitted.load(Ordering::Acquire), MAX_ADMITTED_READS - LANDING_BUDGET + 1);
+        assert_eq!(
+            harness.pool.shared.admitted.load(Ordering::Acquire),
+            MAX_ADMITTED_READS - LANDING_BUDGET + 1
+        );
         drop(held);
-        assert_eq!(harness.pool.shared.admitted.load(Ordering::Acquire), MAX_ADMITTED_READS - LANDING_BUDGET);
+        assert_eq!(
+            harness.pool.shared.admitted.load(Ordering::Acquire),
+            MAX_ADMITTED_READS - LANDING_BUDGET
+        );
         for round in 0..LANDING_BUDGET {
-            assert!(harness.pool.submit(job(&format!("refill-{round}"), 200 + round as u64, Priority::Normal)));
+            assert!(harness.pool.submit(job(
+                &format!("refill-{round}"),
+                200 + round as u64,
+                Priority::Normal
+            )));
         }
-        assert!(!harness.pool.submit(job("full-again", 300, Priority::Normal)));
+        assert!(
+            !harness
+                .pool
+                .submit(job("full-again", 300, Priority::Normal))
+        );
         let count = Arc::clone(&harness.pool.shared.admitted);
         drop(harness);
-        assert_eq!(count.load(Ordering::Acquire), 0, "shutdown releases queued and published work");
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "shutdown releases queued and published work"
+        );
     }
 
     #[test]
@@ -3026,17 +3338,41 @@ mod tests {
         assert!(harness.pool.submit(job("slow-busy", 1, Priority::Normal)));
         harness.started();
         for round in 1..MAX_PREFETCH_ADMISSION {
-            assert!(harness.pool.submit(job(&format!("prefetch-{round}"), round as u64, Priority::Prefetch)));
+            assert!(harness.pool.submit(job(
+                &format!("prefetch-{round}"),
+                round as u64,
+                Priority::Prefetch
+            )));
         }
-        assert!(!harness.pool.submit(job("prefetch-overflow", 100, Priority::Prefetch)));
+        assert!(
+            !harness
+                .pool
+                .submit(job("prefetch-overflow", 100, Priority::Prefetch))
+        );
         for round in MAX_PREFETCH_ADMISSION..MAX_ADMITTED_READS {
-            assert!(harness.pool.submit(job(&format!("visible-{round}"), round as u64, Priority::Normal)));
+            assert!(harness.pool.submit(job(
+                &format!("visible-{round}"),
+                round as u64,
+                Priority::Normal
+            )));
         }
-        assert!(!harness.pool.submit(job("visible-overflow", 200, Priority::Normal)));
+        assert!(
+            !harness
+                .pool
+                .submit(job("visible-overflow", 200, Priority::Normal))
+        );
         assert!(harness.pool.cancel(&key("prefetch-1")));
-        assert!(harness.pool.submit(job("visible-replacement", 201, Priority::Normal)));
+        assert!(
+            harness
+                .pool
+                .submit(job("visible-replacement", 201, Priority::Normal))
+        );
         harness.release("slow-busy");
-        assert_eq!(harness.started().1, format!("visible-{MAX_PREFETCH_ADMISSION}"), "normal work runs before queued prefetches");
+        assert_eq!(
+            harness.started().1,
+            format!("visible-{MAX_PREFETCH_ADMISSION}"),
+            "normal work runs before queued prefetches"
+        );
     }
 
     #[test]
@@ -3046,7 +3382,11 @@ mod tests {
             finish: Arc<(Mutex<bool>, Condvar)>,
         }
         impl PageReader for FloodReader {
-            fn read(&mut self, _: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            fn read(
+                &mut self,
+                _: &ReadRequest,
+                context: &ReadContext<'_>,
+            ) -> Result<PageValue, ReadFailure> {
                 for rows in 0..1_000 {
                     let mut page = health();
                     page.rows = rows;
@@ -3055,7 +3395,9 @@ mod tests {
                 self.staged.send(()).expect("flood published");
                 let (lock, ready) = &*self.finish;
                 let mut done = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                while !*done { done = ready.wait(done).unwrap_or_else(PoisonError::into_inner); }
+                while !*done {
+                    done = ready.wait(done).unwrap_or_else(PoisonError::into_inner);
+                }
                 // The pool must replace success with cancellation even when a
                 // reader finishes late without cooperating with its token.
                 Ok(PageValue::Health(health()))
@@ -3063,14 +3405,23 @@ mod tests {
         }
         let (staged, receiver) = mpsc::channel();
         let finish = Arc::new((Mutex::new(false), Condvar::new()));
-        let mut pool = ReadPool::start(1, |_| FloodReader { staged: staged.clone(), finish: Arc::clone(&finish) }).expect("pool");
+        let mut pool = ReadPool::start(1, |_| FloodReader {
+            staged: staged.clone(),
+            finish: Arc::clone(&finish),
+        })
+        .expect("pool");
         let mut wake = pool.take_wake().expect("wake");
         let pending = job("flood", 1, Priority::Normal);
         let cancel = pending.cancel.clone();
         assert!(pool.submit(pending));
-        receiver.recv_timeout(Duration::from_secs(2)).expect("all partials published");
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("all partials published");
         assert!(wake.try_take());
-        assert!(!wake.try_take(), "a thousand publications leave one pending wake");
+        assert!(
+            !wake.try_take(),
+            "a thousand publications leave one pending wake"
+        );
         let partial = pool.drain();
         assert_eq!(partial.len(), 1);
         assert!(matches!(&partial[0].result, Ok(PageValue::Health(page)) if page.rows == 999));
@@ -3080,13 +3431,24 @@ mod tests {
             *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
             ready.notify_all();
         }
-        crate::runtime::wait::until("cancelled terminal published", || !pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+        crate::runtime::wait::until("cancelled terminal published", || {
+            !pool
+                .shared
+                .results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        });
         let terminal = pool.drain();
         assert_eq!(terminal.len(), 1);
         assert!(terminal[0].complete);
         assert_eq!(terminal[0].result, Err(ReadFailure::Cancelled));
         drop(terminal);
-        assert_eq!(pool.shared.admitted.load(Ordering::Acquire), 1, "the drained partial still owns the admission");
+        assert_eq!(
+            pool.shared.admitted.load(Ordering::Acquire),
+            1,
+            "the drained partial still owns the admission"
+        );
         drop(partial);
         assert_eq!(pool.shared.admitted.load(Ordering::Acquire), 0);
     }
@@ -3094,15 +3456,30 @@ mod tests {
     #[test]
     fn bounded_read_a_terminal_replaces_its_queued_partial_without_losing_failure() {
         let harness = harness(1);
-        let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Normal).expect("permit");
+        let permit =
+            ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Normal).expect("permit");
         let outcome = |complete, result| ReadOutcome {
-            key: PageKey::Health, generation: Generation::new(1), worker: 0,
-            priority: Priority::Normal, complete, result, _residency: Arc::clone(&permit),
+            key: PageKey::Health,
+            generation: Generation::new(1),
+            worker: 0,
+            priority: Priority::Normal,
+            complete,
+            result,
+            _residency: Arc::clone(&permit),
         };
-        harness.pool.shared.publish(outcome(false, Ok(PageValue::Health(health()))));
-        harness.pool.shared.publish(outcome(true, Err(ReadFailure::Cancelled)));
+        harness
+            .pool
+            .shared
+            .publish(outcome(false, Ok(PageValue::Health(health()))));
+        harness
+            .pool
+            .shared
+            .publish(outcome(true, Err(ReadFailure::Cancelled)));
         // A late partial cannot displace a queued terminal.
-        harness.pool.shared.publish(outcome(false, Ok(PageValue::Health(health()))));
+        harness
+            .pool
+            .shared
+            .publish(outcome(false, Ok(PageValue::Health(health()))));
         let batch = harness.pool.drain();
         assert_eq!(batch.len(), 1);
         assert!(batch[0].complete);
@@ -3113,9 +3490,26 @@ mod tests {
     fn bounded_read_bounded_batches_rearm_until_empty_without_losing_a_concurrent_publish() {
         let mut harness = harness(2);
         let mut wake = harness.pool.take_wake().expect("wake");
-        for round in 0..25 { assert!(harness.pool.submit(job(&format!("fast-{round}"), round, Priority::Normal))); }
-        for _ in 0..25 { harness.started(); }
-        crate::runtime::wait::until("25 queued terminals", || harness.pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).len() == 25);
+        for round in 0..25 {
+            assert!(
+                harness
+                    .pool
+                    .submit(job(&format!("fast-{round}"), round, Priority::Normal))
+            );
+        }
+        for _ in 0..25 {
+            harness.started();
+        }
+        crate::runtime::wait::until("25 queued terminals", || {
+            harness
+                .pool
+                .shared
+                .results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+                == 25
+        });
         let mut landed = 0;
         for expected in [8, 8, 8, 1] {
             assert!(wake.try_take(), "remaining work retained its wake");
@@ -3126,7 +3520,11 @@ mod tests {
         }
         assert_eq!(landed, 25);
         assert!(!wake.try_take(), "empty queue schedules no idle turn");
-        assert!(harness.pool.submit(job("after-empty", 26, Priority::Normal)));
+        assert!(
+            harness
+                .pool
+                .submit(job("after-empty", 26, Priority::Normal))
+        );
         harness.started();
         crate::runtime::wait::until("post-drain publication wakes again", || wake.try_take());
         assert_eq!(harness.pool.drain().len(), 1);
@@ -3139,10 +3537,15 @@ mod tests {
         // route. A full normal burst must still make prefetch progress.
         for priority in [Priority::Prefetch, Priority::Normal] {
             for round in 0..14 {
-                let permit = ReadPermit::acquire(&harness.pool.shared.admitted, priority).expect("admission");
+                let permit = ReadPermit::acquire(&harness.pool.shared.admitted, priority)
+                    .expect("admission");
                 harness.pool.shared.publish(ReadOutcome {
-                    key: key(&format!("{priority:?}-{round}")), generation: Generation::new(round),
-                    worker: 0, priority, complete: true, result: Ok(PageValue::Health(health())),
+                    key: key(&format!("{priority:?}-{round}")),
+                    generation: Generation::new(round),
+                    worker: 0,
+                    priority,
+                    complete: true,
+                    result: Ok(PageValue::Health(health())),
                     _residency: permit,
                 });
             }
@@ -3150,51 +3553,108 @@ mod tests {
         for batch_index in 0..2 {
             let batch = harness.pool.drain();
             assert_eq!(batch.len(), LANDING_BUDGET);
-            assert!(batch[..7].iter().all(|outcome| outcome.priority == Priority::Normal));
-            assert_eq!(batch[7].priority, Priority::Prefetch, "one prefetch progresses in each full mixed batch");
-            assert_eq!(batch[0].key, key(&format!("Normal-{}", batch_index * 7)), "FIFO within normal priority");
-            assert_eq!(batch[7].key, key(&format!("Prefetch-{batch_index}")), "FIFO within prefetch priority");
+            assert!(
+                batch[..7]
+                    .iter()
+                    .all(|outcome| outcome.priority == Priority::Normal)
+            );
+            assert_eq!(
+                batch[7].priority,
+                Priority::Prefetch,
+                "one prefetch progresses in each full mixed batch"
+            );
+            assert_eq!(
+                batch[0].key,
+                key(&format!("Normal-{}", batch_index * 7)),
+                "FIFO within normal priority"
+            );
+            assert_eq!(
+                batch[7].key,
+                key(&format!("Prefetch-{batch_index}")),
+                "FIFO within prefetch priority"
+            );
         }
-        assert!(harness.pool.drain().iter().all(|outcome| outcome.priority == Priority::Prefetch));
+        assert!(
+            harness
+                .pool
+                .drain()
+                .iter()
+                .all(|outcome| outcome.priority == Priority::Prefetch)
+        );
     }
 
     #[test]
     fn bounded_read_a_completed_prefetch_becoming_visible_leads_without_worker_mutation() {
         let harness = harness(1);
         for round in 0..12 {
-            let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Prefetch).expect("prefetch admission");
+            let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Prefetch)
+                .expect("prefetch admission");
             harness.pool.shared.publish(ReadOutcome {
-                key: key(&format!("prefetch-{round}")), generation: Generation::new(round),
-                worker: 0, priority: Priority::Prefetch, complete: true,
-                result: Ok(PageValue::Health(health())), _residency: permit,
+                key: key(&format!("prefetch-{round}")),
+                generation: Generation::new(round),
+                worker: 0,
+                priority: Priority::Prefetch,
+                complete: true,
+                result: Ok(PageValue::Health(health())),
+                _residency: permit,
             });
         }
         let visible = key("prefetch-11");
         let batch = harness.pool.drain_for(&BTreeSet::from([visible.clone()]));
         assert_eq!(batch.len(), LANDING_BUDGET);
-        assert_eq!(batch[0].key, visible, "current selection overtakes earlier completed prefetches");
-        assert_eq!(batch[0].priority, Priority::Prefetch, "the actual scheduling history is preserved");
-        assert_eq!(batch[1].key, key("prefetch-0"), "other results retain FIFO order");
+        assert_eq!(
+            batch[0].key, visible,
+            "current selection overtakes earlier completed prefetches"
+        );
+        assert_eq!(
+            batch[0].priority,
+            Priority::Prefetch,
+            "the actual scheduling history is preserved"
+        );
+        assert_eq!(
+            batch[1].key,
+            key("prefetch-0"),
+            "other results retain FIFO order"
+        );
     }
 
     #[test]
     fn bounded_read_a_running_prefetch_uses_latest_visible_selection_at_landing() {
         let harness = harness(1);
-        assert!(harness.pool.submit(job("slow-visible", 77, Priority::Prefetch)));
+        assert!(
+            harness
+                .pool
+                .submit(job("slow-visible", 77, Priority::Prefetch))
+        );
         assert_eq!(harness.started().1, "slow-visible");
         for round in 0..12 {
-            let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Prefetch).expect("prefetch admission");
+            let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Prefetch)
+                .expect("prefetch admission");
             harness.pool.shared.publish(ReadOutcome {
-                key: key(&format!("earlier-{round}")), generation: Generation::new(round),
-                worker: 0, priority: Priority::Prefetch, complete: true,
-                result: Ok(PageValue::Health(health())), _residency: permit,
+                key: key(&format!("earlier-{round}")),
+                generation: Generation::new(round),
+                worker: 0,
+                priority: Priority::Prefetch,
+                complete: true,
+                result: Ok(PageValue::Health(health())),
+                _residency: permit,
             });
         }
         let visible = BTreeSet::from([key("slow-visible")]);
-        assert!(!harness.pool.promote(&key("slow-visible")), "running work needs no queue mutation");
+        assert!(
+            !harness.pool.promote(&key("slow-visible")),
+            "running work needs no queue mutation"
+        );
         harness.release("slow-visible");
         crate::runtime::wait::until("visible prefetch completed after focus changed", || {
-            harness.pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).len() == 13
+            harness
+                .pool
+                .shared
+                .results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+                == 13
         });
         let batch = harness.pool.drain_for(&visible);
         assert_eq!(batch[0].key, key("slow-visible"));
@@ -3272,18 +3732,33 @@ mod tests {
     #[test]
     fn bounded_read_large_source_and_late_generation_keep_exact_page_admission() {
         use crate::core::VersionedRoot;
-        use crate::model::pages::{DeclRef, Known, Landing, PageStore, SourceOrigin, SourceText, SourceView};
+        use crate::model::pages::{
+            DeclRef, Known, Landing, PageStore, SourceOrigin, SourceText, SourceView,
+        };
         struct SourceReader(Arc<str>);
         impl PageReader for SourceReader {
-            fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-                let ReadRequest::Source(symbol) = request else { panic!("source request") };
+            fn read(
+                &mut self,
+                request: &ReadRequest,
+                context: &ReadContext<'_>,
+            ) -> Result<PageValue, ReadFailure> {
+                let ReadRequest::Source(symbol) = request else {
+                    panic!("source request")
+                };
                 let unknown = || Gap::new(GapReason::NotCaptured, "fixture source");
                 let page = PageValue::Source(SourceView {
-                    symbol: DeclRef::from_label(symbol.as_str(), None, None, None).expect("declaration"),
-                    file: Known::Unknown(unknown()), editor_path: Known::Unknown(unknown()),
-                    text: Known::Known(SourceText::new(Arc::clone(&self.0), 1, SourceOrigin::LocalFile, true).expect("4MiB source")),
-                    declaration: Known::Unknown(unknown()), identifiers: Known::Unknown(unknown()),
-                    uses: Known::Unknown(unknown()), uses_elsewhere: Arc::from([]),
+                    symbol: DeclRef::from_label(symbol.as_str(), None, None, None)
+                        .expect("declaration"),
+                    file: Known::Unknown(unknown()),
+                    editor_path: Known::Unknown(unknown()),
+                    text: Known::Known(
+                        SourceText::new(Arc::clone(&self.0), 1, SourceOrigin::LocalFile, true)
+                            .expect("4MiB source"),
+                    ),
+                    declaration: Known::Unknown(unknown()),
+                    identifiers: Known::Unknown(unknown()),
+                    uses: Known::Unknown(unknown()),
+                    uses_elsewhere: Arc::from([]),
                 });
                 context.publish(page.clone());
                 Ok(page)
@@ -3293,38 +3768,89 @@ mod tests {
         let pool = ReadPool::start(1, |_| SourceReader(Arc::clone(&text))).expect("pool");
         let symbol = SymbolRef::new("large-source").expect("symbol");
         let key = PageKey::Source(symbol.clone());
-        let root = |n: u64| VersionedRoot::synthetic(view_state_root(&[("source".to_owned(), n.to_string())]), n);
+        let root = |n: u64| {
+            VersionedRoot::synthetic(view_state_root(&[("source".to_owned(), n.to_string())]), n)
+        };
         let mut pages = PageStore::default();
         let old = pages.begin(&key, root(1)).expect("old generation");
-        let submit = |generation| assert!(pool.submit(ReadJob {
-            key: key.clone(), request: ReadRequest::Source(symbol.clone()), generation,
-            priority: Priority::Normal, cancel: CancellationToken::new(), affinity: None,
-        }));
+        let submit = |generation| {
+            assert!(pool.submit(ReadJob {
+                key: key.clone(),
+                request: ReadRequest::Source(symbol.clone()),
+                generation,
+                priority: Priority::Normal,
+                cancel: CancellationToken::new(),
+                affinity: None,
+            }))
+        };
         submit(old);
-        crate::runtime::wait::until("old source completed but not landed", || pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|outcome| outcome.complete));
+        crate::runtime::wait::until("old source completed but not landed", || {
+            pool.shared
+                .results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .any(|outcome| outcome.complete)
+        });
         assert!(pages.revoke_owner_read(&key));
         let current = pages.begin(&key, root(2)).expect("new owner generation");
         submit(current);
-        crate::runtime::wait::until("both terminal generations queued", || pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|outcome| outcome.complete).count() == 2);
+        crate::runtime::wait::until("both terminal generations queued", || {
+            pool.shared
+                .results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .filter(|outcome| outcome.complete)
+                .count()
+                == 2
+        });
         let outcomes = pool.drain();
-        assert_eq!(outcomes.len(), 2, "terminal replaced each queued source partial");
+        assert_eq!(
+            outcomes.len(),
+            2,
+            "terminal replaced each queued source partial"
+        );
         for outcome in outcomes {
-            let expected = if outcome.generation == old { Landing::Superseded } else { Landing::Applied };
-            assert_eq!(pages.land(&outcome.key, outcome.generation, outcome.result), expected);
+            let expected = if outcome.generation == old {
+                Landing::Superseded
+            } else {
+                Landing::Applied
+            };
+            assert_eq!(
+                pages.land(&outcome.key, outcome.generation, outcome.result),
+                expected
+            );
         }
         let source = pages.source(&symbol);
         assert_eq!(source.value_root(), Some(root(2)));
-        let Known::Known(source) = &source.loaded_value().expect("current source").text else { panic!("source text") };
+        let Known::Known(source) = &source.loaded_value().expect("current source").text else {
+            panic!("source text")
+        };
         assert_eq!(source.text().len(), MAX_LOCAL_SOURCE_FILE_BYTES as usize);
-        assert!(std::ptr::eq(source.text(), text.as_ref()), "worker and landing share the immutable bytes");
-        assert_eq!(pool.shared.admitted.load(Ordering::Acquire), 0, "landing released both work permits");
+        assert!(
+            std::ptr::eq(source.text(), text.as_ref()),
+            "worker and landing share the immutable bytes"
+        );
+        assert_eq!(
+            pool.shared.admitted.load(Ordering::Acquire),
+            0,
+            "landing released both work permits"
+        );
     }
 
     #[test]
     fn bounded_read_shutdown_interrupts_active_publication_and_releases_pending_models() {
-        struct CancelReader { staged: mpsc::Sender<()>, gate: Arc<(Mutex<()>, Condvar)> }
+        struct CancelReader {
+            staged: mpsc::Sender<()>,
+            gate: Arc<(Mutex<()>, Condvar)>,
+        }
         impl PageReader for CancelReader {
-            fn read(&mut self, _: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            fn read(
+                &mut self,
+                _: &ReadRequest,
+                context: &ReadContext<'_>,
+            ) -> Result<PageValue, ReadFailure> {
                 let gate = Arc::clone(&self.gate);
                 let _wake = context.cancel.on_cancel(move || {
                     let _guard = gate.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3334,21 +3860,36 @@ mod tests {
                 self.staged.send(()).expect("partial queued");
                 let mut guard = self.gate.0.lock().unwrap_or_else(PoisonError::into_inner);
                 while !context.cancel.is_cancelled() {
-                    guard = self.gate.1.wait(guard).unwrap_or_else(PoisonError::into_inner);
+                    guard = self
+                        .gate
+                        .1
+                        .wait(guard)
+                        .unwrap_or_else(PoisonError::into_inner);
                 }
                 Err(ReadFailure::Cancelled)
             }
         }
         let (staged, published) = mpsc::channel();
         let gate = Arc::new((Mutex::new(()), Condvar::new()));
-        let pool = ReadPool::start(1, |_| CancelReader { staged: staged.clone(), gate: Arc::clone(&gate) }).expect("pool");
+        let pool = ReadPool::start(1, |_| CancelReader {
+            staged: staged.clone(),
+            gate: Arc::clone(&gate),
+        })
+        .expect("pool");
         assert!(pool.submit(job("active", 1, Priority::Normal)));
-        published.recv_timeout(Duration::from_secs(2)).expect("partial publication");
+        published
+            .recv_timeout(Duration::from_secs(2))
+            .expect("partial publication");
         assert!(pool.submit(job("queued", 2, Priority::Normal)));
         let count = Arc::clone(&pool.shared.admitted);
         let (closed, receiver) = mpsc::channel();
-        std::thread::spawn(move || { drop(pool); closed.send(()).expect("closed"); });
-        receiver.recv_timeout(Duration::from_secs(2)).expect("shutdown does not wait for a result consumer");
+        std::thread::spawn(move || {
+            drop(pool);
+            closed.send(()).expect("closed");
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown does not wait for a result consumer");
         assert_eq!(count.load(Ordering::Acquire), 0);
     }
 

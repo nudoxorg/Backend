@@ -24,25 +24,30 @@
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
 
+#[cfg(test)]
+pub(crate) mod cargo_context_tests;
+#[cfg(test)]
+mod cargo_tests;
 mod dependencies;
 mod keeper;
 mod owner_link;
 #[cfg(test)]
-mod cargo_tests;
-#[cfg(test)]
-pub(crate) mod cargo_context_tests;
-#[cfg(test)]
 mod owner_read_tests;
 
-pub(crate) use self::dependencies::{ContentAdmission, ContentFailure, RouteDependencies, RouteReadLease};
-pub(crate) use self::owner_link::OwnerAttachment;
+pub(crate) use self::dependencies::{
+    ContentAdmission, ContentFailure, RouteDependencies, RouteReadLease,
+};
 use self::keeper::SnapshotKeeper;
+pub(crate) use self::owner_link::OwnerAttachment;
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
-use crate::core::{ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, admit_resource};
+use crate::core::{
+    ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason,
+    admit_resource,
+};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
     Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore,
@@ -364,11 +369,26 @@ impl DataStore {
     /// Installs a completed Browse reply for shell event-boundary fixtures.
     #[cfg(test)]
     #[allow(clippy::expect_used, clippy::panic)]
-    pub(crate) fn test_land_browse(&mut self, key: crate::model::browse::BrowseKey, value: crate::model::browse::BrowseValue, cx: &mut Context<Self>) {
+    pub(crate) fn test_land_browse(
+        &mut self,
+        key: crate::model::browse::BrowseKey,
+        value: crate::model::browse::BrowseValue,
+        cx: &mut Context<Self>,
+    ) {
         let key = PageKey::Browse(key);
         let before = self.pages.stamp(&key);
-        let generation = self.pages.begin_forced(&key, self.snapshot.key()).expect("forced fixture reading");
-        assert_eq!(self.pages.land(&key, generation, Ok(crate::model::pages::PageValue::Browse(value))), Landing::Applied);
+        let generation = self
+            .pages
+            .begin_forced(&key, self.snapshot.key())
+            .expect("forced fixture reading");
+        assert_eq!(
+            self.pages.land(
+                &key,
+                generation,
+                Ok(crate::model::pages::PageValue::Browse(value))
+            ),
+            Landing::Applied
+        );
         self.emit_moved(key, before, cx);
     }
 
@@ -509,7 +529,8 @@ impl DataStore {
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
     pub(crate) fn save_now(&self) -> std::io::Result<usize> {
-        self.keeper.save_now(&self.pages, &self.snapshot, self.owner_serving())
+        self.keeper
+            .save_now(&self.pages, &self.snapshot, self.owner_serving())
     }
 
     /// Emits `key`'s change only when its visible state moved.
@@ -634,7 +655,10 @@ impl DataStore {
             self.keeper.settle(&mut self.pages, root);
         }
         if changed.contains(&Branch::Route) || changed.contains(&Branch::Overlay) {
-            self.focus(RouteDependencies::new(snapshot.route(), snapshot.overlay()).into_keys(), cx);
+            self.focus(
+                RouteDependencies::new(snapshot.route(), snapshot.overlay()).into_keys(),
+                cx,
+            );
         } else if changed.contains(&Branch::Root) {
             let focused = self.focused.iter().cloned().collect::<Vec<_>>();
             for key in focused {
@@ -692,8 +716,12 @@ impl DataStore {
     pub fn focus(&mut self, keys: Vec<PageKey>, cx: &mut Context<Self>) {
         let next = keys.iter().cloned().collect::<BTreeSet<_>>();
         let previous = self.focused.clone();
-        let previous_file = previous.iter().find(|key| matches!(key, PageKey::CargoSource(_)));
-        let next_file = next.iter().find(|key| matches!(key, PageKey::CargoSource(_)));
+        let previous_file = previous
+            .iter()
+            .find(|key| matches!(key, PageKey::CargoSource(_)));
+        let next_file = next
+            .iter()
+            .find(|key| matches!(key, PageKey::CargoSource(_)));
         let file_changed = next_file.is_some() && previous_file != next_file;
         let dropped = self.focused.difference(&next).cloned().collect::<Vec<_>>();
         self.owner.retain_held(|key| next.contains(key));
@@ -708,7 +736,12 @@ impl DataStore {
             if is_cargo_source_resource(&key)
                 && (!previous.contains(&key)
                     || (file_changed
-                        && matches!(key, PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_)))))
+                        && matches!(
+                            key,
+                            PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(
+                                _
+                            ))
+                        )))
                 && self.pages.contains(&key)
             {
                 // A file page is a current source capability, not a durable
@@ -716,7 +749,9 @@ impl DataStore {
                 // when the global index root has not changed.
                 match &key {
                     PageKey::CargoSource(file) => self.pages.revoke_cargo_source(file),
-                    PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
+                    PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(
+                        inventory,
+                    )) => {
                         self.pages.revoke_cargo_source_inventory(inventory);
                     }
                     _ => {}
@@ -1114,12 +1149,15 @@ impl DataStore {
     ) -> CargoReadAdmission {
         debug_assert!(is_cargo_source_resource(key));
         if !self.owner_serving() {
-            return self.owner.current_fault().map_or(CargoReadAdmission::Checking, |fault| {
-                CargoReadAdmission::Fault(ErrorValue::new(
-                    FaultCode::Transport,
-                    format!("The Cargo owner is unavailable. {fault}"),
-                ))
-            });
+            return self
+                .owner
+                .current_fault()
+                .map_or(CargoReadAdmission::Checking, |fault| {
+                    CargoReadAdmission::Fault(ErrorValue::new(
+                        FaultCode::Transport,
+                        format!("The Cargo owner is unavailable. {fault}"),
+                    ))
+                });
         }
         if self.is_loading(key) {
             return CargoReadAdmission::Checking;
@@ -1128,10 +1166,16 @@ impl DataStore {
             ResourceAdmission::Current(_) => CargoReadAdmission::Current,
             ResourceAdmission::Failed { terminal, .. } => match terminal {
                 ResourceTerminal::Fault(error) => CargoReadAdmission::Fault(error.clone()),
-                ResourceTerminal::Unavailable(reason) => CargoReadAdmission::Unavailable(reason.clone()),
-                ResourceTerminal::Complete | ResourceTerminal::Partial => CargoReadAdmission::Checking,
+                ResourceTerminal::Unavailable(reason) => {
+                    CargoReadAdmission::Unavailable(reason.clone())
+                }
+                ResourceTerminal::Complete | ResourceTerminal::Partial => {
+                    CargoReadAdmission::Checking
+                }
             },
-            ResourceAdmission::Retained { .. } | ResourceAdmission::Pending(_) => CargoReadAdmission::Checking,
+            ResourceAdmission::Retained { .. } | ResourceAdmission::Pending(_) => {
+                CargoReadAdmission::Checking
+            }
         }
     }
 
@@ -1155,7 +1199,10 @@ impl DataStore {
 
     /// Returns a current Cargo source file read under the owner receipt.
     #[must_use]
-    pub fn cargo_source(&self, file: &crate::model::pages::CargoSourceKey) -> Resource<crate::model::pages::CargoSourcePage> {
+    pub fn cargo_source(
+        &self,
+        file: &crate::model::pages::CargoSourceKey,
+    ) -> Resource<crate::model::pages::CargoSourcePage> {
         self.pages.cargo_source(file)
     }
 
