@@ -4042,7 +4042,61 @@ mod input_witness_store_tests {
 #[cfg(test)]
 mod portable_recipe_tests {
     use super::*;
-    use backend_semantic::vocabulary::PythonVersion;
+    use backend_semantic::vocabulary::{PythonVersion, RustEdition};
+
+    fn rust_recipe(
+        policy: RustCargoMetadataPolicy,
+    ) -> crate::application::CompilerInvocationRecipeV2 {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let authority = LocalRuntimePackageAuthority {
+            rust: Some(LocalRuntimeRustAuthority {
+                toolchain: RustToolchain {
+                    tool: PathBuf::from("/test/bin/rustc"),
+                    sysroot: PathBuf::from("/test/lib/rustlib"),
+                    cargo: Some(PathBuf::from("/test/bin/cargo")),
+                    cargo_home: Some(PathBuf::from("/test/cargo-home")),
+                    rustup_home: None,
+                    rustup_toolchain: None,
+                },
+                maximum_source_bytes: SourceByteLimit::from(1024),
+                all_features: false,
+                no_default_features: false,
+                features: Box::new([]),
+                metadata_policy: policy,
+            }),
+            ..LocalRuntimePackageAuthority::default()
+        };
+        let runtime = LocalRuntimeToolchain::resolved(
+            NativeTool::Rustc,
+            PathBuf::from("/test/bin/rustc"),
+            b"rustc 1.0.0 test",
+        )
+        .expect("resolved Rust compiler fixture");
+        let options = portable_invocation_options_digest(profile, &authority, Some(&runtime))
+            .expect("Rust authority is bound to the selected compiler");
+        crate::application::CompilerInvocationRecipeV2::new(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            runtime.identity.expect("resolved toolchain identity"),
+            compiler_environment_identity(profile),
+            [8; 32],
+            options,
+        )
+        .expect("portable Rust recipe")
+    }
+
+    #[test]
+    fn rust_online_and_offline_metadata_policies_produce_distinct_reportable_recipes() {
+        let online = rust_recipe(RustCargoMetadataPolicy::Online);
+        let offline = rust_recipe(RustCargoMetadataPolicy::Offline);
+
+        assert_ne!(online.identity(), offline.identity());
+        assert_eq!(online.profile(), offline.profile());
+        assert_eq!(online.toolchain(), offline.toolchain());
+        assert_eq!(online.environment(), offline.environment());
+        assert_eq!(online.target_platform(), offline.target_platform());
+    }
 
     fn python_recipe(
         interpreter: &Path,

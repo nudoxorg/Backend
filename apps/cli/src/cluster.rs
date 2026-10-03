@@ -4,7 +4,7 @@ use crate::options::{Format, Options};
 use backend_client::{LocalSemanticIndexClient, RemoteIndexCommandTransport, Session};
 use backend_engine::application::{
     CompilerPackageTargetV2, GoPackageAuthorityWitness, LocalCompilerCapabilityState,
-    LocalCompilerExecutionIdentity, LocalCompilerHost,
+    LocalCompilerExecutionIdentity, LocalCompilerHost, RustCargoMetadataPolicy,
 };
 use backend_engine::cluster_transport::{
     ClusterExecutionClass, EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims,
@@ -104,7 +104,7 @@ pub(super) const fn help_text() -> &'static str {
             backend [OPTIONS] cluster client connect [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH\n\
             backend [OPTIONS] cluster client query [--key-file PATH] --owner-peer HEX --owner-address IP:PORT --capability-file PATH --operation search|names|document|source|outline|graph|related|index-search --value TEXT [--limit N] [--cursor TOKEN]\n\
             backend [OPTIONS] cluster client semantic-catalog --key-file PATH --owner-peer HEX --owner-address IP:PORT --capability-file PATH\n\
-            backend [OPTIONS] cluster scope show --package PACKAGE --profile PROFILE [--coordinate PKGURL] [--package-root PATH]\n\
+            backend [OPTIONS] cluster scope show --package PACKAGE --profile PROFILE [--coordinate PKGURL] [--package-root PATH] [--cargo-metadata-policy online|offline]\n\
             backend [OPTIONS] cluster invite create --worker-peer HEX --worker-address IP:PORT --namespace HEX --recipe HEX --profile HEX --stage lower-ir --toolchain HEX --environment HEX --target-platform HEX [--ttl-seconds N]\n\
             backend [OPTIONS] cluster trust list\n\
             backend [OPTIONS] cluster trust add --peer HEX --address IP:PORT --namespace HEX --recipe HEX --profile HEX --stage parse|lower-ir --toolchain HEX --environment HEX --target-platform HEX\n\
@@ -113,14 +113,20 @@ pub(super) const fn help_text() -> &'static str {
      Inviting a worker atomically records its exact peer and execution grant in compiler-worker-trust.v1 and prints the one-time import token.\n\
      Use --workspace PATH to select an isolated private data root; by default each project has a separate root under per-user app data.\n\
      `cluster scope show` reports the exact namespace and admitted lower-ir compiler identity for a package/profile. A pinned package URL is its default compiler coordinate; local package labels use locald's package-coordinate resolver unless --coordinate is supplied. For Go, `--package-root` inspects module/workspace manifests and local filesystem directives; packages that depend on local workspace, replace, or use targets remain local-only until those inputs are in the transferable closure. Without a root, package eligibility requires project inspection. Go cgo package graphs are unsupported by the current closed oracle policy.\n\
-     Scope inspection creates no runtime directories and starts no compiler owner; it performs bounded version/authority probes. Its identity matches locald when both admit the same compiler and authority configuration for the same target platform.\n\
+     Scope inspection creates no runtime directories and starts no compiler owner; it performs bounded version/authority probes. Rust metadata policy defaults to offline; select online when locald uses its default online registry policy, or offline when locald was started with --registry-offline. Its identity matches locald when both admit the same compiler and authority configuration for the same target platform.\n\
      The authenticated peer identity and every execution-scope field must match exactly."
 }
 
 fn scope_show(rest: &[String], options: &Options) -> Result<String, Fault> {
     let flags = parse_flags_with_required(
         rest,
-        &["package", "profile", "coordinate", "package-root"],
+        &[
+            "package",
+            "profile",
+            "coordinate",
+            "package-root",
+            "cargo-metadata-policy",
+        ],
         &["package", "profile"],
     )?;
     let package_text = required(&flags, "package")?;
@@ -133,6 +139,8 @@ fn scope_show(rest: &[String], options: &Options) -> Result<String, Fault> {
     let profile_text = required(&flags, "profile")?;
     let profile = LanguageProfile::try_from(profile_text)
         .map_err(|_| usage("--profile", "use a canonical language profile spelling"))?;
+    let cargo_metadata_policy =
+        scope_cargo_metadata_policy(flags.get("cargo-metadata-policy").copied(), profile)?;
     let coordinate = flags
         .get("coordinate")
         .map(|value| {
@@ -161,6 +169,7 @@ fn scope_show(rest: &[String], options: &Options) -> Result<String, Fault> {
         .map_err(|error| compiler_scope_fault(package.as_str(), &error.to_string()))?;
     let compiler_root = compiler_data_root(options)?.join("compiler");
     let capabilities = LocalCompilerHost::production_at(compiler_root.clone())
+        .with_rust_cargo_metadata_policy(cargo_metadata_policy)
         .inspect_capabilities()
         .map_err(|error| {
             compiler_capability_fault(
@@ -196,8 +205,15 @@ fn scope_show(rest: &[String], options: &Options) -> Result<String, Fault> {
             )
         })?;
     let placement = package_placement(profile, flags.get("package-root").copied())?;
-    let report = ClusterScopeReport::new(package.as_str(), profile_text, &scope, identity)
-        .with_placement(placement);
+    let report = ClusterScopeReport::new(
+        package.as_str(),
+        profile_text,
+        &scope,
+        identity,
+        (profile.language() == backend_semantic::vocabulary::Language::Rust)
+            .then_some(cargo_metadata_policy),
+    )
+    .with_placement(placement);
     match options.format() {
         Format::Json => serde_json::to_string_pretty(&report.json())
             .map(|mut value| {
@@ -206,6 +222,33 @@ fn scope_show(rest: &[String], options: &Options) -> Result<String, Fault> {
             })
             .map_err(|error| storage_fault(&compiler_root, error.to_string())),
         Format::Human | Format::Markdown => Ok(report.human()),
+    }
+}
+
+fn scope_cargo_metadata_policy(
+    value: Option<&str>,
+    profile: LanguageProfile,
+) -> Result<RustCargoMetadataPolicy, Fault> {
+    let Some(value) = value else {
+        return Ok(RustCargoMetadataPolicy::Offline);
+    };
+    if profile.language() != backend_semantic::vocabulary::Language::Rust {
+        return Err(usage(
+            "--cargo-metadata-policy",
+            "this option applies only to Rust profiles",
+        ));
+    }
+    match value {
+        "online" => Ok(RustCargoMetadataPolicy::Online),
+        "offline" => Ok(RustCargoMetadataPolicy::Offline),
+        _ => Err(usage("--cargo-metadata-policy", "choose online or offline")),
+    }
+}
+
+const fn cargo_metadata_policy_name(policy: RustCargoMetadataPolicy) -> &'static str {
+    match policy {
+        RustCargoMetadataPolicy::Online => "online",
+        RustCargoMetadataPolicy::Offline => "offline",
     }
 }
 
@@ -224,6 +267,7 @@ struct ClusterScopeReport {
     package_eligibility: &'static str,
     placement: &'static str,
     placement_reason: Option<&'static str>,
+    cargo_metadata_policy: Option<RustCargoMetadataPolicy>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -272,6 +316,7 @@ impl ClusterScopeReport {
         profile_name: &str,
         scope: &ProductCompilerScope,
         identity: LocalCompilerExecutionIdentity,
+        cargo_metadata_policy: Option<RustCargoMetadataPolicy>,
     ) -> Self {
         Self::from_invocation(
             package,
@@ -279,6 +324,7 @@ impl ClusterScopeReport {
             scope,
             identity.profile(),
             identity.invocation_recipe(),
+            cargo_metadata_policy,
         )
     }
 
@@ -288,6 +334,7 @@ impl ClusterScopeReport {
         scope: &ProductCompilerScope,
         profile: LanguageProfile,
         invocation: backend_engine::application::CompilerInvocationRecipeV2,
+        cargo_metadata_policy: Option<RustCargoMetadataPolicy>,
     ) -> Self {
         Self {
             target_kind: match scope.target_kind() {
@@ -306,6 +353,7 @@ impl ClusterScopeReport {
             package_eligibility: "requires-project-inspection",
             placement: "requires-project-inspection",
             placement_reason: None,
+            cargo_metadata_policy,
         }
     }
 
@@ -332,12 +380,13 @@ impl ClusterScopeReport {
             "package_eligibility": self.package_eligibility,
             "placement": self.placement,
             "placement_reason": self.placement_reason,
+            "cargo_metadata_policy": self.cargo_metadata_policy.map(cargo_metadata_policy_name),
         })
     }
 
     fn human(&self) -> String {
         format!(
-            "Compiler scope for {} package {}\nCompiler coordinate: {}\nNamespace: {}\nProfile: {} ({})\nStage: lower-ir\nRecipe: {}\nToolchain: {}\nEnvironment: {}\nTarget platform: {}\nPackage eligibility: {}\nPlacement: {}\nPlacement reason: {}\n",
+            "Compiler scope for {} package {}\nCompiler coordinate: {}\nNamespace: {}\nProfile: {} ({})\nStage: lower-ir\nRecipe: {}\nToolchain: {}\nEnvironment: {}\nTarget platform: {}\nCargo metadata policy: {}\nPackage eligibility: {}\nPlacement: {}\nPlacement reason: {}\n",
             self.target_kind,
             self.package,
             self.coordinate,
@@ -348,10 +397,44 @@ impl ClusterScopeReport {
             hex(&self.toolchain),
             hex(&self.environment),
             hex(&self.target_platform),
+            self.cargo_metadata_policy
+                .map(cargo_metadata_policy_name)
+                .unwrap_or("not applicable"),
             self.package_eligibility,
             self.placement,
             self.placement_reason.unwrap_or("none"),
         )
+    }
+}
+
+#[cfg(test)]
+mod scope_policy_tests {
+    use super::*;
+    use backend_semantic::vocabulary::{RustEdition, TypeScriptSource};
+
+    #[test]
+    fn scope_policy_parser_exposes_rust_owner_acquisition_mode_explicitly() {
+        let rust = LanguageProfile::Rust(RustEdition::Rust2024);
+        assert_eq!(
+            scope_cargo_metadata_policy(None, rust).expect("compatibility default"),
+            RustCargoMetadataPolicy::Offline
+        );
+        assert_eq!(
+            scope_cargo_metadata_policy(Some("online"), rust).expect("online policy"),
+            RustCargoMetadataPolicy::Online
+        );
+        assert_eq!(
+            scope_cargo_metadata_policy(Some("offline"), rust).expect("offline policy"),
+            RustCargoMetadataPolicy::Offline
+        );
+        assert!(scope_cargo_metadata_policy(Some("automatic"), rust).is_err());
+        assert!(
+            scope_cargo_metadata_policy(
+                Some("online"),
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            )
+            .is_err()
+        );
     }
 }
 
@@ -1903,14 +1986,18 @@ mod tests {
             [6; 32],
         )
         .expect("canonical compiler invocation");
+        let expected_recipe = hex(invocation.identity().as_ref());
         let report = ClusterScopeReport::from_invocation(
             package.as_str(),
             "rust-2024",
             &scope,
             profile,
             invocation,
+            Some(RustCargoMetadataPolicy::Online),
         )
         .json();
+        assert_eq!(report["cargo_metadata_policy"], "online");
+        assert_eq!(report["recipe"], expected_recipe);
 
         let namespace = fixed_hex::<16>(report["namespace"].as_str().expect("namespace hex"))
             .expect("namespace bytes");

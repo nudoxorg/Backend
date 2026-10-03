@@ -143,6 +143,7 @@ pub use backend_execution::{
     compiler_full_workspace_transfer_work_id, compiler_transfer_work_id,
 };
 pub use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
+pub use backend_frontend_rust::legacy::RustCargoMetadataPolicy;
 pub use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };

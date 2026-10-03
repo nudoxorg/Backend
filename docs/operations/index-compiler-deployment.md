@@ -565,6 +565,17 @@ scope command performs bounded probes without starting locald or creating
 runtime state. Source it with the same toolchain environment file that the
 service manager will load:
 
+Rust scope inspection defaults to Cargo metadata `offline` mode. That policy
+is part of the compiler recipe, so it must match the owner runtime: locald
+uses online metadata acquisition by default and switches to offline only when
+it is started with `--registry-offline`. Pass
+`--cargo-metadata-policy online` here for the default locald configuration,
+or `--cargo-metadata-policy offline` when that flag is active. Online
+inspection may fetch missing registry index or resolution data through the
+configured Cargo home. The JSON report includes `cargo_metadata_policy`
+alongside the recipe to make the selection auditable. A policy mismatch
+changes the recipe; do not loosen an existing exact grant to compensate.
+
 ```sh
 set -a
 . /etc/nudox/compiler.env
@@ -580,8 +591,8 @@ PROFILE_NAME=rust-2024
 
 SCOPE_JSON=$("$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
   --format json cluster scope show --package "$PACKAGE_REF" \
-  --profile "$PROFILE_NAME")
-printf '%s\n' "$SCOPE_JSON" | "$JQ" '{target_kind,package,coordinate,namespace,recipe,profile,profile_name,stage,toolchain,environment,target_platform}'
+  --profile "$PROFILE_NAME" --cargo-metadata-policy online)
+printf '%s\n' "$SCOPE_JSON" | "$JQ" '{target_kind,package,coordinate,namespace,recipe,profile,profile_name,stage,toolchain,environment,target_platform,cargo_metadata_policy}'
 IFS=$'\t' read -r NAMESPACE RECIPE PROFILE TOOLCHAIN ENVIRONMENT TARGET_PLATFORM \
   < <(printf '%s\n' "$SCOPE_JSON" | "$JQ" -er \
     '[.namespace,.recipe,.profile,.toolchain,.environment,.target_platform] | @tsv')
@@ -616,13 +627,14 @@ PROJECT=/srv/repository # replace with the owner's physical absolute path
 PACKAGE_REF="$PROJECT"
 WORKER_SCOPE_JSON=$( /opt/nudox/current/bin/backend-cli \
   --workspace /var/lib/nudox-worker --project "$PROJECT" --format json \
-  cluster scope show --package "$PACKAGE_REF" --profile rust-2024 )
+  cluster scope show --package "$PACKAGE_REF" --profile rust-2024 \
+  --cargo-metadata-policy online )
 IFS=$'\t' read -r NAMESPACE RECIPE PROFILE TOOLCHAIN ENVIRONMENT TARGET_PLATFORM \
   < <(printf '%s\n' "$WORKER_SCOPE_JSON" | "$JQ" -er \
     '[.namespace,.recipe,.profile,.toolchain,.environment,.target_platform] | @tsv')
 diff -u \
-  <("$JQ" -S '{namespace,recipe,profile,toolchain,environment,target_platform}' /tmp/owner-scope.json) \
-  <(printf '%s\n' "$WORKER_SCOPE_JSON" | "$JQ" -S '{namespace,recipe,profile,toolchain,environment,target_platform}')
+  <("$JQ" -S '{namespace,recipe,profile,toolchain,environment,target_platform,cargo_metadata_policy}' /tmp/owner-scope.json) \
+  <(printf '%s\n' "$WORKER_SCOPE_JSON" | "$JQ" -S '{namespace,recipe,profile,toolchain,environment,target_platform,cargo_metadata_policy}')
 ```
 
 Any difference is a stop condition: fix the OS/architecture or authority paths
