@@ -48,7 +48,7 @@ pub(crate) fn not_ready<T>(
     key: &PageKey,
     what: &str,
     ctx: &mut Ctx<'_>,
-    _cx: &mut Context<Reader>,
+    cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
