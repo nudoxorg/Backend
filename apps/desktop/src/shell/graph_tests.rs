@@ -474,6 +474,48 @@ fn graph_find_uses_guarded_component_tab_and_stays_locally_editable(cx: &mut Tes
 }
 
 #[gpui::test]
+fn freshly_painted_owner_failed_graph_has_local_find_and_real_native_boundaries(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    gate.publish(crate::runtime::owner::OwnerState::Failed("fixture owner unavailable".into()));
+    // This assertion concerns a genuinely new, unavailable painted frame,
+    // unlike the separate revoked-before-repaint denial test.
+    rig.draw(); rig.repaint(); rig.settle();
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("retained native scene");
+    rig.cx.update(|window, _| {
+        let tree = window.a11y_tree().expect("unavailable native frame");
+        for label in ["Declarations", "Graph coverage"] {
+            let node = tree.nodes.iter().find(|(_, node)| node.label() == Some(label)).map(|(_, node)| node).expect("visible disabled resource control");
+            assert!(node.is_disabled(), "{label} is painted unavailable");
+            assert!(!node.supports_action(gpui::AccessibleAction::Click), "{label} cannot advertise an activation");
+        }
+    });
+    rig.keys("tab");
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "the first enabled stop is the actual local editor");
+    rig.cx.simulate_input("cadence"); rig.draw();
+    assert!(rig.cx.update(|window, _| window.a11y_tree().expect("local edit").nodes.iter().any(|(_, node)| node.value() == Some("cadence"))));
+    rig.native_press("enter");
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none(), "editing grants no resource selection");
+    rig.keys("tab");
+    assert!(!rig.cx.update(|window, cx| graph.read(cx).owns_native_focus(window, cx)), "a current Find-only frame has a real forward boundary");
+    let mut returned = false;
+    // Four existing Shell zones, with their real native stops; no enlarged
+    // 64-step search can hide a graph-region trap or focus a disabled leaf.
+    for _ in 0..8 {
+        rig.keys("shift-tab");
+        let (focused, controls) = graph_native_inventory(&mut rig);
+        assert!(!controls.iter().any(|node| node["aria"]["label"].as_str() == focused.as_deref()
+            && node["aria"]["disabled"] == true), "Shift-Tab cannot focus any disabled native resource: {focused:?}");
+        if rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)) { returned = true; break; }
+    }
+    assert!(returned, "Shift-Tab returns through the mounted zones to the admitted local editor");
+    rig.keys("shift-tab");
+    assert!(!rig.cx.update(|window, cx| graph.read(cx).owns_native_focus(window, cx)), "the local editor also has a real backward boundary");
+    assert_eq!(rig.route(), Route::World);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().is_none()));
+}
+
+#[gpui::test]
 fn graph_native_release_cannot_adopt_a_replacement_owner(cx: &mut TestAppContext) {
     use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);

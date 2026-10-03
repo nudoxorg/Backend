@@ -76,11 +76,17 @@ pub enum NativeFocusStep { Moved, Boundary, Denied }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NativeControlScope { navigation: u64, declarations: u64, coverage: u64 }
 
+/// Availability used by this exact frame's native control construction.
+/// A disabled painted frame differs from an enabled frame revoked later.
+#[derive(Clone, Copy)]
+struct NativeFrameControls { resources_enabled: bool }
+
 struct PaintedLabels {
     view: View,
     camera: Camera,
     focus: Option<NodeId>,
     native_scope: NativeControlScope,
+    controls: NativeFrameControls,
     territories: Vec<draw::TerritoryLabel>,
     nodes: Vec<draw::NodeLabel>,
     admission: Option<InteractionAdmission>,
@@ -474,8 +480,10 @@ impl GraphView {
             || self.camera() != Some(painted.camera) || self.native_scope() != painted.native_scope
             || self.state.focus != painted.focus
             || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx)) { return None; }
+        if painted.controls.resources_enabled && (!self.admits_native_interaction(cx)
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx))) { return None; }
         let mut handles = vec![self.find.read(cx).focus_handle(cx)];
-        if !self.state.find_open {
+        if painted.controls.resources_enabled && !self.state.find_open {
             handles.push(self.declaration_focus[32].clone());
             if self.declarations_open {
                 let start = self.declaration_page.saturating_mul(32);
@@ -485,7 +493,7 @@ impl GraphView {
                 if end < self.world.len() { handles.push(self.declaration_focus[34].clone()); }
             }
         }
-        handles.push(self.status_focus.clone());
+        if painted.controls.resources_enabled { handles.push(self.status_focus.clone()); }
         handles.retain(|handle| self.focus_handle.contains(handle, window));
         Some(handles)
     }
@@ -500,7 +508,7 @@ impl GraphView {
     fn admits_native_focus(&self, next: &FocusHandle, cx: &App) -> bool {
         if *next == self.find.read(cx).focus_handle(cx) { return true; }
         self.admits_native_interaction(cx) && self.painted_labels.as_ref().is_some_and(|painted|
-            painted.admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)))
+            painted.controls.resources_enabled && painted.admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)))
     }
 
     fn native_entry<'a>(&self, order: &'a [FocusHandle]) -> Option<&'a FocusHandle> {
@@ -2097,6 +2105,7 @@ impl Element for GraphFrame {
 struct Canvas {
     view: Entity<GraphView>,
     draft: FrameCell,
+    controls: NativeFrameControls,
 }
 
 impl IntoElement for Canvas {
@@ -2196,10 +2205,11 @@ impl Element for Canvas {
             painted
         });
         let hovering = p.hover.is_some() || p.hover_slot.is_some() || p.hover_terr.is_some();
+        let controls = self.controls;
         self.view.update(cx, |view, cx| {
             view.stats = stats.stats;
             view.scene_paint.set(Some(Arc::as_ptr(&p.scene) as usize));
-            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus, native_scope: view.native_scope(),
+            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus, native_scope: view.native_scope(), controls,
                 territories: stats.territory_labels, nodes: stats.node_labels, admission: view.interaction_admission.clone() });
             // If newly accepted text covers a parked pointer, let the next
             // committed frame retire its expanded glyph hover exactly once.
@@ -2293,6 +2303,7 @@ impl Render for GraphView {
         let palette = cx.palette();
         let draft = Rc::new(RefCell::new(None));
         let view = cx.entity();
+        let controls = NativeFrameControls { resources_enabled: self.admits_control_render(cx) };
         let find_admission = self.interaction_admission.clone();
         let key_admission = find_admission.clone();
         let root = div().id("graph").role(gpui::Role::Group).aria_label("Graph").key_context("Graph").track_focus(&self.focus_handle)
@@ -2322,17 +2333,17 @@ impl Render for GraphView {
                 if this.step_native(false, window, cx) == NativeFocusStep::Boundary { cx.propagate(); }
             }))
             .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
-            .child(Canvas { view: cx.entity(), draft: draft.clone() })
+            .child(Canvas { view: cx.entity(), draft: draft.clone(), controls })
             // GPUI's container query constructs the same detached child once,
             // after Canvas has sampled this frame's actual parent geometry.
             .child(div().id("graph-chrome").absolute().top_0().left_0().size_full()
-                .child(gpui::container_query(move |size, window, cx| view.update(cx, |graph, cx| graph.chrome(size, window, cx)))));
+                .child(gpui::container_query(move |size, window, cx| view.update(cx, |graph, cx| graph.chrome(size, controls, window, cx)))));
         GraphFrame { child: root.into_any_element(), view: cx.entity(), draft }
     }
 }
 
 impl GraphView {
-    fn chrome(&mut self, size: gpui::Size<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn chrome(&mut self, size: gpui::Size<Pixels>, controls: NativeFrameControls, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let facet = cx.facet();
         let palette = facet.palette();
         let width = size.width;
@@ -2364,7 +2375,7 @@ impl GraphView {
         }
         if !self.state.find_open {
             find_stack = find_stack.child(MeasuredChrome::new("graph-declarations-bounds",
-                self.declarations(&find_measure, size.height, window, cx), cx.entity()));
+                self.declarations(&find_measure, size.height, controls, window, cx), cx.entity()));
         }
         root = root.child(find_stack);
         if self.state.find_open {
@@ -2373,7 +2384,7 @@ impl GraphView {
         if self.state.exploration.chain().is_some() { root = root.child(MeasuredChrome::new("graph-chain-bounds", self.chain_plate(&measure, window.modifiers().alt, window, cx), cx.entity())); }
         if self.state.exploration.tour().is_some() { root = root.child(MeasuredChrome::new("graph-tour-bounds", self.tour_plate(&measure, cx), cx.entity())); }
         if let Some(i) = self.state.focus.filter(|_| !self.state.find_open) {
-            let card = self.focus_card(i, &measure, window.modifiers().platform, cx);
+            let card = self.focus_card(i, &measure, window.modifiers().platform, controls, cx);
             root = root.child(MeasuredCard { child: card, view: cx.entity() });
         } else { self.card_bounds = None; }
         // A focused card owns its provenance in its native scrolling body;
@@ -2381,7 +2392,7 @@ impl GraphView {
         if self.state.focus.is_none() || self.state.find_open {
             let status_w = (f32::from(width) * 0.52).max(1.0);
             let status_measure = Measure::new(px(status_w), &facet);
-            if let Some(status) = self.provenance(&status_measure, size.height, cx) {
+            if let Some(status) = self.provenance(&status_measure, size.height, controls, cx) {
                 root = root.child(MeasuredChrome::new("graph-status-bounds", div().absolute().bottom(px(8.0)).right(px(16.0)).w(px(status_w)).child(status), cx.entity()));
             }
         }
@@ -2425,7 +2436,7 @@ impl GraphView {
 }
 
 impl GraphView {
-    fn provenance(&self, measure: &Measure, height: Pixels, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn provenance(&self, measure: &Measure, height: Pixels, controls: NativeFrameControls, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (summary, detail) = self.status.as_ref()?;
         let palette = cx.palette();
         let mut status = div().id("graph-status").role(gpui::Role::Status).aria_label(summary.clone()).min_w_0()
@@ -2437,7 +2448,7 @@ impl GraphView {
             let epoch = self.status_epoch;
             let admission = self.control_admission(cx, move |graph| graph.status_open == open && graph.status_epoch == epoch);
             status = status.child(crate::controls::button("graph-coverage-toggle", if open { "Hide coverage" } else { "Graph coverage" }, measure)
-                .focus_handle(self.status_focus.clone()).ghost().disabled(!self.admits_control_render(cx)).when_current(admission).on_click(move |_, cx| {
+                .focus_handle(self.status_focus.clone()).ghost().disabled(!controls.resources_enabled).when_current(admission).on_click(move |_, cx| {
                     let _ = owner.update(cx, |graph, cx| {
                         if !graph.admits_native_interaction(cx) || graph.status_open != open || graph.status_epoch != epoch { return; }
                         graph.status_open = !open;
@@ -2453,10 +2464,10 @@ impl GraphView {
         Some(status.into_any_element())
     }
 
-    fn declarations(&self, measure: &Measure, height: Pixels, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn declarations(&self, measure: &Measure, height: Pixels, controls: NativeFrameControls, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         const PAGE: usize = 32;
         let palette = cx.palette();
-        let active = self.admits_control_render(cx);
+        let active = controls.resources_enabled;
         let open = self.declarations_open;
         let page = self.declaration_page;
         let epoch = self.declaration_epoch;
@@ -2711,7 +2722,7 @@ impl GraphView {
             .max_h(px(available)).p(px(6.0)).child(content).into_any_element()
     }
 
-    fn focus_card(&self, i: NodeId, measure: &Measure, show_keys: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn focus_card(&self, i: NodeId, measure: &Measure, show_keys: bool, controls: NativeFrameControls, cx: &mut Context<Self>) -> AnyElement {
         let palette = cx.palette();
         let facet = cx.facet();
         let world = &self.world;
@@ -2770,7 +2781,7 @@ impl GraphView {
                 .child(div().text_color(palette.ink4.hsla()).child("·"))
                 .child(div().min_w_0().max_w(gpui::relative(1.0)).child(graph_text("graph-focus-yours", format!("{yours} in your code"), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
         }
-        body = body.child(fx).children(self.provenance(&card, px(self.view.map_or(360.0, |view| view.h)), cx));
+        body = body.child(fx).children(self.provenance(&card, px(self.view.map_or(360.0, |view| view.h)), controls, cx));
         if let Some(reach) = self.state.exploration.reach() {
             body = body.child(graph_text("graph-reach-summary", reach.summary(), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap));
             if reach.packages.len() > 1 {

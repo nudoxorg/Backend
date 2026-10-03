@@ -800,12 +800,12 @@ impl Reader {
     /// A neutral view handle, not a focus capability. The Graph validates its
     /// exact native paint/owner/control scope after these Reader gates, while
     /// no Map entity is mutably leased.
-    fn graph_native_view(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> {
+    fn graph_native_view(&self, cx: &App) -> Result<Option<Entity<facet::graph::GraphView>>, ()> {
         let snapshot = self.links.snapshot(cx);
         if !self.native_input_allowed() || self.route != *snapshot.route()
             || snapshot.overlay().is_some() || snapshot.page_overlay().is_some()
-            || !bodies::graph::is_graph(snapshot.route()) { return None; }
-        self.map.as_ref()?.read(cx).native_graph()
+            || !bodies::graph::is_graph(snapshot.route()) { return Err(()); }
+        Ok(self.map.as_ref().and_then(|map| map.read(cx).native_graph()))
     }
 
     /// Move through the mounted native controls in the Reader's existing
@@ -813,9 +813,12 @@ impl Reader {
     /// walk; a denied Graph step consumes the key without moving focus.
     pub(crate) fn step_native(&self, forward: bool, window: &mut Window, cx: &mut gpui::App) -> bool {
         if bodies::graph::is_graph(self.links.snapshot(cx).route()) {
-            let Some(graph) = self.graph_native_view(cx) else { return false; };
-            return graph.update(cx, |graph, cx| graph.step_native(forward, window, cx))
-                != facet::graph::view::NativeFocusStep::Boundary;
+            match self.graph_native_view(cx) {
+                Err(()) => return true, // A stale/covered visit is denial, never a boundary.
+                Ok(Some(graph)) => return graph.update(cx, |graph, cx| graph.step_native(forward, window, cx))
+                    != facet::graph::view::NativeFocusStep::Boundary,
+                Ok(None) => {} // Current placeholder retains its existing Targets/zone walk.
+            }
         }
         self.targets.native_step(forward, window, cx)
     }
@@ -825,7 +828,7 @@ impl Reader {
     /// current place, then make that real handle the Reader walk origin.
     pub(crate) fn adopt_mounted_native_focus(&self, window: &Window, cx: &gpui::App) -> Option<bool> {
         if bodies::graph::is_graph(self.links.snapshot(cx).route()) {
-            let graph = self.graph_native_view(cx)?;
+            let graph = self.graph_native_view(cx).ok().flatten()?;
             return graph.read(cx).owns_native_focus(window, cx).then_some(false);
         }
         let current = self.places.last()?;
@@ -844,7 +847,7 @@ impl Reader {
 
     pub(crate) fn focus_native_current(&self, window: &mut Window, cx: &mut gpui::App) -> bool {
         if bodies::graph::is_graph(self.links.snapshot(cx).route()) {
-            let Some(graph) = self.graph_native_view(cx) else { return false; };
+            let Ok(Some(graph)) = self.graph_native_view(cx) else { return false; };
             return graph.update(cx, |graph, cx| graph.focus_native_current(window, cx));
         }
         self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
