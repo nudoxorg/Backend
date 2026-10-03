@@ -249,6 +249,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::OpenFolderPicker
         | Intent::FolderPickerResult { .. }
         | Intent::IndexProject { .. }
+        | Intent::IndexAdmissionFailed { .. }
         | Intent::AddProject { .. }
         | Intent::RejectProjectPath { .. }
         | Intent::ActivateProject(_)

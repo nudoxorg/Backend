@@ -197,6 +197,10 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 effects.push(Effect::Persist);
             }
         }
+        Intent::IndexAdmissionFailed { project, message } => {
+            next = set_project_phase(&next, project, ProjectPhase::Failed, Some(Arc::clone(message)), None);
+            effects.push(Effect::Persist);
+        }
         Intent::AddProject { project } => {
             next = admit_project(&next, project.clone());
             effects.push(Effect::Persist);

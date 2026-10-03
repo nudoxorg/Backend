@@ -3,9 +3,7 @@
 
 use super::*;
 use crate::core::{LocalProjectId, PackageId, VersionedRoot};
-use crate::model::{
-    CatalogState, ObjectId, PackageSummary, ProjectPhase, ServiceMode, WorkspaceProject,
-};
+use crate::model::{CatalogState, ObjectId, PackageSummary, ProjectPhase, ServiceMode};
 use crate::navigation::OrbitRoute;
 use crate::runtime::actor::{EngineClient, EngineDto, EngineFault, EngineRequest};
 use crate::runtime::owner::{OwnerGate, OwnerState};
@@ -34,10 +32,13 @@ struct Schedule {
 impl Schedule {
     fn new(cx: &mut TestAppContext, gate: OwnerGate) -> Self {
         let project = LocalProjectId::new("/fixture/local-project").expect("project");
-        let mut snapshot = AppSnapshot::empty(authority());
-        let mut workspace = snapshot.workspace().clone();
-        workspace.projects = Arc::from([WorkspaceProject::indexing_with_id(project.clone())]);
-        snapshot = snapshot.with_workspace(workspace);
+        let snapshot = crate::navigation::reduce(
+            &AppSnapshot::empty(authority()),
+            Intent::AddProject {
+                project: project.clone(),
+            },
+        )
+        .snapshot;
         let store = cx.update(|cx| {
             DataStore::install_with_owner(
                 cx,
@@ -184,4 +185,68 @@ fn catalog_publication_keeps_home_and_its_navigation_history(cx: &mut TestAppCon
             );
         });
     });
+}
+
+#[gpui::test]
+fn a_queued_request_is_saved_as_submitted_before_entering_the_actor(cx: &mut TestAppContext) {
+    let schedule = Schedule::new(cx, OwnerGate::ready(authority(), ServiceMode::Embedded));
+    let directory =
+        std::env::temp_dir().join(format!("nudox-index-preflight-{}", std::process::id()));
+    crate::host::private_dir(&directory).expect("private persistence directory");
+    let persistence = PersistentState::at(directory.join("desktop.json"));
+    cx.update(|cx| {
+        schedule.root.update(cx, |root, cx| {
+            persistence
+                .save(&PersistentState::project(&root.snapshot()))
+                .expect("save queued admission");
+            assert_eq!(
+                persistence.load().expect("queued state").shelf[0].phase,
+                crate::model::PersistedProjectPhase::Queued
+            );
+            root.persistence = Some(persistence.clone());
+            root.schedule_pending_indexes(cx);
+            root.flush_pending(cx);
+            assert!(root.snapshot().workspace().projects[0].request.is_some());
+            assert_eq!(
+                persistence.load().expect("submitted state").shelf[0].phase,
+                crate::model::PersistedProjectPhase::Indexing
+            );
+        });
+    });
+    std::fs::remove_dir_all(directory).expect("remove persistence directory");
+}
+
+#[gpui::test]
+fn failed_durable_admission_never_submits_an_index_or_requeues_it_forever(cx: &mut TestAppContext) {
+    let schedule = Schedule::new(cx, OwnerGate::ready(authority(), ServiceMode::Embedded));
+    let directory = std::env::temp_dir().join(format!(
+        "nudox-index-preflight-failure-{}",
+        std::process::id()
+    ));
+    crate::host::private_dir(&directory).expect("private persistence directory");
+    let path = directory.join("desktop.json");
+    std::fs::create_dir(&path).expect("a directory cannot be replaced by a state file");
+    cx.update(|cx| {
+        schedule.root.update(cx, |root, cx| {
+            root.persistence = Some(PersistentState::at(path.clone()));
+            root.schedule_pending_indexes(cx);
+            root.flush_pending(cx);
+            assert!(!root.has_pending_work());
+            let snapshot = root.snapshot();
+            assert_eq!(snapshot.workspace().projects[0].phase, ProjectPhase::Failed);
+            assert_eq!(snapshot.workspace().projects[0].request, None);
+            assert!(
+                snapshot.workspace().projects[0]
+                    .error
+                    .as_deref()
+                    .expect("local admission failure")
+                    .contains("could not be saved")
+            );
+            assert!(
+                root.pending.is_empty(),
+                "local failure does not reschedule the same unsent operation"
+            );
+        });
+    });
+    std::fs::remove_dir_all(directory).expect("remove persistence directory");
 }

@@ -196,6 +196,14 @@ pub enum Intent {
         /// Compatibility request retained until the service owner replies.
         request: RequestId,
     },
+    /// The local durable admission could not be recorded before submission.
+    /// No owner operation was sent, so retry may safely try admission again.
+    IndexAdmissionFailed {
+        /// Exact local folder that remained unsent.
+        project: LocalProjectId,
+        /// Bounded local persistence failure.
+        message: Arc<str>,
+    },
     /// Admit one validated native local folder to the durable shelf.
     AddProject {
         /// Exact native identity admitted by the dialog or platform picker.

@@ -237,7 +237,7 @@ impl UiRootEntity {
                     if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
                         && matches!(&intent, Intent::IndexProject { basis, project, .. } if self.snapshot().key().same_authority(*basis)
                             && self.snapshot().workspace().projects.iter().any(|item| item.id == *project
-                                && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none())) => self.dispatch(intent, cx),
+                                && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none())) => self.dispatch_index(intent, attachment, cx),
                 // An unsent local admission remains on the shelf. A replacement
                 // owner will schedule it against its own attachment and root.
                 QueuedIntent::Index { .. } => {}
@@ -245,6 +245,27 @@ impl UiRootEntity {
                     && self.store.as_ref().is_some_and(|store| lease.admits(store.read(cx))) => self.dispatch(intent, cx),
                 QueuedIntent::Read { .. } => {}
             }
+        }
+    }
+
+    /// Close the durable queued/submitted boundary before crossing the actor.
+    /// A crash after this save is conservatively Unconfirmed on restart; a
+    /// failed save leaves the folder unsent. Persistence already belongs to
+    /// this root, and the exact owner lease is checked again after publication.
+    fn dispatch_index(&mut self, intent: Intent, attachment: OwnerAttachment, cx: &mut Context<Self>) {
+        if let Some(persistence) = &self.persistence {
+            let submitted = crate::navigation::reduce(&self.snapshot(), intent.clone()).snapshot;
+            if let Err(error) = persistence.save(&PersistentState::project(&submitted)) {
+                if let Intent::IndexProject { project, .. } = intent {
+                    let message: Arc<str> = format!("The folder is still on your shelf, but its index request could not be saved: {error}")
+                        .chars().filter(|character| !character.is_control()).take(240).collect::<String>().into();
+                    self.dispatch_runtime(Intent::IndexAdmissionFailed { project, message }, cx);
+                }
+                return;
+            }
+        }
+        if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) {
+            self.dispatch(intent, cx);
         }
     }
 
