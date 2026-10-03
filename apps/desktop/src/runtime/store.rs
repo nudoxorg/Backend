@@ -1027,7 +1027,7 @@ impl DataStore {
         let Some(pool) = &self.pool else {
             return 0;
         };
-        let outcomes = pool.drain();
+        let outcomes = pool.drain_for(&self.focused);
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {

@@ -41,7 +41,7 @@ use backend_library::{
     ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
 use backend_present::{Engine, Probe};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -515,6 +515,12 @@ impl ReadPool {
     /// results lead, with one slot in a full batch reserved for pending
     /// prefetch results so continuous normal work cannot starve them.
     pub fn drain(&self) -> Vec<ReadOutcome> {
+        self.drain_for(&BTreeSet::new())
+    }
+
+    /// Visible keys also lead when their read started as a prefetch. Borrow
+    /// the current selection rather than retaining it in worker state.
+    pub(crate) fn drain_for(&self, visible: &BTreeSet<PageKey>) -> Vec<ReadOutcome> {
         let mut results = self
             .shared
             .results
@@ -528,7 +534,10 @@ impl ReadPool {
             } else {
                 Priority::Normal
             };
-            let at = results.iter().position(|outcome| outcome.priority == preferred).unwrap_or(0);
+            let at = results.iter().position(|outcome| {
+                let normal = outcome.priority == Priority::Normal || visible.contains(&outcome.key);
+                normal == (preferred == Priority::Normal)
+            }).unwrap_or(0);
             if let Some(outcome) = results.remove(at) { batch.push(outcome); }
         }
         let remaining = !results.is_empty();
@@ -3114,6 +3123,25 @@ mod tests {
             assert_eq!(batch[7].key, key(&format!("Prefetch-{batch_index}")), "FIFO within prefetch priority");
         }
         assert!(harness.pool.drain().iter().all(|outcome| outcome.priority == Priority::Prefetch));
+    }
+
+    #[test]
+    fn bounded_read_a_completed_prefetch_becoming_visible_leads_without_worker_mutation() {
+        let harness = harness(1);
+        for round in 0..12 {
+            let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Prefetch).expect("prefetch admission");
+            harness.pool.shared.publish(ReadOutcome {
+                key: key(&format!("prefetch-{round}")), generation: Generation::new(round),
+                worker: 0, priority: Priority::Prefetch, complete: true,
+                result: Ok(PageValue::Health(health())), _residency: permit,
+            });
+        }
+        let visible = key("prefetch-11");
+        let batch = harness.pool.drain_for(&BTreeSet::from([visible.clone()]));
+        assert_eq!(batch.len(), LANDING_BUDGET);
+        assert_eq!(batch[0].key, visible, "current selection overtakes earlier completed prefetches");
+        assert_eq!(batch[0].priority, Priority::Prefetch, "the actual scheduling history is preserved");
+        assert_eq!(batch[1].key, key("prefetch-0"), "other results retain FIFO order");
     }
 
     #[test]
