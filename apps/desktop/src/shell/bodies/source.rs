@@ -655,14 +655,14 @@ fn code(
                 .unwrap_or_default();
             app.write_to_clipboard(gpui::ClipboardItem::new_string(words.to_owned()));
         });
+        let copy_label: SharedString = if page.lines[source_index].continued || page.lines[source_index].more_in_line {
+            format!("Copy visible part of source line {number}")
+        } else {
+            format!("Copy source line {number}")
+        }.into();
         ctx.targets.push(Target {
             id: id.clone(),
-            label: if page.lines[source_index].continued || page.lines[source_index].more_in_line {
-                format!("Copy visible part of source line {number}")
-            } else {
-                format!("Copy source line {number}")
-            }
-            .into(),
+            label: copy_label.clone(),
             act: copy_line.clone(),
             peek: None,
             source: None,
@@ -739,11 +739,8 @@ fn code(
             let declared =
                 declaration.is_some_and(|span| span.first <= number && number <= span.last);
             let requested = requested_line == Some(number);
-            let copy_gutter = copy_line.clone();
-            let line_number = div()
+            let mut line_number = div()
                 .id(format!("source-copy-line-{number}-{piece_index}"))
-                .role(gpui::Role::Label)
-                .aria_label(format!("Source line {number}"))
                 .flex_none()
                 .w(number_width)
                 .flex()
@@ -761,9 +758,22 @@ fn code(
                         },
                     )
                     .child(label),
-                )
-                .cursor_pointer()
-                .on_click(move |_: &ClickEvent, window, app| copy_gutter(window, app));
+                );
+            if piece_index == 0 {
+                if let Some(focus) = ctx.native_handle(&id, cx) {
+                    let copy = Rc::clone(&copy_line);
+                    line_number = facet::controls::button::native_button(
+                        line_number.role(gpui::Role::Button).aria_label(copy_label.clone()).cursor_pointer(),
+                        &focus,
+                        move |window, app| copy(window, app),
+                    );
+                    line_number = facet::controls::button::capture_activation_admission(
+                        line_number, Rc::clone(&source_guard));
+                }
+            } else {
+                line_number = line_number.role(gpui::Role::Label)
+                    .aria_label(format!("Source line {number} continuation"));
+            }
             let shared_text: SharedString = line.text.clone().into();
             let styled = StyledText::new(shared_text.clone()).with_highlights(line.runs);
             let body: gpui::AnyElement = if link_ranges.is_empty() {
@@ -1404,7 +1414,7 @@ mod tests {
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Code tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native JSON");
         let nodes = tree["nodes"].as_object().expect("nodes");
-        for label in ["Copy visible page", "Request to open source file in editor", "Go to line"] {
+        for label in ["Copy visible page", "Copy source line 138", "Request to open source file in editor", "Go to line"] {
             assert!(nodes.values().any(|node| node["aria"]["role"] == "Button" && node["aria"]["label"] == label),
                 "missing native Code button {label}: {json}");
         }
