@@ -49,12 +49,13 @@ impl GraphReadBudget {
     }
 }
 
-fn admit_graph_root(
-    expected: backend_library::ViewStateRoot,
-    observed: backend_library::ViewStateRoot,
+fn admit_graph_revision(
+    expected: ProducerAuthority,
+    observed_root: backend_library::ViewStateRoot,
+    observed_cursor: backend_library::Cursor,
     when: &str,
 ) -> Result<(), Arc<str>> {
-    if observed != expected {
+    if observed_root != expected.root() || observed_cursor != expected.cursor() {
         Err(Arc::from(format!("the local index changed {when}")))
     } else {
         Ok(())
@@ -65,14 +66,14 @@ struct RootedGraphSession {
     session: Session,
     endpoint: PathBuf,
     generation: crate::host::registry::CompositionGeneration,
-    root: backend_library::ViewStateRoot,
+    authority: ProducerAuthority,
     budget: GraphReadBudget,
 }
 
 impl RootedGraphSession {
     fn connect(
         composition: &crate::host::registry::Composition,
-        root: backend_library::ViewStateRoot,
+        authority: ProducerAuthority,
     ) -> Result<Self, Arc<str>> {
         let session = Session::connect(&composition.endpoint).map_err(|error| {
             Arc::<str>::from(format!("could not connect to the local index: {error}"))
@@ -81,7 +82,7 @@ impl RootedGraphSession {
             session,
             endpoint: composition.endpoint.clone(),
             generation: composition.generation,
-            root,
+            authority,
             budget: GraphReadBudget::default(),
         };
         rooted.confirm("before the graph read began")?;
@@ -97,7 +98,7 @@ impl RootedGraphSession {
         let revision = self.session.revision().map_err(|error| {
             Arc::<str>::from(format!("could not confirm the graph's index root {when}: {error}"))
         })?;
-        admit_graph_root(self.root, revision.root, when)
+        admit_graph_revision(self.authority, revision.root, revision.cursor(), when)
     }
 
     fn read<T>(
@@ -530,7 +531,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
         .ok_or_else(|| {
             Arc::from("the local service connection changed before the graph was read")
         })?;
-    let mut session = RootedGraphSession::connect(&composition, key.root.root())?;
+    let mut session = RootedGraphSession::connect(&composition, key.authority)?;
     let mut packages = Vec::with_capacity(MAX_PACKAGES);
     let mut package_rows_scanned = 0usize;
     if let Some(preferred) = key.preferred.as_ref() {
@@ -1003,7 +1004,7 @@ mod tests {
     use crate::core::VersionedRoot;
     use super::{
         Coverage, GraphReadBudget, Key, MAX_PACKAGES, Origin, OwnerIdentity, PackageRef,
-        RelationCompleteness, RelationKindCoverage, admit_graph_root, relation_gap, retain_package,
+        RelationCompleteness, RelationKindCoverage, admit_graph_revision, relation_gap, retain_package,
     };
     use backend_library::SemanticLinkKind;
     use std::collections::BTreeMap;
@@ -1027,6 +1028,7 @@ mod tests {
 
         let root = backend_library::view_state_root(&[("graph".into(), "first".into())]);
         let renewed = backend_library::view_state_root(&[("graph".into(), "second".into())]);
+        let authority = VersionedRoot::synthetic(root, 1).authority();
         let mut budget = GraphReadBudget::default();
         let mut connection = LimitedConnection { frames: 1 }; // first root proof
         let mut rotations = 0;
@@ -1040,7 +1042,7 @@ mod tests {
         for cost in costs {
             if budget.next() {
                 connection.request(1, limit); // departing root proof
-                admit_graph_root(root, root, "between graph batches").expect("same root");
+                admit_graph_revision(authority, root, authority.cursor(), "between graph batches").expect("same root");
                 connection = LimitedConnection { frames: 1 }; // new root proof
                 rotations += 1;
             }
@@ -1048,8 +1050,12 @@ mod tests {
         }
         connection.request(1, limit); // final root proof
         assert!(rotations > 1, "the projection crosses several real service leases");
-        assert!(admit_graph_root(root, renewed, "after reconnecting the graph read").is_err(),
+        assert!(admit_graph_revision(authority, renewed, authority.cursor(), "after reconnecting the graph read").is_err(),
             "a renewed producer cannot contribute facts to a previous projection");
+        assert!(admit_graph_revision(authority, root,
+            backend_library::Cursor::at(root, authority.cursor().sequence() + 1),
+            "after reconnecting the graph read").is_err(),
+            "a renewed cursor at the same root is also a different producer authority");
     }
 
     #[test]
@@ -1088,7 +1094,9 @@ mod tests {
         let owner = EmbeddedLocalService::start(config).expect("private owner");
 
         let mut exhausted = Session::connect(&endpoint).expect("first connection");
-        let root = exhausted.revision().expect("first root").root;
+        let first = exhausted.revision().expect("first root");
+        let root = first.root;
+        let authority = VersionedRoot::from_revision(1, first.cursor(), 0).authority();
         let ceiling = backend_local_service::FrameLimits::default().max_frames_per_connection;
         for _ in 1..ceiling {
             assert_eq!(exhausted.revision().expect("within the service frame limit").root, root);
@@ -1101,10 +1109,12 @@ mod tests {
         let mut rotations = 0;
         for _ in 0..300 {
             if budget.next() {
-                admit_graph_root(root, session.revision().expect("departing proof").root,
+                let proof = session.revision().expect("departing proof");
+                admit_graph_revision(authority, proof.root, proof.cursor(),
                     "between graph batches").expect("unchanged owner");
                 session = Session::connect(&endpoint).expect("rotated connection");
-                admit_graph_root(root, session.revision().expect("new session proof").root,
+                let proof = session.revision().expect("new session proof");
+                admit_graph_revision(authority, proof.root, proof.cursor(),
                     "after reconnecting the graph read").expect("unchanged owner");
                 rotations += 1;
             }
@@ -1116,7 +1126,8 @@ mod tests {
         mutation.index(project.to_str().expect("project utf-8")).expect("index fixture");
         let renewed = mutation.revision().expect("renewed root").root;
         assert_ne!(root, renewed, "the owner published a different index root");
-        assert!(admit_graph_root(root, session.revision().expect("post-index proof").root,
+        let proof = session.revision().expect("post-index proof");
+        assert!(admit_graph_revision(authority, proof.root, proof.cursor(),
             "while its graph was being read").is_err(),
             "a batch cannot combine rows from the earlier and later owner roots");
 
