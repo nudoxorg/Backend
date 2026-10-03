@@ -245,10 +245,14 @@ pub(crate) struct Coverage {
     pub(crate) bounded: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum RelationCompleteness {
-    #[default]
-    Unknown,
+pub(crate) use facet::graph::model::Completeness as RelationCompleteness;
+
+/// This read surface carries declarations and observed relation records, but
+/// no universe completeness certificate or structured callable shape IR.
+pub(crate) fn projection_knowledge() -> facet::graph::model::GraphKnowledge {
+    use facet::graph::model::{Completeness, GraphKnowledge, ShapeFacts};
+    GraphKnowledge { declarations: Completeness::Unknown, relations: Completeness::Unknown,
+        callable_shapes: ShapeFacts::UnsupportedIR }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -287,6 +291,7 @@ impl Coverage {
                 .map(|(kind, facts)| {
                     let coverage = match facts.completeness {
                         RelationCompleteness::Unknown => "unknown",
+                        RelationCompleteness::Complete => "complete",
                     };
                     format!(
                         "{} {} observed, {} unavailable, completeness {coverage}",
@@ -854,11 +859,11 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
 
     ensure_active(cancellation)?;
     session.confirm("while its graph was being read")?;
-    let world = Arc::new(
-        World::new(world_packages, modules, nodes, edges).map_err(|error| {
-            Arc::<str>::from(format!("could not assemble the indexed graph: {error}"))
-        })?,
-    );
+    let mut world = World::new(world_packages, modules, nodes, edges).map_err(|error| {
+        Arc::<str>::from(format!("could not assemble the indexed graph: {error}"))
+    })?;
+    world.knowledge = projection_knowledge();
+    let world = Arc::new(world);
     let identities = Arc::new(IdentityAdapter::indexed(&world, &package_index, resolved));
     let layout = facet::graph::layout::layout_of(&world);
     let scene = Arc::new(facet::graph::scene::Scene::new(Arc::clone(&world), layout));

@@ -6,7 +6,7 @@
 //! from the shared semantic recipe engine. Only the value-consuming spine
 //! is a graph concern. A bounded second shortest-path pass follows it.
 
-use super::model::{Kind, NodeId, World};
+use super::model::{Completeness, Kind, NodeId, ShapeFacts, World};
 use crate::semantics::recipes::{self, How, Kid, Producer, Recipes, Run, Tree};
 use crate::semantics::types::{TypeExpr, parse, split_top};
 mod capability;
@@ -111,6 +111,36 @@ pub struct Search {
     pub packages: usize,
     /// Up to three roads, offered when fewer than three calls answer.
     pub chains: Vec<Chain>,
+}
+
+/// A query's fact boundary, distinct from the cardinality of observed rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchEvidence { Observed, KnownEmpty, Unknown, UnsupportedIR, Rejected }
+
+impl Search {
+    #[must_use]
+    pub fn evidence(&self, world: &World) -> SearchEvidence {
+        if self.issue.is_some() { return SearchEvidence::Rejected; }
+        if self.shaped && world.knowledge.callable_shapes == ShapeFacts::UnsupportedIR { return SearchEvidence::UnsupportedIR; }
+        if !self.rows.is_empty() || !self.chains.is_empty() { return SearchEvidence::Observed; }
+        let completeness = if self.shaped {
+            match world.knowledge.callable_shapes { ShapeFacts::Observed(value) => value, ShapeFacts::UnsupportedIR => unreachable!() }
+        } else { world.knowledge.declarations };
+        if completeness == Completeness::Complete { SearchEvidence::KnownEmpty } else { SearchEvidence::Unknown }
+    }
+
+    #[must_use]
+    pub fn empty_message(&self, world: &World) -> Option<&'static str> {
+        Some(match self.evidence(world) {
+            SearchEvidence::Observed => return None,
+            SearchEvidence::Rejected => self.issue.expect("rejected grammar has a reason"),
+            SearchEvidence::UnsupportedIR => "Callable argument and return type facts are unavailable in this graph. Find declarations by name.",
+            SearchEvidence::KnownEmpty if self.shaped => "No direct callable matches this shape in this complete projection.",
+            SearchEvidence::KnownEmpty => "No matching declaration in this complete graph projection.",
+            SearchEvidence::Unknown if self.shaped => "No callable shape match observed; shape fact coverage is unknown.",
+            SearchEvidence::Unknown => "No matching declarations observed in this graph; declaration coverage is unknown.",
+        })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -464,6 +494,10 @@ impl Discovery {
                 packages: 0,
                 chains: Vec::new(),
             });
+        }
+        if shaped && world.knowledge.callable_shapes == ShapeFacts::UnsupportedIR {
+            return Rc::new(Search { shaped, issue: None, rows: Vec::new(), lit: Vec::new(),
+                lit_set: HashSet::new(), packages: 0, chains: Vec::new() });
         }
         let shape = shaped.then(|| self.parse_shape(world, &query));
         let lit = shape

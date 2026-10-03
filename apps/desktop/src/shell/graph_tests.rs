@@ -336,8 +336,10 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
         nodes.push(crate::runtime::indexed_world::project_declaration(&row, &symbol, 0, module));
         exact.insert(index as u32, ResolvedSymbol { symbol, package: package.clone(), line: Some(line) });
     }
-    let world = Arc::new(World::new(vec![Package { name: "real-rust-canary".into(), version: "0.0.1".into(), yours: true, external: false, deps: vec![] }],
-        vec![Module { pkg: 0, path: "".into(), file: "src/lib.rs".into() }, Module { pkg: 0, path: "cadence".into(), file: "src/cadence.rs".into() }], nodes, vec![]).expect("canary graph"));
+    let mut world = World::new(vec![Package { name: "real-rust-canary".into(), version: "0.0.1".into(), yours: true, external: false, deps: vec![] }],
+        vec![Module { pkg: 0, path: "".into(), file: "src/lib.rs".into() }, Module { pkg: 0, path: "cadence".into(), file: "src/cadence.rs".into() }], nodes, vec![]).expect("canary graph");
+    world.knowledge = crate::runtime::indexed_world::projection_knowledge();
+    let world = Arc::new(world);
     let identities = Arc::new(IdentityAdapter::indexed(&world, &BTreeMap::from([(package, 0)]), exact));
     rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
     rig.go(Intent::Navigate(Route::World));
@@ -528,4 +530,113 @@ fn selected_native_landmark_and_page_code_survive_caption_no_fit(cx: &mut TestAp
         rig.settle();
         assert!(matches!(rig.route(), Route::Symbol(route) if route.view == view && route.id.as_str().contains(&"2".repeat(64))));
     }
+}
+
+
+#[gpui::test]
+fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    use super::bodies::graph::MapWorkStatus;
+    let owner_root = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let owner = crate::runtime::owner::OwnerGate::ready(owner_root, crate::model::ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate(cx, None, 1440.0, 900.0,
+        crate::runtime::reads::ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(owner));
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let gate = Arc::new(TestProjectionGate::default());
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.draw_frame();
+    rig.cx.run_until_parked();
+    assert!(gate.entered(), "real asynchronous Memo worker is held");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::ProjectionRead));
+    gate.release();
+    rig.cx.run_until_parked();
+    assert_ne!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::ProjectionRead), "callback has actually landed before drawing");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none(), "completion does not mutate the mounted scene outside render");
+    // Bare native draw: no refresh, input, timer, settle or additional notify.
+    rig.draw_frame();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(), "the announced completion frame must mount its ready scene immediately");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::Discovery), "the newly spawned discovery worker has not supplied a second wake");
+    // Use the actual first-paint AccessKit controls, without native_bounds()
+    // (that helper intentionally forces a repaint). No discovery completion
+    // or postpaint input has repaired the initial control construction.
+    let controls = rig.cx.update(|window, _| {
+        let tree = window.a11y_tree().expect("first-paint tree");
+        ["Declarations", "Graph coverage"].map(|label| {
+            let (id, node) = tree.nodes.iter().find(|(_, node)| node.label() == Some(label)).expect("first-paint native control");
+            assert!(!node.is_disabled() && node.supports_action(gpui::AccessibleAction::Click), "current control must render operable before paint proves activation");
+            *id
+        })
+    });
+    for target_node in controls {
+        rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+            target_node, data: None,
+        }, cx));
+    }
+    rig.draw_frame();
+    rig.cx.update(|window, _| {
+        let tree = window.a11y_tree().expect("activated controls");
+        for label in ["Hide declarations", "Hide coverage"] {
+            assert!(tree.nodes.values().any(|node| node.label() == Some(label)), "first-paint activation changes each native control exactly once");
+        }
+    });
+}
+
+#[gpui::test]
+fn native_graph_admission_does_not_reenter_its_leased_graph(cx: &mut TestAppContext) {
+    let (mut rig, _) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    // Both pointer and keyboard invoke the production predicate inside a
+    // leased Graph handler. It must inspect the Map's native paint receipt,
+    // rather than reading that Graph entity recursively.
+    let toggle = super::tests::native_bounds(&mut rig, "Button", "Declarations", true).expect("painted native scene");
+    rig.cx.simulate_click(toggle.center(), gpui::Modifiers::none());
+    rig.settle();
+    let label = "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
+    tab_to_graph_control(&mut rig, label);
+    rig.native_press("enter"); rig.settle();
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same scene");
+    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1));
+    let page = super::tests::native_bounds(&mut rig, "Button", "Show Page view", true).expect("current selection action");
+    rig.cx.simulate_click(page.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(route) if route.view == View::Page && route.id.as_str().contains(&"2".repeat(64))), "exact native definition opened");
+}
+
+
+#[gpui::test]
+fn stale_painted_graph_marker_cannot_take_focus_on_owner_replacement(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("native graph");
+    let marker = graph.read_with(rig.cx, |graph, _| graph.node_bounds(1)).expect("painted definition glyph").center();
+    tab_to_graph_control(&mut rig, "Declarations");
+    let focused = rig.cx.update(|window, cx| window.focused(cx));
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    rig.cx.simulate_mouse_down(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "revoked paint cannot focus Graph before semantic admission");
+    rig.cx.simulate_mouse_up(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
+    rig.repaint(); rig.settle();
+    let marker = graph.read_with(rig.cx, |graph, _| graph.node_bounds(1)).expect("fresh marker").center();
+    rig.cx.simulate_click(marker, gpui::Modifiers::none());
+    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1));
+}
+
+
+#[gpui::test]
+fn actual_graph_fact_selectors_expose_unknown_reach_and_unsupported_shapes(cx: &mut TestAppContext) {
+    let (mut rig, _) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations"); rig.native_press("enter");
+    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8"); rig.native_press("enter"); rig.settle();
+    rig.keys("r");
+    let unknown = "No dependents observed in this graph; relation coverage is unknown.";
+    assert!(super::tests::native_bounds(&mut rig, "Label", unknown, false).is_some(), "the actual native R result does not turn incomplete relation reads into absence");
+    rig.keys("/"); rig.cx.simulate_input("crate::MorningSignal -> crate::MorningSignal"); rig.settle();
+    let unsupported = "Callable argument and return type facts are unavailable in this graph. Find declarations by name.";
+    assert!(super::tests::native_bounds(&mut rig, "Label", unsupported, false).is_some(), "opaque signatures cannot certify a complete negative shape search");
 }

@@ -48,9 +48,34 @@ use gpui::{
 use gpui::prelude::FluentBuilder as _;
 use gpui_component::input::{InputEvent, InputState};
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Read-only evidence that this exact immutable scene reached native paint.
+/// It grants neither current owner authority nor a navigation capability.
+#[derive(Clone)]
+pub struct ScenePaintReceipt { scene: Arc<Scene>, painted: Rc<Cell<Option<usize>>> }
+impl ScenePaintReceipt {
+    #[must_use]
+    pub fn was_painted(&self) -> bool { self.painted.get() == Some(Arc::as_ptr(&self.scene) as usize) }
+}
+
+/// One host guard distinguishes constructing a current control from acting
+/// through its actual painted projection. Rendering cannot manufacture paint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InteractionPhase { Render, Activate }
+/// Host guard shared by rendering and captured native activation.
+pub type InteractionAdmission = Rc<dyn Fn(InteractionPhase, &App) -> bool>;
+
+struct PaintedLabels {
+    view: View,
+    camera: Camera,
+    focus: Option<NodeId>,
+    territories: Vec<draw::TerritoryLabel>,
+    nodes: Vec<draw::NodeLabel>,
+    admission: Option<InteractionAdmission>,
+}
 
 /// How the camera starts.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -222,10 +247,11 @@ pub struct GraphView {
     discovery: Option<Rc<Discovery>>,
     search: Rc<Search>,
     stats: Stats,
-    painted_labels: Option<(View, Camera, Vec<draw::TerritoryLabel>)>,
+    painted_labels: Option<PaintedLabels>,
+    scene_paint: Rc<Cell<Option<usize>>>,
     strategy: Strategy,
     on_open: Option<OpenPage>,
-    interaction_admission: Option<Rc<dyn Fn(&App) -> bool>>,
+    interaction_admission: Option<InteractionAdmission>,
     declarations_open: bool,
     declaration_page: usize,
     declaration_epoch: u64,
@@ -358,6 +384,7 @@ impl GraphView {
             search,
             stats: Stats::default(),
             painted_labels: None,
+            scene_paint: Rc::new(Cell::new(None)),
             strategy: Strategy::default(),
             on_open: None,
             interaction_admission: None,
@@ -386,16 +413,25 @@ impl GraphView {
     /// Whether this immutable scene has actually reached a native paint.
     /// This is display evidence only; the product still admits visit/owner.
     #[must_use]
-    pub fn scene_was_painted(&self) -> bool { self.painted_labels.is_some() }
+    pub fn scene_was_painted(&self) -> bool { self.paint_receipt().is_some_and(|receipt| receipt.was_painted()) }
+
+    #[must_use]
+    pub fn paint_receipt(&self) -> Option<ScenePaintReceipt> {
+        Some(ScenePaintReceipt { scene: self.scene.clone()?, painted: self.scene_paint.clone() })
+    }
 
     /// Product admission for native declaration controls. The host supplies
     /// the exact mounted projection, visit and owner capability.
-    pub fn on_interaction_admission(&mut self, admission: Rc<dyn Fn(&App) -> bool>) {
+    pub fn on_interaction_admission(&mut self, admission: InteractionAdmission) {
         self.interaction_admission = Some(admission);
     }
 
     fn admits_native_interaction(&self, cx: &App) -> bool {
-        self.interaction_admission.as_ref().is_none_or(|admit| admit(cx))
+        self.interaction_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx))
+    }
+
+    fn admits_control_render(&self, cx: &App) -> bool {
+        self.interaction_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Render, cx))
     }
 
     /// Capture this rendered producer and semantic control visit for native
@@ -404,7 +440,7 @@ impl GraphView {
         let owner = cx.entity().downgrade();
         let producer = self.interaction_admission.clone();
         Rc::new(move |cx| {
-            if producer.as_ref().is_some_and(|admit| !admit(cx)) { return false; }
+            if producer.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) { return false; }
             owner.upgrade().is_some_and(|graph| {
                 let graph = graph.read(cx);
                 graph.admits_native_interaction(cx) && current(graph)
@@ -1099,9 +1135,11 @@ impl GraphView {
         self.pointer = Some((x, y));
         let cam = rig.cam;
         let slot = self.pick_prism(x, y);
+        let node_label = self.painted_node(&view, &cam, x, y, cx);
         let label = self.painted_territory(&view, &cam, x, y);
         let (hover, slot) = match slot {
             Some(q) => (self.frame.as_ref().and_then(|p| p.slots[q].node), Some(q)),
+            None if node_label.is_some() => (node_label, None),
             None if label.is_some() => (None, None),
             None => (scene.pick_stable(&view, &cam, x, y, self.hover.filter(|_| self.hover_slot.is_none())), None),
         };
@@ -1128,10 +1166,29 @@ impl GraphView {
     /// Only the exact text accepted by the painter owns these semantic targets.
     /// A previous projection can never route input after a resize or camera move.
     fn painted_territory(&self, view: &View, camera: &Camera, x: f32, y: f32) -> Option<Terr> {
-        let (painted_view, painted_camera, labels) = self.painted_labels.as_ref()?;
-        if painted_view != view || painted_camera != camera { return None; }
+        let painted = self.painted_labels.as_ref()?;
+        if &painted.view != view || &painted.camera != camera { return None; }
         let point = point(px(x), px(y));
-        labels.iter().rev().find(|label| label.bounds.contains(&point)).map(|label| label.territory)
+        painted.territories.iter().rev().find(|label| label.bounds.contains(&point)).map(|label| label.territory)
+    }
+
+    fn painted_node(&self, view: &View, camera: &Camera, x: f32, y: f32, cx: &App) -> Option<NodeId> {
+        let painted = self.painted_labels.as_ref()?;
+        if &painted.view != view || &painted.camera != camera
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) { return None; }
+        let point = point(px(x), px(y));
+        painted.nodes.iter().rev().find(|label| label.bounds.contains(&point)
+            && (!label.selected || painted.focus == self.state.focus && self.state.focus == Some(label.node)))
+            .map(|label| label.node)
+    }
+
+    fn admits_painted_pointer(&self, x: f32, y: f32, cx: &App) -> bool {
+        let Some(painted) = self.painted_labels.as_ref() else { return false; };
+        if self.view != Some(painted.view) || self.camera() != Some(painted.camera)
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) { return false; }
+        let point = point(px(x), px(y));
+        !painted.nodes.iter().any(|label| label.selected && label.bounds.contains(&point)
+            && (painted.focus != self.state.focus || self.state.focus != Some(label.node)))
     }
 
     fn enter_territory(&mut self, territory: Terr, scene: &Scene, view: &View, cx: &mut Context<Self>) {
@@ -1154,7 +1211,7 @@ impl GraphView {
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
-        if self.over_chrome(x, y) { return; }
+        if self.over_chrome(x, y) || !self.admits_native_interaction(cx) || !self.admits_painted_pointer(x, y, cx) { return; }
         window.focus(&self.focus_handle, cx);
         let Some(rig) = &mut self.rig else { return };
         rig.hold();
@@ -1172,17 +1229,19 @@ impl GraphView {
         });
         if complete_move { self.pointer_move(x, y, true, window, cx); }
         let Some(drag) = self.drag.take() else { return };
-        if drag.moved <= 3.0 && (!allow_click || self.over_chrome(x, y)) { return; }
+        if !self.admits_native_interaction(cx) || drag.moved <= 3.0 && (!allow_click || self.over_chrome(x, y) || !self.admits_painted_pointer(x, y, cx)) { return; }
         let (Some(scene), Some(view)) = (self.scene.clone(), self.view) else { return };
         if drag.moved <= 3.0 {
             let slot = self.pick_prism(x, y);
             let cam = self.rig.as_ref().map_or(drag.from, |r| r.cam);
-            if slot.is_none() && let Some(territory) = self.painted_territory(&view, &cam, x, y) {
+            let node_label = self.painted_node(&view, &cam, x, y, cx);
+            if slot.is_none() && node_label.is_none() && let Some(territory) = self.painted_territory(&view, &cam, x, y) {
                 self.enter_territory(territory, &scene, &view, cx);
                 return;
             }
             let hit = slot
                 .and_then(|q| self.frame.as_ref().and_then(|p| p.slots[q].node))
+                .or(node_label)
                 .or_else(|| scene.pick(&view, &cam, x, y));
             if clicks >= 2 {
                 if let (Some(i), Some(open)) = (hit, self.on_open.clone()) {
@@ -1586,6 +1645,7 @@ impl GraphView {
                 if self.over_chrome(x, y) && slot.is_none() { self.set_hover(None, None); }
                 else {
                     let node = slot.and_then(|q| self.frame.as_ref().and_then(|frame| frame.slots[q].node))
+                        .or_else(|| self.painted_node(&prepared.view, &prepared.cam, x, y, cx))
                         .or_else(|| if self.painted_territory(&prepared.view, &prepared.cam, x, y).is_some() { None }
                             else { prepared.scene.pick_stable(&prepared.view, &prepared.cam, x, y, self.hover.filter(|_| self.hover_slot.is_none())) });
                     self.set_hover(node, slot);
@@ -2043,7 +2103,9 @@ impl Element for Canvas {
         let hovering = p.hover.is_some() || p.hover_slot.is_some() || p.hover_terr.is_some();
         self.view.update(cx, |view, cx| {
             view.stats = stats.stats;
-            view.painted_labels = Some((p.view, p.cam, stats.territory_labels));
+            view.scene_paint.set(Some(Arc::as_ptr(&p.scene) as usize));
+            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus,
+                territories: stats.territory_labels, nodes: stats.node_labels, admission: view.interaction_admission.clone() });
             // If newly accepted text covers a parked pointer, let the next
             // committed frame retire its expanded glyph hover exactly once.
             if view.hover.is_some() && view.pointer.is_some_and(|(x, y)| view.painted_territory(&p.view, &p.cam, x, y).is_some()) { cx.notify(); }
@@ -2085,8 +2147,10 @@ impl Element for Canvas {
         });
         let view = self.view.clone();
         let hit = hitbox.clone();
+        let admission = self.view.read(cx).interaction_admission.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hit.is_hovered(window) {
+            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hit.is_hovered(window)
+                || admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) {
                 return;
             }
             let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
@@ -2134,10 +2198,16 @@ impl Render for GraphView {
         let palette = cx.palette();
         let draft = Rc::new(RefCell::new(None));
         let view = cx.entity();
+        let find_admission = self.interaction_admission.clone();
+        let key_admission = find_admission.clone();
         let root = div().id("graph").role(gpui::Role::Group).aria_label("Graph").key_context("Graph").track_focus(&self.focus_handle)
             .relative().size_full().overflow_hidden().bg(palette.g0.hsla())
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.find_key(event, window, cx)))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.key(event, window, cx)))
+            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if find_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)) && this.admits_native_interaction(cx) { this.find_key(event, window, cx); }
+            }))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if key_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)) && this.admits_native_interaction(cx) { this.key(event, window, cx); }
+            }))
             .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
             .child(Canvas { view: cx.entity(), draft: draft.clone() })
             // GPUI's container query constructs the same detached child once,
@@ -2247,7 +2317,7 @@ impl GraphView {
             let epoch = self.status_epoch;
             let admission = self.control_admission(cx, move |graph| graph.status_open == open && graph.status_epoch == epoch);
             status = status.child(crate::controls::button("graph-coverage-toggle", if open { "Hide coverage" } else { "Graph coverage" }, measure)
-                .focus_handle(self.status_focus.clone()).ghost().disabled(!self.admits_native_interaction(cx)).when_current(admission).on_click(move |_, cx| {
+                .focus_handle(self.status_focus.clone()).ghost().disabled(!self.admits_control_render(cx)).when_current(admission).on_click(move |_, cx| {
                     let _ = owner.update(cx, |graph, cx| {
                         if !graph.admits_native_interaction(cx) || graph.status_open != open || graph.status_epoch != epoch { return; }
                         graph.status_open = !open;
@@ -2266,7 +2336,7 @@ impl GraphView {
     fn declarations(&self, measure: &Measure, height: Pixels, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         const PAGE: usize = 32;
         let palette = cx.palette();
-        let active = self.admits_native_interaction(cx);
+        let active = self.admits_control_render(cx);
         let open = self.declarations_open;
         let page = self.declaration_page;
         let epoch = self.declaration_epoch;
@@ -2341,6 +2411,10 @@ impl GraphView {
 
     fn find_hints(&self, measure: &Measure, cx: &mut Context<Self>) -> AnyElement {
         let palette = cx.palette();
+        if self.world.knowledge.callable_shapes == super::model::ShapeFacts::UnsupportedIR {
+            return graph_text("graph-find-fact-capability", "Find declarations by name. Callable argument and return type facts are unavailable in this graph.",
+                ty::SMALL, measure, palette.ink2, crate::probe::TextOverflow::Wrap);
+        }
         let hints = [
             ("Value", "a name"),
             ("path -> maybe text", "a shape: what it takes, what it gives"),
@@ -2501,7 +2575,7 @@ impl GraphView {
             .max_h(px((available - 12.0).max(4.0))).overflow_y_scroll().track_scroll(&self.results_scroll)
             .children(rows)
             .children(self.find.read(cx).value().trim().is_empty().then(|| self.find_hints(measure, cx)))
-            .children((!self.find.read(cx).value().trim().is_empty() && self.results.is_empty() && self.search.chains.is_empty()).then(|| div().px(px(8.0)).py(px(10.0)).set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child(if let Some(issue) = self.search.issue { issue } else if self.discovery.is_none() || self.searching { "Finding…" } else if self.search.shaped { "nothing in this world has that shape" } else { "no symbols match" })))
+            .children((!self.find.read(cx).value().trim().is_empty() && self.results.is_empty() && self.search.chains.is_empty()).then(|| div().px(px(8.0)).py(px(10.0)).set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child(graph_text("graph-search-result-state", if self.discovery.is_none() || self.searching { "Finding…" } else { self.search.empty_message(&self.world).unwrap_or("No matching declarations observed in this graph.") }, ty::SMALL, measure, palette.ink3, crate::probe::TextOverflow::Wrap))))
             .children((!self.search.chains.is_empty()).then(|| div().px(px(8.0)).pt(px(8.0)).set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(if self.results.is_empty() { "no one call does it; in steps" } else { "or, in steps" })))
             .children(self.search.chains.iter().enumerate().map(|(n, chain)| {
                 let selected = self.state.result_sel == self.results.len() + n;

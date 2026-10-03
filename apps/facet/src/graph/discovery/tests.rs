@@ -1759,3 +1759,28 @@ fn explicit_array_queries_do_not_erase_length_identity() {
         assert!(result.lit.is_empty() && result.chains.is_empty(), "{query}");
     }
 }
+
+
+#[test]
+fn unsupported_callable_ir_is_distinct_from_unknown_and_complete_empty() {
+    use super::super::model::{Completeness, ShapeFacts};
+    let mut callable = call("advance_signal", None, false, &[], "()");
+    callable.sig = Some("pub fn advance_signal(signal: crate::MorningSignal) -> crate::MorningSignal".into());
+    // An opaque signature is presentation text, never a structured type fact.
+    callable.params.clear(); callable.ret = None;
+    let mut w = world(vec![item(Kind::Struct, "MorningSignal"), callable]);
+    w.knowledge.callable_shapes = ShapeFacts::UnsupportedIR;
+    let d = Discovery::new(&w);
+    for query in ["MorningSignal -> MorningSignal", "crate::MorningSignal -> crate::MorningSignal"] {
+        let result = d.query(&w, query);
+        assert_eq!(result.evidence(&w), super::SearchEvidence::UnsupportedIR);
+        assert!(result.empty_message(&w).expect("capability").contains("facts are unavailable"));
+    }
+    assert!(!d.query(&w, "advance_signal").rows.is_empty(), "name facts remain searchable");
+    let unknown = d.query(&w, "not_observed");
+    assert_eq!(unknown.evidence(&w), super::SearchEvidence::Unknown);
+    w.knowledge.declarations = Completeness::Complete;
+    assert_eq!(unknown.evidence(&w), super::SearchEvidence::KnownEmpty);
+    let typed = world(vec![item(Kind::Struct, "MorningSignal"), call("advance_signal", None, false, &["MorningSignal"], "MorningSignal")]);
+    assert_eq!(Discovery::new(&typed).query(&typed, "MorningSignal -> MorningSignal").evidence(&typed), super::SearchEvidence::Observed);
+}

@@ -472,10 +472,43 @@ impl Csr {
     }
 }
 
+/// Completeness of one fact family within this represented projection.
+/// Missing or bounded producer facts cannot be upgraded by an empty result.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Completeness {
+    #[default]
+    Unknown,
+    Complete,
+}
+
+/// Whether structured argument/return facts are available to shape search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeFacts {
+    UnsupportedIR,
+    Observed(Completeness),
+}
+
+/// Producer knowledge travels with the immutable world consumed by discovery.
+/// It is display/query evidence, never a current serving or action capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphKnowledge {
+    pub declarations: Completeness,
+    pub relations: Completeness,
+    pub callable_shapes: ShapeFacts,
+}
+impl Default for GraphKnowledge {
+    fn default() -> Self {
+        Self { declarations: Completeness::Unknown, relations: Completeness::Unknown,
+            callable_shapes: ShapeFacts::Observed(Completeness::Unknown) }
+    }
+}
+
 /// The whole world. Fields are public so tests and the index can read them;
 /// build it with [`World::new`] so the derived tables stay consistent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
+    /// Exact projection knowledge, independent from observed row counts.
+    pub knowledge: GraphKnowledge,
     /// Every package.
     pub packages: Vec<Package>,
     /// Every module.
@@ -622,6 +655,7 @@ impl World {
         }
         let (importance_exact, importance) = importance(n, &items, &top, &item_edges);
         Ok(Self {
+            knowledge: GraphKnowledge::default(),
             packages,
             modules,
             nodes,

@@ -1,7 +1,7 @@
 //! Graph journeys: breadth-first change reach and the visible tour road.
 //! Pure data; the view owns timing and the renderer owns paint.
 use super::layout::{Box2, Layout};
-use super::model::{Kind, NodeId, World};
+use super::model::{Completeness, Kind, NodeId, World};
 use std::collections::BTreeMap;
 
 /// Estimate reliable release velocity in screen pixels per millisecond.
@@ -25,6 +25,8 @@ pub(crate) fn release_velocity(samples: &[(std::time::Instant, f32, f32)], now: 
 /// What would feel a change, counted once per top-level symbol.
 #[derive(Clone, Debug)]
 pub struct Reach {
+    /// Relation completeness belongs to the represented world, not the count.
+    completeness: Completeness,
     /// The changed symbol.
     pub source: NodeId,
     /// Breadth-first depth bins (including empty intermediate waves).
@@ -92,7 +94,7 @@ impl Reach {
         for &i in &all { *per.entry(world.node(i).pkg).or_insert(0) += 1; }
         let mut packages: Vec<_> = per.into_iter().collect();
         packages.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        Self { source, waves, depth, all, threads, yours, packages }
+        Self { completeness: world.knowledge.relations, source, waves, depth, all, threads, yours, packages }
     }
 
     /// Frames the nearest 90% around the source, so one distant dependent
@@ -112,18 +114,34 @@ impl Reach {
             .fold(Box2::EMPTY.with(source[0] - 1.0, source[1] - 1.0).with(source[0] + 1.0, source[1] + 1.0), |b, (_, p)| b.with(p[0], p[1]))
     }
 
+    /// An empty traversal is an absence claim only with complete relation
+    /// evidence for this represented world.
+    #[must_use]
+    pub fn evidence(&self) -> ReachEvidence {
+        if !self.all.is_empty() { ReachEvidence::Observed }
+        else if self.completeness == Completeness::Complete { ReachEvidence::KnownEmpty }
+        else { ReachEvidence::Unknown }
+    }
+
     /// The quiet sentence in the focus card.
     #[must_use]
     pub fn summary(&self) -> String {
-        if self.all.is_empty() { return "Nothing in this world depends on it.".to_owned(); }
+        match self.evidence() {
+            ReachEvidence::KnownEmpty => return "No declaration in this complete graph projection depends on it.".to_owned(),
+            ReachEvidence::Unknown => return "No dependents observed in this graph; relation coverage is unknown.".to_owned(),
+            ReachEvidence::Observed => {},
+        }
         let mut words = vec![format!("{} direct", self.waves[0].len())];
         if self.waves.len() > 1 { words.push(format!("{} within two steps", self.waves.iter().take(2).map(Vec::len).sum::<usize>())); }
         if self.waves.len() > 2 { words.push(format!("{} in all", self.all.len())); }
         words.push(format!("across {} package{}", self.packages.len(), if self.packages.len() == 1 { "" } else { "s" }));
         if self.yours > 0 { words.push(format!("{} in your code", self.yours)); }
-        format!("If it changes — {}", words.join(" · "))
+        format!("Observed reach — {}", words.join(" · "))
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReachEvidence { Observed, KnownEmpty, Unknown }
 
 /// A package tour as the painter sees it.
 #[derive(Clone, Debug)]
@@ -137,6 +155,20 @@ pub struct TourRoad {
 #[cfg(test)]
 mod tests {
     use super::Reach;
+    #[test]
+    fn no_observed_dependents_is_not_complete_absence() {
+        let base = tiny();
+        let mut world = World::new(base.packages, base.modules, base.nodes, vec![]).expect("observed empty graph");
+        let node = 0;
+        let unknown = Reach::of(&world, node);
+        assert_eq!(unknown.evidence(), super::ReachEvidence::Unknown);
+        assert!(unknown.summary().contains("coverage is unknown"));
+        world.knowledge.relations = super::Completeness::Complete;
+        let empty = Reach::of(&world, node);
+        assert_eq!(empty.evidence(), super::ReachEvidence::KnownEmpty);
+        assert!(empty.summary().contains("complete graph projection"));
+    }
+
     #[test]
     fn release_rejects_coalesced_or_stale_events_and_bounds_coast() {
         use std::time::{Duration, Instant};
@@ -171,7 +203,7 @@ mod tests {
         assert_eq!(reach.depth[6], Some(2));
         assert_eq!(reach.yours, 2);
         assert_eq!(reach.packages, vec![(0, 2), (1, 1)]);
-        assert_eq!(reach.summary(), "If it changes — 2 direct · 3 within two steps · across 2 packages · 2 in your code");
+        assert_eq!(reach.summary(), "Observed reach — 2 direct · 3 within two steps · across 2 packages · 2 in your code");
     }
 
     #[test]

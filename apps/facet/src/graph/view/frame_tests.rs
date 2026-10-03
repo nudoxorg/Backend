@@ -182,8 +182,9 @@ fn painted_package_names_own_their_clicks_without_stealing_visible_glyphs(cx: &m
     let (graph, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(initial.clone(), Start::World, window, cx));
     settle(cx);
     let (view, camera, territory, at) = graph.read_with(cx, |graph, _| {
-        let (view, camera, labels) = graph.painted_labels.as_ref().expect("native labels painted");
-        let label = labels.iter().find(|label| label.territory.module.is_none()).expect("visible package name");
+        let painted = graph.painted_labels.as_ref().expect("native labels painted");
+        let (view, camera) = (&painted.view, &painted.camera);
+        let label = painted.territories.iter().find(|label| label.territory.module.is_none()).expect("visible package name");
         (*view, *camera, label.territory, label.bounds.center())
     });
     let mut layout = (*initial.layout).clone();
@@ -227,8 +228,8 @@ fn painted_package_names_own_their_clicks_without_stealing_visible_glyphs(cx: &m
     draw(cx);
     let name = graph.read_with(cx, |graph, _| {
         assert_eq!(graph.focused(), Some(3), "focus persists while inspecting the overview");
-        let (_, _, labels) = graph.painted_labels.as_ref().expect("overview labels");
-        labels.iter().filter(|label| label.territory.module.is_none())
+        let painted = graph.painted_labels.as_ref().expect("overview labels");
+        painted.territories.iter().filter(|label| label.territory.module.is_none())
             .map(|label| label.bounds.center()).find(|at| !graph.over_chrome(f32::from(at.x), f32::from(at.y)))
             .expect("accepted package text outside the focused card")
     });
@@ -448,4 +449,78 @@ fn the_focus_card_is_carried_between_beside_and_a_sheet(cx: &mut TestAppContext)
         assert!(between >= 4, "carried through {between} frames between the two places: {path:?}");
         assert!(widest < 0.6 * travel, "one frame covered {widest:.0} of {travel:.0} px");
     }
+}
+
+
+#[gpui::test]
+fn painted_item_caption_owns_native_selection_and_rejects_unpainted_changes(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let allowed = Rc::new(Cell::new(true));
+    let (graph, cx) = cx.add_window_view(|window, cx| {
+        let mut graph = GraphView::with_scene(scene.clone(), Start::Focus(0), window, cx);
+        let allowed = allowed.clone();
+        graph.on_interaction_admission(Rc::new(move |_, _| allowed.get())); graph
+    });
+    let receipt = graph.read_with(cx, |graph, _| graph.paint_receipt().expect("scene"));
+    assert!(!receipt.was_painted(), "construction/prepaint is not native paint");
+    settle(cx);
+    assert!(receipt.was_painted());
+    for delta in [0.0, 24.0] {
+        if delta != 0.0 {
+            graph.update(cx, |graph, cx| { let mut camera = graph.camera().expect("camera"); camera.x += delta; camera.w *= 1.1; graph.rig.as_mut().expect("rig").set(camera); cx.notify(); });
+            draw(cx);
+        }
+        let at = graph.read_with(cx, |graph, cx| {
+            let painted = graph.painted_labels.as_ref().expect("native metadata");
+            let label = painted.nodes.iter().find(|label| label.node == 0 && label.selected).expect("accepted item caption");
+            let at = label.bounds.center();
+            assert_eq!(graph.painted_node(&painted.view, &painted.camera, f32::from(at.x), f32::from(at.y), cx), Some(0));
+            at
+        });
+        // Change semantic focus without drawing a replacement caption. The
+        // old visible text must not focus Graph or select its old declaration.
+        graph.update(cx, |graph, _| { graph.state.focus = Some(3); });
+        let focused = cx.update(|window, cx| window.focused(cx));
+        cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(3));
+        graph.update(cx, |graph, cx| { graph.state.focus = Some(0); cx.notify(); }); draw(cx);
+        let at = graph.read_with(cx, |graph, _| graph.painted_labels.as_ref().expect("repaint").nodes.iter().find(|label| label.node == 0 && label.selected).expect("caption").bounds.center());
+        cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(0));
+        allowed.set(false);
+        let focused = cx.update(|window, cx| window.focused(cx));
+        cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), focused);
+        cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+        allowed.set(true);
+    }
+}
+
+
+#[gpui::test]
+fn ordinary_item_words_and_marker_select_the_same_exact_declaration(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let (graph, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene, Start::World, window, cx));
+    settle(cx);
+    let (node, at, camera) = graph.read_with(cx, |graph, _| {
+        let painted = graph.painted_labels.as_ref().expect("real frame");
+        let label = painted.nodes.iter().find(|label| !label.selected && !graph.over_chrome(f32::from(label.bounds.center().x), f32::from(label.bounds.center().y))).expect("visible resting item word");
+        (label.node, label.bounds.center(), painted.camera)
+    });
+    cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(node), "the text selects its own declaration rather than the territory or a nearby glyph");
+    settle(cx);
+    graph.update(cx, |graph, cx| { graph.set_focus(None, false, cx); graph.rig.as_mut().expect("rig").set(camera); });
+    draw(cx);
+    let marker = graph.read_with(cx, |graph, _| graph.node_bounds(node)).expect("actual marker").center();
+    cx.simulate_mouse_down(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_up(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(node), "the independent marker path keeps the same exact identity");
 }

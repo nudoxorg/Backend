@@ -69,6 +69,7 @@ pub(crate) struct Map {
         Coverage,
     )>,
     world_key: Option<WorldKey>,
+    painted_scene: Option<PaintedScene>,
     /// The bounded Memo has deferred this key until another projection read
     /// releases a slot. It is pending work, not a terminal load error.
     projection_waiting: bool,
@@ -94,6 +95,14 @@ pub(crate) struct Map {
     _graph_events: Option<Subscription>,
     _open_intents: Option<Subscription>,
     _events: Subscription,
+}
+
+/// Native paint evidence only, separate from every serving capability. The
+/// existing sibling records it after GraphFrame paints, without reborrowing
+/// GraphView from an admission callback while GraphView is being updated.
+struct PaintedScene {
+    graph: gpui::EntityId,
+    key: WorldKey,
 }
 
 /// Graph display can be a painted scene or an exact declaration route whose
@@ -231,6 +240,7 @@ impl Map {
             graph: None,
             ready_scene,
             world_key,
+            painted_scene: None,
             projection_waiting: false,
             projection_origin: None,
             coverage: None,
@@ -260,6 +270,7 @@ impl Map {
         self.graph = None;
         self.ready_scene = None;
         self.world_key = None;
+        self.painted_scene = None;
         self.projection_waiting = false;
         self.projection_origin = None;
         self.coverage = None;
@@ -299,6 +310,7 @@ impl Map {
             }
             self.painted_focus = None;
             self.graph = None;
+            self.painted_scene = None;
             self.ready_scene = None;
             self.coverage = None;
             self.identities = None;
@@ -336,10 +348,8 @@ impl Map {
                     Arc::clone(&projection.identities),
                     projection.coverage.clone(),
                 ));
-                // This request can run at the end of a cached map render.
-                // Schedule the next draw so it mounts the completed scene;
-                // the ready_scene guard above makes this a single wake.
-                cx.notify();
+                // The Memo completion already woke this view. Render accepts
+                // this value before mounting the scene in that same frame.
             }
         }
     }
@@ -648,7 +658,8 @@ impl Map {
         if !self.visible || self.route.as_ref() != Some(snapshot.route()) { return None; }
         if let Some(graph) = &self.graph {
             if !self.world_key.as_ref().is_some_and(|key| key.at_authority(snapshot.key())) { return None; }
-            return graph.read(cx).scene_was_painted().then(|| MountedGraph::Scene(graph.entity_id()));
+            return self.painted_scene.as_ref().filter(|painted| painted.graph == graph.entity_id()
+                && self.world_key.as_ref() == Some(&painted.key)).map(|painted| MountedGraph::Scene(painted.graph));
         }
         matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Graph)
             .then_some(MountedGraph::Declaration)
@@ -1236,6 +1247,7 @@ fn handoff_anchor(
 /// prepaint, after GraphView prepared this frame's camera. At rest the
 /// canvas draws the node; the gem is visible only during a real shared morph.
 struct FocusMark {
+    scene_paint: Option<facet::graph::view::ScenePaintReceipt>,
     graph: Entity<GraphView>,
     owner: gpui::WeakEntity<Map>,
 }
@@ -1382,6 +1394,13 @@ impl gpui::Element for FocusMark {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // This sibling follows the actual GraphFrame in the native paint
+        // order. Prepaint alone cannot install a scene receipt.
+        let _ = self.owner.update(cx, |map, _| {
+            if self.scene_paint.as_ref().is_some_and(|receipt| receipt.was_painted()) && map.visible && map.graph.as_ref().is_some_and(|graph| graph.entity_id() == self.graph.entity_id()) {
+                map.painted_scene = map.world_key.clone().map(|key| PaintedScene { graph: self.graph.entity_id(), key });
+            }
+        });
         if let Some(mark) = mark {
             mark.paint(window, cx);
         }
@@ -1390,6 +1409,10 @@ impl gpui::Element for FocusMark {
 
 impl Render for Map {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Validate the current root/service key and take any landed result
+        // before the scene mount. No second frame or render-time notify is
+        // needed to turn an announced Memo result into native graph content.
+        self.request_world(cx);
         if let Some((scene, identities, coverage)) = self.ready_scene.take() {
             self.identities = Some(identities);
             self.coverage = Some(coverage);
@@ -1453,7 +1476,6 @@ impl Render for Map {
         {
             self.show(&route, None, window, cx);
         }
-        self.request_world(cx);
         // Rebind controls to this exact mounted visit. Previously captured
         // callbacks retain their older predicate and cannot adopt a later visit.
         if let Some(graph) = &self.graph {
@@ -1462,15 +1484,18 @@ impl Render for Map {
             let basis = self.callback_basis(cx);
             let key = self.world_key.clone();
             let attachment = self.links.store.read(cx).current_owner_attachment();
-            graph.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |cx| {
+            graph.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |phase, cx| {
                 owner.upgrade().is_some_and(|map| {
                     let map = map.read(cx);
                     let snapshot = map.links.snapshot(cx);
                     map.visible && map.route.as_ref() == Some(snapshot.route())
                         && is_graph(snapshot.route()) && snapshot.page_overlay().is_none()
-                        && map.mounted_presentation(cx) == Some(MountedGraph::Scene(graph_id))
+                        && (phase == facet::graph::view::InteractionPhase::Render
+                            || map.mounted_presentation(cx) == Some(MountedGraph::Scene(graph_id)))
                         && map.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
-                        && map.world_key == key && map.callback_current(&basis, cx)
+                        && map.world_key == key
+                        && map.world_key.as_ref().is_some_and(|key| key.at_authority(snapshot.key()))
+                        && map.callback_current(&basis, cx)
                         && attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token))
                 })
             })));
@@ -1489,6 +1514,7 @@ impl Render for Map {
                     .right_0()
                     .bottom_0()
                     .child(FocusMark {
+                        scene_paint: graph.read(cx).paint_receipt(),
                         graph: graph.clone(),
                         owner: cx.entity().downgrade(),
                     }),

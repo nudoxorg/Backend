@@ -83,10 +83,14 @@ pub struct TerritoryLabel {
     pub bounds: Bounds<gpui::Pixels>,
     pub territory: Terr,
 }
+/// An accepted item label; transient hover ink does not own an item target.
+#[derive(Clone, Copy, Debug)]
+pub struct NodeLabel { pub bounds: Bounds<gpui::Pixels>, pub node: NodeId, pub selected: bool }
 /// Paint metadata is committed with the same frame as the canvas geometry.
 pub struct Painted {
     pub stats: Stats,
     pub territory_labels: Vec<TerritoryLabel>,
+    pub node_labels: Vec<NodeLabel>,
 }
 
 /// One immutable exploration snapshot shared by the view and painter.
@@ -909,6 +913,15 @@ fn territory_label(
     }
 }
 
+fn node_label(labels: &mut Vec<NodeLabel>, node: NodeId, selected: bool, shaped: &Shaped,
+    x: f32, base: f32, device_scale: f32, view: &View) {
+    let x = (x * device_scale).round() / device_scale;
+    let base = (base * device_scale).round() / device_scale;
+    if let Some(bounds) = clipped_label_bounds(painted_text_bounds(x, base, shaped.width(), shaped.ascent(), shaped.descent()), view) {
+        labels.push(NodeLabel { bounds, node, selected });
+    }
+}
+
 fn painted_text_bounds(
     x: f32,
     base: f32,
@@ -978,6 +991,7 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
 pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Painted {
     let mut st = Stats::default();
     let mut territory_labels = Vec::new();
+    let mut node_labels = Vec::new();
     let Look {
         scene,
         view,
@@ -1888,6 +1902,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             if let Some((lx, ly)) = selected_caption_position(&view, i, x, y, radius, w, half, &glyph_bounds, &mut occ) {
                 let base = baseline(&label, ly);
                 crate::probe::record_bounds(cx, &"graph-selected-caption".into(), Bounds::new(point(px(lx - 3.0), px(ly - half)), size(px(w + 6.0), px(half * 2.0))));
+                node_label(&mut node_labels, i, true, &label, lx, base, window.scale_factor(), &view);
                 texts.push((label, lx, base));
                 st.labels += 1;
                 st.selected_labels += 1;
@@ -2146,6 +2161,9 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             }
             budget -= 1;
             let base = baseline(&label, y);
+            if (ordinary || strong) && c.alpha >= LABEL_DETAIL {
+                node_label(&mut node_labels, i, focused, &label, lx, base, window.scale_factor(), &view);
+            }
             texts.push((label, lx, base));
             st.labels += 1;
         }
@@ -2161,6 +2179,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
     Painted {
         stats: st,
         territory_labels,
+        node_labels,
     }
 }
 
