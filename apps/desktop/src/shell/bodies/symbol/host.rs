@@ -376,7 +376,10 @@ impl DocLinks {
 
     fn resolve(&self, target: &str) -> Option<DocDestination> {
         let candidate = SymbolRef::new(target).ok()?;
-        if let Some(symbol) = self.0.get(&candidate) {
+        // A displayed href contains the coordinate spelling, while the
+        // producer value may also carry an alternate-release origin receipt.
+        // Return that original value rather than reparsing away its receipt.
+        if let Some(symbol) = self.0.iter().find(|symbol| symbol.as_str() == target) {
             return Some(DocDestination::Declaration(symbol.clone()));
         }
         if let Some(uri) = ExternalUri::parse(target) {
@@ -471,6 +474,24 @@ mod doc_link_tests {
             );
         }
         assert!(ExternalUri::parse("javascript:alert(1)").is_none());
+    }
+
+    #[test]
+    fn displayed_coordinate_keeps_the_producers_alternate_release_receipt() {
+        let pinned = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.0.0").unwrap();
+        let alternate = crate::model::pages::PackageRef::parse("pkg:cargo/demo@2.0.0")
+            .unwrap()
+            .with_release_origin(&pinned);
+        let symbol =
+            SymbolRef::new("pkg:cargo/demo@1.0.0::semantic::00ff::advance_signal").unwrap();
+        let target = symbol.rebased(&pinned, &alternate).unwrap();
+        let mut links = DocLinks::default();
+        links.fragments(&[link(&target)]);
+        let Some(DocDestination::Declaration(actual)) = links.resolve(target.as_str()) else {
+            panic!("exact producer coordinate")
+        };
+        assert_eq!(actual, target);
+        assert_eq!(actual.release_origin(), Some(pinned.as_str()));
     }
 
     #[gpui::test]
