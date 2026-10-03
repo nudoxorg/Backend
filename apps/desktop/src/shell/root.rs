@@ -1494,11 +1494,10 @@ impl Render for Shell {
         // The foot grows only for what the graph says in it; the hand's
         // marks sit on one line.
         let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
-            // Set beside the hand's marks when it holds anything (the same
-            // room the foot sets it in).
-            let room = super::status::line_room(viewport.width, frame.shelf_width, snapshot.session().hand.held().len(), scale);
-            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), room, cx);
-            super::status::height(lines.len(), &role, f32::from(frame.status))
+            super::status::feedback_height(
+                &snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width,
+                snapshot.session().hand.held().len(), f32::from(frame.status), cx,
+            )
         } else {
             f32::from(frame.status)
         };
@@ -1698,7 +1697,7 @@ impl Render for Shell {
                     .bottom(px(status_height + 6.0 * scale))
                     .left(px(shelf_width + 14.0 * scale))
                     .max_w(viewport.width - px(shelf_width + 28.0 * scale))
-                    .child(super::hand::row(&view, self.hand_at, &self.links, &measure, palette)),
+                    .child(super::hand::row(&view, self.hand_at, &self.links, &measure, palette, window, cx)),
             );
         } else if self.hand_open {
             self.hand_open = false;
