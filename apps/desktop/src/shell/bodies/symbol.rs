@@ -62,13 +62,22 @@ pub(super) fn body(
     let page = match &evidence {
         DisplayEvidence::Current(page) => (**page).clone(),
         DisplayEvidence::Earlier { value, .. } => {
-            return retained_symbol_page(value, &earlier_notice(&evidence).unwrap_or_default(), ctx);
+            return retained_symbol_page(
+                value,
+                &earlier_notice(&evidence).unwrap_or_default(),
+                ctx,
+            );
         }
-        DisplayEvidence::Missing(other) => return not_ready(other, &PageKey::Symbol(symbol), &name, ctx, cx),
-        DisplayEvidence::WrongIdentity => return vec![Leaf::new(super::super::kit::quiet(
-            "The saved declaration content belongs to another exact symbol, package, or release.",
-            &ctx.measure, ctx.palette,
-        ))],
+        DisplayEvidence::Missing(other) => {
+            return not_ready(other, &PageKey::Symbol(symbol), &name, ctx, cx);
+        }
+        DisplayEvidence::WrongIdentity => {
+            return vec![Leaf::new(super::super::kit::quiet(
+                "The saved declaration content belongs to another exact symbol, package, or release.",
+                &ctx.measure,
+                ctx.palette,
+            ))];
+        }
     };
     let package = route.package.as_str().to_owned();
     let companions = companions::gather(&companions::of(&page), ctx.links, ctx.active, cx);
@@ -138,7 +147,10 @@ pub(super) fn body(
 }
 
 fn retained_symbol_page(page: &SymbolPage, notice: &str, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
-    let mut lines = vec![notice.to_owned(), page.identity.coordinate.as_str().to_owned()];
+    let mut lines = vec![
+        notice.to_owned(),
+        page.identity.coordinate.as_str().to_owned(),
+    ];
     if let Some(signature) = page.signature.known() {
         lines.push(signature.text.to_string());
     }
@@ -149,17 +161,25 @@ fn retained_symbol_page(page: &SymbolPage, notice: &str, ctx: &mut Ctx<'_>) -> V
     if let Some(excerpt) = page.site.excerpt.known() {
         lines.push(excerpt.text.to_string());
     }
-    lines.into_iter().map(|line| {
-        let words = ctx.say(line);
-        Leaf::new(super::super::kit::quiet(words, &ctx.measure, ctx.palette))
-    }).collect()
+    lines
+        .into_iter()
+        .map(|line| {
+            let words = ctx.say(line);
+            Leaf::new(super::super::kit::quiet(words, &ctx.measure, ctx.palette))
+        })
+        .collect()
 }
 
-fn page_matches_symbol(page: &SymbolPage, symbol: &SymbolRef, package: Option<&PackageRef>) -> bool {
+fn page_matches_symbol(
+    page: &SymbolPage,
+    symbol: &SymbolRef,
+    package: Option<&PackageRef>,
+) -> bool {
     page.identity.coordinate.as_str() == symbol.as_str()
-        && page.package.known().is_none_or(|found| {
-            package.is_some_and(|expected| found.as_str() == expected.as_str())
-        })
+        && page
+            .package
+            .known()
+            .is_none_or(|found| package.is_some_and(|expected| found.as_str() == expected.as_str()))
 }
 
 #[cfg(test)]
@@ -348,9 +368,10 @@ fn upgrade(route: &SymbolRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> 
         crate::runtime::releases::Read::Reading => {
             Some(release_note("Checking the exact release comparison…", ctx))
         }
-        crate::runtime::releases::Read::Waiting => {
-            Some(release_note("Waiting for an available release-read slot…", ctx))
-        }
+        crate::runtime::releases::Read::Waiting => Some(release_note(
+            "Waiting for an available release-read slot…",
+            ctx,
+        )),
         crate::runtime::releases::Read::Unavailable(reason) => Some(release_note(&reason, ctx)),
         crate::runtime::releases::Read::Ready(data) => {
             let diffs = &data.krate;
