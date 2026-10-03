@@ -1305,6 +1305,7 @@ impl Shell {
         let zone = self.zone;
         let frame = self.hinted_targets(zone, cx).hint_frame();
         let scope = self.target_scope(cx);
+        let fallback_input = self.page_input_scope(cx);
         let shell = cx.weak_entity();
         let links = self.links.clone();
         window.defer(cx, move |_, app| {
@@ -1314,7 +1315,14 @@ impl Shell {
                 || !target.action.admits(app) { return; }
             if !shell.read(app).mode_input_allowed(app)
                 || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app) { return; }
-            let symbol = target.source.or_else(|| route_symbol(links.snapshot(app).route()));
+            // S on an unrelated focused control may still mean this page's
+            // own declaration. That fallback is a producer action, so it
+            // cannot borrow the control's potentially local admission.
+            let symbol = target.source.or_else(|| {
+                fallback_input.as_ref()
+                    .filter(|input| shell.read(app).admits_page_input_scope(input, app))
+                    .and_then(|_| route_symbol(links.snapshot(app).route()))
+            });
             if let Some(symbol) = symbol { dispatch_symbol_code(&links, symbol, app); }
         });
     }
