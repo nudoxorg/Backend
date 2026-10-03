@@ -998,7 +998,20 @@ impl Reader {
         if !collapsed && let Some(current) = self.places.last_mut() {
             current.lens = self.lens;
         }
-        let arrival = self.plan(next, overlay, way);
+        // Settings and Inbox are local pages, not a plate opening over the
+        // route they cover. An Open's first frame would paint the old route
+        // outside its zero-width plate while native accessibility already
+        // exposes the local page. This is especially misleading when the old
+        // route is a failed owner read: the failure would remain visible
+        // beneath Settings until a later motion frame. Give each local page
+        // its own body in the first painted frame, including when another
+        // route transition was still in flight.
+        let local_page = matches!(overlay, Some(Overlay::Settings(_) | Overlay::Inbox));
+        let arrival = if local_page { None } else { self.plan(next, overlay, way) };
+        if local_page {
+            self.transit = None;
+            self.tint = None;
+        }
         let hop_forward = arrival.as_ref().is_some_and(|arrival| arrival.verb == Verb::Open);
         self.graph_source = if self.overlay.is_none() { immediate_page_source(&self.route, next) } else { None };
         let from = (self.route.clone(), self.overlay);
@@ -1013,7 +1026,10 @@ impl Reader {
             way,
             lens: Lens::Reference,
             from: Some(from),
-            opened: None,
+            // A cut is still a visit from its underlying route. Keep the
+            // explicit return marker that `begin(Open)` would have written,
+            // so Back closes to that route and restores its saved focus.
+            opened: local_page.then_some(None),
             hop: hop_forward,
         });
         if !view_switch {
