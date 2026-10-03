@@ -70,7 +70,13 @@ impl SignatureCarrierRole {
         self as u8
     }
 
-    pub(crate) const fn union(self, other: Self) -> Self {
+    /// Combines independently observed parameter and result membership.
+    ///
+    /// This is public because language-specific lowering lives in the engine
+    /// crate and must combine the roles derived from canonical product edges
+    /// before handing the complete entity-aligned plane to the IR builder.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
         match self.bits() | other.bits() {
             0 => Self::NotCarrier,
             1 => Self::Input,
