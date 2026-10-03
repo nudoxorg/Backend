@@ -912,3 +912,45 @@ fn at_200_percent_text_the_owned_screens_never_hang_past_a_phone(cx: &mut TestAp
         }
     }
 }
+
+
+#[gpui::test]
+fn native_find_pointer_arrival_and_failed_owner_edit_keep_one_current_query_focus(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.settle();
+    let ledger = painted(&mut rig);
+    let find = ledger.targets.iter().find(|target| target.label == "Find packages and declarations").expect("actual Library Find affordance");
+    rig.cx.simulate_click(point(px(find.bounds.x + find.bounds.width / 2.0), px(find.bounds.y + find.bounds.height / 2.0)), Modifiers::none());
+    for ms in [0, 16, 700] {
+        rig.frame(ms);
+        let native = native_tree(&mut rig);
+        assert!(native["accesskit_focus"].as_str().is_some(), "arrival frame publishes one complete focus identity");
+    }
+    rig.settle();
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome)));
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("native Find owner lost".into()), cx));
+    rig.settle();
+    let native = native_tree(&mut rig);
+    let query = native["nodes"].as_object().expect("nodes").values().find(|node|
+        node["aria"]["label"].as_str() == Some("Find query")).expect("failed-owner Find keeps its native editor");
+    let b = &query["bounds"];
+    rig.cx.simulate_click(point(px((b["x"].as_f64().expect("x") + b["width"].as_f64().expect("width") / 2.0) as f32),
+        px((b["y"].as_f64().expect("y") + b["height"].as_f64().expect("height") / 2.0) as f32)), Modifiers::none());
+    rig.cx.simulate_input("base16");
+    rig.frame(16); rig.frame(700); rig.settle();
+    let native = native_tree(&mut rig);
+    let owner = native["gpui_focus"].as_str().expect("one final query owner after async refinement");
+    assert_eq!(native["nodes"][owner]["aria"]["label"].as_str(), Some("Find query"));
+    assert_eq!(native["nodes"][owner]["aria"]["value"].as_str(), Some("base16"));
+    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "focus/editing never grants resource readiness");
+    rig.keys("cmd-o");
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"), "covering Add owns native input");
+    rig.keys("escape");
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"), "current underlay regains its exact native query owner");
+}
