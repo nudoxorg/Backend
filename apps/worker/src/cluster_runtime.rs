@@ -874,6 +874,10 @@ impl ClusterWorker {
             match event {
                 None => return Err(ClusterWorkerError::UnexpectedControl),
                 Some(Err(_rejected_connection)) => continue,
+                Some(Ok(AcceptedClusterConnection::RemoteIndex(connection))) => {
+                    connection.reject();
+                    continue;
+                }
                 Some(Ok(AcceptedClusterConnection::Probe(connection))) => {
                     let channel = match tokio::time::timeout(
                         self.policy.io_timeout,
@@ -2430,6 +2434,10 @@ impl ClusterWorker {
                     match event {
                         None => break Err(ClusterWorkerError::UnexpectedControl),
                         Some(Err(_rejected_connection)) => continue,
+                        Some(Ok(AcceptedClusterConnection::RemoteIndex(connection))) => {
+                            connection.reject();
+                            continue;
+                        }
                         Some(Ok(AcceptedClusterConnection::Artifact(connection))) => {
                             if connection.peer() != result.coordinator {
                                 break 'transfer Err(ClusterWorkerError::PeerNotAllowed);
@@ -3338,7 +3346,8 @@ fn process_peak_rss_bytes() -> Option<u64> {
         .find_map(|line| line.strip_prefix("VmHWM:"))?
         .split_whitespace()
         .next()?
-        .parse::<u64>()?;
+        .parse::<u64>()
+        .ok()?;
     kilobytes.checked_mul(1024)
 }
 

@@ -2722,6 +2722,14 @@ impl RemoteIndexConnection {
         self.connection.remote_id()
     }
 
+    /// Closes a remote-index connection when this peer role does not serve index queries.
+    pub fn reject(self) {
+        self.connection.close(
+            1_u32.into(),
+            b"remote-index protocol is not served by this peer",
+        );
+    }
+
     /// Verifies the owner-signed capability and opens the bounded request channel.
     pub async fn accept(self) -> Result<RemoteIndexSession, TransportError> {
         accept_remote_index(self.connection, self.local).await
@@ -3805,6 +3813,52 @@ mod tests {
             .shutdown()
             .await
             .expect("listener shuts down cleanly");
+    }
+
+    #[tokio::test]
+    async fn unsupported_remote_index_connection_is_explicitly_closed() {
+        let server = bind_direct(secret(81), "127.0.0.1:0".parse().expect("server socket"))
+            .await
+            .expect("server endpoint");
+        let client = bind_direct(secret(82), "127.0.0.1:0".parse().expect("client socket"))
+            .await
+            .expect("client endpoint");
+        let scope = TransferScope::new([83; 16], [84; 16], 1, [85; 32], [86; 32])
+            .expect("valid listener scope");
+        let control_policy =
+            ControlAdmissionPolicy::coordinator_ingress(server.id(), [client.id()]);
+        let artifact_policy = AdmissionPolicy::new(server.id(), server.id(), [client.id()], scope);
+        let mut listener = ClusterListener::spawn(
+            server.clone(),
+            control_policy,
+            ServerState::new(artifact_policy, Arc::new(MemoryBlobCatalog::default())),
+            1,
+        )
+        .expect("worker protocol listener");
+
+        let client_connection = client
+            .connect(server.addr(), REMOTE_INDEX_ALPN)
+            .await
+            .expect("authenticated remote-index ALPN connection");
+        let accepted = tokio::time::timeout(Duration::from_secs(5), listener.recv())
+            .await
+            .expect("listener receives remote-index connection")
+            .expect("listener remains open")
+            .expect("remote-index ALPN is dispatched");
+        let AcceptedClusterConnection::RemoteIndex(server_connection) = accepted else {
+            panic!("remote-index ALPN was dispatched to the wrong protocol");
+        };
+        server_connection.reject();
+        tokio::time::timeout(Duration::from_secs(5), client_connection.closed())
+            .await
+            .expect("unsupported remote-index connection is closed by the server");
+
+        listener
+            .shutdown()
+            .await
+            .expect("listener shuts down cleanly");
+        client.close().await;
+        server.close().await;
     }
 
     #[tokio::test]
