@@ -417,3 +417,51 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
         std::fs::remove_dir_all(second_parent).expect("clean second fixture");
     }
 }
+
+
+#[gpui::test]
+fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(cx: &mut TestAppContext) {
+    let mut rig = first_run(cx, 1440.0);
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.settle();
+    // This is the same action object and App dispatcher used by the native
+    // menu callback, not an injected reducer OpenSettings intent.
+    rig.cx.update(|_, cx| cx.dispatch_action(&crate::shell::OpenSettingsAction));
+    rig.settle();
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))));
+    let tree = |rig: &mut Rig| -> serde_json::Value {
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced Settings AX");
+        serde_json::from_str(&json).expect("AX JSON")
+    };
+    let native = tree(&mut rig);
+    let selected = native["nodes"].as_object().expect("nodes").values().filter(|node|
+        node["aria"]["role"].as_str() == Some("RadioButton") && node["aria"]["selected"].as_bool() == Some(true)).count();
+    assert!(selected >= 3, "multiple independent selected groups are present, not stripped from accessibility: {native}");
+    assert!(native["active_descendant_focus"].is_null(), "selected values are not competing claims on the Application's keyboard focus");
+    let high = native["nodes"].as_object().expect("nodes").values().find(|node|
+        node["aria"]["role"].as_str() == Some("RadioButton") && node["aria"]["label"].as_str() == Some("High")).expect("native contrast option");
+    let b = &high["bounds"];
+    rig.cx.simulate_click(gpui::point(gpui::px((b["x"].as_f64().expect("x") + b["width"].as_f64().expect("width") / 2.0) as f32),
+        gpui::px((b["y"].as_f64().expect("y") + b["height"].as_f64().expect("height") / 2.0) as f32)), gpui::Modifiers::none());
+    rig.settle();
+    let focused = tree(&mut rig);
+    let owner = focused["gpui_focus"].as_str().expect("one real native radio owner");
+    assert_eq!(focused["nodes"][owner]["aria"]["label"].as_str(), Some("High"));
+    assert!(focused["active_descendant_focus"].is_null());
+    rig.keys("left space");
+    let focused = tree(&mut rig);
+    let owner = focused["gpui_focus"].as_str().expect("native reversal keeps ownership");
+    assert_eq!(focused["nodes"][owner]["aria"]["label"].as_str(), Some("Normal"));
+    assert_eq!(focused["nodes"][owner]["aria"]["selected"].as_bool(), Some(true));
+    rig.keys("tab");
+    let focused = tree(&mut rig);
+    let owner = focused["gpui_focus"].as_str().expect("real native Tab advances");
+    assert_ne!(focused["nodes"][owner]["aria"]["label"].as_str(), Some("Normal"));
+    assert!(focused["active_descendant_focus"].is_null());
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None);
+}

@@ -557,9 +557,9 @@ impl RenderOnce for Seg {
                 .aria_selected(index == selected)
                 .aria_toggled(if index == selected { gpui::Toggled::True } else { gpui::Toggled::False })
                 .aria_disabled(!active);
-            if index == selected {
-                item = item.aria_active_descendant();
-            }
+            // Selection is value state, not managed keyboard focus. This
+            // group's roving handle is attached to its selected native radio
+            // below; there is no separate focused container/descendant pair.
             item = item
                 .relative()
                 .flex()
@@ -721,7 +721,7 @@ mod tests {
     fn pointer_radio_selection_and_arrow_reversal_keep_the_shared_focus(cx: &mut TestAppContext) {
         cx.update(|cx| { set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
         let (fixture, cx) = cx.add_window_view(|_, _| Fixture { selected: 0, disabled: false, focus: None });
-        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        cx.update(|window, cx| { window.set_a11y_forced(true); window.draw(cx).clear(cx); });
         let point_ = cx.update(|window, cx| {
             let measure = Measure::new(px(300.0), &cx.facet());
             let scale = f32::from(measure.control(Control::Small)) / 24.0;
@@ -734,6 +734,11 @@ mod tests {
         assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 1);
         let focus = fixture.read_with(cx, |fixture, _| fixture.focus.clone().unwrap());
         assert!(cx.update(|window, _| focus.is_focused(window)));
+        let json = cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native radio tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("AX JSON");
+        let owner = tree["gpui_focus"].as_str().expect("native selected radio owner");
+        assert_eq!(tree["nodes"][owner]["aria"]["label"].as_str(), Some("Two"));
+        assert!(tree["active_descendant_focus"].is_null(), "native radio focus is not its own managed descendant");
         cx.simulate_keystrokes("left");
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 0);
