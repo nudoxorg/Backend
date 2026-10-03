@@ -885,7 +885,7 @@ impl PersistentState {
                         label: item.label.to_string(),
                         phase: project
                             .map_or(PersistedProjectPhase::Ready, |project| {
-                                if project.phase == ProjectPhase::Indexing && project.request.is_none() {
+                                if project.phase == ProjectPhase::Indexing && project.request.is_none() && project.operation.is_none() {
                                     PersistedProjectPhase::Queued
                                 } else { project.phase.into() }
                             }),
@@ -1759,6 +1759,24 @@ mod tests {
             crate::core::ResourceIdentity::Local(project) => project.as_str() == host,
             _ => false,
         }));
+    }
+
+    #[test]
+    fn an_exact_operation_claim_has_one_durable_phase_across_ephemeral_status_requests() {
+        let key = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("durable-status".into(), "one".into())]), 1);
+        let project = crate::core::LocalProjectId::new("/tmp/durable-status-project").expect("project identity");
+        let snapshot = crate::navigation::reduce(&AppSnapshot::empty(key), crate::navigation::Intent::AddProject { project: project.clone() }).snapshot;
+        let claim = crate::model::index_operation::tests::claim(&project, 9);
+        let sent = crate::navigation::reduce(&snapshot, crate::navigation::Intent::IndexProject { project, operation: claim.clone(), basis: key, request: crate::navigation::RequestId::new(1) }).snapshot;
+        let mut workspace = sent.workspace().clone();
+        let mut rows = workspace.projects.to_vec();
+        rows[0].request = None;
+        workspace.projects = rows.into();
+        let idle = sent.with_workspace(workspace);
+        assert_eq!(PersistentState::project(&sent), PersistentState::project(&idle), "status scheduling is not a durable operation transition");
+        assert_eq!(PersistentState::project(&idle).shelf[0].phase, PersistedProjectPhase::Indexing);
+        assert_eq!(PersistentState::project(&idle).shelf[0].operation.as_ref(), Some(&claim));
+        assert_eq!(PersistentState::project(&snapshot).shelf[0].phase, PersistedProjectPhase::Queued, "a truly unsent folder remains queued");
     }
 
     #[test]
