@@ -142,6 +142,7 @@ lines carry `NUDOX:` comments.
 | `src/highlighter/languages/cpp/highlights.scm` (new) | C's query plus C++'s, specific patterns first (upstream's C++ query is written for `; inherits: c`, which this highlighter does not resolve) | C++ highlighting |
 | `src/highlighter/languages/rust/highlights.scm` | `(lifetime "'" @label)` | a lifetime reads as one token |
 | `Cargo.toml` (non-wasm dev-dependency), `src/highlighter/registry.rs` `test_registry` | `tree-sitter-json` is also a dev-dependency; the built-in `json` lookup is asserted present or absent by the `tree-sitter-json` feature | the registry and Markdown code-block tests register the JSON grammar as a custom language; after the split they no longer compiled with `tree-sitter` on and `tree-sitter-json` off (the desktop's feature set) |
+| `src/input/input.rs` (tests only) | the named-input identity test imports `crate::ElementExt as _`; the focus test drops an unused `Root` import | the identity test calls `on_prepaint`, a method of `ElementExt`, so the crate's lib test target did not compile |
 
 ## Windows headless rendering (H, 2026-10-02)
 
