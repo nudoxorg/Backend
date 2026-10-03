@@ -22,7 +22,7 @@ use crate::publication::{
 };
 use backend_compile::{
     EmbeddingCacheSession, EmbeddingCoordinates, EmbeddingExecutable, EmbeddingExecutionIdentity,
-    EmbeddingNormalization, EmbeddingPurpose,
+    EmbeddingNormalization, EmbeddingPurpose, RustCargoWorkspaceFactsV1,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_rust::legacy::{
@@ -1008,6 +1008,21 @@ impl StagedSemanticPackage {
         self.input
     }
 
+    /// Exact full Cargo metadata facts produced by this staged Rust profile.
+    ///
+    /// The reference is absent when bounded metadata/config/toolchain binding
+    /// was unavailable; a different profile's facts are never substituted.
+    #[must_use]
+    pub fn cargo_workspace_facts(&self) -> Option<&RustCargoWorkspaceFactsV1> {
+        self.staged.cargo_workspace_facts.as_deref()
+    }
+
+    /// Rust language profile whose workspace preflight produced these facts.
+    #[must_use]
+    pub const fn profile(&self) -> backend_semantic::vocabulary::LanguageProfile {
+        self.profile
+    }
+
     /// Returns the semantic VCS generation ID for one exact canonical image payload.
     ///
     /// This is the same byte identity used by `SemanticSnapshot::generation`. It is distinct
@@ -1467,6 +1482,7 @@ pub(crate) struct StagedPackageCompilation {
     input: SemanticInputWitness,
     execution_identity: Option<LocalCompilerExecutionIdentity>,
     plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
+    cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
@@ -2270,6 +2286,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             input,
             execution_identity,
             plane_execution_identity: plane_execution_seed.map(|seed| seed.bind_input(input)),
+            cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
+                lease
+                    .workspace()
+                    .cargo_workspace_facts()
+                    .map(std::sync::Arc::clone)
+            }),
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {

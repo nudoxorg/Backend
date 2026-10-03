@@ -364,6 +364,7 @@ pub fn execute() {}
                 },
             )]),
             files: vec![(file_key, record)],
+            cargo_aliases: BTreeMap::new(),
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let structural_plan =
@@ -463,6 +464,7 @@ pub fn execute() {}
                 },
             )]),
             files: vec![(file_key, record)],
+            cargo_aliases: BTreeMap::new(),
         })
     }
 
@@ -1082,6 +1084,7 @@ pub fn execute() {}
                 },
             )]),
             files: vec![(child_key, child_record), (semantic_key, semantic_record)],
+            cargo_aliases: BTreeMap::new(),
         };
         let complete = BTreeSet::from([(
             package.to_bytes(),
@@ -1424,6 +1427,7 @@ pub fn execute() {}
                 },
             )]),
             files: vec![(file_key, record)],
+            cargo_aliases: BTreeMap::new(),
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let complete = BTreeSet::from([(
@@ -1521,6 +1525,7 @@ pub fn execute() {}
                 },
             )]),
             files,
+            cargo_aliases: BTreeMap::new(),
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let rust = LanguageProfile::Rust(RustEdition::Rust2024);
@@ -1612,6 +1617,7 @@ pub fn execute() {}
                 },
             )]),
             files: vec![(file_key, record)],
+            cargo_aliases: BTreeMap::new(),
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let mut targets = super::SemanticTargets::default();
@@ -1873,6 +1879,7 @@ pub fn execute() {}
                     },
                 )]),
                 files: file_records,
+                cargo_aliases: BTreeMap::new(),
             },
             package,
         ))

@@ -38,10 +38,17 @@ pub(in crate::builtin) fn semantic_query_corpus(
     }
     let mut facts = Vec::with_capacity(sources.projects.len());
     for project in sources.projects.values() {
+        let package_scope = match sources.cargo_aliases.get(&project.package.to_bytes()) {
+            Some(cargo_aliases) => {
+                backend_extension_trustfall::PackageScopeEvidence::with_cargo_aliases(
+                    project.package,
+                    cargo_aliases.clone(),
+                )
+            }
+            None => backend_extension_trustfall::PackageScopeEvidence::new(project.package),
+        };
         facts.push(backend_extension_trustfall::SemanticQueryFact::new(
-            backend_extension_trustfall::SemanticQueryEvidence::Package(
-                backend_extension_trustfall::PackageScopeEvidence::new(project.package),
-            ),
+            backend_extension_trustfall::SemanticQueryEvidence::Package(package_scope),
             backend_extension_trustfall::SemanticQueryPresentation {
                 id: query_package_id(project.package),
                 kind: "project".to_owned(),

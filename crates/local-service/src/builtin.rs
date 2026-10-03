@@ -627,6 +627,7 @@ struct IndexedProject {
 struct IndexedSources {
     projects: BTreeMap<[u8; 32], IndexedProject>,
     files: Vec<([u8; 32], ProductSourceRecord)>,
+    cargo_aliases: BTreeMap<[u8; 32], backend_library::CargoPackageAliasEvidenceV1>,
 }
 
 fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, BuiltinModelError> {
@@ -645,6 +646,7 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
     }
     let mut projects = BTreeMap::new();
     let mut files = Vec::new();
+    let mut cargo_aliases = BTreeMap::new();
     let mut after = None;
     loop {
         let page = relation
@@ -652,7 +654,12 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
             .map_err(|error| BuiltinModelError(format!("read indexed source page: {error}")))?;
         for (key, record) in page.entries() {
             match record {
-                ProductSourceRecord::Project { label, files, .. } => {
+                ProductSourceRecord::Project {
+                    label,
+                    files,
+                    cargo_aliases: aliases,
+                    ..
+                } => {
                     let package = backend_engine::PackageKey::from_value(label.as_str());
                     if package.to_bytes() != *key
                         || projects
@@ -670,6 +677,9 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
                             "project record does not match its canonical coordinate".to_owned(),
                         ));
                     }
+                    if let Some(aliases) = aliases {
+                        cargo_aliases.insert(*key, aliases.clone());
+                    }
                 }
                 ProductSourceRecord::File { .. } => files.push((*key, record.clone())),
             }
@@ -679,7 +689,11 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
         };
         after = Some(next);
     }
-    Ok(IndexedSources { projects, files })
+    Ok(IndexedSources {
+        projects,
+        files,
+        cargo_aliases,
+    })
 }
 
 /// Loads one package's project frontier and source files by key.
@@ -698,6 +712,7 @@ fn empty_indexed_sources() -> IndexedSources {
     IndexedSources {
         projects: BTreeMap::new(),
         files: Vec::new(),
+        cargo_aliases: BTreeMap::new(),
     }
 }
 

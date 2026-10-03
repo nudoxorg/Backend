@@ -222,6 +222,71 @@ fn compiler_external_corpus(
 }
 
 #[test]
+fn exact_cargo_alias_observations_change_the_typed_corpus_digest() {
+    use backend_library::{
+        CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1, CargoPackageAliasEvidenceV1,
+        CargoPackageAliasObservationV1, CargoPackageAliasV1, CargoTargetNameV1,
+    };
+
+    let package = backend_library::package_key("cargo-alias-fixture");
+    let presentation = || SemanticQueryPresentation {
+        id: backend_library::RowId::Package(package).stable_key(),
+        kind: "project".to_owned(),
+        coordinate: "cargo-alias-fixture".to_owned(),
+        name: "cargo-alias-fixture".to_owned(),
+        signature: None,
+        documentation: String::new(),
+        score: None,
+        project: None,
+        parent: None,
+        related: Box::new([]),
+    };
+    let without_aliases = SemanticQueryCorpus::admit(
+        workspace(),
+        vec![SemanticQueryFact::new(
+            SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+            presentation(),
+        )],
+    )
+    .expect("package corpus");
+    let profile = LanguageProfile::Rust(RustEdition::Rust2021);
+    let aliases = CargoPackageAliasEvidenceV1::from_wire_parts(
+        vec![CargoPackageAliasV1::CargoTargetName(
+            CargoTargetNameV1::new("cargo_alias_fixture").expect("target alias"),
+        )],
+        vec![
+            CargoPackageAliasObservationV1::from_wire_parts(
+                profile,
+                [1; 32],
+                Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                    [2; 32], [3; 32], [4; 32],
+                )),
+                vec![0],
+                CargoPackageAliasCoverageV1::Complete,
+            )
+            .expect("profile observation"),
+        ],
+    )
+    .expect("Cargo alias evidence");
+    let with_aliases = SemanticQueryCorpus::admit(
+        workspace(),
+        vec![SemanticQueryFact::new(
+            SemanticQueryEvidence::Package(PackageScopeEvidence::with_cargo_aliases(
+                package, aliases,
+            )),
+            presentation(),
+        )],
+    )
+    .expect("package corpus with aliases");
+
+    assert_ne!(
+        without_aliases.evidence_digest(),
+        with_aliases.evidence_digest(),
+        "Cargo metadata and per-profile source observations are corpus authority"
+    );
+}
+
+#[test]
 fn compiler_external_edge_is_typed_scoped_and_queryable() {
     let package = backend_library::package_key("demo");
     let corpus =

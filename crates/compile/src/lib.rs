@@ -9,6 +9,7 @@
 #![warn(missing_docs)]
 
 mod cancel;
+mod cargo_profile;
 mod containment;
 mod contract;
 mod embedding;
@@ -36,6 +37,17 @@ pub use backend_version::{
     UntrustedCoverageScope, admit_complete_scope,
 };
 pub use cancel::{CancelHandle, Cancellation, CancellationError, CancellationObserver};
+pub use cargo_profile::{
+    MAX_RUST_CARGO_ACTIVE_FEATURES, MAX_RUST_CARGO_DEPENDENCY_EDGES,
+    MAX_RUST_CARGO_DEPENDENCY_KINDS, MAX_RUST_CARGO_FACT_ENTRIES, MAX_RUST_CARGO_FACT_TEXT_ENTRIES,
+    MAX_RUST_CARGO_FEATURE_EDGES, MAX_RUST_CARGO_METADATA_TEXT_BYTES,
+    MAX_RUST_CARGO_PROFILE_FEATURES, MAX_RUST_CARGO_RESOLVED_PACKAGES, MAX_RUST_CARGO_TARGETS,
+    MAX_RUST_CARGO_TOTAL_TEXT_BYTES, MAX_RUST_CARGO_WORKSPACE_PACKAGES, RustCargoBuildProfileV1,
+    RustCargoDependencyKindFactV1, RustCargoFactsAdmissionError, RustCargoFeatureFactV1,
+    RustCargoFeatureSelectionV1, RustCargoProfileRequestError, RustCargoProfileSelectionV1,
+    RustCargoResolvedDependencyFactV1, RustCargoResolvedPackageFactV1, RustCargoTargetFactV1,
+    RustCargoWorkspaceFactsV1, RustCargoWorkspacePackageFactV1,
+};
 pub use contract::{
     Authority, AuthorityEpoch, AuthorityEpochSchema, AuthorityError, AuthorityIdentity, CommandId,
     CommandSchema, ContractId, ContractSchema, DiscoveryDelta, DiscoverySnapshot, Extraction,

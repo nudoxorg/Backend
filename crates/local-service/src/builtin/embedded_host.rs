@@ -191,6 +191,7 @@ mod tests {
         IndexedSources {
             projects: BTreeMap::new(),
             files,
+            cargo_aliases: BTreeMap::new(),
         }
     }
 

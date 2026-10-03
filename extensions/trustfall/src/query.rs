@@ -1,12 +1,12 @@
 //! Lazy async Trustfall execution over immutable typed semantic evidence.
 
-use backend_library::PackageKey;
-use backend_version::WorkspaceRoot;
+use backend_library::{CargoPackageAliasEvidenceV1, PackageKey};
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalTargetIdentity, ImageProvenance, SemanticImageAuthority,
     SemanticImageFacts,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PackageUrl};
+use backend_version::WorkspaceRoot;
 use futures_core::Stream;
 use futures_util::stream;
 use std::collections::BTreeMap;
@@ -78,27 +78,49 @@ pub enum QueryError {
 }
 
 /// Exact product package evidence used only as a navigation root.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageScopeEvidence {
     package: PackageKey,
+    cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
 }
 
 impl PackageScopeEvidence {
     /// Retains one already-admitted typed package key.
     #[must_use]
     pub const fn new(package: PackageKey) -> Self {
-        Self { package }
+        Self {
+            package,
+            cargo_aliases: None,
+        }
+    }
+
+    /// Retains bounded aliases joined to exact per-profile Cargo/source observations.
+    #[must_use]
+    pub fn with_cargo_aliases(
+        package: PackageKey,
+        cargo_aliases: CargoPackageAliasEvidenceV1,
+    ) -> Self {
+        Self {
+            package,
+            cargo_aliases: Some(cargo_aliases),
+        }
     }
 
     /// Returns the typed package key.
     #[must_use]
-    pub const fn package(self) -> PackageKey {
+    pub const fn package(&self) -> PackageKey {
         self.package
+    }
+
+    /// Returns the exact profile-scoped Cargo aliases, when admitted with the project row.
+    #[must_use]
+    pub fn cargo_aliases(&self) -> Option<&CargoPackageAliasEvidenceV1> {
+        self.cargo_aliases.as_ref()
     }
 
     /// Returns the canonical product row identity for this package.
     #[must_use]
-    pub fn row_id(self) -> String {
+    pub fn row_id(&self) -> String {
         backend_library::RowId::Package(self.package).stable_key()
     }
 }
@@ -587,12 +609,19 @@ fn admit_fact_envelope(
     admitted_bytes: &mut usize,
 ) -> Result<(), QueryError> {
     let row = fact.presentation();
+    let alias_field_count = match fact.evidence() {
+        SemanticQueryEvidence::Package(value) => value
+            .cargo_aliases()
+            .map_or(0, |aliases| aliases.aliases().len()),
+        _ => 0,
+    };
     let field_count = 5_usize
         .checked_add(usize::from(row.signature.is_some()))
         .and_then(|count| count.checked_add(usize::from(row.score.is_some())))
         .and_then(|count| count.checked_add(usize::from(row.project.is_some())))
         .and_then(|count| count.checked_add(usize::from(row.parent.is_some())))
         .and_then(|count| count.checked_add(row.related.len()))
+        .and_then(|count| count.checked_add(alias_field_count))
         .ok_or(QueryError::InvalidLimit)?;
     if field_count > limits.max_fields_per_row {
         return Err(QueryError::InvalidLimit);
@@ -619,7 +648,65 @@ fn admit_fact_envelope(
         charge_bytes(4, limits, admitted_bytes)?;
     }
     match fact.evidence() {
-        SemanticQueryEvidence::Package(_) => charge_bytes(32, limits, admitted_bytes),
+        SemanticQueryEvidence::Package(value) => {
+            charge_bytes(32, limits, admitted_bytes)?;
+            if let Some(aliases) = value.cargo_aliases() {
+                aliases.admit().map_err(|_| {
+                    QueryError::Evidence(
+                        "package Cargo aliases failed their bounded admission".to_owned(),
+                    )
+                })?;
+                let alias_bytes = aliases
+                    .aliases()
+                    .iter()
+                    .try_fold(0_usize, |bytes, alias| {
+                        bytes.checked_add(alias.as_str().len())?.checked_add(1)
+                    })
+                    .ok_or(QueryError::InvalidLimit)?;
+                if aliases
+                    .aliases()
+                    .iter()
+                    .any(|alias| alias.as_str().len() > limits.max_field_bytes)
+                    || !aliases.aliases().is_empty()
+                        && "cargo_alias_00".len() > limits.max_field_bytes
+                {
+                    return Err(QueryError::InvalidLimit);
+                }
+                let observation_bytes = aliases
+                    .observations()
+                    .len()
+                    .checked_mul(2 + 32 + 96 + 8)
+                    .and_then(|bytes| {
+                        bytes.checked_add(
+                            aliases
+                                .observations()
+                                .iter()
+                                .map(|observation| observation.alias_indices().len())
+                                .sum::<usize>(),
+                        )
+                    })
+                    .ok_or(QueryError::InvalidLimit)?;
+                let searchable_bytes = aliases
+                    .aliases()
+                    .iter()
+                    .try_fold(0_usize, |bytes, alias| {
+                        bytes
+                            .checked_add("cargo_alias_00".len())?
+                            .checked_add(alias.as_str().len())
+                    })
+                    .ok_or(QueryError::InvalidLimit)?;
+                charge_bytes(
+                    alias_bytes
+                        .checked_add(observation_bytes)
+                        .and_then(|bytes| bytes.checked_add(searchable_bytes))
+                        .ok_or(QueryError::InvalidLimit)?,
+                    limits,
+                    admitted_bytes,
+                )
+            } else {
+                Ok(())
+            }
+        }
         SemanticQueryEvidence::Compiler(value) => {
             admit_text(value.coordinate().as_str(), limits, admitted_bytes)?;
             charge_bytes(252, limits, admitted_bytes)
@@ -705,6 +792,9 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
             SemanticQueryEvidence::Package(value) => {
                 hasher.update(&[0]);
                 hasher.update(value.package().as_bytes());
+                if let Some(cargo_aliases) = value.cargo_aliases() {
+                    cargo_aliases.update_digest(&mut hasher);
+                }
             }
             SemanticQueryEvidence::Compiler(value) => {
                 hasher.update(&[1]);

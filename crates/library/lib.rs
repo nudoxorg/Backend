@@ -19,7 +19,7 @@ mod arrangement;
 pub mod browse;
 pub mod canonical;
 mod capability;
-mod cargo_profile;
+mod cargo_aliases;
 mod cargo_source;
 mod catalog;
 mod command;
@@ -53,8 +53,17 @@ pub use backend_advisory::{
     NativeAdvisoryId, OverrideEvidence, PolicyReason, SeverityLevel,
 };
 pub use backend_compile::{
-    DeclarationFacts, DeclarationKind, Deprecation, Fact, Obligation, SourceExcerpt,
-    SourceExcerptExtent, SourceLanguage, SourceLocation,
+    DeclarationFacts, DeclarationKind, Deprecation, Fact, MAX_RUST_CARGO_ACTIVE_FEATURES,
+    MAX_RUST_CARGO_DEPENDENCY_EDGES, MAX_RUST_CARGO_DEPENDENCY_KINDS, MAX_RUST_CARGO_FACT_ENTRIES,
+    MAX_RUST_CARGO_FACT_TEXT_ENTRIES, MAX_RUST_CARGO_FEATURE_EDGES,
+    MAX_RUST_CARGO_METADATA_TEXT_BYTES, MAX_RUST_CARGO_PROFILE_FEATURES,
+    MAX_RUST_CARGO_RESOLVED_PACKAGES, MAX_RUST_CARGO_TARGETS, MAX_RUST_CARGO_TOTAL_TEXT_BYTES,
+    MAX_RUST_CARGO_WORKSPACE_PACKAGES, Obligation, RustCargoBuildProfileV1,
+    RustCargoDependencyKindFactV1, RustCargoFactsAdmissionError, RustCargoFeatureFactV1,
+    RustCargoFeatureSelectionV1, RustCargoProfileRequestError, RustCargoProfileSelectionV1,
+    RustCargoResolvedDependencyFactV1, RustCargoResolvedPackageFactV1, RustCargoTargetFactV1,
+    RustCargoWorkspaceFactsV1, RustCargoWorkspacePackageFactV1, SourceExcerpt, SourceExcerptExtent,
+    SourceLanguage, SourceLocation,
 };
 pub use backend_semantic::{Read, ReadManifest, ReadSelector};
 pub use backend_version::{
@@ -83,14 +92,12 @@ pub use capability::{
     LanguageOracleTask, MAX_CAPABILITY_INVENTORY, PackageAuthorityIdentity,
     compiler_authority_recipe, embedding_authority_recipe,
 };
-pub use cargo_profile::{
-    MAX_RUST_CARGO_DEPENDENCY_EDGES, MAX_RUST_CARGO_FEATURE_EDGES,
-    MAX_RUST_CARGO_METADATA_TEXT_BYTES, MAX_RUST_CARGO_PROFILE_FEATURES,
-    MAX_RUST_CARGO_RESOLVED_PACKAGES, MAX_RUST_CARGO_TARGETS, MAX_RUST_CARGO_WORKSPACE_PACKAGES,
-    RustCargoBuildProfileV1, RustCargoDependencyKindFactV1, RustCargoFactsAdmissionError,
-    RustCargoFeatureFactV1, RustCargoFeatureSelectionV1, RustCargoProfileRequestError,
-    RustCargoProfileSelectionV1, RustCargoResolvedDependencyFactV1, RustCargoResolvedPackageFactV1,
-    RustCargoTargetFactV1, RustCargoWorkspaceFactsV1, RustCargoWorkspacePackageFactV1,
+pub use cargo_aliases::{
+    CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1, CargoPackageAliasErrorV1,
+    CargoPackageAliasEvidenceV1, CargoPackageAliasObservationV1, CargoPackageAliasUnavailableV1,
+    CargoPackageAliasV1, CargoPackageNameV1, CargoTargetNameV1,
+    MAX_CARGO_ALIAS_PROFILE_OBSERVATIONS, MAX_CARGO_PACKAGE_ALIAS_BYTES, MAX_CARGO_PACKAGE_ALIASES,
+    RustCrateIdentifierV1,
 };
 pub use cargo_source::{
     CARGO_PACKAGE_SOURCE_AUTHORITY_SCHEMA, CargoPackageReadmeAbsenceV1,
@@ -190,20 +197,19 @@ pub use surface::{
     IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal, IndexJobTicket,
     IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
     IndexOperationPublicationReceipt, IndexOperationState, IndexOperationStatus,
-    IndexOperationUnresolvedReason,
-    IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
-    IndexStartResult, MAX_INDEX_PROGRESS_EVENTS, MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS,
-    MAX_PRODUCT_TEXT_BYTES, PackageCoordinate, PackageReference, ProductAdmissionError,
-    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord,
-    RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
-    RegistryDiscoveryFreshness, RegistryDiscoveryMetadata, RegistryDiscoveryStanding,
-    RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet, RegistryFactAvailability,
-    RegistryMetadata, RegistryNegativeFactKind, RegistryPackageFactAuthority,
-    RegistryPackageFactCompleteness, RegistryPackageFactFreshness, RegistryPackageFactProof,
-    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
-    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
-    ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity, SemanticGenerationId,
-    SemanticHistoryImageIdentity, SemanticHistoryInputReplayStatus,
+    IndexOperationUnresolvedReason, IndexProgressPage, IndexSearchCursor, IndexSearchPage,
+    IndexSearchResultCount, IndexStartResult, MAX_INDEX_PROGRESS_EVENTS,
+    MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES, PackageCoordinate,
+    PackageReference, ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord,
+    ProjectSelector, ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
+    RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
+    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
+    RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
+    RegistryPackageFactAuthority, RegistryPackageFactCompleteness, RegistryPackageFactFreshness,
+    RegistryPackageFactProof, RegistryPackageRecord, RegistryPackageSearchGroup,
+    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
+    RegistrySearchRelease, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
+    SemanticGenerationId, SemanticHistoryImageIdentity, SemanticHistoryInputReplayStatus,
     SemanticHistoryPublicationProof, SemanticHistoryPublicationStatus,
     SemanticHistorySelectionStamp, SemanticLanguageProfile, SemanticLinkDelta,
     SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan,

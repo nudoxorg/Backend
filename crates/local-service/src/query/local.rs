@@ -1,6 +1,8 @@
 use backend_engine::{CoverageCapability, Row, RowId, ViewRoot, WorkspaceRoot};
 use backend_extension_tantivy as lexical;
-use backend_extension_trustfall::{SemanticQueryCorpus, SemanticQueryPresentation};
+use backend_extension_trustfall::{
+    SemanticQueryCorpus, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
+};
 use backend_semantic::{Entity, EntityId, Source};
 use backend_version::{CoverageWitness, RelationState};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1322,12 +1324,13 @@ fn qualified_clause_matches(
     selected: &SelectedCorpus,
     evidence: &SemanticQueryCorpus,
 ) -> bool {
-    let Some(mut current) = selected
-        .fact_index(evidence, row_id)
-        .map(|index| evidence.facts()[index].presentation())
-    else {
+    let Some(candidate_index) = selected.fact_index(evidence, row_id) else {
         return false;
     };
+    let Some(candidate) = evidence.facts().get(candidate_index) else {
+        return false;
+    };
+    let mut current = candidate.presentation();
     if !current
         .name
         .to_ascii_lowercase()
@@ -1335,22 +1338,75 @@ fn qualified_clause_matches(
     {
         return false;
     }
-    for owner in clause.owners.iter().rev() {
-        let Some(parent_id) = current.parent.as_deref() else {
-            return false;
-        };
-        let Some(parent) = selected
-            .fact_index(evidence, parent_id)
-            .map(|index| evidence.facts()[index].presentation())
-        else {
-            return false;
-        };
-        if parent.name.to_ascii_lowercase() != *owner {
+    for (owner_index, owner) in clause.owners.iter().enumerate().rev() {
+        let parent = current.parent.as_deref().and_then(|parent_id| {
+            selected
+                .fact_index(evidence, parent_id)
+                .and_then(|index| evidence.facts().get(index))
+        });
+        if let Some(parent) = parent {
+            let parent_presentation = parent.presentation();
+            if parent_presentation.name.eq_ignore_ascii_case(owner) {
+                current = parent_presentation;
+                continue;
+            }
+            let parent_is_package_scope = matches!(
+                parent.evidence(),
+                SemanticQueryEvidence::Package(scope)
+                    if matches!(candidate.evidence(), SemanticQueryEvidence::Compiler(compiler) if scope.package() == compiler.package())
+            );
+            if owner_index == 0
+                && parent_is_package_scope
+                && cargo_package_alias_matches(candidate, owner, evidence, selected)
+            {
+                return true;
+            }
             return false;
         }
-        current = parent;
+        if owner_index == 0 && cargo_package_alias_matches(candidate, owner, evidence, selected) {
+            return true;
+        }
+        return false;
     }
     true
+}
+
+fn cargo_package_alias_matches(
+    candidate: &SemanticQueryFact,
+    owner: &str,
+    evidence: &SemanticQueryCorpus,
+    selected: &SelectedCorpus,
+) -> bool {
+    let SemanticQueryEvidence::Compiler(compiler) = candidate.evidence() else {
+        return false;
+    };
+    let package = compiler.package();
+    let profile = compiler.profile();
+    let package_row = RowId::Package(package).stable_key();
+    let Some(package_index) = selected.fact_index(evidence, &package_row) else {
+        return false;
+    };
+    let Some(package_fact) = evidence.facts().get(package_index) else {
+        return false;
+    };
+    let SemanticQueryEvidence::Package(scope) = package_fact.evidence() else {
+        return false;
+    };
+    if scope.package() != package {
+        return false;
+    }
+    let Some(aliases) = scope.cargo_aliases() else {
+        return false;
+    };
+    let Some(observation) = aliases.observation(profile) else {
+        return false;
+    };
+    observation.alias_indices().iter().any(|index| {
+        aliases
+            .aliases()
+            .get(usize::from(*index))
+            .is_some_and(|alias| alias.as_str().eq_ignore_ascii_case(owner))
+    })
 }
 
 struct PreparedCorpus {
@@ -1521,7 +1577,7 @@ fn collect_selected_documents(
             // direct coordinate lookups (`show`) and the semantic/vector
             // lane are unaffected.
             if !is_synthetic_result_slot {
-                let row_fields = fields(presentation);
+                let row_fields = fields_for_fact(fact);
                 checked_document_bytes(0, &row_fields)?;
                 documents.push((entity, row_fields));
             }
@@ -1614,6 +1670,26 @@ fn fields(row: &SemanticQueryPresentation) -> Vec<(String, String)> {
         fields.push(("documentation".to_owned(), row.documentation.clone()));
     }
     fields.sort();
+    fields
+}
+
+fn fields_for_fact(fact: &SemanticQueryFact) -> Vec<(String, String)> {
+    let mut fields = fields(fact.presentation());
+    if let SemanticQueryEvidence::Package(scope) = fact.evidence()
+        && let Some(aliases) = scope.cargo_aliases()
+    {
+        let mut seen = BTreeSet::new();
+        for alias in aliases.aliases() {
+            if seen.insert(alias.as_str()) {
+                fields.push((
+                    format!("cargo_alias_{:02}", seen.len() - 1),
+                    alias.as_str().to_owned(),
+                ));
+            }
+        }
+        fields.sort();
+        fields.dedup();
+    }
     fields
 }
 
@@ -1784,4 +1860,179 @@ fn corpus_percentiles(samples: &[u128]) -> (u128, u128) {
     let median = ordered[ordered.len() / 2];
     let p95 = ordered[ordered.len() * 95 / 100];
     (median, p95)
+}
+
+#[cfg(test)]
+mod cargo_alias_tests {
+    use super::*;
+    use backend_library::{
+        CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1, CargoPackageAliasEvidenceV1,
+        CargoPackageAliasObservationV1, CargoPackageAliasV1, CargoTargetNameV1,
+    };
+    use backend_semantic::ir::{
+        DeclarationFamilyId, DeclarationIdentity, IrBuilder, SourceIdentity, VariantFingerprint,
+    };
+    use backend_semantic::vocabulary::{
+        CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
+    };
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+
+    fn alias_evidence(profile: LanguageProfile) -> CargoPackageAliasEvidenceV1 {
+        let aliases = vec![CargoPackageAliasV1::CargoTargetName(
+            CargoTargetNameV1::new("crate_alias").expect("target alias"),
+        )];
+        let observation = CargoPackageAliasObservationV1::from_wire_parts(
+            profile,
+            [21; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [22; 32], [23; 32], [24; 32],
+            )),
+            vec![0],
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .expect("profile observation");
+        CargoPackageAliasEvidenceV1::from_wire_parts(aliases, vec![observation])
+            .expect("bounded package aliases")
+    }
+
+    fn compiler_fact(
+        package: backend_engine::PackageKey,
+        profile: LanguageProfile,
+        declaration_tag: u8,
+        source_tag: u8,
+        project: String,
+    ) -> SemanticQueryFact {
+        let coordinate =
+            PackageUrl::parse("pkg:cargo/acme/demo@1.0.0".to_owned()).expect("package coordinate");
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_tag]),
+            byte_len: 1,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"cargo-alias-test-toolchain"),
+        );
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, "src/lib.rs")
+            .expect("captured compiler provenance");
+        let image = builder.finish().expect("semantic image");
+        let identity = DeclarationIdentity {
+            family: DeclarationFamilyId::from_raw([declaration_tag; 16]),
+            variant: VariantFingerprint::from_raw([declaration_tag.wrapping_add(1); 16]),
+        };
+        let evidence = backend_extension_trustfall::CompilerSemanticEvidence::new(
+            package,
+            coordinate.clone(),
+            profile,
+            identity,
+            [declaration_tag; 32],
+            image.image_facts(),
+        );
+        let id = evidence.row_id();
+        SemanticQueryFact::new(
+            SemanticQueryEvidence::Compiler(evidence),
+            SemanticQueryPresentation {
+                id,
+                kind: "struct".to_owned(),
+                coordinate: format!("{}::Widget", coordinate.as_str()),
+                name: "Widget".to_owned(),
+                signature: None,
+                documentation: String::new(),
+                score: None,
+                project: Some(project),
+                parent: None,
+                related: Box::new([]),
+            },
+        )
+    }
+
+    #[test]
+    fn qualified_cargo_alias_is_bound_to_the_candidate_package_and_profile() {
+        let workspace = crate::builtin::genesis().expect("workspace").root();
+        let profile_2021 = LanguageProfile::Rust(RustEdition::Rust2021);
+        let profile_2024 = LanguageProfile::Rust(RustEdition::Rust2024);
+        let package_a = backend_engine::package_key("demo-a");
+        let package_b = backend_engine::package_key("demo-b");
+        let package_a_scope = backend_extension_trustfall::PackageScopeEvidence::with_cargo_aliases(
+            package_a,
+            alias_evidence(profile_2021),
+        );
+        let package_a_id = package_a_scope.row_id();
+        let package_b_scope = backend_extension_trustfall::PackageScopeEvidence::new(package_b);
+        let package_b_id = package_b_scope.row_id();
+        let facts = vec![
+            SemanticQueryFact::new(
+                SemanticQueryEvidence::Package(package_a_scope.clone()),
+                SemanticQueryPresentation {
+                    id: package_a_id.clone(),
+                    kind: "project".to_owned(),
+                    coordinate: "demo-a".to_owned(),
+                    name: "demo-a".to_owned(),
+                    signature: None,
+                    documentation: String::new(),
+                    score: None,
+                    project: None,
+                    parent: None,
+                    related: Box::new([]),
+                },
+            ),
+            SemanticQueryFact::new(
+                SemanticQueryEvidence::Package(package_b_scope),
+                SemanticQueryPresentation {
+                    id: package_b_id.clone(),
+                    kind: "project".to_owned(),
+                    coordinate: "demo-b".to_owned(),
+                    name: "demo-b".to_owned(),
+                    signature: None,
+                    documentation: String::new(),
+                    score: None,
+                    project: None,
+                    parent: None,
+                    related: Box::new([]),
+                },
+            ),
+            compiler_fact(package_a, profile_2021, 1, 11, package_a_id.clone()),
+            compiler_fact(package_a, profile_2024, 3, 13, package_a_id),
+            compiler_fact(package_b, profile_2021, 5, 15, package_b_id),
+        ];
+        let alias_fields = fields_for_fact(&facts[0]);
+        assert!(
+            alias_fields
+                .iter()
+                .any(|(field, value)| field.starts_with("cargo_alias_") && value == "crate_alias")
+        );
+        let corpus = SemanticQueryCorpus::admit(workspace, facts).expect("typed corpus");
+        let mut fact_order = (0..corpus.facts().len()).collect::<Vec<_>>();
+        fact_order.sort_unstable_by_key(|index| corpus.facts()[*index].presentation().id.as_str());
+        let selected = SelectedCorpus {
+            entities: Box::new([]),
+            candidate_order: Box::new([]),
+            document_order: Box::new([]),
+            fact_order: fact_order.into_boxed_slice(),
+            left_out: LeftOut::default(),
+        };
+        let clause = QualifiedClause {
+            leaf: "wid".to_owned(),
+            owners: vec!["crate_alias".to_owned()],
+        };
+        let candidate_id = |index: usize| corpus.facts()[index].presentation().id.clone();
+        assert!(qualified_clause_matches(
+            &candidate_id(2),
+            &clause,
+            &selected,
+            &corpus,
+        ));
+        assert!(
+            !qualified_clause_matches(&candidate_id(3), &clause, &selected, &corpus),
+            "an alias observed for Rust 2021 cannot authorize a Rust 2024 candidate"
+        );
+        assert!(
+            !qualified_clause_matches(&candidate_id(4), &clause, &selected, &corpus),
+            "a different package cannot borrow the alias"
+        );
+    }
 }

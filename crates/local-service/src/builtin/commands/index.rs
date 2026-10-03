@@ -21,11 +21,11 @@ use backend_engine::builtin::{
     SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationSelection,
 };
 use backend_extension_turso::SourceObservationReceipt;
-use backend_library::CompileExecutionIntent;
 use backend_library::interface::{
     CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
     PackageUrl,
 };
+use backend_library::{CargoPackageAliasEvidenceV1, CompileExecutionIntent};
 use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile};
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
@@ -512,7 +512,7 @@ pub(super) fn finish_index_scan(
     if before.as_ref() != Some(&project) {
         changes.push(BuiltinSourceChange {
             key: project_key,
-            after: Some(project),
+            after: Some(project.clone()),
         });
     }
     for (key, record) in &scan.files {
@@ -540,7 +540,7 @@ pub(super) fn finish_index_scan(
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let (semantic_changes, selected) = {
+    let (semantic_changes, selected, cargo_alias_observations) = {
         let fresh_profiles = scan
             .compiler_sources
             .iter()
@@ -577,7 +577,7 @@ pub(super) fn finish_index_scan(
             &dirty,
         );
         if dirty.is_empty() {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         } else {
             let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
                 .map_err(BuiltinModelError)?;
@@ -585,6 +585,8 @@ pub(super) fn finish_index_scan(
                 return prepare_deferred_compile(
                     package,
                     &label,
+                    project_key,
+                    project.clone(),
                     changes,
                     &semantic_context,
                     sources,
@@ -608,6 +610,7 @@ pub(super) fn finish_index_scan(
             )?
         }
     };
+    replace_project_cargo_aliases(&mut changes, project_key, project, cargo_alias_observations)?;
     let intent = if changes.is_empty() && semantic_changes.is_empty() {
         None
     } else {
@@ -623,6 +626,68 @@ pub(super) fn finish_index_scan(
         selected,
         revision_fence: Some(final_revision_fence),
     }))
+}
+
+fn replace_project_cargo_aliases(
+    changes: &mut Vec<BuiltinSourceChange>,
+    project_key: [u8; 32],
+    project: ProductSourceRecord,
+    observations: Vec<CargoPackageAliasEvidenceV1>,
+) -> Result<(), BuiltinModelError> {
+    if observations.is_empty() {
+        // `project` is the fresh alias-free frontier. The caller compares it
+        // with the current row before this helper; if that row carried old
+        // Cargo evidence, the resulting source change removes it. Do not
+        // preserve aliases by matching only the source digest: the compiler
+        // lane currently lacks a complete read-set proof for Cargo config,
+        // targets, and negative inputs.
+        return Ok(());
+    }
+    let evidence = CargoPackageAliasEvidenceV1::merge(observations).map_err(|_| {
+        BuiltinModelError("Cargo package alias observations are invalid".to_owned())
+    })?;
+    let project = project
+        .with_cargo_aliases(evidence)
+        .map_err(BuiltinModelError)?;
+    if let Some(change) = changes.iter_mut().find(|change| change.key == project_key) {
+        change.after = Some(project);
+    } else {
+        changes.push(BuiltinSourceChange {
+            key: project_key,
+            after: Some(project),
+        });
+    }
+    Ok(())
+}
+
+fn staged_cargo_alias_evidence(
+    profile: LanguageProfile,
+    source_observation_revision: [u8; 32],
+    source_root: &Path,
+    staged: Option<&StagedSemanticPackage>,
+) -> Result<Option<CargoPackageAliasEvidenceV1>, BuiltinModelError> {
+    if !matches!(profile, LanguageProfile::Rust(_)) {
+        return Ok(None);
+    }
+    let facts = if let Some(staged) = staged {
+        if staged.profile() != profile {
+            return Err(BuiltinModelError(
+                "staged Cargo facts belong to another language profile".to_owned(),
+            ));
+        }
+        staged.cargo_workspace_facts()
+    } else {
+        None
+    };
+    let manifest = source_root.join("Cargo.toml");
+    let evidence = CargoPackageAliasEvidenceV1::from_workspace_facts(
+        profile,
+        source_observation_revision,
+        &manifest,
+        facts,
+    )
+    .map_err(|_| BuiltinModelError("Cargo package aliases failed bounded admission".to_owned()))?;
+    Ok(Some(evidence))
 }
 
 /// Owner-captured immutable inputs for one filesystem scan.
@@ -697,6 +762,9 @@ pub(super) enum PreparedIndex {
 pub(super) struct DeferredIndex {
     package: backend_engine::PackageKey,
     label: String,
+    project_key: [u8; 32],
+    project_record: ProductSourceRecord,
+    source_root: PathBuf,
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
     profiles: VecDeque<DeferredProfile>,
@@ -704,6 +772,7 @@ pub(super) struct DeferredIndex {
     completed_profiles: usize,
     semantic_changes: Vec<BuiltinSemanticChange>,
     selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    cargo_alias_observations: BTreeMap<LanguageProfile, CargoPackageAliasEvidenceV1>,
 }
 
 struct DeferredProfile {
@@ -788,6 +857,8 @@ impl DeferredIndex {
 fn prepare_deferred_compile(
     package: backend_engine::PackageKey,
     label: &str,
+    project_key: [u8; 32],
+    project_record: ProductSourceRecord,
     source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
@@ -893,6 +964,9 @@ fn prepare_deferred_compile(
     Ok(DeferredIndex {
         package,
         label: label.to_owned(),
+        project_key,
+        project_record,
+        source_root: context.source_root.to_path_buf(),
         source_changes,
         revision_fence,
         profiles: profiles.into(),
@@ -900,6 +974,7 @@ fn prepare_deferred_compile(
         completed_profiles: 0,
         semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
         selected: Vec::with_capacity(expected_profiles),
+        cargo_alias_observations: BTreeMap::new(),
     })
 }
 
@@ -963,6 +1038,21 @@ pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
                 return Err(error);
             }
         };
+    let cargo_alias_evidence = match staged_cargo_alias_evidence(
+        profile.profile(),
+        *profile.attempt.input_digest(),
+        &job.source_root,
+        Some(&staged),
+    ) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            semantic_authority.retire_candidate_attempt(
+                &profile.attempt,
+                backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+            )?;
+            return Err(error);
+        }
+    };
     // Keep the ticket's exact capability until the publication result is
     // known. `publish_staged` consumes its copy when constructing a candidate,
     // but any refusal before Turso selects that candidate still needs a
@@ -991,6 +1081,10 @@ pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
         &mut job.semantic_changes,
     )?;
     job.selected.push((profile.key, claim));
+    if let Some(evidence) = cargo_alias_evidence {
+        job.cargo_alias_observations
+            .insert(profile.profile(), evidence);
+    }
     job.completed_profiles += 1;
     // `staged` owns the compiler output credit lease. It is dropped here,
     // before the adapter asks the compiler to start the next profile.
@@ -1002,7 +1096,7 @@ pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
 /// have been admitted. The caller commits this one intent before advancing
 /// the process-local serving selector.
 pub(super) fn finish_deferred_index(
-    job: DeferredIndex,
+    mut job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
     if !job.profiles.is_empty() || job.completed_profiles != job.expected_profiles {
         return Err(BuiltinModelError(
@@ -1010,6 +1104,14 @@ pub(super) fn finish_deferred_index(
                 .to_owned(),
         ));
     }
+    replace_project_cargo_aliases(
+        &mut job.source_changes,
+        job.project_key,
+        job.project_record,
+        std::mem::take(&mut job.cargo_alias_observations)
+            .into_values()
+            .collect(),
+    )?;
     let intent = if job.source_changes.is_empty() && job.semantic_changes.is_empty() {
         None
     } else {
@@ -1270,6 +1372,7 @@ fn compile_semantic_publications(
     (
         Vec<BuiltinSemanticChange>,
         Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+        Vec<CargoPackageAliasEvidenceV1>,
     ),
     BuiltinModelError,
 > {
@@ -1295,6 +1398,7 @@ fn compile_semantic_publications(
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
     let mut selected_claims = Vec::with_capacity(by_profile.len());
+    let mut cargo_alias_observations = Vec::new();
     for (profile, sources) in by_profile {
         let expected_artifacts = u32::try_from(sources.len())
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
@@ -1834,71 +1938,104 @@ fn compile_semantic_publications(
                 "locald compiler route fallback: complete workspace capture or ACK journal unavailable"
             );
         }
-        let (claim, selected, publication_coverage) = if let Some((claim, selected)) =
-            remote_publication
-        {
-            // Remote result envelopes carry semantic artifacts but no typed
-            // source-scope gaps. Remote admission therefore requires the
-            // exact complete source-identity multiset before this branch can
-            // select a generation; partial worker output is rejected there.
-            (claim, selected, SemanticPublicationCoverage::Complete)
-        } else {
-            // A fallback local compile uses its own fresh, Partial source
-            // observation. This prevents a captured full-workspace root from
-            // being attached to bytes read later from the live checkout.
-            let local_observation = semantic_authority.observe(
-                &key,
-                scan_input_digest,
-                u64::from(expected_artifacts),
-            )?;
-            drop(attempt.take());
-            let local_attempt =
-                semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
-            let local_input_claim = SemanticInputWitness::claimed_state(
-                scan_input_digest,
-                ScopeRoot::from_bytes(scan_input_digest),
-                Coverage::Partial,
-            );
-            let source_set = OwnedPackageSourceSet::new(
-                request,
-                context.source_root.to_path_buf(),
-                sources.into_boxed_slice(),
-            )
-            .map_err(|error| BuiltinModelError(error.to_string()))?
-            .with_input_claim(local_input_claim);
-            let local_compile_started = Instant::now();
-            let (staged, publication_coverage) = admit_local_compile(
-                context.compiler.compile_package_sources_staged(source_set),
-                expected_artifacts,
-            )?;
-            if let (Some(owner), Some((capture, work))) = (owner_cluster, captured_work.as_ref()) {
-                let elapsed_ms =
-                    u64::try_from(local_compile_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                match super::super::cluster_dispatch::LocalCompilerCostObservation::new(
-                    *work.recipe().as_ref(),
-                    capture.payload_bytes(),
+        let (claim, selected, publication_coverage, cargo_alias_evidence) =
+            if let Some((claim, selected)) = remote_publication {
+                // Remote result envelopes carry semantic artifacts but no typed
+                // source-scope gaps. Remote admission therefore requires the
+                // exact complete source-identity multiset before this branch can
+                // select a generation; partial worker output is rejected there.
+                (
+                    claim,
+                    selected,
+                    SemanticPublicationCoverage::Complete,
+                    staged_cargo_alias_evidence(
+                        profile,
+                        scan_input_digest,
+                        context.source_root,
+                        None,
+                    )?,
+                )
+            } else {
+                // A fallback local compile uses its own fresh, Partial source
+                // observation. This prevents a captured full-workspace root from
+                // being attached to bytes read later from the live checkout.
+                let local_observation = semantic_authority.observe(
+                    &key,
+                    scan_input_digest,
+                    u64::from(expected_artifacts),
+                )?;
+                drop(attempt.take());
+                let local_attempt =
+                    semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
+                let local_input_claim = SemanticInputWitness::claimed_state(
+                    scan_input_digest,
+                    ScopeRoot::from_bytes(scan_input_digest),
+                    Coverage::Partial,
+                );
+                let source_set = OwnedPackageSourceSet::new(
+                    request,
+                    context.source_root.to_path_buf(),
+                    sources.into_boxed_slice(),
+                )
+                .map_err(|error| BuiltinModelError(error.to_string()))?
+                .with_input_claim(local_input_claim);
+                let local_compile_started = Instant::now();
+                let (staged, publication_coverage) = admit_local_compile(
+                    context.compiler.compile_package_sources_staged(source_set),
                     expected_artifacts,
-                    elapsed_ms.max(1),
+                )?;
+                let cargo_alias_evidence = match staged_cargo_alias_evidence(
+                    profile,
+                    scan_input_digest,
+                    context.source_root,
+                    Some(&staged),
                 ) {
-                    Ok(observation) => {
-                        if let Err(error) = owner.record_local_observation(observation) {
-                            eprintln!("locald compiler cost observation was not saved: {error}");
+                    Ok(evidence) => evidence,
+                    Err(error) => {
+                        semantic_authority.retire_candidate_attempt(
+                            &local_attempt,
+                            backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+                        )?;
+                        return Err(error);
+                    }
+                };
+                if let (Some(owner), Some((capture, work))) =
+                    (owner_cluster, captured_work.as_ref())
+                {
+                    let elapsed_ms = u64::try_from(local_compile_started.elapsed().as_millis())
+                        .unwrap_or(u64::MAX);
+                    match super::super::cluster_dispatch::LocalCompilerCostObservation::new(
+                        *work.recipe().as_ref(),
+                        capture.payload_bytes(),
+                        expected_artifacts,
+                        elapsed_ms.max(1),
+                    ) {
+                        Ok(observation) => {
+                            if let Err(error) = owner.record_local_observation(observation) {
+                                eprintln!(
+                                    "locald compiler cost observation was not saved: {error}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("locald compiler cost observation was rejected: {error}");
                         }
                     }
-                    Err(error) => {
-                        eprintln!("locald compiler cost observation was rejected: {error}");
-                    }
                 }
-            }
-            let publication = publish_local_compile(
-                semantic_authority,
-                &key,
-                local_attempt,
-                &staged,
-                revision_fence,
-            )?;
-            (publication.0, publication.1, publication_coverage)
-        };
+                let publication = publish_local_compile(
+                    semantic_authority,
+                    &key,
+                    local_attempt,
+                    &staged,
+                    revision_fence,
+                )?;
+                (
+                    publication.0,
+                    publication.1,
+                    publication_coverage,
+                    cargo_alias_evidence,
+                )
+            };
         match execution_route {
             SemanticExecutionRoute::RemoteSelected => {
                 eprintln!("locald semantic profile selected from checked remote compiler output");
@@ -1916,9 +2053,12 @@ fn compile_semantic_publications(
             &mut changes,
         )?;
         selected_claims.push((key, claim));
+        if let Some(evidence) = cargo_alias_evidence {
+            cargo_alias_observations.push(evidence);
+        }
         let _ = selected;
     }
-    Ok((changes, selected_claims))
+    Ok((changes, selected_claims, cargo_alias_observations))
 }
 
 /// Admits one local compile's output: every expected source is accounted
@@ -3850,6 +3990,82 @@ mod compiler_input_witness_tests {
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
+    #[test]
+    fn a_recompile_without_staged_cargo_facts_clears_prior_alias_authority() {
+        use backend_library::{
+            CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1,
+            CargoPackageAliasEvidenceV1, CargoPackageAliasObservationV1,
+            CargoPackageAliasUnavailableV1, CargoPackageAliasV1, CargoPackageNameV1,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let stale_alias = CargoPackageAliasV1::CargoPackageName(
+            CargoPackageNameV1::new("old-cargo-name").expect("bounded stale alias"),
+        );
+        let stale_observation = CargoPackageAliasObservationV1::from_wire_parts(
+            profile,
+            [44; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [1; 32], [2; 32], [3; 32],
+            )),
+            vec![0],
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .expect("well-shaped previous observation");
+        let stale_evidence = CargoPackageAliasEvidenceV1::from_wire_parts(
+            vec![stale_alias],
+            vec![stale_observation],
+        )
+        .expect("well-shaped previous Cargo evidence");
+        let project_key = [9; 32];
+        let previously_indexed = ProductSourceRecord::project_with_cargo_aliases(
+            "fixture",
+            [7; 32],
+            Vec::new(),
+            stale_evidence,
+        )
+        .expect("prior source row with Cargo authority");
+        let fresh_project = ProductSourceRecord::project("fixture", [7; 32], Vec::new())
+            .expect("fresh scan starts with no Cargo aliases");
+        assert_ne!(previously_indexed, fresh_project);
+
+        // This is the no-reuse/recompile result when the staged compiler has
+        // no retained metadata: the current revision is explicitly
+        // unavailable, and the previous name does not cross the rebuild.
+        let current = staged_cargo_alias_evidence(profile, [45; 32], Path::new("/workspace"), None)
+            .expect("no retained full Cargo facts is a typed unavailable observation")
+            .expect("Rust profile carries an explicit alias observation");
+        let mut changes = vec![BuiltinSourceChange {
+            key: project_key,
+            after: Some(fresh_project.clone()),
+        }];
+        replace_project_cargo_aliases(&mut changes, project_key, fresh_project, vec![current])
+            .expect("current observation replaces previous source authority");
+
+        let indexed = changes[0]
+            .after
+            .as_ref()
+            .and_then(ProductSourceRecord::project_fields)
+            .and_then(|fields| fields.cargo_aliases)
+            .expect("new profile observation remains explicit");
+        assert!(indexed.aliases().is_empty());
+        assert!(!indexed.admits_for_profile(profile, "old-cargo-name"));
+        assert_eq!(
+            indexed
+                .observation(profile)
+                .unwrap()
+                .source_observation_revision(),
+            [45; 32]
+        );
+        assert_eq!(
+            indexed.observation(profile).unwrap().coverage(),
+            CargoPackageAliasCoverageV1::Unavailable(
+                CargoPackageAliasUnavailableV1::MetadataFactsUnavailable
+            )
+        );
+    }
+
     fn scratch_directory() -> PathBuf {
         let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -4054,7 +4270,10 @@ mod compiler_input_witness_tests {
             &inputs,
             &BTreeSet::new(),
         );
-        assert_eq!(dirty, live_profiles, "unproven lanes fail closed on no-op");
+        assert_eq!(
+            dirty, live_profiles,
+            "unproven lanes fail closed on no-op; persisted Cargo aliases cannot skip their rebuild"
+        );
         let (fresh, reused) = ingest::select_compiler_inputs(
             &root,
             runtime_no_op.compiler_sources,

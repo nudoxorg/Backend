@@ -18,6 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use backend_compile::{RustCargoFeatureSelectionV1, RustCargoWorkspaceFactsV1};
 use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_base_db::{
     EditionedFileId, FileSet, SourceDatabase, SourceRoot, SourceRootId, all_crates,
@@ -330,6 +331,7 @@ pub struct RustProject {
 pub struct RustWorkspace {
     root: PathBuf,
     edition: RustEdition,
+    cargo_workspace_facts: Option<Arc<RustCargoWorkspaceFactsV1>>,
     database: RootDatabase,
     vfs: Vfs,
     /// Package-relative selected paths mapped to their lexical RA VFS paths.
@@ -371,6 +373,15 @@ pub struct RustActiveHirRootInventory {
 }
 
 impl RustWorkspace {
+    /// Exact full Cargo metadata facts produced during this workspace load.
+    ///
+    /// `None` means Cargo resolution remained usable by rust-analyzer but the
+    /// separate bounded product DTO could not retain a complete owner witness.
+    #[must_use]
+    pub fn cargo_workspace_facts(&self) -> Option<&Arc<RustCargoWorkspaceFactsV1>> {
+        self.cargo_workspace_facts.as_ref()
+    }
+
     fn build_source_ownership_index(
         &self,
         control: RustAnalysisControl<'_>,
@@ -1820,9 +1831,21 @@ impl RustWorkspace {
             });
         }
         control.check()?;
+        let cargo_workspace_facts = if metadata_gate.workspace_facts.is_some()
+            && metadata_gate
+                .config_digest
+                .is_some_and(|digest| cargo_config_digest(&root, cargo_home) == Some(digest))
+            && metadata_gate.lockfile_digest.is_some_and(|digest| {
+                bounded_file_digest(&metadata_gate.lockfile_path) == Some(digest)
+            }) {
+            metadata_gate.workspace_facts.clone()
+        } else {
+            None
+        };
         Ok(Self {
             root,
             edition,
+            cargo_workspace_facts,
             database,
             vfs,
             selected_source_paths: HashMap::new(),
@@ -3033,6 +3056,10 @@ struct CargoMetadataGate {
     lockfile_exists: bool,
     metadata_extra_args: Vec<String>,
     extra_env: Vec<(String, Option<String>)>,
+    lockfile_path: PathBuf,
+    lockfile_digest: Option<[u8; 32]>,
+    config_digest: Option<[u8; 32]>,
+    workspace_facts: Option<Arc<RustCargoWorkspaceFactsV1>>,
     _isolated_lockfile: Option<IsolatedCargoLockfile>,
 }
 
@@ -3072,6 +3099,10 @@ fn cargo_metadata_preflight(
     };
     let lockfile = workspace_root.join("Cargo.lock");
     let lockfile_exists = lockfile.is_file();
+    let lockfile_before = lockfile_exists
+        .then(|| bounded_file_digest(&lockfile))
+        .flatten();
+    let config_before = cargo_config_digest(root, cargo_home);
     let mut command = cargo_metadata_command(
         cargo, cargo_home, toolchain, root, &manifest, features, policy,
     )?;
@@ -3159,13 +3190,263 @@ fn cargo_metadata_preflight(
         .map_err(|cause| metadata_incomplete(root, policy, cause))?;
     validate_resolution_graph(&metadata)
         .map_err(|cause| metadata_incomplete(root, policy, cause))?;
+    let lockfile_after = if lockfile_exists {
+        bounded_file_digest(&lockfile)
+    } else {
+        isolated_lockfile
+            .as_ref()
+            .and_then(|isolated| bounded_file_digest(&isolated.path))
+    };
+    let config_after = cargo_config_digest(root, cargo_home);
+    let workspace_facts = match (lockfile_after, config_before, config_after) {
+        (Some(lockfile_digest), Some(config_before), Some(config_after))
+            if (!lockfile_exists || lockfile_before == Some(lockfile_digest))
+                && config_before == config_after =>
+        {
+            let resolved_lockfile_path = if lockfile_exists {
+                &lockfile
+            } else {
+                isolated_lockfile
+                    .as_ref()
+                    .map(|isolated| &isolated.path)
+                    .unwrap_or(&lockfile)
+            };
+            let requested_features = RustCargoFeatureSelectionV1 {
+                all_features: features.all_features,
+                no_default_features: features.no_default_features,
+                features: features
+                    .features
+                    .iter()
+                    .map(|feature| Box::<str>::from(*feature))
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            };
+            let invocation_digest = cargo_metadata_invocation_digest(
+                root,
+                &manifest,
+                cargo,
+                cargo_home,
+                resolved_lockfile_path,
+                toolchain,
+                features,
+                policy,
+                lockfile_exists,
+                &metadata_extra_args,
+                &extra_env,
+                config_before,
+            );
+            invocation_digest.and_then(|invocation_digest| {
+                RustCargoWorkspaceFactsV1::from_metadata_value(
+                    &metadata,
+                    manifest.clone(),
+                    requested_features,
+                    *blake3::hash(&output.stdout).as_bytes(),
+                    lockfile_digest,
+                    invocation_digest,
+                )
+                .ok()
+                .map(Arc::new)
+            })
+        }
+        _ => None,
+    };
     control.check()?;
+    let lockfile_path = if lockfile_exists {
+        lockfile
+    } else {
+        isolated_lockfile
+            .as_ref()
+            .map(|isolated| isolated.path.clone())
+            .unwrap_or_default()
+    };
     Ok(CargoMetadataGate {
         lockfile_exists,
         metadata_extra_args,
         extra_env,
+        lockfile_path,
+        lockfile_digest: lockfile_after,
+        config_digest: config_after,
+        workspace_facts,
         _isolated_lockfile: isolated_lockfile,
     })
+}
+
+fn bounded_file_digest(path: &Path) -> Option<[u8; 32]> {
+    let bytes = bounded_file_bytes(path, MAX_CARGO_METADATA_STREAM_BYTES)??;
+    Some(*blake3::hash(&bytes).as_bytes())
+}
+
+fn bounded_file_bytes(path: &Path, maximum: usize) -> Option<Option<Vec<u8>>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(None),
+        Err(_) => return None,
+    };
+    // Follow configuration symlinks deliberately: Cargo accepts symlinked
+    // `.cargo/config` files, and the digest is over the opened regular-file
+    // referent. Bracket the read on this descriptor; callers also require the
+    // path-based configuration digest to match before and after Cargo runs.
+    // This detects a length or modification-time change across the descriptor
+    // read; it is not an atomic content snapshot and does not pin pathname
+    // identity while Cargo independently reopens its configuration.
+    let before = file.metadata().ok()?;
+    let before_modified = before.modified().ok()?;
+    if !before.is_file() || before.len() > u64::try_from(maximum).ok()? {
+        return None;
+    }
+    let mut file = file;
+    let mut bytes = Vec::new();
+    let read_limit = u64::try_from(maximum).ok()?.checked_add(1)?;
+    (&mut file).take(read_limit).read_to_end(&mut bytes).ok()?;
+    let after = file.metadata().ok()?;
+    if bytes.len() > maximum
+        || u64::try_from(bytes.len()).ok()? != after.len()
+        || before.len() != after.len()
+        || before_modified != after.modified().ok()?
+    {
+        return None;
+    }
+    Some(Some(bytes))
+}
+
+fn cargo_config_digest(root: &Path, cargo_home: &Path) -> Option<[u8; 32]> {
+    const MAX_CONFIG_FILES: usize = 128;
+    const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+
+    let mut paths = Vec::new();
+    let mut directory = Some(root);
+    while let Some(current) = directory {
+        for file in ["config.toml", "config"] {
+            paths.push(current.join(".cargo").join(file));
+        }
+        directory = current.parent();
+        if paths.len() > MAX_CONFIG_FILES {
+            return None;
+        }
+    }
+    for file in ["config.toml", "config"] {
+        paths.push(cargo_home.join(file));
+    }
+    if paths.len() > MAX_CONFIG_FILES {
+        return None;
+    }
+    paths.sort();
+    paths.dedup();
+
+    let mut hasher = blake3::Hasher::new_derive_key("backend.rust-cargo-config-snapshot.v1");
+    hasher.update(&(paths.len() as u64).to_be_bytes());
+    for path in paths {
+        let encoded = path.as_os_str().as_encoded_bytes();
+        hasher.update(&(encoded.len() as u64).to_be_bytes());
+        hasher.update(encoded);
+        match bounded_file_bytes(&path, MAX_CONFIG_BYTES)? {
+            Some(bytes) => {
+                hasher.update(&[1]);
+                hasher.update(&(bytes.len() as u64).to_be_bytes());
+                hasher.update(blake3::hash(&bytes).as_bytes());
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    Some(*hasher.finalize().as_bytes())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cargo_metadata_invocation_digest(
+    root: &Path,
+    manifest: &Path,
+    cargo: &Path,
+    cargo_home: &Path,
+    lockfile_path: &Path,
+    toolchain: &RustToolchain,
+    features: RustFeatureControl<'_>,
+    policy: RustCargoMetadataPolicy,
+    lockfile_exists: bool,
+    metadata_extra_args: &[String],
+    extra_env: &[(String, Option<String>)],
+    config_digest: [u8; 32],
+) -> Option<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new_derive_key("backend.rust-cargo-metadata-invocation.v1");
+    for path in [
+        root,
+        manifest,
+        cargo,
+        cargo_home,
+        lockfile_path,
+        &toolchain.tool,
+        &toolchain.sysroot,
+    ] {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        hasher.update(&(bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    for optional_path in [
+        &toolchain.rustup_home,
+        &toolchain.cargo_home,
+        &toolchain.cargo,
+    ] {
+        match optional_path {
+            Some(path) => {
+                hasher.update(&[1]);
+                let bytes = path.as_os_str().as_encoded_bytes();
+                hasher.update(&(bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    match &toolchain.rustup_toolchain {
+        Some(value) => hash_metadata_binding_text(&mut hasher, value.as_bytes()),
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    let authority_path = toolchain.authority_path().ok()?;
+    hash_metadata_binding_text(&mut hasher, authority_path.as_bytes());
+    hash_metadata_binding_text(
+        &mut hasher,
+        b"cargo metadata --manifest-path --format-version 1",
+    );
+    hash_metadata_binding_text(&mut hasher, b"CARGO_TERM_COLOR=never");
+    hasher.update(&[
+        u8::from(features.all_features),
+        u8::from(features.no_default_features),
+    ]);
+    hasher.update(&(features.features.len() as u64).to_be_bytes());
+    for feature in features.features {
+        hash_metadata_binding_text(&mut hasher, feature.as_bytes());
+    }
+    hasher.update(&[match policy {
+        RustCargoMetadataPolicy::Online => 0,
+        RustCargoMetadataPolicy::Offline => 1,
+    }]);
+    hasher.update(&[u8::from(lockfile_exists)]);
+    hasher.update(&config_digest);
+    hasher.update(&(metadata_extra_args.len() as u64).to_be_bytes());
+    for argument in metadata_extra_args {
+        hash_metadata_binding_text(&mut hasher, argument.as_bytes());
+    }
+    hasher.update(&(extra_env.len() as u64).to_be_bytes());
+    for (key, value) in extra_env {
+        hash_metadata_binding_text(&mut hasher, key.as_bytes());
+        match value {
+            Some(value) => hash_metadata_binding_text(&mut hasher, value.as_bytes()),
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    Some(*hasher.finalize().as_bytes())
+}
+
+fn hash_metadata_binding_text(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&[1]);
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 fn cargo_base_command(
@@ -5274,5 +5555,41 @@ mod read_frontier_budget_tests {
             result,
             Err(CargoMetadataProcessFailure::Cancelled)
         ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod cargo_config_file_snapshot_tests {
+    use super::bounded_file_bytes;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn bounded_configuration_reads_follow_symlinks_and_enforce_the_byte_limit() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-cargo-config-symlink-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).expect("private fixture directory");
+        let target = root.join("config-target");
+        std::fs::write(&target, b"cfg").expect("write configuration target");
+        let link = root.join("config.toml");
+        symlink(&target, &link).expect("symlinked Cargo configuration is supported");
+
+        assert_eq!(
+            bounded_file_bytes(&link, 3),
+            Some(Some(b"cfg".to_vec())),
+            "configuration hashing follows Cargo's symlink referent"
+        );
+        assert_eq!(
+            bounded_file_bytes(&link, 2),
+            None,
+            "oversized configuration is rejected"
+        );
+
+        std::fs::remove_dir_all(root).expect("remove configuration fixture");
     }
 }

@@ -167,6 +167,7 @@ pub(super) fn read_project_sources(
         return Ok(IndexedSources {
             projects: std::collections::BTreeMap::new(),
             files: Vec::new(),
+            cargo_aliases: std::collections::BTreeMap::new(),
         });
     };
     let fields = record.project_fields().ok_or_else(|| {
@@ -196,7 +197,15 @@ pub(super) fn read_project_sources(
             files: Arc::<[[u8; 32]]>::from(fields.files),
         },
     );
-    Ok(IndexedSources { projects, files })
+    let cargo_aliases = fields
+        .cargo_aliases
+        .map(|aliases| std::collections::BTreeMap::from([(key, aliases.clone())]))
+        .unwrap_or_default();
+    Ok(IndexedSources {
+        projects,
+        files,
+        cargo_aliases,
+    })
 }
 
 /// Drops one package's rows and admits its replacement.
@@ -1078,11 +1087,16 @@ fn structural_fixtures(
     let workspace = IndexedSources {
         projects,
         files: records,
+        cargo_aliases: std::collections::BTreeMap::new(),
     };
     let (project, files) = first.expect("one package");
     let mut projects = std::collections::BTreeMap::new();
     projects.insert(project.package.to_bytes(), project);
-    let one = IndexedSources { projects, files };
+    let one = IndexedSources {
+        projects,
+        files,
+        cargo_aliases: std::collections::BTreeMap::new(),
+    };
     (workspace, one)
 }
 
@@ -1704,7 +1718,11 @@ mod tests {
             },
         );
         (
-            IndexedSources { projects, files },
+            IndexedSources {
+                projects,
+                files,
+                cargo_aliases: std::collections::BTreeMap::new(),
+            },
             package,
             widget_key,
             impl_key,

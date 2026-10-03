@@ -10,7 +10,14 @@ use backend_compile::{
     SourceExcerptExtent,
 };
 use backend_execution::AuthorityVersion;
+use backend_library::{
+    CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1, CargoPackageAliasEvidenceV1,
+    CargoPackageAliasObservationV1, CargoPackageAliasUnavailableV1, CargoPackageAliasV1,
+    MAX_CARGO_ALIAS_PROFILE_OBSERVATIONS, MAX_CARGO_PACKAGE_ALIASES,
+    MAX_RUST_CARGO_METADATA_TEXT_BYTES,
+};
 use backend_replication::ImmutableObjectSchema;
+use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{
     CanonicalRelation, ContentId, CoverageWitness, DEFAULT_CUT_POLICY, Relation, RelationState,
     SourceFactDomain, StateRoot, WorkspaceRoot,
@@ -36,8 +43,11 @@ const SOURCE_RECORD_FORMAT_IDENTIFIED: &[u8; 4] = b"PSRA";
 /// spent on the facts.
 const SOURCE_RECORD_FORMAT_FACTS: &[u8; 4] = b"PSRB";
 
+/// Canonical format tag for a project record carrying source-bound Cargo aliases.
+const SOURCE_RECORD_FORMAT_CARGO_ALIASES: &[u8; 4] = b"PSRC";
+
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 11;
+const SOURCE_RECORD_VERSION: u8 = 12;
 
 /// Returns the lowest format tag that can carry this record.
 ///
@@ -47,9 +57,9 @@ const SOURCE_RECORD_VERSION: u8 = 11;
 /// way it always did, or every workspace written before containment existed
 /// would stop opening. The tag is minimal for that reason, the way a
 /// canonical integer takes the shortest form: `PSR9` means precisely "at
-/// least one declaration states where it sits", and `PSRA` means "the row
-/// also states which `SourceFactDomain` content identity its exact bytes
-/// hash to".
+/// least one declaration states where it sits, `PSRA` means "the row also
+/// states which `SourceFactDomain` content identity its exact bytes hash to",
+/// and `PSRC` carries Cargo alias observations on a project frontier.
 ///
 /// Decoding stays liberal - it admits a `PSR9` record that states no
 /// containment and normalizes it to `PSR8` on the way out - because refusing
@@ -57,6 +67,10 @@ const SOURCE_RECORD_VERSION: u8 = 11;
 /// unopenable over a tag.
 fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
     match value {
+        ProductSourceRecord::Project {
+            cargo_aliases: Some(_),
+            ..
+        } => SOURCE_RECORD_FORMAT_CARGO_ALIASES,
         ProductSourceRecord::Project { .. } => SOURCE_RECORD_FORMAT_PLAIN,
         ProductSourceRecord::File {
             declarations,
@@ -95,12 +109,12 @@ fn format_version(format: &[u8]) -> Option<u8> {
     let [b'P', b'S', b'R', tag] = format else {
         return None;
     };
-    // `PSRA` is the identified format: the eleventh shape, named by a letter
-    // because a tenth digit would read as "1" followed by nothing. `PSRB`
-    // is the facts format that follows it.
+    // `PSRA` is the identified format, `PSRB` adds declaration facts, and
+    // `PSRC` adds source-bound Cargo aliases to project records.
     let version = match tag {
         b'A' => 10,
         b'B' => 11,
+        b'C' => 12,
         digit => digit.checked_sub(b'0')?,
     };
     (2..=SOURCE_RECORD_VERSION)
@@ -129,6 +143,9 @@ pub enum ProductSourceRecord {
         source_version: [u8; 32],
         /// Sorted relation keys for every selected source file.
         files: Arc<[[u8; 32]]>,
+        /// Exact bounded Cargo aliases joined to the current source observations.
+        /// `None` preserves historical project-row encoding.
+        cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
     },
     /// One independently versioned source file.
     File {
@@ -273,6 +290,8 @@ pub struct ProductProjectRef<'a> {
     pub source_version: [u8; 32],
     /// Sorted relation keys for the selected files.
     pub files: &'a [[u8; 32]],
+    /// Exact Cargo aliases with their per-profile source bindings.
+    pub cargo_aliases: Option<&'a CargoPackageAliasEvidenceV1>,
 }
 
 /// Borrowed source-file fields exposed without cloning declaration storage.
@@ -356,6 +375,31 @@ impl ProductSourceRecord {
         source_version: [u8; 32],
         files: impl Into<Vec<[u8; 32]>>,
     ) -> Result<Self, String> {
+        Self::project_with_aliases(label, source_version, files, None)
+    }
+
+    /// Constructs a project frontier with exact source-bound Cargo aliases.
+    /// If the aliases alone push an otherwise valid project row over its
+    /// canonical byte capacity, the record retains each observation and
+    /// reports `ProjectRowCapacity` instead of silently omitting them.
+    pub fn project_with_cargo_aliases(
+        label: impl Into<String>,
+        source_version: [u8; 32],
+        files: impl Into<Vec<[u8; 32]>>,
+        cargo_aliases: CargoPackageAliasEvidenceV1,
+    ) -> Result<Self, String> {
+        cargo_aliases.admit().map_err(|_| {
+            "Cargo package alias evidence is malformed or exceeds its bounds".to_owned()
+        })?;
+        Self::project_with_aliases(label, source_version, files, Some(cargo_aliases))
+    }
+
+    fn project_with_aliases(
+        label: impl Into<String>,
+        source_version: [u8; 32],
+        files: impl Into<Vec<[u8; 32]>>,
+        cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
+    ) -> Result<Self, String> {
         let label = label.into();
         let files = files.into();
         if label.is_empty() || label.len() > Self::MAX_LABEL_BYTES {
@@ -375,8 +419,19 @@ impl ProductSourceRecord {
             label,
             source_version,
             files: Arc::from(files.into_boxed_slice()),
+            cargo_aliases,
         };
-        let encoded = record.encoded_value_bytes();
+        let mut record = record;
+        let mut encoded = record.encoded_value_bytes();
+        if encoded > Self::ROW_VALUE_CAPACITY
+            && let Self::Project {
+                cargo_aliases: Some(evidence),
+                ..
+            } = &mut record
+        {
+            *evidence = evidence.unavailable_for_project_row_capacity();
+            encoded = record.encoded_value_bytes();
+        }
         if encoded > Self::ROW_VALUE_CAPACITY {
             let named = record
                 .project_fields()
@@ -587,10 +642,12 @@ impl ProductSourceRecord {
                 label,
                 source_version,
                 files,
+                cargo_aliases,
             } => Some(ProductProjectRef {
                 label,
                 source_version: *source_version,
                 files,
+                cargo_aliases: cargo_aliases.as_ref(),
             }),
             Self::File { .. } => None,
         }
@@ -649,6 +706,33 @@ impl ProductSourceRecord {
                 "a project record names no source bytes, so it carries no content identity"
                     .to_owned(),
             ),
+        }
+    }
+
+    /// Rebuilds this project frontier with one exact alias-evidence set.
+    ///
+    /// # Errors
+    /// Returns an error when this is not a project record or the alias
+    /// evidence itself is malformed.
+    pub fn with_cargo_aliases(
+        self,
+        cargo_aliases: CargoPackageAliasEvidenceV1,
+    ) -> Result<Self, String> {
+        match self {
+            Self::Project {
+                label,
+                source_version,
+                files,
+                ..
+            } => Self::project_with_cargo_aliases(
+                label,
+                source_version,
+                files.to_vec(),
+                cargo_aliases,
+            ),
+            Self::File { .. } => {
+                Err("a source file row cannot carry project Cargo package aliases".to_owned())
+            }
         }
     }
 }
@@ -737,6 +821,7 @@ impl Relation for ProductSourceRelation {
                 label,
                 source_version,
                 files,
+                cargo_aliases,
             } => {
                 output.push(1);
                 push_text(output, label);
@@ -744,6 +829,9 @@ impl Relation for ProductSourceRelation {
                 push_count(output, files.len());
                 for file in files.iter() {
                     output.extend_from_slice(file);
+                }
+                if let Some(evidence) = cargo_aliases {
+                    encode_cargo_package_alias_evidence(evidence, output);
                 }
             }
             ProductSourceRecord::File { .. } => encode_file_record(value, output),
@@ -948,10 +1036,8 @@ impl ProductSourceFileKey {
 
     fn to_bytes(self) -> [u8; 32] {
         let mut bytes = [0; 32];
-        bytes[..PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES]
-            .copy_from_slice(&self.project_prefix);
-        bytes[PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES..]
-            .copy_from_slice(&self.file_digest);
+        bytes[..PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES].copy_from_slice(&self.project_prefix);
+        bytes[PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES..].copy_from_slice(&self.file_digest);
         bytes
     }
 }
@@ -1017,6 +1103,123 @@ fn push_text(output: &mut Vec<u8>, value: &str) {
     output.extend_from_slice(value.as_bytes());
 }
 
+fn encode_cargo_package_alias_evidence(
+    evidence: &CargoPackageAliasEvidenceV1,
+    output: &mut Vec<u8>,
+) {
+    push_count(output, evidence.aliases().len());
+    for alias in evidence.aliases() {
+        output.push(alias.kind_tag());
+        push_text(output, alias.as_str());
+    }
+    push_count(output, evidence.observations().len());
+    for observation in evidence.observations() {
+        output.extend_from_slice(&<[u8; 2]>::from(observation.profile()));
+        output.extend_from_slice(&observation.source_observation_revision());
+        match observation.cargo_facts() {
+            Some(facts) => {
+                output.push(1);
+                output.extend_from_slice(&facts.metadata_response_digest());
+                output.extend_from_slice(&facts.resolved_lockfile_digest());
+                output.extend_from_slice(&facts.toolchain_binding_digest());
+            }
+            None => output.push(0),
+        }
+        match observation.coverage() {
+            CargoPackageAliasCoverageV1::Complete => output.push(0),
+            CargoPackageAliasCoverageV1::Truncated { retained, omitted } => {
+                output.push(1);
+                output.push(retained);
+                output.extend_from_slice(&omitted.to_be_bytes());
+            }
+            CargoPackageAliasCoverageV1::Unavailable(reason) => {
+                output.push(2);
+                output.push(cargo_alias_unavailable_tag(reason));
+            }
+        }
+        push_count(output, observation.alias_indices().len());
+        output.extend_from_slice(observation.alias_indices());
+    }
+}
+
+fn decode_cargo_package_alias_evidence(
+    reader: &mut SourceReader<'_>,
+) -> Result<CargoPackageAliasEvidenceV1, ()> {
+    let alias_count = reader.count(MAX_CARGO_PACKAGE_ALIASES)?;
+    let mut aliases = Vec::with_capacity(alias_count);
+    for _ in 0..alias_count {
+        let kind = reader.byte()?;
+        let value = reader.text(MAX_RUST_CARGO_METADATA_TEXT_BYTES)?;
+        aliases.push(
+            CargoPackageAliasV1::from_wire_parts(kind, value.into_boxed_str()).map_err(|_| ())?,
+        );
+    }
+    let observation_count = reader.count(MAX_CARGO_ALIAS_PROFILE_OBSERVATIONS)?;
+    let mut observations = Vec::with_capacity(observation_count);
+    for _ in 0..observation_count {
+        let profile_bytes: [u8; 2] = reader.take(2)?.try_into().map_err(|_| ())?;
+        let profile = LanguageProfile::try_from(profile_bytes).map_err(|_| ())?;
+        let source_observation_revision = reader.array()?;
+        let cargo_facts = match reader.byte()? {
+            0 => None,
+            1 => Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                reader.array()?,
+                reader.array()?,
+                reader.array()?,
+            )),
+            _ => return Err(()),
+        };
+        let coverage = match reader.byte()? {
+            0 => CargoPackageAliasCoverageV1::Complete,
+            1 => CargoPackageAliasCoverageV1::Truncated {
+                retained: reader.byte()?,
+                omitted: reader.u32()?,
+            },
+            2 => CargoPackageAliasCoverageV1::Unavailable(
+                cargo_alias_unavailable_from_tag(reader.byte()?).ok_or(())?,
+            ),
+            _ => return Err(()),
+        };
+        let index_count = reader.count(MAX_CARGO_PACKAGE_ALIASES)?;
+        let mut alias_indices = Vec::with_capacity(index_count);
+        for _ in 0..index_count {
+            alias_indices.push(reader.byte()?);
+        }
+        observations.push(
+            CargoPackageAliasObservationV1::from_wire_parts(
+                profile,
+                source_observation_revision,
+                cargo_facts,
+                alias_indices,
+                coverage,
+            )
+            .map_err(|_| ())?,
+        );
+    }
+    CargoPackageAliasEvidenceV1::from_wire_parts(aliases, observations).map_err(|_| ())
+}
+
+const fn cargo_alias_unavailable_tag(reason: CargoPackageAliasUnavailableV1) -> u8 {
+    match reason {
+        CargoPackageAliasUnavailableV1::MetadataFactsUnavailable => 0,
+        CargoPackageAliasUnavailableV1::NoExactWorkspaceMember => 1,
+        CargoPackageAliasUnavailableV1::SelectedManifestMismatch => 2,
+        CargoPackageAliasUnavailableV1::InvalidWorkspaceFacts => 3,
+        CargoPackageAliasUnavailableV1::ProjectRowCapacity => 4,
+    }
+}
+
+const fn cargo_alias_unavailable_from_tag(tag: u8) -> Option<CargoPackageAliasUnavailableV1> {
+    match tag {
+        0 => Some(CargoPackageAliasUnavailableV1::MetadataFactsUnavailable),
+        1 => Some(CargoPackageAliasUnavailableV1::NoExactWorkspaceMember),
+        2 => Some(CargoPackageAliasUnavailableV1::SelectedManifestMismatch),
+        3 => Some(CargoPackageAliasUnavailableV1::InvalidWorkspaceFacts),
+        4 => Some(CargoPackageAliasUnavailableV1::ProjectRowCapacity),
+        _ => None,
+    }
+}
+
 fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
     let mut reader = SourceReader::new(bytes);
     let version = format_version(reader.take(4)?).ok_or(())?;
@@ -1029,9 +1232,20 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
             for _ in 0..count {
                 files.push(reader.array()?);
             }
-            ProductSourceRecord::project(label, source_version, files).map_err(|_| ())?
+            if version >= 12 {
+                let aliases = decode_cargo_package_alias_evidence(&mut reader)?;
+                ProductSourceRecord::project_with_cargo_aliases(
+                    label,
+                    source_version,
+                    files,
+                    aliases,
+                )
+                .map_err(|_| ())?
+            } else {
+                ProductSourceRecord::project(label, source_version, files).map_err(|_| ())?
+            }
         }
-        2 => decode_file_record(&mut reader, version)?,
+        2 if version < 12 => decode_file_record(&mut reader, version)?,
         _ => return Err(()),
     };
     reader.finish()?;
@@ -1551,6 +1765,7 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
             label: "backend-builtin".to_owned(),
             source_version: [0; 32],
             files: Arc::from([]),
+            cargo_aliases: None,
         },
     )];
     if expanded {
@@ -1560,6 +1775,7 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
                 label: "backend-extra".to_owned(),
                 source_version: [0; 32],
                 files: Arc::from([]),
+                cargo_aliases: None,
             },
         ));
     }
@@ -1575,6 +1791,36 @@ mod tests {
     };
     use backend_version::{CanonicalRelation, ContentId, SourceFactDomain};
     use std::sync::Arc;
+
+    fn cargo_alias_evidence() -> backend_library::CargoPackageAliasEvidenceV1 {
+        use backend_library::{
+            CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1,
+            CargoPackageAliasEvidenceV1, CargoPackageAliasObservationV1, CargoPackageAliasV1,
+            CargoPackageNameV1, CargoTargetNameV1,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+
+        let aliases = vec![
+            CargoPackageAliasV1::CargoPackageName(
+                CargoPackageNameV1::new("display-package").expect("package alias"),
+            ),
+            CargoPackageAliasV1::CargoTargetName(
+                CargoTargetNameV1::new("rust_crate").expect("target alias"),
+            ),
+        ];
+        let observation = CargoPackageAliasObservationV1::from_wire_parts(
+            LanguageProfile::Rust(RustEdition::Rust2021),
+            [21; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [22; 32], [23; 32], [24; 32],
+            )),
+            vec![0, 1],
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .expect("profile observation");
+        CargoPackageAliasEvidenceV1::from_wire_parts(aliases, vec![observation])
+            .expect("alias evidence")
+    }
 
     #[test]
     fn source_file_keys_cluster_by_project_and_round_trip_canonically() {
@@ -1639,7 +1885,11 @@ mod tests {
             super::product_source_file_key(project, "src/lib.rs"),
             "a workspace keyed this way is state from another build, not a current one"
         );
-        assert_ne!(legacy[..16], project[..16], "the retired key carries no project prefix");
+        assert_ne!(
+            legacy[..16],
+            project[..16],
+            "the retired key carries no project prefix"
+        );
     }
 
     #[test]
@@ -1768,6 +2018,100 @@ mod tests {
                 .map(SourceDeclaration::container),
             Some(&super::Container::Module)
         );
+    }
+
+    #[test]
+    fn project_cargo_aliases_round_trip_without_changing_legacy_project_bytes() {
+        let legacy =
+            ProductSourceRecord::project("fixture", [7; 32], Vec::new()).expect("legacy project");
+        let mut legacy_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&legacy, &mut legacy_bytes);
+        assert_eq!(legacy_bytes.get(..4), Some(b"PSR8".as_slice()));
+        let mut expected_legacy = b"PSR8\x01".to_vec();
+        super::push_text(&mut expected_legacy, "fixture");
+        expected_legacy.extend_from_slice(&[7; 32]);
+        expected_legacy.extend_from_slice(&0_u32.to_be_bytes());
+        assert_eq!(legacy_bytes, expected_legacy);
+
+        let aliases = cargo_alias_evidence();
+        let record = ProductSourceRecord::project_with_cargo_aliases(
+            "fixture",
+            [7; 32],
+            Vec::new(),
+            aliases.clone(),
+        )
+        .expect("project aliases");
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut encoded);
+        assert_eq!(encoded.get(..4), Some(b"PSRC".as_slice()));
+        let decoded = ProductSourceRelation::decode_value(&encoded).expect("decode aliases");
+        assert_eq!(decoded, record);
+        assert_eq!(
+            decoded
+                .project_fields()
+                .and_then(|fields| fields.cargo_aliases),
+            Some(&aliases)
+        );
+        let mut reencoded = Vec::new();
+        ProductSourceRelation::encode_value(&decoded, &mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn project_frontier_capacity_retains_explicit_alias_unavailability() {
+        use backend_library::{
+            CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1,
+            CargoPackageAliasEvidenceV1, CargoPackageAliasObservationV1, CargoPackageAliasV1,
+            CargoTargetNameV1, MAX_CARGO_PACKAGE_ALIASES,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+
+        let aliases = (0..MAX_CARGO_PACKAGE_ALIASES)
+            .map(|index| {
+                CargoPackageAliasV1::CargoTargetName(
+                    CargoTargetNameV1::new(format!("{index:02}-{}", "x".repeat(1_000)))
+                        .expect("bounded target alias"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let observation = CargoPackageAliasObservationV1::from_wire_parts(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            [31; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [32; 32], [33; 32], [34; 32],
+            )),
+            (0..MAX_CARGO_PACKAGE_ALIASES)
+                .map(|index| u8::try_from(index).expect("alias index"))
+                .collect(),
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .expect("profile observation");
+        let evidence = CargoPackageAliasEvidenceV1::from_wire_parts(aliases, vec![observation])
+            .expect("bounded large alias evidence");
+        let files = (0..ProductSourceRecord::MAX_FRONTIER_FILES.saturating_sub(16))
+            .map(|index| {
+                let mut key = [0; 32];
+                key[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let base = ProductSourceRecord::project("fixture", [7; 32], files.clone())
+            .expect("base frontier fits without aliases");
+        assert!(base.encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+
+        let project =
+            ProductSourceRecord::project_with_cargo_aliases("fixture", [7; 32], files, evidence)
+                .expect("over-capacity alias names become explicit unavailable coverage");
+        let fields = project.project_fields().expect("project row");
+        let aliases = fields.cargo_aliases.expect("typed alias coverage");
+        assert!(aliases.aliases().is_empty());
+        assert_eq!(
+            aliases.observations()[0].coverage(),
+            CargoPackageAliasCoverageV1::Unavailable(
+                backend_library::CargoPackageAliasUnavailableV1::ProjectRowCapacity
+            )
+        );
+        assert!(project.encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
     }
 
     /// The semantic source content identity of a record whose bytes the
