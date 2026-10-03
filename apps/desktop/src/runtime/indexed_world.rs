@@ -9,7 +9,7 @@ use crate::core::{ProducerAuthority, VersionedRoot};
 use crate::model::pages::{PackageRef, SymbolRef};
 use crate::runtime::offload::{Answer, Cancellation, Memo};
 use crate::shell::bodies::graph::identity::{IdentityAdapter, ResolvedSymbol};
-use backend_client::Session;
+use backend_client::{ClientError, Session};
 use backend_library::{
     CommandReply, DeclarationKind, DependencyFacts, PageContinuation, PageTerminal, RowId,
     SemanticLinkKind, SurfaceCommand, SurfaceReply,
@@ -32,10 +32,104 @@ const OUTLINE_PAGES: usize = 8;
 const MAX_DECLARATIONS: usize = 2_048;
 const MAX_RELATION_ROOTS: usize = 128;
 const MAX_RELATIONS: usize = 12_000;
+// The local service closes a connection after 256 frames. A declaration read
+// sends a revision and a query, so rotate well before that boundary. Each
+// new connection must prove the same root before contributing any facts.
+const MAX_READS_PER_GRAPH_SESSION: usize = 64;
+
+#[derive(Default)]
+struct GraphReadBudget { reads: usize }
+
+impl GraphReadBudget {
+    fn next(&mut self) -> bool {
+        let rotate = self.reads == MAX_READS_PER_GRAPH_SESSION;
+        if rotate { self.reads = 0; }
+        self.reads += 1;
+        rotate
+    }
+}
+
+fn admit_graph_root(
+    expected: backend_library::ViewStateRoot,
+    observed: backend_library::ViewStateRoot,
+    when: &str,
+) -> Result<(), Arc<str>> {
+    if observed != expected {
+        Err(Arc::from(format!("the local index changed {when}")))
+    } else {
+        Ok(())
+    }
+}
+
+struct RootedGraphSession {
+    session: Session,
+    endpoint: PathBuf,
+    generation: crate::host::registry::CompositionGeneration,
+    root: backend_library::ViewStateRoot,
+    budget: GraphReadBudget,
+}
+
+impl RootedGraphSession {
+    fn connect(
+        composition: &crate::host::registry::Composition,
+        root: backend_library::ViewStateRoot,
+    ) -> Result<Self, Arc<str>> {
+        let session = Session::connect(&composition.endpoint).map_err(|error| {
+            Arc::<str>::from(format!("could not connect to the local index: {error}"))
+        })?;
+        let mut rooted = Self {
+            session,
+            endpoint: composition.endpoint.clone(),
+            generation: composition.generation,
+            root,
+            budget: GraphReadBudget::default(),
+        };
+        rooted.confirm("before the graph read began")?;
+        Ok(rooted)
+    }
+
+    fn confirm(&mut self, when: &str) -> Result<(), Arc<str>> {
+        if !crate::host::registry::composed().is_some_and(|current| {
+            current.endpoint == self.endpoint && current.generation == self.generation
+        }) {
+            return Err(Arc::from("the local service connection changed during the graph read"));
+        }
+        let revision = self.session.revision().map_err(|error| {
+            Arc::<str>::from(format!("could not confirm the graph's index root {when}: {error}"))
+        })?;
+        admit_graph_root(self.root, revision.root, when)
+    }
+
+    fn read<T>(
+        &mut self,
+        cancellation: &Cancellation,
+        request: impl FnOnce(&mut Session) -> Result<T, ClientError>,
+    ) -> Result<Result<T, ClientError>, Arc<str>> {
+        ensure_active(cancellation)?;
+        if self.budget.next() {
+            self.confirm("between graph batches")?;
+            self.session = Session::connect(&self.endpoint).map_err(|error| {
+                Arc::<str>::from(format!("could not reconnect to the local index: {error}"))
+            })?;
+            self.confirm("after reconnecting the graph read")?;
+        }
+        let result = request(&mut self.session);
+        if result.is_err() {
+            // A missing optional fact is a gap only while its owner session
+            // still proves this exact root. A broken stream or renewed owner
+            // must terminate the projection, never become a partial graph.
+            self.confirm("after a failed graph request")?;
+        }
+        Ok(result)
+    }
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum OwnerIdentity {
-    Indexed(PathBuf),
+    Indexed {
+        endpoint: PathBuf,
+        generation: crate::host::registry::CompositionGeneration,
+    },
     #[cfg(test)]
     Synthetic(u64),
 }
@@ -354,12 +448,12 @@ pub(crate) fn key<T: 'static>(
         OwnerIdentity::Synthetic(synthetic.id)
     } else {
         let composition = crate::host::registry::composed()?;
-        OwnerIdentity::Indexed(composition.endpoint.clone())
+        OwnerIdentity::Indexed { endpoint: composition.endpoint.clone(), generation: composition.generation }
     };
     #[cfg(not(test))]
     let owner = {
         let composition = crate::host::registry::composed()?;
-        OwnerIdentity::Indexed(composition.endpoint.clone())
+        OwnerIdentity::Indexed { endpoint: composition.endpoint.clone(), generation: composition.generation }
     };
     if cx.try_global::<Reads>().is_none() {
         cx.set_global(Reads::new());
@@ -424,30 +518,19 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
         let synthetic = key.synthetic.clone();
         return read_synthetic(synthetic, id, root).await;
     }
-    let endpoint = match &key.owner {
-        OwnerIdentity::Indexed(endpoint) => endpoint,
+    let (endpoint, generation) = match &key.owner {
+        OwnerIdentity::Indexed { endpoint, generation } => (endpoint, generation),
         #[cfg(test)]
         OwnerIdentity::Synthetic(_) => {
             return Err(Arc::from("the synthetic graph owner is unsupported"));
         }
     };
     let composition = crate::host::registry::composed()
-        .filter(|composition| composition.endpoint == *endpoint)
+        .filter(|composition| composition.endpoint == *endpoint && composition.generation == *generation)
         .ok_or_else(|| {
             Arc::from("the local service connection changed before the graph was read")
         })?;
-    let mut session = Session::connect(&composition.endpoint).map_err(|error| {
-        Arc::<str>::from(format!("could not connect to the local index: {error}"))
-    })?;
-    let before = session.revision().map_err(|error| {
-        Arc::<str>::from(format!("could not read the graph's index root: {error}"))
-    })?;
-    ensure_active(cancellation)?;
-    if before.root != key.root.root() {
-        return Err(Arc::from(
-            "the local index changed before the graph read began",
-        ));
-    }
+    let mut session = RootedGraphSession::connect(&composition, key.root.root())?;
     let mut packages = Vec::with_capacity(MAX_PACKAGES);
     let mut package_rows_scanned = 0usize;
     if let Some(preferred) = key.preferred.as_ref() {
@@ -455,7 +538,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
         // coordinate, so a bounded first page cannot make a later local root
         // disappear from its own graph.
         ensure_active(cancellation)?;
-        if matches!(session.outline_page(preferred.as_str(), 1, None), Ok(reply)
+        if matches!(session.read(cancellation, |session| session.outline_page(preferred.as_str(), 1, None))?, Ok(reply)
             if matches!(reply.reply, CommandReply::ProjectionPage(_)))
     {
             packages.push(preferred.clone());
@@ -466,7 +549,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
     let package_page_limit = u16::try_from(package_page_limit)
         .map_err(|_| Arc::<str>::from("the package graph page limit is invalid"))?;
     let package_page = session
-        .package_page(package_page_limit, None)
+        .read(cancellation, |session| session.package_page(package_page_limit, None))?
         .map_err(|error| Arc::<str>::from(format!("could not read indexed packages: {error}")))?;
     ensure_active(cancellation)?;
     let package_page = match package_page.reply {
@@ -542,7 +625,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
     for (index, package) in packages.iter().enumerate() {
         ensure_active(cancellation)?;
         let reference = package.reference().clone();
-        match session.surface(SurfaceCommand::Dependencies { package: reference }) {
+        match session.read(cancellation, |session| session.surface(SurfaceCommand::Dependencies { package: reference }))? {
             Ok(SurfaceReply::Dependencies(DependencyFacts::Known(edges))) => {
                 for edge in edges.iter() {
                     let Some(target) = edge.target.resolved.as_ref() else {
@@ -589,7 +672,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
                 coverage.bounded = true;
                 break 'packages;
             }
-            let reply = match session.outline_page(package.as_str(), OUTLINE_PAGE, continuation) {
+            let reply = match session.read(cancellation, |session| session.outline_page(package.as_str(), OUTLINE_PAGE, continuation))? {
                 Ok(reply) => reply,
                 Err(_) => {
                     coverage.declaration_gaps += 1;
@@ -724,7 +807,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
     let mut semantic_edge_keys = HashSet::<(u32, u32, SemanticLinkKind)>::new();
     'relation_roots: for symbol in relation_candidates {
         ensure_active(cancellation)?;
-        match session.related(symbol.as_str()) {
+        match session.read(cancellation, |session| session.related(symbol.as_str()))? {
             Ok(reply) => {
                 let CommandReply::Graph(snapshot) = reply.reply else {
                     coverage.relation_gaps += 1;
@@ -776,14 +859,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
     coverage.relations = edges.len();
 
     ensure_active(cancellation)?;
-    let after = session.revision().map_err(|error| {
-        Arc::<str>::from(format!("could not confirm the graph's index root: {error}"))
-    })?;
-    if after.root != key.root.root() {
-        return Err(Arc::from(
-            "the local index changed while its graph was being read",
-        ));
-    }
+    session.confirm("while its graph was being read")?;
     let world = Arc::new(
         World::new(world_packages, modules, nodes, edges).map_err(|error| {
             Arc::<str>::from(format!("could not assemble the indexed graph: {error}"))
@@ -926,11 +1002,130 @@ fn module_path(file: Option<&str>) -> String {
 mod tests {
     use crate::core::VersionedRoot;
     use super::{
-        Coverage, Key, MAX_PACKAGES, Origin, OwnerIdentity, PackageRef, RelationCompleteness, RelationKindCoverage,
-        relation_gap, retain_package,
+        Coverage, GraphReadBudget, Key, MAX_PACKAGES, Origin, OwnerIdentity, PackageRef,
+        RelationCompleteness, RelationKindCoverage, admit_graph_root, relation_gap, retain_package,
     };
     use backend_library::SemanticLinkKind;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn graph_read_batches_survive_the_real_service_frame_ceiling_and_reject_a_renewed_root() {
+        // A Session::related call sends Revision + Related. The old single
+        // connection reaches frame 257 on its 128th relation request, even
+        // before package, dependency and outline reads are counted.
+        let limit = backend_local_service::FrameLimits::default().max_frames_per_connection;
+        assert_eq!(limit, 256);
+        assert!(1 + 128 * 2 > limit);
+
+        struct LimitedConnection { frames: usize }
+        impl LimitedConnection {
+            fn request(&mut self, frames: usize, ceiling: usize) {
+                self.frames += frames;
+                assert!(self.frames <= ceiling, "the service would close this connection");
+            }
+        }
+
+        let root = backend_library::view_state_root(&[("graph".into(), "first".into())]);
+        let renewed = backend_library::view_state_root(&[("graph".into(), "second".into())]);
+        let mut budget = GraphReadBudget::default();
+        let mut connection = LimitedConnection { frames: 1 }; // first root proof
+        let mut rotations = 0;
+        // Worst supported projection: a preferred outline, package page,
+        // every package dependency, eight outline pages each, and 128
+        // neighborhoods. Failed optional reads cost an extra root check.
+        let costs = [2, 2].into_iter()
+            .chain(std::iter::repeat_n(2, 64))
+            .chain(std::iter::repeat_n(2, 64 * 8))
+            .chain(std::iter::repeat_n(3, 128));
+        for cost in costs {
+            if budget.next() {
+                connection.request(1, limit); // departing root proof
+                admit_graph_root(root, root, "between graph batches").expect("same root");
+                connection = LimitedConnection { frames: 1 }; // new root proof
+                rotations += 1;
+            }
+            connection.request(cost, limit);
+        }
+        connection.request(1, limit); // final root proof
+        assert!(rotations > 1, "the projection crosses several real service leases");
+        assert!(admit_graph_root(root, renewed, "after reconnecting the graph read").is_err(),
+            "a renewed producer cannot contribute facts to a previous projection");
+    }
+
+    #[test]
+    fn private_owner_closes_an_exhausted_session_but_rooted_graph_batches_continue() {
+        use backend_client::Session;
+        use backend_local_service::{EmbeddedLocalService, ProcessConfig};
+        use backend_runtime::WorkspacePaths;
+        use std::path::PathBuf;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let scratch = PathBuf::from(format!("/tmp/nx-graph-{}-{nonce}", std::process::id()));
+        let endpoint = PathBuf::from(format!("/tmp/nx-graph-{}-{nonce}.sock", std::process::id()));
+        crate::host::private_dir(&scratch).expect("private fixture workspace");
+        crate::host::private_dir(&scratch.join("data")).expect("private owner state");
+        let project = scratch.join("source");
+        std::fs::create_dir_all(project.join("src")).expect("source directory");
+        std::fs::write(project.join("Cargo.toml"),
+            b"[package]\nname = \"graph-lease-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            .expect("manifest");
+        std::fs::write(project.join("src/lib.rs"), b"pub fn one() {}\n").expect("source");
+        let paths = WorkspacePaths::discover(
+            Some(project.clone()), Some(scratch.join("data")), Some(endpoint.clone()),
+        ).expect("owner paths");
+        paths.initialize().expect("initialize owner paths");
+        let arguments = [
+            "--endpoint", paths.endpoint().to_str().expect("endpoint utf-8"),
+            "--workspace", paths.data().to_str().expect("workspace utf-8"),
+            "--authority-secret-file", paths.authority_secret().to_str().expect("authority utf-8"),
+            "--profile", "builtin",
+        ].map(ToOwned::to_owned);
+        let mut config = ProcessConfig::parse(arguments).expect("owner arguments");
+        config.compiler_environment = crate::host::toolchain::supplied_by_the_process();
+        let owner = EmbeddedLocalService::start(config).expect("private owner");
+
+        let mut exhausted = Session::connect(&endpoint).expect("first connection");
+        let root = exhausted.revision().expect("first root").root;
+        let ceiling = backend_local_service::FrameLimits::default().max_frames_per_connection;
+        for _ in 1..ceiling {
+            assert_eq!(exhausted.revision().expect("within the service frame limit").root, root);
+        }
+        assert!(exhausted.revision().is_err(), "the actual listener closes after 256 requests");
+
+        let mut budget = GraphReadBudget::default();
+        let mut session = Session::connect(&endpoint).expect("rooted graph connection");
+        assert_eq!(session.revision().expect("root proof").root, root);
+        let mut rotations = 0;
+        for _ in 0..300 {
+            if budget.next() {
+                admit_graph_root(root, session.revision().expect("departing proof").root,
+                    "between graph batches").expect("unchanged owner");
+                session = Session::connect(&endpoint).expect("rotated connection");
+                admit_graph_root(root, session.revision().expect("new session proof").root,
+                    "after reconnecting the graph read").expect("unchanged owner");
+                rotations += 1;
+            }
+            assert_eq!(session.revision().expect("bounded graph read").root, root);
+        }
+        assert!(rotations >= 4, "several authenticated sessions served the projection");
+
+        let mut mutation = Session::connect(&endpoint).expect("mutation session");
+        mutation.index(project.to_str().expect("project utf-8")).expect("index fixture");
+        let renewed = mutation.revision().expect("renewed root").root;
+        assert_ne!(root, renewed, "the owner published a different index root");
+        assert!(admit_graph_root(root, session.revision().expect("post-index proof").root,
+            "while its graph was being read").is_err(),
+            "a batch cannot combine rows from the earlier and later owner roots");
+
+        drop(session);
+        drop(mutation);
+        drop(exhausted);
+        owner.close().expect("close owner");
+        std::fs::remove_dir_all(scratch).expect("remove private fixture");
+    }
 
     #[test]
     fn bounded_package_selection_keeps_the_current_project_even_when_it_is_last() {
