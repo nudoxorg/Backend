@@ -3,7 +3,7 @@
 use super::actor::{CancellationToken, EngineActor, EngineRequest, LocalRead};
 use super::mailbox::{CoalesceKey, Coalescible};
 use super::mapping::{MappingError, map_event};
-use crate::core::{LocalProjectId, SnapshotReadModel};
+use crate::core::{FaultCode, LocalProjectId, SnapshotReadModel};
 use crate::model::AppSnapshot;
 use crate::navigation::{Effect, EngineCommand, Intent, RequestId, reduce};
 use std::collections::BTreeMap;
@@ -17,6 +17,8 @@ struct InflightRequest {
     /// Whether the result is producer-root state that a newer root makes
     /// stale. Local manifest reads are not.
     rooted: bool,
+    /// A connection check may only succeed from its own revision DTO.
+    connection_probe: bool,
 }
 
 /// Runtime events observed by the UI entity graph.
@@ -45,7 +47,7 @@ pub enum RequestOutcome {
     /// The producer response was admitted into the snapshot.
     Succeeded,
     /// The producer answered with an error or its response failed admission.
-    Failed,
+    Failed(FaultCode),
     /// Work that had been accepted was stopped without claiming a result.
     Cancelled,
     /// A newer request made this request's result irrelevant.
@@ -160,6 +162,10 @@ impl DesktopRuntime {
     #[allow(clippy::too_many_lines)] // one arm per engine command, kept flat
     fn submit(&mut self, command: EngineCommand) -> Vec<RuntimeEvent> {
         let (request, engine_request, basis, cancel) = match command {
+            EngineCommand::CheckConnection { basis, request } => {
+                let cancel = CancellationToken::new();
+                (request, EngineRequest::ConnectionProbe { request, basis, cancel: cancel.clone() }, basis, cancel)
+            }
             EngineCommand::ReadLocalPackage {
                 project,
                 basis,
@@ -263,6 +269,7 @@ impl DesktopRuntime {
                     _ => None,
                 },
                 rooted: true,
+                connection_probe: matches!(&engine_request, EngineRequest::ConnectionProbe { .. }),
             },
         );
         match self.actor.try_submit_coalesced(engine_request) {
@@ -322,6 +329,7 @@ impl DesktopRuntime {
                 lane,
                 index_project: None,
                 rooted: false,
+                connection_probe: false,
             },
         );
         match self.actor.try_submit_local(read) {
@@ -412,13 +420,28 @@ impl DesktopRuntime {
                 });
                 continue;
             }
+            if inflight.connection_probe
+                && matches!(&event.result, Ok(dto) if !matches!(dto, super::actor::EngineDto::ConnectionProbe { .. }))
+            {
+                events.push(RuntimeEvent::RejectedStale(MappingError::Engine(
+                    super::actor::EngineFault::Failed(crate::core::ErrorValue::new(
+                        FaultCode::Protocol, "connection check returned a non-revision reply",
+                    )),
+                )));
+                events.push(RuntimeEvent::RequestCompleted {
+                    request,
+                    outcome: RequestOutcome::Failed(FaultCode::Protocol),
+                });
+                continue;
+            }
             let actor_outcome = match &event.result {
                 Err(
                     super::actor::EngineFault::Cancelled
                     | super::actor::EngineFault::IndexCancelled { .. },
                 ) => RequestOutcome::Cancelled,
                 Err(super::actor::EngineFault::Superseded) => RequestOutcome::Superseded,
-                Err(_) => RequestOutcome::Failed,
+                Err(super::actor::EngineFault::Failed(error) | super::actor::EngineFault::IndexFailed { error, .. }) => RequestOutcome::Failed(error.code()),
+                Err(_) => RequestOutcome::Failed(FaultCode::Protocol),
                 Ok(_) => RequestOutcome::Succeeded,
             };
             events.extend(self.retire_lane(request, inflight.lane, RequestOutcome::Superseded));
@@ -439,7 +462,7 @@ impl DesktopRuntime {
                     });
                 }
                 Err(error) => {
-                    let outcome = match error {
+                    let outcome = match &error {
                         MappingError::StaleRoot { .. }
                         | MappingError::Engine(super::actor::EngineFault::Superseded) => {
                             RequestOutcome::Superseded
@@ -448,14 +471,12 @@ impl DesktopRuntime {
                             super::actor::EngineFault::Cancelled
                             | super::actor::EngineFault::IndexCancelled { .. },
                         ) => RequestOutcome::Cancelled,
-                        MappingError::Engine(
-                            super::actor::EngineFault::IndexUnconfirmed { .. }
-                            | super::actor::EngineFault::MutationUnconfirmed
-                            | super::actor::EngineFault::Failed(_)
-                            | super::actor::EngineFault::IndexFailed { .. },
-                        )
-                        | MappingError::BasisMismatch { .. }
-                        | MappingError::RequestMismatch { .. } => RequestOutcome::Failed,
+                        MappingError::Engine(super::actor::EngineFault::Failed(error)
+                            | super::actor::EngineFault::IndexFailed { error, .. }) => RequestOutcome::Failed(error.code()),
+                        MappingError::Engine(super::actor::EngineFault::IndexUnconfirmed { .. }
+                            | super::actor::EngineFault::MutationUnconfirmed) => RequestOutcome::Failed(FaultCode::Transport),
+                        MappingError::BasisMismatch { .. }
+                        | MappingError::RequestMismatch { .. } => RequestOutcome::Failed(FaultCode::Protocol),
                     };
                     events.push(RuntimeEvent::RejectedStale(error));
                     events.push(RuntimeEvent::RequestCompleted { request, outcome });

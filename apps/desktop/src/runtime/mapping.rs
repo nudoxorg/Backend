@@ -71,6 +71,23 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
         Err(error) => return Err(MappingError::Engine(error)),
     };
     match dto {
+        EngineDto::ConnectionProbe { request, basis: dto_basis, revision: _ } => {
+            if request != event_request {
+                return Err(MappingError::RequestMismatch {
+                    expected: event_request,
+                    observed: request,
+                });
+            }
+            if !dto_basis.same_authority(basis) {
+                return Err(MappingError::BasisMismatch {
+                    expected: basis,
+                    observed: dto_basis,
+                });
+            }
+            // The check has no root/catalog side effects. Its authenticated
+            // revision is evidence of a responding session, not a new UI root.
+            Ok(current.clone())
+        }
         EngineDto::Root {
             request,
             basis: dto_basis,

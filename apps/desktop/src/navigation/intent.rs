@@ -239,12 +239,21 @@ pub enum Intent {
     AddRelease(crate::model::release::Release),
     /// Cancel an active index job while retaining the shelf row.
     CancelIndex(LocalProjectId),
-    /// Run a local connection probe.
+    /// Run a local, read-only service revision check.
     TestConnection,
-    /// Complete a local connection probe.
+    /// Submit the exact request allocated for that check after its visible
+    /// `Testing` state is reduced.
+    CheckConnection {
+        /// Root authority captured with the current UI visit.
+        basis: VersionedRoot,
+        /// One-shot request identity.
+        request: RequestId,
+    },
+    /// Complete one admitted revision check. This reports only the check,
+    /// never the owner gate's independent liveness or any product capability.
     ConnectionResult {
-        /// Whether the service answered.
-        connected: bool,
+        /// Typed outcome of the last check.
+        result: crate::model::ConnectionStatus,
     },
     /// Retire an interrupted connection probe and restore the state it
     /// temporarily replaced, unless a newer owner observation won meanwhile.
@@ -260,6 +269,10 @@ pub enum Intent {
         /// Embedded in this process, or attached to a live owner.
         mode: crate::model::ServiceMode,
     },
+    /// The current owner has entered a new start/reattachment generation.
+    OwnerStarting,
+    /// The current owner gate withdrew its serving attachment or failed startup.
+    OwnerUnavailable,
     /// Open the help page in Settings.
     OpenHelp,
     /// Let go of a note that was said.
@@ -325,6 +338,14 @@ pub enum Intent {
 /// Typed engine work emitted by the reducer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineCommand {
+    /// Check only the local service's authenticated revision, without asking
+    /// for the root projection, catalog or a product capability.
+    CheckConnection {
+        /// Root authority captured with the current UI visit.
+        basis: VersionedRoot,
+        /// One-shot request identity.
+        request: RequestId,
+    },
     /// Ask the engine for the latest projection at a basis.
     ReadRoot {
         /// Root basis to match.

@@ -800,6 +800,13 @@ fn diagnostics(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         palette.ink1,
         ctx,
     ));
+    leaves.push(value_row(
+        "Check details",
+        connection_explanation(snapshot.settings().connection),
+        ty::SMALL,
+        palette.ink2,
+        ctx,
+    ));
     let (project, data, endpoint) = owner_paths(snapshot);
     for (label, path) in [
         ("Project", project),
@@ -830,20 +837,24 @@ fn connections(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         palette.ink1,
         ctx,
     ));
-    let mode = ctx.say(match confirmed_host_mode(snapshot) {
+    let mode = match confirmed_host_mode(snapshot) {
         Some(crate::host::lease::HostMode::Embedded) => {
-            "This desktop owns the connected local service."
+            "The owner watcher last confirmed this desktop's embedded local service."
         }
         Some(crate::host::lease::HostMode::Attached) => {
-            "This desktop shares a local service owned elsewhere."
+            "The owner watcher last confirmed an attached local service owned elsewhere."
         }
-        None => "The local service owner has not confirmed this connection yet.",
-    });
-    leaves.push(Leaf::new(quiet(mode, &measure, palette)));
+        None => "The local service owner has not confirmed a serving attachment yet.",
+    };
+    leaves.push(value_row("Owner confirmation", mode, ty::SMALL, palette.ink2, ctx));
+    leaves.push(value_row(
+        "Check details", connection_explanation(snapshot.settings().connection),
+        ty::SMALL, palette.ink2, ctx,
+    ));
     let links = ctx.links.clone();
     let testing = snapshot.settings().connection == ConnectionStatus::Testing;
     let probe = facet::controls::button("settings-test-connection", "Test connection", &measure)
-        .disabled(!ctx.active)
+        .disabled(!ctx.active || snapshot.settings().confirmed_service_mode.is_none())
         .primary()
         .busy(testing)
         .on_click(move |_, cx| links.dispatch(Intent::TestConnection, cx));
@@ -1095,15 +1106,11 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) 
     leaves
 }
 
-/// The persisted service mode can be stale before the current owner answers.
-/// `OwnerReady` publishes the mode returned by `DesktopHost::mode()` together
-/// with `ConnectionStatus::Connected`, so only that live state is presented as
-/// the actual host mode.
+/// The persisted service mode is history, not a current serving attachment.
+/// Only the owner watcher sets this ephemeral value; an ancillary check cannot
+/// confirm or withdraw it.
 fn confirmed_host_mode(snapshot: &AppSnapshot) -> Option<crate::host::lease::HostMode> {
-    if snapshot.settings().connection != ConnectionStatus::Connected {
-        return None;
-    }
-    Some(match snapshot.settings().service_mode {
+    Some(match snapshot.settings().confirmed_service_mode? {
         crate::model::ServiceMode::Embedded => crate::host::lease::HostMode::Embedded,
         crate::model::ServiceMode::Attached => crate::host::lease::HostMode::Attached,
     })
@@ -1112,10 +1119,10 @@ fn confirmed_host_mode(snapshot: &AppSnapshot) -> Option<crate::host::lease::Hos
 fn running_service_policy_note(snapshot: &AppSnapshot) -> &'static str {
     match confirmed_host_mode(snapshot) {
         Some(crate::host::lease::HostMode::Embedded) => {
-            "The connected service is this desktop's embedded owner. Saved choices do not change its current policy; restart the desktop to apply them on its next embedded start."
+            "The last confirmed owner is this desktop's embedded service. Saved choices do not change its current policy; restart the desktop to apply them on its next embedded start."
         }
         Some(crate::host::lease::HostMode::Attached) => {
-            "The connected service is attached and its owner controls current policy. Saved choices apply only if this desktop later starts an embedded service."
+            "The last confirmed owner is an attached local service and controls current policy. Saved choices apply only if this desktop later starts an embedded service."
         }
         None => {
             "The active service mode is not confirmed. Saved choices apply on the next embedded-service start and do not change an already-running owner."
@@ -1128,7 +1135,22 @@ fn connection_words(status: ConnectionStatus) -> &'static str {
         ConnectionStatus::Unknown => "Not checked yet",
         ConnectionStatus::Testing => "Checking the local service…",
         ConnectionStatus::Connected => "Connected",
-        ConnectionStatus::Disconnected => "Unavailable",
+        ConnectionStatus::TransportFailed => "Revision check failed over local transport",
+        ConnectionStatus::CheckFailed => "Revision check failed",
+        ConnectionStatus::CheckUnavailable => "Revision check unavailable",
+        ConnectionStatus::OwnerUnavailable => "Local owner unavailable",
+    }
+}
+
+fn connection_explanation(status: ConnectionStatus) -> &'static str {
+    match status {
+        ConnectionStatus::Unknown => "No revision-check result is current for this owner generation yet.",
+        ConnectionStatus::Testing => "Checking an authenticated revision; this does not read the catalog or inspect product capabilities.",
+        ConnectionStatus::Connected => "The local service answered an authenticated revision check. This does not establish catalog or feature availability.",
+        ConnectionStatus::TransportFailed => "The last revision request failed over local transport. This alone does not prove the owner stopped; test again. If the owner watcher reports failure, use Try again in the service notice.",
+        ConnectionStatus::CheckFailed => "The last revision check ended without an admitted reply. Test again; this result does not determine the availability of other pages or features.",
+        ConnectionStatus::CheckUnavailable => "This service does not expose the revision check. Other service features have not been tested by this result.",
+        ConnectionStatus::OwnerUnavailable => "The owner watcher withdrew the serving attachment. Use Try again in the service notice to restart it.",
     }
 }
 
@@ -1165,12 +1187,18 @@ mod policy_status_tests {
         assert_eq!(confirmed_host_mode(&restored), None);
 
         settings.connection = ConnectionStatus::Connected;
+        let status_only = AppSnapshot::empty(crate::core::VersionedRoot::unserved())
+            .with_settings(settings.clone());
+        assert_eq!(confirmed_host_mode(&status_only), None);
+        settings.confirmed_service_mode = Some(crate::model::ServiceMode::Attached);
         let ready =
-            AppSnapshot::empty(crate::core::VersionedRoot::unserved()).with_settings(settings);
+            AppSnapshot::empty(crate::core::VersionedRoot::unserved()).with_settings(settings.clone());
         assert_eq!(
             confirmed_host_mode(&ready),
             Some(crate::host::lease::HostMode::Attached)
         );
+        settings.connection = ConnectionStatus::TransportFailed;
+        assert_eq!(confirmed_host_mode(&ready.with_settings(settings)), Some(crate::host::lease::HostMode::Attached));
     }
 }
 
@@ -1528,8 +1556,12 @@ mod tests {
                 );
             }
         }
-        for (connected, value) in [(false, "Unavailable"), (true, "Connected")] {
-            rig.go(Intent::ConnectionResult { connected });
+        let owner_key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        for (intent, value) in [
+            (Intent::OwnerUnavailable, "Local owner unavailable"),
+            (Intent::OwnerReady { key: owner_key, mode: crate::model::ServiceMode::Embedded }, "Connected"),
+        ] {
+            rig.go(intent);
             for (page, label) in [
                 (
                     SettingsPage::Connections,
@@ -1558,6 +1590,14 @@ mod tests {
                 assert!(
                     labels.contains(&label.as_str()),
                     "{page:?} native AX lacks {label}: {labels:?}"
+                );
+                let status = rig.graph.store.read_with(rig.cx, |store, _| {
+                    store.snapshot().settings().connection
+                });
+                let detail = format!("Check details: {}", connection_explanation(status));
+                assert!(
+                    labels.contains(&detail.as_str()),
+                    "{page:?} native AX lacks {detail}: {labels:?}"
                 );
             }
         }

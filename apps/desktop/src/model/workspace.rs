@@ -390,15 +390,22 @@ pub enum ServiceMode {
 /// Current local-service connection status.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConnectionStatus {
-    /// No probe has been run yet.
+    /// No revision-check result is current for this owner generation.
     #[default]
     Unknown,
     /// A probe is in flight.
     Testing,
-    /// The local service answered successfully.
+    /// The local service answered an authenticated revision request.
     Connected,
-    /// The service could not answer the last probe.
-    Disconnected,
+    /// The last revision check failed over the local transport. This alone
+    /// does not withdraw an independently confirmed serving owner.
+    TransportFailed,
+    /// The last revision reply could not be admitted for another reason.
+    CheckFailed,
+    /// This service does not expose the requested check.
+    CheckUnavailable,
+    /// The owner gate withdrew the serving attachment or could not start it.
+    OwnerUnavailable,
 }
 
 /// The window's size in logical pixels, as the person left it.
@@ -436,6 +443,9 @@ pub struct SettingsState {
     pub privacy: PrivacyPreference,
     /// How the local daemon is hosted.
     pub service_mode: ServiceMode,
+    /// Current owner-gate confirmation, never restored from persisted mode.
+    /// A failed ancillary connection check cannot revoke this observation.
+    pub confirmed_service_mode: Option<ServiceMode>,
     /// Whether explicit advisory-feed refreshes are enabled. Cached advisory
     /// findings remain available when refresh is paused.
     pub advisories: bool,
@@ -461,6 +471,7 @@ impl Default for SettingsState {
             motion: MotionPreference::System,
             privacy: PrivacyPreference::LocalOnly,
             service_mode: ServiceMode::Embedded,
+            confirmed_service_mode: None,
             advisories: true,
             cache_enabled: true,
             cache_days: 14,

@@ -193,6 +193,9 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::RefreshRoot { basis, request } => {
             effects.push(Effect::Engine(EngineCommand::ReadRoot { basis, request }));
         }
+        Intent::CheckConnection { basis, request } => {
+            effects.push(Effect::Engine(EngineCommand::CheckConnection { basis, request }));
+        }
         Intent::RefreshObject {
             object,
             delta,
@@ -266,6 +269,8 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::CancelIndex(_)
         | Intent::TestConnection
         | Intent::ConnectionResult { .. }
+        | Intent::OwnerStarting
+        | Intent::OwnerUnavailable
         | Intent::ConnectionProbeAborted { .. }
         | Intent::OwnerReady { .. }
         | Intent::DismissNote(_)

@@ -26,6 +26,11 @@ fn next_key(basis: VersionedRoot) -> (VersionedRoot, backend_library::Cursor) {
 impl EngineClient for EchoClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         match request {
+            EngineRequest::ConnectionProbe { request, basis, .. } => Ok(EngineDto::ConnectionProbe {
+                request: *request,
+                basis: *basis,
+                revision: basis.revision(),
+            }),
             EngineRequest::Root { request, basis, .. } => {
                 let (key, revision) = next_key(*basis);
                 Ok(EngineDto::Root {
@@ -96,6 +101,80 @@ fn request_terminals(events: Vec<RuntimeEvent>) -> Vec<(RequestId, RequestOutcom
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn revision_check_is_a_separate_read_that_does_not_replace_root_or_catalog() {
+    let actor = super::actor::EngineActor::start(EchoClient, 2).expect("actor thread");
+    let initial = snapshot();
+    let mut runtime = DesktopRuntime::new(initial.clone(), actor);
+    let request = runtime.allocate_request();
+    let submitted = runtime.dispatch(Intent::CheckConnection { basis: initial.key(), request });
+    assert!(request_terminals(submitted).is_empty());
+    let mut terminal = Vec::new();
+    wait::until("revision-only connection check", || {
+        terminal.extend(request_terminals(runtime.poll()));
+        !runtime.is_inflight(request)
+    });
+    assert_eq!(terminal, [(request, RequestOutcome::Succeeded)]);
+    assert_eq!(runtime.snapshot().key(), initial.key());
+    assert_eq!(runtime.snapshot().catalog(), initial.catalog());
+}
+
+#[test]
+fn a_transport_failure_of_the_revision_check_is_typed_without_replacing_the_snapshot() {
+    struct BrokenProbe;
+    impl EngineClient for BrokenProbe {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            match request {
+                EngineRequest::ConnectionProbe { .. } => Err(EngineFault::Failed(
+                    crate::core::ErrorValue::new(crate::core::FaultCode::Transport, "revision socket failed"),
+                )),
+                other => EchoClient.execute(other),
+            }
+        }
+    }
+    let actor = super::actor::EngineActor::start(BrokenProbe, 2).expect("actor thread");
+    let initial = snapshot();
+    let mut runtime = DesktopRuntime::new(initial.clone(), actor);
+    let request = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::CheckConnection { basis: initial.key(), request });
+    let mut terminal = Vec::new();
+    wait::until("failed revision check", || {
+        terminal.extend(request_terminals(runtime.poll()));
+        !runtime.is_inflight(request)
+    });
+    assert_eq!(terminal, [(request, RequestOutcome::Failed(crate::core::FaultCode::Transport))]);
+    assert_eq!(runtime.snapshot().key(), initial.key());
+}
+
+#[test]
+fn a_non_revision_dto_cannot_claim_a_successful_connection_check_or_advance_the_root() {
+    struct WrongProbe;
+    impl EngineClient for WrongProbe {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            let EngineRequest::ConnectionProbe { request, basis, .. } = request else {
+                return EchoClient.execute(request);
+            };
+            let (key, revision) = next_key(*basis);
+            Ok(EngineDto::Root {
+                request: *request, basis: *basis, key, revision,
+                delta: None, project: None, catalog: None,
+            })
+        }
+    }
+    let actor = super::actor::EngineActor::start(WrongProbe, 2).expect("actor thread");
+    let initial = snapshot();
+    let mut runtime = DesktopRuntime::new(initial.clone(), actor);
+    let request = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::CheckConnection { basis: initial.key(), request });
+    let mut terminal = Vec::new();
+    wait::until("wrong DTO rejected", || {
+        terminal.extend(request_terminals(runtime.poll()));
+        !runtime.is_inflight(request)
+    });
+    assert_eq!(terminal, [(request, RequestOutcome::Failed(crate::core::FaultCode::Protocol))]);
+    assert_eq!(runtime.snapshot().key(), initial.key());
 }
 
 #[test]
@@ -191,7 +270,7 @@ fn actor_failure_is_a_failed_terminal_not_a_success_or_stuck_request() {
         outcomes.extend(request_terminals(runtime.poll()).into_iter().map(|(_, outcome)| outcome));
         !runtime.is_inflight(request)
     });
-    assert_eq!(outcomes, [RequestOutcome::Failed]);
+    assert_eq!(outcomes, [RequestOutcome::Failed(crate::core::FaultCode::Transport)]);
 }
 
 #[test]

@@ -79,7 +79,7 @@ impl EngineClient for HeldIndexClient {
                     observation: crate::model::index_operation::tests::published(operation),
                 })
             }
-            EngineRequest::Object { .. } | EngineRequest::Surface { .. } => Err(EngineFault::Cancelled),
+            EngineRequest::ConnectionProbe { .. } | EngineRequest::Object { .. } | EngineRequest::Surface { .. } => Err(EngineFault::Cancelled),
         }
     }
 }

@@ -93,6 +93,16 @@ impl Default for CancellationToken {
 /// Typed work executed by the background engine/client actor.
 #[derive(Clone, Debug)]
 pub enum EngineRequest {
+    /// Read only the local service's authenticated revision. The actor never
+    /// loads a root projection or catalog to complete a connection check.
+    ConnectionProbe {
+        /// Request identity.
+        request: RequestId,
+        /// UI root when the check was requested.
+        basis: VersionedRoot,
+        /// Cancellation scope.
+        cancel: CancellationToken,
+    },
     /// Read a versioned root.
     Root {
         /// Request identity.
@@ -152,7 +162,8 @@ pub enum EngineRequest {
 impl EngineRequest {
     fn basis(&self) -> VersionedRoot {
         match self {
-            Self::Root { basis, .. }
+            Self::ConnectionProbe { basis, .. }
+            | Self::Root { basis, .. }
             | Self::Object { basis, .. }
             | Self::Surface { basis, .. }
             | Self::IndexProject { basis, .. }
@@ -162,7 +173,8 @@ impl EngineRequest {
 
     pub(crate) fn request(&self) -> RequestId {
         match self {
-            Self::Root { request, .. }
+            Self::ConnectionProbe { request, .. }
+            | Self::Root { request, .. }
             | Self::Object { request, .. }
             | Self::Surface { request, .. }
             | Self::IndexProject { request, .. }
@@ -176,7 +188,8 @@ impl EngineRequest {
 
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         match self {
-            Self::Root { cancel, .. }
+            Self::ConnectionProbe { cancel, .. }
+            | Self::Root { cancel, .. }
             | Self::Object { cancel, .. }
             | Self::Surface { cancel, .. }
             | Self::IndexProject { cancel, .. }
@@ -188,6 +201,7 @@ impl EngineRequest {
 impl Coalescible for EngineRequest {
     fn coalesce_key(&self) -> Option<CoalesceKey> {
         match self {
+            Self::ConnectionProbe { .. } => None,
             Self::Root { .. } => Some(CoalesceKey::Root),
             Self::Object { object, .. } => Some(CoalesceKey::Object(*object)),
             Self::Surface { command, .. } => Some(CoalesceKey::Surface(command.id())),
@@ -223,6 +237,16 @@ impl Coalescible for LocalRead {
 /// happens in `runtime::mapping`, outside widgets.
 #[derive(Clone, Debug)]
 pub enum EngineDto {
+    /// One admitted revision reply. It confirms only the local session's
+    /// revision command, without asserting catalog or capability readiness.
+    ConnectionProbe {
+        /// Request identity.
+        request: RequestId,
+        /// UI root when the check was requested.
+        basis: VersionedRoot,
+        /// Authenticated revision returned by the local service.
+        revision: backend_library::Cursor,
+    },
     /// A root response with a producer identity.
     Root {
         /// Request identity.
@@ -378,6 +402,7 @@ pub struct EngineEvent {
 impl Coalescible for EngineEvent {
     fn coalesce_key(&self) -> Option<CoalesceKey> {
         self.lane.or_else(|| match &self.result {
+            Ok(EngineDto::ConnectionProbe { .. }) => None,
             Ok(EngineDto::Root { .. }) => Some(CoalesceKey::Root),
             Ok(EngineDto::Object { object, .. }) => Some(CoalesceKey::Object(*object)),
             Ok(EngineDto::Surface { command, .. }) => Some(CoalesceKey::Surface(command.id())),
@@ -560,7 +585,8 @@ impl EngineActor {
         let result = self.mailbox.try_push(request, key);
         if let PushResult::Coalesced(old) = &result {
             match old {
-                EngineRequest::Root { cancel, .. }
+                EngineRequest::ConnectionProbe { cancel, .. }
+                | EngineRequest::Root { cancel, .. }
                 | EngineRequest::Object { cancel, .. }
                 | EngineRequest::Surface { cancel, .. }
                 | EngineRequest::IndexProject { cancel, .. }

@@ -732,6 +732,7 @@ pub(crate) fn watch(
                     OwnerState::Starting => {
                         // A restart is a new wait: its patience starts now.
                         watch_patience(&gate, PATIENCE, cx);
+                        root.update(cx, |root, cx| root.owner_starting(cx));
                         store.update(cx, super::store::DataStore::owner_starting);
                     }
                     OwnerState::Ready { key, mode } => {
@@ -750,6 +751,7 @@ pub(crate) fn watch(
                     }
                     OwnerState::Failed(OwnerFault::Closed) => return false,
                     OwnerState::Failed(fault) => {
+                        root.update(cx, |root, cx| root.owner_unavailable(cx));
                         store.update(cx, |store, cx| store.owner_failed(&fault, cx));
                     }
                 }

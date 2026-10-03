@@ -218,6 +218,22 @@ impl LocalEngineClient {
         })
     }
 
+    fn request_connection_probe(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        let EngineRequest::ConnectionProbe { request, basis, .. } = request else {
+            unreachable!("connection adapter called with a non-probe request")
+        };
+        // This is the same authenticated Revision command the owner uses for
+        // liveness. It cannot fail because Explore, bootstrap or a product
+        // capability is unavailable. The ordinary read retry and cancellation
+        // rules still apply to a broken local socket.
+        let revision = self.with_session_read(Session::revision)?;
+        Ok(EngineDto::ConnectionProbe {
+            request: *request,
+            basis: *basis,
+            revision: revision.cursor(),
+        })
+    }
+
     fn catalog(&mut self) -> Result<Arc<[PackageSummary]>, EngineFault> {
         let reply = self
             .with_session_read(|session| {
@@ -446,6 +462,7 @@ impl EngineClient for LocalEngineClient {
             self.attached_epoch = epoch;
         }
         let result = match request {
+            EngineRequest::ConnectionProbe { .. } => self.request_connection_probe(request),
             EngineRequest::Root { .. } => self.request_root(request),
             EngineRequest::Surface { .. } => self.request_surface(request),
             EngineRequest::IndexProject { .. } => self.request_index(request),

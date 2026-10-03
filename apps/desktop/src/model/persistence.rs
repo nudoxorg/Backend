@@ -1198,6 +1198,7 @@ impl PersistentState {
                 PersistedServiceMode::Embedded => ServiceMode::Embedded,
                 PersistedServiceMode::Attached => ServiceMode::Attached,
             },
+            confirmed_service_mode: None,
             advisories: state.advisories,
             cache_enabled: state.cache_enabled,
             cache_days: state.cache_days,

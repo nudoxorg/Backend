@@ -354,14 +354,12 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             // this intent. The reducer only records the visible state.
             effects.push(Effect::Persist);
         }
-        Intent::ConnectionResult { connected } => {
+        Intent::ConnectionResult { result } => {
             let mut settings = next.settings().clone();
-            settings.connection = if *connected {
-                ConnectionStatus::Connected
-            } else {
-                ConnectionStatus::Disconnected
-            };
-            next = next.with_settings(settings);
+            if settings.connection == ConnectionStatus::Testing {
+                settings.connection = *result;
+                next = next.with_settings(settings);
+            }
         }
         Intent::ConnectionProbeAborted { previous } => {
             let mut settings = next.settings().clone();
@@ -377,7 +375,20 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             next = next.with_key(*key, None);
             let mut settings = next.settings().clone();
             settings.service_mode = *mode;
+            settings.confirmed_service_mode = Some(*mode);
             settings.connection = ConnectionStatus::Connected;
+            next = next.with_settings(settings);
+        }
+        Intent::OwnerStarting => {
+            let mut settings = next.settings().clone();
+            settings.confirmed_service_mode = None;
+            settings.connection = ConnectionStatus::Unknown;
+            next = next.with_settings(settings);
+        }
+        Intent::OwnerUnavailable => {
+            let mut settings = next.settings().clone();
+            settings.confirmed_service_mode = None;
+            settings.connection = ConnectionStatus::OwnerUnavailable;
             next = next.with_settings(settings);
         }
         Intent::DismissNote(note) => {
@@ -933,7 +944,7 @@ mod tests {
     #[test]
     fn an_aborted_connection_probe_restores_its_prior_state_only_while_testing() {
         for previous in [
-            ConnectionStatus::Disconnected,
+            ConnectionStatus::TransportFailed,
             ConnectionStatus::Connected,
             ConnectionStatus::Unknown,
         ] {
@@ -955,7 +966,7 @@ mod tests {
         }
 
         let mut settings = snapshot().settings().clone();
-        settings.connection = ConnectionStatus::Disconnected;
+        settings.connection = ConnectionStatus::TransportFailed;
         let initial = snapshot().with_settings(settings);
         let testing = reduce(&initial, &Intent::TestConnection)
             .expect("connection probe")
@@ -977,7 +988,7 @@ mod tests {
         let after_late_abort = reduce(
             &connected,
             &Intent::ConnectionProbeAborted {
-                previous: ConnectionStatus::Disconnected,
+                previous: ConnectionStatus::TransportFailed,
             },
         )
             .expect("late probe cancellation")
@@ -987,6 +998,39 @@ mod tests {
             ConnectionStatus::Connected,
             "a newer owner observation must win over a late cancellation"
         );
+        let after_late_failure = reduce(&after_late_abort, &Intent::ConnectionResult {
+            result: ConnectionStatus::TransportFailed,
+        }).expect("late probe failure").snapshot;
+        assert_eq!(after_late_failure.settings().connection, ConnectionStatus::Connected);
+    }
+
+    #[test]
+    fn current_owner_mode_survives_check_failure_but_not_owner_withdrawal() {
+        let owner_key = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("root".to_owned(), "owner".to_owned())]), 2,
+        );
+        let ready = reduce(&snapshot(), &Intent::OwnerReady {
+            key: owner_key,
+            mode: crate::model::ServiceMode::Attached,
+        }).expect("owner ready").snapshot;
+        assert_eq!(ready.settings().confirmed_service_mode, Some(crate::model::ServiceMode::Attached));
+        let checking = reduce(&ready, &Intent::TestConnection).expect("checking").snapshot;
+        assert_eq!(checking.settings().confirmed_service_mode, Some(crate::model::ServiceMode::Attached));
+        let failed = reduce(&checking, &Intent::ConnectionResult {
+            result: ConnectionStatus::TransportFailed,
+        }).expect("failed check").snapshot;
+        assert_eq!(failed.settings().connection, ConnectionStatus::TransportFailed);
+        assert_eq!(failed.settings().confirmed_service_mode, Some(crate::model::ServiceMode::Attached));
+        let lost = reduce(&failed, &Intent::OwnerUnavailable).expect("owner withdrawn").snapshot;
+        assert_eq!(lost.settings().connection, ConnectionStatus::OwnerUnavailable);
+        assert_eq!(lost.settings().confirmed_service_mode, None);
+        let stale = reduce(&lost, &Intent::ConnectionResult {
+            result: ConnectionStatus::Connected,
+        }).expect("old result").snapshot;
+        assert_eq!(stale.settings().connection, ConnectionStatus::OwnerUnavailable);
+        let restarting = reduce(&stale, &Intent::OwnerStarting).expect("new start").snapshot;
+        assert_eq!(restarting.settings().connection, ConnectionStatus::Unknown);
+        assert_eq!(restarting.settings().confirmed_service_mode, None);
     }
 
     #[test]

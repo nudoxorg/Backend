@@ -11,7 +11,7 @@
 use super::coordinator::{DesktopRuntime, RequestOutcome, RuntimeEvent};
 use super::reads::ReadPool;
 use super::store::{DataStore, OwnerAttachment, RouteDependencies, RouteReadLease};
-use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
+use crate::core::{FaultCode, IntentDispatcher, ProducerAuthority, SnapshotReadModel};
 use crate::model::{AppSnapshot, ConnectionStatus, PersistentState};
 use crate::navigation::{FolderPickerOutcome, Intent, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
@@ -36,6 +36,8 @@ struct ConnectionProbeLatch {
 struct ActiveConnectionProbe {
     request: crate::navigation::RequestId,
     previous: ConnectionStatus,
+    basis: crate::core::VersionedRoot,
+    attachment: OwnerAttachment,
 }
 
 impl ConnectionProbeLatch {
@@ -43,11 +45,13 @@ impl ConnectionProbeLatch {
         &mut self,
         request: crate::navigation::RequestId,
         previous: ConnectionStatus,
+        basis: crate::core::VersionedRoot,
+        attachment: OwnerAttachment,
     ) -> bool {
         if self.active.is_some() {
             return false;
         }
-        self.active = Some(ActiveConnectionProbe { request, previous });
+        self.active = Some(ActiveConnectionProbe { request, previous, basis, attachment });
         true
     }
 
@@ -55,16 +59,31 @@ impl ConnectionProbeLatch {
         &mut self,
         request: crate::navigation::RequestId,
         outcome: RequestOutcome,
+        current_basis: crate::core::VersionedRoot,
+        current_attachment: Option<&OwnerAttachment>,
     ) -> Option<Intent> {
         let active = self.active.as_ref()?;
         if active.request != request {
             return None;
         }
         let previous = active.previous;
+        let same_basis = active.basis.same_authority(current_basis);
+        let same_attachment = current_attachment == Some(&active.attachment);
         self.active.take()?;
+        if !same_attachment {
+            // The former owner cannot lend even its previous Connected check
+            // to a replacement or withdrawn attachment. The watcher will
+            // publish Ready/Failed for the new generation independently.
+            return Some(Intent::ConnectionProbeAborted { previous: ConnectionStatus::Unknown });
+        }
+        if !same_basis {
+            return Some(Intent::ConnectionProbeAborted { previous });
+        }
         Some(match outcome {
-            RequestOutcome::Succeeded => Intent::ConnectionResult { connected: true },
-            RequestOutcome::Failed => Intent::ConnectionResult { connected: false },
+            RequestOutcome::Succeeded => Intent::ConnectionResult { result: ConnectionStatus::Connected },
+            RequestOutcome::Failed(FaultCode::Transport) => Intent::ConnectionResult { result: ConnectionStatus::TransportFailed },
+            RequestOutcome::Failed(FaultCode::Unsupported) => Intent::ConnectionResult { result: ConnectionStatus::CheckUnavailable },
+            RequestOutcome::Failed(_) => Intent::ConnectionResult { result: ConnectionStatus::CheckFailed },
             RequestOutcome::Cancelled
             | RequestOutcome::Superseded
             | RequestOutcome::Refused(_) => Intent::ConnectionProbeAborted {
@@ -75,6 +94,10 @@ impl ConnectionProbeLatch {
 
     fn is_active(&self) -> bool {
         self.active.is_some()
+    }
+
+    fn clear(&mut self) {
+        self.active = None;
     }
 }
 
@@ -561,15 +584,17 @@ impl UiRootEntity {
             }
             Intent::TestConnection => {
                 if !self.connection_probe.is_active() {
+                    let Some(attachment) = self.store.as_ref()
+                        .and_then(|store| store.read(cx).current_owner_attachment()) else {
+                        return;
+                    };
                     let request = self.runtime.allocate_request();
                     let previous = self.snapshot().settings().connection;
-                    if self.connection_probe.begin(request, previous) {
+                    let basis = self.snapshot().key();
+                    if self.connection_probe.begin(request, previous, basis, attachment) {
                         self.dispatch_runtime(Intent::TestConnection, cx);
                         self.dispatch_runtime(
-                            Intent::RefreshRoot {
-                                basis: self.snapshot().key(),
-                                request,
-                            },
+                            Intent::CheckConnection { basis, request },
                             cx,
                         );
                     }
@@ -632,6 +657,7 @@ impl UiRootEntity {
                 self.persist_snapshot(&self.snapshot(), cx);
             } else { self.bootstrap = Some((binding, origin)); }
         }
+        self.connection_probe.clear();
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         let request = self.runtime.allocate_request();
         self.dispatch_runtime(Intent::RefreshRoot { basis: key, request }, cx);
@@ -664,9 +690,11 @@ impl UiRootEntity {
         if !attachment_changed
             && self.snapshot().key().same_authority(key)
             && self.snapshot().settings().service_mode == mode
+            && self.snapshot().settings().confirmed_service_mode == Some(mode)
         {
             return;
         }
+        self.connection_probe.clear();
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         self.refresh_root(cx);
         self.resume_indexes_after_owner(cx);
@@ -677,6 +705,17 @@ impl UiRootEntity {
     pub(crate) fn refresh_root(&mut self, cx: &mut Context<Self>) {
         let request = self.runtime.allocate_request();
         self.dispatch_runtime(Intent::RefreshRoot { basis: self.snapshot().key(), request }, cx);
+    }
+
+    /// The owner watcher alone withdraws a previously confirmed generation.
+    pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
+        self.connection_probe.clear();
+        self.dispatch_runtime(Intent::OwnerStarting, cx);
+    }
+
+    pub(crate) fn owner_unavailable(&mut self, cx: &mut Context<Self>) {
+        self.connection_probe.clear();
+        self.dispatch_runtime(Intent::OwnerUnavailable, cx);
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
@@ -838,7 +877,12 @@ impl UiRootEntity {
                     self.persist_snapshot(&self.snapshot(), cx);
                 }
                 RuntimeEvent::RequestCompleted { request, outcome } => {
-                    if let Some(intent) = self.connection_probe.finish(request, outcome) {
+                    let attachment = self.store.as_ref()
+                        .and_then(|store| store.read(cx).current_owner_attachment());
+                    let basis = self.snapshot().key();
+                    if let Some(intent) = self.connection_probe.finish(
+                        request, outcome, basis, attachment.as_ref(),
+                    ) {
                         self.dispatch_runtime(intent, cx);
                     }
                 }
@@ -1040,32 +1084,44 @@ impl UiEntityGraph {
 mod connection_probe_tests {
     use super::*;
 
+    fn basis() -> crate::core::VersionedRoot {
+        crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("probe".to_owned(), "owner".to_owned())]), 1,
+        )
+    }
+
+    fn attachment() -> OwnerAttachment {
+        DataStore::new(Arc::new(AppSnapshot::empty(basis())), None)
+            .current_owner_attachment().expect("synthetic serving attachment")
+    }
+
     #[test]
     fn superseded_probe_retires_once_and_allows_a_later_reconnect() {
         let mut probe = ConnectionProbeLatch::default();
         let first = crate::navigation::RequestId::new(701);
         let second = crate::navigation::RequestId::new(702);
+        let attachment = attachment();
 
-        assert!(probe.begin(first, ConnectionStatus::Disconnected));
+        assert!(probe.begin(first, ConnectionStatus::TransportFailed, basis(), attachment.clone()));
         assert_eq!(
-            probe.finish(crate::navigation::RequestId::new(799), RequestOutcome::Succeeded),
+            probe.finish(crate::navigation::RequestId::new(799), RequestOutcome::Succeeded, basis(), Some(&attachment)),
             None,
             "an unrelated request terminal cannot release this probe"
         );
-        assert!(!probe.begin(second, ConnectionStatus::Unknown));
+        assert!(!probe.begin(second, ConnectionStatus::Unknown, basis(), attachment.clone()));
         assert_eq!(
-            probe.finish(first, RequestOutcome::Superseded),
+            probe.finish(first, RequestOutcome::Superseded, basis(), Some(&attachment)),
             Some(Intent::ConnectionProbeAborted {
-                previous: ConnectionStatus::Disconnected,
+                previous: ConnectionStatus::TransportFailed,
             })
         );
-        assert_eq!(probe.finish(first, RequestOutcome::Succeeded), None);
+        assert_eq!(probe.finish(first, RequestOutcome::Succeeded, basis(), Some(&attachment)), None);
         assert!(!probe.is_active());
 
-        assert!(probe.begin(second, ConnectionStatus::Connected));
+        assert!(probe.begin(second, ConnectionStatus::Connected, basis(), attachment.clone()));
         assert_eq!(
-            probe.finish(second, RequestOutcome::Succeeded),
-            Some(Intent::ConnectionResult { connected: true })
+            probe.finish(second, RequestOutcome::Succeeded, basis(), Some(&attachment)),
+            Some(Intent::ConnectionResult { result: ConnectionStatus::Connected })
         );
         assert!(!probe.is_active());
     }
@@ -1074,11 +1130,13 @@ mod connection_probe_tests {
     fn refusal_and_actor_failure_are_not_reported_as_success() {
         let mut probe = ConnectionProbeLatch::default();
         let refused = crate::navigation::RequestId::new(703);
-        assert!(probe.begin(refused, ConnectionStatus::Unknown));
+        let attachment = attachment();
+        assert!(probe.begin(refused, ConnectionStatus::Unknown, basis(), attachment.clone()));
         assert_eq!(
             probe.finish(
                 refused,
                 RequestOutcome::Refused(super::super::coordinator::RequestRefusalReason::Closed),
+                basis(), Some(&attachment),
             ),
             Some(Intent::ConnectionProbeAborted {
                 previous: ConnectionStatus::Unknown,
@@ -1086,10 +1144,56 @@ mod connection_probe_tests {
         );
 
         let failed = crate::navigation::RequestId::new(704);
-        assert!(probe.begin(failed, ConnectionStatus::Unknown));
+        assert!(probe.begin(failed, ConnectionStatus::Unknown, basis(), attachment.clone()));
         assert_eq!(
-            probe.finish(failed, RequestOutcome::Failed),
-            Some(Intent::ConnectionResult { connected: false })
+            probe.finish(failed, RequestOutcome::Failed(FaultCode::Transport), basis(), Some(&attachment)),
+            Some(Intent::ConnectionResult { result: ConnectionStatus::TransportFailed })
+        );
+        let unsupported = crate::navigation::RequestId::new(707);
+        assert!(probe.begin(unsupported, ConnectionStatus::Connected, basis(), attachment.clone()));
+        assert_eq!(
+            probe.finish(unsupported, RequestOutcome::Failed(FaultCode::Unsupported), basis(), Some(&attachment)),
+            Some(Intent::ConnectionResult { result: ConnectionStatus::CheckUnavailable }),
+        );
+        let protocol = crate::navigation::RequestId::new(708);
+        assert!(probe.begin(protocol, ConnectionStatus::Connected, basis(), attachment.clone()));
+        assert_eq!(
+            probe.finish(protocol, RequestOutcome::Failed(FaultCode::Protocol), basis(), Some(&attachment)),
+            Some(Intent::ConnectionResult { result: ConnectionStatus::CheckFailed }),
+        );
+    }
+
+    #[gpui::test]
+    fn an_old_same_root_owner_reply_cannot_complete_the_new_attachments_check(cx: &mut gpui::TestAppContext) {
+        let gate = super::super::owner::OwnerGate::ready(basis(), crate::model::ServiceMode::Attached);
+        let store = cx.update(|cx| DataStore::install_with_owner(
+            cx, Arc::new(AppSnapshot::empty(basis())), None, Some(gate.clone()), None,
+        ));
+        let old = store.read_with(cx, |store, _| store.current_owner_attachment())
+            .expect("first serving attachment");
+        let mut probe = ConnectionProbeLatch::default();
+        let request = crate::navigation::RequestId::new(705);
+        assert!(probe.begin(request, ConnectionStatus::Connected, basis(), old.clone()));
+        gate.publish(super::super::owner::OwnerState::Ready {
+            key: basis(), mode: crate::model::ServiceMode::Attached,
+        });
+        store.update(cx, |store, cx| store.owner_ready(cx));
+        let current = store.read_with(cx, |store, _| store.current_owner_attachment())
+            .expect("replacement serving attachment");
+        assert_ne!(old, current);
+        assert_eq!(
+            probe.finish(request, RequestOutcome::Succeeded, basis(), Some(&current)),
+            Some(Intent::ConnectionProbeAborted { previous: ConnectionStatus::Unknown }),
+        );
+        assert!(!probe.is_active());
+
+        let request = crate::navigation::RequestId::new(706);
+        assert!(probe.begin(request, ConnectionStatus::Connected, basis(), current.clone()));
+        let newer_basis = crate::core::VersionedRoot::synthetic(basis().root(), 2);
+        assert_eq!(
+            probe.finish(request, RequestOutcome::Succeeded, newer_basis, Some(&current)),
+            Some(Intent::ConnectionProbeAborted { previous: ConnectionStatus::Connected }),
+            "a current attachment cannot promote a result asked at an old root",
         );
     }
 }
