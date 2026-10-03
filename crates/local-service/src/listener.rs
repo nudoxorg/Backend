@@ -858,7 +858,7 @@ mod tests {
     }
 
     impl RunningListener {
-        fn spawn(mut listener: UnixListenerService<impl OwnerService + 'static>) -> Self {
+        fn spawn(mut listener: UnixListenerService<impl OwnerService + Send + 'static>) -> Self {
             let shutdown = listener.shutdown_handle();
             let worker = thread::spawn(move || listener.run());
             Self {
