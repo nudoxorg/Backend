@@ -6,6 +6,7 @@ pub mod hand;
 pub mod local_package;
 pub mod pages;
 pub mod persistence;
+pub(crate) mod retained_display;
 pub mod release;
 pub mod selectors;
 pub mod snapshot;

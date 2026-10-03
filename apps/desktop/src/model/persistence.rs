@@ -531,6 +531,8 @@ impl From<PersistedPackageLane> for PackageLane {
 
 /// Keeps the content place even while Settings is layered over it. The
 /// transient overlay is recorded separately in `settings_page`.
+pub(crate) fn display_route_claim(route: &Route) -> PersistedRoute { persist_route(route) }
+
 fn persist_route(route: &Route) -> PersistedRoute {
     match route {
         Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
