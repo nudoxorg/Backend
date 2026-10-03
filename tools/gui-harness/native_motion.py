@@ -150,7 +150,7 @@ def require_plan(path: Path) -> dict[str, Any]:
         raise ValueError("unknown case flow")
     if case["owner_phase"] not in {"starting", "failed", "serving"} or case["motion"] not in {"full", "reduced"}:
         raise ValueError("invalid owner phase or motion")
-    if case["transition"] not in {"first_open", "open_close", "resize_midflight", "text_scale_midflight", "failure_recovery", "settle", "retarget", "hide_reveal"}:
+    if case["transition"] not in {"first_open", "open_close", "resize_midflight", "text_scale_midflight", "failure_recovery", "settle", "retarget", "hide_reveal", "underlay_retirement"}:
         raise ValueError("invalid transition")
     if case["viewport"] not in {"wide", "narrow", "mixed"} or case["text_scale"] not in {"100", "200", "mixed"}:
         raise ValueError("invalid viewport/text scale")
@@ -190,11 +190,14 @@ def require_plan(path: Path) -> dict[str, Any]:
     allowed = {"key", "move", "click", "mouse_down", "mouse_up", "resize", "click_ax", "probe"}
     previous = -1
     button_down = False
+    retirement = case["flow"] == "drawer" and case["transition"] == "underlay_retirement"
+    held_keys: list[tuple[int, tuple[str, ...]]] = []
+    retirement_pairs = 0
     for index, action in enumerate(actions):
         if not isinstance(action, dict) or action.get("kind") not in allowed:
             raise ValueError(f"action {index}: unknown kind")
         allowed_action = {"at_ms", "kind", "label", "keycode", "modifiers", "x", "y",
-                          "width", "height", "title", "role", "expect_visual_ms", "min_visual_fraction", "expect_focus_title", "expect_ax_title", "expect_ax_selected_title"}
+                          "width", "height", "title", "role", "expect_visual_ms", "min_visual_fraction", "expect_focus_title", "expect_ax_title", "expect_ax_selected_title", "expect_ax_unselected_title"}
         if set(action) - allowed_action:
             raise ValueError(f"action {index}: unknown fields {sorted(set(action) - allowed_action)}")
         at = action.get("at_ms")
@@ -218,13 +221,24 @@ def require_plan(path: Path) -> dict[str, Any]:
         if kind == "mouse_down":
             if button_down:
                 raise ValueError(f"action {index}: nested mouse_down")
+            if retirement and retirement_pairs:
+                raise ValueError(f"action {index}: underlay retirement permits one held gesture")
             button_down = True
         elif kind == "mouse_up":
             if not button_down:
                 raise ValueError(f"action {index}: mouse_up without mouse_down")
+            if retirement and held_keys != [(42, ("command",)), (53, ())]:
+                raise ValueError(f"action {index}: underlay retirement requires held ⌘\\ then Escape before Up")
             button_down = False
-        elif button_down and kind not in {"move", "probe"}:
-            raise ValueError(f"action {index}: only move/probe/mouse_up may follow held mouse_down")
+            retirement_pairs += 1
+        elif button_down and kind == "key" and retirement:
+            chord = (action["keycode"], tuple(action.get("modifiers", [])))
+            allowed_held = [(42, ("command",)), (53, ())]
+            if len(held_keys) >= len(allowed_held) or chord != allowed_held[len(held_keys)]:
+                raise ValueError(f"action {index}: held keyboard cover only admits ⌘\\ then Escape")
+            held_keys.append(chord)
+        elif button_down and kind not in ({"probe"} if retirement else {"move", "probe"}):
+            raise ValueError(f"action {index}: only scoped held-input actions may follow mouse_down")
         if "expect_visual_ms" in action and (type(action["expect_visual_ms"]) is not int or action["expect_visual_ms"] < 1 or at + action["expect_visual_ms"] > duration):
             raise ValueError(f"action {index}: expect_visual_ms outside capture")
         fraction = action.get("min_visual_fraction", 0.005)
@@ -236,8 +250,12 @@ def require_plan(path: Path) -> dict[str, Any]:
             raise ValueError(f"action {index}: expect_ax_title requires a named probe")
         if "expect_ax_selected_title" in action and (kind != "probe" or not isinstance(action["expect_ax_selected_title"], str) or not action["expect_ax_selected_title"]):
             raise ValueError(f"action {index}: expect_ax_selected_title requires a named probe")
+        if "expect_ax_unselected_title" in action and (kind != "probe" or not isinstance(action["expect_ax_unselected_title"], str) or not action["expect_ax_unselected_title"]):
+            raise ValueError(f"action {index}: expect_ax_unselected_title requires a named probe")
     if button_down:
         raise ValueError("plan leaves mouse button down")
+    if case["transition"] == "underlay_retirement" and (not retirement or retirement_pairs != 1):
+        raise ValueError("underlay retirement requires one drawer held keyboard cover gesture")
     crops = plan.get("crops", [])
     if not isinstance(crops, list):
         raise ValueError("crops must be a list")
@@ -344,6 +362,11 @@ def fresh_ax(snapshot: dict[str, Any], before_host_ns: int, after_host_ns: int |
 def ax_has_title(snapshot: dict[str, Any], title: str) -> bool:
     focused = snapshot.get("focused") or {}
     return title in {focused.get("title"), focused.get("description")}
+
+
+def ax_uniquely_unselected(nodes: list[dict[str, Any]], title: str) -> bool:
+    matches = [node for node in nodes if title in {node.get("title"), node.get("description")}]
+    return len(matches) == 1 and matches[0].get("selected") is False
 
 
 def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[str, Any]], plan: dict[str, Any]) -> dict[str, Any]:
@@ -468,6 +491,10 @@ def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[s
                              for node in ax_nodes) if selected_title else None
         if selected_title and not selected_found:
             failures.append(f"{actual['label']}: fresh AX probe did not select {selected_title!r}")
+        unselected_title = requested.get("expect_ax_unselected_title")
+        unselected_found = ax_uniquely_unselected(ax_nodes, unselected_title) if unselected_title else None
+        if unselected_title and not unselected_found:
+            failures.append(f"{actual['label']}: fresh AX probe did not uniquely leave {unselected_title!r} unselected")
         prior_trees = [(0, event.get("ax", {}).get("tree")) for event in actions
                        if event.get("phase") == "initial"
                        and fresh_ax(event.get("ax") or {}, dispatch_host)]
@@ -502,6 +529,7 @@ def analyze_frames(out: Path, frames: list[dict[str, Any]], actions: list[dict[s
                                "expected_focus_already_present": focus_already_present,
                                "expected_ax_title": expected_ax, "ax_found": ax_found,
                                "expected_ax_selected_title": selected_title, "ax_selected_found": selected_found,
+                               "expected_ax_unselected_title": unselected_title, "ax_unselected_found": unselected_found,
                                "resize_window_after_pt": resize_bounds, "ax_tree_changed": ax_changed,
                                "ax_pixel_divergence": ax_pixel_divergence})
     if len(actual_actions) != len(plan["actions"]):

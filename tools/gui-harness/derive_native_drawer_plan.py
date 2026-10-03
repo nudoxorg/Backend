@@ -126,14 +126,63 @@ def derive(survey_path: Path, width: int, percent: int) -> tuple[dict, dict]:
     return plan, derivation
 
 
+def derive_retirement(survey_path: Path, width: int, percent: int) -> tuple[dict, dict]:
+    """Press a live Settings radio, cover/uncover it by keyboard, then release."""
+    plan, derivation = derive(survey_path, width, percent)
+    survey = json.loads(survey_path.read_text())
+    initial = next(a["ax"] for a in survey["actions"] if a.get("phase") == "initial")
+    full = unique(initial.get("tree"), "Full")
+    if full.get("selected") is not False:
+        raise ValueError("native Motion Full radio must begin unselected")
+    fx, fy, fw, fh = rect(full.get("bounds_pt"), "Motion Full radio")
+    wx, wy, ww, wh = derivation["window_bounds_pt"]
+    point = [fx + fw / 2, fy + fh / 2]
+    if not (wx + 4 < point[0] < wx + ww - 4 and wy + 4 < point[1] < wy + wh - 4):
+        raise ValueError("native Motion Full radio center is outside selected window")
+    plan["name"] = f"drawer-{width}-{percent}-held-underlay-retirement"
+    plan["case"] = {**plan["case"], "id": f"drawer_{width}_{percent}_retirement",
+                    "transition": "underlay_retirement"}
+    plan["duration_ms"] = 1600
+    plan["actions"] = [
+        {"at_ms": 20, "kind": "probe", "label": "uncovered Settings baseline",
+         "expect_ax_title": "Appearance", "expect_ax_unselected_title": "Full"},
+        {"at_ms": 120, "kind": "mouse_down", "x": point[0], "y": point[1],
+         "label": "hold native Motion Full underlay"},
+        {"at_ms": 270, "kind": "key", "keycode": 42, "modifiers": ["command"],
+         "label": "keyboard opens drawer over held radio", "expect_visual_ms": 250},
+        {"at_ms": 540, "kind": "probe", "label": "native drawer covers held radio",
+         "expect_ax_title": "Library shelf"},
+        {"at_ms": 660, "kind": "key", "keycode": 53,
+         "label": "Escape closes keyboard cover while held", "expect_visual_ms": 300},
+        {"at_ms": 1000, "kind": "probe", "label": "same radio remounts before release",
+         "expect_ax_title": "Appearance", "expect_ax_unselected_title": "Full"},
+        {"at_ms": 1150, "kind": "mouse_up", "x": point[0], "y": point[1],
+         "label": "release retired underlay press"},
+        {"at_ms": 1420, "kind": "probe", "label": "stale release did not select Motion Full",
+         "expect_ax_title": "Appearance", "expect_ax_unselected_title": "Full"},
+    ]
+    crops = []
+    for prefix, times in [("window", [20, 120, 400, 540, 900, 1150, 1420]),
+                          ("drawer", [400, 540, 900]),
+                          ("motion-full", [20, 540, 1000, 1150, 1420])]:
+        rect_px = next(crop["rect_px"] for crop in plan["crops"] if crop["label"].startswith(prefix + "-"))
+        crops.extend({"label": f"{prefix}-{at}", "at_ms": at, "rect_px": rect_px} for at in times)
+    plan["crops"] = crops
+    derivation["scenario"] = "underlay_retirement"
+    derivation["held_radio_point_pt"] = point
+    return plan, derivation
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--survey-capture',type=Path,required=True)
     parser.add_argument('--width',type=int,choices=[360,500],required=True)
     parser.add_argument('--percent',type=int,choices=[100,200],required=True)
+    parser.add_argument('--scenario',choices=['drag_off','underlay_retirement'],default='drag_off')
     parser.add_argument('--out-plan',type=Path,required=True)
     args = parser.parse_args()
-    plan, derivation = derive(args.survey_capture, args.width, args.percent)
+    builder = derive_retirement if args.scenario == 'underlay_retirement' else derive
+    plan, derivation = builder(args.survey_capture, args.width, args.percent)
     args.out_plan.parent.mkdir(parents=True,exist_ok=True)
     args.out_plan.write_text(json.dumps(plan,indent=2)+'\n')
     require_plan(args.out_plan)

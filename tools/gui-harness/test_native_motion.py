@@ -57,12 +57,17 @@ class NativeMotionTests(unittest.TestCase):
         for case in cases:
             self.assertEqual(by_id[case["id"]], case)
         self.assertEqual(cases[2]["flow"], "find")
+        find_actions = motion.require_plan(HERE / "plans/find-fast-open-close.json")["actions"]
+        self.assertEqual((find_actions[2]["keycode"], find_actions[2]["modifiers"]),
+                         (33, ["command"]), "native Shell Back is ⌘[ (Carbon kVK_ANSI_LeftBracket)")
         self.assertEqual(cases[3]["transition"], "settle")
         self.assertEqual(cases[1]["transition"], "retarget")
         self.assertEqual((cases[5]["flow"], cases[5]["transition"]), ("shelf", "hide_reveal"))
         self.assertEqual({by_id["drawer_500_100_full"]["flow"], by_id["drawer_360_200_full"]["flow"]}, {"drawer"})
         self.assertEqual({by_id["drawer_500_100_full"]["text_scale"],
                           by_id["drawer_360_200_full"]["text_scale"]}, {"100", "200"})
+        self.assertEqual({by_id["drawer_500_100_retirement"]["transition"],
+                          by_id["drawer_360_200_retirement"]["transition"]}, {"underlay_retirement"})
 
     def test_native_down_up_requires_a_balanced_ordered_gesture(self):
         with tempfile.TemporaryDirectory() as root:
@@ -76,9 +81,17 @@ class NativeMotionTests(unittest.TestCase):
             for actions, failure in [([up], "without mouse_down"), ([down], "leaves mouse button down"),
                                      ([down, down, up], "nested mouse_down"),
                                      ([down, {"at_ms": 150, "kind": "click", "x": 50, "y": 180,
-                                              "label": "ambiguous click"}, up], "only move/probe/mouse_up")]:
+                                              "label": "ambiguous click"}, up], "only scoped held-input")]:
                 with self.assertRaisesRegex(ValueError, failure):
                     motion.require_plan(self.plan(directory, **dict(base, actions=actions)))
+
+    def test_native_unselected_oracle_cannot_pass_by_absence_or_ambiguity(self):
+        self.assertTrue(motion.ax_uniquely_unselected([{"title": "Full", "selected": False}], "Full"))
+        self.assertFalse(motion.ax_uniquely_unselected([], "Full"))
+        self.assertFalse(motion.ax_uniquely_unselected([{"title": "Full"}], "Full"))
+        self.assertFalse(motion.ax_uniquely_unselected([{"title": "Full", "selected": True}], "Full"))
+        self.assertFalse(motion.ax_uniquely_unselected(
+            [{"title": "Full", "selected": False}, {"description": "Full", "selected": False}], "Full"))
 
     def test_drawer_gesture_uses_unique_measured_native_bounds(self):
         with tempfile.TemporaryDirectory() as root:
@@ -92,7 +105,8 @@ class NativeMotionTests(unittest.TestCase):
                            "requested_width_px": 2880, "requested_height_px": 2400},
                 "actions": [
                     {"phase": "initial", "ax": {"tree": [
-                        {"title": "Full", "bounds_pt": {"x": 510, "y": 500, "width": 40, "height": 24}},
+                        {"title": "Full", "selected": False,
+                         "bounds_pt": {"x": 510, "y": 500, "width": 40, "height": 24}},
                         {"title": "100%", "selected": True}]}},
                     {"phase": "action", "label": "measure native Library shelf", "posted": {"ax": {
                         "window": {"bounds_pt": window}, "tree": [
@@ -105,6 +119,30 @@ class NativeMotionTests(unittest.TestCase):
             self.assertEqual(derivation["down_strategy"], "native Full radio center")
             self.assertEqual(generated["crops"][0]["rect_px"], [200, 200, 1000, 1800])
             self.assertEqual(motion.require_plan(self.plan(directory, **generated))["case"]["flow"], "drawer")
+            retirement, retirement_evidence = drawer_plan.derive_retirement(path, 500, 100)
+            self.assertEqual(retirement["case"]["transition"], "underlay_retirement")
+            self.assertEqual(retirement_evidence["held_radio_point_pt"], [530, 512])
+            self.assertEqual([action["kind"] for action in retirement["actions"] if action["kind"] != "probe"],
+                             ["mouse_down", "key", "key", "mouse_up"])
+            self.assertEqual(motion.require_plan(self.plan(directory, **retirement))["case"],
+                             next(row for row in json.loads((HERE / "native_motion_matrix.json").read_text())["required"]
+                                  if row["id"] == "drawer_500_100_retirement"))
+            with self.assertRaisesRegex(ValueError, "only scoped held-input"):
+                wrong_case = dict(retirement["case"], transition="open_close")
+                motion.require_plan(self.plan(directory, **dict(retirement, case=wrong_case)))
+            with self.assertRaisesRegex(ValueError, "held keyboard cover only admits"):
+                wrong_actions = deepcopy(retirement["actions"])
+                wrong_actions[2]["keycode"] = 40
+                motion.require_plan(self.plan(directory, **dict(retirement, actions=wrong_actions)))
+            with self.assertRaisesRegex(ValueError, "requires held"):
+                wrong_actions = deepcopy(retirement["actions"])
+                wrong_actions.pop(4)
+                motion.require_plan(self.plan(directory, **dict(retirement, actions=wrong_actions)))
+            with self.assertRaisesRegex(ValueError, "only scoped held-input"):
+                wrong_actions = deepcopy(retirement["actions"])
+                wrong_actions.insert(3, {"at_ms": 400, "kind": "resize", "width": 500,
+                                         "height": 900, "label": "unsafe resize while held"})
+                motion.require_plan(self.plan(directory, **dict(retirement, actions=wrong_actions)))
             with self.assertRaisesRegex(ValueError, "expected_window_frame_pt"):
                 motion.require_plan(self.plan(directory, **dict(generated, expected_window_frame_pt=[0, 0, -1, 900])))
             survey["actions"][1]["posted"]["ax"]["tree"].append(survey["actions"][1]["posted"]["ax"]["tree"][0])

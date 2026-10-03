@@ -25,6 +25,8 @@
     {"id": "settings_retarget_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "retarget", "viewport": "mixed", "text_scale": "100", "live_index": false},
     {"id": "drawer_500_100_full", "flow": "drawer", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "narrow", "text_scale": "100", "live_index": false},
     {"id": "drawer_360_200_full", "flow": "drawer", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "narrow", "text_scale": "200", "live_index": false},
-    {"id": "shelf_hide_reveal_full", "flow": "shelf", "owner_phase": "serving", "motion": "full", "transition": "hide_reveal", "viewport": "wide", "text_scale": "100", "live_index": false}
+    {"id": "shelf_hide_reveal_full", "flow": "shelf", "owner_phase": "serving", "motion": "full", "transition": "hide_reveal", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "drawer_500_100_retirement", "flow": "drawer", "owner_phase": "serving", "motion": "full", "transition": "underlay_retirement", "viewport": "narrow", "text_scale": "100", "live_index": false},
+    {"id": "drawer_360_200_retirement", "flow": "drawer", "owner_phase": "serving", "motion": "full", "transition": "underlay_retirement", "viewport": "narrow", "text_scale": "200", "live_index": false}
   ]
 }
