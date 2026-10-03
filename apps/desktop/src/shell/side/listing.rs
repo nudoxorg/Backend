@@ -257,6 +257,7 @@ fn settings(inputs: &Inputs<'_>, current: SettingsPage) -> Listing {
 /// closed `SettingsPage` vocabulary.
 fn settings_icon(page: SettingsPage) -> Icon {
     match page {
+        SettingsPage::About => Icon::Info,
         SettingsPage::Appearance => Icon::Eye,
         SettingsPage::Editor => Icon::File,
         SettingsPage::Agents => Icon::Users,

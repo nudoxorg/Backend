@@ -32,6 +32,7 @@ pub(super) fn body(
     // these controls once it owns the route.
     if !ctx.active { return Vec::new(); }
     match page {
+        SettingsPage::About => about(ctx),
         SettingsPage::Index => index(store, ctx),
         SettingsPage::Registry => registry(snapshot, ctx),
         SettingsPage::Help => keys(ctx),
@@ -53,6 +54,18 @@ fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
             .pb(ctx.measure.space(Space::Base))
             .child(text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0).child(said)),
     )
+}
+
+fn about(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let mut leaves = vec![title("About Nudox", ctx)];
+    let purpose = ctx.say("Read the code you depend on.");
+    leaves.push(Leaf::new(text(ty::ROW, &measure, palette.ink1).child(purpose)));
+    let version = ctx.say(env!("CARGO_PKG_VERSION"));
+    leaves.push(setting("Version", text(ty::MONO_ROW, &measure, palette.ink1)
+        .child(version).into_any_element(), ctx));
+    leaves
 }
 
 fn appearance(

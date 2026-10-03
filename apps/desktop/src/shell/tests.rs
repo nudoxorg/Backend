@@ -1908,6 +1908,7 @@ fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
 
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let pages = [
+        (SettingsPage::About, "About Nudox"),
         (SettingsPage::Appearance, "Appearance"),
         (SettingsPage::Editor, "Editor"),
         (SettingsPage::Agents, "Agents & MCP"),

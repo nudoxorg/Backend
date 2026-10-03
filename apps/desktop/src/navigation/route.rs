@@ -389,6 +389,8 @@ pub enum Overlay {
 /// Settings pages are closed semantic tokens.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SettingsPage {
+    /// Product identity and build version.
+    About,
     /// Appearance and surface preferences.
     #[default]
     Appearance,
@@ -414,7 +416,8 @@ pub enum SettingsPage {
 
 impl SettingsPage {
     /// Stable order used by the settings focus route.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::About,
         Self::Appearance,
         Self::Editor,
         Self::Agents,
@@ -432,6 +435,7 @@ impl SettingsPage {
     #[must_use]
     pub const fn menu_label(self) -> &'static str {
         match self {
+            Self::About => "About Nudox",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Agents => "Agents",
@@ -449,6 +453,7 @@ impl SettingsPage {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::About => "about",
             Self::Appearance => "appearance",
             Self::Editor => "editor",
             Self::Agents => "agents",
