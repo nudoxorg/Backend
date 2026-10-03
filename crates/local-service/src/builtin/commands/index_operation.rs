@@ -203,13 +203,13 @@ impl IndexOperationJournal {
             .map_err(|error| JournalError::Database(error.to_string()))?
             .join(database_name);
         let database_path = database_path.to_str().ok_or(JournalError::NonUtf8Path)?;
-        let (database, mut connection) = futures_executor::block_on(async {
+        let (database, connection) = futures_executor::block_on(async {
             let database = turso::Builder::new_local(database_path)
                 .experimental_multiprocess_wal(true)
                 .build()
                 .await
                 .map_err(database_error)?;
-            let connection = database.connect().map_err(database_error)?;
+            let mut connection = database.connect().map_err(database_error)?;
             connection
                 .busy_timeout(BUSY_TIMEOUT)
                 .map_err(database_error)?;
@@ -1177,13 +1177,7 @@ mod tests {
             root,
             backend_library::object_version(b"index-operation-source"),
         );
-        let frontier = backend_library::canonical::Frontier::new(
-            backend_library::branch_key("main"),
-            backend_library::log_key("library"),
-            backend_library::cursor::CURSOR_SCHEMA,
-            root,
-            0,
-        );
+        let frontier = Cursor::at(root, 0).frontier();
         ViewRoot::new_incomplete(
             backend_library::view_key(b"index-operation-test-view"),
             basis,
@@ -1268,10 +1262,10 @@ mod tests {
         assert!(matches!(
             entry.state,
             StoredOperationState::Prepared {
-                request_identity: Some([4; 32]),
-                base_workspace_root: [5; 32],
+                request_identity,
+                base_workspace_root,
                 base_workspace_sequence: 9
-            }
+            } if request_identity == Some([4; 32]) && base_workspace_root == [5; 32]
         ));
         assert!(journal.has_prepared().expect("prepared state probe"));
         drop(journal);
@@ -1453,8 +1447,8 @@ mod tests {
 
     #[test]
     fn cold_open_rejects_key_pending_and_terminal_counter_mismatches() {
-        let path = path();
-        let mut journal = open(&path);
+        let first_path = path();
+        let mut journal = open(&first_path);
         journal
             .accept(key(60), package(), CompileExecutionIntent::Interactive)
             .expect("accept operation");
@@ -1466,11 +1460,11 @@ mod tests {
         .expect("corrupt key and pending counters");
         drop(journal);
         assert!(matches!(
-            IndexOperationJournal::open(&path),
+            IndexOperationJournal::open(&first_path),
             Err(JournalError::Corrupt(message))
                 if message == "metadata counters or indexed row shapes disagree with durable aggregates"
         ));
-        cleanup(&path);
+        cleanup(&first_path);
 
         let path = path();
         let mut journal = open(&path);

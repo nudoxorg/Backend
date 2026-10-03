@@ -568,7 +568,7 @@ impl CommandAdapter {
             }
             Ok(IndexOperationAcceptance::New) => {}
             Err(error) => {
-                return self.encode_index_operation_start_failure(daemon, request_id, error);
+                return Self::encode_index_operation_start_failure(daemon, request_id, error);
             }
         }
 
