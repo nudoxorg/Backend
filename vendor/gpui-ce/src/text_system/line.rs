@@ -291,6 +291,52 @@ impl WrappedLine {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
+        self.paint_with_decorations(
+            origin,
+            line_height,
+            align,
+            bounds,
+            &self.decoration_runs,
+            window,
+            cx,
+        )
+    }
+
+    /// Paint the existing shaped and wrapped layout with a uniform foreground.
+    /// Glyphs, positions, wrapping, backgrounds and explicit underline colors
+    /// remain unchanged. This does not shape or measure the text again.
+    pub fn paint_with_text_color(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        bounds: Option<Bounds<Pixels>>,
+        color: Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
+        let decorations: SmallVec<[DecorationRun; 1]> = self
+            .decoration_runs
+            .iter()
+            .cloned()
+            .map(|mut run| {
+                run.color = color;
+                run
+            })
+            .collect();
+        self.paint_with_decorations(origin, line_height, align, bounds, &decorations, window, cx)
+    }
+
+    fn paint_with_decorations(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        bounds: Option<Bounds<Pixels>>,
+        decorations: &[DecorationRun],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
         let align_width = match bounds {
             Some(bounds) => Some(bounds.size.width),
             None => self.layout.wrap_width,
@@ -302,14 +348,18 @@ impl WrappedLine {
             line_height,
             align,
             align_width,
-            &self.decoration_runs,
+            decorations,
             &self.wrap_boundaries,
             window,
             cx,
         )?;
         let lines = self.wrap_boundaries.len() as f32 + 1.0;
         let width = align_width.map_or(self.layout.unwrapped_layout.width, |width| {
-            if lines > 1.0 { width } else { width.min(self.layout.unwrapped_layout.width) }
+            if lines > 1.0 {
+                width
+            } else {
+                width.min(self.layout.unwrapped_layout.width)
+            }
         });
         trace_line(
             &self.text,
@@ -317,7 +367,7 @@ impl WrappedLine {
             (width, line_height * lines),
             if lines > 1.0 { TextAlign::Left } else { align },
             align_width,
-            self.decoration_runs.iter(),
+            decorations.iter(),
             window,
             cx,
         );
