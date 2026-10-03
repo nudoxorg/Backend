@@ -565,8 +565,8 @@ fn cargo_metadata_source_root_closure(
     no_deps: &[u8],
 ) -> Result<CargoMetadataSourceRootClosure, String> {
     let config_roots = local_override_roots_from_config(request_context)?;
-    cargo_metadata_source_root_closure_with(requested, no_deps, config_roots, |manifest| {
-        run_cargo_metadata_query(
+    cargo_metadata_source_root_closure_with(requested, no_deps, config_roots, |manifest, limit| {
+        run_cargo_metadata_query_with_limit(
             cargo,
             request_context,
             selection,
@@ -575,6 +575,7 @@ fn cargo_metadata_source_root_closure(
             true,
             false,
             None,
+            limit,
         )
     })
 }
@@ -583,7 +584,7 @@ fn cargo_metadata_source_root_closure_with(
     requested: &RequestedCargoManifest,
     no_deps: &[u8],
     config_roots: Vec<PathBuf>,
-    mut query_no_deps: impl FnMut(&Path) -> Result<Vec<u8>, String>,
+    mut query_no_deps: impl FnMut(&Path, usize) -> Result<Vec<u8>, String>,
 ) -> Result<CargoMetadataSourceRootClosure, String> {
     let initial = CargoMetadataDocument::parse(no_deps)?;
     let effective_workspace = initial.proves_requested_manifest(requested)?;
@@ -658,7 +659,11 @@ fn cargo_metadata_source_root_closure_with(
         if document_receipts.len() >= MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS {
             return Err("Cargo local source metadata exceeds its document limit".to_owned());
         }
-        let child_no_deps = query_no_deps(&child_requested.manifest)?;
+        let byte_limit = MAX_LOCK_SOURCE_CLOSURE_BYTES.saturating_sub(response_bytes);
+        if byte_limit == 0 {
+            return Err("Cargo local source metadata exceeds its aggregate byte limit".to_owned());
+        }
+        let child_no_deps = query_no_deps(&child_requested.manifest, byte_limit)?;
         response_bytes = response_bytes.saturating_add(child_no_deps.len());
         if response_bytes > MAX_LOCK_SOURCE_CLOSURE_BYTES {
             return Err("Cargo local source metadata exceeds its aggregate byte limit".to_owned());
@@ -1616,6 +1621,30 @@ fn run_cargo_metadata_query(
     locked: bool,
     private_lockfile: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
+    run_cargo_metadata_query_with_limit(
+        cargo,
+        request_context,
+        selection,
+        host,
+        requested_manifest,
+        no_deps,
+        locked,
+        private_lockfile,
+        MAX_METADATA_BYTES,
+    )
+}
+
+fn run_cargo_metadata_query_with_limit(
+    cargo: &Path,
+    request_context: &Path,
+    selection: &CargoToolSelection,
+    host: &str,
+    requested_manifest: &Path,
+    no_deps: bool,
+    locked: bool,
+    private_lockfile: Option<&Path>,
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
     let manifest = requested_manifest
         .to_str()
         .ok_or_else(|| "requested Cargo manifest path is not UTF-8".to_owned())?;
@@ -1642,7 +1671,7 @@ fn run_cargo_metadata_query(
         cargo,
         request_context,
         &arguments,
-        MAX_METADATA_BYTES,
+        maximum,
         selection
             .inject_default_rustc
             .then_some(selection.rustc.as_path()),
@@ -2450,8 +2479,11 @@ mod tests {
         let a_manifest = dependency_a.join("Cargo.toml");
         let transitive_manifest = transitive.join("Cargo.toml");
         let mut queried = Vec::new();
-        let closure =
-            cargo_metadata_source_root_closure_with(&requested, &initial, Vec::new(), |manifest| {
+        let closure = cargo_metadata_source_root_closure_with(
+            &requested,
+            &initial,
+            Vec::new(),
+            |manifest, _limit| {
                 queried.push(manifest.to_path_buf());
                 if manifest == a_manifest {
                     Ok(external.clone())
@@ -2463,8 +2495,9 @@ mod tests {
                         manifest.display()
                     ))
                 }
-            })
-            .expect("bounded source-root closure");
+            },
+        )
+        .expect("bounded source-root closure");
 
         assert_eq!(
             queried,
@@ -2529,8 +2562,11 @@ mod tests {
         }))
         .expect("request no-deps Cargo document");
         let mut queries = 0;
-        let outcome =
-            cargo_metadata_source_root_closure_with(&requested, &initial, Vec::new(), |manifest| {
+        let outcome = cargo_metadata_source_root_closure_with(
+            &requested,
+            &initial,
+            Vec::new(),
+            |manifest, _limit| {
                 queries += 1;
                 let root = manifest.parent().expect("dependency manifest parent");
                 let id = format!(
@@ -2548,7 +2584,8 @@ mod tests {
                     }]
                 }))
                 .map_err(|error| format!("cannot make Cargo metadata fixture: {error}"))
-            });
+            },
+        );
         assert!(
             outcome.is_err_and(|error| error.contains("document limit")),
             "the closure must stop with a typed refusal when it reaches its document cap"
