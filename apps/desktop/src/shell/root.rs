@@ -1459,7 +1459,7 @@ impl Shell {
         if !self.target_structure_current(scope, cx) { return false; }
         let targets = self.hinted_targets(zone, cx);
         targets.admits_hint(id, frame)
-            && (!must_be_focused || targets.focused().as_deref() == Some(id))
+            && (!must_be_focused || (self.zone == zone && targets.focused().as_deref() == Some(id)))
     }
 
     fn activate_hint(&mut self, choice: Hinted, scope: &HintScope, window: &mut Window, cx: &mut Context<Self>) {
@@ -2521,6 +2521,60 @@ mod deferred_target_admission_tests {
     use crate::runtime::owner::{OwnerGate, OwnerState};
     use crate::runtime::reads::ReadPool;
     use gpui::AppContext as _;
+
+    fn mounted_declaration_handoff(cx: &mut gpui::TestAppContext, source_key: bool) {
+        let route = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
+            project: None,
+            at: None,
+            package: crate::core::PackageId::new(super::super::tests::PACKAGE).expect("package"),
+            lane: crate::navigation::PackageLane::Overview,
+            selected: None,
+        });
+        let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 900.0);
+        rig.settle();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
+        let frame = targets.hint_frame();
+        let target = targets.placed().into_iter()
+            .find(|(target, _)| target.peek.is_some() && target.source.is_some())
+            .map(|(target, _)| target)
+            .expect("mounted declaration supports both Space and S");
+        targets.focus(target.id.clone());
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| {
+            let handoff_shell = shell.clone();
+            window.defer(app, move |window, app| {
+                // This effect precedes the Space/S effect in the same GPUI
+                // cycle. The old row, its frame, and its producer stay live;
+                // only the keyboard's zone has changed.
+                handoff_shell.update(app, |shell, cx| shell.take_zone(Zone::Titlebar, window, cx));
+                let old = handoff_shell.read(app).reader.read(app).targets.clone();
+                assert_eq!(old.hint_frame(), frame);
+                assert_eq!(old.focused(), Some(target.id.clone()));
+                assert!(target.action.admits(app), "producer still admits the old row");
+            });
+            shell.update(app, |shell, cx| {
+                if source_key { shell.peel(window, cx); }
+                else { shell.peek(window, cx); }
+            });
+        });
+        rig.settle();
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Titlebar);
+        assert_eq!(rig.route(), route, "the old Reader row cannot navigate after a zone handoff");
+        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1,
+            "the old Reader row cannot open a peek after a zone handoff");
+    }
+
+    #[gpui::test]
+    fn space_rechecks_the_keyboard_zone_before_opening_a_mounted_peek(cx: &mut gpui::TestAppContext) {
+        mounted_declaration_handoff(cx, false);
+    }
+
+    #[gpui::test]
+    fn source_key_rechecks_the_keyboard_zone_before_navigating(cx: &mut gpui::TestAppContext) {
+        mounted_declaration_handoff(cx, true);
+    }
 
     fn serving_gate() -> (crate::core::VersionedRoot, OwnerGate) {
         let root = crate::core::VersionedRoot::synthetic(
