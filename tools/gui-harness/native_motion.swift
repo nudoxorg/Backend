@@ -45,6 +45,54 @@ func jsonLine(_ value: [String: Any]) -> Data {
 func sha256Hex(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
+// The driver caps plans at the same size. Read one regular inode without
+// following a final symlink, including one overflow byte to reject growth.
+// The digest below is always of these captured bytes, never a second read.
+func readBoundedPlan(_ url: URL) throws -> Data {
+    let limit = 1_000_000
+    let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
+    guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    defer { Darwin.close(fd) }
+    var before = stat()
+    guard Darwin.fstat(fd, &before) == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    guard (before.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+          before.st_nlink == 1, before.st_size >= 0,
+          before.st_size <= Int64(limit) else {
+        throw NSError(domain: "native-motion", code: 24,
+            userInfo: [NSLocalizedDescriptionKey: "plan must be regular and at most 1,000,000 bytes"])
+    }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 65_536)
+    while data.count <= limit {
+        let remaining = min(buffer.count, limit + 1 - data.count)
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(fd, bytes.baseAddress, remaining)
+        }
+        if count < 0 {
+            if errno == EINTR { continue }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        if count == 0 { break }
+        data.append(contentsOf: buffer[..<count])
+    }
+    var after = stat()
+    guard Darwin.fstat(fd, &after) == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    guard data.count <= limit, Int64(data.count) == before.st_size,
+          before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+          before.st_size == after.st_size, after.st_nlink == 1,
+          before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+          before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+          before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+          before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+        throw NSError(domain: "native-motion", code: 24,
+            userInfo: [NSLocalizedDescriptionKey: "plan changed or exceeded 1,000,000 bytes during bounded read"])
+    }
+    return data
+}
 func writeOnceReadOnly(_ data: Data, to url: URL) throws {
     let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
     guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
@@ -449,8 +497,38 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         } else {
             expectedPlanSHA256 = nil
         }
-        let planData = try Data(contentsOf: URL(fileURLWithPath: args[2]))
+        let planData = try readBoundedPlan(URL(fileURLWithPath: args[2]))
         let consumedPlanSHA256 = sha256Hex(planData)
+        let out = URL(fileURLWithPath: args[3], isDirectory: true)
+        let outputSelector = #selector(SCStreamOutput.stream(_:didOutputSampleBuffer:of:))
+        let implementedSelector = #selector(Recorder.stream(_:didOutputSampleBuffer:of:))
+        guard let recorderExecutable = Bundle.main.executableURL else {
+            throw NSError(domain: "native-motion", code: 23,
+                userInfo: [NSLocalizedDescriptionKey: "recorder executable identity unavailable"])
+        }
+        let executableSHA256 = sha256Hex(try Data(contentsOf: recorderExecutable))
+        func writeConsumption(_ state: String, callbackReady: Bool) throws {
+            let consumption: [String: Any] = [
+                "schema": 1, "kind": "native-motion-plan-consumption-v1", "state": state,
+                "pid": pid, "plan_path": args[2], "consumed_bytes": planData.count,
+                "consumed_sha256": consumedPlanSHA256,
+                "expected_sha256": expectedPlanSHA256.map { $0 as Any } ?? NSNull(),
+                "recorder_bundle_identifier": Bundle.main.bundleIdentifier ?? "",
+                "recorder_executable": recorderExecutable.path,
+                "recorder_executable_sha256": executableSHA256,
+                "stream_output_callback_ready": callbackReady]
+            try writeOnceReadOnly(jsonLine(consumption), to: out.appendingPathComponent("plan-consumption.jsonl"))
+        }
+        // A substituted valid or malformed plan is rejected before decoding
+        // either one. The mismatch receipt still records its exact bounded bytes.
+        if let expectedPlanSHA256, expectedPlanSHA256 != consumedPlanSHA256 {
+            let probe = Recorder(frameDir: out.appendingPathComponent("frames"),
+                frames: FileHandle.nullDevice, pid: pid, maxFrames: 0)
+            try writeConsumption("MismatchV1", callbackReady:
+                outputSelector == implementedSelector && probe.responds(to: outputSelector))
+            throw NSError(domain: "native-motion", code: 21,
+                userInfo: [NSLocalizedDescriptionKey: "recorder rejected plan bytes before decode, capture or input: MismatchV1"])
+        }
         let plan = try JSONDecoder().decode(Plan.self, from: planData)
         guard plan.schema == 1, plan.duration_ms > 0, plan.duration_ms <= 30_000,
               plan.max_frames > 0, plan.max_frames <= 1800,
@@ -458,7 +536,6 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
                   plan.actions.contains(where: { $0.kind != "probe" })) else {
             throw NSError(domain: "native-motion", code: 11, userInfo: [NSLocalizedDescriptionKey: "invalid plan bounds"])
         }
-        let out = URL(fileURLWithPath: args[3], isDirectory: true)
         let frameDir = out.appendingPathComponent("frames", isDirectory: true)
         try FileManager.default.createDirectory(at: frameDir, withIntermediateDirectories: true)
         let framesURL = out.appendingPathComponent("frames.jsonl")
@@ -472,32 +549,14 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         let recorder = Recorder(frameDir: frameDir, frames: frames, pid: pid, maxFrames: plan.max_frames)
         // SCStreamOutput's frame method is optional in Objective-C. A Swift
         // method with the wrong external label compiles but receives no frames.
-        let outputSelector = #selector(SCStreamOutput.stream(_:didOutputSampleBuffer:of:))
-        let implementedSelector = #selector(Recorder.stream(_:didOutputSampleBuffer:of:))
         let outputCallbackReady = outputSelector == implementedSelector && recorder.responds(to: outputSelector)
-        guard let recorderExecutable = Bundle.main.executableURL else {
-            throw NSError(domain: "native-motion", code: 23,
-                userInfo: [NSLocalizedDescriptionKey: "recorder executable identity unavailable"])
-        }
-        let consumptionState: String
-        if let expectedPlanSHA256 {
-            consumptionState = expectedPlanSHA256 == consumedPlanSHA256 ? "MatchedV1" : "MismatchV1"
-        } else {
-            consumptionState = plan.actions.isEmpty ? "UnrequestedPassive" : "ActiveRequiresExpectedDigestV1"
-        }
-        let consumption: [String: Any] = [
-            "schema": 1, "kind": "native-motion-plan-consumption-v1", "state": consumptionState,
-            "pid": pid, "plan_path": args[2], "consumed_bytes": planData.count,
-            "consumed_sha256": consumedPlanSHA256,
-            "expected_sha256": expectedPlanSHA256.map { $0 as Any } ?? NSNull(),
-            "recorder_bundle_identifier": Bundle.main.bundleIdentifier ?? "",
-            "recorder_executable": recorderExecutable.path,
-            "recorder_executable_sha256": sha256Hex(try Data(contentsOf: recorderExecutable)),
-            "stream_output_callback_ready": outputCallbackReady]
-        try writeOnceReadOnly(jsonLine(consumption), to: out.appendingPathComponent("plan-consumption.jsonl"))
-        guard consumptionState == "MatchedV1" || consumptionState == "UnrequestedPassive" else {
-            throw NSError(domain: "native-motion", code: consumptionState == "MismatchV1" ? 21 : 22,
-                userInfo: [NSLocalizedDescriptionKey: "recorder rejected plan bytes before capture or input: \(consumptionState)"])
+        let consumptionState = expectedPlanSHA256 == nil && !plan.actions.isEmpty
+            ? "ActiveRequiresExpectedDigestV1"
+            : (expectedPlanSHA256 == nil ? "UnrequestedPassive" : "MatchedV1")
+        try writeConsumption(consumptionState, callbackReady: outputCallbackReady)
+        guard consumptionState != "ActiveRequiresExpectedDigestV1" else {
+            throw NSError(domain: "native-motion", code: 22,
+                userInfo: [NSLocalizedDescriptionKey: "recorder rejected active plan without expected digest before capture or input"])
         }
         // These are independent, read-only OS admissions. A discovered
         // SCWindow does not prove Screen Recording permission, and an absent

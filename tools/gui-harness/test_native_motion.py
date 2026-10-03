@@ -158,19 +158,57 @@ class NativeMotionTests(unittest.TestCase):
             self.assertEqual(motion.failed_recorder_evidence(out)["action_rows"], 0)
             self.assertEqual(motion.failed_recorder_evidence(out)["plan_consumption"]["state"], "MismatchV1")
 
-    def test_swift_hashes_the_same_data_it_decodes_before_capture(self):
+    def test_actual_resolved_plan_mutations_cannot_qualify_a_consumption_receipt(self):
+        for mutated in (b'{"active":false}\n', b'{"active":oops}\n'):
+            with self.subTest(mutated=mutated), tempfile.TemporaryDirectory() as root:
+                out = Path(root)
+                plan_path = out / "resolved-plan.json"
+                expected = motion.write_once_readonly(plan_path, b'{"active":true}\n')
+                plan_path.chmod(0o644)
+                plan_path.write_bytes(mutated)
+                actual, actual_bytes = motion.plan_file_observation(plan_path)
+                self.assertEqual(actual_bytes, mutated)
+                self.assertNotEqual(actual["sha256"], expected["sha256"])
+                self.assertEqual(motion.plan_snapshot_check(expected)["state"], "Changed")
+                recorder = out / "NudoxMotionRecorder"
+                identity = {"identifier": "dev.nudox.audit.motion-recorder",
+                            "executable_sha256": "a" * 64}
+                receipt = {"schema": 1, "kind": "native-motion-plan-consumption-v1",
+                           "state": "MismatchV1", "pid": 43542,
+                           "plan_path": str(plan_path), "consumed_bytes": len(actual_bytes),
+                           "consumed_sha256": actual["sha256"],
+                           "expected_sha256": expected["sha256"],
+                           "recorder_bundle_identifier": identity["identifier"],
+                           "recorder_executable": str(recorder),
+                           "recorder_executable_sha256": identity["executable_sha256"],
+                           "stream_output_callback_ready": True}
+                motion.write_once_readonly(out / "plan-consumption.jsonl",
+                                           (json.dumps(receipt) + "\n").encode())
+                (out / "actions.jsonl").write_bytes(b"")
+                (out / "frames.jsonl").write_bytes(b"")
+                qualification = motion.consumed_plan_receipt(out, expected, recorder,
+                                                              identity, 43542)
+                self.assertEqual(qualification["state"], "RejectedV1")
+                self.assertFalse(qualification["exact_bytes_attested"])
+                self.assertEqual(motion.failed_recorder_evidence(out)["action_rows"], 0)
+                self.assertEqual(motion.failed_recorder_evidence(out)["plan_consumption"], receipt)
+
+    def test_swift_bounded_hashes_same_data_and_rejects_mismatch_before_decode(self):
         source = (HERE / "native_motion.swift").read_text()
-        read = source.index("let planData = try Data(contentsOf:")
+        read = source.index("let planData = try readBoundedPlan(")
         digest = source.index("let consumedPlanSHA256 = sha256Hex(planData)", read)
-        decode = source.index("JSONDecoder().decode(Plan.self, from: planData)", digest)
-        receipt = source.index('"plan-consumption.jsonl"', decode)
-        gate = source.index('guard consumptionState == "MatchedV1"', receipt)
-        capture = source.index("SCShareableContent.current", gate)
+        mismatch = source.index('if let expectedPlanSHA256, expectedPlanSHA256 != consumedPlanSHA256', digest)
+        mismatch_receipt = source.index('try writeConsumption("MismatchV1"', mismatch)
+        decode = source.index("JSONDecoder().decode(Plan.self, from: planData)", mismatch_receipt)
+        receipt = source.index("try writeConsumption(consumptionState", decode)
+        capture = source.index("SCShareableContent.current", receipt)
         self.assertLess(read, digest)
-        self.assertLess(digest, decode)
+        self.assertIn("Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)", source)
+        self.assertIn("limit + 1 - data.count", source)
+        self.assertLess(digest, mismatch)
+        self.assertLess(mismatch_receipt, decode)
         self.assertLess(decode, receipt)
-        self.assertLess(receipt, gate)
-        self.assertLess(gate, capture)
+        self.assertLess(receipt, capture)
 
     def test_swift_source_binds_optional_screen_output_selector(self):
         # SCStreamOutput's frame callback is optional. A wrong Swift external
