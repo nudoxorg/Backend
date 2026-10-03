@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 const MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS: usize = 128;
-const MAX_LOCK_SOURCE_CLOSURE_BYTES: usize = MAX_METADATA_BYTES;
+const MAX_LOCK_SOURCE_CLOSURE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LOCK_SOURCE_CLOSURE_PACKAGES: usize = MAX_CARGO_METADATA_PACKAGES;
 const MAX_LOCK_SOURCE_CLOSURE_ROOTS: usize = MAX_CARGO_METADATA_PACKAGES;
 const MAX_CARGO_METADATA_DEPENDENCIES_PER_PACKAGE: usize = 65_536;
@@ -586,6 +586,9 @@ fn cargo_metadata_source_root_closure_with(
     config_roots: Vec<PathBuf>,
     mut query_no_deps: impl FnMut(&Path, usize) -> Result<Vec<u8>, String>,
 ) -> Result<CargoMetadataSourceRootClosure, String> {
+    if no_deps.len() > MAX_LOCK_SOURCE_CLOSURE_BYTES {
+        return Err("Cargo local source metadata exceeds its aggregate byte limit".to_owned());
+    }
     let initial = CargoMetadataDocument::parse(no_deps)?;
     let effective_workspace = initial.proves_requested_manifest(requested)?;
     let mut roots = BTreeSet::new();
@@ -1243,7 +1246,7 @@ impl CargoMetadataResolutionSession {
         let tool_before =
             metadata_tool_witness(request_context, &version, &selection_before, cached)?;
 
-        let no_deps = run_cargo_metadata_query(
+        let no_deps = run_cargo_metadata_query_with_limit(
             &cargo,
             request_context,
             &selection_before,
@@ -1252,6 +1255,7 @@ impl CargoMetadataResolutionSession {
             true,
             false,
             None,
+            MAX_LOCK_SOURCE_CLOSURE_BYTES,
         )?;
         let no_deps_workspace = metadata_proves_requested_manifest(&no_deps, requested)?;
         let mut source_closure = if matches!(
@@ -2052,6 +2056,36 @@ mod tests {
         )))
     }
 
+    fn minimal_source_closure_fixture(
+        prefix: &str,
+    ) -> (Scratch, PathBuf, RequestedCargoManifest, Vec<u8>) {
+        let scratch = scratch(prefix);
+        let request_root = scratch.0.join("request");
+        std::fs::create_dir_all(&request_root).expect("request package directory");
+        std::fs::write(
+            request_root.join("Cargo.toml"),
+            "[package]\nname = \"request\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("request package manifest");
+        let request_root = request_root.canonicalize().expect("canonical request root");
+        let requested = requested_cargo_manifest(&request_root)
+            .expect("request manifest")
+            .expect("request package");
+        let id = "request 0.1.0 (fixture)";
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": request_root,
+            "workspace_members": [id],
+            "packages": [{
+                "id": id,
+                "manifest_path": requested.manifest.clone(),
+                "dependencies": [],
+                "targets": []
+            }]
+        }))
+        .expect("request no-deps Cargo document");
+        (scratch, request_root, requested, metadata)
+    }
+
     #[cfg(unix)]
     #[test]
     fn cancelled_private_resolution_releases_its_ephemeral_lock_directory() {
@@ -2520,6 +2554,48 @@ mod tests {
             );
         }
         assert_ne!(closure.witness, *blake3::hash(&initial).as_bytes());
+    }
+
+    #[test]
+    fn lock_source_closure_accepts_initial_document_at_aggregate_limit() {
+        let (_scratch, request_root, requested, mut metadata) =
+            minimal_source_closure_fixture("backend-cargo-source-root-near-limit");
+        assert!(metadata.len() < MAX_LOCK_SOURCE_CLOSURE_BYTES);
+        metadata.resize(MAX_LOCK_SOURCE_CLOSURE_BYTES, b' ');
+        let mut queries = 0;
+        let closure =
+            cargo_metadata_source_root_closure_with(&requested, &metadata, Vec::new(), |_, _| {
+                queries += 1;
+                Err("unexpected local Cargo query".to_owned())
+            })
+            .expect("a document exactly at the serialized byte limit is admitted");
+        assert_eq!(metadata.len(), MAX_LOCK_SOURCE_CLOSURE_BYTES);
+        assert_eq!(queries, 0);
+        assert!(closure.roots.contains(&request_root));
+    }
+
+    #[test]
+    fn lock_source_closure_rejects_oversized_initial_output_before_query_or_source_write() {
+        let (_scratch, request_root, requested, mut metadata) =
+            minimal_source_closure_fixture("backend-cargo-source-root-over-limit");
+        metadata.resize(MAX_LOCK_SOURCE_CLOSURE_BYTES + 1, b' ');
+        let source_entries_before = std::fs::read_dir(&request_root)
+            .expect("source directory before closure")
+            .map(|entry| entry.expect("source entry").file_name())
+            .collect::<BTreeSet<_>>();
+        let mut queries = 0;
+        let outcome =
+            cargo_metadata_source_root_closure_with(&requested, &metadata, Vec::new(), |_, _| {
+                queries += 1;
+                Err("unexpected local Cargo query".to_owned())
+            });
+        assert!(outcome.is_err_and(|error| error.contains("aggregate byte limit")));
+        assert_eq!(queries, 0, "reject before querying any external path root");
+        let source_entries_after = std::fs::read_dir(&request_root)
+            .expect("source directory after closure")
+            .map(|entry| entry.expect("source entry").file_name())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(source_entries_after, source_entries_before);
     }
 
     #[test]

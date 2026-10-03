@@ -4398,7 +4398,7 @@ mod tests {
                 let metadata = serde_json::to_vec(&serde_json::json!({
                     "workspace_root": excluded.clone(),
                     "workspace_members": [id],
-                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
+                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "dependencies": [], "targets": [] }]
                 }))
                 .expect("standalone Cargo-shaped metadata");
                 assert_eq!(
@@ -4547,7 +4547,7 @@ mod tests {
                 let metadata = serde_json::to_vec(&serde_json::json!({
                     "workspace_root": external.clone(),
                     "workspace_members": [id],
-                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
+                    "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "dependencies": [], "targets": [] }]
                 }))
                 .expect("Cargo-shaped replacement metadata");
                 assert_eq!(
@@ -4646,6 +4646,7 @@ mod tests {
                     "name": "cache-root",
                     "version": "0.1.0",
                     "manifest_path": requested.manifest,
+                    "dependencies": [],
                     "source": null,
                     "targets": []
                 }),
@@ -4654,6 +4655,7 @@ mod tests {
                     "name": "cache-indexed",
                     "version": registry_version,
                     "manifest_path": registry_manifest,
+                    "dependencies": [],
                     "source": "registry+https://index.example",
                     "targets": []
                 }),
@@ -4662,6 +4664,7 @@ mod tests {
                     "name": "cache-git",
                     "version": "0.4.0",
                     "manifest_path": git_manifest,
+                    "dependencies": [],
                     "source": format!("git+https://git.example/cache-git?rev={git_revision}#{git_revision}"),
                     "targets": []
                 }),
@@ -4672,6 +4675,7 @@ mod tests {
                     "name": "cache-patch",
                     "version": version,
                     "manifest_path": patch_manifest,
+                    "dependencies": [],
                     "source": null,
                     "targets": []
                 }));
