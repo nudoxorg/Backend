@@ -247,12 +247,6 @@ pub(super) fn navigation_index(
     (links.into(), headings.into())
 }
 
-/// Indexes owner-returned Markdown without opening or inferring local paths.
-pub(crate) fn owner_navigation_index(source: &str) -> (Arc<[ReadmeLink]>, Arc<[ReadmeHeading]>) {
-    let (links, headings) = navigation_nodes(source);
-    (links.into(), headings.into())
-}
-
 fn navigation_nodes(source: &str) -> (Vec<ReadmeLink>, Vec<ReadmeHeading>) {
     let Ok(ast) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
         return (Vec::new(), Vec::new());

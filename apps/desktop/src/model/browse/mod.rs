@@ -17,7 +17,10 @@ use std::sync::Arc;
 
 mod cargo_readme;
 pub use cargo_readme::{CargoReadmeDestination, CargoReadmeDocument, CargoReadmeKey, CargoReadmeLink, CargoReadmeModel, CargoReadmeState};
-pub(crate) use cargo_readme::CargoReadmeFocus;
+pub(crate) use cargo_readme::{
+    CargoReadmeFocus, NavigationPage as CargoReadmeNavigationPage,
+    PreparationError as CargoReadmePreparationError,
+};
 
 /// Identity of one browsing resource.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

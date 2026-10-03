@@ -1,11 +1,16 @@
 //! Owner-selected README content and its bounded, worker-prepared addresses.
 
-use crate::model::local_package::{ReadmeHeading, owner_readme_navigation, readme_external_address, readme_fragment_slug};
+use crate::model::local_package::ReadmeHeading;
 use crate::model::pages::PackageRef;
 use crate::navigation::{CargoBrowseContext, CargoReadmeLinkAddress};
-use backend_library::{CargoPackageReadmeAbsenceV1, CargoPackageReadmeLinkTargetV1, CargoPackageReadmeOriginV1};
-use std::collections::BTreeMap;
+use backend_library::{CargoPackageReadmeAbsenceV1, CargoPackageReadmeOriginV1};
 use std::sync::Arc;
+
+mod navigation;
+mod page;
+use navigation::NavigationIndex;
+pub(crate) use navigation::PreparationError;
+pub(crate) use page::NavigationPage;
 
 /// One exact package README selector, independent of its semantic dossier.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -25,7 +30,7 @@ pub enum CargoReadmeDestination {
     Anchor(ReadmeHeading),
     /// Owner-relative file address retaining the original root scope.
     Source(CargoReadmeLinkAddress),
-    /// The authored link has no supported address in this bounded index.
+    /// The authored link has no supported address in the complete index.
     Unavailable(&'static str),
 }
 
@@ -50,13 +55,8 @@ pub struct CargoReadmeDocument {
     pub origin: CargoPackageReadmeOriginV1,
     /// Complete bounded UTF-8 Markdown returned by the owner.
     pub source: Arc<str>,
-    /// At most 512 authored link rows, with no client path hints.
-    pub links: Arc<[CargoReadmeLink]>,
-    /// At most 512 exact heading endpoints.
-    pub headings: Arc<[ReadmeHeading]>,
     identity: Arc<str>,
-    heading_ids: Arc<[Arc<str>]>,
-    destinations: BTreeMap<Arc<str>, CargoReadmeDestination>,
+    navigation: Arc<NavigationIndex>,
 }
 
 /// A remembered focus ID resolved only against this exact immutable origin.
@@ -67,85 +67,82 @@ pub(crate) enum CargoReadmeFocus {
 }
 
 impl CargoReadmeDocument {
-    pub(crate) fn prepare(origin: CargoPackageReadmeOriginV1, source: Arc<str>) -> Self {
-        let (authored, headings) = owner_readme_navigation(&source);
-        let origin_key = origin_identity(&origin);
-        let identity = endpoint_identity(&origin_key, "document", "", 0);
-        let heading_ids = headings.iter().map(|heading| {
-            endpoint_identity(&origin_key, "heading", &heading.slug, 0)
-        }).collect::<Vec<_>>();
-        let mut occurrences = BTreeMap::<Arc<str>, usize>::new();
-        let mut destinations = BTreeMap::new();
-        let links = authored.iter().map(|link| {
-            let occurrence = occurrences.entry(Arc::clone(&link.destination)).or_default();
-            let id = endpoint_identity(&origin_key, "link", &link.destination, *occurrence);
-            *occurrence += 1;
-            let destination = if let Some(url) = readme_external_address(&link.destination) {
-                CargoReadmeDestination::External(Arc::from(url))
-            } else {
-                match origin.resolve_relative_href(&link.destination) {
-                    Ok(CargoPackageReadmeLinkTargetV1::Anchor { fragment }) => {
-                        let slug = readme_fragment_slug(&fragment);
-                        let mut hits = headings.iter().filter(|heading| heading.slug.as_ref() == slug);
-                        match (hits.next(), hits.next()) {
-                            (Some(heading), None) => CargoReadmeDestination::Anchor(heading.clone()),
-                            _ => CargoReadmeDestination::Unavailable("This heading is not in the bounded README index."),
-                        }
-                    }
-                    Ok(CargoPackageReadmeLinkTargetV1::File { .. }) => CargoReadmeLinkAddress::new(origin.clone(), &link.destination)
-                        .map_or(CargoReadmeDestination::Unavailable("This README link has no admitted relative address."), CargoReadmeDestination::Source),
-                    Err(_) => CargoReadmeDestination::Unavailable("This README link is outside its supported package or workspace scope."),
-                }
-            };
-            destinations.entry(Arc::clone(&link.destination)).or_insert_with(|| destination.clone());
-            CargoReadmeLink { id, label: Arc::clone(&link.label), href: Arc::clone(&link.destination), destination }
-        }).collect::<Vec<_>>();
-        Self { origin, source, links: links.into(), headings, identity, heading_ids: heading_ids.into(), destinations }
+    pub(crate) fn prepare(
+        origin: CargoPackageReadmeOriginV1,
+        source: Arc<str>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, PreparationError> {
+        let navigation = NavigationIndex::prepare(&origin, &source, cancelled)?;
+        let identity = endpoint_identity(&origin_identity(&origin), "document", "");
+        Ok(Self {
+            origin,
+            source,
+            identity,
+            navigation: Arc::new(navigation),
+        })
     }
 
-    pub(crate) fn identity(&self) -> &str { &self.identity }
-
-    pub(crate) fn heading_id(&self, index: usize) -> Option<&str> {
-        self.heading_ids.get(index).map(AsRef::as_ref)
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
+    pub(crate) fn link_count(&self) -> usize {
+        self.navigation.link_count()
+    }
+    pub(crate) fn heading_count(&self) -> usize {
+        self.navigation.heading_count()
+    }
+    pub(crate) fn link(&self, index: usize) -> Option<CargoReadmeLink> {
+        self.navigation.link(index, &self.origin)
+    }
+    pub(crate) fn heading(&self, index: usize) -> Option<ReadmeHeading> {
+        self.navigation.heading(index)
+    }
+    pub(crate) fn heading_id(&self, index: usize) -> Option<Arc<str>> {
+        self.navigation.heading_id(index)
     }
 
-    /// The rich Markdown callback carries an href, not an occurrence. Equal
-    /// hrefs resolve to the same endpoint; the first is the bounded focus tie.
-    pub(crate) fn inline_focus_id(&self, href: &str) -> Option<&str> {
-        self.links.iter().find(|link| link.href.as_ref() == href
-            && !matches!(link.destination, CargoReadmeDestination::Unavailable(_)))
-            .map(|link| link.id.as_ref())
+    /// Actual prepared index storage for bounded result payload accounting.
+    pub(crate) fn navigation_storage_bytes(&self) -> usize {
+        self.navigation.storage_bytes()
+    }
+
+    /// An inline callback names an exact authored href. Its first occurrence
+    /// is the native focus tie; all authored hrefs have a prepared lookup.
+    pub(crate) fn inline_focus_id(&self, href: &str) -> Option<Arc<str>> {
+        self.navigation.inline_focus_id(href)
     }
 
     /// No fallback to an ordinal: a different origin or target has no match.
     pub(crate) fn restore_focus(&self, id: &str) -> Option<CargoReadmeFocus> {
-        if let Some(index) = self.links.iter().position(|link| link.id.as_ref() == id
-            && !matches!(link.destination, CargoReadmeDestination::Unavailable(_))) {
-            return Some(CargoReadmeFocus::Link(index));
-        }
-        self.heading_ids.iter().position(|current| current.as_ref() == id).map(CargoReadmeFocus::Heading)
+        self.navigation.restore_focus(id)
     }
 
-    /// Only indexed authored hrefs can be activated by the Markdown callback.
     pub(crate) fn destination(&self, href: &str) -> CargoReadmeDestination {
-        self.destinations.get(href).cloned().unwrap_or(CargoReadmeDestination::Unavailable("This link was not captured in the bounded README index."))
+        self.navigation.destination(href, &self.origin)
     }
 }
 
 /// UI identity only. Neither this digest nor a native ID admits owner reads.
 fn origin_identity(origin: &CargoPackageReadmeOriginV1) -> blake3::Hash {
-    use backend_library::{CargoPackageReadmeRootScopeV1 as Scope, CargoPackageReadmeSelectionV1 as Selection};
+    use backend_library::{
+        CargoPackageReadmeRootScopeV1 as Scope, CargoPackageReadmeSelectionV1 as Selection,
+    };
     let mut hash = blake3::Hasher::new();
     hash.update(b"nudox-cargo-readme-focus-v1");
     identity_field(&mut hash, origin.package.as_str().as_bytes());
     hash.update(&origin.request_binding.schema.to_le_bytes());
     hash.update(&origin.request_binding.requested_root_digest);
     hash.update(&origin.request_binding.effective_workspace_root_digest);
-    hash.update(&[match origin.root_scope { Scope::Package => 0, Scope::EffectiveWorkspace => 1 }]);
+    hash.update(&[match origin.root_scope {
+        Scope::Package => 0,
+        Scope::EffectiveWorkspace => 1,
+    }]);
     identity_field(&mut hash, origin.path.as_str().as_bytes());
     hash.update(&[match origin.selection {
-        Selection::ManifestPath => 0, Selection::ManifestTrueDefault => 1,
-        Selection::CargoConventionalDefault => 2, Selection::WorkspaceInherited => 3,
+        Selection::ManifestPath => 0,
+        Selection::ManifestTrueDefault => 1,
+        Selection::CargoConventionalDefault => 2,
+        Selection::WorkspaceInherited => 3,
     }]);
     hash.update(&origin.content_digest);
     hash.finalize()
@@ -156,13 +153,19 @@ fn identity_field(hash: &mut blake3::Hasher, bytes: &[u8]) {
     hash.update(bytes);
 }
 
-fn endpoint_identity(origin: &blake3::Hash, kind: &str, endpoint: &str, occurrence: usize) -> Arc<str> {
+fn endpoint_digest(origin: &blake3::Hash, kind: &str, endpoint: &str) -> blake3::Hash {
     let mut hash = blake3::Hasher::new();
     hash.update(origin.as_bytes());
     identity_field(&mut hash, kind.as_bytes());
     identity_field(&mut hash, endpoint.as_bytes());
-    hash.update(&(occurrence as u64).to_le_bytes());
-    Arc::from(format!("cargo-readme-{kind}-{}", hash.finalize().to_hex()))
+    hash.finalize()
+}
+
+fn endpoint_identity(origin: &blake3::Hash, kind: &str, endpoint: &str) -> Arc<str> {
+    Arc::from(format!(
+        "cargo-readme-{kind}-{}",
+        endpoint_digest(origin, kind, endpoint).to_hex()
+    ))
 }
 
 /// README content and exact absence are separate completed owner observations.
@@ -194,47 +197,239 @@ mod focus_tests {
 
     fn document(contents: &str) -> CargoReadmeDocument {
         let (_, _, mut result) = crate::runtime::cargo_readme_reads::tests::fixture();
-        let backend_library::CargoPackageReadmeResultV1::Read { readme, .. } = &mut result else { panic!("fixture read"); };
+        let backend_library::CargoPackageReadmeResultV1::Read { readme, .. } = &mut result else {
+            panic!("fixture read");
+        };
         readme.contents = contents.into();
         readme.content_digest = *blake3::hash(contents.as_bytes()).as_bytes();
         let origin = CargoPackageReadmeOriginV1::from_result(&result).expect("exact origin");
-        CargoReadmeDocument::prepare(origin, Arc::from(contents))
+        CargoReadmeDocument::prepare(origin, Arc::from(contents), &|| false)
+            .expect("complete navigation index")
     }
 
     #[test]
     fn back_focus_matches_exact_endpoint_and_never_the_new_ordinal() {
-        let old = document("# Guide\n\n[Old target](../src/old.rs#L7)\n\n[Other](../src/other.rs)\n");
-        let remembered = old.links[0].id.clone();
-        assert_eq!(old.restore_focus(&remembered), Some(CargoReadmeFocus::Link(0)));
-        let repeated = CargoReadmeDocument::prepare(old.origin.clone(), Arc::clone(&old.source));
-        assert_eq!(repeated.restore_focus(&remembered), Some(CargoReadmeFocus::Link(0)), "repaint of the same immutable read keeps the endpoint");
+        let old =
+            document("# Guide\n\n[Old target](../src/old.rs#L7)\n\n[Other](../src/other.rs)\n");
+        let remembered = old.link(0).expect("old endpoint").id;
+        assert_eq!(
+            old.restore_focus(&remembered),
+            Some(CargoReadmeFocus::Link(0))
+        );
+        let repeated =
+            CargoReadmeDocument::prepare(old.origin.clone(), Arc::clone(&old.source), &|| false)
+                .expect("same document");
+        assert_eq!(
+            repeated.restore_focus(&remembered),
+            Some(CargoReadmeFocus::Link(0)),
+            "repaint of the same immutable read keeps the endpoint"
+        );
 
-        let new = document("# Guide\n\n[New target](../src/new.rs#L7)\n\n[Old target](../src/old.rs#L7)\n");
-        assert_eq!(new.restore_focus(&remembered), None, "a remembered row cannot transfer to another origin or the replacement at ordinal zero");
-        assert_eq!(new.restore_focus(old.heading_id(0).expect("old heading")), None, "even equal heading words require the same Markdown origin");
-        assert_eq!(new.restore_focus("cargo-readme-link-0"), None, "legacy ordinal IDs have no semantic fallback");
+        let new = document(
+            "# Guide\n\n[New target](../src/new.rs#L7)\n\n[Old target](../src/old.rs#L7)\n",
+        );
+        assert_eq!(
+            new.restore_focus(&remembered),
+            None,
+            "a remembered row cannot transfer to another origin or the replacement at ordinal zero"
+        );
+        assert_eq!(
+            new.restore_focus(&old.heading_id(0).expect("old heading")),
+            None,
+            "even equal heading words require the same Markdown origin"
+        );
+        assert_eq!(
+            new.restore_focus("cargo-readme-link-0"),
+            None,
+            "legacy ordinal IDs have no semantic fallback"
+        );
 
-        let mut reordered = old.clone();
-        reordered.links = Arc::from([old.links[1].clone(), old.links[0].clone()]);
-        assert_eq!(reordered.restore_focus(&remembered), Some(CargoReadmeFocus::Link(1)), "bounded presentation order never defines endpoint identity");
-        assert_eq!(reordered.links[1].href, old.links[0].href);
+        let presented = [
+            old.link(1).expect("other endpoint"),
+            old.link(0).expect("remembered endpoint"),
+        ];
+        assert_eq!(
+            presented[1].id, remembered,
+            "presentation order never defines endpoint identity"
+        );
     }
 
     #[test]
     fn duplicate_destinations_only_use_occurrence_as_a_tie_break_and_ids_are_bounded() {
-        let document = document("# Guide\n\n[First](../src/lib.rs#L7)\n\n[Different](../src/other.rs)\n\n[Again](../src/lib.rs#L7)\n");
-        assert_eq!(document.links[0].href, document.links[2].href);
-        assert_ne!(document.links[0].id, document.links[2].id);
-        assert_eq!(document.restore_focus(&document.links[2].id), Some(CargoReadmeFocus::Link(2)));
-        assert_eq!(document.inline_focus_id("../src/lib.rs#L7"), Some(document.links[0].id.as_ref()), "inline navigation remembers an exact native endpoint rather than the Markdown block ordinal");
-        for link in document.links.iter() { assert!(link.id.len() <= 90); }
+        let document = document(
+            "# Guide\n\n[First](../src/lib.rs#L7)\n\n[Different](../src/other.rs)\n\n[Again](../src/lib.rs#L7)\n",
+        );
+        assert_eq!(
+            document.link(0).expect("first link").href,
+            document.link(2).expect("repeated link").href
+        );
+        assert_ne!(
+            document.link(0).expect("first link").id,
+            document.link(2).expect("repeated link").id
+        );
+        assert_eq!(
+            document.restore_focus(&document.link(2).expect("repeated link").id),
+            Some(CargoReadmeFocus::Link(2))
+        );
+        assert_eq!(
+            document.inline_focus_id("../src/lib.rs#L7"),
+            Some(document.link(0).expect("first link").id),
+            "inline navigation remembers an exact native endpoint rather than the Markdown block ordinal"
+        );
+        for index in 0..document.link_count() {
+            assert!(document.link(index).expect("link").id.len() <= 96);
+        }
         let mut changed = document.origin.clone();
         changed.request_binding.requested_root_digest = [3; 32];
-        let other_request = CargoReadmeDocument::prepare(changed, Arc::clone(&document.source));
-        assert_eq!(other_request.restore_focus(&document.links[0].id), None, "an equal package/path in another requested browse context cannot borrow focus");
+        let other_request =
+            CargoReadmeDocument::prepare(changed, Arc::clone(&document.source), &|| false)
+                .expect("different address only");
+        assert_eq!(
+            other_request.restore_focus(&document.link(0).expect("first link").id),
+            None,
+            "an equal package/path in another requested browse context cannot borrow focus"
+        );
         let mut changed = document.origin.clone();
-        changed.path = backend_library::CargoPackageSourcePathV1::new("other/README.md").expect("different origin path");
-        let other_origin = CargoReadmeDocument::prepare(changed, Arc::clone(&document.source));
-        assert_eq!(other_origin.restore_focus(&document.links[0].id), None, "same href under another README directory has another endpoint");
+        changed.path = backend_library::CargoPackageSourcePathV1::new("other/README.md")
+            .expect("different origin path");
+        let other_origin =
+            CargoReadmeDocument::prepare(changed, Arc::clone(&document.source), &|| false)
+                .expect("different address only");
+        assert_eq!(
+            other_origin.restore_focus(&document.link(0).expect("first link").id),
+            None,
+            "same href under another README directory has another endpoint"
+        );
+    }
+
+    #[test]
+    fn late_authored_links_and_headings_remain_reachable_in_the_complete_document() {
+        use std::fmt::Write as _;
+        let mut source = String::new();
+        for index in 0..700 {
+            writeln!(
+                &mut source,
+                "# Section {index}\n\n[Code {index}](../src/file-{index}.rs#L7)\n"
+            )
+            .expect("source");
+        }
+        source.push_str("[Last heading](#section-699)\n\n[External](https://example.com/late)\n\n[Escaping](../../escape.rs)\n\n```md\n[Not authored](../src/not-a-link.rs)\n```\n");
+        let document = document(&source);
+        assert_eq!(document.heading_count(), 700);
+        assert_eq!(document.link_count(), 703);
+        let CargoReadmeDestination::Source(address) = document.destination("../src/file-699.rs#L7")
+        else {
+            panic!("the final authored file address");
+        };
+        assert_eq!(address.origin(), &document.origin);
+        assert_eq!(address.path().as_str(), "src/file-699.rs");
+        assert_eq!(address.fragment(), Some("L7"));
+        assert!(
+            matches!(document.destination("#section-699"), CargoReadmeDestination::Anchor(heading) if heading.slug.as_ref() == "section-699")
+        );
+        assert!(matches!(
+            document.destination("https://example.com/late"),
+            CargoReadmeDestination::External(_)
+        ));
+        assert!(
+            matches!(document.destination("../../escape.rs"), CargoReadmeDestination::Unavailable(reason) if reason.contains("scope"))
+        );
+        assert!(
+            matches!(document.destination("../src/not-a-link.rs"), CargoReadmeDestination::Unavailable(reason) if reason.contains("not an authored"))
+        );
+        let late = document.link(699).expect("late native row");
+        assert_eq!(
+            document.inline_focus_id("../src/file-699.rs#L7"),
+            Some(Arc::clone(&late.id))
+        );
+        assert_eq!(
+            document.restore_focus(&late.id),
+            Some(CargoReadmeFocus::Link(699))
+        );
+        assert!(
+            NavigationPage::containing(699)
+                .range(document.link_count())
+                .contains(&699)
+        );
+        assert_eq!(
+            document.restore_focus(&document.heading_id(699).expect("last heading")),
+            Some(CargoReadmeFocus::Heading(699))
+        );
+    }
+
+    #[test]
+    fn reference_links_share_long_destinations_and_late_duplicate_focus_is_exact() {
+        let href = format!("https://example.com/{}", "x".repeat(3_000));
+        let source = format!("{}\n\n[shared]: {href}\n", "[shared] ".repeat(2_049));
+        let document = document(&source);
+        assert_eq!(document.link_count(), 2_049);
+        assert!(
+            matches!(document.destination(&href), CargoReadmeDestination::External(url) if url.as_ref() == href)
+        );
+        let late = document.link(2_048).expect("last reference");
+        assert_eq!(
+            document.restore_focus(&late.id),
+            Some(CargoReadmeFocus::Link(2_048))
+        );
+        assert_ne!(late.id, document.link(0).expect("first reference").id);
+        assert!(late.id.len() <= 96);
+        assert!(
+            document.navigation_storage_bytes() < source.len() * 8,
+            "the reference URL is retained once rather than expanded into every row or owner receipt"
+        );
+        let cloned = document.clone();
+        assert!(
+            Arc::ptr_eq(&document.navigation, &cloned.navigation),
+            "render snapshots share the immutable index"
+        );
+    }
+
+    #[test]
+    fn duplicate_unicode_and_literal_suffix_headings_use_the_full_authored_index() {
+        let document = document(
+            "# X\n\n# X\n\n# X-1\n\n# CafÉ guide\n\n# 🚀\n\n[last](#x-1-1)\n\n[unicode](#caf%C3%A9-guide)\n",
+        );
+        assert_eq!(
+            document.heading_count(),
+            5,
+            "even headings without an alphanumeric fragment remain native scroll targets"
+        );
+        assert_eq!(document.heading(0).expect("first").slug.as_ref(), "x");
+        assert_eq!(document.heading(1).expect("duplicate").slug.as_ref(), "x-1");
+        assert_eq!(
+            document.heading(2).expect("literal suffix").slug.as_ref(),
+            "x-1-1"
+        );
+        assert!(
+            matches!(document.destination("#x-1-1"), CargoReadmeDestination::Anchor(heading) if heading.title.as_ref() == "X-1")
+        );
+        assert!(
+            matches!(document.destination("#caf%C3%A9-guide"), CargoReadmeDestination::Anchor(heading) if heading.slug.as_ref() == "café-guide")
+        );
+    }
+
+    #[test]
+    fn withdrawn_preparation_never_publishes_a_shortened_index() {
+        use std::cell::Cell;
+        let ready = document("# Guide\n\n[Code](../src/lib.rs#L7)\n");
+        assert!(matches!(
+            CargoReadmeDocument::prepare(ready.origin.clone(), Arc::clone(&ready.source), &|| true),
+            Err(PreparationError::Cancelled)
+        ));
+        for limit in [2, 5, 12] {
+            let calls = Cell::new(0);
+            let cancelled = || {
+                calls.set(calls.get() + 1);
+                calls.get() >= limit
+            };
+            assert!(matches!(
+                CargoReadmeDocument::prepare(
+                    ready.origin.clone(),
+                    Arc::clone(&ready.source),
+                    &cancelled
+                ),
+                Err(PreparationError::Cancelled)
+            ));
+        }
     }
 }
