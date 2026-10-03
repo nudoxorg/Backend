@@ -22,7 +22,7 @@ impl VisitId {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct ReadingText(Arc<str>);
 impl ReadingText {
     pub fn new(text: impl Into<String>) -> Option<Self> {
@@ -318,6 +318,18 @@ impl ReadingPresentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shelf_fold_text_has_the_same_identity_in_ordered_and_hashed_collections() {
+        let first = ReadingText::new("module/β").expect("checked fold key");
+        let same = ReadingText::new("module/β").expect("same checked fold key");
+        let other = ReadingText::new("module/γ").expect("different checked fold key");
+        let ordered = BTreeSet::from([first.clone()]);
+        let hashed = std::collections::HashSet::from([first]);
+        assert!(ordered.contains(&same) && hashed.contains(&same));
+        assert!(!ordered.contains(&other) && !hashed.contains(&other));
+    }
+
     #[test]
     fn restoring_future_incompatible_or_invalid_visits_refuses_without_mutation() {
         let home = Route::Orbit(OrbitRoute::Home);
