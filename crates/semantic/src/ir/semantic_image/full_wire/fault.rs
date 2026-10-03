@@ -166,6 +166,13 @@ pub enum FullSemanticImageFault {
     },
     #[error("cannot allocate {bytes} bytes to validate signature-carrier role union")]
     SignatureCarrierBindingScratch { bytes: usize },
+    #[error("cannot reserve {bytes} bytes for signature-carrier image {field:?}")]
+    SignatureCarrierBindingAllocation {
+        field: FullSemanticImageField,
+        bytes: usize,
+        #[source]
+        cause: alloc::collections::TryReserveError,
+    },
     #[error("full semantic image entity {row} has invalid source span {start}..{end}")]
     SourceSpan { row: u32, start: u32, end: u32 },
     #[error(

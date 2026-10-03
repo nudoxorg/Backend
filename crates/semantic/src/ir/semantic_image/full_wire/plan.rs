@@ -284,8 +284,37 @@ fn plan_signature_carrier_bindings(
         }
         .into());
     }
-    let mut ranges = Vec::with_capacity(function_count);
+    let range_bytes = function_count
+        .checked_mul(SIGNATURE_CARRIER_RANGE_ROW_BYTES)
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::SignatureCarrierBindingRanges,
+        })?;
+    let target_count = source.targets().len();
+    count(
+        target_count,
+        FullSemanticImageField::SignatureCarrierBindingTargets,
+    )?;
+    let target_byte_length = target_count
+        .checked_mul(SIGNATURE_CARRIER_TARGET_ROW_BYTES)
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::SignatureCarrierBindingTargets,
+        })?;
+    let mut ranges = Vec::new();
+    ranges
+        .try_reserve_exact(function_count)
+        .map_err(|cause| FullSemanticImageFault::SignatureCarrierBindingAllocation {
+            field: FullSemanticImageField::SignatureCarrierBindingRanges,
+            bytes: range_bytes,
+            cause,
+        })?;
     let mut target_bytes = Vec::new();
+    target_bytes
+        .try_reserve_exact(target_byte_length)
+        .map_err(|cause| FullSemanticImageFault::SignatureCarrierBindingAllocation {
+            field: FullSemanticImageField::SignatureCarrierBindingTargets,
+            bytes: target_byte_length,
+            cause,
+        })?;
     for row in semantic.entities.rows.iter().copied() {
         let entity = ir
             .semantic_entity(row.entity)
