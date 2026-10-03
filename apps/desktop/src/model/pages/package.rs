@@ -1,6 +1,6 @@
 //! The Package (Territory) board's read model: one package as a dossier.
 
-use super::common::{DeclRef, Known, PackageRef, SymbolRef};
+use super::common::{DeclRef, Gap, Known, PackageRef, SymbolRef};
 use crate::model::local_package::{ReadmeBlock, ReadmeHeading, ReadmeLink};
 use backend_library::RegistryEcosystem;
 use std::sync::Arc;
@@ -42,6 +42,61 @@ pub struct PackageDossier {
     /// authority with which to claim these links still name that source.
     #[serde(skip, default = "readme_exact_targets_not_captured")]
     pub readme_exact_targets: Known<ReadmeExactTargets>,
+}
+
+/// A package record is usable only when its producer facts bind it to this
+/// dossier's exact source address. A missing record is an unread fact, never
+/// a declaration that the manifest omitted a field. A present but unbound
+/// record cannot supply package facts or source capabilities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageRecordEvidence<'a> {
+    Bound(&'a PackageRecord),
+    Unread(&'a Gap),
+    Unbound,
+}
+
+impl PackageDossier {
+    #[must_use]
+    pub fn record_evidence(&self) -> PackageRecordEvidence<'_> {
+        use backend_library::PackageReference;
+        let record = match &self.record {
+            Known::Known(record) => record,
+            Known::Unknown(gap) => return PackageRecordEvidence::Unread(gap),
+        };
+        if record.package.reference() != self.package.reference() {
+            return PackageRecordEvidence::Unbound;
+        }
+        match (self.package.reference(), record.source) {
+            (PackageReference::Local(_), RecordSource::LocalManifest) =>
+                PackageRecordEvidence::Bound(record),
+            (PackageReference::Purl(coordinate), RecordSource::Registry)
+                if record.name.as_ref() == coordinate.lineage_name()
+                    && record.version.known().is_some_and(|version| version.as_ref() == coordinate.version())
+                    && record.ecosystem.known().is_some_and(|ecosystem| ecosystem.package_type() == coordinate.package_type()) =>
+                PackageRecordEvidence::Bound(record),
+            _ => PackageRecordEvidence::Unbound,
+        }
+    }
+}
+
+#[cfg(test)]
+mod record_evidence_tests {
+    use super::{PackageRecordEvidence, RecordSource};
+    use crate::model::pages::{GapReason, Known};
+
+    #[test]
+    fn bound_unread_and_unbound_records_are_distinct() {
+        let mut dossier = crate::shell::tests::dossier();
+        assert!(matches!(dossier.record_evidence(), PackageRecordEvidence::Bound(_)));
+        dossier.record = Known::unknown(GapReason::NotRecorded, "library record not found");
+        assert!(matches!(dossier.record_evidence(), PackageRecordEvidence::Unread(gap)
+            if gap.reason == GapReason::NotRecorded));
+        let mut dossier = crate::shell::tests::dossier();
+        if let Known::Known(record) = &mut dossier.record {
+            record.source = RecordSource::Registry;
+        }
+        assert_eq!(dossier.record_evidence(), PackageRecordEvidence::Unbound);
+    }
 }
 
 /// Worker proof tying a bounded set of README actions to this exact loaded

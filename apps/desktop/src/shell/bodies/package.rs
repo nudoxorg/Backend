@@ -11,8 +11,9 @@ use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
 use crate::model::pages::{
-    Dependency, DependencyScope, PackageDossier, PackageRef, PageKey, RecordSource,
+    Dependency, DependencyScope, PackageDossier, PackageRecord, PackageRef, PageKey, RecordSource,
 };
+use crate::model::pages::package::PackageRecordEvidence;
 use crate::navigation::{CargoSourcePath, CargoSourceRoute, Intent, Overlay, Route};
 use crate::shell::focus::Target;
 use crate::shell::kit::{HoverIntent, package_route, quiet, text};
@@ -111,7 +112,7 @@ pub(super) fn body(
             return with_cargo_offer(leaves, cargo_offer, owner_readme);
         }
         DisplayEvidence::WrongIdentity => {
-            let leaves = vec![Leaf::new(quiet("The saved package content belongs to another exact package or release.", &ctx.measure, ctx.palette))];
+            let leaves = vec![Leaf::new(quiet("The saved package content cannot be verified for this exact package and release.", &ctx.measure, ctx.palette))];
             return with_cargo_offer(leaves, cargo_offer, owner_readme);
         }
     };
@@ -146,7 +147,14 @@ pub(super) fn body(
         .as_ref()
         .and_then(PackageRef::release_version)
         .map(str::to_owned);
-    let record = dossier.record.known();
+    let record = match dossier.record_evidence() {
+        PackageRecordEvidence::Bound(record) => Some(record),
+        PackageRecordEvidence::Unread(_) => None,
+        PackageRecordEvidence::Unbound => {
+            let leaves = vec![Leaf::new(quiet("The package record cannot be verified for this exact source address.", &ctx.measure, ctx.palette))];
+            return with_cargo_offer(leaves, cargo_offer, owner_readme);
+        }
+    };
     let name = record.map_or_else(
         || dossier.package.display_name().to_owned(),
         |record| record.name.to_string(),
@@ -163,14 +171,15 @@ pub(super) fn body(
     // SourceFacts currently reads Cargo.toml and Rust modules. Keep that
     // evidence off a non-Cargo page even if a mixed-language root also has
     // an incidental Cargo manifest or a previous read is cached.
-    let source = if record.and_then(|record| record.ecosystem.known())
-        == Some(&backend_library::RegistryEcosystem::Cargo)
-    {
-        crate::model::source_facts::reading(&dossier.package, &hints, project_path.as_deref(), cx)
-    } else {
-        crate::model::source_facts::Reading::Absent(
+    let source = match source_analysis_admission(&dossier.package, record) {
+        SourceAnalysisAdmission::Cargo =>
+            crate::model::source_facts::reading(&dossier.package, &hints, project_path.as_deref(), cx),
+        SourceAnalysisAdmission::Unread => crate::model::source_facts::Reading::Absent(
+            "The package record has not established a source ecosystem. Nothing is read from its source yet.".into(),
+        ),
+        SourceAnalysisAdmission::Unsupported => crate::model::source_facts::Reading::Absent(
             "Source analysis is unavailable for this package ecosystem.".into(),
-        )
+        ),
     };
     let ready = match &source {
         crate::model::source_facts::Reading::Ready(facts) => Some(facts.clone()),
@@ -406,12 +415,29 @@ fn retained_dossier(
 
 fn dossier_matches_package(dossier: &PackageDossier, package: &PackageRef) -> bool {
     dossier.package.as_str() == package.as_str()
-        && dossier.record.known().is_none_or(|record| record.package.as_str() == package.as_str())
+        && !matches!(dossier.record_evidence(), PackageRecordEvidence::Unbound)
+}
+
+/// An exact Cargo coordinate permits an attempt to read that release's
+/// trusted local source even when its indexed package record is unread. The
+/// resolver still proves availability and manifest bytes separately. Only an
+/// observed other ecosystem establishes unsupported Cargo analysis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceAnalysisAdmission { Cargo, Unread, Unsupported }
+
+fn source_analysis_admission(package: &PackageRef, record: Option<&PackageRecord>) -> SourceAnalysisAdmission {
+    match record.and_then(|record| record.ecosystem.known()) {
+        Some(backend_library::RegistryEcosystem::Cargo) => SourceAnalysisAdmission::Cargo,
+        Some(_) => SourceAnalysisAdmission::Unsupported,
+        None if matches!(package.reference(), backend_library::PackageReference::Purl(coordinate)
+            if coordinate.package_type() == backend_library::RegistryEcosystem::Cargo.package_type()) => SourceAnalysisAdmission::Cargo,
+        None => SourceAnalysisAdmission::Unread,
+    }
 }
 
 #[cfg(test)]
 mod display_identity_tests {
-    use super::dossier_matches_package;
+    use super::{SourceAnalysisAdmission, dossier_matches_package, source_analysis_admission};
     use crate::model::pages::{Known, PackageRef};
 
     #[test]
@@ -426,6 +452,20 @@ mod display_identity_tests {
             record.package = other;
         }
         assert!(!dossier_matches_package(&wrong_record, &expected));
+    }
+
+    #[test]
+    fn exact_cargo_coordinate_permits_only_a_source_attempt_when_record_is_unread() {
+        let cargo = PackageRef::parse("pkg:cargo/thiserror@2.0.0").expect("typed Cargo release");
+        assert_eq!(source_analysis_admission(&cargo, None), SourceAnalysisAdmission::Cargo);
+        let other = PackageRef::parse("pkg:nuget/thiserror@2.0.0").expect("typed other release");
+        assert_eq!(source_analysis_admission(&other, None), SourceAnalysisAdmission::Unread);
+        let local = crate::shell::tests::dossier();
+        let record = local.record.known().expect("local manifest");
+        assert_eq!(source_analysis_admission(&local.package, Some(record)), SourceAnalysisAdmission::Cargo);
+        let mut observed_other = record.clone();
+        observed_other.ecosystem = Known::Known(backend_library::RegistryEcosystem::Nuget);
+        assert_eq!(source_analysis_admission(&local.package, Some(&observed_other)), SourceAnalysisAdmission::Unsupported);
     }
 }
 
