@@ -113,6 +113,20 @@ func timedAXSnapshot(pid: pid_t, full: Bool) -> [String: Any] {
 }
 
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
+    struct Status {
+        let capturedFrames: Int
+        let droppedFrames: Int
+        let callbacks: Int
+        let completeSamples: Int
+        let incompleteSamples: Int
+        let streamErrors: Int
+        let failure: String?
+        let firstFrameTime: UInt64?
+        var diagnostics: [String: Any] {
+            ["callback_count": callbacks, "complete_sample_count": completeSamples,
+             "incomplete_sample_count": incompleteSamples, "stream_error_count": streamErrors]
+        }
+    }
     private let lock = NSLock()
     private let context = CIContext(options: [.useSoftwareRenderer: false])
     private let frames: FileHandle
@@ -122,6 +136,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var firstPTS: CMTime?
     private var count = 0
     private var dropped = 0
+    private var callbacks = 0
+    private var completeSamples = 0
+    private var incompleteSamples = 0
+    private var streamErrors = 0
     private var lastFocus: [String: Any] = [:]
     private var failure: String?
     private var firstFrameTime: UInt64?
@@ -132,21 +150,30 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         self.maxFrames = maxFrames
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        lock.lock(); failure = error.localizedDescription; lock.unlock()
+        lock.lock(); streamErrors += 1; failure = error.localizedDescription; lock.unlock()
     }
-    func stream(_ stream: SCStream, sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+    @objc func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         let hostCaptureNS = DispatchTime.now().uptimeNanoseconds
-        guard type == .screen, CMSampleBufferIsValid(sampleBuffer),
-              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         // Serialize the encode/write path. ScreenCaptureKit may call us on
         // different queues; no frame image is retained after this callback.
         lock.lock()
         defer { lock.unlock() }
+        callbacks += 1
+        guard type == .screen,
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                  sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let rawStatus = attachments.first?[.status] as? Int,
+              SCFrameStatus(rawValue: rawStatus) == .complete else {
+            incompleteSamples += 1
+            return
+        }
+        completeSamples += 1
+        guard CMSampleBufferIsValid(sampleBuffer),
+              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { dropped += 1; return }
         guard count < maxFrames else { dropped += 1; return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid else { dropped += 1; return }
-        if firstPTS == nil { firstPTS = pts; firstFrameTime = hostCaptureNS }
-        let relativeMs = max(0, CMTimeGetSeconds(CMTimeSubtract(pts, firstPTS!)) * 1000)
+        let relativeMs = firstPTS.map { max(0, CMTimeGetSeconds(CMTimeSubtract(pts, $0)) * 1000) } ?? 0
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
         guard width > 0, height > 0 else { dropped += 1; return }
@@ -162,8 +189,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 "pts_seconds": CMTimeGetSeconds(pts), "host_capture_ns": hostCaptureNS, "width_px": width,
                 "height_px": height, "file": "frames/" + file, "ax": lastFocus]
             frames.write(jsonLine(row))
+            if firstPTS == nil { firstPTS = pts; firstFrameTime = hostCaptureNS }
             count += 1
-        } catch { failure = "write frame: \(error)" }
+        } catch { dropped += 1; failure = "write frame: \(error)" }
     }
     // AX calls can synchronously message the app. Run them on an independent
     // sampler queue so a slow accessibility tree never holds the SCStream
@@ -172,9 +200,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let sampled = timedAXSnapshot(pid: pid, full: false)
         lock.lock(); lastFocus = sampled; lock.unlock()
     }
-    func status() -> (Int, Int, String?, UInt64?) {
+    func status() -> Status {
         lock.lock(); defer { lock.unlock() }
-        return (count, dropped, failure, firstFrameTime)
+        return Status(capturedFrames: count, droppedFrames: dropped, callbacks: callbacks,
+                      completeSamples: completeSamples, incompleteSamples: incompleteSamples,
+                      streamErrors: streamErrors, failure: failure, firstFrameTime: firstFrameTime)
     }
 }
 
@@ -393,6 +423,22 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             throw NSError(domain: "native-motion", code: 11, userInfo: [NSLocalizedDescriptionKey: "invalid plan bounds"])
         }
         let out = URL(fileURLWithPath: args[3], isDirectory: true)
+        let frameDir = out.appendingPathComponent("frames", isDirectory: true)
+        try FileManager.default.createDirectory(at: frameDir, withIntermediateDirectories: true)
+        let framesURL = out.appendingPathComponent("frames.jsonl")
+        FileManager.default.createFile(atPath: framesURL.path, contents: nil)
+        let frames = try FileHandle(forWritingTo: framesURL)
+        defer { try? frames.close() }
+        let actionsURL = out.appendingPathComponent("actions.jsonl")
+        FileManager.default.createFile(atPath: actionsURL.path, contents: nil)
+        let actions = try FileHandle(forWritingTo: actionsURL)
+        defer { try? actions.close() }
+        let recorder = Recorder(frameDir: frameDir, frames: frames, pid: pid, maxFrames: plan.max_frames)
+        // SCStreamOutput's frame method is optional in Objective-C. A Swift
+        // method with the wrong external label compiles but receives no frames.
+        let outputSelector = #selector(SCStreamOutput.stream(_:didOutputSampleBuffer:of:))
+        let implementedSelector = #selector(Recorder.stream(_:didOutputSampleBuffer:of:))
+        let outputCallbackReady = outputSelector == implementedSelector && recorder.responds(to: outputSelector)
         // These are independent, read-only OS admissions. A discovered
         // SCWindow does not prove Screen Recording permission, and an absent
         // first frame is not evidence about the product's visual motion.
@@ -407,6 +453,7 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         }
         if !screenCaptureGranted { preflightFailures.append("ScreenRecordingPreflightDenied") }
         if !axTrusted { preflightFailures.append("AccessibilityTrustDenied") }
+        if !outputCallbackReady { preflightFailures.append("SCStreamOutputCallbackUnavailable") }
         if plan.foreground_required && frontmostPID != pid { preflightFailures.append("TargetNotFrontmost") }
         let preflight: [String: Any] = [
             "schema": 1, "state": preflightFailures.isEmpty ? "Admitted" : "Rejected",
@@ -414,6 +461,7 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             "foreground_required": plan.foreground_required,
             "screen_recording_preflight_granted": screenCaptureGranted,
             "ax_trusted": axTrusted,
+            "stream_output_callback_ready": outputCallbackReady,
             "recorder_bundle_identifier": recorderBundleID,
             "recorder_executable": Bundle.main.executableURL?.path ?? ""]
         try jsonLine(preflight).write(to: out.appendingPathComponent("preflight.jsonl"))
@@ -421,16 +469,6 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
             throw NSError(domain: "native-motion", code: 20,
                 userInfo: [NSLocalizedDescriptionKey: "native capture preflight rejected: \(preflightFailures.joined(separator: ", "))"])
         }
-        let frameDir = out.appendingPathComponent("frames", isDirectory: true)
-        try FileManager.default.createDirectory(at: frameDir, withIntermediateDirectories: true)
-        let framesURL = out.appendingPathComponent("frames.jsonl")
-        FileManager.default.createFile(atPath: framesURL.path, contents: nil)
-        let frames = try FileHandle(forWritingTo: framesURL)
-        defer { try? frames.close() }
-        let actionsURL = out.appendingPathComponent("actions.jsonl")
-        FileManager.default.createFile(atPath: actionsURL.path, contents: nil)
-        let actions = try FileHandle(forWritingTo: actionsURL)
-        defer { try? actions.close() }
         let available = try await SCShareableContent.current
         let candidates = available.windows.filter { $0.owningApplication?.processID == pid && $0.isOnScreen }
         let window: SCWindow
@@ -488,7 +526,6 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.queueDepth = 3
         config.showsCursor = false // Pointer events are logged, never mistaken for app-pixel motion.
-        let recorder = Recorder(frameDir: frameDir, frames: frames, pid: pid, maxFrames: plan.max_frames)
         let stream = SCStream(filter: filter, configuration: config, delegate: recorder)
         try stream.addStreamOutput(recorder, type: .screen, sampleHandlerQueue: DispatchQueue(label: "native-motion.capture"))
         let metadata: [String: Any] = ["pid": pid, "window_id": window.windowID,
@@ -505,8 +542,10 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         do {
             try await stream.startCapture()
         } catch {
+            let status = recorder.status()
             let streamState: [String: Any] = ["schema": 1, "state": "StartCaptureFailed",
-                "error": String(describing: error), "captured_frames": 0]
+                "error": String(describing: error), "captured_frames": status.capturedFrames]
+                .merging(status.diagnostics) { _, diagnostics in diagnostics }
             try jsonLine(streamState).write(to: out.appendingPathComponent("stream-state.jsonl"))
             throw error
         }
@@ -514,16 +553,17 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         var first: UInt64?
         for _ in 0..<100 {
             let status = recorder.status()
-            first = status.3
-            if first != nil || status.2 != nil { break }
+            first = status.firstFrameTime
+            if first != nil || status.failure != nil { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         guard let started = first else {
             let status = recorder.status()
             let streamState: [String: Any] = ["schema": 1, "state": "NoFirstFrameAfterStartCapture",
                 "waited_ms": Int((DispatchTime.now().uptimeNanoseconds - streamStartedHostNS) / 1_000_000),
-                "captured_frames": status.0,
-                "stream_delegate_failure": status.2 ?? ""]
+                "captured_frames": status.capturedFrames,
+                "stream_delegate_failure": status.failure ?? ""]
+                .merging(status.diagnostics) { _, diagnostics in diagnostics }
             try jsonLine(streamState).write(to: out.appendingPathComponent("stream-state.jsonl"))
             try await stream.stopCapture()
             throw NSError(domain: "native-motion", code: 14,
@@ -587,9 +627,11 @@ func send(_ action: Action, pid: pid_t, windowID: CGWindowID,
         try await stream.stopCapture()
         actions.write(jsonLine(["phase": "final", "at_ms": plan.duration_ms, "ax": timedAXSnapshot(pid: pid, full: true),
             "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion]))
-        let (count, dropped, failure, _) = recorder.status()
-        try jsonLine(["captured_frames": count, "dropped_frames": dropped, "stream_failure": failure.map { $0 as Any } ?? NSNull()])
+        let status = recorder.status()
+        try jsonLine(["captured_frames": status.capturedFrames, "dropped_frames": status.droppedFrames,
+            "stream_failure": status.failure.map { $0 as Any } ?? NSNull()]
+            .merging(status.diagnostics) { _, diagnostics in diagnostics })
             .write(to: out.appendingPathComponent("result.jsonl"))
-        if let failure { throw NSError(domain: "native-motion", code: 15, userInfo: [NSLocalizedDescriptionKey: failure]) }
+        if let failure = status.failure { throw NSError(domain: "native-motion", code: 15, userInfo: [NSLocalizedDescriptionKey: failure]) }
     }
 }

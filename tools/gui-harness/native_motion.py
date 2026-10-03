@@ -716,7 +716,8 @@ def launch_services_completion(out: Path, launch: dict[str, Any], recorder: Path
             preflight.get("recorder_executable") != str(recorder) or \
             preflight.get("recorder_bundle_identifier") != identity["identifier"] or \
             preflight.get("pid") != pid or \
-            preflight.get("foreground_required") != plan["foreground_required"]:
+            preflight.get("foreground_required") != plan["foreground_required"] or \
+            preflight.get("stream_output_callback_ready") is not True:
         failures.append("native preflight identity/admission mismatch")
     return not failures, preflight, failures
 
@@ -1102,7 +1103,7 @@ def run(args: argparse.Namespace) -> Path:
     manifest["frame_count"] = len(frames)
     manifest["stream_dropped_frames"] = result_row["dropped_frames"]
     if result_row["dropped_frames"]:
-        manifest["analysis"]["failures"].append(f"{result_row['dropped_frames']} native frames discarded at max_frames bound")
+        manifest["analysis"]["failures"].append(f"{result_row['dropped_frames']} complete screen samples were not saved as PNG evidence")
     manifest["crops"] = crop_frames(out, plan, frames)
     manifest["movie"] = encode(out, frames, timing, args.ffmpeg)
     if not manifest["window"]["ax_trusted"]:

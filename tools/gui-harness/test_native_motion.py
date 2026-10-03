@@ -45,6 +45,20 @@ class NativeMotionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown plan fields"):
                 motion.require_plan(self.plan(directory, accidental_route_seed=True))
 
+    def test_swift_source_binds_optional_screen_output_selector(self):
+        # SCStreamOutput's frame callback is optional. A wrong Swift external
+        # label compiles but never receives pixels, so compile-time references
+        # and the runtime selector admission must both remain present.
+        source = (HERE / "native_motion.swift").read_text()
+        self.assertRegex(source, r"@objc\s+func stream\(_ stream: SCStream, "
+                         r"didOutputSampleBuffer sampleBuffer: CMSampleBuffer, "
+                         r"of type: SCStreamOutputType\)")
+        self.assertIn("#selector(SCStreamOutput.stream(_:didOutputSampleBuffer:of:))", source)
+        self.assertIn("#selector(Recorder.stream(_:didOutputSampleBuffer:of:))", source)
+        self.assertIn("recorder.responds(to: outputSelector)", source)
+        self.assertIn('preflightFailures.append("SCStreamOutputCallbackUnavailable")', source)
+        self.assertNotRegex(source, r"func stream\(_ stream: SCStream, sampleBuffer:")
+
     def test_failed_recorder_preserves_preflight_without_claiming_frames(self):
         with tempfile.TemporaryDirectory() as root:
             out = Path(root)
@@ -184,13 +198,28 @@ class NativeMotionTests(unittest.TestCase):
             (out / "result.jsonl").write_text('{"captured_frames":1,"dropped_frames":0}\n')
             preflight = {"state": "Admitted", "recorder_executable": str(recorder),
                          "recorder_bundle_identifier": identity["identifier"],
-                         "pid": 43542, "foreground_required": False}
+                         "pid": 43542, "foreground_required": False,
+                         "stream_output_callback_ready": True}
             (out / "preflight.jsonl").write_text(json.dumps(preflight) + "\n")
             admitted, row, failures = motion.launch_services_completion(out, launch, recorder,
                                                                           identity, 43542, plan)
             self.assertTrue(admitted)
             self.assertEqual(row, preflight)
             self.assertEqual(failures, [])
+            (out / "preflight.jsonl").write_text(json.dumps(dict(preflight,
+                stream_output_callback_ready=False)) + "\n")
+            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+                                                                        identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertIn("identity/admission mismatch", "; ".join(failures))
+            (out / "preflight.jsonl").write_text(json.dumps({
+                key: value for key, value in preflight.items()
+                if key != "stream_output_callback_ready"}) + "\n")
+            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+                                                                        identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertIn("identity/admission mismatch", "; ".join(failures))
+            (out / "preflight.jsonl").write_text(json.dumps(preflight) + "\n")
             admitted, _, failures = motion.launch_services_completion(out,
                 dict(launch, launcher_exit_code=1), recorder, identity, 43542, plan)
             self.assertFalse(admitted)
