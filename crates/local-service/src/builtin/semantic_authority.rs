@@ -4225,6 +4225,7 @@ mod tests {
                 .is_err(),
             "a valid CAS object cannot be admitted under another image's identity"
         );
+        drop(image_gc_pin);
 
         let wrong_profile_observation = authority
             .observe(&wrong_profile_key, *staged.input_witness().input_root(), 2)
