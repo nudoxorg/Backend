@@ -71,21 +71,30 @@ pub(super) fn body(
         // fail for a path the engine would refuse; then the tile still
         // activates the project, it just has nowhere further to go.
         let project_route = PackageRef::parse(&project.path).ok().and_then(|package| package_route(&package));
-        let project_openable = project_route.is_some();
         let tree_route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project.id.clone())));
+        // A durable folder is still selectable when the index is absent.
+        // Opening its local Tree address grants no source or semantic controls;
+        // those require the Tree's own current owner-backed read receipts.
+        let destination = if owner_serving { project_route } else {
+            (project.phase != crate::model::ProjectPhase::Missing).then(|| tree_route.clone())
+        };
+        let project_openable = destination.is_some();
         let tree_id: SharedString = format!("orbit-tree-{}", project.id.as_str()).into();
         let tree_links = ctx.links.clone();
         let tree_project = project.id.clone();
         let tree_recall = ctx.targets.recall();
         let tree_leave_id = tree_id.clone();
         let tree_act: Act = Rc::new(move |_, cx| {
-            let leaving = tree_links.snapshot(cx).route().clone();
+            let snapshot = tree_links.snapshot(cx);
+            if !snapshot.workspace().projects.iter().any(|project| project.id == tree_project
+                && project.phase != crate::model::ProjectPhase::Missing) { return; }
+            let leaving = snapshot.route().clone();
             tree_recall.focus(tree_leave_id.clone());
             tree_recall.remember_leave(leaving, tree_leave_id.clone());
             tree_links.dispatch(Intent::ActivateProject(tree_project.clone()), cx);
             tree_links.dispatch(Intent::Navigate(tree_route.clone()), cx);
         });
-        let tree_act = ctx.native_snapshot_action(tree_act, cx);
+        let tree_act = ctx.native_local_action(tree_act, cx);
         // A click focuses the tile it lands on (so Back, returning here,
         // restores it) and remembers this route was left by it, since
         // `Reader::arrive` unfocuses every new page it draws.
@@ -94,24 +103,26 @@ pub(super) fn body(
         let recall = ctx.targets.recall();
         let leave_id = id.clone();
         let act: Act = Rc::new(move |_, cx| {
-            let leaving = links.snapshot(cx).route().clone();
+            let snapshot = links.snapshot(cx);
+            if !snapshot.workspace().projects.iter().any(|project| project.id == project_id) { return; }
+            let leaving = snapshot.route().clone();
             recall.focus(leave_id.clone());
             recall.remember_leave(leaving, leave_id.clone());
             links.dispatch(Intent::ActivateProject(project_id.clone()), cx);
-            if let Some(route) = project_route.clone() {
+            if let Some(route) = destination.clone() {
                 links.dispatch(Intent::Navigate(route), cx);
             }
         });
-        let act = ctx.native_snapshot_action(act, cx);
-        if owner_serving { ctx.targets.push(Target {
+        let act = if owner_serving { ctx.native_snapshot_action(act, cx) } else { ctx.native_local_action(act, cx) };
+        ctx.targets.push(Target {
             id: id.clone(),
             label: name.clone(),
             act: Rc::clone(&act),
             peek: None,
             source: None,
-        }); }
-        let tile_focus = owner_serving.then(|| ctx.native_handle(&id, cx)).flatten();
-        if owner_serving && project.phase != crate::model::ProjectPhase::Missing {
+        });
+        let tile_focus = ctx.native_handle(&id, cx);
+        if project.phase != crate::model::ProjectPhase::Missing {
             ctx.targets.push(Target {
                 id: tree_id.clone(),
                 label: format!("{} dependency tree", project.label).into(),
@@ -120,7 +131,7 @@ pub(super) fn body(
                 source: None,
             });
         }
-        let tree_focus = (owner_serving && project.phase != crate::model::ProjectPhase::Missing)
+        let tree_focus = (project.phase != crate::model::ProjectPhase::Missing)
             .then(|| ctx.native_handle(&tree_id, cx)).flatten();
         let state = match project.phase {
             crate::model::ProjectPhase::Indexing => ctx.say("indexing"),
@@ -131,13 +142,8 @@ pub(super) fn body(
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),
             _ => SharedString::default(),
         };
-        let tile_face =
-                if owner_serving {
-                    native_control(id.clone(), if project_openable { format!("Open {}", project.label) } else { format!("Select {}", project.label) },
+        let tile_face = native_control(id.clone(), if project_openable { format!("Open {}", project.label) } else { format!("Select {}", project.label) },
                         if project_openable { gpui::Role::Link } else { gpui::Role::Button }, tile_focus, Rc::clone(&act))
-                } else {
-                    div().id(id.clone()).role(gpui::Role::Label).aria_label(format!("{} — awaiting the current index", project.label))
-                }
                     .aria_description(project.path.to_string())
                     .flex()
                     .flex_col()
@@ -146,23 +152,19 @@ pub(super) fn body(
                     .child(crate::shell::onboard::library::tile_gem(project, f32::from(PROJECT_GEM.at(ctx.wide.fluid_room())), active, ctx))
                     .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
                     .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)));
-        let tile = if owner_serving { ctx.targets.track(id.clone(), tile_face).into_any_element() } else { tile_face.into_any_element() };
+        let tile = ctx.targets.track(id.clone(), tile_face).into_any_element();
         let mut project_block = div().flex().flex_col().items_center().gap(measure.space(Space::Snug)).child(tile);
         if project.phase != crate::model::ProjectPhase::Missing {
             let label = ctx.say("Dependency tree ›");
-            let tree_face = if owner_serving {
-                native_control(tree_id.clone(), format!("{} dependency tree", project.label), gpui::Role::Link, tree_focus, Rc::clone(&tree_act))
-            } else {
-                div().id(tree_id.clone()).role(gpui::Role::Label).aria_label(format!("{} dependency tree — awaiting the current index", project.label))
-            }
+            let tree_face = native_control(tree_id.clone(), format!("{} dependency tree", project.label), gpui::Role::Link, tree_focus, Rc::clone(&tree_act))
                 .aria_description(project.path.to_string())
                 .min_h(measure.row())
                 .flex()
                 .items_center()
                 .px(measure.space(Space::Base))
                 .child(text(ty::SMALL, &measure, palette.ink2).child(label));
-            let tree_face = if owner_serving { tree_face.cursor_pointer().hover(|style| style.bg(palette.tint)) } else { tree_face };
-            project_block = project_block.child(if owner_serving { ctx.targets.track(tree_id.clone(), tree_face).into_any_element() } else { tree_face.into_any_element() });
+            let tree_face = tree_face.cursor_pointer().hover(|style| style.bg(palette.tint));
+            project_block = project_block.child(ctx.targets.track(tree_id.clone(), tree_face));
         }
         centre = centre.child(project_block);
     }

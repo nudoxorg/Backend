@@ -10,10 +10,10 @@
 
 use super::coordinator::{DesktopRuntime, RequestOutcome, RuntimeEvent};
 use super::reads::ReadPool;
-use super::store::{DataStore, RouteDependencies, RouteReadLease};
+use super::store::{DataStore, OwnerAttachment, RouteDependencies, RouteReadLease};
 use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
 use crate::model::{AppSnapshot, ConnectionStatus, PersistentState};
-use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View};
+use crate::navigation::{FolderPickerOutcome, Intent, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -89,11 +89,12 @@ pub(crate) struct GraphViewRequest {
 
 enum QueuedIntent {
     Plain(Intent),
+    Index { intent: Intent, attachment: OwnerAttachment },
     Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Index { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
 /// The complete UI-thread state owner for one desktop window.
@@ -101,7 +102,6 @@ pub struct UiRootEntity {
     runtime: DesktopRuntime,
     pending: Vec<QueuedIntent>,
     persistence: Option<PersistentState>,
-    first_catalog_route_admitted: bool,
     folder_picker_task: Option<Task<()>>,
     connection_probe: ConnectionProbeLatch,
     /// The data plane: snapshot mirror, keyed page resources, read pool.
@@ -133,7 +133,6 @@ impl UiRootEntity {
             // catalog or a second, view-owned bootstrap path.
             pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
             persistence,
-            first_catalog_route_admitted: false,
             folder_picker_task: None,
             connection_probe: ConnectionProbeLatch::default(),
             store: None,
@@ -234,6 +233,14 @@ impl UiRootEntity {
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
+                QueuedIntent::Index { intent, attachment }
+                    if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
+                        && matches!(&intent, Intent::IndexProject { basis, project, .. } if self.snapshot().key().same_authority(*basis)
+                            && self.snapshot().workspace().projects.iter().any(|item| item.id == *project
+                                && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none())) => self.dispatch(intent, cx),
+                // An unsent local admission remains on the shelf. A replacement
+                // owner will schedule it against its own attachment and root.
+                QueuedIntent::Index { .. } => {}
                 QueuedIntent::Read { intent, lease, sequence } if sequence == self.graph_view_generation
                     && self.store.as_ref().is_some_and(|store| lease.admits(store.read(cx))) => self.dispatch(intent, cx),
                 QueuedIntent::Read { .. } => {}
@@ -412,6 +419,7 @@ impl UiRootEntity {
         }
         // Packages an earlier launch was still adding are added now.
         super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
+        self.resume_indexes_after_owner(cx);
     }
 
     /// A certified publication for the existing attachment. This advances
@@ -431,6 +439,7 @@ impl UiRootEntity {
         }
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         self.refresh_root(cx);
+        self.resume_indexes_after_owner(cx);
     }
 
     /// Reads the owner's root again: something outside the project lane
@@ -486,6 +495,16 @@ impl UiRootEntity {
         true
     }
 
+    /// The owner watcher admits its root before renewing the store. Defer
+    /// scheduling until both name the same live attachment; unsent projects
+    /// stay local while the service starts or is unavailable.
+    fn resume_indexes_after_owner(&self, cx: &mut Context<Self>) {
+        let root = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = root.update(cx, Self::schedule_pending_indexes);
+        });
+    }
+
     fn schedule_pending_indexes(&mut self, cx: &mut Context<Self>) {
         let projects = self
             .snapshot()
@@ -510,16 +529,17 @@ impl UiRootEntity {
         {
             return;
         }
+        let Some(store) = &self.store else { return; };
+        let store = store.read(cx);
+        let Some(attachment) = store.current_owner_attachment() else { return; };
         let basis = self.snapshot().key();
+        if !store.snapshot().key().same_authority(basis) { return; }
         let request = self.runtime.allocate_request();
-        self.queue(
-            Intent::IndexProject {
-                project,
-                basis,
-                request,
-            },
-            cx,
-        );
+        self.pending.push(QueuedIntent::Index {
+            intent: Intent::IndexProject { project, basis, request },
+            attachment,
+        });
+        self.schedule_flush(cx);
     }
 
     fn index_intent_pending(&self, project: &crate::core::LocalProjectId) -> bool {
@@ -532,9 +552,10 @@ impl UiRootEntity {
         let before = self.published.clone();
         for event in events {
             match event {
-                RuntimeEvent::SnapshotChanged(snapshot) => {
-                    self.admit_first_catalog_route(&snapshot, cx);
-                }
+                // A publication updates data, never chooses the person's
+                // next route. Late startup/index replies must not move Home
+                // into an arbitrary first package or add navigation history.
+                RuntimeEvent::SnapshotChanged(_) => {}
                 RuntimeEvent::PersistRequested(snapshot) => {
                     if let Some(persistence) = &self.persistence {
                         let _ = persistence.save(&PersistentState::project(&snapshot));
@@ -556,45 +577,13 @@ impl UiRootEntity {
         self.schedule_pending_indexes(cx);
     }
 
-    fn admit_first_catalog_route(&mut self, snapshot: &AppSnapshot, cx: &mut Context<Self>) {
-        if self.first_catalog_route_admitted {
-            return;
-        }
-        // A service catalog can be live before the first folder has been
-        // admitted to the shelf. Keep cold first launch on the onboarding
-        // surface until the user chooses a source; otherwise a registry row
-        // silently replaces the empty-project affordance.
-        if snapshot.workspace().projects.is_empty() {
-            return;
-        }
-        let Some(catalog) = snapshot.catalog().loaded_value() else {
-            return;
-        };
-        let Some(package) = catalog.packages.first() else {
-            return;
-        };
-        if !matches!(snapshot.route(), Route::Orbit(OrbitRoute::Home)) {
-            self.first_catalog_route_admitted = true;
-            return;
-        }
-        self.first_catalog_route_admitted = true;
-        self.queue(
-            Intent::Navigate(Route::Package(PackageRoute {
-                cargo: None,
-                project: None,
-                package: package.coordinate.clone(),
-                lane: PackageLane::Overview,
-                selected: Some(package.object),
-                at: None,
-            })),
-            cx,
-        );
-    }
 
 }
 
 #[cfg(test)]
 mod cargo_queue_tests;
+#[cfg(test)]
+mod local_index_queue_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();

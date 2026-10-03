@@ -58,7 +58,11 @@ pub(crate) fn install(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Quit Nudox", Quit),
         ]),
-        Menu::new("File").items([MenuItem::action("Close Window", CloseWindow)]),
+        Menu::new("File").items([
+            MenuItem::action("Add a Folder…", crate::shell::keys::AddFolder),
+            MenuItem::separator(),
+            MenuItem::action("Close Window", CloseWindow),
+        ]),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", gpui_component::input::Undo, OsAction::Undo),
             MenuItem::os_action("Redo", gpui_component::input::Redo, OsAction::Redo),

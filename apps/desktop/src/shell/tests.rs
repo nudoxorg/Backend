@@ -2822,3 +2822,34 @@ fn a_replaced_page_leaves_instead_of_vanishing(cx: &mut TestAppContext) {
     let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
     assert_eq!(pages, 1, "once settled only the current page is drawn");
 }
+
+
+/// Local shelf addresses remain useful without lending retained package bytes
+/// permission to open semantic or source controls.
+#[gpui::test]
+fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
+    rig.draw();
+    let project = LocalProjectId::new("/fixture/local-recovery").expect("local project");
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::AddProject { project: project.clone() }, cx));
+    rig.draw();
+    rig.repaint();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-project-")), "local project selection remains a native control");
+    assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "local Tree address stays reachable");
+    assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained semantic packages remain inert");
+    let action = targets.placed().into_iter().find(|(target, _)| target.id.starts_with("orbit-project-"))
+        .expect("local project tile").0.act;
+    rig.cx.update(|window, cx| action(window, cx));
+    rig.draw();
+    let snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    assert_eq!(snapshot.route(), &Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project.clone()))));
+    assert_eq!(snapshot.workspace().active.as_ref(), Some(&project));
+    assert_eq!(snapshot.workspace().projects[0].request, None, "an outage does not issue an index mutation");
+    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()));
+}

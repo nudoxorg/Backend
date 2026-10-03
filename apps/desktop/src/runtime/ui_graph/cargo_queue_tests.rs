@@ -8,7 +8,7 @@ use crate::core::{LocalProjectId, PackageId, VersionedRoot};
 use crate::model::browse::{BrowseKey, BrowseValue, TreeModel};
 use crate::model::pages::{PageKey, PageValue};
 use crate::model::{PersistedRoute, ServiceMode};
-use crate::navigation::{CargoBrowseContext, CargoSourcePath, CargoSourceRoute};
+use crate::navigation::{CargoBrowseContext, CargoSourcePath, CargoSourceRoute, OrbitRoute};
 use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use crate::runtime::store::cargo_context_tests::{fixture, force_land};

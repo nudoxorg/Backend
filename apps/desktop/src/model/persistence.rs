@@ -73,6 +73,8 @@ pub enum PersistedProjectPhase {
     /// Index is current.
     #[default]
     Ready,
+    /// A local folder is admitted, but no owner request has been submitted.
+    Queued,
     /// Indexing is in progress.
     Indexing,
     /// Cancellation was requested and is waiting for the producer boundary.
@@ -105,7 +107,7 @@ impl From<PersistedProjectPhase> for ProjectPhase {
     fn from(value: PersistedProjectPhase) -> Self {
         match value {
             PersistedProjectPhase::Ready => Self::Ready,
-            PersistedProjectPhase::Indexing => Self::Indexing,
+            PersistedProjectPhase::Queued | PersistedProjectPhase::Indexing => Self::Indexing,
             PersistedProjectPhase::Cancelling => Self::Cancelling,
             PersistedProjectPhase::Cancelled => Self::Cancelled,
             PersistedProjectPhase::Failed => Self::Failed,
@@ -854,7 +856,11 @@ impl PersistentState {
                         native_path: id.native_wire().ok(),
                         label: item.label.to_string(),
                         phase: project
-                            .map_or(PersistedProjectPhase::Ready, |project| project.phase.into()),
+                            .map_or(PersistedProjectPhase::Ready, |project| {
+                                if project.phase == ProjectPhase::Indexing && project.request.is_none() {
+                                    PersistedProjectPhase::Queued
+                                } else { project.phase.into() }
+                            }),
                         progress: project.and_then(|project| project.progress),
                         files_indexed: project.and_then(|project| project.files_indexed),
                         error: project
@@ -1444,6 +1450,32 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("fixture directory");
         path
+    }
+
+    #[test]
+    fn queued_local_admission_survives_restart_without_becoming_an_uncertain_mutation() {
+        let root = fixture("queued-admission");
+        let project = LocalProjectId::from_path(&root).expect("local project");
+        let store = PersistentState::at(root.join("desktop.json"));
+        let snapshot = crate::navigation::reduce(
+            &AppSnapshot::empty(crate::core::VersionedRoot::unserved()),
+            crate::navigation::Intent::AddProject { project: project.clone() },
+        ).snapshot;
+        let queued = PersistentState::project(&snapshot);
+        assert_eq!(queued.shelf[0].phase, PersistedProjectPhase::Queued);
+        let restored = store.cold_workspace(&queued);
+        assert_eq!(restored.projects[0].phase, ProjectPhase::Indexing);
+        assert_eq!(restored.projects[0].request, None);
+        assert_eq!(restored.projects[0].error, None);
+
+        let submitted = crate::navigation::reduce(&snapshot, crate::navigation::Intent::IndexProject {
+            project, basis: snapshot.key(), request: crate::navigation::RequestId::new(7),
+        }).snapshot;
+        let submitted = PersistentState::project(&submitted);
+        assert_eq!(submitted.shelf[0].phase, PersistedProjectPhase::Indexing);
+        assert_eq!(store.cold_workspace(&submitted).projects[0].phase, ProjectPhase::Unconfirmed,
+            "submitted and legacy index mutations still require exact recovery");
+        fs::remove_dir_all(root).expect("remove queued admission fixture");
     }
 
     #[test]

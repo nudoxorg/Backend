@@ -373,6 +373,10 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                             project.request = None;
                             project.error = None;
                         }
+                        // No request was submitted for a queued local folder.
+                        // Replacing an old index does not make that admission
+                        // an uncertain producer operation.
+                        ProjectPhase::Indexing if project.request.is_none() => {}
                         ProjectPhase::Indexing | ProjectPhase::Cancelling => {
                             project.phase = ProjectPhase::Unconfirmed;
                             project.progress = None;
@@ -814,10 +818,21 @@ mod tests {
     }
 
     #[test]
+    fn library_rebuild_preserves_an_unsent_local_folder_for_the_new_owner() {
+        let project = LocalProjectId::new("/fixture/queued-rebuild").expect("project");
+        let admitted = reduce(&AppSnapshot::empty(crate::core::VersionedRoot::unserved()),
+            &Intent::AddProject { project }).expect("admit project").snapshot;
+        let rebuilt = reduce(&admitted, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/old-owner") }).expect("rebuild").snapshot;
+        assert_eq!(rebuilt.workspace().projects[0].phase, ProjectPhase::Indexing);
+        assert_eq!(rebuilt.workspace().projects[0].request, None);
+        assert_eq!(rebuilt.workspace().projects[0].error, None);
+    }
+
+    #[test]
     fn library_rebuild_keeps_in_flight_owner_attempts_unconfirmed() {
         let (snapshot, first, second) = two_ready_projects();
-        let indexing = set_project_phase(&snapshot, &first, ProjectPhase::Indexing, None, None);
-        let cancelling = set_project_phase(&indexing, &second, ProjectPhase::Cancelling, None, None);
+        let indexing = set_project_phase(&snapshot, &first, ProjectPhase::Indexing, None, Some(RequestId::new(17)));
+        let cancelling = set_project_phase(&indexing, &second, ProjectPhase::Cancelling, None, Some(RequestId::new(18)));
         let rebuilt = reduce(&cancelling, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/old-owner") }).expect("workspace");
         assert!(rebuilt.snapshot.workspace().projects.iter().all(|project| {
             project.phase == ProjectPhase::Unconfirmed && project.request.is_none()

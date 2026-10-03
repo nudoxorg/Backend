@@ -112,6 +112,24 @@ pub fn ensure_private_child_directory(path: &Path) -> io::Result<()> {
     ensure_private_child_directory_platform(path)
 }
 
+/// Creates or repairs an application-owned state directory beneath a trusted
+/// per-user data parent. The caller must know this exact child belongs to its
+/// application; use [`ensure_private_child_directory`] for untrusted operands.
+///
+/// On Unix, an existing directory is opened without following links, its
+/// current-user ownership is verified, and only that pinned child is made
+/// private. Ancestors and directory contents are never changed.
+///
+/// # Errors
+/// Returns an error for a foreign owner, unsafe parent, symlink, non-directory,
+/// or failed permission/durability operation.
+pub fn ensure_private_application_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    { ensure_private_child_directory_unix(path, true) }
+    #[cfg(not(unix))]
+    { ensure_private_child_directory_platform(path) }
+}
+
 fn create_temporary(parent: &Path, file_name: Option<&OsStr>) -> io::Result<(PathBuf, File)> {
     loop {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -323,6 +341,11 @@ fn ensure_private_directory_platform(path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn ensure_private_child_directory_platform(path: &Path) -> io::Result<()> {
+    ensure_private_child_directory_unix(path, false)
+}
+
+#[cfg(unix)]
+fn ensure_private_child_directory_unix(path: &Path, repair_owned: bool) -> io::Result<()> {
     use rustix::fs::{Mode, OFlags, fchmod, mkdirat, open, openat};
     use std::os::unix::fs::MetadataExt as _;
 
@@ -381,7 +404,11 @@ fn ensure_private_child_directory_platform(path: &Path) -> io::Result<()> {
     )
     .map(File::from)
     .map_err(rustix_io)?;
-    if created {
+    let child_metadata = child.metadata()?;
+    if !child_metadata.is_dir() || child_metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "application data directory is not owned by the current user"));
+    }
+    if created || repair_owned {
         fchmod(&child, Mode::from_bits_truncate(0o700)).map_err(rustix_io)?;
     }
     let child_metadata = child.metadata()?;
@@ -631,6 +658,31 @@ mod tests {
         assert!(ensure_private_child_directory(&link).is_err());
 
         let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_owned_repair_changes_only_the_pinned_leaf_and_rejects_links_or_unsafe_parent() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let parent = fixture("app-data-repair");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).expect("ordinary OS parent");
+        let child = parent.join("Nudox");
+        fs::create_dir(&child).expect("legacy app directory");
+        fs::set_permissions(&child, fs::Permissions::from_mode(0o755)).expect("legacy directory mode");
+        fs::write(child.join("session.json"), b"retained session").expect("legacy session");
+        ensure_private_application_directory(&child).expect("repair application-owned directory");
+        assert_eq!(fs::metadata(&child).expect("repaired child").permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&parent).expect("unchanged parent").permissions().mode() & 0o777, 0o755);
+        assert_eq!(fs::read(child.join("session.json")).expect("retained session"), b"retained session");
+        let link = parent.join("linked");
+        std::os::unix::fs::symlink(&child, &link).expect("link");
+        assert!(ensure_private_application_directory(&link).is_err());
+
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).expect("unsafe parent");
+        fs::set_permissions(&child, fs::Permissions::from_mode(0o755)).expect("unsafe child fixture");
+        assert!(ensure_private_application_directory(&child).is_err());
+        assert_eq!(fs::metadata(&child).expect("unmodified child").permissions().mode() & 0o777, 0o755);
+        fs::remove_dir_all(parent).expect("remove repair fixture");
     }
 
     #[test]

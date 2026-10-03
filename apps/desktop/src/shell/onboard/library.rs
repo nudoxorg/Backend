@@ -54,6 +54,26 @@ pub(crate) fn stages(phase: ProjectPhase) -> Option<[Stage; 3]> {
     ])
 }
 
+/// An admitted folder is not an owner operation until the runtime submits it.
+/// Its seam stays at the completed local admission while the owner is absent.
+fn project_stages(project: &WorkspaceProject) -> Option<[Stage; 3]> {
+    let mut steps = stages(project.phase)?;
+    if project.phase == ProjectPhase::Indexing && project.request.is_none() {
+        steps[1] = Stage::new("indexing", StageState::Todo);
+    }
+    Some(steps)
+}
+
+fn project_door(project: &WorkspaceProject) -> Door {
+    if project.phase == ProjectPhase::Indexing && project.request.is_none() {
+        Door::tip(|step, measure, window, cx| {
+            let (title, body) = if step == 0 { ("Folder added", "It is on your shelf.") }
+                else { ("Waiting for the index", "Starts once the owner answers.") };
+            content(TipText { title: Some(title.into()), body: body.into(), chord: Vec::new() })(measure, window, cx)
+        })
+    } else { door(project.phase) }
+}
+
 /// What resting on each step says. A tip is one short line: it does not wrap.
 fn tip(phase: ProjectPhase, step: usize) -> TipText {
     let (title, body) = match (step, phase) {
@@ -78,11 +98,11 @@ fn door(phase: ProjectPhase) -> Door {
 pub(crate) fn tile_gem(project: &WorkspaceProject, edge: f32, active: bool, ctx: &Ctx<'_>) -> AnyElement {
     let opacity = if active { 1.0 } else { 0.8 };
     let plain = || facet::paint::gem(Kind::Module).size(edge).opacity(opacity).into_any_element();
-    let Some(stages) = stages(project.phase) else { return plain() };
+    let Some(stages) = project_stages(project) else { return plain() };
     let id = SharedString::from(format!("project-gem-{}", project.path));
     div()
         .opacity(opacity)
-        .child(gem_progress(id, Kind::Module, stages.to_vec(), &ctx.measure).size(edge / ctx.measure.scale()).door(door(project.phase)))
+        .child(gem_progress(id, Kind::Module, stages.to_vec(), &ctx.measure).size(edge / ctx.measure.scale()).door(project_door(project)))
         .into_any_element()
 }
 
@@ -294,7 +314,7 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
         .iter()
         .filter(|project| project.phase == ProjectPhase::Indexing)
         .collect();
-    let ids: Vec<LocalProjectId> = running.iter().map(|project| project.id.clone()).collect();
+    let ids: Vec<LocalProjectId> = running.iter().filter(|project| project.request.is_some()).map(|project| project.id.clone()).collect();
     let ages = Ages::observe(&ids, cx);
     let view = cx.entity_id();
     let additions = snapshot
@@ -317,11 +337,13 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
         block = block.child(package_block(&path, &words, ctx));
     }
     for project in running {
-        let headline = ctx.say(format!("Compiling {}.", project.label));
-        let promise = ctx.say(
-            "Then each package it uses is indexed from your cargo cache, one at a time. A first install takes a few minutes.",
-        );
-        let since = ctx.say(format!("started {}", ago(ages.of(&project.id))));
+        let submitted = project.request.is_some();
+        let headline = ctx.say(if submitted { format!("Compiling {}.", project.label) }
+            else { format!("{} is on your shelf.", project.label) });
+        let promise = ctx.say(if submitted {
+            "Then each package it uses is indexed from your cargo cache, one at a time. A first install takes a few minutes."
+        } else { "Waiting for the local index to answer. Your folder will start once it is available." });
+        let since = submitted.then(|| ctx.say(format!("started {}", ago(ages.of(&project.id)))));
         // The seam is the strip under the thing being worked on: as wide as
         // its words, never wider than the room.
         let strip = measure.within(px(360.0 * measure.scale()).min(measure.width()));
@@ -333,9 +355,9 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
                 .items_center()
                 .gap(measure.space(Space::Snug))
                 .child(text(ty::ROW, &measure, palette.ink0).text_center().child(headline))
-                .child(seam(seam_id, stages(project.phase).map_or_else(Vec::new, |steps| steps.to_vec()), &strip).door(door(project.phase)))
+                .child(seam(seam_id, project_stages(project).map_or_else(Vec::new, |steps| steps.to_vec()), &strip).door(project_door(project)))
                 .child(text(ty::SMALL, &measure, palette.ink2).text_center().child(promise))
-                .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(since)),
+                .children(since.map(|since| text(ty::MONO_SMALL, &measure, palette.ink3).child(since))),
         );
     }
     Some(Leaf::new(block))
@@ -592,6 +614,16 @@ mod tests {
             "with its dependencies there is nothing to warn about"
         );
         assert_eq!(arrival(0, 3, 0).says(), ["25 declarations from 1 of 1 files"], "nothing of yours answered: just the counts");
+    }
+
+    #[test]
+    fn an_unsent_local_folder_does_not_animate_as_an_owner_compile() {
+        let mut project = WorkspaceProject::indexing("/fixture/queued").expect("local folder");
+        let steps = project_stages(&project).expect("queued stages");
+        assert_eq!(steps[0].state, StageState::Done);
+        assert_eq!(steps[1].state, StageState::Todo, "no owner request has been submitted");
+        project.request = Some(crate::navigation::RequestId::new(7));
+        assert_eq!(project_stages(&project).expect("submitted stages")[1].state, StageState::Now);
     }
 
     #[test]

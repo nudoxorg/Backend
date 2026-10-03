@@ -62,7 +62,11 @@ pub(crate) fn ambient_paths(application_root: &Path) -> Result<WorkspacePaths, R
     ensure_private_application_root(application_root).map_err(RuntimeError::Io)?;
     let data = application_root.join("workspace");
     let starter = application_root.join("starter");
-    backend_platform::durable::ensure_private_directory(&starter).map_err(RuntimeError::Io)?;
+    // These fixed children were created with ordinary umasks by older desktop
+    // builds. Repair only the held application-owned directories, preserving
+    // every file and credential and leaving explicit BACKEND_DATA untouched.
+    backend_platform::durable::ensure_private_application_directory(&starter).map_err(RuntimeError::Io)?;
+    backend_platform::durable::ensure_private_application_directory(&data).map_err(RuntimeError::Io)?;
     WorkspacePaths::discover(Some(starter), Some(data), None)
 }
 
@@ -73,10 +77,11 @@ pub(crate) fn ambient_paths(application_root: &Path) -> Result<WorkspacePaths, R
 /// application directory beneath that location must therefore be created as
 /// an owner-only child. If the platform data hierarchy itself is missing, each
 /// newly created level becomes private before it is used as the next parent.
-/// Existing application roots are admitted only when already private.
+/// Existing application-owned roots are made private through a pinned handle
+/// after proving current-user ownership. No ancestor or content is changed.
 ///
 /// Every existing path component is inspected with `symlink_metadata`; a link
-/// or non-directory is rejected rather than followed or repaired.
+/// or non-directory is rejected rather than followed.
 fn ensure_private_application_root(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::new(
@@ -131,7 +136,7 @@ fn ensure_private_application_root(path: &Path) -> io::Result<()> {
     }
 
     if missing.is_empty() {
-        return backend_platform::durable::ensure_private_child_directory(path);
+        return backend_platform::durable::ensure_private_application_directory(path);
     }
 
     // The path walk above has found a continuous missing suffix. Anchor its
@@ -273,7 +278,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn existing_public_app_root_is_refused_without_chmod_or_symlink_following() {
+    fn legacy_owned_app_directories_are_repaired_without_changing_parent_or_following_links() {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -289,16 +294,28 @@ mod tests {
         fs::create_dir(&public).expect("public preexisting app root");
         fs::set_permissions(&public, fs::Permissions::from_mode(0o755))
             .expect("make existing app root intentionally nonprivate");
-        assert!(ensure_private_application_root(&public).is_err());
+        ensure_private_application_root(&public).expect("repair exact owned application root");
         assert_eq!(
             fs::metadata(&public)
                 .expect("existing app root remains in place")
                 .permissions()
                 .mode()
                 & 0o777,
-            0o755,
-            "startup must not repair an existing public directory by chmod",
+            0o700,
+            "the exact owned application root is repaired through its held handle",
         );
+
+        for name in ["starter", "workspace"] {
+            let child = public.join(name);
+            fs::create_dir(&child).expect("legacy application child");
+            fs::set_permissions(&child, fs::Permissions::from_mode(0o755)).expect("legacy child mode");
+        }
+        fs::write(public.join("workspace").join("desktop-state.json"), b"legacy state retained").expect("legacy state");
+        let paths = ambient_paths(&public).expect("repair legacy ambient layout");
+        for child in [paths.project(), paths.data()] {
+            assert_eq!(fs::metadata(child).expect("repaired child").permissions().mode() & 0o777, 0o700);
+        }
+        assert_eq!(fs::read(paths.data().join("desktop-state.json")).expect("retained state"), b"legacy state retained");
 
         let private_target = fixture.join("private-target");
         fs::create_dir(&private_target).expect("private symlink target");
