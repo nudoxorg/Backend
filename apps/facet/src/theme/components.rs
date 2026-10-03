@@ -20,12 +20,12 @@ macro_rules! colors {
                 Self { $($field: $value),+ }
             }
             fn matches(&self, theme: &Theme) -> bool {
-                $(self.$field == theme.$field
+                $(self.$field == theme.colors.$field
                     && theme.tokens.$field.color == self.$field
                     && theme.tokens.$field.background == self.$field.into())&&+
             }
             fn apply(&self, theme: &mut Theme) {
-                $(theme.$field = self.$field;
+                $(theme.colors.$field = self.$field;
                   theme.tokens.$field = self.$field.into();)+
             }
         }
