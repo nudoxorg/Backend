@@ -348,6 +348,14 @@ def main() -> int:
     parser.add_argument("--workspace-template", type=Path, default=DEFAULT_WORKSPACE)
     parser.add_argument("--project-template", type=Path, default=None)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--allow-non-maven-dataset",
+        action="store_true",
+        help=(
+            "allow a different frozen registry-discovery journal only when its "
+            "independent labels and workspace template bind the exact same SHA-256"
+        ),
+    )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
@@ -390,6 +398,16 @@ def main() -> int:
     queries = labels.get("queries")
     if not isinstance(queries, list) or not queries:
         raise ValueError("independent labels must contain a nonempty query list")
+    dataset_kind = labels.get("dataset_kind", "retained-maven")
+    if args.allow_non_maven_dataset and (
+        not isinstance(labels.get("dataset_kind"), str)
+        or not labels["dataset_kind"].strip()
+        or not isinstance(labels.get("scope"), str)
+        or not labels["scope"].strip()
+    ):
+        raise ValueError(
+            "non-Maven labels must identify dataset_kind and an independently recorded scope"
+        )
     for item in queries:
         if (
             not isinstance(item, dict)
@@ -403,7 +421,7 @@ def main() -> int:
     journal_size = journal.stat().st_size
     if labels.get("journal_sha256") != journal_digest:
         raise ValueError("independent labels were recorded against a different journal")
-    if journal_size != 722_663:
+    if journal_size != 722_663 and not args.allow_non_maven_dataset:
         raise ValueError(f"expected the retained 722,663-byte Maven journal, found {journal_size}")
     template_journal = workspace_template / "registry-discovery" / "catalog.journal"
     if sha256(template_journal) != journal_digest:
@@ -561,6 +579,7 @@ def main() -> int:
         "schema": "nudox.registry-journal-search-benchmark.v1",
         "correct": correctness,
         "provenance": {
+            "dataset_kind": dataset_kind,
             "journal_path": str(journal),
             "journal_sha256": journal_digest,
             "journal_bytes": journal_size,
@@ -595,6 +614,7 @@ def main() -> int:
             "locald_argv": locald_command,
         },
         "configuration": {
+            "non_maven_dataset_opt_in": args.allow_non_maven_dataset,
             "page_limit": args.limit,
             "repetitions": args.repetitions,
             "latency_boundary": "one backend-cli process + local socket roundtrip per page",
