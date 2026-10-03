@@ -3628,6 +3628,22 @@ mod tests {
             .expect("open product daemon");
             let intent = BuiltinIntent::add(package, label.clone()).expect("seed project intent");
             super::commit_builtin_intent(&mut daemon, 1, &intent).expect("commit seed project");
+            // Product publication applies checked view deltas. Start with the
+            // same source-bound baseline that production startup installs;
+            // Library::new() is intentionally unbound and cannot authorize a
+            // reset transition to the product view.
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let (baseline, cursor) = super::super::initial_view_for_workspace(&snapshot)
+                .expect("checked current product baseline");
+            let admission = super::super::BuiltinViewAdmission {
+                workspace_root: snapshot.root(),
+                source_root: baseline.basis().root,
+            };
+            daemon
+                .engine_mut()
+                .daemon_mut()
+                .publish_view(baseline, cursor, &admission, None)
+                .expect("publish checked product baseline");
 
             let compiler_root = workspace.join("compiler-fixture");
             let paths = LocalCompilerRuntimePaths::new(

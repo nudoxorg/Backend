@@ -2244,7 +2244,7 @@ mod owner_fairness_tests {
             .expect("workspace relation registry")
             .with_relation::<BuiltinSemanticRelation>()
             .expect("semantic relation registry");
-        let daemon = crate::Locald::open_with_dispatcher_and_registry(
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             directory,
             BuiltinModel,
             genesis().expect("product genesis"),
@@ -2253,12 +2253,23 @@ mod owner_fairness_tests {
             registry,
         )
         .expect("open local daemon");
-        let cursor = daemon
-            .engine()
-            .daemon()
-            .library()
-            .cursor()
-            .encode_control();
+        // A subscription can only read against a coherent view root. The
+        // freshly opened daemon's library is intentionally unbound, so mirror
+        // product startup and publish its checked current view before asking
+        // the public daemon API for the cursor used by the test client.
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let (view, cursor) =
+            initial_view_for_workspace(&snapshot).expect("checked current product view");
+        let admission = BuiltinViewAdmission {
+            workspace_root: snapshot.root(),
+            source_root: view.basis().root,
+        };
+        daemon
+            .engine_mut()
+            .daemon_mut()
+            .publish_view(view, cursor, &admission, None)
+            .expect("publish checked current product view");
+        let cursor = daemon.engine().daemon().cursor_bytes();
         let client = daemon.client();
         let owner = daemon.into_owner_with_admission(
             test_command as TestCommand,
