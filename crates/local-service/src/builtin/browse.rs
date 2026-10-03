@@ -16,8 +16,8 @@
 mod cargo_metadata;
 
 use backend_library::browse::{
-    LockedInactiveCoverage, LockfileGraphCoverage, ProjectTree, TreeInput, TreeInputPackage,
-    TreeSource, build_tree, lockfile_input, metadata_input,
+    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, ProjectTree,
+    TreeInput, TreeInputPackage, TreeSource, build_tree, lockfile_input, metadata_input,
     metadata_input_with_stable_source_witness,
 };
 use backend_library::{
@@ -64,9 +64,12 @@ const MAX_SOURCE_DIRECTORY_DEPTH: usize = 32;
 const MAX_BROWSE_CACHED_WORKSPACES: usize = 2;
 const MAX_BROWSE_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE: usize = 16;
-/// Conservative reserve for the bounded workspace and request-binding index
-/// bucket allocations. These maps retain their high-water buckets after row
-/// removal, so account for their maximum size once for the cache's lifetime.
+const MAX_BROWSE_REQUEST_BINDINGS_PER_CONTEXT: usize = 1;
+const MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE: usize = MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE;
+/// Conservative reserve for the bounded workspace, context, and request-
+/// binding index bucket allocations. These maps retain their high-water buckets
+/// after row removal, so account for their maximum size once for the cache's
+/// lifetime.
 const BROWSE_CACHE_INDEX_RETAINED_BYTES: usize = 256 * 1024;
 
 /// One absolute budget for a deferred browse request, including queue wait,
@@ -192,10 +195,32 @@ struct RequestBindingKey {
     effective_workspace_root_digest: [u8; 32],
 }
 
+/// One immutable Cargo observation for an exact invocation directory and the
+/// effective workspace that Cargo resolved from it. Different request CWDs
+/// in one workspace may have different Cargo config and tool recipes.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct BrowseContextKey {
+    workspace: PathBuf,
+    invocation_root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct BoundBrowseRequest {
+    context: BrowseContextKey,
+    /// Canonical request directory retained by the owner for exact rechecks.
+    request_root: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestBindingAdmission {
+    Retained,
+    NoRetainedObservation,
+}
+
 /// Bounded, shared immutable Cargo observations for currently admitted trees.
 pub(super) struct BrowseCache {
-    entries: HashMap<PathBuf, CacheEntry>,
-    bindings: HashMap<RequestBindingKey, PathBuf>,
+    entries: HashMap<BrowseContextKey, CacheEntry>,
+    bindings: HashMap<RequestBindingKey, BrowseContextKey>,
     requested_bindings: HashMap<[u8; 32], RequestBindingKey>,
     cached_bytes: usize,
     use_clock: u64,
@@ -224,10 +249,6 @@ struct CacheEntry {
     witness: [u8; 32],
     watched: Vec<PathBuf>,
     input: Arc<TreeInput>,
-    /// Directory from which the exact-manifest metadata command was run.
-    /// Cargo tool selection and nested config discovery are rechecked against
-    /// this same context when the cached observation is reused.
-    metadata_context: PathBuf,
     /// Estimated retained bytes, including this entry's indexes.
     retained_bytes: usize,
     /// Exact source authority digest to package-row index; `None` means an
@@ -249,9 +270,10 @@ struct RequestedCargoManifest {
     has_workspace: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CachedRequestBinding {
     binding: backend_library::browse::ProjectTreeRequestBindingV1,
+    request_root: PathBuf,
     last_used: u64,
 }
 
@@ -272,10 +294,28 @@ impl BrowseCache {
         root: &Path,
         authority: Option<&backend_engine::advisory::AdvisoryAuthority>,
     ) -> Result<ProjectTree, String> {
+        self.project_tree_with_read_project(root, authority, read_project)
+    }
+
+    fn project_tree_with_read_project(
+        &mut self,
+        root: &Path,
+        authority: Option<&backend_engine::advisory::AdvisoryAuthority>,
+        read: impl FnMut(
+            &RequestedCargoManifest,
+            Option<&CargoToolWitnessReuse>,
+        ) -> Result<CargoProjectRead, String>,
+    ) -> Result<ProjectTree, String> {
         if !root.is_absolute() {
             return Err("project-tree needs an absolute project directory".to_owned());
         }
-        let input = self.input(root)?;
+        // Resolve a caller-provided symlink once. The exact canonical
+        // invocation used for Cargo, the cache key, and the route binding must
+        // remain the same even if the caller's symlink changes during Cargo.
+        let request_root = root
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve Cargo request directory: {error}"))?;
+        let input = self.input_with_read_project(&request_root, read)?;
         observation_budget()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -292,14 +332,28 @@ impl BrowseCache {
             authority.observe(&package, version, false, false, now, false)
         };
         let mut tree = build_tree(input.as_ref(), &observe);
-        let binding =
-            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(root, &tree.root)
-                .ok_or_else(|| {
-                    "Cargo project tree could not bind its requested and resolved roots".to_owned()
-                })?;
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            &request_root,
+            &tree.root,
+        )
+        .ok_or_else(|| {
+            "Cargo project tree could not bind its requested and resolved roots".to_owned()
+        })?;
+        if !binding.matches_effective_workspace_root(&input.root) {
+            return Err("Cargo project tree root differs from its retained observation".to_owned());
+        }
+        let context = BrowseContextKey {
+            workspace: PathBuf::from(&input.root),
+            invocation_root: request_root.clone(),
+        };
         observation_budget()?;
-        self.admit_request_binding(Path::new(&input.root), binding);
-        tree.request_binding = Some(binding);
+        // Keep dependency-tree display available when an input is intentionally
+        // not retained (for example, a lockfile fallback or cache-size limit),
+        // but issue no source route without an exact owner-held observation.
+        tree.request_binding = match self.admit_request_binding(&context, binding, request_root)? {
+            RequestBindingAdmission::Retained => Some(binding),
+            RequestBindingAdmission::NoRetainedObservation => None,
+        };
         Ok(tree)
     }
 
@@ -335,7 +389,7 @@ impl BrowseCache {
                 CargoPackageSourceReadFailureV1::UnsupportedFileKind,
             );
         }
-        let Some(workspace) = self.workspace_for_binding(request_binding) else {
+        let Some(bound_request) = self.context_for_binding(request_binding) else {
             if self.has_cached_authority(&package) {
                 return CargoPackageSourceFileResultV1::Stale {
                     package,
@@ -348,7 +402,7 @@ impl BrowseCache {
                 CargoPackageSourceReadFailureV1::AuthorityUnavailable,
             );
         };
-        let input = match self.input(&workspace) {
+        let input = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_source_file(
@@ -358,13 +412,14 @@ impl BrowseCache {
                 );
             }
         };
-        if !self.has_current_binding(&workspace, request_binding) {
+        if !self.has_current_binding(&bound_request.context, request_binding) {
             return CargoPackageSourceFileResultV1::Stale {
                 package,
                 request_binding,
             };
         }
-        let Some(package_row_index) = self.package_row_index(&workspace, &package) else {
+        let Some(package_row_index) = self.package_row_index(&bound_request.context, &package)
+        else {
             return CargoPackageSourceFileResultV1::Stale {
                 package,
                 request_binding,
@@ -424,7 +479,7 @@ impl BrowseCache {
         // Recheck the complete metadata input set after opening and reading.
         // A changed manifest/config/source authority invalidates these bytes;
         // the next request must use a fresh tree receipt.
-        let current = match self.input(&workspace) {
+        let current = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_source_file(
@@ -434,9 +489,9 @@ impl BrowseCache {
                 );
             }
         };
-        let still_current = self.has_current_binding(&workspace, request_binding)
+        let still_current = self.has_current_binding(&bound_request.context, request_binding)
             && self
-                .package_row_index(&workspace, &package)
+                .package_row_index(&bound_request.context, &package)
                 .and_then(|index| current.packages.get(index))
                 .is_some_and(|row| {
                     matches!(
@@ -497,7 +552,7 @@ impl BrowseCache {
                 CargoPackageReadmeFailureV1::InvalidPackageReference,
             );
         }
-        let Some((workspace, request_binding)) =
+        let Some((bound_request, request_binding)) =
             self.binding_for_request(requested_root_digest, None)
         else {
             return unavailable_package_readme(
@@ -514,7 +569,7 @@ impl BrowseCache {
                 request_binding: Some(request_binding),
             };
         }
-        let input = match self.input(&workspace) {
+        let input = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_package_readme(
@@ -524,7 +579,7 @@ impl BrowseCache {
                 );
             }
         };
-        if !self.has_current_binding(&workspace, request_binding)
+        if !self.has_current_binding(&bound_request.context, request_binding)
             || !request_binding.matches_effective_workspace_root(&input.root)
         {
             return CargoPackageReadmeResultV1::Stale {
@@ -532,7 +587,8 @@ impl BrowseCache {
                 request_binding: Some(request_binding),
             };
         }
-        let Some(package_row_index) = self.package_row_index(&workspace, &package) else {
+        let Some(package_row_index) = self.package_row_index(&bound_request.context, &package)
+        else {
             return CargoPackageReadmeResultV1::Stale {
                 package,
                 request_binding: Some(request_binding),
@@ -590,7 +646,7 @@ impl BrowseCache {
         };
 
         // Revalidate all manifests/configuration after the bounded file read.
-        let current = match self.input(&workspace) {
+        let current = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_package_readme(
@@ -600,7 +656,7 @@ impl BrowseCache {
                 );
             }
         };
-        if !self.has_current_binding(&workspace, request_binding) {
+        if !self.has_current_binding(&bound_request.context, request_binding) {
             return CargoPackageReadmeResultV1::Stale {
                 package,
                 request_binding: Some(request_binding),
@@ -635,7 +691,7 @@ impl BrowseCache {
             };
         }
         let still_current = self
-            .package_row_index(&workspace, &package)
+            .package_row_index(&bound_request.context, &package)
             .and_then(|index| current.packages.get(index))
             .is_some_and(|row| {
                 matches!(
@@ -709,7 +765,7 @@ impl BrowseCache {
         }
         let origin = request.origin;
         let href = request.href;
-        let Some(workspace) = self.workspace_for_binding(origin.request_binding) else {
+        let Some(bound_request) = self.context_for_binding(origin.request_binding) else {
             return unavailable_package_readme_link(
                 Some(origin),
                 CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
@@ -765,7 +821,7 @@ impl BrowseCache {
             );
         }
 
-        let input = match self.input(&workspace) {
+        let input = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_package_readme_link(
@@ -774,14 +830,16 @@ impl BrowseCache {
                 );
             }
         };
-        if !self.has_current_binding(&workspace, origin.request_binding)
+        if !self.has_current_binding(&bound_request.context, origin.request_binding)
             || !origin
                 .request_binding
                 .matches_effective_workspace_root(&input.root)
         {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
         }
-        let Some(package_row_index) = self.package_row_index(&workspace, &origin.package) else {
+        let Some(package_row_index) =
+            self.package_row_index(&bound_request.context, &origin.package)
+        else {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
         };
         let Some(package_row) = input.packages.get(package_row_index) else {
@@ -889,7 +947,7 @@ impl BrowseCache {
             _ => return CargoPackageReadmeLinkResultV1::Stale { origin },
         };
         if contents.as_bytes() != second.as_slice()
-            || !self.has_current_binding(&workspace, origin.request_binding)
+            || !self.has_current_binding(&bound_request.context, origin.request_binding)
         {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
         }
@@ -922,7 +980,7 @@ impl BrowseCache {
                 CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
             );
         }
-        let Some(workspace) = self.workspace_for_binding(request_binding) else {
+        let Some(bound_request) = self.context_for_binding(request_binding) else {
             if self.has_cached_authority(&package) {
                 return CargoPackageSourceInventoryResultV1::Stale {
                     package,
@@ -935,7 +993,7 @@ impl BrowseCache {
                 CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
             );
         };
-        let input = match self.input(&workspace) {
+        let input = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_source_inventory(
@@ -945,13 +1003,14 @@ impl BrowseCache {
                 );
             }
         };
-        if !self.has_current_binding(&workspace, request_binding) {
+        if !self.has_current_binding(&bound_request.context, request_binding) {
             return CargoPackageSourceInventoryResultV1::Stale {
                 package,
                 request_binding,
             };
         }
-        let Some(package_row_index) = self.package_row_index(&workspace, &package) else {
+        let Some(package_row_index) = self.package_row_index(&bound_request.context, &package)
+        else {
             return CargoPackageSourceInventoryResultV1::Stale {
                 package,
                 request_binding,
@@ -1015,7 +1074,7 @@ impl BrowseCache {
         // Recheck the Cargo metadata, config, and tool-selection witness after
         // walking. A route is useful only while its exact source authority is
         // still present in the owner's current observation.
-        let current = match self.input(&workspace) {
+        let current = match self.input(&bound_request.request_root) {
             Ok(input) => input,
             Err(_) => {
                 return unavailable_source_inventory(
@@ -1025,9 +1084,9 @@ impl BrowseCache {
                 );
             }
         };
-        let still_current = self.has_current_binding(&workspace, request_binding)
+        let still_current = self.has_current_binding(&bound_request.context, request_binding)
             && self
-                .package_row_index(&workspace, &package)
+                .package_row_index(&bound_request.context, &package)
                 .and_then(|index| current.packages.get(index))
                 .is_some_and(|row| {
                     matches!(
@@ -1073,32 +1132,20 @@ impl BrowseCache {
             )
         })?;
 
-        // A cached workspace is reusable only when its actual Cargo metadata
-        // proves this exact manifest is a member (or this exact manifest is a
-        // virtual workspace root). This also lets a warmed ancestor workspace
-        // entry coexist with an excluded standalone package inside it.
+        // Each invocation directory keeps its own Cargo observation because
+        // Cargo config, target selection, and tools can differ by CWD. Reuse
+        // candidates by that exact canonical context, then let Cargo re-prove
+        // membership, targets, and resolution before the cached graph is used.
         let candidates = self
             .entries
             .iter()
-            .filter(|(_, entry)| {
-                // Cargo config and selected-tool lookup are contextual to the
-                // exact manifest directory used for metadata. Until cache
-                // entries retain a separately comparable graph witness and
-                // per-request config/tool recipe, reuse only the context that
-                // actually produced this observation.
-                entry.metadata_context == requested.root
-                    && tree_input_proves_requested_manifest(
-                        &entry.input,
-                        &requested,
-                        &entry.watched,
-                    )
-            })
-            .map(|(workspace, _)| workspace.clone())
+            .filter(|(context, _)| context.invocation_root == requested.root)
+            .map(|(context, _)| context.clone())
             .collect::<Vec<_>>();
-        let fresh = if let Some(workspace) = candidates.first() {
+        let fresh = if let Some(context) = candidates.first() {
             let cached_tool = self
                 .entries
-                .get(workspace)
+                .get(context)
                 .and_then(|entry| entry.tool_witness_reuse.clone());
             match read(&requested, cached_tool.as_ref()) {
                 Ok(read) => Some(read),
@@ -1107,8 +1154,8 @@ impl BrowseCache {
                     // previous entry for a later request, which must still
                     // run a fresh Cargo observation before reusing it.
                     if !error.contains("cancelled") {
-                        for workspace in &candidates {
-                            self.remove_workspace(workspace);
+                        for context in &candidates {
+                            self.remove_context(context);
                         }
                     }
                     return Err(error);
@@ -1117,20 +1164,21 @@ impl BrowseCache {
         } else {
             None
         };
-        for workspace in candidates {
+        for context in candidates {
             let current = fresh
                 .as_ref()
                 .expect("candidate freshness read was performed");
             let matches = current.is_metadata_authority()
-                && self.entries.get(&workspace).is_some_and(|entry| {
-                    current.workspace_root() == workspace && current.witness() == entry.witness
+                && self.entries.get(&context).is_some_and(|entry| {
+                    current.workspace_root() == context.workspace.as_path()
+                        && current.witness() == entry.witness
                 });
             observation_budget()?;
             if matches {
-                self.touch_entry(&workspace);
+                self.touch_entry(&context);
                 let entry = self
                     .entries
-                    .get(&workspace)
+                    .get(&context)
                     .expect("cache entry remained present while touching it");
                 #[cfg(test)]
                 {
@@ -1143,11 +1191,12 @@ impl BrowseCache {
                 return Ok(Arc::clone(&entry.input));
             }
             // Fresh Cargo output or its complete bounded input witness changed;
-            // revoke the old graph before admitting the replacement below.
-            self.remove_workspace(&workspace);
+            // revoke only this invocation's graph. Other CWDs in the effective
+            // workspace have distinct Cargo authorities and remain independent.
+            self.remove_context(&context);
         }
 
-        let metadata_context = requested.root.clone();
+        let invocation_root = requested.root.clone();
         let read = match fresh {
             Some(read) => read,
             None => read(&requested, None)?,
@@ -1167,9 +1216,13 @@ impl BrowseCache {
         if !workspace.is_absolute() || canonical_workspace != workspace {
             return Err("Cargo metadata returned a noncanonical workspace root".to_owned());
         }
-        // Replacing an entry at the same effective root must also revoke its
-        // old request bindings, even if it did not prove this request.
-        self.remove_workspace(&workspace);
+        let context = BrowseContextKey {
+            workspace: workspace.clone(),
+            invocation_root: invocation_root.clone(),
+        };
+        // The exact invocation context owns this snapshot. Keep other CWDs in
+        // the same effective workspace; each is independently revalidated.
+        self.remove_context(&context);
         let input = Arc::new(read.input);
         let package_rows = source_package_row_index(&input);
         #[cfg(test)]
@@ -1182,7 +1235,7 @@ impl BrowseCache {
         }
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
-            &metadata_context,
+            &invocation_root,
             &read.watched,
             read.watched.capacity(),
             &input,
@@ -1190,35 +1243,57 @@ impl BrowseCache {
             read.tool_witness_reuse.as_ref(),
         );
         if retained_bytes <= MAX_BROWSE_CACHE_BYTES {
-            while self.entries.len() >= MAX_BROWSE_CACHED_WORKSPACES
+            while !self.workspace_cache_limit_allows(&workspace)
+                || self.context_count_for_workspace(&workspace)
+                    >= MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE
                 || self.cached_bytes.saturating_add(retained_bytes) > MAX_BROWSE_CACHE_BYTES
             {
-                let Some(oldest) = self
-                    .entries
-                    .iter()
-                    .min_by_key(|(_, entry)| entry.last_used)
-                    .map(|(workspace, _)| workspace.clone())
-                else {
-                    break;
-                };
-                self.remove_workspace(&oldest);
+                let workspace_limit = !self.workspace_cache_limit_allows(&workspace);
+                let context_limit = self.context_count_for_workspace(&workspace)
+                    >= MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE;
+                if workspace_limit {
+                    let Some(oldest_workspace) = self.oldest_workspace() else {
+                        break;
+                    };
+                    self.remove_workspace(&oldest_workspace);
+                } else {
+                    let oldest = if context_limit {
+                        self.oldest_context_for_workspace(&workspace)
+                    } else {
+                        self.oldest_context()
+                    };
+                    let Some(oldest) = oldest else {
+                        break;
+                    };
+                    #[cfg(test)]
+                    if context_limit {
+                        self.counters.request_binding_evictions =
+                            self.counters.request_binding_evictions.saturating_add(
+                                self.entries
+                                    .get(&oldest)
+                                    .map_or(0, |entry| entry.request_bindings.len()),
+                            );
+                    }
+                    self.remove_context(&oldest);
+                }
                 #[cfg(test)]
                 {
                     self.counters.evictions = self.counters.evictions.saturating_add(1);
                 }
             }
-            if self.entries.len() < MAX_BROWSE_CACHED_WORKSPACES
+            if self.workspace_cache_limit_allows(&workspace)
+                && self.context_count_for_workspace(&workspace)
+                    < MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE
                 && self.cached_bytes.saturating_add(retained_bytes) <= MAX_BROWSE_CACHE_BYTES
             {
                 let last_used = self.next_use();
                 self.cached_bytes = self.cached_bytes.saturating_add(retained_bytes);
                 self.entries.insert(
-                    workspace.clone(),
+                    context,
                     CacheEntry {
                         witness,
                         watched: read.watched,
                         input: Arc::clone(&input),
-                        metadata_context,
                         retained_bytes,
                         package_rows,
                         request_bindings: HashMap::new(),
@@ -1236,15 +1311,86 @@ impl BrowseCache {
         self.use_clock
     }
 
-    fn touch_entry(&mut self, workspace: &Path) {
+    fn has_workspace(&self, workspace: &Path) -> bool {
+        self.entries
+            .keys()
+            .any(|context| context.workspace.as_path() == workspace)
+    }
+
+    fn workspace_count(&self) -> usize {
+        self.entries
+            .keys()
+            .map(|context| context.workspace.as_path())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn workspace_cache_limit_allows(&self, workspace: &Path) -> bool {
+        let count = self.workspace_count();
+        if self.has_workspace(workspace) {
+            count <= MAX_BROWSE_CACHED_WORKSPACES
+        } else {
+            count < MAX_BROWSE_CACHED_WORKSPACES
+        }
+    }
+
+    fn context_count_for_workspace(&self, workspace: &Path) -> usize {
+        self.entries
+            .keys()
+            .filter(|context| context.workspace.as_path() == workspace)
+            .count()
+    }
+
+    fn oldest_context(&self) -> Option<BrowseContextKey> {
+        self.entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(context, _)| context.clone())
+    }
+
+    fn oldest_context_for_workspace(&self, workspace: &Path) -> Option<BrowseContextKey> {
+        self.entries
+            .iter()
+            .filter(|(context, _)| context.workspace.as_path() == workspace)
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(context, _)| context.clone())
+    }
+
+    fn oldest_workspace(&self) -> Option<PathBuf> {
+        let mut last_used_by_workspace = BTreeMap::<&Path, u64>::new();
+        for (context, entry) in &self.entries {
+            last_used_by_workspace
+                .entry(context.workspace.as_path())
+                .and_modify(|last_used| *last_used = (*last_used).max(entry.last_used))
+                .or_insert(entry.last_used);
+        }
+        last_used_by_workspace
+            .into_iter()
+            .min_by_key(|(_, last_used)| *last_used)
+            .map(|(workspace, _)| workspace.to_path_buf())
+    }
+
+    fn touch_entry(&mut self, context: &BrowseContextKey) {
         let last_used = self.next_use();
-        if let Some(entry) = self.entries.get_mut(workspace) {
+        if let Some(entry) = self.entries.get_mut(context) {
             entry.last_used = last_used;
         }
     }
 
     fn remove_workspace(&mut self, workspace: &Path) {
-        let Some(entry) = self.entries.remove(workspace) else {
+        let contexts = self
+            .entries
+            .keys()
+            .filter(|context| context.workspace.as_path() == workspace)
+            .cloned()
+            .collect::<Vec<_>>();
+        for context in contexts {
+            self.remove_context(&context);
+        }
+    }
+
+    fn remove_context(&mut self, context: &BrowseContextKey) {
+        let Some(entry) = self.entries.remove(context) else {
             return;
         };
         self.cached_bytes = self.cached_bytes.saturating_sub(entry.retained_bytes);
@@ -1252,7 +1398,7 @@ impl BrowseCache {
             if self
                 .bindings
                 .get(&key)
-                .is_some_and(|cached| cached.as_path() == workspace)
+                .is_some_and(|cached| cached == context)
             {
                 self.bindings.remove(&key);
             }
@@ -1264,12 +1410,17 @@ impl BrowseCache {
 
     fn admit_request_binding(
         &mut self,
-        workspace: &Path,
+        context: &BrowseContextKey,
         binding: backend_library::browse::ProjectTreeRequestBindingV1,
-    ) {
-        let workspace = workspace.to_path_buf();
-        if !self.entries.contains_key(&workspace) {
-            return;
+        request_root: PathBuf,
+    ) -> Result<RequestBindingAdmission, String> {
+        if context.invocation_root != request_root {
+            return Err(
+                "request binding does not match the observed Cargo invocation root".to_owned(),
+            );
+        }
+        if !self.entries.contains_key(context) {
+            return Ok(RequestBindingAdmission::NoRetainedObservation);
         }
         let key = request_binding_key(binding);
         if let Some(previous) = self
@@ -1283,20 +1434,20 @@ impl BrowseCache {
         if self
             .bindings
             .get(&key)
-            .is_some_and(|cached_workspace| cached_workspace != &workspace)
+            .is_some_and(|cached_context| cached_context != context)
         {
             self.remove_binding(key);
         }
         let binding_exists = self
             .entries
-            .get(&workspace)
+            .get(context)
             .is_some_and(|entry| entry.request_bindings.contains_key(&key));
         if !binding_exists
-            && self.entries.get(&workspace).is_some_and(|entry| {
-                entry.request_bindings.len() >= MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+            && self.entries.get(context).is_some_and(|entry| {
+                entry.request_bindings.len() >= MAX_BROWSE_REQUEST_BINDINGS_PER_CONTEXT
             })
         {
-            let oldest = self.entries.get(&workspace).and_then(|entry| {
+            let oldest = self.entries.get(context).and_then(|entry| {
                 entry
                     .request_bindings
                     .iter()
@@ -1312,21 +1463,51 @@ impl BrowseCache {
                 }
             }
         }
+        let workspace_binding_count = self
+            .entries
+            .iter()
+            .filter(|(cached_context, _)| cached_context.workspace == context.workspace)
+            .map(|(_, entry)| entry.request_bindings.len())
+            .sum::<usize>();
+        if !binding_exists && workspace_binding_count >= MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE {
+            let oldest = self
+                .entries
+                .iter()
+                .filter(|(cached_context, _)| cached_context.workspace == context.workspace)
+                .flat_map(|(_, entry)| entry.request_bindings.iter())
+                .min_by_key(|(_, binding)| binding.last_used)
+                .map(|(key, _)| *key);
+            if let Some(oldest) = oldest {
+                self.remove_binding(oldest);
+                #[cfg(test)]
+                {
+                    self.counters.request_binding_evictions =
+                        self.counters.request_binding_evictions.saturating_add(1);
+                }
+            }
+        }
         let last_used = self.next_use();
-        let Some(entry) = self.entries.get_mut(&workspace) else {
-            return;
+        let Some(entry) = self.entries.get_mut(context) else {
+            return Ok(RequestBindingAdmission::NoRetainedObservation);
         };
-        entry
-            .request_bindings
-            .insert(key, CachedRequestBinding { binding, last_used });
-        self.bindings.insert(key, workspace);
+        entry.request_bindings.insert(
+            key,
+            CachedRequestBinding {
+                binding,
+                request_root,
+                last_used,
+            },
+        );
+        entry.last_used = last_used;
+        self.bindings.insert(key, context.clone());
         self.requested_bindings
             .insert(binding.requested_root_digest, key);
+        Ok(RequestBindingAdmission::Retained)
     }
 
     fn remove_binding(&mut self, key: RequestBindingKey) {
-        if let Some(workspace) = self.bindings.remove(&key)
-            && let Some(entry) = self.entries.get_mut(&workspace)
+        if let Some(context) = self.bindings.remove(&key)
+            && let Some(entry) = self.entries.get_mut(&context)
         {
             entry.request_bindings.remove(&key);
         }
@@ -1335,17 +1516,27 @@ impl BrowseCache {
         }
     }
 
-    fn workspace_for_binding(
+    fn context_for_binding(
         &mut self,
         binding: backend_library::browse::ProjectTreeRequestBindingV1,
-    ) -> Option<PathBuf> {
+    ) -> Option<BoundBrowseRequest> {
         let key = request_binding_key(binding);
-        let workspace = self.bindings.get(&key)?.clone();
-        if !self.has_current_binding(&workspace, binding) {
+        let context = self.bindings.get(&key)?.clone();
+        if !self.has_current_binding(&context, binding) {
             return None;
         }
-        self.touch_binding(&workspace, key);
-        Some(workspace)
+        let request_root = self
+            .entries
+            .get(&context)?
+            .request_bindings
+            .get(&key)?
+            .request_root
+            .clone();
+        self.touch_binding(&context, key);
+        Some(BoundBrowseRequest {
+            context,
+            request_root,
+        })
     }
 
     fn binding_for_request(
@@ -1353,7 +1544,7 @@ impl BrowseCache {
         requested_root_digest: [u8; 32],
         expected_workspace_root_digest: Option<[u8; 32]>,
     ) -> Option<(
-        PathBuf,
+        BoundBrowseRequest,
         backend_library::browse::ProjectTreeRequestBindingV1,
     )> {
         let key = if let Some(effective) = expected_workspace_root_digest {
@@ -1364,43 +1555,61 @@ impl BrowseCache {
         } else {
             *self.requested_bindings.get(&requested_root_digest)?
         };
-        let workspace = self.bindings.get(&key)?.clone();
+        let context = self.bindings.get(&key)?.clone();
         let binding = self
             .entries
-            .get(&workspace)?
+            .get(&context)?
             .request_bindings
             .get(&key)?
             .binding;
         if request_binding_key(binding) != key {
             return None;
         }
-        self.touch_binding(&workspace, key);
-        Some((workspace, binding))
+        let request_root = self
+            .entries
+            .get(&context)?
+            .request_bindings
+            .get(&key)?
+            .request_root
+            .clone();
+        self.touch_binding(&context, key);
+        Some((
+            BoundBrowseRequest {
+                context,
+                request_root,
+            },
+            binding,
+        ))
     }
 
     fn has_current_binding(
         &self,
-        workspace: &Path,
+        context: &BrowseContextKey,
         binding: backend_library::browse::ProjectTreeRequestBindingV1,
     ) -> bool {
         self.entries
-            .get(workspace)
+            .get(context)
             .and_then(|entry| entry.request_bindings.get(&request_binding_key(binding)))
-            .is_some_and(|cached| cached.binding == binding)
+            .is_some_and(|cached| {
+                cached.binding == binding && cached.request_root == context.invocation_root
+            })
             && self
                 .bindings
                 .get(&request_binding_key(binding))
-                .is_some_and(|cached_workspace| cached_workspace.as_path() == workspace)
+                .is_some_and(|cached_context| cached_context == context)
     }
 
-    fn touch_binding(&mut self, workspace: &Path, key: RequestBindingKey) {
+    fn touch_binding(&mut self, context: &BrowseContextKey, key: RequestBindingKey) {
         let last_used = self.next_use();
         if let Some(binding) = self
             .entries
-            .get_mut(workspace)
+            .get_mut(context)
             .and_then(|entry| entry.request_bindings.get_mut(&key))
         {
             binding.last_used = last_used;
+        }
+        if let Some(entry) = self.entries.get_mut(context) {
+            entry.last_used = last_used;
         }
     }
 
@@ -1409,18 +1618,21 @@ impl BrowseCache {
         else {
             return false;
         };
-        // At most two workspaces are retained, so this is a constant-bounded
-        // lookup through each workspace's direct authority index rather than
-        // a second process-global map with independent retention accounting.
+        // Contexts share the same bounded workspace and byte budgets, so this
+        // scans only a fixed maximum number of direct authority indexes.
         self.entries
             .values()
             .any(|entry| entry.package_rows.contains_key(&digest))
     }
 
-    fn package_row_index(&self, workspace: &Path, package: &PackageReference) -> Option<usize> {
+    fn package_row_index(
+        &self,
+        context: &BrowseContextKey,
+        package: &PackageReference,
+    ) -> Option<usize> {
         let digest = CargoPackageSourceAuthorityV1::digest_from_package_reference(package)?;
         self.entries
-            .get(workspace)?
+            .get(context)?
             .package_rows
             .get(&digest)
             .copied()
@@ -1496,7 +1708,7 @@ fn source_package_row_index(input: &TreeInput) -> HashMap<[u8; 32], Option<usize
 
 fn browse_entry_retained_bytes(
     workspace: &PathBuf,
-    metadata_context: &PathBuf,
+    invocation_root: &PathBuf,
     watched: &[PathBuf],
     watched_capacity: usize,
     input: &TreeInput,
@@ -1506,11 +1718,14 @@ fn browse_entry_retained_bytes(
     // Each admitted request binding retains a workspace path clone in the
     // direct binding index. The cache-wide reserve accounts for all bounded
     // hash-map bucket allocations, including high-water capacity after eviction.
-    let binding_path_budget =
-        MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE.saturating_mul(workspace.capacity());
+    let binding_path_budget = MAX_BROWSE_REQUEST_BINDINGS_PER_CONTEXT.saturating_mul(
+        workspace
+            .capacity()
+            .saturating_add(invocation_root.capacity().saturating_mul(2)),
+    );
     let mut bytes = std::mem::size_of::<CacheEntry>()
         .saturating_add(workspace.capacity())
-        .saturating_add(metadata_context.capacity())
+        .saturating_add(invocation_root.capacity())
         .saturating_add(1_024)
         .saturating_add(binding_path_budget)
         .saturating_add(std::mem::size_of::<Arc<TreeInput>>())
@@ -2019,6 +2234,26 @@ fn manifest_readme_path(
     } else {
         path
     };
+    // A relative parent component can mean an actual root escape. Report that
+    // separately from a path that remains inside the root but is not in the
+    // canonical wire format. Do not normalize an in-root `..`: it could cross
+    // a symlink before reaching its lexical destination, and selected source
+    // paths intentionally reject traversal spellings.
+    let mut depth = 0_usize;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(_) => depth = depth.saturating_add(1),
+            std::path::Component::ParentDir if depth == 0 => {
+                return Err(CargoPackageReadmeFailureV1::ReadmeOutsideAuthorizedRoot);
+            }
+            std::path::Component::ParentDir => depth -= 1,
+            std::path::Component::CurDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(CargoPackageReadmeFailureV1::InvalidReadmePath);
+            }
+        }
+    }
     package_relative_path(relative)
 }
 
@@ -4253,14 +4488,18 @@ mod tests {
         cache: &mut BrowseCache,
         input: TreeInput,
         watched: Vec<PathBuf>,
-        metadata_context: &Path,
+        invocation_root: &Path,
     ) {
         let workspace = PathBuf::from(&input.root);
+        let context = BrowseContextKey {
+            workspace: workspace.clone(),
+            invocation_root: invocation_root.to_path_buf(),
+        };
         let lock_origin_witness = [0; 32];
         let input = Arc::new(input);
         let package_rows = source_package_row_index(&input);
         let file_witness =
-            observation_witness_for_context(&workspace, metadata_context, &watched, None)
+            observation_witness_for_context(&workspace, invocation_root, &watched, None)
                 .expect("fixture observation witness")
                 .digest;
         let witness = cargo_metadata::compose_cargo_input_witness(
@@ -4271,22 +4510,21 @@ mod tests {
         );
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
-            &metadata_context.to_path_buf(),
+            &invocation_root.to_path_buf(),
             &watched,
             watched.capacity(),
             &input,
             &package_rows,
             None,
         );
-        cache.remove_workspace(&workspace);
+        cache.remove_context(&context);
         cache.cached_bytes = cache.cached_bytes.saturating_add(retained_bytes);
         cache.entries.insert(
-            workspace,
+            context,
             CacheEntry {
                 witness,
                 watched,
                 input,
-                metadata_context: metadata_context.to_path_buf(),
                 retained_bytes,
                 package_rows,
                 request_bindings: HashMap::new(),
@@ -4425,11 +4663,11 @@ mod tests {
         );
         assert_eq!(standalone.root, excluded.to_string_lossy().into_owned());
         assert!(
-            cache.entries.contains_key(&workspace),
+            cache.has_workspace(&workspace),
             "the ancestor entry remains reusable for its members"
         );
         assert!(
-            cache.entries.contains_key(&excluded),
+            cache.has_workspace(&excluded),
             "the standalone gets its own cache key"
         );
     }
@@ -4487,7 +4725,7 @@ mod tests {
             "the workspace-context cache cannot answer"
         );
         assert_eq!(member_input.root, workspace.to_string_lossy().into_owned());
-        assert!(cache.entries.contains_key(&workspace));
+        assert!(cache.has_workspace(&workspace));
     }
 
     #[test]
@@ -4508,6 +4746,9 @@ mod tests {
             "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("initial member manifest");
+        std::fs::create_dir_all(package.join("src")).expect("member source directory");
+        std::fs::write(package.join("src/lib.rs"), "pub fn tool() {}\n")
+            .expect("initial member target");
         std::fs::write(
             external.join("Cargo.toml"),
             "[workspace]\nresolver = \"3\"\n",
@@ -4530,7 +4771,12 @@ mod tests {
             .project_tree(&package, None)
             .expect("fresh old member cache");
         let old_binding = old_reply.request_binding.expect("bound request");
-        assert!(cache.has_current_binding(&workspace, old_binding));
+        let old_context = cache
+            .bindings
+            .get(&request_binding_key(old_binding))
+            .expect("old request's exact context")
+            .clone();
+        assert!(cache.has_current_binding(&old_context, old_binding));
 
         std::fs::write(
             package.join("Cargo.toml"),
@@ -4573,13 +4819,13 @@ mod tests {
 
         assert_eq!(metadata_calls, 1);
         assert_eq!(updated.root, external.to_string_lossy().into_owned());
-        assert!(!cache.has_current_binding(&workspace, old_binding));
+        assert!(!cache.has_current_binding(&old_context, old_binding));
         assert!(
-            !cache.entries.contains_key(&workspace),
+            !cache.has_workspace(&workspace),
             "old workspace entry was revoked"
         );
         assert!(
-            cache.entries.contains_key(&external),
+            cache.has_workspace(&external),
             "new resolved root owns the replacement"
         );
     }
@@ -5037,6 +5283,11 @@ mod tests {
             read_workspace_inherited_readme(&package, &workspace),
             Err(CargoPackageReadmeFailureV1::ReadmeOutsideAuthorizedRoot)
         );
+        assert_eq!(
+            manifest_readme_path(&workspace, "nested/../README.md"),
+            Err(CargoPackageReadmeFailureV1::InvalidReadmePath),
+            "in-root traversal remains inadmissible even when it does not escape"
+        );
 
         let outside = scratch.0.join("outside.md");
         std::fs::write(&outside, "outside README\n").expect("outside file");
@@ -5152,11 +5403,185 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn two_real_workspaces_keep_exact_source_authority_with_bounded_lru_and_shared_inputs() {
+    fn project_tree_keeps_route_bound_to_root_canonicalized_before_cargo() {
+        fn write_package(root: &Path, name: &str, contents: &str) {
+            std::fs::create_dir_all(root.join("src")).expect("package source directory");
+            std::fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            )
+            .expect("package manifest");
+            std::fs::write(
+                root.join("Cargo.lock"),
+                format!("version = 4\n\n[[package]]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .expect("package lockfile");
+            std::fs::write(root.join("src/lib.rs"), contents).expect("package source file");
+        }
+
+        let scratch = scratch("backend-browse-canonical-request-root");
+        let a = scratch.0.join("a");
+        let b = scratch.0.join("b");
+        let alias = scratch.0.join("request");
+        write_package(&a, "canonical-a", "pub fn selected() { /* A */ }\n");
+        write_package(&b, "canonical-b", "pub fn selected() { /* B */ }\n");
+        let a = a.canonicalize().expect("canonical package A");
+        let b = b.canonicalize().expect("canonical package B");
+        std::os::unix::fs::symlink(&a, &alias).expect("request symlink to A");
+
+        let mut owner = BrowseCache::default();
+        let mut changed_link = false;
+        let tree_a = owner
+            .project_tree_with_read_project(&alias, None, |requested, cached_tool| {
+                assert_eq!(requested.root, a);
+                if !changed_link {
+                    std::fs::remove_file(&alias).expect("remove request symlink to A");
+                    std::os::unix::fs::symlink(&b, &alias)
+                        .expect("change request symlink to B during Cargo admission");
+                    changed_link = true;
+                }
+                read_project(requested, cached_tool)
+            })
+            .expect("Cargo observation remains bound to canonical package A");
+        assert!(changed_link);
+        assert_eq!(alias.canonicalize().expect("updated request symlink"), b);
+        assert_eq!(tree_a.root, a.to_string_lossy().into_owned());
+        let binding_a = tree_a.request_binding.expect("retained A request binding");
+        assert_eq!(
+            binding_a,
+            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(&a, &tree_a.root)
+                .expect("binding for the exact canonical A request")
+        );
+        let context_a = BrowseContextKey {
+            workspace: a.clone(),
+            invocation_root: a.clone(),
+        };
+        assert!(owner.has_current_binding(&context_a, binding_a));
+
+        let request_a = {
+            let entry = owner.entries.get(&context_a).expect("retained A context");
+            let authority = entry
+                .input
+                .packages
+                .iter()
+                .find_map(|row| match &row.source_authority {
+                    CargoPackageSourceAuthorityStateV1::Admitted(authority)
+                        if authority.name() == "canonical-a" =>
+                    {
+                        Some(authority)
+                    }
+                    _ => None,
+                })
+                .expect("A package source authority");
+            backend_library::CargoPackageSourceRequestV1::from_tree(
+                authority
+                    .package_reference()
+                    .expect("exact A package reference"),
+                binding_a,
+            )
+        };
+        let source_a = owner.source_file(
+            request_a.clone(),
+            CargoPackageSourcePathV1::new("src/lib.rs").expect("source path"),
+        );
+        assert!(matches!(
+            source_a,
+            CargoPackageSourceFileResultV1::Read { contents, .. }
+                if contents.as_ref() == "pub fn selected() { /* A */ }\n"
+        ));
+
+        let tree_b = owner
+            .project_tree(&alias, None)
+            .expect("later request follows the changed symlink to B");
+        assert_eq!(tree_b.root, b.to_string_lossy().into_owned());
+        let binding_b = tree_b.request_binding.expect("retained B request binding");
+        assert_ne!(
+            binding_a.requested_root_digest,
+            binding_b.requested_root_digest
+        );
+        assert!(matches!(
+            owner.source_file(
+                request_a,
+                CargoPackageSourcePathV1::new("src/lib.rs").expect("source path"),
+            ),
+            CargoPackageSourceFileResultV1::Read { contents, .. }
+                if contents.as_ref() == "pub fn selected() { /* A */ }\n"
+        ));
+        assert_eq!(owner.workspace_count(), 2);
+    }
+
+    #[test]
+    fn project_tree_omits_source_binding_when_observation_is_not_retained() {
+        let scratch = scratch("backend-browse-unretained-observation");
+        let root = scratch.0.join("project");
+        std::fs::create_dir_all(&root).expect("project directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"unretained\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("package manifest");
+        let root = root.canonicalize().expect("canonical project root");
+        let requested_manifest = root.join("Cargo.toml");
+        let mut input = fixture_member_input(&root, &root, "unretained");
+        input.source = TreeSource::Lockfile {
+            reason: "Cargo unavailable".to_owned(),
+            coverage: LockfileGraphCoverage::Partial {
+                ambiguous_edges: 0,
+                ambiguous_package_rows: 0,
+            },
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
+        };
+        let fallback = ProjectInputRead {
+            input,
+            watched: vec![requested_manifest],
+            file_witness: [1; 32],
+            metadata_witness: [0; 32],
+            lock_origin_witness: [2; 32],
+            no_deps_witness: [0; 32],
+            tool_witness_reuse: None,
+        };
+        let mut fallback = Some(fallback);
+        let mut owner = BrowseCache::default();
+        let tree = owner
+            .project_tree_with_read_project(&root, None, |_, _| {
+                Ok(CargoProjectRead::LockfileFallback(
+                    fallback.take().expect("one fallback observation"),
+                ))
+            })
+            .expect("lockfile-only tree remains displayable");
+
+        assert!(tree.request_binding.is_none());
+        assert!(owner.entries.is_empty());
+        assert!(owner.bindings.is_empty());
+        assert!(owner.requested_bindings.is_empty());
+    }
+
+    #[test]
+    fn two_real_workspaces_keep_exact_context_authority_with_bounded_lru() {
         fn make_workspace(root: &Path, name: &str, helper_body: &str) {
             let member = root.join("member");
             std::fs::create_dir_all(member.join("src")).expect("workspace member source directory");
+            let fixture_members = root.join("members");
+            for index in 0..MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE {
+                let member_name = format!("{name}-request-{index:02}");
+                let member_root = fixture_members.join(format!("request-{index:02}"));
+                std::fs::create_dir_all(member_root.join("src"))
+                    .expect("additional workspace member source directory");
+                std::fs::write(
+                    member_root.join("Cargo.toml"),
+                    format!(
+                        "[package]\nname = \"{member_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                    ),
+                )
+                .expect("additional workspace member manifest");
+                std::fs::write(
+                    member_root.join("src/lib.rs"),
+                    "pub fn request_member() {}\n",
+                )
+                .expect("additional workspace member target");
+            }
             let helper = root
                 .parent()
                 .expect("fixture workspace parent")
@@ -5164,16 +5589,32 @@ mod tests {
             std::fs::create_dir_all(helper.join("src")).expect("local helper source directory");
             std::fs::write(
                 root.join("Cargo.toml"),
-                "[workspace]\nmembers = [\"member\"]\nresolver = \"2\"\n",
+                "[workspace]\nmembers = [\"member\", \"members/*\"]\nresolver = \"2\"\n",
             )
             .expect("workspace manifest");
+            std::fs::create_dir_all(root.join(".cargo")).expect("workspace Cargo config directory");
             std::fs::write(
-                root.join("Cargo.lock"),
-                format!(
-                    "version = 4\n\n[[package]]\nname = \"{name}\"\nversion = \"0.1.0\"\ndependencies = [\n \"cache-shared\",\n]\n\n[[package]]\nname = \"cache-shared\"\nversion = \"0.1.0\"\n"
-                ),
+                root.join(".cargo/config.toml"),
+                "[build]\ntarget = \"x86_64-unknown-linux-gnu\"\n\n[profile.dev]\nopt-level = 1\n",
             )
-            .expect("project lockfile");
+            .expect("workspace target/profile config");
+            let mut lock_packages = vec![name.to_owned(), "cache-shared".to_owned()];
+            lock_packages.extend(
+                (0..MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE)
+                    .map(|index| format!("{name}-request-{index:02}")),
+            );
+            lock_packages.sort();
+            let mut lockfile = String::from("version = 4\n\n");
+            for package_name in lock_packages {
+                lockfile.push_str(&format!(
+                    "[[package]]\nname = \"{package_name}\"\nversion = \"0.1.0\"\n"
+                ));
+                if package_name == name {
+                    lockfile.push_str("dependencies = [\n \"cache-shared\",\n]\n");
+                }
+                lockfile.push('\n');
+            }
+            std::fs::write(root.join("Cargo.lock"), lockfile).expect("project lockfile");
             std::fs::write(
                 member.join("Cargo.toml"),
                 format!(
@@ -5194,6 +5635,12 @@ mod tests {
                 format!("# shared\n\n{helper_body}"),
             )
             .expect("local helper README");
+            std::fs::create_dir_all(member.join(".cargo")).expect("nested Cargo config dir");
+            std::fs::write(
+                member.join(".cargo/config.toml"),
+                "[term]\ncolor = \"never\"\n\n[build]\ntarget = \"aarch64-unknown-linux-gnu\"\nrustc = \"rustc\"\n\n[profile.dev]\nopt-level = 2\n",
+            )
+            .expect("member-only target/profile Cargo config");
         }
 
         fn request_for(
@@ -5202,7 +5649,13 @@ mod tests {
             name: &str,
             binding: backend_library::browse::ProjectTreeRequestBindingV1,
         ) -> backend_library::CargoPackageSourceRequestV1 {
-            let entry = cache.entries.get(root).expect("cached workspace");
+            let key = request_binding_key(binding);
+            let context = cache
+                .bindings
+                .get(&key)
+                .expect("request binding has a context key");
+            assert_eq!(context.workspace.as_path(), root);
+            let entry = cache.entries.get(context).expect("cached request context");
             let authority = entry
                 .input
                 .packages
@@ -5262,16 +5715,32 @@ mod tests {
             .expect("real Cargo observation for workspace A");
         let binding_a = tree_a.request_binding.expect("A request binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
-        let shared_a_input = Arc::clone(&owner.entries.get(&a).expect("A cache entry").input);
+        let root_context_a = owner
+            .bindings
+            .get(&request_binding_key(binding_a))
+            .expect("A root invocation context")
+            .clone();
+        let shared_a_input = Arc::clone(
+            &owner
+                .entries
+                .get(&root_context_a)
+                .expect("A root cache entry")
+                .input,
+        );
 
         let member_root_a = a.join("member");
         let tree_a_member = owner
             .project_tree(&member_root_a, None)
-            .expect("member request shares workspace A's real Cargo observation");
-        let binding_a_member = tree_a_member
+            .expect("member request gets its own real Cargo observation");
+        let mut binding_a_member = tree_a_member
             .request_binding
             .expect("A member request binding");
-        let request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
+        let mut request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
+        let member_context_a = owner
+            .bindings
+            .get(&request_binding_key(binding_a_member))
+            .expect("A member invocation context")
+            .clone();
         assert_ne!(
             binding_a.requested_root_digest, binding_a_member.requested_root_digest,
             "the workspace and member requests remain distinct"
@@ -5281,7 +5750,122 @@ mod tests {
             binding_a_member.effective_workspace_root_digest,
             "both requests resolve to the same exact Cargo workspace"
         );
-        assert_eq!(request_a.package, request_a_member.package);
+        assert_ne!(root_context_a, member_context_a);
+        assert_ne!(request_a.package, request_a_member.package);
+        assert!(owner.has_current_binding(&root_context_a, binding_a));
+        assert!(owner.has_current_binding(&member_context_a, binding_a_member));
+        assert_eq!(owner.context_count_for_workspace(&a), 2);
+        assert!(Arc::ptr_eq(
+            &shared_a_input,
+            &owner
+                .entries
+                .get(&root_context_a)
+                .expect("A root context remains cached")
+                .input
+        ));
+
+        // A nested member config changes only the member CWD's observation.
+        // The root-context receipt remains active and can still read its row.
+        let stale_member_request = request_a_member.clone();
+        std::fs::write(
+            member_root_a.join(".cargo/config.toml"),
+            "[term]\ncolor = \"always\"\n\n[build]\ntarget = \"x86_64-unknown-linux-gnu\"\nrustc = \"rustc\"\n\n[profile.dev]\nopt-level = 3\n",
+        )
+        .expect("change the member-only target/profile Cargo configuration");
+        let source_path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
+        assert!(matches!(
+            owner.source_file(request_a_member.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        assert!(matches!(
+            owner.source_file(request_a.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Read { .. }
+        ));
+        let refreshed_member = owner
+            .project_tree(&member_root_a, None)
+            .expect("re-admit the changed member context");
+        binding_a_member = refreshed_member
+            .request_binding
+            .expect("refreshed member binding");
+        let previous_member_route = request_a_member.package.clone();
+        request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
+        assert_ne!(previous_member_route, request_a_member.package);
+        assert!(matches!(
+            owner.source_file(stale_member_request, source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+
+        // The local path dependency manifest is shared input for both Cargo
+        // contexts. Each route becomes stale when its own exact context sees
+        // that edit, then each context can be independently re-admitted.
+        let helper_manifest = a
+            .parent()
+            .expect("fixture parent")
+            .join("cache-a-helper/Cargo.toml");
+        let mut helper_manifest_bytes =
+            std::fs::read(&helper_manifest).expect("read shared local dependency manifest");
+        helper_manifest_bytes.extend_from_slice(b"\n# shared input changed\n");
+        std::fs::write(&helper_manifest, helper_manifest_bytes)
+            .expect("change shared local dependency manifest");
+        let stale_root_request = request_a.clone();
+        let stale_member_request = request_a_member.clone();
+        let old_root_route = request_a.package.clone();
+        let old_member_route = request_a_member.package.clone();
+        assert!(matches!(
+            owner.source_file(request_a.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        assert!(matches!(
+            owner.source_file(request_a_member.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        let refreshed_root = owner
+            .project_tree(&a, None)
+            .expect("re-admit the changed workspace context");
+        let binding_a = refreshed_root.request_binding.expect("refreshed A binding");
+        let request_a = request_for(&owner, &a, "cache-shared", binding_a);
+        let refreshed_member = owner
+            .project_tree(&member_root_a, None)
+            .expect("re-admit the changed member context");
+        binding_a_member = refreshed_member
+            .request_binding
+            .expect("refreshed member binding");
+        request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
+        assert_ne!(old_root_route, request_a.package);
+        assert_ne!(old_member_route, request_a_member.package);
+        assert!(matches!(
+            owner.source_file(stale_root_request, source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        assert!(matches!(
+            owner.source_file(stale_member_request, source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        let root_context_a = owner
+            .bindings
+            .get(&request_binding_key(binding_a))
+            .expect("refreshed A root invocation context")
+            .clone();
+        let member_context_a = owner
+            .bindings
+            .get(&request_binding_key(binding_a_member))
+            .expect("refreshed A member invocation context")
+            .clone();
+        assert!(!Arc::ptr_eq(
+            &shared_a_input,
+            &owner
+                .entries
+                .get(&root_context_a)
+                .expect("refreshed A root cache entry")
+                .input
+        ));
+        let current_root_input = Arc::clone(
+            &owner
+                .entries
+                .get(&root_context_a)
+                .expect("refreshed A root cache entry")
+                .input,
+        );
 
         let tree_b = owner
             .project_tree(&b, None)
@@ -5292,7 +5876,9 @@ mod tests {
             request_a.package, request_b.package,
             "same-name/version local packages still have distinct exact source routes"
         );
-        assert_eq!(owner.entries.len(), 2);
+        assert_eq!(owner.workspace_count(), 2);
+        assert_eq!(owner.context_count_for_workspace(&a), 2);
+        assert_eq!(owner.entries.len(), 3);
         assert_eq!(
             owner.bindings.len(),
             3,
@@ -5305,11 +5891,14 @@ mod tests {
         );
         assert!(owner.cached_bytes <= MAX_BROWSE_CACHE_BYTES);
         assert!(Arc::ptr_eq(
-            &shared_a_input,
-            &owner.entries.get(&a).expect("A retained cache entry").input
+            &current_root_input,
+            &owner
+                .entries
+                .get(&root_context_a)
+                .expect("A root context remains cached after admitting B")
+                .input
         ));
 
-        let source_path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
         let source_a = owner.source_file(request_a.clone(), source_path.clone());
         assert!(source_a.has_admissible_shape(), "A receipt: {source_a:?}");
         assert!(matches!(
@@ -5391,7 +5980,8 @@ mod tests {
         owner
             .project_tree(&c, None)
             .expect("real Cargo observation for workspace C");
-        assert_eq!(owner.entries.len(), MAX_BROWSE_CACHED_WORKSPACES);
+        assert_eq!(owner.workspace_count(), MAX_BROWSE_CACHED_WORKSPACES);
+        assert_eq!(owner.entries.len(), 3);
         assert!(matches!(
             owner.source_file(request_b, source_path.clone()),
             CargoPackageSourceFileResultV1::Unavailable {
@@ -5415,18 +6005,15 @@ mod tests {
             } if request_binding == binding_a_member
         ));
 
-        // A bounded set preserves multiple real ProjectTree requests for one
-        // workspace, then revokes its least-recently-used exact roots once
-        // the explicit request-binding limit is reached.
+        // A bounded set preserves distinct real member contexts for one
+        // workspace, then evicts the least-recently-used context when the
+        // per-workspace context limit is reached.
         let mut newest_binding = None;
         for index in 0..MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE {
-            let requested = member_root_a
-                .join("src")
-                .join(format!("request-{index:02}"));
-            std::fs::create_dir_all(&requested).expect("additional requested root directory");
+            let requested = a.join("members").join(format!("request-{index:02}"));
             let tree = owner
                 .project_tree(&requested, None)
-                .expect("real observed request in workspace A");
+                .expect("real Cargo member request in workspace A");
             let binding = tree.request_binding.expect("additional request binding");
             assert_eq!(
                 binding.effective_workspace_root_digest,
@@ -5435,27 +6022,24 @@ mod tests {
             newest_binding = Some(binding);
         }
         assert_eq!(
-            owner
-                .entries
-                .get(&a)
-                .expect("workspace A remains cached")
-                .request_bindings
-                .len(),
-            MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+            owner.context_count_for_workspace(&a),
+            MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE,
+            "only the bounded most-recent exact invocation contexts remain"
         );
         assert!(
             owner.bindings.len()
                 <= MAX_BROWSE_CACHED_WORKSPACES * MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
         );
         assert_eq!(owner.requested_bindings.len(), owner.bindings.len());
-        assert!(matches!(
-            owner.source_file(request_a.clone(), source_path.clone()),
-            CargoPackageSourceFileResultV1::Stale { .. }
-        ));
-        assert!(matches!(
-            owner.source_file(request_a_member, source_path.clone()),
-            CargoPackageSourceFileResultV1::Stale { .. }
-        ));
+        for evicted_request in [&request_a, &request_a_member] {
+            assert!(matches!(
+                owner.source_file(evicted_request.clone(), source_path.clone()),
+                CargoPackageSourceFileResultV1::Unavailable {
+                    reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+                    ..
+                }
+            ));
+        }
         let newest_request = request_for(
             &owner,
             &a,
@@ -5467,13 +6051,11 @@ mod tests {
             CargoPackageSourceFileResultV1::Read { .. }
         ));
 
-        std::fs::write(
-            a.parent()
-                .expect("fixture parent")
-                .join("cache-a-helper/Cargo.toml"),
-            "[package]\nname = \"cache-shared\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
-        )
-        .expect("mutate A's local path dependency authority");
+        let mut helper_manifest_bytes =
+            std::fs::read(&helper_manifest).expect("read shared local dependency manifest");
+        helper_manifest_bytes.extend_from_slice(b"\n# second shared input change\n");
+        std::fs::write(&helper_manifest, helper_manifest_bytes)
+            .expect("mutate A's shared local path dependency input");
         assert!(
             matches!(
                 owner.source_file(newest_request, source_path),
@@ -5481,10 +6063,13 @@ mod tests {
             ),
             "an old source selector must be stale after its local dependency changes"
         );
-        assert_eq!(owner.counters.tree_input_allocations, 4);
+        assert_eq!(
+            owner.counters.tree_input_allocations,
+            7 + MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+        );
         assert!(owner.counters.cache_hits >= 6);
         assert!(owner.counters.retained_bytes_reused > 0);
-        assert_eq!(owner.counters.evictions, 1);
+        assert_eq!(owner.counters.evictions, 3);
         assert_eq!(owner.counters.request_binding_evictions, 2);
         assert!(owner.cached_bytes <= MAX_BROWSE_CACHE_BYTES);
     }
@@ -5877,10 +6462,16 @@ mod tests {
                 .iter()
                 .any(|member| member.name == "cache-app" && member.has_bin)
         );
-        let app_root = PathBuf::from(&with_target.root);
+        let target_binding = with_target
+            .request_binding
+            .expect("custom target request binding");
+        let target_context = cache
+            .bindings
+            .get(&request_binding_key(target_binding))
+            .expect("custom target request context");
         let entry = cache
             .entries
-            .get(&app_root)
+            .get(target_context)
             .expect("warm metadata cache entry");
         assert!(!entry.watched.contains(&external_target));
         assert_eq!(cache.counters.tree_input_allocations, 4);
@@ -6300,7 +6891,7 @@ mod tests {
         ));
         assert!(!is_nix_store_object_name("not-a-store-object"));
         assert!(!is_nix_store_object_name(
-            "ffffffffffffffffffffffffffffffff-unknown-hash-alphabet"
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-unknown-hash-alphabet"
         ));
     }
 
