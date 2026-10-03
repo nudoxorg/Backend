@@ -17,12 +17,13 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// Cargo's diagnostics are read only to keep its stderr pipe drained; the
-/// metadata document is on stdout.
+/// The metadata document is on stdout and `cargo metadata` prints little else.
+/// Stderr is read so its pipe never stalls the child, and like stdout it is
+/// bounded: more than this means the run is not a plain metadata read, and the
+/// capture refuses it as an output-limit failure.
 const STDERR_BYTES: usize = 64 * 1024;
 
 /// The stable subset of `cargo metadata --format-version 1` the dossier uses.
@@ -117,6 +118,7 @@ pub(super) fn metadata(
 }
 
 /// Runs `command` to completion, returning stdout within both bounds.
+#[cfg(test)]
 pub(super) fn bounded_output(
     command: &CaptureCommand,
     timeout: Duration,
