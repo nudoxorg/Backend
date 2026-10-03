@@ -876,6 +876,8 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn capslock(&self) -> Capslock;
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler);
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler>;
+    /// Whether a text input handler is installed, without changing its native state.
+    fn has_input_handler(&self) -> bool;
     fn prompt(
         &self,
         level: PromptLevel,

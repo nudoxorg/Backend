@@ -31,7 +31,7 @@ use backend_desktop::runtime::client::LocalEngineClient;
 use backend_desktop::runtime::reads::{ReadPool, SessionReader};
 use backend_desktop::runtime::store::DataStore;
 use backend_desktop::runtime::{DesktopRuntime, UiEntityGraph, UiRootEntity};
-use backend_desktop::shell::Shell;
+use backend_desktop::shell::{KeyboardDiagnostic, Shell};
 use backend_gui_harness::{
     AnimationFrame, CaptureConfig, CaptureError, CaptureSession, GpuiCaptureOptions, GuiState,
     InputStep, ThemeState, Viewport, capture_gpui_state_with_adapters_result_and_semantics,
@@ -166,6 +166,7 @@ struct JourneyFrame {
     motion: MotionPreference,
     /// Paint probes drained beside these exact native pixels.
     ledger: facet::probe::Ledger,
+    keyboard: Option<KeyboardDiagnostic>,
 }
 
 struct Places {
@@ -614,6 +615,7 @@ fn capture(
                     text_percent: snapshot.settings().zoom.percent(&display),
                     motion: snapshot.settings().motion,
                     ledger: facet::probe::Ledger::default(),
+                    keyboard: None,
                 });
             }
             // Discard input/intermediate paint records before this capture.
@@ -648,12 +650,35 @@ fn capture(
                     (shell.reader_text(cx).into_iter().map(|line| line.to_string()).collect::<Vec<_>>(),
                         shell.hero_lines(cx), shell.reader_pages(cx))
                 };
+                let keyboard = std::env::var_os("FACET_INPUT_TRACE")
+                    .map(|_| shell.read(cx).keyboard_diagnostic(window, cx));
                 let mut observed = journey_semantic.borrow_mut();
+                let prior_chars = observed.iter().rev().nth(1)
+                    .and_then(|frame| frame.keyboard.as_ref()).and_then(|value| value.editor_chars);
                 let state = observed.last_mut().ok_or_else(|| CaptureError::Gpui("journey route was not recorded".to_owned()))?;
                 state.reader_text = reader_text;
                 state.reader_hero = reader_hero;
                 state.reader_pages = reader_pages;
                 state.ledger = facet::probe::take(cx);
+                state.keyboard = keyboard;
+                if let Some(keyboard) = keyboard {
+                    let observation = serde_json::json!({
+                        "schema": "nudox-keyboard-frame-v1",
+                        "label": frame.label,
+                        "shell_frame": keyboard.shell_frame,
+                        "native_frame": keyboard.native_frame,
+                        "window_active": keyboard.window_active,
+                        "focus_owner": keyboard.focus_owner,
+                        "target_mounted": keyboard.target_mounted,
+                        "input_handler_present": keyboard.input_handler_present,
+                        "editor_chars": keyboard.editor_chars,
+                        "input_change_chars": keyboard.editor_chars.zip(prior_chars).map(|(now, prior)| now as i64 - prior as i64),
+                        "pending_claim": keyboard.pending_claim,
+                    });
+                    std::fs::write(frame_dir.join("keyboard.json"), serde_json::to_vec(&observation)
+                        .map_err(|error| CaptureError::Gpui(error.to_string()))?)
+                        .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+                }
                 std::fs::write(frame_dir.join("motion.txt"), format!("label={}\ntime_ms={}\n{:#?}\n", frame.label, frame.time_ms, state.ledger))
                     .map_err(|error| CaptureError::Gpui(error.to_string()))?;
                 std::fs::write(frame_dir.join("reader.txt"), format!("pages={}\nhero={:?}\ntext={:?}\n",

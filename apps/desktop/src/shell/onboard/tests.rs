@@ -485,6 +485,43 @@ fn native_menu_settings_keeps_independent_selected_radios_out_of_managed_focus(c
 }
 
 #[gpui::test]
+fn native_menu_settings_replaces_an_unmounted_focus_receiver_before_first_tab(cx: &mut TestAppContext) {
+    let mut rig = first_run(cx, 1440.0);
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.settle();
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+        &crate::runtime::owner::OwnerFault::Lost("fixture owner unavailable".into()), cx));
+    rig.settle();
+    let stale = rig.cx.update(|window, cx| {
+        let handle = cx.focus_handle();
+        assert!(!window.is_focus_handle_mounted(&handle));
+        handle.focus(window, cx);
+        handle
+    });
+
+    // App dispatch matches a native Settings menu callback: no Window is
+    // borrowed by the caller, and the old handle remains Some but unmounted.
+    rig.cx.cx.update(|cx| cx.dispatch_action(&crate::shell::OpenSettingsAction));
+    rig.settle();
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))));
+    let shell = rig.shell.clone();
+    let keyboard = rig.cx.update(|window, cx| shell.read(cx).keyboard_diagnostic(window, cx));
+    assert_eq!(keyboard.focus_owner, "shell", "fresh Settings takes the mounted local receiver: {keyboard:?}");
+    assert!(keyboard.target_mounted && !keyboard.pending_claim, "the first Settings paint verified the claim");
+    assert_ne!(rig.cx.update(|window, cx| window.focused(cx)), Some(stale));
+    rig.keys("tab");
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))));
+    assert!(rig.cx.update(|window, cx| window.focused(cx)
+        .as_ref().is_some_and(|handle| window.is_focus_handle_mounted(handle))));
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "the first native Escape returns from Settings offline");
+}
+
+#[gpui::test]
 fn native_settings_press_from_before_a_cover_cannot_select_after_its_return(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
     let shell = rig.shell.clone();

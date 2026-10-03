@@ -33,6 +33,7 @@ mod frame;
 mod hand;
 mod hints;
 mod jump;
+mod keyboard;
 mod keys;
 mod markdown;
 pub(crate) mod kit;
@@ -84,4 +85,4 @@ pub(crate) use keys::{AddFolder as AddFolderAction, OpenSettings as OpenSettings
 pub use keys::bindings as key_bindings;
 pub(crate) use keys::{Command as KeyCommand, TABLE as KEY_TABLE};
 pub use reader::Way;
-pub use root::{RenderCounts, Shell, open_shell};
+pub use root::{KeyboardDiagnostic, RenderCounts, Shell, open_shell};

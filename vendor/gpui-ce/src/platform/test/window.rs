@@ -242,6 +242,10 @@ impl PlatformWindow for TestWindow {
         self.0.lock().input_handler.take()
     }
 
+    fn has_input_handler(&self) -> bool {
+        self.0.lock().input_handler.is_some()
+    }
+
     fn prompt(
         &self,
         _level: crate::PromptLevel,

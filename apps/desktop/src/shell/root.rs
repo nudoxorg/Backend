@@ -17,6 +17,7 @@ use gpui_component::WindowExt as _;
 use super::focus::{Target, Zone};
 use super::frame::{Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Hinted, Step};
+use super::keyboard::KeyboardClaim;
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
 use super::reader::{Reader, Way};
@@ -50,6 +51,19 @@ use gpui::{
 /// fanned hand of tiles is 1 or 2) and below the float layer (`float::PRIORITY`,
 /// 1000), so a card opened over the drawer still shows above it.
 const DRAWER_PRIORITY: usize = 100;
+
+/// Bounded, text-free observation for a captured native keyboard frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyboardDiagnostic {
+    pub shell_frame: u64,
+    pub native_frame: u64,
+    pub window_active: bool,
+    pub focus_owner: &'static str,
+    pub target_mounted: bool,
+    pub input_handler_present: bool,
+    pub editor_chars: Option<usize>,
+    pub pending_claim: bool,
+}
 
 /// A page control's lease on the current painted visit and owner. Ordinary
 /// input interrupts a deferred focus return, but must not revoke the very
@@ -153,6 +167,9 @@ pub struct Shell {
     /// Last route observed by this window. A Find query refinement changes
     /// the route while keeping the same mounted native editor.
     observed_route: Route,
+    /// Previous observed overlay only identifies a fresh keyboard handoff;
+    /// the snapshot remains the authority for the current view.
+    observed_overlay: Option<Overlay>,
     focus: FocusHandle,
     drawer_focus: FocusHandle,
     titlebar: Entity<Titlebar>,
@@ -175,6 +192,8 @@ pub struct Shell {
     drawer_departing: bool,
     ask_return: Option<TransientFocusReturn>,
     pending_transient_return: Option<TransientFocusReturn>,
+    keyboard_claim: Option<KeyboardClaim>,
+    keyboard_claim_scheduled: bool,
     /// Changes when the page's input owner changes, never mid-gesture.
     page_input_generation: Option<u64>,
     /// Structural receipt selected from the same clock, never separately advanced.
@@ -257,6 +276,11 @@ impl Shell {
                 if let Some(reveal) = change.reveal {
                     shell.apply_reveal(reveal, cx);
                 }
+            } else if shell.keyboard_claim.is_some() {
+                // A native app menu can change the overlay while the window
+                // is inactive. Its first active paint schedules the one
+                // verification; never focus into an externally blurred window.
+                cx.notify();
             }
         });
         // The window moved to another display: that display's zoom applies.
@@ -288,6 +312,7 @@ impl Shell {
         let reduced_motion = system::watch_reduced_motion();
         let system_reduced_motion = reduced_motion.initial();
         let observed_route = links.snapshot(cx).route().clone();
+        let observed_overlay = links.snapshot(cx).overlay();
         let motion_changes = reduced_motion.changes();
         cx.spawn(async move |shell, cx| {
             while let Ok(system) = motion_changes.recv().await {
@@ -308,6 +333,7 @@ impl Shell {
                 store: graph.store.clone(),
             },
             observed_route,
+            observed_overlay,
             focus,
             drawer_focus: cx.focus_handle(),
             titlebar,
@@ -327,6 +353,8 @@ impl Shell {
             drawer_departing: false,
             ask_return: None,
             pending_transient_return: None,
+            keyboard_claim: None,
+            keyboard_claim_scheduled: false,
             page_input_generation: Some(0),
             local_native_input: gpui::NativeActivationScope::new(cx.entity_id(), Some(0)),
             painted_native_input: None,
@@ -562,6 +590,38 @@ impl Shell {
         ]
     }
 
+    /// Read after a native frame's paint. It never copies query text or key
+    /// characters, and capture writes it only under the input-trace opt-in.
+    pub fn keyboard_diagnostic(&self, window: &mut Window, cx: &App) -> KeyboardDiagnostic {
+        let input = self.ask.read(cx).input().clone();
+        let editor = input.read(cx);
+        let editor_focus = editor.focus_handle(cx);
+        let overlay = self.links.snapshot(cx).overlay();
+        let focus_owner = if editor_focus.is_focused(window) {
+            "ask-editor"
+        } else if self.focus.is_focused(window) {
+            "shell"
+        } else if window.focused(cx).is_some() {
+            "other"
+        } else {
+            "none"
+        };
+        KeyboardDiagnostic {
+            shell_frame: self.renders,
+            native_frame: window.a11y_frame_number(),
+            window_active: window.is_window_active(),
+            focus_owner,
+            target_mounted: match overlay {
+                Some(Overlay::CommandPalette) => window.is_focus_handle_mounted(&editor_focus),
+                Some(Overlay::Settings(_)) => window.is_focus_handle_mounted(&self.focus),
+                _ => false,
+            },
+            input_handler_present: window.has_input_handler(),
+            editor_chars: (overlay == Some(Overlay::CommandPalette)).then(|| editor.value().chars().count()),
+            pending_claim: self.keyboard_claim.is_some(),
+        }
+    }
+
     /// Subscribes `notified` to every view the window draws (the root and
     /// each region): a notification is what dirties a real window, so tests
     /// count these to prove an idle window costs nothing.
@@ -731,18 +791,67 @@ impl Shell {
         }
     }
 
+    fn request_keyboard_claim(
+        &mut self,
+        overlay: Overlay,
+        target: FocusHandle,
+        origin: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.links.snapshot(cx);
+        let Some(mut claim) = KeyboardClaim::new(
+            overlay,
+            snapshot.session().reading.current.id,
+            window.window_handle().window_id(),
+            self.transient_generation,
+            window.focus_epoch(),
+            target,
+            origin,
+        ) else { return; };
+        if window.is_window_active()
+            && claim.may_reassert(window.focused(cx).as_ref())
+        {
+            claim.target().focus(window, cx);
+        }
+        claim.record_request(window.focus_epoch());
+        self.keyboard_claim = Some(claim);
+        self.keyboard_claim_scheduled = false;
+    }
+
+    /// One post-paint admission. The Shell ancestor contains Ask's input only
+    /// when the current rendered dispatch tree mounted that exact handle.
+    fn verify_keyboard_claim(&mut self, expected: &KeyboardClaim, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.keyboard_claim.as_ref().is_some_and(|claim| claim.same_request(expected)) { return; }
+        self.keyboard_claim_scheduled = false;
+        if !window.is_window_active() { return; }
+        let Some(claim) = self.keyboard_claim.take() else { return; };
+        let snapshot = self.links.snapshot(cx);
+        if !claim.current(
+            snapshot.overlay(),
+            snapshot.session().reading.current.id,
+            window.window_handle().window_id(),
+            self.transient_generation,
+        ) { return; }
+        let mounted = window.is_focus_handle_mounted(claim.target())
+            && (claim.target() == &self.focus || self.focus.contains(claim.target(), window));
+        if !mounted
+            || !claim.unchanged_focus(window.focus_epoch())
+            || !claim.may_reassert(window.focused(cx).as_ref()) { return; }
+        if !claim.target().is_focused(window) {
+            claim.target().focus(window, cx);
+        }
+    }
+
     fn sync_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
-        // App-menu actions can open Settings while no element owns keyboard
-        // focus (for example after the window was blurred). Give that local
-        // page the mounted Shell receiver so its first Escape is actionable.
-        // An existing page or control owner is the return origin and must
-        // remain untouched.
-        if matches!(snapshot.overlay(), Some(Overlay::Settings(_)))
-            && window.focused(cx).is_none()
-        {
-            self.focus.focus(window, cx);
-        }
+        let previous_overlay = std::mem::replace(&mut self.observed_overlay, snapshot.overlay());
+        let entering_settings = !matches!(previous_overlay, Some(Overlay::Settings(_)))
+            && matches!(snapshot.overlay(), Some(Overlay::Settings(_)));
+        // Capture before Ask, Add, or Settings changes native focus. This is
+        // still the old view's return origin, even if its handle has left the
+        // rendered tree by the time the new view finishes painting.
+        let origin = window.focused(cx);
         let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
         let opening = wants_ask && !self.ask_open;
         let fresh_ask = opening && self.ask_return.is_none();
@@ -771,13 +880,20 @@ impl Shell {
         if wants_ask {
             if fresh_ask {
                 self.ask.update(cx, |ask, cx| ask.opened(window, cx));
-            } else if opening {
+            }
+            if opening {
                 let input = self.ask.read(cx).input().clone();
-                input.update(cx, |input, cx| input.focus(window, cx));
+                let target = input.read(cx).focus_handle(cx);
+                self.request_keyboard_claim(Overlay::CommandPalette, target, origin, window, cx);
             }
         } else if !snapshot.session().overlay_is_covered(Overlay::CommandPalette) {
             if let Some(saved) = self.ask_return.take() {
                 if saved.overlay == snapshot.overlay() { self.queue_transient_return(saved, window, cx); }
+            }
+        }
+        if entering_settings {
+            if let Some(overlay @ Overlay::Settings(_)) = snapshot.overlay() {
+                self.request_keyboard_claim(overlay, self.focus.clone(), origin, window, cx);
             }
         }
         match dialog_return {
@@ -2079,6 +2195,14 @@ impl Render for Shell {
         // The probe ledger describes one painted frame.
         facet::probe::draw_started(cx);
         self.renders = self.renders.saturating_add(1);
+        // Arm from the rendered Shell entity so GPUI reconciles this callback
+        // against the scene produced below. A store event has no painted
+        // entity owner and could otherwise run a callback against the old tree.
+        if window.is_window_active() && self.keyboard_claim.is_some() && !self.keyboard_claim_scheduled {
+            self.keyboard_claim_scheduled = true;
+            let claim = self.keyboard_claim.clone().expect("checked claim");
+            cx.on_next_frame(window, move |shell, window, cx| shell.verify_keyboard_claim(&claim, window, cx));
+        }
         let facet = cx.facet();
         let palette = facet.palette();
         let scale = facet.text_scale;
@@ -2523,6 +2647,96 @@ pub(crate) fn held_route(held: &crate::model::hand::Held) -> Option<Route> {
             at: None,
         }),
     })
+}
+
+#[cfg(test)]
+mod keyboard_claim_tests {
+    use super::*;
+
+    fn mounted_root(cx: &mut gpui::TestAppContext) -> super::super::tests::Rig {
+        let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0, 900.0);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+        });
+        rig.settle();
+        rig
+    }
+
+    fn opened_before_first_paint(cx: &mut gpui::TestAppContext) -> super::super::tests::Rig {
+        let mut rig = mounted_root(cx);
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+        rig.cx.update(|_, cx| links.dispatch(Intent::OpenCommandPalette, cx));
+        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_some()));
+        rig
+    }
+
+    fn pending_inactive_ask(cx: &mut gpui::TestAppContext) -> super::super::tests::Rig {
+        let mut rig = mounted_root(cx);
+        rig.cx.deactivate_window();
+        rig.cx.update(|window, _| window.blur());
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+        rig.cx.update(|_, cx| links.dispatch(Intent::OpenCommandPalette, cx));
+        rig.settle();
+        assert!(rig.cx.update(|window, cx| !window.is_window_active() && window.focused(cx).is_none()));
+        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_some()));
+        rig
+    }
+
+    #[gpui::test]
+    fn a_later_explicit_blur_cancels_ask_focus_reassertion(cx: &mut gpui::TestAppContext) {
+        let mut rig = opened_before_first_paint(cx);
+        rig.cx.update(|window, _| window.blur());
+        rig.settle();
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::CommandPalette));
+        assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()),
+            "the current mounted Ask target cannot override a later explicit blur");
+        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_none()));
+    }
+
+    #[gpui::test]
+    fn a_later_mounted_focus_choice_cancels_ask_focus_reassertion(cx: &mut gpui::TestAppContext) {
+        let mut rig = opened_before_first_paint(cx);
+        let shell_focus = rig.shell.read_with(rig.cx, |shell, _| shell.focus.clone());
+        rig.cx.update(|window, cx| shell_focus.focus(window, cx));
+        rig.settle();
+        assert!(rig.cx.update(|window, _| shell_focus.is_focused(window)),
+            "a newer mounted focus choice owns the next frame");
+        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_none()));
+    }
+
+    #[gpui::test]
+    fn inactive_ask_claim_focuses_only_after_activation_and_current_paint(cx: &mut gpui::TestAppContext) {
+        let mut rig = pending_inactive_ask(cx);
+        rig.cx.update(|window, _| window.activate_window());
+        rig.settle();
+        let shell = rig.shell.clone();
+        let keyboard = rig.cx.update(|window, cx| shell.read(cx).keyboard_diagnostic(window, cx));
+        assert_eq!(keyboard.focus_owner, "ask-editor");
+        assert!(keyboard.window_active && keyboard.target_mounted && keyboard.input_handler_present);
+        assert!(!keyboard.pending_claim);
+        rig.keys("f");
+        let input = shell.read_with(rig.cx, |shell, cx| shell.ask.read(cx).input().clone());
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "f",
+            "the first current native text event reaches the editor");
+    }
+
+    #[gpui::test]
+    fn explicit_blur_of_none_cancels_an_inactive_ask_claim(cx: &mut gpui::TestAppContext) {
+        let mut rig = pending_inactive_ask(cx);
+        let before = rig.cx.update(|window, _| window.focus_epoch());
+        rig.cx.update(|window, _| window.blur());
+        assert_ne!(rig.cx.update(|window, _| window.focus_epoch()), before,
+            "an explicit None-to-None blur is still a later focus intent");
+        rig.cx.update(|window, _| window.activate_window());
+        rig.settle();
+        assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()));
+        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_none()));
+    }
 }
 
 #[cfg(test)]

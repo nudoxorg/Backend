@@ -264,7 +264,8 @@ impl Ask {
         &self.input
     }
 
-    /// Opens fresh: empty field, focused.
+    /// Opens fresh. The Shell's current-view keyboard claim focuses the
+    /// mounted field, so a covered or inactive window cannot steal focus.
     pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = 0;
         self.walked = false;
@@ -279,7 +280,6 @@ impl Ask {
         }
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
-            input.focus(window, cx);
         });
         cx.notify();
     }
@@ -1395,6 +1395,12 @@ mod tests {
             assert_eq!(tree["nodes"][focused]["aria"]["role"].as_str(), Some("TextInput"));
             assert_eq!(tree["nodes"][focused]["aria"]["label"].as_str(),
                 Some("Ask anything, or find a package"));
+            let shell = rig.shell.clone();
+            let keyboard = rig.cx.update(|window, cx| shell.read(cx).keyboard_diagnostic(window, cx));
+            assert_eq!(keyboard.focus_owner, "ask-editor");
+            assert!(keyboard.target_mounted && keyboard.input_handler_present,
+                "the rendered editor must install its native text handler: {keyboard:?}");
+            assert!(!keyboard.pending_claim, "one post-paint keyboard handoff completed");
             (ask, input)
         };
 

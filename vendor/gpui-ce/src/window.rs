@@ -2101,6 +2101,9 @@ pub struct Window {
     /// Incremented every time focus moves. Used to invalidate a
     /// pending keyboard activation state when focus changes.
     pub(crate) focus_generation: u64,
+    /// Every focus or blur request, including an explicit blur while already
+    /// unfocused. Deferred UI claims use this without changing activation semantics.
+    focus_intent_epoch: u64,
     pending_input: Option<PendingInput>,
     pending_modifier: ModifierState,
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
@@ -2913,6 +2916,7 @@ impl Window {
             inert_owner_boundary_stack: Rc::new(RefCell::new(Vec::new())),
             element_owner_stack: Rc::new(RefCell::new(ElementOwnerStack::default())),
             focus_generation: 0,
+            focus_intent_epoch: 0,
             pending_input: None,
             pending_modifier: ModifierState::default(),
             pending_input_observers: SubscriberSet::new(),
@@ -3094,6 +3098,7 @@ impl Window {
 
     /// Move focus to the element associated with the given [`FocusHandle`].
     pub fn focus(&mut self, handle: &FocusHandle, cx: &mut App) {
+        self.focus_intent_epoch = self.focus_intent_epoch.wrapping_add(1);
         if !self.focus_enabled {
             return;
         }
@@ -3130,8 +3135,30 @@ impl Window {
         self.refresh();
     }
 
+    /// The current window's focus-intent revision. Every later focus or blur
+    /// request changes it, including a blur when focus is already `None`.
+    pub fn focus_epoch(&self) -> u64 {
+        self.focus_intent_epoch
+    }
+
+    /// Whether this handle is in the most recently rendered key dispatch tree.
+    /// Unlike action availability, this does not fall back to the root node.
+    pub fn is_focus_handle_mounted(&self, handle: &FocusHandle) -> bool {
+        self.rendered_frame
+            .dispatch_tree
+            .focusable_node_id(handle.id)
+            .is_some()
+    }
+
+    /// Whether the rendered frame installed an input handler on the platform.
+    /// This does not change macOS input-context or IME state.
+    pub fn has_input_handler(&self) -> bool {
+        self.platform_window.has_input_handler()
+    }
+
     /// Remove focus from all elements within this context's window.
     pub fn blur(&mut self) {
+        self.focus_intent_epoch = self.focus_intent_epoch.wrapping_add(1);
         if !self.focus_enabled {
             return;
         }
