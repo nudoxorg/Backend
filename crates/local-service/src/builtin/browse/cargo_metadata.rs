@@ -9,14 +9,20 @@ use super::{
     MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_DEPTH, MAX_CARGO_CONFIG_INPUTS,
     MAX_CARGO_METADATA_PACKAGES, MAX_CARGO_METADATA_TARGETS_PER_PACKAGE,
     MAX_CARGO_OBSERVATION_FILE_BYTES, MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES,
-    RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_environment_witness,
-    cargo_tool_selection, metadata_tool_witness, observation_budget, observation_path_key,
-    read_observation_file, run_with_default_rustc, run_with_default_rustc_and_overrides,
-    rustup_selection_paths, sccache_configuration_paths, selected_cargo_program,
-    strict_observation_witness,
+    RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_config_relative_path_base,
+    cargo_environment_witness, cargo_tool_selection, metadata_tool_witness, observation_budget,
+    observation_path_key, read_observation_file, requested_cargo_manifest, run_with_default_rustc,
+    run_with_default_rustc_and_overrides, rustup_selection_paths, sccache_configuration_paths,
+    selected_cargo_program, strict_observation_witness,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+
+const MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS: usize = 128;
+const MAX_LOCK_SOURCE_CLOSURE_BYTES: usize = MAX_METADATA_BYTES;
+const MAX_LOCK_SOURCE_CLOSURE_PACKAGES: usize = MAX_CARGO_METADATA_PACKAGES;
+const MAX_LOCK_SOURCE_CLOSURE_ROOTS: usize = MAX_CARGO_METADATA_PACKAGES;
+const MAX_CARGO_METADATA_DEPENDENCIES_PER_PACKAGE: usize = 65_536;
 
 /// Describes where the Cargo.lock bytes used for one metadata answer came
 /// from. This is an internal data distinction, not a cryptographic proof or
@@ -152,8 +158,13 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     }
     let lock_origin_witness = lock_origin_witness_for_run(&observed)?;
     let metadata_witness = cargo_metadata_output_witness(&observed.metadata, &observed.host);
-    let input_witness =
-        compose_cargo_input_witness(after.digest, metadata_witness, lock_origin_witness);
+    let no_deps_witness = observed.no_deps_witness.unwrap_or([0; 32]);
+    let input_witness = compose_cargo_input_witness(
+        after.digest,
+        metadata_witness,
+        lock_origin_witness,
+        no_deps_witness,
+    );
     Ok(CoherentMetadata {
         metadata: observed.metadata,
         host: observed.host,
@@ -162,6 +173,7 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
         file_witness: after.digest,
         metadata_witness,
         lock_origin_witness,
+        no_deps_witness,
         tool_witness_reuse: after.tool_witness_reuse,
         lockfile: observed.lockfile.or(after.lockfile),
         watched,
@@ -182,6 +194,7 @@ struct CargoMetadataInputs {
     registry_checksums: Vec<PathBuf>,
     target_sources: Vec<PathBuf>,
     package_roots: Vec<PathBuf>,
+    local_dependency_roots: Vec<PathBuf>,
 }
 
 impl CargoMetadataDocument {
@@ -228,6 +241,7 @@ impl CargoMetadataDocument {
         let mut checksums = BTreeSet::new();
         let mut target_sources = BTreeSet::new();
         let mut package_roots = BTreeSet::new();
+        let mut local_dependency_roots = BTreeSet::new();
         let mut total_path_bytes = 0_usize;
         for package in packages {
             observation_budget()?;
@@ -244,6 +258,28 @@ impl CargoMetadataDocument {
                 .ok_or_else(|| "Cargo metadata package manifest has no parent".to_owned())?;
             manifests.insert(manifest.clone());
             package_roots.insert(package_root.to_path_buf());
+
+            let dependencies = package
+                .get("dependencies")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "Cargo metadata package omitted dependencies".to_owned())?;
+            if dependencies.len() > MAX_CARGO_METADATA_DEPENDENCIES_PER_PACKAGE {
+                return Err(
+                    "Cargo metadata dependency set exceeds the observation limit".to_owned(),
+                );
+            }
+            for dependency in dependencies {
+                observation_budget()?;
+                if let Some(root) = metadata_local_dependency_root(dependency)? {
+                    account_metadata_path_bytes(&mut total_path_bytes, &root)?;
+                    local_dependency_roots.insert(root);
+                    if package_roots.len() + local_dependency_roots.len()
+                        > MAX_LOCK_SOURCE_CLOSURE_ROOTS
+                    {
+                        return Err("Cargo local dependency roots exceed their limit".to_owned());
+                    }
+                }
+            }
 
             if package
                 .get("source")
@@ -283,6 +319,7 @@ impl CargoMetadataDocument {
                 registry_checksums: checksums.into_iter().collect(),
                 target_sources: target_sources.into_iter().collect(),
                 package_roots: package_roots.into_iter().collect(),
+                local_dependency_roots: local_dependency_roots.into_iter().collect(),
             },
         })
     }
@@ -291,9 +328,14 @@ impl CargoMetadataDocument {
         &self,
         requested: &RequestedCargoManifest,
     ) -> Result<PathBuf, String> {
-        let requested_is_member = self.package_ids.iter().any(|(id, manifest)| {
-            manifest == &requested.manifest && self.workspace_members.contains(id)
-        });
+        let mut requested_is_member = false;
+        for (id, manifest) in &self.package_ids {
+            observation_budget()?;
+            if manifest == &requested.manifest && self.workspace_members.contains(id) {
+                requested_is_member = true;
+                break;
+            }
+        }
         if requested.has_package && !requested_is_member {
             return Err(
                 "Cargo metadata did not admit the exact requested package manifest as a workspace member".to_owned(),
@@ -459,6 +501,37 @@ fn metadata_target_source_path(target: &serde_json::Value) -> Result<PathBuf, St
     Ok(path)
 }
 
+fn metadata_local_dependency_root(
+    dependency: &serde_json::Value,
+) -> Result<Option<PathBuf>, String> {
+    let Some(value) = dependency.get("path") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text = value
+        .as_str()
+        .ok_or_else(|| "Cargo metadata local dependency path is malformed".to_owned())?;
+    if text.is_empty() || text.len() > 4 * 1024 || text.contains("//") {
+        return Err(
+            "Cargo metadata local dependency path exceeds the observation limit".to_owned(),
+        );
+    }
+    let path = PathBuf::from(text);
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err("Cargo metadata returned a noncanonical local dependency path".to_owned());
+    }
+    Ok(Some(path))
+}
+
 fn account_metadata_path_bytes(total: &mut usize, path: &Path) -> Result<(), String> {
     *total = total.saturating_add(path.as_os_str().as_encoded_bytes().len());
     if *total > 16 * 1024 * 1024 {
@@ -478,8 +551,485 @@ fn metadata_observation_paths(
         .observation_paths(request_context, workspace)
 }
 
-fn metadata_package_roots(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
-    Ok(CargoMetadataDocument::parse(metadata)?.inputs.package_roots)
+struct CargoMetadataSourceRootClosure {
+    roots: Vec<PathBuf>,
+    witness: [u8; 32],
+}
+
+fn cargo_metadata_source_root_closure(
+    cargo: &Path,
+    selection: &CargoToolSelection,
+    host: &str,
+    request_context: &Path,
+    requested: &RequestedCargoManifest,
+    no_deps: &[u8],
+) -> Result<CargoMetadataSourceRootClosure, String> {
+    let config_roots = local_override_roots_from_config(request_context)?;
+    cargo_metadata_source_root_closure_with(requested, no_deps, config_roots, |manifest| {
+        run_cargo_metadata_query(
+            cargo,
+            request_context,
+            selection,
+            host,
+            manifest,
+            true,
+            false,
+            None,
+        )
+    })
+}
+
+fn cargo_metadata_source_root_closure_with(
+    requested: &RequestedCargoManifest,
+    no_deps: &[u8],
+    config_roots: Vec<PathBuf>,
+    mut query_no_deps: impl FnMut(&Path) -> Result<Vec<u8>, String>,
+) -> Result<CargoMetadataSourceRootClosure, String> {
+    let initial = CargoMetadataDocument::parse(no_deps)?;
+    let effective_workspace = initial.proves_requested_manifest(requested)?;
+    let mut roots = BTreeSet::new();
+    let mut queue = VecDeque::<(PathBuf, bool)>::new();
+    let mut known_manifests = BTreeMap::<PathBuf, PathBuf>::new();
+    let mut document_receipts = BTreeMap::<PathBuf, (PathBuf, [u8; 32])>::new();
+    let mut package_rows = initial.package_ids.len();
+    let mut response_bytes = no_deps.len();
+
+    document_receipts.insert(
+        requested.manifest.clone(),
+        (
+            effective_workspace.clone(),
+            *blake3::hash(no_deps).as_bytes(),
+        ),
+    );
+    admit_metadata_source_roots(
+        &[requested.root.clone(), effective_workspace.clone()],
+        &mut roots,
+    )?;
+    admit_metadata_source_roots(&initial.inputs.package_roots, &mut roots)?;
+    admit_metadata_target_source_roots(&initial.inputs.target_sources, &mut roots)?;
+    for (id, manifest) in &initial.package_ids {
+        observation_budget()?;
+        if initial.workspace_members.contains(id) {
+            known_manifests.insert(manifest.clone(), effective_workspace.clone());
+        }
+    }
+    queue.extend(
+        initial
+            .inputs
+            .local_dependency_roots
+            .iter()
+            .cloned()
+            .map(|root| (root, true)),
+    );
+
+    // Cargo's `paths` and `[patch]`/`[replace]` candidates can also place a
+    // source package around the temporary directory. Treat these paths only
+    // as exclusion candidates; Cargo still decides the resolved graph.
+    let mut override_roots =
+        local_override_roots_from_manifest(&effective_workspace.join("Cargo.toml"))?;
+    override_roots.extend(config_roots.iter().cloned());
+    admit_metadata_source_roots(&override_roots, &mut roots)?;
+    queue.extend(override_roots.into_iter().map(|root| (root, false)));
+
+    let mut queried_manifests = BTreeSet::from([requested.manifest.clone()]);
+    let mut examined_workspace_overrides = BTreeSet::from([effective_workspace]);
+    while let Some((candidate_root, package_required)) = queue.pop_front() {
+        observation_budget()?;
+        let Some(root) = canonical_existing_source_root(&candidate_root)? else {
+            if package_required {
+                return Err("Cargo-declared local dependency root is missing".to_owned());
+            }
+            continue;
+        };
+        roots.insert(root.clone());
+        if roots.len() > MAX_LOCK_SOURCE_CLOSURE_ROOTS {
+            return Err("Cargo local source-root closure exceeds its limit".to_owned());
+        }
+        let manifest = root.join("Cargo.toml");
+        if known_manifests.contains_key(&manifest) || !queried_manifests.insert(manifest.clone()) {
+            continue;
+        }
+        let Some(child_requested) = requested_cargo_manifest(&root)? else {
+            if package_required {
+                return Err("Cargo-declared local dependency has no package manifest".to_owned());
+            }
+            continue;
+        };
+        if document_receipts.len() >= MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS {
+            return Err("Cargo local source metadata exceeds its document limit".to_owned());
+        }
+        let child_no_deps = query_no_deps(&child_requested.manifest)?;
+        response_bytes = response_bytes.saturating_add(child_no_deps.len());
+        if response_bytes > MAX_LOCK_SOURCE_CLOSURE_BYTES {
+            return Err("Cargo local source metadata exceeds its aggregate byte limit".to_owned());
+        }
+        let child_document = CargoMetadataDocument::parse(&child_no_deps)?;
+        let child_workspace = child_document.proves_requested_manifest(&child_requested)?;
+        if child_workspace != child_document.workspace_root {
+            return Err("Cargo local source metadata returned an incoherent workspace".to_owned());
+        }
+        admit_metadata_source_roots(std::slice::from_ref(&child_workspace), &mut roots)?;
+        let child_fingerprint = *blake3::hash(&child_no_deps).as_bytes();
+        document_receipts.insert(
+            child_requested.manifest.clone(),
+            (child_workspace.clone(), child_fingerprint),
+        );
+        let mut unseen_rows = 0_usize;
+        for (_, package_manifest) in &child_document.package_ids {
+            observation_budget()?;
+            if !known_manifests.contains_key(package_manifest) {
+                unseen_rows = unseen_rows.saturating_add(1);
+            }
+        }
+        package_rows = package_rows.saturating_add(unseen_rows);
+        if package_rows > MAX_LOCK_SOURCE_CLOSURE_PACKAGES {
+            return Err("Cargo local source package closure exceeds its row limit".to_owned());
+        }
+        admit_metadata_source_roots(&child_document.inputs.package_roots, &mut roots)?;
+        admit_metadata_target_source_roots(&child_document.inputs.target_sources, &mut roots)?;
+        for (id, package_manifest) in &child_document.package_ids {
+            observation_budget()?;
+            if child_document.workspace_members.contains(id) {
+                known_manifests.insert(package_manifest.clone(), child_workspace.clone());
+            }
+        }
+        queue.extend(
+            child_document
+                .inputs
+                .local_dependency_roots
+                .iter()
+                .cloned()
+                .map(|dependency_root| (dependency_root, true)),
+        );
+
+        if examined_workspace_overrides.insert(child_workspace.clone()) {
+            let mut candidates =
+                local_override_roots_from_manifest(&child_workspace.join("Cargo.toml"))?;
+            candidates.extend(config_roots.iter().cloned());
+            admit_metadata_source_roots(&candidates, &mut roots)?;
+            queue.extend(
+                candidates
+                    .into_iter()
+                    .map(|source_root| (source_root, false)),
+            );
+        }
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-metadata-source-root-closure.v1\0");
+    for (manifest, (workspace, digest)) in document_receipts {
+        observation_budget()?;
+        update_metadata_path(&mut hasher, &manifest);
+        update_metadata_path(&mut hasher, &workspace);
+        hasher.update(&digest);
+    }
+    for root in &roots {
+        observation_budget()?;
+        update_metadata_path(&mut hasher, root);
+    }
+    Ok(CargoMetadataSourceRootClosure {
+        roots: roots.into_iter().collect(),
+        witness: *hasher.finalize().as_bytes(),
+    })
+}
+
+fn admit_metadata_source_roots(
+    candidates: &[PathBuf],
+    roots: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    for candidate in candidates {
+        observation_budget()?;
+        let root = canonical_existing_source_root(candidate)?
+            .ok_or_else(|| "Cargo metadata-listed source root is missing".to_owned())?;
+        roots.insert(root);
+        if roots.len() > MAX_LOCK_SOURCE_CLOSURE_ROOTS {
+            return Err("Cargo local source-root closure exceeds its limit".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn admit_metadata_target_source_roots(
+    target_sources: &[PathBuf],
+    roots: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    for source in target_sources {
+        observation_budget()?;
+        let parent = source
+            .parent()
+            .ok_or_else(|| "Cargo metadata target source has no parent directory".to_owned())?;
+        let root = canonical_existing_source_candidate(parent)?
+            .ok_or_else(|| "Cargo metadata target source directory is missing".to_owned())?;
+        roots.insert(root);
+        if roots.len() > MAX_LOCK_SOURCE_CLOSURE_ROOTS {
+            return Err("Cargo local source-root closure exceeds its limit".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn canonical_existing_source_root(path: &Path) -> Result<Option<PathBuf>, String> {
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err("Cargo local source root is not a canonical absolute path".to_owned());
+    }
+    canonical_existing_source_candidate(path)
+}
+
+fn canonical_existing_source_candidate(path: &Path) -> Result<Option<PathBuf>, String> {
+    if !path.is_absolute() {
+        return Err("Cargo local source root is not absolute".to_owned());
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            let canonical = path
+                .canonicalize()
+                .map_err(|_| "Cargo local source root cannot be resolved".to_owned())?;
+            Ok(Some(canonical))
+        }
+        Ok(_) => Err("Cargo local source root is not a directory".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Cargo local source root cannot be inspected".to_owned()),
+    }
+}
+
+fn cargo_home_directory() -> Result<PathBuf, String> {
+    let home = match std::env::var_os("CARGO_HOME") {
+        Some(value) => PathBuf::from(value),
+        None => {
+            let home = std::env::var_os("HOME")
+                .ok_or_else(|| "Cargo home cannot be resolved for source admission".to_owned())?;
+            PathBuf::from(home).join(".cargo")
+        }
+    };
+    if !home.is_absolute() {
+        return Err("relative CARGO_HOME cannot be safely observed".to_owned());
+    }
+    Ok(home)
+}
+
+fn local_override_roots_from_manifest(manifest: &Path) -> Result<Vec<PathBuf>, String> {
+    let bytes = read_observation_file(manifest, MAX_CARGO_CONFIG_BYTES)?
+        .ok_or_else(|| "Cargo workspace manifest is missing during source admission".to_owned())?;
+    let document: toml::Value = std::str::from_utf8(&bytes)
+        .map_err(|_| "Cargo workspace manifest is not UTF-8".to_owned())?
+        .parse()
+        .map_err(|_| "Cargo workspace manifest is malformed during source admission".to_owned())?;
+    let base = manifest
+        .parent()
+        .ok_or_else(|| "Cargo workspace manifest has no parent".to_owned())?;
+    let mut roots = Vec::new();
+    if let Some(patch) = document.get("patch") {
+        let patch = patch
+            .as_table()
+            .ok_or_else(|| "Cargo workspace patch table is malformed".to_owned())?;
+        for registry in patch.values() {
+            observation_budget()?;
+            let entries = registry
+                .as_table()
+                .ok_or_else(|| "Cargo workspace patch registry is malformed".to_owned())?;
+            for entry in entries.values() {
+                observation_budget()?;
+                push_source_path_field(entry, "path", base, &mut roots)?;
+            }
+        }
+    }
+    if let Some(replace) = document.get("replace") {
+        let entries = replace
+            .as_table()
+            .ok_or_else(|| "Cargo workspace replace table is malformed".to_owned())?;
+        for entry in entries.values() {
+            observation_budget()?;
+            push_source_path_field(entry, "path", base, &mut roots)?;
+        }
+    }
+    Ok(roots)
+}
+
+fn local_override_roots_from_config(request_context: &Path) -> Result<Vec<PathBuf>, String> {
+    reject_local_file_registry_environment()?;
+    let mut roots = local_override_roots_from_config_paths(&cargo_config_paths(request_context)?)?;
+    if let Some(root) = canonical_existing_source_candidate(&cargo_home_directory()?)? {
+        roots.push(root);
+    }
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn local_override_roots_from_config_paths(
+    config_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    for path in config_paths {
+        observation_budget()?;
+        if path.extension() == Some(std::ffi::OsStr::new("json")) {
+            continue;
+        }
+        let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
+            continue;
+        };
+        let document: toml::Value = std::str::from_utf8(&bytes)
+            .map_err(|_| "Cargo config is not UTF-8 during source admission".to_owned())?
+            .parse()
+            .map_err(|_| "Cargo config is malformed during source admission".to_owned())?;
+        reject_local_file_registry_config(&document)?;
+        let base = cargo_config_relative_path_base(&path)?;
+        if let Some(paths) = document.get("paths") {
+            let paths = paths
+                .as_array()
+                .ok_or_else(|| "Cargo config paths setting is malformed".to_owned())?;
+            for path in paths {
+                observation_budget()?;
+                let path = path
+                    .as_str()
+                    .ok_or_else(|| "Cargo config paths entry is not a string".to_owned())?;
+                push_source_path(path, &base, &mut roots)?;
+            }
+        }
+        if let Some(patch) = document.get("patch") {
+            let patch = patch
+                .as_table()
+                .ok_or_else(|| "Cargo config patch table is malformed".to_owned())?;
+            for registry in patch.values() {
+                observation_budget()?;
+                let entries = registry
+                    .as_table()
+                    .ok_or_else(|| "Cargo config patch registry is malformed".to_owned())?;
+                for entry in entries.values() {
+                    observation_budget()?;
+                    push_source_path_field(entry, "path", &base, &mut roots)?;
+                }
+            }
+        }
+        if let Some(replace) = document.get("replace") {
+            let entries = replace
+                .as_table()
+                .ok_or_else(|| "Cargo config replace table is malformed".to_owned())?;
+            for entry in entries.values() {
+                observation_budget()?;
+                push_source_path_field(entry, "path", &base, &mut roots)?;
+            }
+        }
+        if let Some(sources) = document.get("source") {
+            let sources = sources
+                .as_table()
+                .ok_or_else(|| "Cargo config source table is malformed".to_owned())?;
+            for source in sources.values() {
+                observation_budget()?;
+                let source = source
+                    .as_table()
+                    .ok_or_else(|| "Cargo config source entry is malformed".to_owned())?;
+                for field in ["directory", "local-registry"] {
+                    if let Some(value) = source.get(field) {
+                        let value = value.as_str().ok_or_else(|| {
+                            format!("Cargo config source {field} value is not a string")
+                        })?;
+                        push_source_path(value, &base, &mut roots)?;
+                    }
+                }
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn reject_local_file_registry_environment() -> Result<(), String> {
+    for (key, value) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if key.starts_with("CARGO_REGISTRIES_")
+            && key.ends_with("_INDEX")
+            && is_local_file_registry_index(&value.to_string_lossy())
+        {
+            return Err(
+                "lockless Cargo metadata with a file-based registry environment override is unsupported".to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn reject_local_file_registry_config(document: &toml::Value) -> Result<(), String> {
+    let file_based_index = document
+        .get("registries")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|registries| registries.values())
+        .filter_map(toml::Value::as_table)
+        .filter_map(|registry| registry.get("index"))
+        .filter_map(toml::Value::as_str)
+        .any(is_local_file_registry_index);
+    let file_based_source = document
+        .get("source")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|sources| sources.values())
+        .filter_map(toml::Value::as_table)
+        .filter_map(|source| source.get("registry"))
+        .filter_map(toml::Value::as_str)
+        .any(is_local_file_registry_index);
+    if file_based_index || file_based_source {
+        return Err(
+            "lockless Cargo metadata with a file-based registry config is unsupported".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn is_local_file_registry_index(value: &str) -> bool {
+    value.starts_with("file:") || value.starts_with("sparse+file:")
+}
+
+fn push_source_path_field(
+    value: &toml::Value,
+    field: &str,
+    base: &Path,
+    paths: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let Some(value) = value.as_table().and_then(|table| table.get(field)) else {
+        return Ok(());
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| format!("Cargo local {field} source path is not a string"))?;
+    push_source_path(value, base, paths)
+}
+
+fn push_source_path(value: &str, base: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    if value.is_empty() || value.len() > 4 * 1024 || value.contains('\0') {
+        return Err("Cargo local source path exceeds its limit".to_owned());
+    }
+    let path = PathBuf::from(value);
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    };
+    if !candidate.is_absolute() {
+        return Err("Cargo local source path is not absolute".to_owned());
+    }
+    observation_budget()?;
+    let root = canonical_existing_source_candidate(&candidate)?
+        .ok_or_else(|| "Cargo configured local source path is missing".to_owned())?;
+    paths.push(root);
+    if paths.len() > MAX_LOCK_SOURCE_CLOSURE_ROOTS {
+        return Err("Cargo local source-root candidates exceed their limit".to_owned());
+    }
+    Ok(())
+}
+
+fn update_metadata_path(hasher: &mut blake3::Hasher, path: &Path) {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
 #[cfg(test)]
@@ -600,12 +1150,14 @@ pub(super) fn compose_cargo_input_witness(
     file_witness: [u8; 32],
     metadata_witness: [u8; 32],
     lock_origin_witness: [u8; 32],
+    no_deps_witness: [u8; 32],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.cargo-metadata-input-composition.v2\0");
+    hasher.update(b"backend.cargo-metadata-input-composition.v3\0");
     hasher.update(&file_witness);
     hasher.update(&metadata_witness);
     hasher.update(&lock_origin_witness);
+    hasher.update(&no_deps_witness);
     *hasher.finalize().as_bytes()
 }
 
@@ -697,14 +1249,25 @@ impl CargoMetadataResolutionSession {
             None,
         )?;
         let no_deps_workspace = metadata_proves_requested_manifest(&no_deps, requested)?;
-        let no_deps_witness = *blake3::hash(&no_deps).as_bytes();
-        if self
-            .no_deps_witness
-            .is_some_and(|previous| previous != no_deps_witness)
-        {
-            return Err("Cargo no-deps workspace membership changed between passes".to_owned());
-        }
-        self.no_deps_witness = Some(no_deps_witness);
+        let mut source_closure = if matches!(
+            self.lock_state.as_ref(),
+            Some(CargoMetadataLockState::Ephemeral { .. })
+        ) {
+            Some(cargo_metadata_source_root_closure(
+                &cargo,
+                &selection_before,
+                &host,
+                request_context,
+                requested,
+                &no_deps,
+            )?)
+        } else {
+            None
+        };
+        let mut no_deps_witness = source_closure
+            .as_ref()
+            .map(|closure| closure.witness)
+            .unwrap_or_else(|| *blake3::hash(&no_deps).as_bytes());
 
         // Resolve the existing lock path before the full query when Cargo's
         // ordinary inputs are unambiguous. This lets the successful --locked
@@ -787,15 +1350,19 @@ impl CargoMetadataResolutionSession {
                             return Err("Cargo reported a missing lockfile that was present before metadata".to_owned());
                         }
                     }
-                    // These are the source roots available before full
-                    // dependency resolution: the requested package, Cargo's
-                    // effective no-deps workspace, and its package rows.
-                    // Nonmember path dependencies require separate Cargo
-                    // metadata closure before this can be called complete.
-                    let mut source_roots =
-                        BTreeSet::from([requested.root.clone(), no_deps_workspace.clone()]);
-                    source_roots.extend(metadata_package_roots(&no_deps)?);
-                    let source_roots = source_roots.into_iter().collect::<Vec<_>>();
+                    let closure = match source_closure.take() {
+                        Some(closure) => closure,
+                        None => cargo_metadata_source_root_closure(
+                            &cargo,
+                            &selection_before,
+                            &host,
+                            request_context,
+                            requested,
+                            &no_deps,
+                        )?,
+                    };
+                    no_deps_witness = closure.witness;
+                    let source_roots = closure.roots;
                     verify_private_cargo_lockfile_redirect(
                         &cargo,
                         &selection_before,
@@ -981,6 +1548,16 @@ impl CargoMetadataResolutionSession {
                 }
             }
         };
+
+        if self
+            .no_deps_witness
+            .is_some_and(|previous| previous != no_deps_witness)
+        {
+            return Err(
+                "Cargo no-deps membership or source-root closure changed between passes".to_owned(),
+            );
+        }
+        self.no_deps_witness = Some(no_deps_witness);
 
         let (lockfile, lockfile_digest, lock_origin, lock_path_witness) = match self
             .lock_state
@@ -1534,7 +2111,7 @@ mod tests {
         let metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),
             "workspace_members": [id],
-            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
+            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "dependencies": [], "targets": [] }]
         }))
         .expect("Cargo-shaped metadata");
         // Cargo's metadata is the authority for glob and default-member
@@ -1638,7 +2215,7 @@ mod tests {
         let metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),
             "workspace_members": [id],
-            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
+            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "dependencies": [], "targets": [] }]
         }))
         .expect("Cargo-shaped metadata");
         assert_eq!(
@@ -1670,7 +2247,7 @@ mod tests {
         let excluded_metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace.clone(),
             "workspace_members": [],
-            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "targets": [] }]
+            "packages": [{ "id": id, "manifest_path": requested.manifest.clone(), "dependencies": [], "targets": [] }]
         }))
         .expect("nonmember Cargo-shaped metadata");
         assert!(
@@ -1678,6 +2255,305 @@ mod tests {
                 .is_err_and(|error| error.contains("workspace member")),
             "a package row without workspace_members membership is not admitted"
         );
+    }
+
+    #[test]
+    fn local_override_source_paths_are_excluded_from_private_lock_placement() {
+        let scratch = scratch("backend-cargo-local-override-source-paths");
+        let workspace = scratch.0.join("workspace");
+        let request = scratch.0.join("request");
+        let config = request.join(".cargo/config.toml");
+        let manifest_patch = scratch.0.join("manifest-patches/patchy");
+        let manifest_replace = scratch.0.join("manifest-replacements/legacy");
+        let config_path_override = scratch.0.join("config-paths/package");
+        let config_patch = scratch.0.join("config-patches/package");
+        let config_replace = scratch.0.join("config-replacements/package");
+        let config_source = scratch.0.join("config-source/vendor");
+        for directory in [
+            workspace.as_path(),
+            config.parent().expect("config parent"),
+            manifest_patch.as_path(),
+            manifest_replace.as_path(),
+            config_path_override.as_path(),
+            config_patch.as_path(),
+            config_replace.as_path(),
+            config_source.as_path(),
+        ] {
+            std::fs::create_dir_all(directory).expect("override source directory");
+        }
+        let manifest = workspace.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[workspace]\nmembers = []\n\n[patch.crates-io]\npatchy = { path = \"../manifest-patches/patchy\" }\n\n[replace]\n\"legacy:1.0.0\" = { path = \"../manifest-replacements/legacy\" }\n",
+        )
+        .expect("workspace local overrides");
+        std::fs::write(
+            &config,
+            "paths = [\"../config-paths/package\"]\n\n[patch.crates-io]\ncfgpatch = { path = \"../config-patches/package\" }\n\n[replace]\n\"cfg-legacy:1.0.0\" = { path = \"../config-replacements/package\" }\n\n[source.vendored]\ndirectory = \"../config-source/vendor\"\n",
+        )
+        .expect("request config local overrides");
+        let manifest_paths = local_override_roots_from_manifest(&manifest)
+            .expect("manifest patch and replace paths");
+        let config_paths = local_override_roots_from_config_paths(&[config.clone()])
+            .expect("config paths, patch, and replace candidates");
+        let canonical = |path: &Path| path.canonicalize().expect("canonical fixture path");
+        assert_eq!(
+            manifest_paths.into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from([canonical(&manifest_patch), canonical(&manifest_replace)])
+        );
+        assert_eq!(
+            config_paths.into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                canonical(&config_path_override),
+                canonical(&config_patch),
+                canonical(&config_replace),
+                canonical(&config_source),
+            ])
+        );
+
+        let missing_config = request.join("missing-local-source.toml");
+        std::fs::write(&missing_config, "paths = [\"../not-created\"]\n")
+            .expect("missing local path override config");
+        assert!(
+            local_override_roots_from_config_paths(&[missing_config])
+                .is_err_and(|error| error.contains("local source path is missing")),
+            "missing configured local roots cannot be omitted from the exclusion set"
+        );
+
+        let file_registry_config = request.join("file-registry.toml");
+        std::fs::write(
+            &file_registry_config,
+            "[registries.fixture]\nindex = \"file:///tmp/local-registry-index\"\n",
+        )
+        .expect("local file registry config");
+        assert!(
+            local_override_roots_from_config_paths(&[file_registry_config])
+                .is_err_and(|error| error.contains("file-based registry config")),
+            "unsupported local registry locations refuse before private lock creation"
+        );
+    }
+
+    #[test]
+    fn lock_source_closure_uses_cargo_workspace_receipts_for_external_path_dependencies() {
+        let scratch = scratch("backend-cargo-source-root-closure");
+        let workspace = scratch.0.join("workspace");
+        let app = workspace.join("app");
+        let external_workspace = scratch.0.join("external-workspace");
+        let dependency_a = external_workspace.join("a");
+        let dependency_b = external_workspace.join("b");
+        let transitive = scratch.0.join("transitive");
+        let external_target_source = scratch.0.join("external-target/src");
+        for root in [
+            &app,
+            &dependency_a,
+            &dependency_b,
+            &transitive,
+            &external_target_source,
+        ] {
+            std::fs::create_dir_all(root).expect("package directory");
+        }
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\nresolver = \"3\"\n",
+        )
+        .expect("request workspace manifest");
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"root-app\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("request package manifest");
+        std::fs::write(
+            external_workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"3\"\n",
+        )
+        .expect("external workspace manifest");
+        std::fs::write(
+            dependency_a.join("Cargo.toml"),
+            "[package]\nname = \"external-a\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("external workspace member A manifest");
+        std::fs::write(
+            dependency_b.join("Cargo.toml"),
+            "[package]\nname = \"external-b\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("external workspace member B manifest");
+        std::fs::write(
+            transitive.join("Cargo.toml"),
+            "[package]\nname = \"transitive\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("transitive path package manifest");
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app = app.canonicalize().expect("canonical app");
+        let external_workspace = external_workspace
+            .canonicalize()
+            .expect("canonical external workspace");
+        let dependency_a = dependency_a.canonicalize().expect("canonical dependency A");
+        let dependency_b = dependency_b.canonicalize().expect("canonical dependency B");
+        let transitive = transitive
+            .canonicalize()
+            .expect("canonical transitive package");
+        let external_target_source = external_target_source
+            .canonicalize()
+            .expect("canonical target source directory");
+        let requested = requested_cargo_manifest(&app)
+            .expect("exact request manifest")
+            .expect("request package");
+        let app_id = "root-app 0.1.0 (fixture)";
+        let a_id = "external-a 0.1.0 (fixture)";
+        let b_id = "external-b 0.1.0 (fixture)";
+        let transitive_id = "transitive 0.1.0 (fixture)";
+        let initial = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace.clone(),
+            "workspace_members": [app_id],
+            "packages": [{
+                "id": app_id,
+                "manifest_path": app.join("Cargo.toml"),
+                "dependencies": [
+                    { "name": "registry-dependency", "path": null },
+                    { "path": dependency_a.clone() },
+                    { "path": dependency_b.clone() }
+                ],
+                "targets": [{ "src_path": external_target_source.join("lib.rs") }]
+            }]
+        }))
+        .expect("request no-deps Cargo document");
+        let external = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": external_workspace.clone(),
+            "workspace_members": [a_id, b_id],
+            "packages": [
+                {
+                    "id": a_id,
+                    "manifest_path": dependency_a.join("Cargo.toml"),
+                    "dependencies": [{ "path": transitive.clone() }],
+                    "targets": []
+                },
+                {
+                    "id": b_id,
+                    "manifest_path": dependency_b.join("Cargo.toml"),
+                    "dependencies": [],
+                    "targets": []
+                }
+            ]
+        }))
+        .expect("external workspace no-deps Cargo document");
+        let transitive_document = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": transitive.clone(),
+            "workspace_members": [transitive_id],
+            "packages": [{
+                "id": transitive_id,
+                "manifest_path": transitive.join("Cargo.toml"),
+                "dependencies": [],
+                "targets": []
+            }]
+        }))
+        .expect("transitive no-deps Cargo document");
+        let a_manifest = dependency_a.join("Cargo.toml");
+        let transitive_manifest = transitive.join("Cargo.toml");
+        let mut queried = Vec::new();
+        let closure =
+            cargo_metadata_source_root_closure_with(&requested, &initial, Vec::new(), |manifest| {
+                queried.push(manifest.to_path_buf());
+                if manifest == a_manifest {
+                    Ok(external.clone())
+                } else if manifest == transitive_manifest {
+                    Ok(transitive_document.clone())
+                } else {
+                    Err(format!(
+                        "unexpected Cargo manifest query: {}",
+                        manifest.display()
+                    ))
+                }
+            })
+            .expect("bounded source-root closure");
+
+        assert_eq!(
+            queried,
+            [a_manifest, transitive_manifest],
+            "one Cargo workspace response admits both members, and the transitive local path is queried once"
+        );
+        for root in [
+            &workspace,
+            &app,
+            &external_workspace,
+            &dependency_a,
+            &dependency_b,
+            &transitive,
+            &external_target_source,
+        ] {
+            assert!(
+                closure.roots.contains(root),
+                "missing source root {}",
+                root.display()
+            );
+        }
+        assert_ne!(closure.witness, *blake3::hash(&initial).as_bytes());
+    }
+
+    #[test]
+    fn lock_source_closure_refuses_before_exceeding_its_document_limit() {
+        let scratch = scratch("backend-cargo-source-root-document-limit");
+        let request_root = scratch.0.join("request");
+        std::fs::create_dir_all(&request_root).expect("request package directory");
+        std::fs::write(
+            request_root.join("Cargo.toml"),
+            "[package]\nname = \"request\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("request package manifest");
+        let request_root = request_root.canonicalize().expect("canonical request root");
+        let requested = requested_cargo_manifest(&request_root)
+            .expect("request manifest")
+            .expect("request package");
+
+        let mut dependencies = Vec::new();
+        for index in 0..MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS {
+            let root = scratch.0.join(format!("dependency-{index:03}"));
+            std::fs::create_dir_all(&root).expect("path dependency directory");
+            std::fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = \"dependency-{index}\"\nversion = \"0.1.0\"\n"),
+            )
+            .expect("path dependency manifest");
+            let root = root.canonicalize().expect("canonical path dependency");
+            dependencies.push(serde_json::json!({ "path": root }));
+        }
+        let request_id = "request 0.1.0 (fixture)";
+        let initial = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": request_root.clone(),
+            "workspace_members": [request_id],
+            "packages": [{
+                "id": request_id,
+                "manifest_path": requested.manifest.clone(),
+                "dependencies": dependencies,
+                "targets": []
+            }]
+        }))
+        .expect("request no-deps Cargo document");
+        let mut queries = 0;
+        let outcome =
+            cargo_metadata_source_root_closure_with(&requested, &initial, Vec::new(), |manifest| {
+                queries += 1;
+                let root = manifest.parent().expect("dependency manifest parent");
+                let id = format!(
+                    "{} 0.1.0 (fixture)",
+                    root.file_name().unwrap().to_string_lossy()
+                );
+                serde_json::to_vec(&serde_json::json!({
+                    "workspace_root": root,
+                    "workspace_members": [id.as_str()],
+                    "packages": [{
+                        "id": id.as_str(),
+                        "manifest_path": manifest,
+                        "dependencies": [],
+                        "targets": []
+                    }]
+                }))
+                .map_err(|error| format!("cannot make Cargo metadata fixture: {error}"))
+            });
+        assert!(
+            outcome.is_err_and(|error| error.contains("document limit")),
+            "the closure must stop with a typed refusal when it reaches its document cap"
+        );
+        assert_eq!(queries, MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS - 1);
     }
 
     #[test]
@@ -1812,12 +2688,14 @@ mod tests {
                     "id": "serde 1.0.0 (registry)",
                     "source": "registry+https://github.com/rust-lang/crates.io-index",
                     "manifest_path": registry_manifest,
+                    "dependencies": [],
                     "targets": []
                 },
                 {
                     "id": "local 0.1.0 (fixture)",
                     "source": null,
                     "manifest_path": local_manifest,
+                    "dependencies": [],
                     "targets": [{ "src_path": outside_target, "kind": ["bin"] }]
                 }
             ]
@@ -1850,8 +2728,13 @@ mod tests {
             "generated and observed lock bytes have distinct origins"
         );
         assert_ne!(
-            compose_cargo_input_witness([1; 32], [2; 32], observed),
-            compose_cargo_input_witness([1; 32], [2; 32], ephemeral)
+            compose_cargo_input_witness([1; 32], [2; 32], observed, [3; 32]),
+            compose_cargo_input_witness([1; 32], [2; 32], ephemeral, [3; 32])
+        );
+        assert_ne!(
+            compose_cargo_input_witness([1; 32], [2; 32], observed, [3; 32]),
+            compose_cargo_input_witness([1; 32], [2; 32], observed, [4; 32]),
+            "the no-deps membership/source-root closure is part of cache identity"
         );
         let first_output = cargo_metadata_output_witness(&metadata, "fixture-host");
         let mut updated_metadata: serde_json::Value =
@@ -2252,6 +3135,7 @@ mod tests {
                     "name": "app",
                     "version": "0.1.0",
                     "manifest_path": app_manifest,
+                    "dependencies": [{ "path": dependency.clone() }],
                     "targets": []
                 },
                 {
@@ -2259,6 +3143,7 @@ mod tests {
                     "name": "dep",
                     "version": "0.1.0",
                     "manifest_path": dependency_manifest,
+                    "dependencies": [],
                     "targets": []
                 }
             ]
@@ -2338,8 +3223,8 @@ mod tests {
             "workspace_root": workspace,
             "workspace_members": ["app 0.1.0 (path+file:///workspace/app)"],
             "packages": [
-                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest, "targets": []},
-                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest, "targets": []}
+                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest, "dependencies": [{"path": dependency.clone()}], "targets": []},
+                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest, "dependencies": [], "targets": []}
             ]
         }))
         .expect("metadata fixture");
@@ -2441,8 +3326,8 @@ mod tests {
             "workspace_root": workspace,
             "workspace_members": ["app 0.1.0 (path+file:///workspace/app)"],
             "packages": [
-                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest, "targets": []},
-                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest, "targets": []}
+                {"id": "app 0.1.0 (path+file:///workspace/app)", "manifest_path": app_manifest, "dependencies": [{"path": dependency.clone()}], "targets": []},
+                {"id": "dep 0.1.0 (path+file:///path-dependency)", "manifest_path": dependency_manifest, "dependencies": [], "targets": []}
             ]
         }))
         .expect("metadata fixture");

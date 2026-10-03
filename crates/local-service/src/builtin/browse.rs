@@ -2092,6 +2092,7 @@ struct ProjectInputRead {
     file_witness: [u8; 32],
     metadata_witness: [u8; 32],
     lock_origin_witness: [u8; 32],
+    no_deps_witness: [u8; 32],
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
 }
 
@@ -2101,6 +2102,7 @@ impl ProjectInputRead {
             self.file_witness,
             self.metadata_witness,
             self.lock_origin_witness,
+            self.no_deps_witness,
         )
     }
 }
@@ -2199,6 +2201,7 @@ struct CoherentMetadata {
     file_witness: [u8; 32],
     metadata_witness: [u8; 32],
     lock_origin_witness: [u8; 32],
+    no_deps_witness: [u8; 32],
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
     lockfile: Option<String>,
     watched: Vec<PathBuf>,
@@ -3497,6 +3500,7 @@ fn read_project(
                 file_witness: observed.digest,
                 metadata_witness: [0; 32],
                 lock_origin_witness,
+                no_deps_witness: [0; 32],
                 tool_witness_reuse: observed.tool_witness_reuse,
             }))
         }
@@ -3525,6 +3529,7 @@ fn project_input_from_metadata(
         file_witness: observed.file_witness,
         metadata_witness: observed.metadata_witness,
         lock_origin_witness: observed.lock_origin_witness,
+        no_deps_witness: observed.no_deps_witness,
         tool_witness_reuse: observed.tool_witness_reuse,
     })
 }
@@ -4239,6 +4244,7 @@ mod tests {
             file_witness,
             metadata_witness: [0; 32],
             lock_origin_witness: [0; 32],
+            no_deps_witness: [0; 32],
             tool_witness_reuse,
         }
     }
@@ -4257,8 +4263,12 @@ mod tests {
             observation_witness_for_context(&workspace, metadata_context, &watched, None)
                 .expect("fixture observation witness")
                 .digest;
-        let witness =
-            cargo_metadata::compose_cargo_input_witness(file_witness, [0; 32], lock_origin_witness);
+        let witness = cargo_metadata::compose_cargo_input_witness(
+            file_witness,
+            [0; 32],
+            lock_origin_witness,
+            [0; 32],
+        );
         let retained_bytes = browse_entry_retained_bytes(
             &workspace,
             &metadata_context.to_path_buf(),
