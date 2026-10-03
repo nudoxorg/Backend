@@ -6,54 +6,6 @@ use super::*;
 use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, frame, unframe};
 use std::io::Cursor;
 
-#[test]
-fn owner_lane_schedule_services_engine_after_four_productive_remote_polls() {
-    let mut schedule = OwnerLaneSchedule::default();
-    let mut remote_polls = 0;
-    let mut engine_polls = 0;
-    let mut turns = Vec::new();
-
-    for _ in 0..12 {
-        match schedule.next_turn() {
-            OwnerLaneTurn::Remote => {
-                remote_polls += 1;
-                turns.push(OwnerLaneTurn::Remote);
-                schedule.remote_polled(true);
-            }
-            OwnerLaneTurn::Engine => {
-                engine_polls += 1;
-                turns.push(OwnerLaneTurn::Engine);
-                schedule.engine_polled();
-            }
-        }
-    }
-
-    assert_eq!(remote_polls, 10);
-    assert_eq!(engine_polls, 2);
-    assert_eq!(
-        turns,
-        [
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Engine,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Engine,
-            OwnerLaneTurn::Remote,
-            OwnerLaneTurn::Remote,
-        ]
-    );
-
-    schedule.remote_polled(false);
-    assert_eq!(schedule.next_turn(), OwnerLaneTurn::Remote);
-    schedule.remote_polled(true);
-    assert_eq!(schedule.next_turn(), OwnerLaneTurn::Remote);
-}
-
 #[derive(Debug, Default)]
 struct FakeOwner {
     commands: usize,

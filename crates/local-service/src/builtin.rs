@@ -2137,3 +2137,198 @@ mod authority_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod owner_fairness_tests {
+    use super::*;
+    use crate::service::{
+        LocaldOwner, NoCompletionAdmission, OwnerService, ReplicationAdmission,
+        SubscriptionLeaseLimits,
+    };
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[derive(Debug, Default)]
+    struct RemoteProgressState {
+        pending: AtomicUsize,
+        polled: AtomicUsize,
+    }
+
+    #[derive(Debug)]
+    struct SustainedRemoteProgress(Arc<RemoteProgressState>);
+
+    impl ReplicationAdmission<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>
+        for SustainedRemoteProgress
+    {
+        fn admit(
+            &mut self,
+            _daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+            _request_id: u64,
+            _message: TransportMessage,
+        ) -> Result<EngineStatus, crate::ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn poll(
+            &mut self,
+            _daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        ) -> bool {
+            if self.0.pending.load(Ordering::Acquire) == 0 {
+                return false;
+            }
+            self.0.pending.fetch_sub(1, Ordering::AcqRel);
+            self.0.polled.fetch_add(1, Ordering::AcqRel);
+            true
+        }
+    }
+
+    struct RemoveWorkspace(PathBuf);
+
+    impl Drop for RemoveWorkspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_workspace_path() -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        std::env::temp_dir().join(format!(
+            "backend-local-service-owner-fairness-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    type TestCommand = fn(
+        &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        &[u8],
+    ) -> Result<Vec<u8>, String>;
+
+    fn test_command(
+        _daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        _body: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        Ok(Vec::new())
+    }
+
+    fn owner(
+        directory: &Path,
+        remote_progress: Arc<RemoteProgressState>,
+    ) -> LocaldOwner<
+        BuiltinModel,
+        BuiltinValidator,
+        BuiltinAuthorityVerifier,
+        TestCommand,
+        NoCompletionAdmission,
+        SustainedRemoteProgress,
+    > {
+        let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
+        let dispatcher =
+            builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
+                .expect("test dispatcher");
+        let registry = RelationAdmissionRegistry::new()
+            .with_relation::<BuiltinWorkspaceRelation>()
+            .expect("workspace relation registry")
+            .with_relation::<BuiltinSemanticRelation>()
+            .expect("semantic relation registry");
+        let daemon = crate::Locald::open_with_dispatcher_and_registry(
+            directory,
+            BuiltinModel,
+            genesis().expect("product genesis"),
+            dispatcher,
+            DaemonConfig::default(),
+            registry,
+        )
+        .expect("open local daemon");
+        daemon.into_owner_with_admission(
+            test_command as TestCommand,
+            NoCompletionAdmission,
+            SustainedRemoteProgress(remote_progress),
+        )
+    }
+
+    #[test]
+    fn queued_daemon_query_and_lease_expiry_progress_under_sustained_remote_admission() {
+        let directory = test_workspace_path();
+        let _remove_workspace = RemoveWorkspace(directory.clone());
+        let remote_progress = Arc::new(RemoteProgressState {
+            pending: AtomicUsize::new(8),
+            polled: AtomicUsize::new(0),
+        });
+        let mut owner = owner(&directory, Arc::clone(&remote_progress));
+        owner = owner.with_subscription_lease_limits(
+            SubscriptionLeaseLimits::new(
+                4,
+                Duration::from_millis(50),
+                1,
+                Duration::from_millis(50),
+            )
+            .expect("small finite lease bounds"),
+        );
+
+        let cursor = owner
+            .daemon()
+            .engine()
+            .daemon()
+            .library()
+            .cursor()
+            .encode_control();
+        let opened = OwnerService::engine(
+            &mut owner,
+            401,
+            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                request_id: 401,
+                operation: backend_engine::LocalSubscriptionOperation::Open {
+                    cursor,
+                    credit: 1,
+                    lease_ms: 5,
+                },
+            }),
+        )
+        .expect("open test lease");
+        let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
+            lease,
+            ..
+        }) = opened
+        else {
+            panic!("open operation must return its owner-issued lease");
+        };
+        assert!(owner.has_subscription_lease_for_test(lease));
+        std::thread::sleep(Duration::from_millis(20));
+
+        // This is a real queued daemon request. The owner must continue
+        // admitting productive remote work, yet service this request on its
+        // bounded fifth owner turn.
+        let query = owner
+            .daemon()
+            .client()
+            .request(402, crate::Request::Query)
+            .expect("queue daemon query");
+        for turn in 1..=5 {
+            assert!(OwnerService::serve_one(&mut owner));
+            if turn == 1 {
+                assert_eq!(remote_progress.polled.load(Ordering::Acquire), 1);
+                assert!(
+                    !owner.has_subscription_lease_for_test(lease),
+                    "the normal owner-turn expiry sweep runs even on a remote-priority turn"
+                );
+            }
+            if turn < 5 {
+                assert!(matches!(
+                    query.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+            }
+        }
+        assert_eq!(remote_progress.polled.load(Ordering::Acquire), 4);
+        assert_eq!(remote_progress.pending.load(Ordering::Acquire), 4);
+        assert!(matches!(
+            query.try_recv().expect("engine-lane query reply"),
+            backend_engine::DaemonReply::Query(_)
+        ));
+        OwnerService::close(&mut owner);
+    }
+}

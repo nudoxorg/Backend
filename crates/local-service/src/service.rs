@@ -1370,6 +1370,11 @@ where
     pub const fn daemon_mut(&mut self) -> &mut crate::Locald<M, V, A> {
         &mut self.daemon
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_subscription_lease_for_test(&self, lease: LocalSubscriptionId) -> bool {
+        self.leases.contains_key(&lease)
+    }
 }
 
 impl<M, V, A, F, C, R, S, E> OwnerService for LocaldOwner<M, V, A, F, C, R, S>
