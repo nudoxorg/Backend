@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "settings-native-midflight-text-scale",
+  "case": {"id": "settings_text_scale_reduced", "flow": "settings", "owner_phase": "serving", "motion": "reduced", "transition": "text_scale_midflight", "viewport": "mixed", "text_scale": "mixed", "live_index": false},
+  "capture_scope": "app_display",
+  "capture_fps": 30,
+  "duration_ms": 1400,
+  "max_frame_gap_ms": 70,
+  "expected_reduce_motion": true,
+  "actions": [
+    {"at_ms": 80, "kind": "key", "keycode": 43, "modifiers": ["command"], "label": "open Settings", "expect_visual_ms": 350},
+    {"at_ms": 240, "kind": "click_ax", "title": "200%", "label": "set 200% text during Settings entry", "expect_visual_ms": 350},
+    {"at_ms": 480, "kind": "probe", "label": "200% text choice and geometry", "expect_ax_title": "Text size"}
+  ],
+  "crops": []
+}

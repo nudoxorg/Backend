@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "hand-native-open",
+  "case": {"id": "hand_full", "flow": "hand", "owner_phase": "serving", "motion": "full", "transition": "first_open", "viewport": "wide", "text_scale": "100", "live_index": true},
+  "capture_scope": "app_display",
+  "capture_fps": 30,
+  "duration_ms": 1000,
+  "max_frame_gap_ms": 70,
+  "expected_reduce_motion": false,
+  "actions": [
+    {"at_ms": 80, "kind": "click_ax", "title": "Open hand", "label": "open held hand", "expect_visual_ms": 350},
+    {"at_ms": 330, "kind": "probe", "label": "held hand row arrived"}
+  ],
+  "crops": []
+}

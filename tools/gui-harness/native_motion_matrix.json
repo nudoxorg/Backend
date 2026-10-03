@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "evidence_class": "native_window_compositor_and_ax",
+  "required": [
+    {"id": "first_add_starting_full", "flow": "add", "owner_phase": "starting", "motion": "full", "transition": "first_open", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "first_add_failed_reduced", "flow": "add", "owner_phase": "failed", "motion": "reduced", "transition": "first_open", "viewport": "narrow", "text_scale": "200", "live_index": false},
+    {"id": "ask_full", "flow": "ask", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "ask_reduced", "flow": "ask", "owner_phase": "serving", "motion": "reduced", "transition": "open_close", "viewport": "narrow", "text_scale": "200", "live_index": false},
+    {"id": "hand_full", "flow": "hand", "owner_phase": "serving", "motion": "full", "transition": "first_open", "viewport": "wide", "text_scale": "100", "live_index": true},
+    {"id": "hand_reduced", "flow": "hand", "owner_phase": "serving", "motion": "reduced", "transition": "open_close", "viewport": "narrow", "text_scale": "200", "live_index": true},
+    {"id": "settings_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "wide", "text_scale": "100", "live_index": false},
+    {"id": "settings_reduced", "flow": "settings", "owner_phase": "serving", "motion": "reduced", "transition": "open_close", "viewport": "narrow", "text_scale": "200", "live_index": false},
+    {"id": "settings_resize_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "resize_midflight", "viewport": "mixed", "text_scale": "100", "live_index": false},
+    {"id": "settings_text_scale_reduced", "flow": "settings", "owner_phase": "serving", "motion": "reduced", "transition": "text_scale_midflight", "viewport": "mixed", "text_scale": "mixed", "live_index": false},
+    {"id": "source_full", "flow": "source", "owner_phase": "serving", "motion": "full", "transition": "first_open", "viewport": "wide", "text_scale": "100", "live_index": true},
+    {"id": "source_reduced", "flow": "source", "owner_phase": "serving", "motion": "reduced", "transition": "open_close", "viewport": "narrow", "text_scale": "200", "live_index": true},
+    {"id": "source_resize_full", "flow": "source", "owner_phase": "serving", "motion": "full", "transition": "resize_midflight", "viewport": "mixed", "text_scale": "100", "live_index": true},
+    {"id": "source_text_scale_reduced", "flow": "source", "owner_phase": "serving", "motion": "reduced", "transition": "text_scale_midflight", "viewport": "mixed", "text_scale": "mixed", "live_index": true},
+    {"id": "page_failure_recovery_full", "flow": "failure_recovery", "owner_phase": "serving", "motion": "full", "transition": "failure_recovery", "viewport": "wide", "text_scale": "100", "live_index": true},
+    {"id": "page_failure_recovery_reduced", "flow": "failure_recovery", "owner_phase": "serving", "motion": "reduced", "transition": "failure_recovery", "viewport": "narrow", "text_scale": "200", "live_index": true}
+  ]
+}

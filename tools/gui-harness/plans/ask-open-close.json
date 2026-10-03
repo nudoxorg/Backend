@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "ask-native-open-close",
+  "case": {"id": "ask_full", "flow": "ask", "owner_phase": "serving", "motion": "full", "transition": "open_close", "viewport": "wide", "text_scale": "100", "live_index": false},
+  "capture_scope": "app_display",
+  "capture_fps": 30,
+  "duration_ms": 1200,
+  "max_frame_gap_ms": 70,
+  "expected_reduce_motion": false,
+  "actions": [
+    {"at_ms": 80, "kind": "key", "keycode": 40, "modifiers": ["command"], "label": "open Ask", "expect_visual_ms": 350, "expect_focus_title": "Ask anything, or find a package"},
+    {"at_ms": 330, "kind": "probe", "label": "Ask arrived", "expect_ax_title": "Ask anything, or find a package"},
+    {"at_ms": 650, "kind": "key", "keycode": 53, "label": "close Ask", "expect_visual_ms": 350}
+  ],
+  "crops": []
+}

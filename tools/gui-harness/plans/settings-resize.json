@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "settings-native-midflight-resize",
+  "case": {"id": "settings_resize_full", "flow": "settings", "owner_phase": "serving", "motion": "full", "transition": "resize_midflight", "viewport": "mixed", "text_scale": "100", "live_index": false},
+  "capture_scope": "app_display",
+  "capture_fps": 30,
+  "duration_ms": 1400,
+  "max_frame_gap_ms": 70,
+  "expected_reduce_motion": false,
+  "actions": [
+    {"at_ms": 80, "kind": "key", "keycode": 43, "modifiers": ["command"], "label": "open Settings", "expect_visual_ms": 350},
+    {"at_ms": 180, "kind": "resize", "width": 640, "height": 700, "label": "resize during Settings entry", "expect_visual_ms": 350},
+    {"at_ms": 430, "kind": "probe", "label": "Settings and resized geometry", "expect_ax_title": "Appearance"},
+    {"at_ms": 850, "kind": "key", "keycode": 53, "label": "close Settings", "expect_visual_ms": 350}
+  ],
+  "crops": []
+}

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "first-add-cold-start",
+  "case": {"id": "first_add_starting_full", "flow": "add", "owner_phase": "starting", "motion": "full", "transition": "first_open", "viewport": "wide", "text_scale": "100", "live_index": false},
+  "capture_scope": "app_display",
+  "capture_fps": 30,
+  "duration_ms": 1200,
+  "max_frame_gap_ms": 70,
+  "expected_reduce_motion": false,
+  "actions": [
+    {"at_ms": 80, "kind": "click_ax", "title": "Add a folder", "label": "first Add a folder", "expect_visual_ms": 350},
+    {"at_ms": 330, "kind": "probe", "label": "first Add native AX after arrival"}
+  ],
+  "crops": []
+}
