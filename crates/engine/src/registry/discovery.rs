@@ -2563,7 +2563,7 @@ mod tests {
 
     #[test]
     fn cargo_sparse_publish_time_uses_strict_shared_calendar_parser() {
-        let valid = br#"{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"2024-02-29T23:59:59Z"}"#;
+        let valid = br#"{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"2024-02-29T23:59:59Z","yanked":false}"#;
         let package = parse_crates_sparse_package(valid, "demo", 10).expect("leap-day row");
         assert_eq!(
             package.releases[0].metadata.published_at,
@@ -2578,7 +2578,7 @@ mod tests {
             "2024-02-09T23:59:59.1Z",
         ] {
             let row = format!(
-                r#"{{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"{invalid}"}}"#
+                r#"{{"name":"demo","vers":"1.0.0","cksum":"0000000000000000000000000000000000000000000000000000000000000000","pubtime":"{invalid}","yanked":false}}"#
             );
             assert!(
                 matches!(
