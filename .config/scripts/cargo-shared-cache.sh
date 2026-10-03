@@ -62,7 +62,7 @@ if [ -n "$manifest_path" ]; then
   if [ -n "$manifest_root" ]; then
     workspace_root="$manifest_root"
   else
-    workspace_root="$(CDPATH= cd -P "$manifest_directory" 2>/dev/null && pwd -P)" || {
+    workspace_root="$(CDPATH='' cd -P "$manifest_directory" 2>/dev/null && pwd -P)" || {
       echo "nudox cargo: unable to resolve the manifest directory" >&2
       exit 64
     }
@@ -292,7 +292,7 @@ canonical_path_for_guard() {
           _canonical_next="$_canonical_current/$_canonical_component"
         fi
         if [ -d "$_canonical_next" ]; then
-          _canonical_current="$(CDPATH= cd -P "$_canonical_next" 2>/dev/null && pwd -P)" || return 1
+          _canonical_current="$(CDPATH='' cd -P "$_canonical_next" 2>/dev/null && pwd -P)" || return 1
         elif [ -e "$_canonical_next" ] || [ -L "$_canonical_next" ]; then
           return 1
         else

@@ -5,7 +5,7 @@
 set -eu
 unset CARGO_BUILD_BUILD_DIR CARGO_TARGET_DIR
 
-repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 # A Nix check runs this file as a lone store path, where the repository layout
 # is gone; it names the script under test explicitly instead.
 source_script="${NUDOX_CARGO_CACHE_SCRIPT:-$repo_root/.config/scripts/cargo-shared-cache.sh}"
