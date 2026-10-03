@@ -1743,8 +1743,17 @@ impl App {
                     })
                     .collect::<Vec<_>>()
                 {
-                    self.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
-                        .unwrap();
+                    self.update_window(window, |_, window, cx| {
+                        // `test-support` is also enabled by native QA builds. An
+                        // eager draw clears the invalidator, so the platform's
+                        // next frame callback cannot recover this scene if its
+                        // source is idle. Submit the completed scene here; a
+                        // deferred drawable stays owned by Window for retry.
+                        let clear = window.draw(cx);
+                        window.present();
+                        clear.clear(cx);
+                    })
+                    .unwrap();
                 }
 
                 if self.pending_effects.is_empty() {

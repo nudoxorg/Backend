@@ -4212,7 +4212,7 @@ impl Window {
     }
 
     #[profiling::function]
-    fn present(&mut self) {
+    pub(crate) fn present(&mut self) {
         let result = self.platform_window.draw_result(&self.rendered_frame.scene);
         if profiler::frame_trace_enabled() {
             profiler::record_frame_lifecycle(profiler::FrameLifecycleEvent {
@@ -9089,6 +9089,50 @@ mod tests {
             self.0.set(self.0.get() + 1);
             div().child("retained scene")
         }
+    }
+
+    #[gpui::test]
+    fn eager_dirty_draw_submits_without_a_frame_source_tick(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let window = cx.add_window({
+            let renders = renders.clone();
+            move |_, _| CountedView(renders)
+        });
+        cx.run_until_parked();
+        let platform = cx.test_window(window.into());
+        let previous_renders = renders.get();
+        let previous_submissions = platform.presentation_attempts();
+
+        // Native QA enables `test-support`, so App::flush_effects eagerly
+        // draws after this update. No platform frame is simulated afterward.
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        assert!(renders.get() > previous_renders);
+        assert_eq!(platform.presentation_attempts(), previous_submissions + 1);
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(!window.invalidator.is_dirty());
+            assert!(!window.needs_present.get());
+        })
+        .unwrap();
+
+        // A missing drawable is attempted once, then retained for the
+        // existing bounded retry rule instead of spinning the idle owner.
+        platform.queue_presentation_result(DrawResult::Deferred);
+        let previous_submissions = platform.presentation_attempts();
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        assert_eq!(platform.presentation_attempts(), previous_submissions + 1);
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(!window.invalidator.is_dirty());
+            assert!(window.needs_present.get());
+            assert!(matches!(
+                window.presentation_retry.get(),
+                PresentationRetry::Later { .. }
+            ));
+        })
+        .unwrap();
+        platform.simulate_frame(RequestFrameOptions::default());
+        assert_eq!(platform.presentation_attempts(), previous_submissions + 1);
     }
 
     #[gpui::test]
