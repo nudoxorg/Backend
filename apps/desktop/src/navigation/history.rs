@@ -6,6 +6,7 @@
 //! without bound.
 
 use super::route::Route;
+use super::presentation::ReadingVisit;
 use std::sync::Arc;
 
 /// Maximum number of content routes retained in either history direction.
@@ -14,6 +15,7 @@ pub const MAX_ROUTE_HISTORY: usize = 64;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Node {
     route: Route,
+    reading: ReadingVisit,
     previous: Option<Arc<Node>>,
     length: usize,
 }
@@ -59,10 +61,16 @@ impl RouteHistory {
     /// Adds a route at the newest end, dropping the oldest route at the cap.
     #[must_use]
     pub fn push(&self, route: Route) -> Self {
+        let reading = ReadingVisit::cold(&route);
+        self.push_visit(route, reading)
+    }
+
+    pub fn push_visit(&self, route: Route, reading: ReadingVisit) -> Self {
         if self.len() < MAX_ROUTE_HISTORY {
             return Self {
                 head: Some(Arc::new(Node {
                     route,
+                    reading,
                     previous: self.head.clone(),
                     length: self.len() + 1,
                 })),
@@ -72,23 +80,22 @@ impl RouteHistory {
         // This path runs only at the explicit cap. Rebuilding at most 64
         // nodes keeps the invariant simple while all normal pushes share the
         // prior Arc tail.
-        let mut routes = self.to_vec();
-        routes.truncate(MAX_ROUTE_HISTORY - 1);
-        routes.insert(0, route);
-        Self::from_newest(routes)
+        let mut visits = std::iter::successors(self.head.as_deref(), |node| node.previous.as_deref())
+            .take(MAX_ROUTE_HISTORY - 1).map(|node| (node.route.clone(), node.reading.clone())).collect::<Vec<_>>();
+        visits.insert(0, (route, reading));
+        let mut history = Self::new();
+        for (route, reading) in visits.into_iter().rev() { history = history.push_visit(route, reading); }
+        history
     }
 
     /// Removes and returns the newest route and the remaining history.
     #[must_use]
     pub fn pop(&self) -> Option<(Route, Self)> {
-        self.head.as_ref().map(|node| {
-            (
-                node.route.clone(),
-                Self {
-                    head: node.previous.clone(),
-                },
-            )
-        })
+        self.pop_visit().map(|(route, _, rest)| (route, rest))
+    }
+
+    pub fn pop_visit(&self) -> Option<(Route, ReadingVisit, Self)> {
+        self.head.as_ref().map(|node| (node.route.clone(), node.reading.clone(), Self { head: node.previous.clone() }))
     }
 
     /// Returns routes from newest to oldest for diagnostics and persistence
@@ -105,13 +112,7 @@ impl RouteHistory {
         routes
     }
 
-    fn from_newest(routes: Vec<Route>) -> Self {
-        let mut history = Self::new();
-        for route in routes.into_iter().rev() {
-            history = history.push(route);
-        }
-        history
-    }
+
 }
 
 impl From<Vec<Route>> for RouteHistory {

@@ -197,6 +197,8 @@ fn same_overlay_kind(left: Overlay, right: Overlay) -> bool {
 pub struct SessionState {
     /// Last route the user viewed.
     pub route: Route,
+    /// Session-local reading choices for this exact history visit.
+    pub reading: crate::navigation::presentation::ReadingSession,
     /// Orthogonal shell overlay, if one is open.
     pub overlay: Option<Overlay>,
     /// Bounded transient covers beneath the top overlay; never persisted.
@@ -273,6 +275,7 @@ impl Default for SessionState {
     fn default() -> Self {
         Self {
             route: Route::Orbit(crate::navigation::OrbitRoute::Home),
+            reading: Default::default(),
             overlay: None,
             overlay_underlays: OverlayUnderlays::default(),
             back: RouteHistory::new(),
@@ -445,7 +448,8 @@ impl AppSnapshot {
     /// Returns a copy with a changed route and back/forward state handled by
     /// the typed navigation reducer.
     #[must_use]
-    pub fn with_session(&self, session: SessionState) -> Self {
+    pub fn with_session(&self, mut session: SessionState) -> Self {
+        session.reading.normalize(&session.route);
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),

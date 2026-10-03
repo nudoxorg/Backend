@@ -24,6 +24,12 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         _ => {}
     }
     match intent {
+        Intent::SetReading { visit, change } => {
+            if next.session().reading.current.id == visit && next.session().preview.is_none() && next.page_overlay().is_none() {
+                let mut session = next.session().clone();
+                if session.reading.current.presentation.apply(change) { next = next.with_session(session); }
+            }
+        }
         // The window root adds a release (`runtime::acquire`): no state here.
         Intent::Noop | Intent::AddRelease(_) => {}
         Intent::Navigate(route) => {
@@ -40,6 +46,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         }
         Intent::Preview(route) => {
             let mut session = next.session().clone();
+            if !session.reading.preview(&route) { return Reduction { snapshot: next, effects }; }
             if session.preview.is_none() {
                 session.preview = Some(session.route.clone());
             }
@@ -123,9 +130,9 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::Back => {
             let mut session = next.session().clone();
             session.clear_overlays();
-            if let Some((previous, back)) = session.back.pop() {
-                let current = session.route.clone();
-                let forward = session.forward.push(current);
+            if let Some((previous, reading, back)) = session.back.pop_visit() {
+                let forward = session.forward.push_visit(session.route.clone(), session.reading.current.clone());
+                if !session.reading.restore(reading, &previous) { return Reduction { snapshot: next, effects }; }
                 session.route = previous;
                 session.pending_selection = None;
                 session.back = back;
@@ -137,9 +144,9 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::Forward => {
             let mut session = next.session().clone();
             session.clear_overlays();
-            if let Some((forward_route, forward)) = session.forward.pop() {
-                let current = session.route.clone();
-                let back = session.back.push(current);
+            if let Some((forward_route, reading, forward)) = session.forward.pop_visit() {
+                let back = session.back.push_visit(session.route.clone(), session.reading.current.clone());
+                if !session.reading.restore(reading, &forward_route) { return Reduction { snapshot: next, effects }; }
                 session.route = forward_route;
                 session.pending_selection = None;
                 session.back = back;
@@ -294,7 +301,8 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
         return;
     }
     let mut session = snapshot.session().clone();
-    let back = session.back.push(session.route.clone());
+    let back = session.back.push_visit(session.route.clone(), session.reading.current.clone());
+    if !session.reading.fresh(&route) { return; }
     session.route = route;
     session.pending_selection = None;
     session.clear_overlays();
@@ -308,9 +316,12 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
 fn commit_preview(snapshot: &mut crate::model::AppSnapshot) -> bool {
     let mut session = snapshot.session().clone();
     let Some(origin) = session.preview.take() else { return false };
+    let reading = session.reading.commit_preview().unwrap_or_else(|| super::presentation::ReadingVisit::cold(&origin));
     if !origin.same_place(&session.route) {
-        session.back = session.back.push(origin);
+        session.back = session.back.push_visit(origin, reading);
         session.forward = Default::default();
+    } else {
+        session.reading.restore(reading, &session.route);
     }
     *snapshot = snapshot.with_session(session);
     true
@@ -320,6 +331,7 @@ fn commit_preview(snapshot: &mut crate::model::AppSnapshot) -> bool {
 fn end_preview(snapshot: &mut crate::model::AppSnapshot, close: bool) {
     let mut session = snapshot.session().clone();
     if let Some(origin) = session.preview.take() {
+        session.reading.cancel_preview();
         session.route = origin;
     }
     if close {
@@ -666,6 +678,50 @@ mod tests {
         let origin = reduce(&restored, Intent::DismissOverlay).snapshot;
         assert_eq!(origin.overlay(), None);
         assert_eq!(origin.route(), base.route());
+    }
+
+    #[test]
+    fn reading_intent_travels_with_real_back_and_forward_without_io() {
+        use crate::navigation::presentation::{ReadingChange, ShelfLens};
+        let initial = AppSnapshot::empty(VersionedRoot::unserved());
+        let package = reduce(&initial, Intent::Navigate(package_route(None))).snapshot;
+        let visit = package.session().reading.current.id;
+        let changed = reduce(&package, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) });
+        assert!(changed.effects.is_empty(), "presentation does not acquire or persist data");
+        assert_eq!(changed.snapshot.key(), package.key());
+        assert_eq!(changed.snapshot.route(), package.route());
+        let elsewhere = reduce(&changed.snapshot, Intent::Navigate(Route::World)).snapshot;
+        let back = reduce(&elsewhere, Intent::Back).snapshot;
+        assert_eq!(back.session().reading.current.id, visit);
+        assert_eq!(back.session().reading.current.presentation.controls().shelf.lens, ShelfLens::UsedBy);
+        let forward = reduce(&back, Intent::Forward).snapshot;
+        assert_eq!(forward.session().reading.current.id, elsewhere.session().reading.current.id);
+        assert_eq!(forward.route(), &Route::World);
+        let stale = reduce(&forward, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::Versions) });
+        assert_eq!(stale.snapshot, forward, "a departed callback cannot edit the new visit");
+        let fresh = reduce(&forward, Intent::Navigate(package_route(None))).snapshot;
+        assert_ne!(fresh.session().reading.current.id, visit);
+        assert_eq!(fresh.session().reading.current.presentation.controls().shelf.lens, ShelfLens::Contents);
+        let same_reading = reduce(&fresh, Intent::SetReading { visit: fresh.session().reading.current.id, change: ReadingChange::ShelfLens(ShelfLens::Contents) });
+        assert_eq!(same_reading.snapshot, fresh, "unchanged presentation coalesces to no branch change");
+    }
+
+    #[test]
+    fn covers_and_preview_preserve_the_exact_reading_origin() {
+        use crate::navigation::presentation::{ReadingChange, ShelfLens};
+        let initial = reduce(&AppSnapshot::empty(VersionedRoot::unserved()), Intent::Navigate(package_route(None))).snapshot;
+        let visit = initial.session().reading.current.id;
+        let origin = reduce(&initial, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) }).snapshot;
+        let settings = reduce(&origin, Intent::OpenSettings(crate::navigation::SettingsPage::Appearance)).snapshot;
+        assert_eq!(settings.session().reading, origin.session().reading);
+        let ask = reduce(&settings, Intent::OpenCommandPalette).snapshot;
+        assert_eq!(ask.session().reading, origin.session().reading);
+        let covered_write = reduce(&ask, Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::Contents) });
+        assert_eq!(covered_write.snapshot, ask);
+        let preview = reduce(&ask, Intent::Preview(Route::World)).snapshot;
+        let returned = reduce(&preview, Intent::DismissOverlay).snapshot;
+        assert_eq!(returned.route(), origin.route());
+        assert_eq!(returned.session().reading.current, origin.session().reading.current);
     }
 
 }

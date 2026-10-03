@@ -251,6 +251,7 @@ fn restored_snapshot(
         .with_workspace(workspace)
         .with_settings(settings)
         .with_session(SessionState {
+            reading: Default::default(),
             route: restored.route,
             overlay: restored.overlay,
             overlay_underlays: Default::default(),

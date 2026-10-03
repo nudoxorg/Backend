@@ -83,6 +83,8 @@ pub enum Branch {
     Root,
     /// The content route changed.
     Route,
+    /// Session-local per-visit reading intent; never refreshes data keys.
+    Reading,
     /// The transient overlay changed.
     Overlay,
     /// Local project lifecycle rows changed.
@@ -631,6 +633,9 @@ impl DataStore {
             if !matches!(snapshot.route(), Route::World) {
                 self.tour = None;
             }
+        }
+        if old.session().reading != snapshot.session().reading {
+            changed.push(Branch::Reading);
         }
         if old.overlay() != snapshot.overlay() {
             changed.push(Branch::Overlay);

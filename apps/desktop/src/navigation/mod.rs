@@ -5,6 +5,7 @@ pub mod browse;
 pub mod cargo_browse;
 pub mod cargo_source_target;
 pub mod history;
+pub mod presentation;
 pub mod intent;
 pub mod journey_specs;
 pub mod reducer;

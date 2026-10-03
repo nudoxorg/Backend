@@ -167,7 +167,24 @@ pub const fn family(kind: Kind) -> Family {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum Scope { All, Shared, Distinct }
+pub enum Scope { All, Shared, Distinct }
+
+/// Pure per-visit preference. Carries no focus handle, observation or response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Presentation {
+    pub selected: Option<(SharedString, Kind)>,
+    pub family: Option<Family>,
+    pub scope: Option<Scope>,
+    pub page: usize,
+    pub facts: bool,
+    pub more_overloads: bool,
+}
+impl Default for Presentation {
+    fn default() -> Self { Self { selected: None, family: None, scope: None, page: 0, facts: false, more_overloads: false } }
+}
+impl Presentation {
+    pub fn valid(&self) -> bool { self.page <= 4096 && self.selected.as_ref().is_none_or(|(name, _)| name.len() <= 1024 && !name.chars().any(char::is_control)) }
+}
 
 struct State { selected: Option<(SharedString, Kind)>, family: Option<Family>, scope: Option<Scope>, page: usize, facts: bool, more_overloads: bool, reveal: KeyboardReveal, focus: FocusHandle, focus_claimed: bool }
 

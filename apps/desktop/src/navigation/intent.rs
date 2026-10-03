@@ -72,6 +72,8 @@ pub enum FolderPickerOutcome {
 /// not concatenate route strings or call an engine client directly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Intent {
+    /// Pure presentation changes require the exact live history visit; no I/O.
+    SetReading { visit: super::presentation::VisitId, change: super::presentation::ReadingChange },
     /// Replace the current typed route.
     Navigate(Route),
     /// Replace a legacy source address after the current Tree admits its exact
