@@ -308,8 +308,8 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     use super::bodies::graph::identity::ResolvedSymbol;
     use std::collections::BTreeMap;
     use facet::theme::ActiveFacet;
-    let root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
-    let gate = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let launch_root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(launch_root, crate::model::ServiceMode::Attached);
     let mut rig = super::tests::rig_with_engine_gate(cx, None, width, 900.0,
         ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(gate.clone()));
     let preference = match appearance {
@@ -319,6 +319,16 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     rig.go(Intent::SetAppearance(preference));
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
+    // Startup admits the owner and RootOnly can publish a newer cursor before
+    // this fixture is installed. The projection must bind to the same exact
+    // authority the current Reader will request, not the launch gate's key.
+    let root = rig.graph.store.read_with(rig.cx, |store, _| {
+        assert!(store.current_owner_attachment().is_some(), "canary needs a serving owner attachment");
+        store.snapshot().key()
+    });
+    let model_root = rig.graph.root.read_with(rig.cx, |model, _| model.snapshot().key());
+    assert!(root.same_authority(model_root), "canary store/model authority diverged before projection: store={root:?}, model={model_root:?}");
+    assert_eq!(root.root(), launch_root.root(), "canary startup changed the certified fixture root");
     let package = PackageRef::parse("/fixture/real-rust-canary").expect("package");
     let basis = Basis::new(view_state_root(&[]), object_version(b"Run19 source fixture"));
     let mut exact = BTreeMap::new();
@@ -343,6 +353,12 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     let identities = Arc::new(IdentityAdapter::indexed(&world, &BTreeMap::from([(package, 0)]), exact));
     rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
     rig.go(Intent::Navigate(Route::World));
+    let at_graph = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    assert!(root.same_authority(at_graph), "canary projection became stale before Graph mounted: installed={root:?}, current={at_graph:?}");
+    let mounted = rig.shell.read_with(rig.cx, |shell, cx| {
+        (shell.graph_entity(cx).is_some(), shell.graph_report(cx))
+    });
+    assert!(mounted.0, "current canary projection did not mount: installed={root:?}, current={at_graph:?}, graph={}", mounted.1);
     rig.cx.update(|_, cx| {
         assert_eq!(cx.facet().appearance, appearance);
         assert_eq!(cx.facet().text_scale, scale);
