@@ -15,7 +15,7 @@ use super::{Ctx, Leaf};
 #[cfg(test)]
 use crate::model::pages::ByteSpan;
 use crate::model::pages::{
-    DocFragment, PageKey, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
+    DocFragment, PageKey, RelationKind, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
 };
 use crate::navigation::{Intent, Route, SymbolRoute};
 use crate::shell::focus::{Recall, Target};
@@ -213,7 +213,7 @@ pub(super) fn body(
     crumb.push(view.symbol.name.to_string());
     let crumb = ctx.say(crumb.join("  ›  "));
     leaves.push(Leaf::new(
-        text(ty::MONO_ROW, &measure, palette.ink2).child(crumb),
+        text(ty::MONO_ROW, &measure, palette.ink2).role(gpui::Role::Label).aria_label(crumb.clone()).child(crumb),
     ));
     match view.text.known() {
         Some(source) => {
@@ -232,9 +232,9 @@ pub(super) fn body(
                     }
                 };
                 let words = ctx.say(status);
-                leaves.push(Leaf::new(quiet(words, &measure, palette)));
+                leaves.push(Leaf::new(quiet(words.clone(), &measure, palette).role(gpui::Role::Status).aria_label(words)));
             }
-            let note = margin(&view, store, &symbol, route, ctx);
+            let note = margin(&view, store, &symbol, route, ctx, cx);
             let code = code(&view, source, route, ctx, window, cx);
             let leaf = Leaf::new(code);
             leaves.push(match note {
@@ -243,13 +243,13 @@ pub(super) fn body(
             });
             if let Some(gap) = view.identifiers.gap() {
                 let words = ctx.say(format!("Source links aren't available: {}", gap.detail));
-                leaves.push(Leaf::new(quiet(words, &ctx.measure, ctx.palette)));
+                leaves.push(Leaf::new(quiet(words.clone(), &ctx.measure, ctx.palette).role(gpui::Role::Status).aria_label(words)));
             }
         }
         None => {
             if let Some(gap) = view.text.gap() {
                 let words = ctx.say(gap_words(gap));
-                leaves.push(Leaf::new(quiet(words, &measure, palette)));
+                leaves.push(Leaf::new(quiet(words.clone(), &measure, palette).role(gpui::Role::Status).aria_label(words)));
             }
         }
     }
@@ -259,9 +259,9 @@ pub(super) fn body(
 fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = Vec::new();
     let status = ctx.say(notice.to_owned());
-    leaves.push(Leaf::new(quiet(status, &ctx.measure, ctx.palette)));
+    leaves.push(Leaf::new(quiet(status.clone(), &ctx.measure, ctx.palette).role(gpui::Role::Status).aria_label(status)));
     let heading = ctx.say(view.symbol.coordinate.as_str().to_owned());
-    leaves.push(Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).child(heading)));
+    leaves.push(Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).role(gpui::Role::Label).aria_label(heading.clone()).child(heading)));
     match view.text.known() {
         Some(source) => {
             let line = route.line.filter(|line| source.line_range().is_some_and(|range| (range.first..=range.last).contains(line)))
@@ -273,7 +273,7 @@ fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &
             }).collect::<Vec<_>>().join("\n");
             let words = ctx.say(rows);
             leaves.push(Leaf::new(div().id("read-only-source-page").role(gpui::Role::Label)
-                .aria_label("Read-only source excerpt")
+                .aria_label(words.clone())
                 .child(text(ty::CODE, &ctx.measure, ctx.palette.ink1).child(words))));
             if page.next.is_some() {
                 leaves.push(Leaf::new(quiet("Earlier source continues beyond this bounded excerpt; a current reading is needed for source paging.", &ctx.measure, ctx.palette)));
@@ -317,10 +317,11 @@ pub(super) fn retained_page(
     let page = SourcePage::at(&source, cursor);
     let visible = page.lines.iter().filter_map(|line| source.text().get(line.span.range())
         .map(|words| format!("{}  {words}", line.number))).collect::<Vec<_>>().join("\n");
+    let visible = ctx.say(visible);
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base))
         .child(div().id("saved-display-source-page").role(gpui::Role::Label)
-            .aria_label("Read-only saved source page")
-            .child(text(ty::CODE, &measure, palette.ink1).child(ctx.say(visible))));
+            .aria_label(visible.clone())
+            .child(text(ty::CODE, &measure, palette.ink1).child(visible)));
     let last = source.line_range().map_or(first_line, |range| range.last);
     let first = page.lines.first().map_or(cursor.line, |line| line.number);
     let shown_last = page.lines.last().map_or(cursor.line, |line| line.number);
@@ -436,7 +437,8 @@ fn code(
         } else {
             "Source line numbers are invalid; this text cannot be navigated safely".to_owned()
         };
-        return quiet(ctx.say(words), &measure, palette).into_any_element();
+        let words = ctx.say(words);
+        return quiet(words.clone(), &measure, palette).role(gpui::Role::Status).aria_label(words).into_any_element();
     };
     let first_line = range.first;
     let last_line = range.last;
@@ -572,7 +574,7 @@ fn code(
         } else {
             format!("{above} earlier lines")
         };
-        column = column.child(quiet(label, &measure, palette));
+        column = column.child(quiet(label.clone(), &measure, palette).role(gpui::Role::Label).aria_label(label));
     }
     let mut rows = div().flex().flex_col();
     let mut visible_references = Vec::<(SymbolRef, Route)>::new();
@@ -720,6 +722,8 @@ fn code(
             let copy_gutter = copy_line.clone();
             let line_number = div()
                 .id(format!("source-copy-line-{number}-{piece_index}"))
+                .role(gpui::Role::Label)
+                .aria_label(format!("Source line {number}"))
                 .flex_none()
                 .w(number_width)
                 .flex()
@@ -772,6 +776,8 @@ fn code(
             };
             visual_lines = visual_lines.child(
                 div()
+                    .role(gpui::Role::Label)
+                    .aria_label(format!("Line {number}: {}", line.text))
                     .flex()
                     .items_start()
                     .gap(gap)
@@ -809,14 +815,8 @@ fn code(
     }
     column = column.child(rows);
     if route.line.is_some() && requested_line.is_none() {
-        column = column.child(quiet(
-            format!(
-                "Line {} is outside the source text this reader has",
-                route.line.unwrap_or_default()
-            ),
-            &measure,
-            palette,
-        ));
+        let warning = format!("Line {} is outside the source text this reader has", route.line.unwrap_or_default());
+        column = column.child(quiet(warning.clone(), &measure, palette).role(gpui::Role::Status).aria_label(warning));
     }
     if page.next.is_some() {
         let continuation = if page.next.is_some_and(|next| next.line == rendered_to) {
@@ -824,16 +824,15 @@ fn code(
         } else {
             format!("{below} later lines")
         };
-        column = column.child(quiet(continuation, &measure, palette));
+        column = column.child(quiet(continuation.clone(), &measure, palette).role(gpui::Role::Label).aria_label(continuation));
         column = column.child(pager_controls(
             "bottom", &pager, cursor, &page, source, ctx, cx,
         ));
     }
     if let Some(editor_path) = view.editor_path.known() {
         let path: Arc<str> = Arc::clone(editor_path);
-        let line = route
-            .line
-            .or_else(|| declaration.map(|span| span.first))
+        let line = requested_line
+            .or_else(|| declaration.map(|span| span.first).filter(|line| (first_line..=last_line).contains(line)))
             .unwrap_or(first_line);
         let links = ctx.links.clone();
         let editor_guard = Rc::clone(&source_guard);
@@ -855,13 +854,12 @@ fn code(
             peek: None,
             source: None,
         });
-        let button = div()
-            .id(id.clone())
-            .cursor_pointer()
-            .text_color(palette.peri.base.hsla())
-            .child(text(ty::SMALL, &measure, palette.peri.base).child("Open in editor"))
-            .on_click(move |_: &ClickEvent, window, app| act(window, app));
-        column = column.child(ctx.targets.track(id, button));
+        let focus = ctx.native_handle(&id, cx);
+        let mut button = facet::controls::button(id.clone(), "Open in editor", &measure)
+            .ghost().size(Control::Small).aria_label("Request to open source file in editor")
+            .on_click(move |window, app| act(window, app));
+        if let Some(focus) = focus { button = button.focus_handle(focus); }
+        column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
     }
     if !visible_references.is_empty() {
         let reference_count = visible_references.len();
@@ -872,13 +870,13 @@ fn code(
             .map_or(0, |state| state.reference_page)
             .min(last_reference_page);
         let reference_start = reference_page * MAX_PAGE_REFERENCES;
-        column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child(ctx.say(
-            format!(
+        let reference_summary = ctx.say(format!(
                 "References on these lines · {}–{} of {reference_count}",
                 reference_start + 1,
                 (reference_start + MAX_PAGE_REFERENCES).min(reference_count)
-            ),
-        )));
+            ));
+        column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3)
+            .role(gpui::Role::Label).aria_label(reference_summary.clone()).child(reference_summary));
         let mut reference_controls = div().flex().flex_wrap().gap(measure.space(Space::Base));
         for (direction, destination, label) in [
             (
@@ -898,6 +896,7 @@ fn code(
                 let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
                     state.update(app, |pager, cx| pager.show_references(destination, cx));
                 });
+                let act = ctx.native_action(act, cx);
                 ctx.targets.push(Target {
                     id: id.clone(),
                     label: label.into(),
@@ -905,13 +904,14 @@ fn code(
                     peek: None,
                     source: None,
                 });
+                let focus = ctx.native_handle(&id, cx);
+                let mut button = facet::controls::button(id.clone(), label, &measure)
+                    .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+                if let Some(focus) = focus { button = button.focus_handle(focus); }
                 reference_controls = reference_controls.child(
                     ctx.targets.track(
                         id.clone(),
-                        facet::controls::button(id, label, &measure)
-                            .ghost()
-                            .size(Control::Small)
-                            .on_click(move |window, app| act(window, app)),
+                        div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button),
                     ),
                 );
             }
@@ -958,13 +958,11 @@ fn code(
             }
             let act = target.act.clone();
             ctx.targets.push(target);
-            let row = div()
-                .id(id.clone())
-                .cursor_pointer()
-                .text_color(palette.peri.base.hsla())
-                .child(text(ty::PROSE, &measure, palette.peri.base).child(label))
-                .on_click(move |_: &ClickEvent, window, app| act(window, app));
-            column = column.child(ctx.targets.track(id, row));
+            let focus = ctx.native_handle(&id, cx);
+            let mut button = facet::controls::button(id.clone(), label, &measure)
+                .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+            if let Some(focus) = focus { button = button.focus_handle(focus); }
+            column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
         }
     }
     let snippet = shown.clone();
@@ -981,13 +979,11 @@ fn code(
         peek: None,
         source: None,
     });
-    let copy_button = div()
-        .id(copy_id.clone())
-        .cursor_pointer()
-        .text_color(palette.peri.base.hsla())
-        .child(text(ty::SMALL, &measure, palette.peri.base).child("Copy visible page"))
-        .on_click(move |_: &ClickEvent, window, app| copy(window, app));
-    column = column.child(ctx.targets.track(copy_id, copy_button));
+    let focus = ctx.native_handle(&copy_id, cx);
+    let mut copy_button = facet::controls::button(copy_id.clone(), "Copy visible page", &measure)
+        .ghost().size(Control::Small).on_click(move |window, app| copy(window, app));
+    if let Some(focus) = focus { copy_button = copy_button.focus_handle(focus); }
+    column = column.child(ctx.targets.track(copy_id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(copy_button)));
     column.into_any_element()
 }
 
@@ -1023,7 +1019,7 @@ fn pager_controls(
         .items_center()
         .gap(measure.space(Space::Base))
         .min_w_0()
-        .child(quiet(ctx.say(range), &measure, palette));
+        .child(quiet(ctx.say(range.clone()), &measure, palette).role(gpui::Role::Label).aria_label(range));
 
     let memory = Rc::clone(&pager.read(cx).state);
     let previous = memory
@@ -1092,6 +1088,7 @@ fn pager_controls(
         let focus: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, app| {
             focus_input.update(app, |input, cx| input.focus(window, cx));
         });
+        let focus = ctx.native_action(focus, cx);
         ctx.targets.push(Target {
             id: field_id.clone(),
             label: "Enter a source line number".into(),
@@ -1108,6 +1105,8 @@ fn pager_controls(
                 field_id.clone(),
                 div()
                     .id(field_id)
+                    .role(gpui::Role::Label)
+                    .aria_label("Source line number input")
                     .w(px(112.0 * measure.scale()))
                     .min_w_0()
                     .on_click(move |_: &ClickEvent, window, app| focus(window, app))
@@ -1120,6 +1119,7 @@ fn pager_controls(
             let typed = input.read(app).value().to_string();
             state.update(app, |pager, cx| pager.jump(&typed, cx));
         });
+        let act = ctx.native_action(act, cx);
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Go to source line".into(),
@@ -1127,15 +1127,11 @@ fn pager_controls(
             peek: None,
             source: None,
         });
-        controls = controls.child(
-            ctx.targets.track(
-                id.clone(),
-                facet::controls::button(id, "Go to line", &measure)
-                    .ghost()
-                    .size(Control::Small)
-                    .on_click(move |window, app| act(window, app)),
-            ),
-        );
+        let focus = ctx.native_handle(&id, cx);
+        let mut button = facet::controls::button(id.clone(), "Go to line", &measure)
+            .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+        if let Some(focus) = focus { button = button.focus_handle(focus); }
+        controls = controls.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
     }
     controls.into_any_element()
 }
@@ -1170,12 +1166,39 @@ fn code_language(view: &SourceView) -> Option<facet::code::Lang> {
     })
 }
 
+fn incoming_verb(kind: RelationKind) -> &'static str {
+    use backend_library::SemanticLinkKind as Link;
+    match kind {
+        RelationKind::Semantic(Link::Calls | Link::MethodCall) => "calls",
+        RelationKind::Semantic(Link::TypeReference) => "uses the type",
+        RelationKind::Semantic(Link::Reads) => "reads",
+        RelationKind::Semantic(Link::Writes) => "writes",
+        RelationKind::Semantic(Link::Imports) => "imports",
+        RelationKind::Semantic(Link::Implements) => "implements",
+        RelationKind::Semantic(Link::Overrides) => "overrides",
+        RelationKind::Semantic(Link::Reexports) => "reexports",
+        RelationKind::Semantic(Link::Inherits) => "inherits",
+        RelationKind::Semantic(Link::Documents) => "documents",
+        RelationKind::Contains => "contains",
+    }
+}
+
+fn incoming_heading(callers: &[crate::model::pages::Relation]) -> &'static str {
+    if callers.iter().all(|relation| matches!(relation.kind,
+        RelationKind::Semantic(backend_library::SemanticLinkKind::Calls | backend_library::SemanticLinkKind::MethodCall))) {
+        "Called by"
+    } else {
+        "Used by"
+    }
+}
+
 fn margin(
     view: &SourceView,
     store: &super::Pages,
     symbol: &SymbolRef,
     route: &SymbolRoute,
     ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
 ) -> Option<gpui::AnyElement> {
     let page = store.symbol(symbol);
     let page = page.loaded_value()?;
@@ -1183,7 +1206,7 @@ fn margin(
     let palette = ctx.palette;
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     let name = ctx.say(view.symbol.name.to_string());
-    column = column.child(text(ty::MONO_ROW, &measure, palette.ink0).child(name));
+    column = column.child(text(ty::MONO_ROW, &measure, palette.ink0).role(gpui::Role::Label).aria_label(name.clone()).child(name));
     let prose = DocFragment::plain_text(&page.docs);
     if let Some(sentence) = prose
         .split_terminator(['.', '\n'])
@@ -1191,31 +1214,40 @@ fn margin(
         .find(|line| !line.is_empty())
     {
         let sentence = ctx.say(format!("{sentence}."));
-        column = column.child(text(ty::MARGIN, &measure, palette.ink2).child(sentence));
+        column = column.child(text(ty::MARGIN, &measure, palette.ink2).role(gpui::Role::Label).aria_label(sentence.clone()).child(sentence));
     }
     if let Some(callers) = page.rose.left.known().filter(|callers| !callers.is_empty()) {
+        let source_key = PageKey::Source(symbol.clone());
+        let semantic_key = PageKey::Symbol(symbol.clone());
+        let (source_stamp, semantic_stamp) = {
+            let store = ctx.links.store.read(cx);
+            (store.stamp(&source_key), store.stamp(&semantic_key))
+        };
+        let source_guard = ctx.native_dependency_guard((source_key, source_stamp), cx);
+        let semantic_guard = ctx.native_dependency_guard((semantic_key, semantic_stamp), cx);
         column = column.child(
             text(ty::SMALL, &measure, palette.ink3)
+                .role(gpui::Role::Label).aria_label(incoming_heading(callers))
                 .pt(measure.space(Space::Base))
-                .child("Called by"),
+                .child(incoming_heading(callers)),
         );
         for caller in callers.iter().take(5) {
-            let name: SharedString = ctx.say(caller.decl.name.to_string());
+            let name: SharedString = ctx.say(format!("{} · {}", caller.decl.name, incoming_verb(caller.kind)));
             let target = symbol_route(route.package.as_str(), &caller.decl.coordinate);
             let links = ctx.links.clone();
-            column = column.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "caller-{}",
-                        caller.decl.coordinate
-                    )))
-                    .child(text(ty::MONO_SMALL, &measure, palette.ink1).child(name))
-                    .on_click(move |_: &ClickEvent, _, cx| {
-                        if let Some(route) = target.clone() {
-                            links.dispatch(Intent::Navigate(route), cx);
-                        }
-                    }),
-            );
+            let id: SharedString = format!("caller-{}", caller.decl.coordinate).into();
+            let source_guard = Rc::clone(&source_guard);
+            let semantic_guard = Rc::clone(&semantic_guard);
+            let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+                if !source_guard(app) || !semantic_guard(app) { return; }
+                if let Some(route) = target.clone() { links.dispatch(Intent::Navigate(route), app); }
+            });
+            ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: act.clone(), peek: None, source: None });
+            let focus = ctx.native_handle(&id, cx);
+            let mut button = facet::controls::button(id.clone(), name, &measure)
+                .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+            if let Some(focus) = focus { button = button.focus_handle(focus); }
+            column = column.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(button)));
         }
         if callers.len() > 5 {
             let more = ctx.say(format!("and {} more", callers.len() - 5));
@@ -1261,6 +1293,90 @@ mod tests {
     use crate::navigation::View;
     use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
     use gpui::TestAppContext;
+
+    struct EditorSource;
+
+    impl PageReader for EditorSource {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            let mut fixture = crate::shell::tests::Fixture;
+            let mut value = fixture.read(request, context)?;
+            if let PageValue::Source(view) = &mut value {
+                let text = view.text.known().expect("fixture source").clone();
+                view.text = Known::Known(text.with_verified_local_excerpt(ByteSpan { start: 8, end: 35 }));
+                view.editor_path = Known::Known(Arc::from("/work/real-source/glyph.rs"));
+            }
+            if let PageValue::Symbol(page) = &mut value {
+                let mut relation = page.rose.down.known().expect("fixture relation")[0].clone();
+                relation.kind = RelationKind::Semantic(backend_library::SemanticLinkKind::Reads);
+                page.rose.left = Known::Known(Arc::from([relation]));
+            }
+            Ok(value)
+        }
+    }
+
+    #[test]
+    fn incoming_relation_words_follow_the_recorded_edge_not_the_column_position() {
+        use backend_library::SemanticLinkKind as Link;
+        assert_eq!(incoming_verb(RelationKind::Semantic(Link::Reads)), "reads");
+        assert_eq!(incoming_verb(RelationKind::Semantic(Link::TypeReference)), "uses the type");
+        assert_eq!(incoming_verb(RelationKind::Semantic(Link::Calls)), "calls");
+        let page = crate::shell::tests::page("RelationLabel");
+        let mut row = page.rose.down.known().expect("recorded fixture relation")[0].clone();
+        row.kind = RelationKind::Semantic(Link::Reads);
+        assert_eq!(incoming_heading(&[row.clone()]), "Used by");
+        row.kind = RelationKind::Semantic(Link::Calls);
+        assert_eq!(incoming_heading(&[row]), "Called by");
+    }
+
+    #[gpui::test]
+    fn mounted_code_reports_native_source_controls_and_editor_launch_result(cx: &mut TestAppContext) {
+        use crate::host::editor::{Command, Launch};
+        struct Reject(Rc<RefCell<Vec<Command>>>);
+        impl Launch for Reject {
+            fn run(&self, command: &Command) -> std::io::Result<()> {
+                self.0.borrow_mut().push(command.clone());
+                Err(std::io::ErrorKind::NotFound.into())
+            }
+        }
+        let attempts = Rc::new(RefCell::new(Vec::new()));
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| EditorSource).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route.clone()), 900.0, 700.0, pool);
+        rig.cx.update(|window, cx| {
+            cx.set_global(gpui::TextTrace);
+            window.set_a11y_forced(true);
+            crate::host::editor::install(Rc::new(Reject(Rc::clone(&attempts))), cx);
+        });
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Code tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native JSON");
+        let nodes = tree["nodes"].as_object().expect("nodes");
+        for label in ["Copy visible page", "Request to open source file in editor", "Go to line"] {
+            assert!(nodes.values().any(|node| node["aria"]["role"] == "Button" && node["aria"]["label"] == label),
+                "missing native Code button {label}: {json}");
+        }
+        assert!(nodes.values().any(|node| node["aria"]["label"].as_str().is_some_and(|label| label.contains("pub enum RelationLabel"))),
+            "bounded source text must be in native AX: {json}");
+        assert!(nodes.values().any(|node| node["aria"]["label"] == "Used by"), "incoming edge heading must be native: {json}");
+        assert!(nodes.values().any(|node| node["aria"]["role"] == "Button" && node["aria"]["label"] == "Typed · reads"),
+            "a recorded value read cannot be announced as a caller: {json}");
+        let editor = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-open-editor").expect("mounted editor control");
+        let old_editor = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .placed().into_iter().find(|(target, _)| target.id == "source-open-editor")
+            .expect("current editor action").0.act;
+        rig.cx.simulate_click(editor.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(attempts.borrow().len(), 3, "each failed launcher is tried once");
+        let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+        assert!(notice.as_deref().is_some_and(|message| message.contains("Could not start an editor") && message.contains("glyph.rs:138")),
+            "a spawn failure needs bounded visit-scoped feedback: {notice:?}");
+        rig.go(Intent::Back);
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "editor result cannot follow Back");
+        rig.cx.update(|window, cx| old_editor(window, cx));
+        rig.settle();
+        assert_eq!(attempts.borrow().len(), 3, "a previous Code visit cannot launch after Back");
+    }
 
     fn text(words: String) -> SourceText {
         SourceText::new(words.into(), 1, SourceOrigin::LocalFile, true)
