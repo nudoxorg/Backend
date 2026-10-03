@@ -773,10 +773,18 @@ impl IndexOperationPublicationReceipt {
         view_recipe: [u8; 32],
         revision_cursor: Box<[u8]>,
     ) -> Result<Self, ProductAdmissionError> {
+        // This is structural admission for a serialized receipt, not proof
+        // that these bytes came from an authorized cursor owner. Publication
+        // authority remains with the separately retained owner evidence.
         let matches = |offset: usize, expected: &[u8; 32]| {
             revision_cursor
                 .get(offset..offset.saturating_add(32))
                 .is_some_and(|value| value == expected)
+        };
+        let has_nonzero_identity = |range: std::ops::Range<usize>| {
+            revision_cursor
+                .get(range)
+                .is_some_and(|value| value.iter().any(|byte| *byte != 0))
         };
         if request_identity.is_some_and(|identity| identity.iter().all(|byte| *byte == 0))
             || [
@@ -793,6 +801,10 @@ impl IndexOperationPublicationReceipt {
                 != Some(crate::cursor::CURSOR_SCHEMA.to_be_bytes().as_slice())
             || !matches(2, &view_recipe)
             || !matches(34, &view_version)
+            || !has_nonzero_identity(66..98)
+            || !has_nonzero_identity(98..130)
+            || revision_cursor.get(130..132)
+                != Some(crate::cursor::CURSOR_SCHEMA.to_be_bytes().as_slice())
             || !matches(132, &view_root)
         {
             return Err(ProductAdmissionError::IndexOperationShape);
@@ -3812,6 +3824,64 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn operation_receipt_admission_rejects_malformed_embedded_cursor_identities() {
+        let key = IndexOperationKey::from_bytes([0x0a; 32]).expect("operation key");
+        let package = PackageReference::parse("/workspace/demo").expect("package");
+        let view = operation_receipt_view();
+        let receipt = IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]),
+            [2; 32],
+            [3; 32],
+            1,
+            &view,
+            crate::Cursor::for_view_root(&view),
+        )
+        .expect("checked publication receipt");
+        let status = IndexOperationStatus {
+            operation_key: key,
+            request_digest: index_operation_request_digest(
+                &package,
+                crate::CompileExecutionIntent::Interactive,
+            ),
+            package,
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+            state: IndexOperationState::Published(receipt.clone()),
+        };
+
+        for (range, replacement) in [
+            (
+                130..132,
+                Some((crate::cursor::CURSOR_SCHEMA + 1).to_be_bytes().to_vec()),
+            ),
+            (66..98, None),
+            (98..130, None),
+        ] {
+            let mut malformed_receipt = receipt.clone();
+            let mut cursor = malformed_receipt.revision_cursor().to_vec();
+            if let Some(replacement) = replacement {
+                cursor[range.clone()].copy_from_slice(&replacement);
+            } else {
+                cursor[range.clone()].fill(0);
+            }
+            malformed_receipt.revision_cursor = cursor.into_boxed_slice();
+
+            let mut malformed_status = status.clone();
+            malformed_status.state = IndexOperationState::Published(malformed_receipt);
+            let malformed = IndexOperationObservation::Known(malformed_status);
+            let wire = serde_json::to_vec(&malformed).expect("malformed receipt wire");
+            let decoded: IndexOperationObservation =
+                serde_json::from_slice(&wire).expect("malformed receipt decodes before admission");
+            assert!(
+                matches!(
+                    decoded.admit(),
+                    Err(ProductAdmissionError::IndexOperationShape)
+                ),
+                "cursor identity bytes at {range:?} must be structurally rejected"
+            );
+        }
     }
 
     #[test]
