@@ -67,9 +67,9 @@ pub fn prism(
 /// The shape a row's mark takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mark {
-    /// A filled diamond: a type or value.
+    /// A filled diamond: a type or an unclassified declaration.
     Solid,
-    /// A square: a callable.
+    /// A square: a callable or value.
     Square,
     /// An open diamond: a trait.
     Open,
@@ -77,9 +77,33 @@ enum Mark {
 
 fn mark_of(kind: Option<Kind>) -> Mark {
     match kind {
-        Some(Kind::Function | Kind::Method | Kind::Macro | Kind::Constant | Kind::Field | Kind::Variant) => Mark::Square,
+        Some(
+            Kind::Function
+            | Kind::Method
+            | Kind::Macro
+            | Kind::Constant
+            | Kind::Variable
+            | Kind::Field
+            | Kind::Variant,
+        ) => Mark::Square,
         Some(Kind::Trait) | None => Mark::Open,
-        _ => Mark::Solid,
+        Some(Kind::Struct | Kind::Enum | Kind::Union | Kind::Type | Kind::Other) => Mark::Solid,
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::{Kind, Mark, mark_of};
+
+    #[test]
+    fn a_variable_uses_the_value_silhouette_without_becoming_a_constant() {
+        assert_eq!(mark_of(Some(Kind::Variable)), Mark::Square);
+        assert_eq!(mark_of(Some(Kind::Constant)), Mark::Square);
+        assert_ne!(mark_of(Some(Kind::Variable)), mark_of(Some(Kind::Struct)));
+        assert_ne!(
+            crate::anatomy::icon_kind(Kind::Variable),
+            crate::anatomy::icon_kind(Kind::Constant)
+        );
     }
 }
 

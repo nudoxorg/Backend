@@ -81,7 +81,7 @@ impl DeclarationPresentation {
     }
 
     pub(crate) const fn graph_icon(kind: GraphKind) -> IconKind {
-        Self::of(Some(Self::graph_definition(kind))).icon()
+        facet::anatomy::icon_kind(kind)
     }
 }
 
@@ -127,10 +127,28 @@ mod tests {
             DeclarationPresentation::graph_icon(variable.graph()),
             variable.icon()
         );
+        assert_eq!(
+            crate::shell::kit::world_kind(variable.graph()),
+            variable.icon()
+        );
+        assert_ne!(
+            crate::shell::kit::world_kind(variable.graph()),
+            constant.icon()
+        );
         assert_eq!(GraphKind::parse("variable"), variable.graph());
         assert_eq!(
             facet::graph::layout::core(variable.graph()),
             facet::graph::layout::core(constant.graph())
         );
+    }
+
+    #[test]
+    fn desktop_world_marks_share_the_component_projection_for_every_producer_kind() {
+        for kind in (0..=u8::MAX).filter_map(DeclarationKind::from_wire_tag) {
+            let graph = DeclarationPresentation::of(Some(kind)).graph();
+            let mark = facet::anatomy::icon_kind(graph);
+            assert_eq!(DeclarationPresentation::graph_icon(graph), mark, "{kind:?}");
+            assert_eq!(crate::shell::kit::world_kind(graph), mark, "{kind:?}");
+        }
     }
 }

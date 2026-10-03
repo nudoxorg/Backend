@@ -390,22 +390,7 @@ pub(crate) fn link_ink(has_place: bool, palette: &Palette) -> Hsla {
 
 /// A world node's kind as the mark it wears.
 pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
-    use facet::graph::Kind as World;
-    use Kind as Mark;
-    match kind {
-        World::Struct => Mark::Struct,
-        World::Enum => Mark::Enum,
-        World::Union => Mark::Union,
-        World::Trait => Mark::Trait,
-        World::Type => Mark::Type,
-        World::Function => Mark::Function,
-        World::Method => Mark::Method,
-        World::Macro => Mark::Macro,
-        World::Constant => Mark::Constant,
-        World::Field => Mark::Field,
-        World::Variant => Mark::Variant,
-        World::Other => Mark::Unknown,
-    }
+    crate::model::declaration_presentation::DeclarationPresentation::graph_icon(kind)
 }
 
 /// Whether an outline row names something the package declares, as a person

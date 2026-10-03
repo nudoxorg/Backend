@@ -117,9 +117,68 @@ pub fn scope<'w>(resolver: &'w InWorld<'w>, node: NodeId) -> Scope<'w> {
     let owner = n.parent.unwrap_or(node);
     let owner_node = world.node(owner);
     let scope = Scope::new(resolver).generics(names);
-    if matches!(owner_node.kind, Kind::Function | Kind::Method | Kind::Macro | Kind::Constant) {
-        scope
-    } else {
-        scope.owner(Target::Node(owner), owner_node.name.clone())
+    match owner_node.kind {
+        Kind::Function | Kind::Method | Kind::Macro | Kind::Constant | Kind::Variable => scope,
+        Kind::Struct
+        | Kind::Enum
+        | Kind::Union
+        | Kind::Trait
+        | Kind::Type
+        | Kind::Field
+        | Kind::Variant
+        | Kind::Other => scope.owner(Target::Node(owner), owner_node.name.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Module, Node, Package};
+
+    #[test]
+    fn a_variable_cannot_invent_a_type_owner_for_self() {
+        let world = World::new(
+            vec![Package {
+                name: "p".into(),
+                version: "0".into(),
+                yours: true,
+                external: false,
+                deps: vec![],
+            }],
+            vec![Module {
+                pkg: 0,
+                path: "".into(),
+                file: "src/lib.rs".into(),
+            }],
+            vec![
+                Node::new(Kind::Variable, "signal", 0, 0),
+                Node::new(Kind::Constant, "signal", 0, 0),
+                Node::new(Kind::Struct, "State", 0, 0),
+                Node::new(Kind::Variable, "signal", 0, 0).member_of(2),
+                Node::new(Kind::Function, "receive", 0, 0),
+                Node::new(Kind::Variable, "signal", 0, 0).member_of(4),
+            ],
+            vec![],
+        )
+        .expect("a valid value-kind world");
+        let names = Names::new(&world);
+        for node in [0, 1, 5] {
+            let resolver = InWorld {
+                world: &world,
+                names: &names,
+                from: node,
+            };
+            let spelled = scope(&resolver, node).spell_text("Self");
+            assert_eq!(spelled.plain(), "Self");
+            assert!(spelled.targets().is_empty(), "value {node} is not a type");
+        }
+        let resolver = InWorld {
+            world: &world,
+            names: &names,
+            from: 3,
+        };
+        let spelled = scope(&resolver, 3).spell_text("Self");
+        assert_eq!(spelled.plain(), "State");
+        assert_eq!(spelled.targets(), [&Target::Node(2)]);
     }
 }

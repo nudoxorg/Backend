@@ -50,6 +50,8 @@ pub mod symbol;
 pub mod text;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod kind_tests;
 
 pub use can::{Can, can};
 pub use contract::{ContractView, contract};
@@ -187,7 +189,8 @@ pub const fn is_serif(role: TypeRole) -> bool {
     matches!(role.face, Face::Serif)
 }
 
-/// The kind mark for a world kind.
+/// The shared kind mark for a world kind, including desktop peeks and flights.
+/// Keep this projection exhaustive; a new world kind must choose its own mark.
 #[must_use]
 pub const fn icon_kind(kind: crate::graph::Kind) -> crate::icons::Kind {
     use crate::graph::Kind as W;
@@ -205,5 +208,6 @@ pub const fn icon_kind(kind: crate::graph::Kind) -> crate::icons::Kind {
         W::Field => I::Field,
         W::Variant => I::Variant,
         W::Other => I::Unknown,
+        W::Variable => I::Variable,
     }
 }
