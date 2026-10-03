@@ -16,8 +16,7 @@ use crate::shell::reader::Reader;
 use facet::{Set as _, Space, tokens::ty};
 use gpui::{
     App, AppContext as _, Context, ElementId, Global, InteractiveElement, ParentElement,
-    StatefulInteractiveElement,
-    SharedString, Styled, Window, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -190,12 +189,15 @@ fn document_leaf(
     let scroll = ctx.reader_scroll.clone();
     let document_id = SharedString::from(painted.identity().document_id());
     let rich_id = document_id.clone();
+    let link_disclosure = Arc::clone(&document);
     let rich = crate::shell::markdown::scoped_view(
         ElementId::Name(document_id),
         SharedString::from(Arc::clone(&document.source)),
         painted.identity(),
     )
-    .w_full();
+    .w_full()
+    .link_availability(move |url| link_disclosure.link_actionable(url))
+    .link_admission(Rc::clone(&rich_guard));
     column = column.child(
         div()
             .set(ty::PROSE, &measure)

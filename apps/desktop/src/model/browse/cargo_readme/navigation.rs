@@ -274,6 +274,15 @@ impl NavigationIndex {
             .then(|| link_id(&found.focus, 0))
     }
 
+    pub(super) fn link_actionable(&self, href: &str) -> bool {
+        self.find_href(href).is_some_and(|found| {
+            matches!(
+                found.destination,
+                Destination::External | Destination::Anchor(_) | Destination::Source
+            )
+        })
+    }
+
     pub(super) fn restore_focus(&self, id: &str) -> Option<CargoReadmeFocus> {
         if let Some(tail) = id.strip_prefix("cargo-readme-link-") {
             let (digest, occurrence) = tail.split_once('-')?;

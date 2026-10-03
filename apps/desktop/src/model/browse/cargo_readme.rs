@@ -126,6 +126,12 @@ impl CargoReadmeDocument {
         self.navigation.inline_focus_id(href)
     }
 
+    /// Cheap native/pointer disclosure from the immutable prepared index.
+    /// This never admits content or an action against a live owner.
+    pub(crate) fn link_actionable(&self, href: &str) -> bool {
+        self.navigation.link_actionable(href)
+    }
+
     /// No fallback to an ordinal: a different origin or target has no match.
     pub(crate) fn restore_focus(&self, id: &str) -> Option<CargoReadmeFocus> {
         self.navigation.restore_focus(id)
@@ -210,6 +216,24 @@ mod focus_tests {
         let origin = CargoPackageReadmeOriginV1::from_result(&result).expect("exact origin");
         CargoReadmeDocument::prepare(origin, Arc::from(contents), &|| false)
             .expect("complete navigation index")
+    }
+
+    #[test]
+    fn native_link_disclosure_uses_exact_prepared_authored_destinations() {
+        let readme = document(
+            "# Current\n\n[Docs](https://docs.rs/example) [File](src/lib.rs) [Here](#current) [Missing](#not-present) [Unsafe](javascript:alert)\n\n`[Code](src/fiction.rs)`",
+        );
+        for href in ["https://docs.rs/example", "src/lib.rs", "#current"] {
+            assert!(readme.link_actionable(href));
+        }
+        for href in [
+            "#not-present",
+            "javascript:alert",
+            "src/fiction.rs",
+            "https://forged",
+        ] {
+            assert!(!readme.link_actionable(href));
+        }
     }
 
     #[test]

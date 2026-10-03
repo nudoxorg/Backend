@@ -4,6 +4,7 @@ mod format;
 mod inline;
 mod inline_flow;
 mod markdown_ext;
+mod native;
 mod node;
 mod pending_update;
 mod reference_environment;
@@ -34,6 +35,7 @@ pub use text_view::*;
 
 pub(crate) fn init(cx: &mut App) {
     state::init(cx);
+    native::init(cx);
 }
 
 /// Create a new markdown text view with code location as id.

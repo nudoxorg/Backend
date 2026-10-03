@@ -6,10 +6,10 @@ use std::{
 };
 
 use gpui::{
-    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, GlobalElementId,
-    Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    SharedString, StyledText, TextLayout, Window, point, px, quad,
+    AnyElement, App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId,
+    GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, SharedString, StyledText, TextLayout, Window, point, px, quad,
 };
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
     text::node::LinkMark,
     text::selection::word_range_at,
     text::state::LineSpan,
-    text::text_view::{LinkClickHandlerFn, handle_link_click},
+    text::text_view::{LinkAvailabilityFn, LinkClickHandlerFn, handle_link_click, link_available},
 };
 
 /// A inline element used to render a inline text and support selectable.
@@ -33,8 +33,14 @@ pub(super) struct Inline {
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     styled_text: StyledText,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    link_availability: Option<Arc<LinkAvailabilityFn>>,
 
     state: Arc<Mutex<InlineState>>,
+}
+
+pub(super) struct InlinePrepaint {
+    hitbox: Hitbox,
+    native: Vec<AnyElement>,
 }
 
 /// The inline text state, used RefCell to keep the selection state.
@@ -60,6 +66,7 @@ impl Inline {
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        link_availability: Option<Arc<LinkAvailabilityFn>>,
     ) -> Self {
         let text = state
             .lock()
@@ -73,6 +80,7 @@ impl Inline {
             text: text.clone(),
             styled_text: StyledText::new(text),
             link_click_handler,
+            link_availability,
             state,
         }
     }
@@ -343,7 +351,7 @@ impl IntoElement for Inline {
 
 impl Element for Inline {
     type RequestLayoutState = ();
-    type PrepaintState = Hitbox;
+    type PrepaintState = InlinePrepaint;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -351,6 +359,10 @@ impl Element for Inline {
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
+    }
+
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        Some(gpui::Role::Paragraph)
     }
 
     fn request_layout(
@@ -413,7 +425,17 @@ impl Element for Inline {
         }
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        hitbox
+        let native = super::native::inline_elements(
+            &self.text,
+            &self.links,
+            &self.styled_text.layout().clone(),
+            bounds,
+            &self.link_availability,
+            &self.link_click_handler,
+            window,
+            cx,
+        );
+        InlinePrepaint { hitbox, native }
     }
 
     fn paint(
@@ -427,7 +449,7 @@ impl Element for Inline {
         cx: &mut App,
     ) {
         let current_view = window.current_view();
-        let hitbox = prepaint;
+        let hitbox = &prepaint.hitbox;
         let Ok(mut state) = self.state.lock() else {
             return;
         };
@@ -448,7 +470,9 @@ impl Element for Inline {
 
         // link cursor pointer
         let mouse_position = window.mouse_position();
-        if let Some(_) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
+        if Self::link_for_position(&text_layout, &self.links, mouse_position)
+            .is_some_and(|link| link_available(&self.link_availability, &link.url))
+        {
             window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
         }
 
@@ -550,6 +574,7 @@ impl Element for Inline {
                 let hitbox = hitbox.clone();
                 let text_view_state = UiGlobalState::global(cx).text_view_state().cloned();
                 let link_click_handler = self.link_click_handler.clone();
+                let link_availability = self.link_availability.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
@@ -565,6 +590,11 @@ impl Element for Inline {
                     if let Some(link) =
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
+                        if !super::native::admitted(&text_view_state, cx)
+                            || !link_available(&link_availability, &link.url)
+                        {
+                            return;
+                        }
                         gpui_base::TextSelection::end(window, cx);
                         cx.stop_propagation();
                         let click = ClickEvent::Mouse(MouseClickEvent {
@@ -581,6 +611,12 @@ impl Element for Inline {
                     }
                 }
             });
+        }
+        // Native focus decoration sits on the already shaped link fragment.
+        // It has no broad pointer callback and cannot turn surrounding words
+        // or wrapped-line whitespace into a clickable link.
+        for element in &mut prepaint.native {
+            element.paint(window, cx);
         }
     }
 }

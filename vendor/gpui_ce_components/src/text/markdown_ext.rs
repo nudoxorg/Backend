@@ -30,6 +30,38 @@ pub type MarkdownBlockParserFn =
 pub type MarkdownBlockRenderFn =
     dyn Fn(&MarkdownNode, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+type ContextBlockRenderFn = dyn Fn(&MarkdownNode, &MarkdownRenderContext<'_>, &mut Window, &mut App) -> AnyElement
+    + Send
+    + Sync;
+
+/// Borrowed document link behavior and definitions for a custom renderer.
+/// It introduces no persistent document copy, address origin, or read lease.
+#[derive(Clone)]
+pub struct MarkdownRenderContext<'a> {
+    context: &'a super::node::NodeContext,
+    admission: Option<super::text_view::LinkAdmission>,
+}
+
+impl<'a> MarkdownRenderContext<'a> {
+    pub(crate) fn new(context: &'a super::node::NodeContext, cx: &App) -> Self {
+        let admission = crate::global_state::UiGlobalState::global(cx)
+            .text_view_state()
+            .and_then(|state| state.read(cx).link_admission.clone());
+        Self { context, admission }
+    }
+
+    /// Apply the enclosing document's pointer/native action callback and
+    /// availability policy without rebuilding its origin for each paragraph.
+    pub fn inherit_links(&self, view: super::TextView) -> super::TextView {
+        let mut view = view.with_link_context(
+            self.context.link_click_handler.clone(),
+            self.context.link_availability.clone(),
+        );
+        view.link_admission = self.admission.clone();
+        view
+    }
+}
+
 /// A reusable Markdown extension that parses and renders one custom node.
 pub trait MarkdownPlugin: Send + Sync + 'static {
     /// Whether this plugin produces block-level nodes.
@@ -192,7 +224,7 @@ impl PartialEq for MarkdownNode {
 pub struct MarkdownExtensions {
     enable_mdx: bool,
     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
-    block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
+    block_renderers: HashMap<SharedString, Arc<ContextBlockRenderFn>>,
     revision: u64,
 }
 
@@ -226,6 +258,30 @@ impl MarkdownExtensions {
         E: IntoElement,
     {
         self.push_block_renderer(name, renderer);
+        self
+    }
+
+    /// Register a renderer that can pass the enclosing document's link
+    /// behavior to nested TextViews. Existing renderers keep their API.
+    pub fn block_renderer_with_context<F, E>(
+        mut self,
+        name: impl Into<SharedString>,
+        renderer: F,
+    ) -> Self
+    where
+        F: Fn(&MarkdownNode, &MarkdownRenderContext<'_>, &mut Window, &mut App) -> E
+            + Send
+            + Sync
+            + 'static,
+        E: IntoElement,
+    {
+        self.block_renderers.insert(
+            name.into(),
+            Arc::new(move |node, context, window, cx| {
+                renderer(node, context, window, cx).into_any_element()
+            }),
+        );
+        self.bump_revision();
         self
     }
 
@@ -272,7 +328,7 @@ impl MarkdownExtensions {
     {
         self.block_renderers.insert(
             name.into(),
-            Arc::new(move |node, window, cx| renderer(node, window, cx).into_any_element()),
+            Arc::new(move |node, _, window, cx| renderer(node, window, cx).into_any_element()),
         );
         self.bump_revision();
     }
@@ -306,12 +362,13 @@ impl MarkdownExtensions {
     pub(crate) fn render_block(
         &self,
         node: &MarkdownNode,
+        context: &MarkdownRenderContext<'_>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
         self.block_renderers
             .get(node.name())
-            .map(|render| render(node, window, cx))
+            .map(|render| render(node, context, window, cx))
     }
 
     fn bump_revision(&mut self) {

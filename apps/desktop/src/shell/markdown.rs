@@ -10,7 +10,8 @@ use facet::ActiveFacet as _;
 use facet::tokens::ty;
 use facet::{Measure, Space};
 use gpui::{
-    App, ClickEvent, ElementId, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
+    App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, px,
 };
 use gpui_component::text::{MarkdownExtensions, MarkdownNode, PreparedMarkdown, TextView};
 use std::cell::RefCell;
@@ -124,12 +125,13 @@ fn extensions_for(scope: Option<DocumentPaintIdentity>) -> MarkdownExtensions {
                         inline_id,
                         prepared,
                         level: heading.depth,
+                        label: heading_plain_text(node).into(),
                     },
                 )
                 .markdown(inline),
             )
         })
-        .block_renderer("readme-heading-anchor", move |node, window, cx| {
+        .block_renderer_with_context("readme-heading-anchor", move |node, context, window, cx| {
             let Some(data) = node.data::<HeadingData>() else {
                 return div().into_any_element();
             };
@@ -142,15 +144,20 @@ fn extensions_for(scope: Option<DocumentPaintIdentity>) -> MarkdownExtensions {
                 2 => ty::TITLE,
                 _ => ty::PROSE,
             });
-            let inline = TextView::prepared_markdown(
-                ElementId::Name(data.inline_id.clone()),
-                data.prepared.clone(),
-            )
-            .selectable(true)
-            .on_link_click(emit_link_action);
+            let inline = context.inherit_links(
+                TextView::prepared_markdown(
+                    ElementId::Name(data.inline_id.clone()),
+                    data.prepared.clone(),
+                )
+                .selectable(true),
+            );
             facet::motion::shared::shared(
                 ElementId::Name(id),
                 div()
+                    .id("heading")
+                    .role(gpui::Role::Heading)
+                    .aria_level(usize::from(data.level))
+                    .aria_label(data.label.clone())
                     .w_full()
                     .pt(measure.space(Space::Snug))
                     .pb(measure.space(Space::Tight))
@@ -169,6 +176,29 @@ struct HeadingData {
     inline_id: SharedString,
     prepared: PreparedMarkdown,
     level: u8,
+    label: SharedString,
+}
+
+// Compute one plain heading label during parsing, alongside its immutable
+// anchor. Native labels contain authored words rather than Markdown markers.
+fn heading_plain_text(node: &markdown::mdast::Node) -> String {
+    use markdown::mdast::Node;
+    let mut text = String::new();
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        match node {
+            Node::Text(value) => text.push_str(&value.value),
+            Node::InlineCode(value) => text.push_str(&value.value),
+            Node::Image(value) => text.push_str(&value.alt),
+            Node::ImageReference(value) => text.push_str(&value.alt),
+            Node::Break(_) => text.push('\n'),
+            _ => {}
+        }
+        if let Some(children) = node.children() {
+            stack.extend(children.iter().rev());
+        }
+    }
+    text
 }
 
 fn heading_inline_source(source: &str) -> String {

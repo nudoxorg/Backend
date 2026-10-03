@@ -24,8 +24,17 @@ pub(crate) type CodeBlockActionsFn =
 pub(crate) type TableActionsFn =
     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+/// UI-only callback admission shared with the enclosing owner.
+pub type LinkAdmission = std::rc::Rc<dyn Fn(&mut App) -> bool>;
+
 pub(crate) type LinkClickHandlerFn =
     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
+
+pub(crate) type LinkAvailabilityFn = dyn Fn(&SharedString) -> bool + Send + Sync;
+
+pub(crate) fn link_available(policy: &Option<Arc<LinkAvailabilityFn>>, url: &SharedString) -> bool {
+    policy.as_ref().is_none_or(|policy| policy(url))
+}
 
 pub(crate) fn handle_link_click(
     handler: &Option<Arc<LinkClickHandlerFn>>,
@@ -78,6 +87,8 @@ pub struct TextView {
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    link_availability: Option<Arc<LinkAvailabilityFn>>,
+    pub(crate) link_admission: Option<LinkAdmission>,
     markdown_extensions: Arc<MarkdownExtensions>,
     background_parse: bool,
     prepared: Option<PreparedMarkdown>,
@@ -107,6 +118,16 @@ impl Styled for TextView {
 }
 
 impl TextView {
+    pub(super) fn with_link_context(
+        mut self,
+        handler: Option<Arc<LinkClickHandlerFn>>,
+        availability: Option<Arc<LinkAvailabilityFn>>,
+    ) -> Self {
+        self.link_click_handler = handler;
+        self.link_availability = availability;
+        self
+    }
+
     /// Create new TextView with managed state.
     pub fn new(state: &Entity<TextViewState>) -> Self {
         Self {
@@ -123,6 +144,8 @@ impl TextView {
             code_block_actions: None,
             table_actions: None,
             link_click_handler: None,
+            link_availability: None,
+            link_admission: None,
             markdown_extensions: Arc::default(),
             background_parse: false,
             prepared: None,
@@ -145,6 +168,8 @@ impl TextView {
             code_block_actions: None,
             table_actions: None,
             link_click_handler: None,
+            link_availability: None,
+            link_admission: None,
             markdown_extensions: Arc::default(),
             background_parse: false,
             prepared: None,
@@ -178,6 +203,8 @@ impl TextView {
             code_block_actions: None,
             table_actions: None,
             link_click_handler: None,
+            link_availability: None,
+            link_admission: None,
             markdown_extensions: Arc::default(),
             background_parse: false,
             prepared: None,
@@ -292,6 +319,24 @@ impl TextView {
         F: Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.link_click_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Disclose which authored destinations may be activated in this paint.
+    /// This is presentation policy; the activation handler must separately
+    /// re-admit any application-owned resource or navigation action.
+    pub fn link_availability<F>(mut self, available: F) -> Self
+    where
+        F: Fn(&SharedString) -> bool + Send + Sync + 'static,
+    {
+        self.link_availability = Some(Arc::new(available));
+        self
+    }
+
+    /// Use the owner's existing UI-thread admission before native focus or
+    /// activation. This predicate is never sent to the parser worker.
+    pub fn link_admission(mut self, admission: LinkAdmission) -> Self {
+        self.link_admission = Some(admission);
         self
     }
 
@@ -464,6 +509,10 @@ impl Element for TextView {
         Some(self.id.clone())
     }
 
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        Some(gpui::Role::Document)
+    }
+
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
     }
@@ -521,6 +570,8 @@ impl Element for TextView {
             state.code_block_actions = self.code_block_actions.clone();
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
+            state.link_availability = self.link_availability.clone();
+            state.link_admission = self.link_admission.clone();
             if let Some(prepared) = &self.prepared {
                 state.set_prepared(prepared, cx);
             } else {
@@ -552,6 +603,7 @@ impl Element for TextView {
             text_style.line_height_in_pixels(window.rem_size()) * max_lines as f32
         });
 
+        let admission = self.link_admission.clone();
         let mut el = div()
             .key_context("TextView")
             .track_focus(&focus_handle)
@@ -560,6 +612,14 @@ impl Element for TextView {
             })
             .when_some(max_lines_cap, |this, cap| this.max_h(cap).overflow_hidden())
             .relative()
+            .when_some(admission, |this, admit| {
+                this.capture_any_mouse_down(move |_, window, cx| {
+                    if !admit(cx) {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                })
+            })
             .on_action(move |_: &crate::input::Copy, window, cx| {
                 let text = gpui_base::TextSelection::selected_text(window, cx)
                     .trim()
@@ -574,7 +634,11 @@ impl Element for TextView {
             .child(state.clone())
             .refine_style(&self.style)
             .into_any_element();
+        UiGlobalState::global_mut(cx)
+            .text_view_state_stack
+            .push(state.clone());
         let layout_id = el.request_layout(window, cx);
+        UiGlobalState::global_mut(cx).text_view_state_stack.pop();
         (layout_id, TextViewLayoutState { state, element: el })
     }
 
@@ -591,16 +655,13 @@ impl Element for TextView {
         let max_lines_active = state.read(cx).max_lines.is_some();
         if max_lines_active {
             state.update(cx, |state, _| state.line_spans.clear());
-            // Descendant `Inline`s report their line spans through the state
-            // stack during prepaint (in addition to the paint-time push below).
-            UiGlobalState::global_mut(cx)
-                .text_view_state_stack
-                .push(state.clone());
         }
+        // All document descendants share the selection and admission owner.
+        UiGlobalState::global_mut(cx)
+            .text_view_state_stack
+            .push(state.clone());
         request_layout.element.prepaint(window, cx);
-        if max_lines_active {
-            UiGlobalState::global_mut(cx).text_view_state_stack.pop();
-        }
+        UiGlobalState::global_mut(cx).text_view_state_stack.pop();
 
         let mut clip_bottom = None;
         if max_lines_active {

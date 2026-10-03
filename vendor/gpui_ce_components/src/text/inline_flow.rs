@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use crate::{
-    text::text_view::{LinkClickHandlerFn, handle_link_click},
+    text::text_view::{LinkAvailabilityFn, LinkClickHandlerFn, handle_link_click, link_available},
     tooltip::Tooltip,
 };
 
@@ -28,6 +28,7 @@ pub(super) struct InlineFlow {
     id: ElementId,
     items: Vec<InlineFlowItem>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    link_availability: Option<Arc<LinkAvailabilityFn>>,
 }
 
 pub(super) enum InlineFlowItem {
@@ -41,6 +42,7 @@ pub(super) enum InlineFlowItem {
         url: SharedUri,
         link: Option<LinkMark>,
         title: String,
+        alt: SharedString,
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
     },
@@ -109,11 +111,13 @@ impl InlineFlow {
         id: impl Into<ElementId>,
         items: Vec<InlineFlowItem>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        link_availability: Option<Arc<LinkAvailabilityFn>>,
     ) -> Self {
         Self {
             id: id.into(),
             items,
             link_click_handler,
+            link_availability,
         }
     }
 
@@ -122,26 +126,43 @@ impl InlineFlow {
         url: &SharedUri,
         link: &Option<LinkMark>,
         title: &str,
+        alt: SharedString,
         size: Size<Pixels>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        link_availability: Option<Arc<LinkAvailabilityFn>>,
+        cx: &App,
     ) -> AnyElement {
-        img(image_source(url))
+        let admission = super::native::current_admission(cx);
+        let admitted = link
+            .clone()
+            .filter(|link| link_available(&link_availability, &link.url));
+        let image = img(image_source(url))
             .id(ix)
             .object_fit(ObjectFit::Contain)
             .max_w(relative(1.))
             .w(size.width)
             .h(size.height)
-            .when_some(link.clone(), |this, link| {
+            .when_some(admitted.clone(), |this, link| {
                 let title = title.to_string();
                 let aux_link = link.clone();
                 let aux_link_click_handler = link_click_handler.clone();
+                let pointer_handler = link_click_handler.clone();
+                let pointer_availability = link_availability.clone();
+                let aux_availability = link_availability.clone();
+                let pointer_admission = admission.clone();
+                let aux_admission = admission.clone();
                 this.cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                     .on_click(move |event, window, cx| {
+                        if pointer_admission.as_ref().is_some_and(|admit| !admit(cx))
+                            || !link_available(&pointer_availability, &link.url)
+                        {
+                            return;
+                        }
                         gpui_base::TextSelection::end(window, cx);
                         cx.stop_propagation();
                         handle_link_click(
-                            &link_click_handler,
+                            &pointer_handler,
                             link.url.clone(),
                             event.clone(),
                             window,
@@ -149,6 +170,11 @@ impl InlineFlow {
                         );
                     })
                     .on_aux_click(move |event, window, cx| {
+                        if aux_admission.as_ref().is_some_and(|admit| !admit(cx))
+                            || !link_available(&aux_availability, &aux_link.url)
+                        {
+                            return;
+                        }
                         gpui_base::TextSelection::end(window, cx);
                         cx.stop_propagation();
                         handle_link_click(
@@ -160,7 +186,16 @@ impl InlineFlow {
                         );
                     })
             })
-            .into_any_element()
+            .into_any_element();
+        super::native::image(
+            ("image", ix),
+            image,
+            alt,
+            admitted,
+            link_availability,
+            link_click_handler,
+        )
+        .into_any_element()
     }
 }
 
@@ -290,6 +325,7 @@ impl Element for InlineFlow {
                         links,
                         highlights,
                         self.link_click_handler.clone(),
+                        self.link_availability.clone(),
                     )
                     .into_any_element();
                     element.prepaint_as_root(
@@ -309,7 +345,11 @@ impl Element for InlineFlow {
                     size: fragment_size,
                 } => {
                     let InlineFlowItem::Image {
-                        url, link, title, ..
+                        url,
+                        link,
+                        title,
+                        alt,
+                        ..
                     } = &self.items[item_ix]
                     else {
                         continue;
@@ -319,8 +359,11 @@ impl Element for InlineFlow {
                         url,
                         link,
                         title.as_str(),
+                        alt.clone(),
                         fragment_size,
                         self.link_click_handler.clone(),
+                        self.link_availability.clone(),
+                        cx,
                     );
                     element.prepaint_as_root(
                         bounds.origin + origin,

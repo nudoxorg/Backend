@@ -1333,6 +1333,7 @@ impl CodeBlock {
                         vec![],
                         self.styles(&cx.theme().highlight_theme),
                         node_cx.link_click_handler.clone(),
+                        node_cx.link_availability.clone(),
                     ))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
@@ -1363,6 +1364,7 @@ pub(crate) struct NodeContext {
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    pub(crate) link_availability: Option<Arc<super::text_view::LinkAvailabilityFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -1401,7 +1403,12 @@ impl PartialEq for NodeContext {
 }
 
 impl Paragraph {
-    fn render(&self, node_cx: &NodeContext, _window: &mut Window, cx: &mut App) -> AnyElement {
+    pub(crate) fn render(
+        &self,
+        node_cx: &NodeContext,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         let span = self.span;
         let children = &self.children;
 
@@ -1410,6 +1417,7 @@ impl Paragraph {
                 span.unwrap_or_default(),
                 self.inline_flow_items(node_cx, cx),
                 node_cx.link_click_handler.clone(),
+                node_cx.link_availability.clone(),
             )
             .into_any_element();
         }
@@ -1438,50 +1446,82 @@ impl Paragraph {
                             links.clone(),
                             highlights.clone(),
                             node_cx.link_click_handler.clone(),
+                            node_cx.link_availability.clone(),
                         )
                         .into_any_element(),
                     );
                 }
                 let link_click_handler = node_cx.link_click_handler.clone();
+                let admitted_link = image.link.clone().filter(|link| {
+                    super::text_view::link_available(&node_cx.link_availability, &link.url)
+                });
+                let link_availability = node_cx.link_availability.clone();
+                let admission = super::native::current_admission(cx);
+                let rendered_image = img(image_source(&image.url))
+                    .id(ix)
+                    .object_fit(ObjectFit::Contain)
+                    .max_w(relative(1.))
+                    .when_some(image.width, |this, width| this.w(width))
+                    .when_some(admitted_link.clone(), |this, link| {
+                        let title = image.title();
+                        let link_click_handler = link_click_handler.clone();
+                        let aux_link = link.clone();
+                        let aux_link_click_handler = link_click_handler.clone();
+                        let availability = link_availability.clone();
+                        let pointer_admission = admission.clone();
+                        let aux_admission = admission.clone();
+                        let aux_availability = link_availability.clone();
+                        this.cursor_pointer()
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(title.clone()).build(window, cx)
+                            })
+                            .on_click(move |event, window, cx| {
+                                if pointer_admission.as_ref().is_some_and(|admit| !admit(cx))
+                                    || !super::text_view::link_available(&availability, &link.url)
+                                {
+                                    return;
+                                }
+                                gpui_base::TextSelection::end(window, cx);
+                                cx.stop_propagation();
+                                handle_link_click(
+                                    &link_click_handler,
+                                    link.url.clone(),
+                                    event.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })
+                            .on_aux_click(move |event, window, cx| {
+                                if aux_admission.as_ref().is_some_and(|admit| !admit(cx))
+                                    || !super::text_view::link_available(
+                                        &aux_availability,
+                                        &aux_link.url,
+                                    )
+                                {
+                                    return;
+                                }
+                                gpui_base::TextSelection::end(window, cx);
+                                cx.stop_propagation();
+                                handle_link_click(
+                                    &aux_link_click_handler,
+                                    aux_link.url.clone(),
+                                    event.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })
+                    })
+                    .into_any_element();
                 child_nodes.push(
-                    img(image_source(&image.url))
-                        .id(ix)
-                        .object_fit(ObjectFit::Contain)
-                        .max_w(relative(1.))
-                        .when_some(image.width, |this, width| this.w(width))
-                        .when_some(image.link.clone(), |this, link| {
-                            let title = image.title();
-                            let link_click_handler = link_click_handler.clone();
-                            let aux_link = link.clone();
-                            let aux_link_click_handler = link_click_handler.clone();
-                            this.cursor_pointer()
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(title.clone()).build(window, cx)
-                                })
-                                .on_click(move |event, window, cx| {
-                                    gpui_base::TextSelection::end(window, cx);
-                                    cx.stop_propagation();
-                                    handle_link_click(
-                                        &link_click_handler,
-                                        link.url.clone(),
-                                        event.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                })
-                                .on_aux_click(move |event, window, cx| {
-                                    gpui_base::TextSelection::end(window, cx);
-                                    cx.stop_propagation();
-                                    handle_link_click(
-                                        &aux_link_click_handler,
-                                        aux_link.url.clone(),
-                                        event.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                })
-                        })
-                        .into_any_element(),
+                    super::native::image(
+                        ("image", ix),
+                        rendered_image,
+                        image.alt.clone().unwrap_or_default(),
+                        admitted_link,
+                        node_cx.link_availability.clone(),
+                        node_cx.link_click_handler.clone(),
+                    )
+                    .into_any_element(),
                 );
 
                 text.clear();
@@ -1552,6 +1592,7 @@ impl Paragraph {
                     links,
                     highlights,
                     node_cx.link_click_handler.clone(),
+                    node_cx.link_availability.clone(),
                 )
                 .into_any_element(),
             );
@@ -1597,6 +1638,7 @@ impl Paragraph {
                     url: image.url.clone(),
                     link: image.link.clone(),
                     title: image.title(),
+                    alt: image.alt.clone().unwrap_or_default(),
                     width: image.width,
                     height: image.height,
                 });
@@ -2371,6 +2413,11 @@ impl BlockNode {
 
                 div()
                     .id(SharedString::from(format!("h{}-{}", level, ix)))
+                    .role(gpui::Role::Heading)
+                    .aria_level(usize::from(*level))
+                    .when(window.is_a11y_active(), |this| {
+                        this.aria_label(children.text())
+                    })
                     .pb(rems(0.3))
                     .whitespace_normal()
                     .text_size(text_size)
@@ -2433,7 +2480,11 @@ impl BlockNode {
                 .into_any_element(),
             BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
             BlockNode::Custom(node) => {
-                let inner = match node_cx.markdown_extensions.render_block(node, window, cx) {
+                let context = super::markdown_ext::MarkdownRenderContext::new(node_cx, cx);
+                let inner = match node_cx
+                    .markdown_extensions
+                    .render_block(node, &context, window, cx)
+                {
                     Some(rendered) => rendered,
                     None => div().child(node.as_text().to_string()).into_any_element(),
                 };
