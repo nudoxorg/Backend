@@ -263,11 +263,16 @@ fn complete_carrier_roles_round_trip_in_canonical_entity_order() -> Result<(), c
         };
         assert_eq!(
             observed,
-            Some(SignatureCarrierRoleObservation::Captured(role))
+            SignatureCarrierRoleObservation::Captured(role)
         );
     }
 
     let bytes = encoded(&ir)?;
+    let forward_bytes = encoded(&carrier_image(&expected, false)?)?;
+    assert_eq!(
+        bytes, forward_bytes,
+        "canonical entity ordering must make role-image bytes independent of insertion order"
+    );
     assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2);
     assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), 27);
     // The result owner retains the exact canonical payload and cached proof,
