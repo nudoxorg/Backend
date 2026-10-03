@@ -497,6 +497,9 @@ impl DataStore {
                 if this.update(cx, Self::drain).is_err() {
                     break;
                 }
+                // A pending wake can resolve immediately. Yield the actual
+                // foreground task so another UI task runs between batches.
+                super::wake::yield_turn().await;
             }
         }));
     }
@@ -1014,7 +1017,7 @@ impl DataStore {
         }
     }
 
-    /// Lands every finished read. Called by the wake task; public so tests
+    /// Lands one bounded batch. Called by the wake task; public so tests
     /// and harnesses can drive it deterministically.
     pub fn drain(&mut self, cx: &mut Context<Self>) -> usize {
         if self.owner.attachment_changed() {

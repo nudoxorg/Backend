@@ -44,6 +44,7 @@ use backend_present::{Engine, Probe};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -57,10 +58,13 @@ const OUTLINE_ROWS: usize = 8_000;
 const OUTLINE_BYTES: usize = 12 * 1024 * 1024;
 /// Explore page size for the Orbit catalog.
 const EXPLORE_LIMIT: u16 = 64;
-/// Maximum queued page reads across all workers. Running reads have their
-/// own fixed worker slots; a burst of distinct hover targets cannot grow the
-/// queue or its keyed page slots without bound.
-const MAX_QUEUED_READS: usize = 64;
+/// Count bound covering queued, running, published and drained reads. This
+/// bounds pending models, not their heap bytes or already landed page values.
+const MAX_ADMITTED_READS: usize = 64;
+/// Leave half the admission slots available to visible/normal requests.
+const MAX_PREFETCH_ADMISSION: usize = MAX_ADMITTED_READS / 2;
+/// Maximum landings in one UI update.
+const LANDING_BUDGET: usize = 8;
 /// Maximum local Cargo-shaped roots for which one Orbit read admits registry
 /// identity. Above this bound it grants no partial proof, since an unseen row
 /// could make the exact release ambiguous.
@@ -152,6 +156,9 @@ pub struct ReadOutcome {
     pub complete: bool,
     /// The read model, or why there is none.
     pub result: Result<PageValue, ReadFailure>,
+    // Clones and drained partials keep the same admission alive. This is
+    // scheduling ownership only; key/generation still decide admission.
+    _residency: Arc<ReadPermit>,
 }
 
 /// Performs reads for one worker. Production uses [`SessionReader`].
@@ -282,6 +289,41 @@ fn outline_row_bytes(row: &Row) -> usize {
         .saturating_add(text.saturating_mul(4))
 }
 
+/// One admission, shared by its worker and every outstanding publication.
+/// Releasing it never needs a scheduler lock, including during shutdown.
+#[derive(Debug)]
+struct ReadPermit(Arc<AtomicUsize>);
+
+impl ReadPermit {
+    fn acquire(count: &Arc<AtomicUsize>, priority: Priority) -> Option<Arc<Self>> {
+        let limit = match priority {
+            Priority::Normal => MAX_ADMITTED_READS,
+            Priority::Prefetch => MAX_PREFETCH_ADMISSION,
+        };
+        count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            (used < limit).then_some(used + 1)
+        }).ok()?;
+        Some(Arc::new(Self(Arc::clone(count))))
+    }
+}
+
+impl Drop for ReadPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug)]
+struct AdmittedRead {
+    job: ReadJob,
+    permit: Arc<ReadPermit>,
+}
+
+impl std::ops::Deref for AdmittedRead {
+    type Target = ReadJob;
+    fn deref(&self) -> &ReadJob { &self.job }
+}
+
 /// The job one worker is running: its key, generation, and token.
 #[derive(Clone, Debug)]
 struct RunningJob {
@@ -295,7 +337,7 @@ type Running = Option<RunningJob>;
 
 #[derive(Debug, Default)]
 struct Queue {
-    jobs: VecDeque<ReadJob>,
+    jobs: VecDeque<AdmittedRead>,
     running: Vec<Running>,
     closed: bool,
 }
@@ -307,12 +349,33 @@ struct Shared {
     results: Mutex<VecDeque<ReadOutcome>>,
     wake: WakeSender,
     outlines: OutlineCache,
+    admitted: Arc<AtomicUsize>,
 }
 
 impl Shared {
     fn queue(&self) -> std::sync::MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Keep one queued partial per key/generation. A terminal result replaces
+    /// that partial, but terminal results are never evicted by publications.
+    fn publish(&self, outcome: ReadOutcome) {
+        let mut results = self.results.lock().unwrap_or_else(PoisonError::into_inner);
+        let same = |queued: &ReadOutcome| {
+            queued.key == outcome.key && queued.generation == outcome.generation
+        };
+        if !outcome.complete && results.iter().any(|queued| same(queued) && queued.complete) {
+            return;
+        }
+        let old = results.iter().position(|queued| same(queued) && !queued.complete)
+            .and_then(|at| results.remove(at));
+        results.push_back(outcome);
+        drop(results);
+        // Large replaced models are destroyed outside the scheduler lock.
+        drop(old);
+        self.wake.wake();
+    }
+
 }
 
 /// A fixed pool of read workers.
@@ -351,6 +414,7 @@ impl ReadPool {
             results: Mutex::new(VecDeque::new()),
             wake,
             outlines: OutlineCache::default(),
+            admitted: Arc::new(AtomicUsize::new(0)),
         });
         let mut pool = Self {
             shared,
@@ -400,35 +464,10 @@ impl ReadPool {
                 running.cancel.cancel();
             }
         }
-        if queue.jobs.len() >= MAX_QUEUED_READS {
-            let victim = (job.priority == Priority::Normal)
-                .then(|| {
-                    queue
-                        .jobs
-                        .iter()
-                        .position(|queued| queued.priority == Priority::Prefetch)
-                })
-                .flatten();
-            if let Some(victim) = victim.and_then(|at| queue.jobs.remove(at)) {
-                victim.cancel.cancel();
-                self.shared
-                    .results
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push_back(ReadOutcome {
-                        key: victim.key,
-                        generation: victim.generation,
-                        worker: usize::MAX,
-                        priority: victim.priority,
-                        complete: true,
-                        result: Err(ReadFailure::Cancelled),
-                    });
-                self.shared.wake.wake();
-            } else {
-                return false;
-            }
-        }
-        queue.jobs.push_back(job);
+        let Some(permit) = ReadPermit::acquire(&self.shared.admitted, job.priority) else {
+            return false;
+        };
+        queue.jobs.push_back(AdmittedRead { job, permit });
         drop(queue);
         self.shared.ready.notify_all();
         true
@@ -441,7 +480,7 @@ impl ReadPool {
         let mut queue = self.shared.queue();
         let mut found = false;
         for job in queue.jobs.iter_mut().filter(|job| job.key == *key) {
-            job.priority = Priority::Normal;
+            job.job.priority = Priority::Normal;
             found = true;
         }
         found
@@ -471,14 +510,20 @@ impl ReadPool {
         found
     }
 
-    /// Drains every finished job without waiting.
+    /// Takes one bounded batch without waiting. Remaining results rearm the
+    /// same coalesced wake; the UI consumer yields between batches.
     pub fn drain(&self) -> Vec<ReadOutcome> {
         let mut results = self
             .shared
             .results
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        results.drain(..).collect()
+        let count = results.len().min(LANDING_BUDGET);
+        let batch = results.drain(..count).collect();
+        let remaining = !results.is_empty();
+        drop(results);
+        if remaining { self.shared.wake.wake(); }
+        batch
     }
 
     /// Returns the number of queued (not yet running) jobs.
@@ -508,6 +553,7 @@ impl ReadPool {
         for handle in self.workers.drain(..) {
             let _ = handle.join();
         }
+        self.shared.results.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.shared.wake.close();
     }
 }
@@ -518,7 +564,7 @@ impl Drop for ReadPool {
     }
 }
 
-fn next_job(queue: &mut Queue, worker: usize) -> Option<ReadJob> {
+fn next_job(queue: &mut Queue, worker: usize) -> Option<AdmittedRead> {
     let mut best: Option<(usize, Priority)> = None;
     for (index, job) in queue.jobs.iter().enumerate() {
         if job.affinity.is_some_and(|pinned| pinned != worker) {
@@ -556,23 +602,20 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
+        let AdmittedRead { job, permit } = job;
         let result = if job.cancel.is_cancelled() {
             Err(ReadFailure::Cancelled)
         } else {
             let publish = |value| {
-                shared
-                    .results
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push_back(ReadOutcome {
-                        key: job.key.clone(),
-                        generation: job.generation,
-                        worker,
-                        priority: job.priority,
-                        complete: false,
-                        result: Ok(value),
-                    });
-                shared.wake.wake();
+                shared.publish(ReadOutcome {
+                    key: job.key.clone(),
+                    generation: job.generation,
+                    worker,
+                    priority: job.priority,
+                    complete: false,
+                    result: Ok(value),
+                    _residency: Arc::clone(&permit),
+                });
             };
             let context = ReadContext {
                 worker,
@@ -604,19 +647,15 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 *slot = None;
             }
         }
-        shared
-            .results
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push_back(ReadOutcome {
-                key: job.key,
-                generation: job.generation,
-                worker,
-                priority: job.priority,
-                complete: true,
-                result,
-            });
-        shared.wake.wake();
+        shared.publish(ReadOutcome {
+            key: job.key,
+            generation: job.generation,
+            worker,
+            priority: job.priority,
+            complete: true,
+            result,
+            _residency: permit,
+        });
     }
 }
 
@@ -2897,6 +2936,230 @@ mod tests {
         assert_eq!(signals, 8, "one wake per finished read");
         assert!(receiver.try_take(), "the burst left one pending turn");
         assert!(!receiver.try_take(), "and only one");
+    }
+
+    #[test]
+    fn bounded_read_completed_reads_and_drained_clones_hold_admission_until_drop() {
+        let harness = harness(2);
+        for round in 0..MAX_ADMITTED_READS {
+            assert!(harness.pool.submit(job(&format!("fast-{round}"), round as u64, Priority::Normal)));
+        }
+        for _ in 0..MAX_ADMITTED_READS { harness.started(); }
+        crate::runtime::wait::until("all results published without a UI consumer", || {
+            harness.pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).len() == MAX_ADMITTED_READS
+        });
+        assert!(!harness.pool.submit(job("overflow", 100, Priority::Normal)));
+        assert_eq!(harness.pool.shared.admitted.load(Ordering::Acquire), MAX_ADMITTED_READS);
+        let batch = harness.pool.drain();
+        assert_eq!(batch.len(), LANDING_BUDGET);
+        assert!(!harness.pool.submit(job("still-full", 101, Priority::Normal)), "draining is not landing/dropping");
+        let held = batch[0].clone();
+        drop(batch);
+        assert_eq!(harness.pool.shared.admitted.load(Ordering::Acquire), MAX_ADMITTED_READS - LANDING_BUDGET + 1);
+        drop(held);
+        assert_eq!(harness.pool.shared.admitted.load(Ordering::Acquire), MAX_ADMITTED_READS - LANDING_BUDGET);
+        for round in 0..LANDING_BUDGET {
+            assert!(harness.pool.submit(job(&format!("refill-{round}"), 200 + round as u64, Priority::Normal)));
+        }
+        assert!(!harness.pool.submit(job("full-again", 300, Priority::Normal)));
+        let count = Arc::clone(&harness.pool.shared.admitted);
+        drop(harness);
+        assert_eq!(count.load(Ordering::Acquire), 0, "shutdown releases queued and published work");
+    }
+
+    #[test]
+    fn bounded_read_prefetch_reserves_normal_admission_and_queued_cancellation_releases_it() {
+        let harness = harness(1);
+        assert!(harness.pool.submit(job("slow-busy", 1, Priority::Normal)));
+        harness.started();
+        for round in 1..MAX_PREFETCH_ADMISSION {
+            assert!(harness.pool.submit(job(&format!("prefetch-{round}"), round as u64, Priority::Prefetch)));
+        }
+        assert!(!harness.pool.submit(job("prefetch-overflow", 100, Priority::Prefetch)));
+        for round in MAX_PREFETCH_ADMISSION..MAX_ADMITTED_READS {
+            assert!(harness.pool.submit(job(&format!("visible-{round}"), round as u64, Priority::Normal)));
+        }
+        assert!(!harness.pool.submit(job("visible-overflow", 200, Priority::Normal)));
+        assert!(harness.pool.cancel(&key("prefetch-1")));
+        assert!(harness.pool.submit(job("visible-replacement", 201, Priority::Normal)));
+        harness.release("slow-busy");
+        assert_eq!(harness.started().1, format!("visible-{MAX_PREFETCH_ADMISSION}"), "normal work runs before queued prefetches");
+    }
+
+    #[test]
+    fn bounded_read_partial_flood_coalesces_and_cancelled_terminal_keeps_the_drained_permit() {
+        struct FloodReader {
+            staged: mpsc::Sender<()>,
+            finish: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl PageReader for FloodReader {
+            fn read(&mut self, _: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                for rows in 0..1_000 {
+                    let mut page = health();
+                    page.rows = rows;
+                    context.publish(PageValue::Health(page));
+                }
+                self.staged.send(()).expect("flood published");
+                let (lock, ready) = &*self.finish;
+                let mut done = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                while !*done { done = ready.wait(done).unwrap_or_else(PoisonError::into_inner); }
+                // The pool must replace success with cancellation even when a
+                // reader finishes late without cooperating with its token.
+                Ok(PageValue::Health(health()))
+            }
+        }
+        let (staged, receiver) = mpsc::channel();
+        let finish = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut pool = ReadPool::start(1, |_| FloodReader { staged: staged.clone(), finish: Arc::clone(&finish) }).expect("pool");
+        let mut wake = pool.take_wake().expect("wake");
+        let pending = job("flood", 1, Priority::Normal);
+        let cancel = pending.cancel.clone();
+        assert!(pool.submit(pending));
+        receiver.recv_timeout(Duration::from_secs(2)).expect("all partials published");
+        assert!(wake.try_take());
+        assert!(!wake.try_take(), "a thousand publications leave one pending wake");
+        let partial = pool.drain();
+        assert_eq!(partial.len(), 1);
+        assert!(matches!(&partial[0].result, Ok(PageValue::Health(page)) if page.rows == 999));
+        cancel.cancel();
+        {
+            let (lock, ready) = &*finish;
+            *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            ready.notify_all();
+        }
+        crate::runtime::wait::until("cancelled terminal published", || !pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+        let terminal = pool.drain();
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].complete);
+        assert_eq!(terminal[0].result, Err(ReadFailure::Cancelled));
+        drop(terminal);
+        assert_eq!(pool.shared.admitted.load(Ordering::Acquire), 1, "the drained partial still owns the admission");
+        drop(partial);
+        assert_eq!(pool.shared.admitted.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn bounded_read_a_terminal_replaces_its_queued_partial_without_losing_failure() {
+        let harness = harness(1);
+        let permit = ReadPermit::acquire(&harness.pool.shared.admitted, Priority::Normal).expect("permit");
+        let outcome = |complete, result| ReadOutcome {
+            key: PageKey::Health, generation: Generation::new(1), worker: 0,
+            priority: Priority::Normal, complete, result, _residency: Arc::clone(&permit),
+        };
+        harness.pool.shared.publish(outcome(false, Ok(PageValue::Health(health()))));
+        harness.pool.shared.publish(outcome(true, Err(ReadFailure::Cancelled)));
+        // A late partial cannot displace a queued terminal.
+        harness.pool.shared.publish(outcome(false, Ok(PageValue::Health(health()))));
+        let batch = harness.pool.drain();
+        assert_eq!(batch.len(), 1);
+        assert!(batch[0].complete);
+        assert_eq!(batch[0].result, Err(ReadFailure::Cancelled));
+    }
+
+    #[test]
+    fn bounded_read_bounded_batches_rearm_until_empty_without_losing_a_concurrent_publish() {
+        let mut harness = harness(2);
+        let mut wake = harness.pool.take_wake().expect("wake");
+        for round in 0..25 { assert!(harness.pool.submit(job(&format!("fast-{round}"), round, Priority::Normal))); }
+        for _ in 0..25 { harness.started(); }
+        crate::runtime::wait::until("25 queued terminals", || harness.pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).len() == 25);
+        let mut landed = 0;
+        for expected in [8, 8, 8, 1] {
+            assert!(wake.try_take(), "remaining work retained its wake");
+            let batch = harness.pool.drain();
+            assert_eq!(batch.len(), expected);
+            landed += batch.len();
+            drop(batch);
+        }
+        assert_eq!(landed, 25);
+        assert!(!wake.try_take(), "empty queue schedules no idle turn");
+        assert!(harness.pool.submit(job("after-empty", 26, Priority::Normal)));
+        harness.started();
+        crate::runtime::wait::until("post-drain publication wakes again", || wake.try_take());
+        assert_eq!(harness.pool.drain().len(), 1);
+    }
+
+    #[test]
+    fn bounded_read_large_source_and_late_generation_keep_exact_page_admission() {
+        use crate::core::VersionedRoot;
+        use crate::model::pages::{DeclRef, Known, Landing, PageStore, SourceOrigin, SourceText, SourceView};
+        struct SourceReader(Arc<str>);
+        impl PageReader for SourceReader {
+            fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                let ReadRequest::Source(symbol) = request else { panic!("source request") };
+                let unknown = || Gap::new(GapReason::NotCaptured, "fixture source");
+                let page = PageValue::Source(SourceView {
+                    symbol: DeclRef::from_label(symbol.as_str(), None, None, None).expect("declaration"),
+                    file: Known::Unknown(unknown()), editor_path: Known::Unknown(unknown()),
+                    text: Known::Known(SourceText::new(Arc::clone(&self.0), 1, SourceOrigin::LocalFile, true).expect("4MiB source")),
+                    declaration: Known::Unknown(unknown()), identifiers: Known::Unknown(unknown()),
+                    uses: Known::Unknown(unknown()), uses_elsewhere: Arc::from([]),
+                });
+                context.publish(page.clone());
+                Ok(page)
+            }
+        }
+        let text: Arc<str> = Arc::from("x".repeat(MAX_LOCAL_SOURCE_FILE_BYTES as usize));
+        let pool = ReadPool::start(1, |_| SourceReader(Arc::clone(&text))).expect("pool");
+        let symbol = SymbolRef::new("large-source").expect("symbol");
+        let key = PageKey::Source(symbol.clone());
+        let root = |n: u64| VersionedRoot::synthetic(view_state_root(&[("source".to_owned(), n.to_string())]), n);
+        let mut pages = PageStore::default();
+        let old = pages.begin(&key, root(1)).expect("old generation");
+        let submit = |generation| assert!(pool.submit(ReadJob {
+            key: key.clone(), request: ReadRequest::Source(symbol.clone()), generation,
+            priority: Priority::Normal, cancel: CancellationToken::new(), affinity: None,
+        }));
+        submit(old);
+        crate::runtime::wait::until("old source completed but not landed", || pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|outcome| outcome.complete));
+        assert!(pages.revoke_owner_read(&key));
+        let current = pages.begin(&key, root(2)).expect("new owner generation");
+        submit(current);
+        crate::runtime::wait::until("both terminal generations queued", || pool.shared.results.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|outcome| outcome.complete).count() == 2);
+        let outcomes = pool.drain();
+        assert_eq!(outcomes.len(), 2, "terminal replaced each queued source partial");
+        for outcome in outcomes {
+            let expected = if outcome.generation == old { Landing::Superseded } else { Landing::Applied };
+            assert_eq!(pages.land(&outcome.key, outcome.generation, outcome.result), expected);
+        }
+        let source = pages.source(&symbol);
+        assert_eq!(source.value_root(), Some(root(2)));
+        let Known::Known(source) = &source.loaded_value().expect("current source").text else { panic!("source text") };
+        assert_eq!(source.text().len(), MAX_LOCAL_SOURCE_FILE_BYTES as usize);
+        assert!(std::ptr::eq(source.text(), text.as_ref()), "worker and landing share the immutable bytes");
+        assert_eq!(pool.shared.admitted.load(Ordering::Acquire), 0, "landing released both work permits");
+    }
+
+    #[test]
+    fn bounded_read_shutdown_interrupts_active_publication_and_releases_pending_models() {
+        struct CancelReader { staged: mpsc::Sender<()>, gate: Arc<(Mutex<()>, Condvar)> }
+        impl PageReader for CancelReader {
+            fn read(&mut self, _: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                let gate = Arc::clone(&self.gate);
+                let _wake = context.cancel.on_cancel(move || {
+                    let _guard = gate.0.lock().unwrap_or_else(PoisonError::into_inner);
+                    gate.1.notify_all();
+                });
+                context.publish(PageValue::Health(health()));
+                self.staged.send(()).expect("partial queued");
+                let mut guard = self.gate.0.lock().unwrap_or_else(PoisonError::into_inner);
+                while !context.cancel.is_cancelled() {
+                    guard = self.gate.1.wait(guard).unwrap_or_else(PoisonError::into_inner);
+                }
+                Err(ReadFailure::Cancelled)
+            }
+        }
+        let (staged, published) = mpsc::channel();
+        let gate = Arc::new((Mutex::new(()), Condvar::new()));
+        let pool = ReadPool::start(1, |_| CancelReader { staged: staged.clone(), gate: Arc::clone(&gate) }).expect("pool");
+        assert!(pool.submit(job("active", 1, Priority::Normal)));
+        published.recv_timeout(Duration::from_secs(2)).expect("partial publication");
+        assert!(pool.submit(job("queued", 2, Priority::Normal)));
+        let count = Arc::clone(&pool.shared.admitted);
+        let (closed, receiver) = mpsc::channel();
+        std::thread::spawn(move || { drop(pool); closed.send(()).expect("closed"); });
+        receiver.recv_timeout(Duration::from_secs(2)).expect("shutdown does not wait for a result consumer");
+        assert_eq!(count.load(Ordering::Acquire), 0);
     }
 
     #[test]

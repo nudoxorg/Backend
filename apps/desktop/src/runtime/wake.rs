@@ -3,9 +3,9 @@
 //! Worker threads (the engine actor lanes and the read pool) push results into
 //! bounded mailboxes and then call [`WakeSender::wake`]. The UI side awaits
 //! [`WakeReceiver::wait`] inside one `cx.spawn` task and, when it resolves,
-//! drains every queued result before awaiting again. Many wakes between two
-//! drains collapse into one pending bit, so a burst of results costs one UI
-//! turn, and nothing is polled while no work lands: an idle window with a
+//! drains a batch before awaiting again. A bounded consumer rearms this same
+//! signal for remaining results and yields between batches. Many wakes
+//! collapse into one pending bit, and nothing polls while no work lands: an idle window with a
 //! long-running request schedules no frame at all.
 //!
 //! The signal carries no payload on purpose. The payload stays in the bounded
@@ -16,6 +16,20 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
+
+/// Suspend the consuming task once, even when its next wake is already ready.
+/// No timer or recurring idle wake is scheduled.
+pub(crate) async fn yield_turn() {
+    let mut yielded = false;
+    std::future::poll_fn(move |cx| {
+        if std::mem::replace(&mut yielded, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }).await;
+}
 
 #[derive(Debug, Default)]
 struct WakeState {
@@ -177,6 +191,32 @@ mod tests {
         let mut context = Context::from_waker(waker);
         let mut future = receiver.wait();
         Pin::new(&mut future).poll(&mut context)
+    }
+
+    #[gpui::test]
+    fn bounded_read_batches_yield_to_another_foreground_task(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let foreground = cx.foreground_executor().clone();
+        let recorded = Rc::clone(&events);
+        let executor = foreground.clone();
+        foreground.spawn(async move {
+            let (sender, mut receiver) = wake_channel();
+            sender.wake();
+            for batch in 0..3 {
+                assert!(receiver.wait().await.is_some());
+                recorded.borrow_mut().push(batch);
+                if batch == 0 {
+                    let probe = Rc::clone(&recorded);
+                    executor.spawn(async move { probe.borrow_mut().push(99); }).detach();
+                }
+                sender.wake();
+                yield_turn().await;
+            }
+        }).detach();
+        cx.run_until_parked();
+        assert_eq!(&*events.borrow(), &[0, 99, 1, 2], "the real foreground executor polls the unrelated task before the next ready batch");
     }
 
     #[test]
