@@ -70,6 +70,47 @@ const MAX_CONFIGURED_SUBSCRIPTION_LEASES: usize = 1024;
 const MAX_CONFIGURED_SUBSCRIPTION_LEASE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_CONFIGURED_RESET_PAGES: usize = 4096;
 const MAX_CONFIGURED_RESET_DURATION: Duration = Duration::from_secs(4 * 60 * 60);
+const MAX_CONSECUTIVE_REMOTE_PROGRESS_TICKS: u8 = 4;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum OwnerLaneTurn {
+    #[default]
+    Remote,
+    Engine,
+}
+
+/// Bounds how many productive remote polls may run before one engine-lane
+/// turn. A remote poll is still synchronous and cannot be preempted once it
+/// starts; this only prevents a continuously productive remote inbox from
+/// winning every successive owner-loop turn.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct OwnerLaneSchedule {
+    consecutive_remote_progress: u8,
+}
+
+impl OwnerLaneSchedule {
+    const fn next_turn(self) -> OwnerLaneTurn {
+        if self.consecutive_remote_progress >= MAX_CONSECUTIVE_REMOTE_PROGRESS_TICKS {
+            OwnerLaneTurn::Engine
+        } else {
+            OwnerLaneTurn::Remote
+        }
+    }
+
+    fn remote_polled(&mut self, progressed: bool) {
+        self.consecutive_remote_progress = if progressed {
+            self.consecutive_remote_progress
+                .saturating_add(1)
+                .min(MAX_CONSECUTIVE_REMOTE_PROGRESS_TICKS)
+        } else {
+            0
+        };
+    }
+
+    fn engine_polled(&mut self) {
+        self.consecutive_remote_progress = 0;
+    }
+}
 
 /// Owner-local bounds on retained subscription roots and lease lifetimes.
 /// Successful exact snapshot-page progress may renew one lease for its
@@ -157,6 +198,7 @@ pub struct LocaldOwner<
     completion: C,
     replication: R,
     semantic_ranges: S,
+    owner_lane_schedule: OwnerLaneSchedule,
     leases: BTreeMap<LocalSubscriptionId, DurableLease>,
     next_lease_expiry: Option<Instant>,
     lease_limits: SubscriptionLeaseLimits,
@@ -1231,6 +1273,7 @@ where
             completion: NoCompletionAdmission,
             replication: NoReplicationAdmission,
             semantic_ranges: NoSemanticRangeAdmission,
+            owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: BTreeMap::new(),
             next_lease_expiry: None,
             lease_limits: SubscriptionLeaseLimits::default(),
@@ -1256,6 +1299,7 @@ where
             completion,
             replication: NoReplicationAdmission,
             semantic_ranges: NoSemanticRangeAdmission,
+            owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: BTreeMap::new(),
             next_lease_expiry: None,
             lease_limits: SubscriptionLeaseLimits::default(),
@@ -1279,6 +1323,7 @@ where
             completion,
             replication,
             semantic_ranges: NoSemanticRangeAdmission,
+            owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: BTreeMap::new(),
             next_lease_expiry: None,
             lease_limits: SubscriptionLeaseLimits::default(),
@@ -1305,6 +1350,7 @@ where
             completion,
             replication,
             semantic_ranges,
+            owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: BTreeMap::new(),
             next_lease_expiry: None,
             lease_limits: SubscriptionLeaseLimits::default(),
@@ -1458,8 +1504,22 @@ where
         // the composition's bounded inbox first, then run one fair engine
         // lane. A later client request can therefore observe durable output
         // from a completion that arrived out of order.
-        let remote_progress = self.replication.poll(&mut self.daemon);
-        let engine_progress = !remote_progress && self.daemon.serve_one();
+        let (remote_progress, engine_progress) = match self.owner_lane_schedule.next_turn() {
+            OwnerLaneTurn::Remote => {
+                let remote_progress = self.replication.poll(&mut self.daemon);
+                if remote_progress {
+                    self.owner_lane_schedule.remote_polled(true);
+                    (true, false)
+                } else {
+                    self.owner_lane_schedule.remote_polled(false);
+                    (false, self.daemon.serve_one())
+                }
+            }
+            OwnerLaneTurn::Engine => {
+                self.owner_lane_schedule.engine_polled();
+                (false, self.daemon.serve_one())
+            }
+        };
         expired || remote_progress || engine_progress
     }
 
