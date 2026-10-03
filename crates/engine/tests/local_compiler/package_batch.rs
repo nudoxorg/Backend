@@ -21,9 +21,10 @@ use backend_library::interface::{
 };
 use backend_semantic::ir::{
     CanonicalPlaneStreamError, CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink,
-    CoreDeclarationRows, MAX_SEMANTIC_SEGMENT_BYTES, SemanticImageView, SemanticIrPlane,
-    SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneRecordError, SemanticSegmentId,
-    reset_semantic_image_validations, semantic_image_validations, stream_canonical_plane_family,
+    CoreDeclarationRows, ImageProvenance, MAX_SEMANTIC_SEGMENT_BYTES, SemanticCoreReader,
+    SemanticImageView, SemanticIrPlane, SemanticPlaneKind, SemanticPlaneManifest,
+    SemanticPlaneRecordError, SemanticSegmentId, reset_semantic_image_validations,
+    semantic_image_validations, stream_canonical_plane_family,
 };
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CStandard, LanguageProfile, NativeTool, Stage,
@@ -320,7 +321,60 @@ fn rust_package_staging_keeps_detached_sources_out_of_artifact_and_coverage_acco
         backend_version::Coverage::Partial
     );
     assert_eq!(staged.output_object_count(), 7);
-    assert_eq!(staged.versioned_planes()?.artifacts().len(), 3);
+    let versioned = staged.versioned_planes()?;
+    assert_eq!(versioned.artifacts().len(), 3);
+    let package_target = CompilerPackageTargetV2::for_package(request.as_ref().clone());
+    let runtime_identity = client
+        .execution_identity_for_unit(
+            &package_target,
+            request.target.profile,
+            request.target.stage,
+        )
+        .ok_or("opened Rust capability must expose its exact runtime identity")?;
+    let mut source_recipes = Vec::new();
+    for (ordinal, artifact) in versioned.artifacts().iter().enumerate() {
+        let manifest = SemanticPlaneManifest::decode(artifact.manifest_bytes())?;
+        let image_facts = staged.with_semantic_reader(ordinal, |reader, _| {
+            Ok::<_, std::io::Error>(reader.image_facts())
+        })?;
+        let ImageProvenance::Captured { recipe, .. } = image_facts.provenance else {
+            return Err("production compiler image has no captured recipe provenance".into());
+        };
+        assert_eq!(
+            manifest.build().recipe(),
+            recipe.identity.as_ref(),
+            "each emitted manifest must join its exact reopened source recipe"
+        );
+        assert_eq!(manifest.build().profile(), recipe.profile);
+        assert_eq!(manifest.build().stage(), recipe.stage);
+        assert_eq!(
+            manifest.build().target(),
+            runtime_identity.target().as_ref()
+        );
+        assert_eq!(
+            manifest.build().toolchain(),
+            recipe.toolchain.as_ref(),
+            "the strict typed-plane build/image toolchain join must remain exact"
+        );
+        assert_eq!(
+            manifest.build().toolchain(),
+            &runtime_identity.toolchain_identity()
+        );
+        assert_eq!(
+            manifest.build().environment(),
+            &runtime_identity.environment_identity()
+        );
+        assert_eq!(
+            manifest.build().target_platform(),
+            &runtime_identity.target_platform_identity()
+        );
+        source_recipes.push(*manifest.build().recipe());
+    }
+    source_recipes.sort_unstable();
+    assert!(
+        source_recipes.windows(2).all(|pair| pair[0] != pair[1]),
+        "distinct source images must retain distinct source-bound recipes"
+    );
     assert_eq!(
         staged.embedding_status(),
         StagedEmbeddingStatus::NotConfigured

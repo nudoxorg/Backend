@@ -732,7 +732,6 @@ struct VersionedPlaneInputBinding {
     target: [u8; 32],
     profile: backend_semantic::vocabulary::LanguageProfile,
     stage: backend_semantic::vocabulary::Stage,
-    recipe: [u8; 32],
     toolchain: [u8; 32],
     environment: [u8; 32],
     target_platform: [u8; 32],
@@ -748,7 +747,6 @@ impl VersionedPlaneInputBinding {
             target: *manifest.package_target().target().as_ref(),
             profile: manifest.profile(),
             stage: manifest.stage(),
-            recipe: *recipe.identity().as_ref(),
             toolchain: *recipe.toolchain().as_ref(),
             environment: recipe.environment(),
             target_platform: recipe.target_platform(),
@@ -1011,11 +1009,14 @@ fn validate_versioned_plane_output(
         }
         let build = manifest.build();
         let input = manifest.input();
+        // The output artifact's source recipe was already matched to the
+        // assignment's invocation recipe and the reopened image. This per-image
+        // build field must repeat that exact source-bound recipe identity.
         if build.package() != &expected.package
             || build.target() != &expected.target
             || build.profile() != expected.profile
             || build.stage() != expected.stage
-            || build.recipe() != &expected.recipe
+            || build.recipe() != artifact.recipe().identity.as_ref()
             || build.toolchain() != &expected.toolchain
             || build.environment() != &expected.environment
             || build.target_platform() != &expected.target_platform
@@ -1310,7 +1311,8 @@ mod tests {
             .ok_or("clang is required for the result recipe regression")?;
         let libclang = std::env::var_os("LIBCLANG_PATH")
             .ok_or("LIBCLANG_PATH is required for the result recipe regression")?;
-        let environment = backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)?;
+        let environment =
+            backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)?;
         let clang = environment.driver().to_path_buf();
         let version = Command::new(&clang).arg("--version").output()?;
         if !version.status.success() {
@@ -1430,7 +1432,6 @@ mod tests {
             target: *build.target(),
             profile: build.profile(),
             stage: build.stage(),
-            recipe: *build.recipe(),
             toolchain: *build.toolchain(),
             environment: *build.environment(),
             target_platform: *build.target_platform(),
@@ -1569,6 +1570,18 @@ mod tests {
         assert_eq!(
             admitted_output.versioned_plane_artifacts()[0].artifact_ordinal(),
             0
+        );
+        let admitted_plane_manifest = SemanticPlaneManifest::decode(
+            admitted_output.versioned_plane_artifacts()[0].manifest_bytes(),
+        )?;
+        assert_eq!(
+            admitted_plane_manifest.build().recipe(),
+            admitted_output.artifacts()[0].recipe().identity.as_ref(),
+            "plane recipe is the admitted source recipe, not the invocation-level recipe"
+        );
+        assert_eq!(
+            admitted_plane_manifest.build().environment(),
+            &plane_input.environment
         );
         assert_eq!(
             admitted_output.versioned_plane_artifacts()[0].semantic_generation(),
@@ -2208,6 +2221,21 @@ mod tests {
         let mut members = Vec::new();
         let mut objects = Vec::new();
         for artifact_ordinal in 0..staged.artifacts().len() {
+            let artifact = staged
+                .artifacts()
+                .get(artifact_ordinal)
+                .ok_or("staged semantic artifact is absent")?;
+            let source_recipe = artifact.recipe();
+            let artifact_build = SemanticBuildIdentity::new(
+                *build.package(),
+                *build.target(),
+                build.profile(),
+                build.stage(),
+                *source_recipe.identity.as_ref(),
+                *build.toolchain(),
+                *build.environment(),
+                *build.target_platform(),
+            );
             let image = staged
                 .semantic_output_object(artifact_ordinal)
                 .ok_or("staged semantic image claim is absent")?;
@@ -2254,7 +2282,7 @@ mod tests {
                 )?);
                 segment_payloads.push(EMBEDDING_PAYLOAD);
             }
-            let manifest = SemanticPlaneManifest::new(generation, build, input, planes)?;
+            let manifest = SemanticPlaneManifest::new(generation, artifact_build, input, planes)?;
             let manifest_bytes = manifest.encode()?;
             let image_claim =
                 crate::application::compiler_result_output_claim(image.claim(), image.bytes())?;

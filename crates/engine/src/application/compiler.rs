@@ -1047,11 +1047,11 @@ impl StagedSemanticPackage {
 
     /// Builds one exact per-image manifest over bounded ranges of the canonical IR bytes.
     ///
-    /// The portable runtime identity is preferred when available. Local-only authorities use a
-    /// distinct host-scoped identity which commits the exact input witness but cannot be promoted
-    /// to worker portability. A source-only witness remains Partial because it does not prove
-    /// config files, negative reads, or ambient-read completeness. Payload bytes are borrowed from
-    /// the existing canonical image buffer, so creating a range bundle does not copy a full image.
+    /// The portable or host-local runtime identity gates publication and binds the exact runtime
+    /// fields. Each image retains its source-bound recipe; a source-only witness remains Partial
+    /// because it does not prove config files, negative reads, or ambient-read completeness.
+    /// Payload bytes are borrowed from the existing canonical image buffer, so creating a range
+    /// bundle does not copy a full image.
     pub fn versioned_planes(&self) -> Result<StagedVersionedPlanes<'_>, StagedVersionedPlaneError> {
         if self
             .plane_execution_identity
@@ -1059,27 +1059,26 @@ impl StagedSemanticPackage {
         {
             return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
         }
-        let (target, profile, stage, toolchain, environment, target_platform, recipe) =
+        let (target, profile, stage, tool, toolchain, environment, target_platform) =
             if let Some(identity) = self.execution_identity {
-                let recipe = identity.invocation_recipe();
                 (
                     identity.target(),
                     identity.profile(),
                     identity.stage(),
+                    identity.toolchain(),
                     identity.toolchain_identity(),
                     identity.environment_identity(),
                     identity.target_platform_identity(),
-                    *recipe.identity().as_ref(),
                 )
             } else if let Some(identity) = self.plane_execution_identity {
                 (
                     identity.target(),
                     identity.profile(),
                     identity.stage(),
+                    identity.toolchain(),
                     identity.toolchain_identity(),
                     identity.environment_identity(),
                     identity.target_platform_identity(),
-                    identity.recipe_identity().as_bytes(),
                 )
             } else {
                 return Err(StagedVersionedPlaneError::ExecutionIdentityUnavailable);
@@ -1087,16 +1086,6 @@ impl StagedSemanticPackage {
         if target != self.target_identity || profile != self.profile || stage != self.stage {
             return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
         }
-        let build = SemanticBuildIdentity::new(
-            self.package_identity,
-            *target.as_ref(),
-            profile,
-            stage,
-            recipe,
-            toolchain,
-            environment,
-            target_platform,
-        );
         let input = self.input;
         let mut output = Vec::new();
         output
@@ -1104,6 +1093,33 @@ impl StagedSemanticPackage {
             .map_err(StagedVersionedPlaneError::Allocation)?;
 
         for artifact_ordinal in 0..self.artifacts.len() {
+            let artifact = self
+                .artifacts
+                .get(artifact_ordinal)
+                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+            let recipe = artifact.recipe();
+            if recipe.profile != profile
+                || recipe.stage != stage
+                || recipe.tool != tool
+                || recipe.toolchain.as_ref() != &toolchain
+            {
+                return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
+            }
+            // Build identity is per semantic image. `CompileRecipeFact` binds
+            // the exact source image, while the remaining build fields retain
+            // the runtime, toolchain, environment, and platform authorities.
+            // The invocation/local-plane recipe is not interchangeable with
+            // this source-bound identity and must not be placed in this field.
+            let build = SemanticBuildIdentity::new(
+                self.package_identity,
+                *target.as_ref(),
+                profile,
+                stage,
+                *recipe.identity.as_ref(),
+                toolchain,
+                environment,
+                target_platform,
+            );
             let input_ordinal = *self
                 .prepared
                 .canonical_ordinals
