@@ -258,38 +258,58 @@ fn resolve_relative(value: &str, directory: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{error::Error, io};
 
-    #[test]
-    fn missing_database_yields_none() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(CompileCommands::load(dir.path()).is_none());
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn tempdir() -> Result<tempfile::TempDir, io::Error> {
+        tempfile::tempdir()
+    }
+
+    fn utf8_path(path: &Path) -> Result<&str, io::Error> {
+        path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("temporary path is not UTF-8: {}", path.display()),
+            )
+        })
     }
 
     #[test]
-    fn arguments_form_is_indexed_by_canonical_path_with_source_and_driver_stripped() {
-        let dir = tempfile::tempdir().unwrap();
+    fn missing_database_yields_none() -> TestResult {
+        let dir = tempdir()?;
+        assert!(CompileCommands::load(dir.path()).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn arguments_form_is_indexed_by_canonical_path_with_source_and_driver_stripped() -> TestResult {
+        let dir = tempdir()?;
         let src_dir = dir.path().join("src");
-        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&src_dir)?;
         let file_path = src_dir.join("main.c");
-        std::fs::write(&file_path, "int main(void) { return 0; }\n").unwrap();
+        std::fs::write(&file_path, "int main(void) { return 0; }\n")?;
 
         let db = serde_json::json!([
             {
-                "directory": dir.path().to_str().unwrap(),
+                "directory": utf8_path(dir.path())?,
                 "file": "src/main.c",
                 "arguments": ["cc", "-Iinclude", "-DFOO=1", "-std=c11", "-c", "-o", "main.o", "src/main.c"],
             }
         ]);
-        std::fs::write(dir.path().join("compile_commands.json"), db.to_string()).unwrap();
+        std::fs::write(dir.path().join("compile_commands.json"), db.to_string())?;
 
-        let cc = CompileCommands::load(dir.path()).expect("database must load");
-        let args = cc.args_for(&file_path).expect("main.c must be listed");
+        let cc = CompileCommands::load(dir.path())
+            .ok_or_else(|| io::Error::other("valid compile database was not loaded"))?;
+        let args = cc
+            .args_for(&file_path)
+            .ok_or_else(|| io::Error::other("main.c was not indexed from compile database"))?;
 
         // `-Iinclude` is relative to `directory` per the spec, so it must
         // come out rewritten to an absolute path, not the literal string —
         // see `rewrite_relative_include_paths`. The anchor is the canonical
         // directory so a symlinked temp path matches libclang's own spelling.
-        let canonical = dir.path().canonicalize().unwrap();
+        let canonical = dir.path().canonicalize()?;
         let expected_include = format!("-I{}", canonical.join("include").display());
         assert!(args.contains(&expected_include), "got {args:?}");
         assert!(args.contains(&"-DFOO=1".to_owned()), "got {args:?}");
@@ -314,29 +334,34 @@ mod tests {
             !args.iter().any(|a| a.ends_with("main.c")),
             "source file must be stripped (extract_file supplies it separately): {args:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn command_form_is_split_and_filtered_the_same_way() {
-        let dir = tempfile::tempdir().unwrap();
+    fn command_form_is_split_and_filtered_the_same_way() -> TestResult {
+        let dir = tempdir()?;
         let file_path = dir.path().join("lib.cpp");
-        std::fs::write(&file_path, "int f() { return 0; }\n").unwrap();
+        std::fs::write(&file_path, "int f() { return 0; }\n")?;
 
         let db = serde_json::json!([
             {
-                "directory": dir.path().to_str().unwrap(),
+                "directory": utf8_path(dir.path())?,
                 "file": "lib.cpp",
                 "command": "c++ -Iinclude -std=c++17 -c -o lib.o lib.cpp",
             }
         ]);
-        std::fs::write(dir.path().join("compile_commands.json"), db.to_string()).unwrap();
+        std::fs::write(dir.path().join("compile_commands.json"), db.to_string())?;
 
-        let cc = CompileCommands::load(dir.path()).expect("database must load");
-        let args = cc.args_for(&file_path).expect("lib.cpp must be listed");
-        let canonical = dir.path().canonicalize().unwrap();
+        let cc = CompileCommands::load(dir.path())
+            .ok_or_else(|| io::Error::other("valid compile database was not loaded"))?;
+        let args = cc
+            .args_for(&file_path)
+            .ok_or_else(|| io::Error::other("lib.cpp was not indexed from compile database"))?;
+        let canonical = dir.path().canonicalize()?;
         let expected_include = format!("-I{}", canonical.join("include").display());
         assert!(args.contains(&expected_include), "got {args:?}");
         assert!(args.contains(&"-std=c++17".to_owned()), "got {args:?}");
+        Ok(())
     }
 
     #[test]
@@ -376,49 +401,53 @@ mod tests {
     }
 
     #[test]
-    fn unlisted_file_yields_none_not_empty_args() {
-        let dir = tempfile::tempdir().unwrap();
+    fn unlisted_file_yields_none_not_empty_args() -> TestResult {
+        let dir = tempdir()?;
         let listed = dir.path().join("listed.c");
         let unlisted = dir.path().join("unlisted.c");
-        std::fs::write(&listed, "").unwrap();
-        std::fs::write(&unlisted, "").unwrap();
+        std::fs::write(&listed, "")?;
+        std::fs::write(&unlisted, "")?;
 
         let db = serde_json::json!([
             {
-                "directory": dir.path().to_str().unwrap(),
+                "directory": utf8_path(dir.path())?,
                 "file": "listed.c",
                 "arguments": ["cc", "-std=c11", "-c", "-o", "listed.o", "listed.c"],
             }
         ]);
-        std::fs::write(dir.path().join("compile_commands.json"), db.to_string()).unwrap();
+        std::fs::write(dir.path().join("compile_commands.json"), db.to_string())?;
 
-        let cc = CompileCommands::load(dir.path()).expect("database must load");
+        let cc = CompileCommands::load(dir.path())
+            .ok_or_else(|| io::Error::other("valid compile database was not loaded"))?;
         assert!(cc.args_for(&listed).is_some());
         assert!(
             cc.args_for(&unlisted).is_none(),
             "a file absent from the database must fall back to defaults, not an empty arg list"
         );
+        Ok(())
     }
 
     #[test]
-    fn database_in_build_subdirectory_is_found() {
-        let dir = tempfile::tempdir().unwrap();
+    fn database_in_build_subdirectory_is_found() -> TestResult {
+        let dir = tempdir()?;
         let build_dir = dir.path().join("build");
-        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::create_dir_all(&build_dir)?;
         let file_path = dir.path().join("a.c");
-        std::fs::write(&file_path, "").unwrap();
+        std::fs::write(&file_path, "")?;
 
         let db = serde_json::json!([
             {
-                "directory": dir.path().to_str().unwrap(),
+                "directory": utf8_path(dir.path())?,
                 "file": "a.c",
                 "arguments": ["cc", "-std=c11", "-c", "a.c"],
             }
         ]);
-        std::fs::write(build_dir.join("compile_commands.json"), db.to_string()).unwrap();
+        std::fs::write(build_dir.join("compile_commands.json"), db.to_string())?;
 
-        let cc =
-            CompileCommands::load(dir.path()).expect("database under nix/build/ must be found");
+        let cc = CompileCommands::load(dir.path()).ok_or_else(|| {
+            io::Error::other("valid compile database under build/ was not loaded")
+        })?;
         assert!(cc.args_for(&file_path).is_some());
+        Ok(())
     }
 }

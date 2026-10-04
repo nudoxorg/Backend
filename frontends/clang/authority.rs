@@ -856,22 +856,24 @@ fn header_looks_like_cpp(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::process::Command;
+    use std::{error::Error, io};
+
+    type TestResult = Result<(), Box<dyn Error>>;
 
     #[cfg(unix)]
     #[test]
-    fn same_version_drivers_keep_their_resource_and_sysroot_authorities_distinct() {
-        let temp = tempfile::tempdir().expect("temporary fixture");
-        let first = fixture_toolchain(temp.path(), "first");
-        let second = fixture_toolchain(temp.path(), "second");
-        let first_environment = ClangAuthorityEnvironment::probe(
-            &first.0,
-            first.1.parent().expect("library directory"),
-        )
-        .expect("first toolchain probe");
-        let second_environment =
-            ClangAuthorityEnvironment::probe(&second.0, &second.1).expect("second toolchain probe");
+    fn same_version_drivers_keep_their_resource_and_sysroot_authorities_distinct() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let first = fixture_toolchain(temp.path(), "first")?;
+        let second = fixture_toolchain(temp.path(), "second")?;
+        let first_libclang_directory = first.1.parent().ok_or_else(|| {
+            io::Error::other("first libclang fixture has no containing directory")
+        })?;
+        let first_environment =
+            ClangAuthorityEnvironment::probe(&first.0, first_libclang_directory)?;
+        let second_environment = ClangAuthorityEnvironment::probe(&second.0, &second.1)?;
 
-        assert_eq!(driver_version(&first.0), driver_version(&second.0));
+        assert_eq!(driver_version(&first.0)?, driver_version(&second.0)?);
         assert_ne!(first_environment.driver(), second_environment.driver());
         assert_ne!(
             first_environment.resource_dir(),
@@ -882,54 +884,52 @@ mod tests {
             first_environment.system_include_dirs(),
             second_environment.system_include_dirs()
         );
-        assert_eq!(
-            first_environment.libclang_path(),
-            first.1.canonicalize().unwrap()
-        );
-        assert_eq!(
-            second_environment.libclang_path(),
-            second.1.canonicalize().unwrap()
-        );
+        assert_eq!(first_environment.libclang_path(), first.1.canonicalize()?);
+        assert_eq!(second_environment.libclang_path(), second.1.canonicalize()?);
 
         let package = temp.path().join("first-package");
-        fs::create_dir_all(&package).expect("package root");
+        fs::create_dir_all(&package)?;
         let entry = package.join("entry.cpp");
-        fs::write(&entry, "int main() { return 0; }\n").expect("entry source");
+        fs::write(&entry, "int main() { return 0; }\n")?;
         let project =
-            ClangProject::open_with_environment(&package, &entry, first_environment.clone())
-                .expect("selected project");
+            ClangProject::open_with_environment(&package, &entry, first_environment.clone())?;
         let arguments = project.arguments();
+        let sysroot = first_environment
+            .sysroot()
+            .ok_or_else(|| io::Error::other("fixture Clang driver did not provide a sysroot"))?;
+        let system_include = first_environment
+            .system_include_dirs()
+            .first()
+            .ok_or_else(|| {
+                io::Error::other("fixture Clang driver did not provide an include directory")
+            })?;
         assert!(arguments.windows(2).any(|pair| {
             pair == [
                 "-resource-dir",
                 first_environment.resource_dir().to_string_lossy().as_ref(),
             ]
         }));
-        assert!(arguments.iter().any(|argument| {
-            argument
-                == &format!(
-                    "--sysroot={}",
-                    first_environment.sysroot().unwrap().display()
-                )
-        }));
-        assert!(arguments.windows(2).any(|pair| {
-            pair == [
-                "-isystem",
-                first_environment.system_include_dirs()[0]
-                    .to_string_lossy()
-                    .as_ref(),
-            ]
-        }));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| { argument == &format!("--sysroot={}", sysroot.display()) })
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| { pair == ["-isystem", system_include.to_string_lossy().as_ref(),] })
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn hostile_parent_selectors_cannot_redirect_the_explicit_driver_probe() {
-        let temp = tempfile::tempdir().expect("temporary fixture");
-        let selected = fixture_toolchain(temp.path(), "selected");
-        let hostile = fixture_toolchain(temp.path(), "hostile");
+    fn hostile_parent_selectors_cannot_redirect_the_explicit_driver_probe() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let selected = fixture_toolchain(temp.path(), "selected")?;
+        let hostile = fixture_toolchain(temp.path(), "hostile")?;
         let root = temp.path().to_string_lossy().into_owned();
-        let output = Command::new(std::env::current_exe().expect("test executable"))
+        let output = Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "authority::tests::hostile_parent_environment_child",
@@ -941,8 +941,7 @@ mod tests {
             .env("NUDOX_CLANG_DRIVER", &hostile.0)
             .env("LIBCLANG_PATH", &hostile.1)
             .env("PATH", temp.path().join("no-tools-here"))
-            .output()
-            .expect("isolated child test");
+            .output()?;
         assert!(
             output.status.success(),
             "hostile environment child failed: {}",
@@ -951,39 +950,37 @@ mod tests {
 
         // The child resolves only the paths passed through this explicit test
         // channel. All ambient selectors above point at the hostile fixture.
-        let explicit = ClangAuthorityEnvironment::probe(&selected.0, &selected.1)
-            .expect("explicit selected toolchain");
-        assert_eq!(explicit.driver(), selected.0.canonicalize().unwrap());
-        assert_eq!(explicit.libclang_path(), selected.1.canonicalize().unwrap());
+        let explicit = ClangAuthorityEnvironment::probe(&selected.0, &selected.1)?;
+        assert_eq!(explicit.driver(), selected.0.canonicalize()?);
+        assert_eq!(explicit.libclang_path(), selected.1.canonicalize()?);
         assert_ne!(explicit.resource_dir(), Path::new("/opt/hostile/resource"));
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn hostile_parent_environment_child() {
+    fn hostile_parent_environment_child() -> TestResult {
         let Ok(root) = std::env::var("CLANG_AUTHORITY_TEST_ROOT") else {
-            return;
+            return Ok(());
         };
         let root = PathBuf::from(root);
         let environment = ClangAuthorityEnvironment::probe(
             root.join("selected-driver"),
             root.join("selected").join(libclang_file_name()),
-        )
-        .expect("the explicit selected toolchain wins over hostile parent variables");
+        )?;
         assert_eq!(
             environment.driver(),
-            root.join("selected-driver").canonicalize().unwrap()
+            root.join("selected-driver").canonicalize()?
         );
         assert_eq!(
             environment.resource_dir(),
-            root.join("selected/resource").canonicalize().unwrap()
+            root.join("selected/resource").canonicalize()?
         );
         assert_eq!(
             environment.libclang_path(),
             root.join("selected")
                 .join(libclang_file_name())
-                .canonicalize()
-                .unwrap()
+                .canonicalize()?
         );
         assert_eq!(
             environment.child_environment()[0].1.as_os_str(),
@@ -993,6 +990,7 @@ mod tests {
             environment.load_configured_libclang(),
             Err(ClangAuthorityError::LibclangEnvironmentMismatch { .. })
         ));
+        Ok(())
     }
 
     /// The Nix wrapper and Apple's Clang answer `-print-sysroot` with "unknown
@@ -1000,11 +998,11 @@ mod tests {
     /// dump. The authority a desktop owner boots on must still carry that SDK.
     #[cfg(unix)]
     #[test]
-    fn a_driver_that_rejects_print_sysroot_still_hands_libclang_its_sysroot() {
+    fn a_driver_that_rejects_print_sysroot_still_hands_libclang_its_sysroot() -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let temp = tempfile::tempdir().expect("temporary fixture");
-        let (driver, libclang) = fixture_toolchain(temp.path(), "wrapper");
+        let temp = tempfile::tempdir()?;
+        let (driver, libclang) = fixture_toolchain(temp.path(), "wrapper")?;
         let sysroot = temp.path().join("wrapper").join("sysroot");
         let include = temp.path().join("wrapper").join("include");
         let resource = temp.path().join("wrapper").join("resource");
@@ -1014,41 +1012,40 @@ mod tests {
             shell_quote(&sysroot),
             shell_quote(&include),
         );
-        fs::write(&driver, script).expect("rewrite the driver as the wrapper");
-        fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).expect("executable driver");
+        fs::write(&driver, script)?;
+        fs::set_permissions(&driver, fs::Permissions::from_mode(0o755))?;
 
-        let environment = ClangAuthorityEnvironment::probe(&driver, &libclang)
-            .expect("a driver that rejects -print-sysroot is admitted");
+        let environment = ClangAuthorityEnvironment::probe(&driver, &libclang)?;
+        let canonical_sysroot = sysroot.canonicalize()?;
 
-        assert_eq!(
-            environment.sysroot(),
-            Some(sysroot.canonicalize().unwrap().as_path())
-        );
+        assert_eq!(environment.sysroot(), Some(canonical_sysroot.as_path()));
         let package = temp.path().join("package");
-        fs::create_dir_all(&package).expect("package root");
+        fs::create_dir_all(&package)?;
         let entry = package.join("entry.cpp");
-        fs::write(&entry, "int main() { return 0; }\n").expect("entry source");
-        let project = ClangProject::open_with_environment(&package, &entry, environment)
-            .expect("selected project");
+        fs::write(&entry, "int main() { return 0; }\n")?;
+        let project = ClangProject::open_with_environment(&package, &entry, environment)?;
         assert!(
-            project.arguments().iter().any(|argument| argument
-                == &format!("--sysroot={}", sysroot.canonicalize().unwrap().display())),
+            project
+                .arguments()
+                .iter()
+                .any(|argument| argument == &format!("--sysroot={}", canonical_sysroot.display())),
             "libclang is given the SDK the driver names: {:?}",
             project.arguments()
         );
+        Ok(())
     }
 
     #[cfg(unix)]
-    fn fixture_toolchain(root: &Path, name: &str) -> (PathBuf, PathBuf) {
+    fn fixture_toolchain(root: &Path, name: &str) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
         use std::os::unix::fs::PermissionsExt as _;
 
         let fixture = root.join(name);
         let resource = fixture.join("resource");
         let sysroot = fixture.join("sysroot");
         let include = fixture.join("include");
-        fs::create_dir_all(&resource).expect("resource dir");
-        fs::create_dir_all(&sysroot).expect("sysroot dir");
-        fs::create_dir_all(&include).expect("include dir");
+        fs::create_dir_all(&resource)?;
+        fs::create_dir_all(&sysroot)?;
+        fs::create_dir_all(&include)?;
         let driver = root.join(format!("{name}-driver"));
         let script = format!(
             "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'clang version 18.1.0';;\n  -print-resource-dir) printf '%s\\n' {};;\n  -print-sysroot) printf '%s\\n' {};;\n  -v) printf '#include <...> search starts here:\\n %s\\nEnd of search list.\\n' {} >&2;;\n  *) exit 2;;\nesac\n",
@@ -1056,14 +1053,14 @@ mod tests {
             shell_quote(&sysroot),
             shell_quote(&include),
         );
-        fs::write(&driver, script).expect("driver script");
-        let mut permissions = fs::metadata(&driver).unwrap().permissions();
+        fs::write(&driver, script)?;
+        let mut permissions = fs::metadata(&driver)?.permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&driver, permissions).expect("executable driver");
+        fs::set_permissions(&driver, permissions)?;
 
         let libclang = fixture.join(libclang_file_name());
-        fs::write(&libclang, b"fixture library").expect("library marker");
-        (driver, libclang)
+        fs::write(&libclang, b"fixture library")?;
+        Ok((driver, libclang))
     }
 
     #[cfg(unix)]
@@ -1082,12 +1079,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn driver_version(driver: &Path) -> String {
-        let output = Command::new(driver)
-            .arg("--version")
-            .env_clear()
-            .output()
-            .expect("driver version");
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    fn driver_version(driver: &Path) -> Result<String, Box<dyn Error>> {
+        let output = Command::new(driver).arg("--version").env_clear().output()?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 }
