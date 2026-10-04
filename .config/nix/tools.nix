@@ -481,7 +481,15 @@ let
           root=$(mktemp -d "''${TMPDIR:-/tmp}/nudox-gui-service-test.XXXXXX")
           endpoint="$root/locald.sock"
           workspace="$root/workspace"
-          cleanup() { "$bin_dir/nudox-gui-service" stop --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1 || true; rm -rf "$root"; }
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ -f "$endpoint.log" ]; then
+              echo "--- backend-locald log (exit $status) ---" >&2
+              tail -n 60 "$endpoint.log" >&2
+            fi
+            "$bin_dir/nudox-gui-service" stop --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1 || true
+            rm -rf "$root"
+          }
           trap cleanup EXIT HUP INT TERM
           "$bin_dir/nudox-gui-service" start --endpoint "$endpoint" --workspace "$workspace"
           "$bin_dir/nudox-gui-service" status --endpoint "$endpoint" --workspace "$workspace" >/dev/null
