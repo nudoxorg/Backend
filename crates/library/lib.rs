@@ -154,7 +154,8 @@ pub use graph_query::{
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use package_graph::{
-    CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
+    BorrowedPackageGraphSourceState, CheckedPackageGraphFacts,
+    CheckedPackageGraphSourceWitness, DependencyAuthority, DependencyEvidence, DependencyFacts,
     DependencyScope, DependentSources, IndexedCheckedPackageGraph, MAX_PACKAGE_GRAPH_ROWS,
     PackageDependencyLookup, PackageDependencyRecord, PackageDependencySourceFacts,
     PackageDependencyTarget, PackageGraphAdmissionError, PackageGraphIndexLimits,
@@ -239,8 +240,9 @@ pub use surface::{
     IndexOperationUnresolvedReason, IndexProgressPage, IndexSearchCursor, IndexSearchPage,
     IndexSearchResultCount, IndexStartResult, MAX_INDEX_PROGRESS_EVENTS,
     MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES, PackageCoordinate,
-    PackageReference, ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord,
-    ProjectSelector, ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
+    PackageReference, PackageReferenceKind, ProductAdmissionError, ProductText, ProjectId,
+    ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord, RegistryDiscoveryAdvisory,
+    RegistryDiscoveryCandidate,
     RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
     RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
     RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
