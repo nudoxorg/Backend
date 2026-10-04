@@ -1,4 +1,7 @@
 #!/bin/sh
+# Development-only convenience bundle. Do not use this as a release pipeline;
+# verified distribution uses tools/package/macos-investor-bundle.py and its
+# exact-source build and QA protocol in docs/operations/macos-investor-bundle-2026-10-04.md.
 set -eu
 
 profile="${1:-release}"
