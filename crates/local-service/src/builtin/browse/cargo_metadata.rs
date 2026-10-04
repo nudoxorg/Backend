@@ -6,7 +6,7 @@
 
 use super::{
     CargoMetadataLockState, CargoToolSelection, CargoToolWitnessReuse, CoherentMetadata,
-    InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_DEPTH, MAX_CARGO_CONFIG_INPUTS,
+    InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_INPUTS,
     MAX_CARGO_METADATA_PACKAGES, MAX_CARGO_METADATA_TARGETS_PER_PACKAGE,
     MAX_CARGO_OBSERVATION_FILE_BYTES, MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES,
     RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_config_relative_path_base,

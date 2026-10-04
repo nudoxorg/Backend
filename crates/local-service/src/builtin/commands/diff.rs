@@ -1,14 +1,10 @@
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ProductSourceRecord, RegistryGateway,
-    WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
-    publish_builtin_view,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinValidator,
 };
 use super::snapshot::{
-    SemanticDeclaration, SemanticLinkSummary, SemanticPackageSnapshot, semantic_confidence,
-    semantic_declaration_identity, semantic_link_evidence, semantic_link_kind,
-    semantic_link_target, semantic_package_snapshot,
+    SemanticDeclaration, SemanticLinkSummary, SemanticPackageSnapshot,
+    semantic_declaration_identity, semantic_link_kind, semantic_link_target,
+    semantic_package_snapshot,
 };
 use backend_engine::application::LocalCompilerClient;
 use backend_semantic::ir::StableLinkKey;

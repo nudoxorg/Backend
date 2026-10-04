@@ -28,8 +28,8 @@ use backend_engine::cluster_transport::{
     AcceptedClusterConnection, AdmissionPolicy, AssignmentScope, Capability, CapabilityIssuer,
     ChunkRange, ClusterListener, CompilerProbeDemand, CompilerProbePage, CompilerProbeSession,
     ControlChannel, ControlGrantPage, ControlMessage, ControlResultAck, ControlResultRecoveryQuery,
-    ControlResultRecoveryState, ControlResultRecoveryStatus, ControlResultRetired,
-    ControlResultRetirementApplied, ControlResultRetirementConfirm, ControlRole, Endpoint,
+    ControlResultRecoveryState, ControlResultRetired, ControlResultRetirementConfirm, ControlRole,
+    Endpoint,
     EndpointAddr, EndpointId, GrantDirection, MAX_CONTROL_GRANT_PAGES, MAX_OFFER_CAPABILITIES,
     MAX_PROBE_LIFETIME_MS, MAX_PROBE_OBJECTS_PER_PAGE, MAX_PROBE_PAGES, MAX_RANGE_CHUNKS,
     MAX_RESPONSE_BYTES, OwnerClusterAdmissionRegistry, ProbeCapability, ProbeInventoryDescriptor,
@@ -616,7 +616,7 @@ pub(crate) struct OwnerCompilerClusterRuntime {
     owner_address: EndpointAddr,
     issuer: CapabilityIssuer,
     owner_id: EndpointId,
-    scheduler: backend_engine::application::CompilerClusterScheduler,
+    scheduler: CompilerClusterScheduler,
     store: FileStore,
     catalog: StoreBlobCatalog,
     trust_policy_path: PathBuf,
@@ -1268,7 +1268,7 @@ impl Drop for CompilerAssignmentLease {
 pub(crate) struct RecoveredCompilerAssignment {
     assignment: CompilerAssignment,
     namespace_id: [u8; 16],
-    capture: backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+    capture: CapturedFullWorkspaceV2,
     input_admission: VerifiedCompilerInputAdmission,
     worker_grant: TrustedCompilerWorkerGrant,
     deadline_unix_ms: u64,
@@ -1291,7 +1291,7 @@ impl RecoveredCompilerAssignment {
     #[must_use]
     pub(crate) const fn capture(
         &self,
-    ) -> &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2 {
+    ) -> &CapturedFullWorkspaceV2 {
         &self.capture
     }
 
@@ -1317,7 +1317,7 @@ pub(crate) enum RecoveredCompilerAssignmentOutcome {
     /// Worker execution is still in progress; the exact reservation must remain durable.
     Running,
     /// Worker reports a prior terminal retirement; locald must reconcile its exact journal row.
-    Retired(backend_engine::cluster_transport::ControlResultRetired),
+    Retired(ControlResultRetired),
 }
 
 /// Outcome of stale-source reconciliation for an exact, previously offered assignment.
@@ -1332,7 +1332,7 @@ pub(crate) enum StaleOfferedAssignmentOutcome {
     /// The worker durably proved no result exists and fenced delayed Offers.
     NoResult,
     /// A prior terminal ACK exists and must be reconciled against locald's authority journal.
-    Retired(backend_engine::cluster_transport::ControlResultRetired),
+    Retired(ControlResultRetired),
 }
 
 fn pending_cost_probe_key(
@@ -2018,7 +2018,7 @@ fn decode_route_cost_state(bytes: &[u8]) -> Result<RouteCostState, ClusterDispat
             "model checksum mismatch".into(),
         ));
     }
-    let mut cursor = std::io::Cursor::new(&bytes[..checksum_offset]);
+    let mut cursor = io::Cursor::new(&bytes[..checksum_offset]);
     let mut magic = [0; 8];
     cursor
         .read_exact(&mut magic)
@@ -2131,7 +2131,7 @@ fn decode_local_cost_state(bytes: &[u8]) -> Result<LocalCostState, ClusterDispat
             "local model checksum mismatch".into(),
         ));
     }
-    let mut cursor = std::io::Cursor::new(&bytes[..checksum_offset]);
+    let mut cursor = io::Cursor::new(&bytes[..checksum_offset]);
     let mut magic = [0; 8];
     cursor
         .read_exact(&mut magic)
@@ -2199,7 +2199,7 @@ fn millis_per_mib(elapsed_ms: u64, bytes: u64) -> Option<u64> {
 }
 
 fn read_array<const N: usize>(
-    cursor: &mut std::io::Cursor<&[u8]>,
+    cursor: &mut io::Cursor<&[u8]>,
 ) -> Result<[u8; N], ClusterDispatchError> {
     let mut value = [0; N];
     cursor
@@ -2208,7 +2208,7 @@ fn read_array<const N: usize>(
     Ok(value)
 }
 
-fn read_u16(cursor: &mut std::io::Cursor<&[u8]>) -> Result<u16, ClusterDispatchError> {
+fn read_u16(cursor: &mut io::Cursor<&[u8]>) -> Result<u16, ClusterDispatchError> {
     let mut bytes = [0; 2];
     cursor
         .read_exact(&mut bytes)
@@ -2216,7 +2216,7 @@ fn read_u16(cursor: &mut std::io::Cursor<&[u8]>) -> Result<u16, ClusterDispatchE
     Ok(u16::from_be_bytes(bytes))
 }
 
-fn read_u32(cursor: &mut std::io::Cursor<&[u8]>) -> Result<u32, ClusterDispatchError> {
+fn read_u32(cursor: &mut io::Cursor<&[u8]>) -> Result<u32, ClusterDispatchError> {
     let mut bytes = [0; 4];
     cursor
         .read_exact(&mut bytes)
@@ -2224,7 +2224,7 @@ fn read_u32(cursor: &mut std::io::Cursor<&[u8]>) -> Result<u32, ClusterDispatchE
     Ok(u32::from_be_bytes(bytes))
 }
 
-fn read_u64(cursor: &mut std::io::Cursor<&[u8]>) -> Result<u64, ClusterDispatchError> {
+fn read_u64(cursor: &mut io::Cursor<&[u8]>) -> Result<u64, ClusterDispatchError> {
     let mut bytes = [0; 8];
     cursor
         .read_exact(&mut bytes)
@@ -2278,7 +2278,7 @@ impl CompilerNodeCapacityVerifier for ExactNodeCapacityVerifier {
 }
 
 struct OwnerControlEvent {
-    channel: backend_engine::cluster_transport::ControlChannel,
+    channel: ControlChannel,
     first_message: ControlMessage,
 }
 
@@ -2556,7 +2556,7 @@ impl OwnerCompilerClusterRuntime {
             owner_address,
             issuer: CapabilityIssuer::new(owner_config.secret_key()),
             owner_id: expected_id,
-            scheduler: backend_engine::application::CompilerClusterScheduler::with_balancing_limits(
+            scheduler: CompilerClusterScheduler::with_balancing_limits(
                 NonZeroUsize::new(REMOTE_ASSIGNMENT_CAPACITY)
                     .ok_or(ClusterDispatchError::NoEligibleWorker)?,
                 NonZeroUsize::new(REMOTE_ASSIGNMENT_CAPACITY)
@@ -2742,7 +2742,7 @@ impl OwnerCompilerClusterRuntime {
         token: CompilerAttemptToken,
         peer: CompilerPeerId,
         expected_scope: AssignmentScope,
-        capture: backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: CapturedFullWorkspaceV2,
         input_admission: VerifiedCompilerInputAdmission,
         worker_grant: TrustedCompilerWorkerGrant,
         deadline_unix_ms: u64,
@@ -3041,7 +3041,7 @@ impl OwnerCompilerClusterRuntime {
             namespace_id,
         )
         .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
-        let mut authority = backend_extension_turso::TursoAuthority::open(&self.authority_path)
+        let authority = backend_extension_turso::TursoAuthority::open(&self.authority_path)
             .await
             .map_err(|error| ClusterDispatchError::NoResultRetirement(error.to_string()))?;
         let namespace = authority
@@ -3205,7 +3205,6 @@ impl OwnerCompilerClusterRuntime {
                 let Some(receipt) = receipt else {
                     return Ok(RecoveredCompilerAssignmentOutcome::Running);
                 };
-                let input_closure = recovered.capture.closure();
                 let fenced_result =
                     backend_engine::compiler_cluster_transport::admit_compiler_result(
                         scheduler,
@@ -3233,7 +3232,7 @@ impl OwnerCompilerClusterRuntime {
                     .map_err(|_| ClusterDispatchError::DeadlineExpired)?
                     .ok_or(ClusterDispatchError::WorkerFailed)?;
                     let OwnerControlEvent {
-                        mut channel,
+                        channel,
                         first_message,
                     } = event;
                     match first_message {
@@ -3359,7 +3358,7 @@ impl OwnerCompilerClusterRuntime {
         request: CompilerBalancingRequest,
         local_cost: LocalCostEstimate,
         attempt: &CandidateAttempt,
-        capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: &CapturedFullWorkspaceV2,
         deadline_unix_ms: u64,
     ) -> Result<CompilerDispatchDecision, ClusterDispatchError> {
         self.block_on(self.probe_and_place_assignment_async(
@@ -3380,7 +3379,7 @@ impl OwnerCompilerClusterRuntime {
         mut request: CompilerBalancingRequest,
         local_cost: LocalCostEstimate,
         attempt: &CandidateAttempt,
-        capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: &CapturedFullWorkspaceV2,
         deadline_unix_ms: u64,
     ) -> Result<CompilerDispatchDecision, ClusterDispatchError> {
         let work = request.work;
@@ -3430,7 +3429,7 @@ impl OwnerCompilerClusterRuntime {
         }
         let started_at = current_unix_ms()?;
         if interactive_local_first_window(
-            request.demand == backend_engine::application::CompilerDemand::Interactive,
+            request.demand == CompilerDemand::Interactive,
             request.local != LocalCompilerAvailability::Unavailable,
             request.submitted_at,
             started_at,
@@ -3484,7 +3483,7 @@ impl OwnerCompilerClusterRuntime {
             return Err(ClusterDispatchError::NoEligibleWorker);
         }
         let exact_grant_count = applicable_grants.len();
-        let mut probes = FuturesUnordered::new();
+        let probes = FuturesUnordered::new();
         for grant in applicable_grants {
             probes.push(self.probe_trusted_worker(
                 scheduler,
@@ -3656,7 +3655,7 @@ impl OwnerCompilerClusterRuntime {
                 .map(|(candidate, _)| candidate.node().peer());
         }
         if chosen_peer.is_none()
-            && request.demand == backend_engine::application::CompilerDemand::Background
+            && request.demand == CompilerDemand::Background
         {
             chosen_peer = candidates
                 .iter()
@@ -3792,7 +3791,7 @@ impl OwnerCompilerClusterRuntime {
         attempt: &CandidateAttempt,
         work: CompilerWorkIdentity,
         namespace_id: [u8; 16],
-        capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: &CapturedFullWorkspaceV2,
     ) -> Result<(), ClusterDispatchError> {
         let manifest = capture.manifest();
         let full_workspace = work
@@ -3867,9 +3866,9 @@ impl OwnerCompilerClusterRuntime {
         scheduler: &CompilerClusterScheduler,
         request: CompilerBalancingRequest,
         local_cost_is_measured: bool,
-        token: backend_engine::application::CompilerAttemptToken,
+        token: CompilerAttemptToken,
         namespace_id: [u8; 16],
-        capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: &CapturedFullWorkspaceV2,
         inventory: ProbeInventoryDescriptor,
         grant: &TrustedCompilerWorkerGrant,
         assignment_deadline_unix_ms: u64,
@@ -4315,7 +4314,7 @@ impl OwnerCompilerClusterRuntime {
                 EndpointAddr::new(invalidated_peer).with_ip_addr(grant.address()),
                 invalidated_peer,
                 scope,
-                backend_engine::cluster_transport::ControlRole::Coordinator,
+                ControlRole::Coordinator,
             )
             .await
             else {
@@ -4365,7 +4364,7 @@ impl OwnerCompilerClusterRuntime {
         scheduler: &CompilerClusterScheduler,
         assignment_lease: CompilerAssignmentLease,
         namespace_id: [u8; 16],
-        capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: &CapturedFullWorkspaceV2,
         input_admission: VerifiedCompilerInputAdmission,
         deadline_unix_ms: u64,
         mut journal_hook: impl FnMut(
@@ -4463,7 +4462,7 @@ impl OwnerCompilerClusterRuntime {
                 // A receipt followed by a timeout, transport error, local CAS error, or allocation
                 // failure is still a recoverable worker result. Drop only the in-memory identity;
                 // keep the worker's durable result and the journal reservation for a later sweep.
-                rejected_result = None;
+                drop(rejected_result.take());
                 if !result_was_announced && let Some(address) = worker_address {
                     // Tell a still-running worker to stop before freeing the local capacity slot.
                     // The authenticated control stream remains tied to the same exact attempt.
@@ -4670,7 +4669,7 @@ impl OwnerCompilerClusterRuntime {
                     proof.worker_address(),
                     proof.expected_peer(),
                     proof.scope(),
-                    backend_engine::cluster_transport::ControlRole::Coordinator,
+                    ControlRole::Coordinator,
                 ),
             )
             .await
@@ -4814,7 +4813,7 @@ impl OwnerCompilerClusterRuntime {
         namespace_id: [u8; 16],
         worker_grant: TrustedCompilerWorkerGrant,
         worker_address: EndpointAddr,
-        capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+        capture: &CapturedFullWorkspaceV2,
         input_admission: VerifiedCompilerInputAdmission,
         deadline_unix_ms: u64,
         rejected_result: &mut Option<CompilerResultIdentity>,
@@ -4934,7 +4933,7 @@ impl OwnerCompilerClusterRuntime {
                     .map_err(|_| ClusterDispatchError::DeadlineExpired)?
                     .ok_or(ClusterDispatchError::WorkerFailed)?;
             let OwnerControlEvent {
-                mut channel,
+                channel,
                 first_message: message,
             } = event;
             match message {
@@ -5554,7 +5553,7 @@ impl OwnerCompilerClusterRuntime {
                 worker_address,
                 expected_peer,
                 scope,
-                backend_engine::cluster_transport::ControlRole::Coordinator,
+                ControlRole::Coordinator,
             ),
         )
         .await
@@ -6335,7 +6334,7 @@ fn recovered_capacity_allows(
 }
 
 fn recovered_resource_demand(
-    capture: &backend_engine::compiler_cluster_transport::CapturedFullWorkspaceV2,
+    capture: &CapturedFullWorkspaceV2,
     assignment: CompilerAssignment,
     output_bytes: u64,
 ) -> Result<CompilerResourceCredits, ClusterDispatchError> {

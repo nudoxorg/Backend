@@ -12,7 +12,7 @@ use std::{
     collections::BTreeMap,
     env, fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -68,9 +68,7 @@ mod receipt;
 #[path = "s3_publication/signing.rs"]
 mod signing;
 
-use config::valid_prefix;
-use receipt::{closure_membership_digest, pack_membership_digest};
-use signing::{aws_encode, aws_timestamp, canonical_query, hex};
+use signing::{aws_timestamp, hex};
 
 #[derive(Debug)]
 pub(super) enum PublicationError {
@@ -408,6 +406,9 @@ pub(super) trait SelectedClosurePublisher: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::config::valid_prefix;
+    use super::receipt::{closure_membership_digest, pack_membership_digest};
+    use super::signing::{aws_encode, canonical_query};
 
     fn receipt() -> ExactS3ClosureReceipt {
         let publication_fence = PublicationFence {

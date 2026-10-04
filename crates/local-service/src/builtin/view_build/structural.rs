@@ -24,7 +24,7 @@ pub(super) fn duplicate_declaration_coordinates(
 pub(super) fn is_file_module(declaration: &backend_compile::SourceDeclaration, path: &str) -> bool {
     declaration.kind() == DeclarationKind::Module
         && declaration.line() == 1
-        && std::path::Path::new(path)
+        && Path::new(path)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem == declaration.name())
@@ -393,11 +393,11 @@ impl<'a> FileContainment<'a> {
             return None;
         }
         Some(match declaration.container() {
-            backend_compile::Container::Module => self.module_coordinate.clone(),
-            backend_compile::Container::Enclosing { name, line } => {
+            Container::Module => self.module_coordinate.clone(),
+            Container::Enclosing { name, line } => {
                 declaration_coordinate(self.label, self.path, line.get(), name)
             }
-            backend_compile::Container::Attached { type_name } => self
+            Container::Attached { type_name } => self
                 .attached_coordinate(type_name, types)
                 .unwrap_or_else(|| self.module_coordinate.clone()),
         })
@@ -472,7 +472,7 @@ pub(super) fn profile_source_paths(
         let Some(file) = record.1.file_fields() else {
             continue;
         };
-        let Some(profile) = super::super::ingest::source_profile(std::path::Path::new(file.path))
+        let Some(profile) = super::super::ingest::source_profile(Path::new(file.path))
             .map_err(BuiltinModelError)?
         else {
             continue;
@@ -498,7 +498,7 @@ pub(super) fn profile_source_identities(
         let Some(identity) = file.source_identity else {
             continue;
         };
-        let Some(profile) = super::super::ingest::source_profile(std::path::Path::new(file.path))
+        let Some(profile) = super::super::ingest::source_profile(Path::new(file.path))
             .map_err(BuiltinModelError)?
         else {
             continue;
@@ -1547,14 +1547,14 @@ pub(crate) fn structural_call_graph_relations(
 /// Incoming call sites for one declaration when semantic references are absent.
 pub(crate) fn structural_reference_facts(
     view: &backend_engine::ViewRoot,
-    sources: &super::super::IndexedSources,
+    sources: &IndexedSources,
     target: &str,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
     let (target_id, target_symbol, package) = {
         let target_row = view.row_by_label(target).ok_or_else(|| {
             BuiltinModelError("structural references target is absent from the view".to_owned())
         })?;
-        let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {
+        let RowId::Symbol(target_symbol) = target_row.id else {
             return Err(BuiltinModelError(
                 "structural references target is not a declaration row".to_owned(),
             ));
@@ -1578,7 +1578,7 @@ pub(crate) fn structural_reference_facts(
             BuiltinModelError("structural references target has no declaration name".to_owned())
         })?;
     let target_identity = structural_symbol_identity(target_symbol);
-    let root = sources.projects.get(&package.to_bytes()).map(|project| std::path::PathBuf::from(&project.label));
+    let root = sources.projects.get(&package.to_bytes()).map(|project| PathBuf::from(&project.label));
     let mut files = BTreeMap::new();
     let mut facts = Vec::new();
     for relation in relations {
@@ -1589,7 +1589,7 @@ pub(crate) fn structural_reference_facts(
         let site_row = view.row_ref(relation.from).ok_or_else(|| {
             BuiltinModelError("structural references site is absent from the view".to_owned())
         })?;
-        let backend_engine::RowId::Symbol(site_symbol) = site_row.id else {
+        let RowId::Symbol(site_symbol) = site_row.id else {
             return Err(BuiltinModelError(
                 "structural references site is not a declaration row".to_owned(),
             ));
@@ -1707,7 +1707,7 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
 /// `root` no longer holds the indexed text there: no place is better than a
 /// place on the wrong bytes.
 pub(crate) fn structural_file_span(
-    root: &std::path::Path,
+    root: &Path,
     location: &backend_compile::SourceLocation,
     excerpt: &str,
     span: (usize, usize),

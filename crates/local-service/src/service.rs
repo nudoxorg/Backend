@@ -134,7 +134,7 @@ pub struct LocaldOwner<
     replication: R,
     semantic_ranges: S,
     owner_lane_schedule: OwnerLaneSchedule,
-    leases: lease::LeaseTable,
+    leases: LeaseTable,
     deferred: Option<Box<dyn DeferredCommands<M, V, A> + Send>>,
 }
 

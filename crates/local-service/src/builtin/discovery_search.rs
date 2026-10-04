@@ -3755,7 +3755,7 @@ fn search_projection_file_fingerprints(
                     "projection file count exceeds its bound",
                 ));
             }
-            let mut file =
+            let file =
                 match backend_platform::durability::open_regular_file_nofollow(&child_path) {
                     Ok(file) => file,
                     Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
@@ -3824,7 +3824,7 @@ fn invalid_search_projection_file(message: &'static str) -> std::io::Error {
 }
 
 fn read_bounded_search_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::io::Error> {
-    let mut file = backend_platform::durability::open_regular_file_nofollow(path)?;
+    let file = backend_platform::durability::open_regular_file_nofollow(path)?;
     let initial_length = file.metadata()?.len();
     if initial_length > maximum {
         return Err(invalid_search_projection_file(
@@ -3961,10 +3961,10 @@ fn remove_unpinned_search_projection(path: &Path) -> Result<(), String> {
     let lease = search_projection_lease(path)?;
     match lease.try_lock() {
         Ok(()) => remove_search_projection(path),
-        Err(std::fs::TryLockError::WouldBlock) => {
+        Err(fs::TryLockError::WouldBlock) => {
             Err("selected discovery search root is held by an active reader".to_owned())
         }
-        Err(std::fs::TryLockError::Error(error)) => {
+        Err(fs::TryLockError::Error(error)) => {
             Err(format!("lock discovery search root for recovery: {error}"))
         }
     }
@@ -4039,8 +4039,8 @@ fn prune_search_projections(
                 Ok(()) => {}
                 // A live reader's root is outside the retained-root count,
                 // while its bytes still count against the shared quota.
-                Err(std::fs::TryLockError::WouldBlock) => continue,
-                Err(std::fs::TryLockError::Error(error)) => {
+                Err(fs::TryLockError::WouldBlock) => continue,
+                Err(fs::TryLockError::Error(error)) => {
                     return Err(format!("classify discovery search root: {error}"));
                 }
             }
@@ -4068,8 +4068,8 @@ fn prune_search_projections(
                 retained_bytes = retained_bytes.saturating_sub(bytes);
                 live_roots = live_roots.saturating_sub(1);
             }
-            Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(error)) => {
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(error)) => {
                 return Err(format!("lock discovery search root for pruning: {error}"));
             }
         }
@@ -4287,9 +4287,7 @@ fn forge_search_document(
         }
         DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => {}
     }
-    if let ForgeFact::Recorded(name) = &manifest.name {
-        aliases.retain(|alias| alias != name.as_str());
-    }
+    aliases.retain(|alias| alias.as_str() != name);
 
     let metadata = DiscoveryMetadata {
         aliases: DiscoveryFacet::Known(aliases),

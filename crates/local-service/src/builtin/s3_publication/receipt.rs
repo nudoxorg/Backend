@@ -766,7 +766,7 @@ pub(super) fn read_receipt_file_if_exists(
     {
         return Err(PublicationError::ReceiptIo);
     }
-    let mut file = File::open(path).map_err(|_| PublicationError::ReceiptIo)?;
+    let file = File::open(path).map_err(|_| PublicationError::ReceiptIo)?;
     let mut bytes = Vec::new();
     file.take((MAX_RECEIPT_BYTES as u64) + 1)
         .read_to_end(&mut bytes)

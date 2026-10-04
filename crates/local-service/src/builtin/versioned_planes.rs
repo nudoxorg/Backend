@@ -420,7 +420,7 @@ impl OwnedSemanticAuthoritySelectionSource {
     ) -> Result<
         (
             SemanticPublicationClaim,
-            backend_extension_turso::SelectedGeneration,
+            SelectedGeneration,
             SelectedVersionedPlanePublication,
         ),
         OwnedSemanticAuthoritySelectionError,
@@ -542,7 +542,7 @@ impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
     fn selected_native_image_identity(
         &mut self,
         image: SemanticPlaneImageKey,
-    ) -> Result<backend_semantic::ir::SemanticImageIdentity, Self::Error> {
+    ) -> Result<SemanticImageIdentity, Self::Error> {
         self.authority
             .selected_native_image_identity(&self.key, image)
     }
@@ -637,7 +637,6 @@ impl SelectedGenerationSource for OwnedSemanticAuthoritySelectionSource {
         }
         SemanticAuthority::selected_native_image_identity_for_store(
             &self.store,
-            &self.key,
             claim,
             &selected,
             image,
@@ -679,7 +678,6 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
         }
         SemanticAuthority::selected_native_image_identity_for_store(
             &self.store,
-            &self.key,
             claim,
             &selected,
             image,
@@ -720,7 +718,6 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
         }
         let image_identity = SemanticAuthority::selected_native_image_identity_for_store(
             &self.store,
-            &self.key,
             claim,
             &selected,
             image,
@@ -1187,7 +1184,7 @@ fn native_history_publication_proof(
 }
 
 fn selected_history_provenance(
-    selected: &backend_replication::SelectedNativeHistoryImage<'_>,
+    selected: &SelectedNativeHistoryImage<'_>,
 ) -> [u8; 32] {
     let target = selected.target();
     let stamp = selected.selected_stamp();

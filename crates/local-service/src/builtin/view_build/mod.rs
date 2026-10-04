@@ -25,30 +25,37 @@ mod semantic;
 mod structural;
 
 pub(crate) use call_join::{
-    ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
-    foreign_namespace_field_retarget, foreign_package_call_retarget,
-    foreign_package_field_retarget, foreign_package_mention_retarget, join_project_call,
+    ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
+#[cfg(test)]
+pub(crate) use call_join::{
+    foreign_display_name, foreign_namespace_field_retarget, foreign_package_field_retarget,
+    foreign_package_mention_retarget, join_project_call,
+};
 
+#[cfg(test)]
 pub(crate) use identity::query_semantic_id;
+#[cfg(test)]
 pub(crate) use identity::semantic_coordinate;
-pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
+pub(super) use identity::{external_semantic_symbol, semantic_symbol};
 pub(super) use query::semantic_query_corpus;
 pub(crate) use semantic::compiled_source_path;
-pub(super) use semantic::{
-    ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
-};
+pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(crate) use structural::{
-    resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
+    structural_call_coordinate_pairs, structural_call_graph_relations,
     structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
     structural_reference_facts,
     structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
+#[cfg(test)]
 use query::append_structural_query_facts;
+#[cfg(test)]
 use semantic::{ProfileStalePaths, SourceRowProjection};
-use structural::{StructuralParent, StructuralProjectionPlan};
+#[cfg(test)]
+use structural::StructuralParent;
+use structural::StructuralProjectionPlan;
 
 /// Builds the structural declaration plan and drops it. Benchmarks time this.
 pub(super) fn project_structural_plan(
@@ -136,13 +143,17 @@ pub(super) const STALE_NOTE: &str =
 
 type DeclarationOccurrenceKey = (String, String, String);
 
+#[cfg(test)]
 use super::ProjectionLedger;
+#[cfg(test)]
 use identity::declaration_symbol;
+#[cfg(test)]
 use semantic::{
     SemanticRowSink, SemanticTargets, append_image_rows, compiled_source, freshness_decision,
 };
 #[cfg(test)]
 use structural::structural_excerpt_calls;
+#[cfg(test)]
 use structural::structural_parent_rank;
 
 fn semantic_profile_is_complete(

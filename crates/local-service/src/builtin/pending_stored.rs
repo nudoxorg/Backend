@@ -12,7 +12,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use backend_engine::cluster_transport::{AssignmentScope, EndpointAddr, EndpointId, SecretKey};
+use backend_engine::cluster_transport::{AssignmentScope, EndpointAddr, EndpointId};
 use backend_extension_turso::{SelectedGeneration, SupersededAttemptProof};
 
 use super::semantic_authority::PendingRemoteResultProof;
@@ -3408,7 +3408,7 @@ fn encode_control_result_receipt(
 fn decode_control_result_receipt(
     cursor: &mut Cursor<'_>,
 ) -> Result<backend_engine::cluster_transport::ControlResultReceipt, PendingStoredAckError> {
-    let scope = backend_engine::cluster_transport::AssignmentScope::new(
+    let scope = AssignmentScope::new(
         cursor.array()?,
         cursor.array()?,
         cursor.u64()?,
@@ -3532,6 +3532,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use backend_engine::cluster_transport::SecretKey;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);

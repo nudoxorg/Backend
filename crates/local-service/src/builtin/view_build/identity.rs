@@ -1,5 +1,5 @@
 use super::DeclarationOccurrenceKey;
-use backend_engine::{DeclarationKind, Fragment, RowId, RowIdentityPreimage};
+use backend_engine::{DeclarationKind, Fragment, RowId};
 use backend_semantic::ir::{DeclarationIdentity, ExternalTargetIdentity, ItemKind};
 use std::collections::BTreeMap;
 

@@ -10,13 +10,13 @@ use super::s3_publication::{
 };
 use super::versioned_planes::coordinate_identity;
 use super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticRelation, BuiltinValidator, generation_residence,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
+    BuiltinValidator, generation_residence,
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationSelection,
+    SemanticPublicationClaim, SemanticPublicationCoverage,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
@@ -24,7 +24,7 @@ use backend_extension_turso::{
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CandidateAttemptRetirementReason, CompilerImageMember, CompilerPublicationEnvelope,
     CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind,
-    ReopenedCompilerMetadata, SelectedGeneration, SourceObservation, SourceObservationReceipt,
+    SelectedGeneration, SourceObservation, SourceObservationReceipt,
     SourceObservationValue, SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata,
     VersionedPlaneMember, VersionedPlaneMetadata, reopen_selected_compiler_metadata,
 };
@@ -47,7 +47,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
@@ -308,7 +310,7 @@ fn pin_object_ids(
 }
 
 fn stream_payload<S: Schema<Value = [u8]>>(
-    builder: &mut backend_store::StreamingClosureBuilder,
+    builder: &mut StreamingClosureBuilder,
     bytes: &[u8],
 ) -> Result<ObjectId, BuiltinModelError> {
     if bytes.is_empty() {
@@ -1219,7 +1221,7 @@ pub(crate) struct SemanticAuthority {
     store: FileStore,
     workspace: PathBuf,
     s3_publisher: Option<Arc<dyn SelectedClosurePublisher>>,
-    compiler_trust_policy: std::path::PathBuf,
+    compiler_trust_policy: PathBuf,
     image_loader: Arc<SelectedClosureImageLoader>,
     verified_segments: Arc<super::versioned_planes::VerifiedSegmentCache>,
     selected_image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
@@ -1699,7 +1701,6 @@ impl SemanticAuthority {
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
         Self::selected_native_image_identity_for_store(
             &self.store,
-            key,
             expected_claim,
             selected,
             image,
@@ -1708,7 +1709,6 @@ impl SemanticAuthority {
 
     pub(super) fn selected_native_image_identity_for_store(
         store: &FileStore,
-        key: &ProductSemanticPublicationKey,
         expected_claim: SemanticPublicationClaim,
         selected: &SelectedGeneration,
         image: backend_semantic::ir::SemanticPlaneImageKey,
@@ -2194,7 +2194,7 @@ impl SemanticAuthority {
                                         continue;
                                     };
                                     let selected_identity =
-                                        super::s3_publication::RemoteClosureSelection::from_selected(
+                                        RemoteClosureSelection::from_selected(
                                             selected,
                                         );
                                     let expected_members = remote_segments.object_ids().to_vec();
@@ -2228,7 +2228,7 @@ impl SemanticAuthority {
                                                 ))
                                             })?
                                             .ok_or(backend_store::StoreError::Corrupt)?;
-                                            if super::s3_publication::RemoteClosureSelection::from_selected(
+                                            if RemoteClosureSelection::from_selected(
                                                 &current,
                                             ) != selected_identity
                                             {
@@ -2386,7 +2386,7 @@ impl SemanticAuthority {
         epoch: u64,
         fence: AuthorityHash,
         input_digest: AuthorityHash,
-    ) -> Result<Option<backend_extension_turso::SupersededAttemptProof>, BuiltinModelError> {
+    ) -> Result<Option<SupersededAttemptProof>, BuiltinModelError> {
         let Some(proof) = futures_executor::block_on(
             self.authority
                 .superseded_attempt_proof(namespace, attempt_id, epoch, fence),

@@ -1,9 +1,7 @@
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ProductSourceRecord, RegistryGateway,
-    WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
-    publish_builtin_view,
+    BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
@@ -27,7 +25,9 @@ use backend_library::interface::{
 };
 use backend_library::{CargoPackageAliasEvidenceV1, CompileExecutionIntent};
 use backend_semantic::ir::SemanticInputWitness;
-use backend_semantic::vocabulary::{Language, LanguageProfile};
+use backend_semantic::vocabulary::LanguageProfile;
+#[cfg(test)]
+use backend_semantic::vocabulary::Language;
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
@@ -2591,7 +2591,7 @@ fn recover_compiler_route(
         || capture.payload_bytes() != captured.payload_bytes
         || capture.manifest().recipe() != identity.trust.recipe
         || capture.manifest().profile()
-            != backend_semantic::vocabulary::LanguageProfile::try_from(identity.trust.profile)
+            != LanguageProfile::try_from(identity.trust.profile)
                 .map_err(|_| "pending compiler profile is invalid".to_owned())?
         || capture.manifest().stage()
             != backend_semantic::vocabulary::Stage::try_from(identity.trust.stage)

@@ -1600,7 +1600,7 @@ fn scan_project_with_configuration_policy_attempt(
         source_delta.as_ref(),
         cancellation,
     )?;
-    let mut source_bytes_read = scanned
+    let source_bytes_read = scanned
         .iter()
         .map(|file| file.source_bytes_read)
         .sum::<usize>();
@@ -1911,12 +1911,12 @@ fn project_paths_with_policy(
                 *count = count.saturating_add(1);
             }
             if revision_path {
-                let relative = entry
+                let _relative = entry
                     .path()
                     .strip_prefix(root)
                     .map_err(|_| "discovered file escaped its project root".to_owned())?;
                 #[cfg(windows)]
-                let revision = _root_capability.revision_relative(relative).ok();
+                let revision = _root_capability.revision_relative(_relative).ok();
                 #[cfg(not(windows))]
                 let revision = file_system_revision(entry.path());
                 file_revisions.insert(entry.path().to_owned(), revision);

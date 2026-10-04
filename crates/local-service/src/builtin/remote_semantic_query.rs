@@ -8,7 +8,7 @@ use backend_engine::cluster_transport::{
 };
 use backend_library::{
     Command, CommandDto, CommandReply, ProductText, SurfaceCommand, SurfaceReply,
-    decode_command_body, decode_reply_body,
+    decode_command_body,
 };
 use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use backend_replication::{
@@ -1935,7 +1935,7 @@ fn owner_unavailable(request_id: u64) -> RemoteIndexResponse {
 }
 
 pub(crate) fn connection_slots() -> Arc<tokio::sync::Semaphore> {
-    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
     Arc::clone(
         SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_REMOTE_INDEX_CONNECTIONS))),
     )

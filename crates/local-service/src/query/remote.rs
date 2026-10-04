@@ -1253,7 +1253,7 @@ impl EmbeddingProducer {
         options.update(device.as_bytes());
         let maximum_text = u32::try_from(MAX_EMBEDDING_TEXT_BYTES)
             .ok()
-            .and_then(std::num::NonZeroU32::new)
+            .and_then(NonZeroU32::new)
             .ok_or(RemoteConfigError::InvalidValue(EMBEDDING_DIMENSIONS_ENV))?;
         let normalization = match recipe.normalization {
             qdrant::EmbeddingNormalization::None => EmbeddingNormalization::None,

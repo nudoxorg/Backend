@@ -450,7 +450,7 @@ struct GenerationFixture {
     #[allow(dead_code)]
     artifacts: std::path::PathBuf,
     client: Option<backend_engine::application::LocalCompilerClient>,
-    key: backend_engine::builtin::ProductSemanticPublicationKey,
+    key: ProductSemanticPublicationKey,
     claim: SemanticPublicationClaim,
     /// A second compiled generation. The adversarial test reopens it after the
     /// artifact directory is gone, so the miss must reach the owner and fail.
@@ -459,7 +459,7 @@ struct GenerationFixture {
     /// Same claim, different language profile. Admission checks the profile;
     /// the cache key does not.
     #[allow(dead_code)]
-    cxx_key: backend_engine::builtin::ProductSemanticPublicationKey,
+    cxx_key: ProductSemanticPublicationKey,
 }
 
 impl GenerationFixture {
@@ -469,7 +469,7 @@ impl GenerationFixture {
             .ok_or_else(|| "compiler client is gone".to_owned())
     }
 
-    fn key(&self) -> &backend_engine::builtin::ProductSemanticPublicationKey {
+    fn key(&self) -> &ProductSemanticPublicationKey {
         &self.key
     }
 
@@ -552,7 +552,7 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
         .map(std::path::PathBuf::from)
         .ok_or("explicit LIBCLANG_PATH is required for semantic generation residence")?;
     let root = unique_directory().map_err(|error| error.to_string())?;
-    let (clang, clang_authority, clang_toolchain) = match (|| -> Result<_, String> {
+    let (clang_authority, clang_toolchain) = match (|| -> Result<_, String> {
         let clang_authority =
             backend_frontend_clang::ClangAuthorityEnvironment::probe(&selected_clang, &libclang)
                 .map_err(|error| format!("admit generation fixture Clang authority: {error}"))?;
@@ -571,7 +571,7 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
         if clang_authority.driver() != clang_path {
             return Err("generation fixture Clang authority and toolchain differ".to_owned());
         }
-        Ok((clang, clang_authority, clang_toolchain))
+        Ok((clang_authority, clang_toolchain))
     })() {
         Ok(prepared) => prepared,
         Err(error) => {

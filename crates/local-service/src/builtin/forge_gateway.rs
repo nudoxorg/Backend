@@ -13,8 +13,7 @@ use std::path::PathBuf;
 #[path = "forge_gateway/package_view.rs"]
 mod package_view;
 pub(super) use package_view::{
-    ForgePackageDetail, ForgePackagePin, ForgeRegistryEvidence, find_package_versions,
-    project_package_details,
+    ForgePackageDetail, ForgePackagePin, find_package_versions, project_package_details,
 };
 
 pub(super) struct ForgeGateway {

@@ -16,8 +16,7 @@
 mod cargo_metadata;
 
 use backend_library::browse::{
-    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, ProjectTree,
-    TreeInput, TreeInputPackage, TreeSource, build_tree, lockfile_input, metadata_input,
+    ProjectTree, TreeInput, TreeInputPackage, TreeSource, build_tree, lockfile_input,
     metadata_input_with_stable_source_witness,
 };
 use backend_library::{
@@ -25,7 +24,7 @@ use backend_library::{
     CargoPackageReadmeLinkRequestV1, CargoPackageReadmeLinkResultV1,
     CargoPackageReadmeLinkTargetV1, CargoPackageReadmeManifestV1, CargoPackageReadmeOriginV1,
     CargoPackageReadmeRequestV1, CargoPackageReadmeResultV1, CargoPackageReadmeRootScopeV1,
-    CargoPackageReadmeSelectionV1, CargoPackageReadmeV1, CargoPackageSourceAuthorityFailureV1,
+    CargoPackageReadmeSelectionV1, CargoPackageReadmeV1,
     CargoPackageSourceAuthorityStateV1, CargoPackageSourceAuthorityV1,
     CargoPackageSourceFileResultV1, CargoPackageSourceInventoryCoverageV1,
     CargoPackageSourceInventoryFailureV1, CargoPackageSourceInventoryGapV1,
@@ -45,6 +44,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+use backend_library::CargoPackageSourceAuthorityFailureV1;
+#[cfg(test)]
+use backend_library::browse::{
+    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership,
+};
 
 /// Largest `cargo metadata` document admitted.
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
@@ -1723,20 +1729,20 @@ fn browse_entry_retained_bytes(
             .capacity()
             .saturating_add(invocation_root.capacity().saturating_mul(2)),
     );
-    let mut bytes = std::mem::size_of::<CacheEntry>()
+    let mut bytes = size_of::<CacheEntry>()
         .saturating_add(workspace.capacity())
         .saturating_add(invocation_root.capacity())
         .saturating_add(1_024)
         .saturating_add(binding_path_budget)
-        .saturating_add(std::mem::size_of::<Arc<TreeInput>>())
-        .saturating_add(std::mem::size_of::<TreeInput>())
+        .saturating_add(size_of::<Arc<TreeInput>>())
+        .saturating_add(size_of::<TreeInput>())
         .saturating_add(input.root.capacity())
-        .saturating_add(input.packages.capacity() * std::mem::size_of::<TreeInputPackage>())
+        .saturating_add(input.packages.capacity() * size_of::<TreeInputPackage>())
         .saturating_add(
-            input.edges.capacity() * std::mem::size_of::<backend_library::browse::TreeEdge>(),
+            input.edges.capacity() * size_of::<backend_library::browse::TreeEdge>(),
         )
         .saturating_add(package_rows.capacity().saturating_mul(256))
-        .saturating_add(watched_capacity.saturating_mul(std::mem::size_of::<PathBuf>()));
+        .saturating_add(watched_capacity.saturating_mul(size_of::<PathBuf>()));
     match &input.source {
         TreeSource::Cargo { host } => bytes = bytes.saturating_add(host.capacity()),
         TreeSource::Lockfile { reason, .. } => bytes = bytes.saturating_add(reason.capacity()),
@@ -1748,7 +1754,7 @@ fn browse_entry_retained_bytes(
         // `files` is a boxed slice, so its length is its exact element count
         // with no spare vector capacity.
         bytes = bytes
-            .saturating_add(tool_reuse.files.len() * std::mem::size_of::<CargoToolFileReuse>());
+            .saturating_add(tool_reuse.files.len() * size_of::<CargoToolFileReuse>());
         for file in &tool_reuse.files {
             bytes = bytes.saturating_add(file.canonical_path.capacity());
         }
@@ -1760,8 +1766,8 @@ fn browse_entry_retained_bytes(
             .saturating_add(package.version.capacity())
             .saturating_add(package.license.as_ref().map_or(0, String::capacity))
             .saturating_add(package.description.as_ref().map_or(0, String::capacity))
-            .saturating_add(package.categories.capacity() * std::mem::size_of::<String>())
-            .saturating_add(package.keywords.capacity() * std::mem::size_of::<String>());
+            .saturating_add(package.categories.capacity() * size_of::<String>())
+            .saturating_add(package.keywords.capacity() * size_of::<String>());
         if let Some(root) = &package.source_root {
             bytes = bytes.saturating_add(root.capacity());
         }
@@ -1783,7 +1789,7 @@ fn browse_entry_retained_bytes(
             // type; charge its actual string capacities rather than each
             // field's maximum possible payload.
             bytes = bytes
-                .saturating_add(std::mem::size_of_val(authority))
+                .saturating_add(size_of_val(authority))
                 .saturating_add(authority.retained_text_capacity_bytes());
         }
     }
@@ -3780,7 +3786,7 @@ fn basic_input_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
     let workspace = workspace
         .canonicalize()
         .map_err(|error| format!("cannot resolve workspace root: {error}"))?;
-    let mut paths = vec![workspace.join("Cargo.lock"), workspace.join("Cargo.toml")];
+    let paths = vec![workspace.join("Cargo.lock"), workspace.join("Cargo.toml")];
     Ok(paths)
 }
 

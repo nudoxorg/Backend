@@ -1,10 +1,6 @@
-use super::super::view_build;
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ProductSourceRecord, RegistryGateway,
-    WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
-    publish_builtin_view,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
+    BuiltinValidator, activate_semantic_publication,
 };
 use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};

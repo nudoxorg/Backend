@@ -1,11 +1,7 @@
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ProductSourceRecord, RegistryGateway,
-    WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
-    publish_builtin_view,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
+    BuiltinValidator, Command, CommandReply, WireCertificate, projection,
 };
-use super::super::{read_indexed_sources, view_build};
 use super::semantic_query::{SemanticQueryJob, semantic_query_executor};
 use backend_engine::application::LocalCompilerClient;
 use std::collections::BTreeMap;

@@ -4,11 +4,8 @@ use super::super::view_build::{
     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ProductSourceRecord, RegistryGateway,
-    WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
-    publish_builtin_view,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
+    BuiltinValidator, activate_semantic_publication,
 };
 use super::super::{empty_indexed_sources, read_package_sources};
 use super::snapshot::{
@@ -16,11 +13,9 @@ use super::snapshot::{
 };
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
-use backend_semantic::ir::{
-    DeclarationIdentity, ExternalTarget, ForeignTargetOrigin, LinkKind, LinkTarget, SemanticReader,
-};
+use backend_semantic::ir::{DeclarationIdentity, LinkKind, LinkTarget, SemanticReader};
 use futures_util::StreamExt as _;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::thread;
@@ -322,7 +317,7 @@ pub(super) fn semantic_entity_for_symbol(
         .canonical_entities()
         .find_map(|entity| match entity {
             Ok(entity)
-                if super::super::view_build::semantic_symbol(
+                if view_build::semantic_symbol(
                     package,
                     entity.entity.version.identity(),
                 ) == symbol =>
@@ -371,7 +366,7 @@ fn semantic_link_row_id(
             let target = session.entity(target).map_err(|error| {
                 BuiltinModelError(format!("read semantic graph target: {error}"))
             })?;
-            backend_engine::RowId::Symbol(super::super::view_build::semantic_symbol(
+            backend_engine::RowId::Symbol(view_build::semantic_symbol(
                 package,
                 target.entity.version.identity(),
             ))
@@ -391,7 +386,7 @@ fn semantic_link_row_id(
                 };
                 if let Some(identity) = identity {
                     let row_id = backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(package, identity),
+                        view_build::semantic_symbol(package, identity),
                     );
                     return Ok(view.row_ref(row_id).map(|_| row_id));
                 }
@@ -407,7 +402,7 @@ fn semantic_link_row_id(
                 )?
             {
                 let row_id = backend_engine::RowId::Symbol(
-                    super::super::view_build::semantic_symbol(package, identity),
+                    view_build::semantic_symbol(package, identity),
                 );
                 return Ok(view.row_ref(row_id).map(|_| row_id));
             } else if matches!(link_kind, LinkKind::Reads) {
@@ -434,7 +429,7 @@ fn semantic_link_row_id(
                 };
                 if let Some(identity) = identity {
                     let row_id = backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(package, identity),
+                        view_build::semantic_symbol(package, identity),
                     );
                     return Ok(view.row_ref(row_id).map(|_| row_id));
                 }
@@ -443,7 +438,7 @@ fn semantic_link_row_id(
                 .map_err(|error| {
                 BuiltinModelError(format!("identify semantic graph target: {error}"))
             })?;
-            backend_engine::RowId::Symbol(super::super::view_build::external_semantic_symbol(
+            backend_engine::RowId::Symbol(view_build::external_semantic_symbol(
                 package,
                 image_identity,
                 identity,
@@ -553,7 +548,7 @@ fn project_opened_semantic_graph(
                         continue;
                     }
                     let from =
-                        backend_engine::RowId::Symbol(super::super::view_build::semantic_symbol(
+                        backend_engine::RowId::Symbol(view_build::semantic_symbol(
                             package,
                             source.entity.version.identity(),
                         ));
@@ -690,7 +685,7 @@ fn project_opened_reference_facts(
             let source = source.map_err(|error| {
                 BuiltinModelError(format!("read semantic references caller: {error}"))
             })?;
-            let caller_symbol = super::super::view_build::semantic_symbol(
+            let caller_symbol = view_build::semantic_symbol(
                 package,
                 source.entity.version.identity(),
             );
@@ -755,7 +750,7 @@ fn project_opened_reference_facts(
                     continue;
                 };
                 let retargeted_symbol =
-                    super::super::view_build::semantic_symbol(package, identity);
+                    view_build::semantic_symbol(package, identity);
                 if retargeted_symbol != target_symbol {
                     continue;
                 }
@@ -1064,12 +1059,12 @@ fn append_reference_facts(
     target_symbol: backend_engine::SymbolKey,
     facts: &mut Vec<backend_engine::ReferenceFact>,
 ) -> Result<(), BuiltinModelError> {
-    let session = backend_engine::application::DocumentationSession::new(image);
+    let session = DocumentationSession::new(image);
     let target_entity = session
         .canonical_entities()
         .find_map(|entity| match entity {
             Ok(entity)
-                if super::super::view_build::semantic_symbol(
+                if view_build::semantic_symbol(
                     package,
                     entity.entity.version.identity(),
                 ) == target_symbol =>
@@ -1126,7 +1121,7 @@ fn append_reference_facts(
                     .transpose()?,
             };
             facts.push(backend_engine::ReferenceFact {
-                site: super::super::view_build::semantic_symbol(package, site),
+                site: view_build::semantic_symbol(package, site),
                 target: backend_engine::SemanticLinkTarget::Local {
                     declaration: semantic_declaration_identity(target_identity),
                 },

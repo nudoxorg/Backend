@@ -165,9 +165,9 @@ pub(super) fn read_project_sources(
         .map_err(|error| BuiltinModelError(format!("read package frontier: {error}")))?
     else {
         return Ok(IndexedSources {
-            projects: std::collections::BTreeMap::new(),
+            projects: BTreeMap::new(),
             files: Vec::new(),
-            cargo_aliases: std::collections::BTreeMap::new(),
+            cargo_aliases: BTreeMap::new(),
         });
     };
     let fields = record.project_fields().ok_or_else(|| {
@@ -188,7 +188,7 @@ pub(super) fn read_project_sources(
         }
         files.push((file_key, file));
     }
-    let mut projects = std::collections::BTreeMap::new();
+    let mut projects = BTreeMap::new();
     projects.insert(
         key,
         IndexedProject {
@@ -199,7 +199,7 @@ pub(super) fn read_project_sources(
     );
     let cargo_aliases = fields
         .cargo_aliases
-        .map(|aliases| std::collections::BTreeMap::from([(key, aliases.clone())]))
+        .map(|aliases| BTreeMap::from([(key, aliases.clone())]))
         .unwrap_or_default();
     Ok(IndexedSources {
         projects,
@@ -1016,7 +1016,7 @@ fn structural_fixtures(
     files_per: usize,
     declarations: usize,
 ) -> (IndexedSources, IndexedSources) {
-    let mut projects = std::collections::BTreeMap::new();
+    let mut projects = BTreeMap::new();
     let mut records = Vec::new();
     let mut first = None;
     for project_index in 0..packages {
@@ -1087,15 +1087,15 @@ fn structural_fixtures(
     let workspace = IndexedSources {
         projects,
         files: records,
-        cargo_aliases: std::collections::BTreeMap::new(),
+        cargo_aliases: BTreeMap::new(),
     };
     let (project, files) = first.expect("one package");
-    let mut projects = std::collections::BTreeMap::new();
+    let mut projects = BTreeMap::new();
     projects.insert(project.package.to_bytes(), project);
     let one = IndexedSources {
         projects,
         files,
-        cargo_aliases: std::collections::BTreeMap::new(),
+        cargo_aliases: BTreeMap::new(),
     };
     (workspace, one)
 }

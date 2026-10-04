@@ -10,14 +10,14 @@ use super::call_join::{
 };
 use super::compiled_source_path;
 use super::identity::{
-    declaration_kind, external_semantic_symbol, fragment_text, query_external_id, query_package_id,
-    query_semantic_id, semantic_coordinate, semantic_symbol,
+    declaration_kind, fragment_text, query_external_id, query_package_id, query_semantic_id,
+    semantic_coordinate,
 };
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::ProductSemanticPublicationRecord;
-use backend_engine::{Fragment, RowId};
+use backend_engine::RowId;
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,

@@ -4,15 +4,14 @@ use super::super::{
     WorkspaceSnapshot,
 };
 use super::identity::{
-    declaration_coordinate, declaration_family, declaration_kind, external_semantic_symbol,
-    semantic_coordinate, semantic_identity, semantic_symbol,
+    declaration_family, declaration_kind, external_semantic_symbol, semantic_coordinate,
+    semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::structural::{
-    FileContainment, ProfileSourceIdentities, ProfileSourcePaths, ProjectTypeIndex,
-    StructuralDeclaration, StructuralParent, StructuralProjectionPlan, StructuralSymbol,
-    duplicate_declaration_coordinates, is_file_module, profile_source_identities,
-    profile_source_paths, projected_source_capacity,
+    ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
+    StructuralProjectionPlan, profile_source_identities, profile_source_paths,
+    projected_source_capacity,
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
@@ -22,7 +21,7 @@ use backend_engine::application::{
     DocumentationFragment, DocumentationSession, LocalCompilerClient,
 };
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticUnavailableReason};
-use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, product_source_file_key};
+use backend_engine::{Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,

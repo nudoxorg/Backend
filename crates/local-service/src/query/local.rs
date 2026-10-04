@@ -1818,13 +1818,13 @@ pub(super) fn measure_search_corpus() {
     );
 }
 
-fn package_query_fact(index: usize) -> backend_extension_trustfall::SemanticQueryFact {
+fn package_query_fact(index: usize) -> SemanticQueryFact {
     let name = format!("pkg-{index}");
     let package = backend_engine::package_key(&name);
     let evidence = backend_extension_trustfall::PackageScopeEvidence::new(package);
     let id = evidence.row_id();
-    backend_extension_trustfall::SemanticQueryFact::new(
-        backend_extension_trustfall::SemanticQueryEvidence::Package(evidence),
+    SemanticQueryFact::new(
+        SemanticQueryEvidence::Package(evidence),
         SemanticQueryPresentation {
             id,
             kind: "project".to_owned(),

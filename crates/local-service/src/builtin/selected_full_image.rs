@@ -8,7 +8,7 @@
 use backend_engine::builtin::ProductSemanticPublicationKey;
 use backend_replication::{
     ByteRange, MAX_SEMANTIC_IMAGE_BYTES, SelectedGenerationStamp, SelectedSemanticImageChunk,
-    SelectedSemanticImageGet, SemanticTargetKey,
+    SelectedSemanticImageGet,
 };
 use backend_semantic::ir::{
     SemanticImageIdentity, SemanticPlaneCatalogRoot, SemanticPlaneImageKey,

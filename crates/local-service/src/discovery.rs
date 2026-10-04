@@ -11,7 +11,7 @@ use backend_engine::registry::{
     DISCOVERY_BATCH_ENVELOPE_VERSION, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCompleteness,
     DiscoveryCursor, DiscoveryError, DiscoveryFacet, DiscoveryFact, DiscoveryMetadata,
     DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoveryReleaseObservation,
-    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
     MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_PAGE_ITEMS, NugetCatalogEvent,
     RegistryEcosystem, RegistryEndpoint, crates_sparse_index_path, discovery_source_identity,
     parse_conan_recipe_tree, parse_conan_recipe_versions, parse_crates_recent_page,
@@ -33,6 +33,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use backend_engine::registry::DiscoveryTimestamp;
 
 const JOURNAL_MAGIC: &[u8; 8] = b"DISCOV01";
 const JOURNAL_VERSION: u16 = DISCOVERY_BATCH_ENVELOPE_VERSION;
@@ -500,7 +502,7 @@ fn refresh_crates(
                 Ok((package_name.clone(), url, etag))
             })
             .collect::<Result<Vec<_>, DiscoveryStoreError>>()?;
-        let responses = std::thread::scope(|scope| {
+        let responses = thread::scope(|scope| {
             let handles = requests
                 .into_iter()
                 .map(|(package_name, url, etag)| {
@@ -1918,7 +1920,7 @@ impl DiscoveryStore {
             return Ok(MaterializedDiscoveryBatch::Borrowed(batch));
         }
         self.preflight_package_retraction_materialization(batch)?;
-        if batch.source.ecosystem() != backend_engine::RegistryEcosystem::Npm {
+        if batch.source.ecosystem() != RegistryEcosystem::Npm {
             return Err(DiscoveryStoreError::Decode);
         }
         let mut materialized = batch.clone();
@@ -2123,7 +2125,7 @@ struct JournalWriteTransaction<'a> {
 
 struct FramePayloadWriter<'a> {
     journal: &'a mut File,
-    hasher: backend_engine::blake3::Hasher,
+    hasher: blake3::Hasher,
 }
 
 struct BoundedCountingWriter {
@@ -2170,7 +2172,7 @@ fn serialized_value_len_bounded<T: Serialize>(value: &T) -> Result<usize, Discov
 
 impl<'a> FramePayloadWriter<'a> {
     fn new(journal: &'a mut File) -> Self {
-        let mut hasher = backend_engine::blake3::Hasher::new();
+        let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.registry.discovery.transaction.v2\0");
         Self { journal, hasher }
     }
@@ -2296,21 +2298,21 @@ fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, DiscoveryStoreError> {
 }
 
 fn frame_checksum(payload: &[u8]) -> [u8; 32] {
-    let mut hasher = backend_engine::blake3::Hasher::new();
+    let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.registry.discovery.transaction.v2\0");
     hasher.update(payload);
     *hasher.finalize().as_bytes()
 }
 
 fn batch_fingerprint(batch: &DiscoveryBatch) -> Result<[u8; 32], DiscoveryStoreError> {
-    let mut hasher = backend_engine::blake3::Hasher::new();
+    let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.registry.discovery.batch.v1\0");
     serde_json::to_writer(&mut Blake3Writer(&mut hasher), batch)
         .map_err(|_| DiscoveryStoreError::Decode)?;
     Ok(*hasher.finalize().as_bytes())
 }
 
-struct Blake3Writer<'a>(&'a mut backend_engine::blake3::Hasher);
+struct Blake3Writer<'a>(&'a mut blake3::Hasher);
 
 impl Write for Blake3Writer<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {

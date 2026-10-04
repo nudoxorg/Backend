@@ -267,11 +267,11 @@ impl ImageRowResidence {
 
 fn projected_image_retained_bytes(projected: &ProjectedImage) -> usize {
     let mut shared_text = HashSet::new();
-    let mut bytes = std::mem::size_of::<ResidentProjection>().saturating_add(
+    let mut bytes = size_of::<ResidentProjection>().saturating_add(
         projected
             .rows
             .capacity()
-            .saturating_mul(std::mem::size_of::<ProjectedRow>()),
+            .saturating_mul(size_of::<ProjectedRow>()),
     );
     for projected_row in &projected.rows {
         bytes = bytes
@@ -279,7 +279,7 @@ fn projected_image_retained_bytes(projected: &ProjectedImage) -> usize {
                 projected_row
                     .charges
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<Charge>()),
+                    .saturating_mul(size_of::<Charge>()),
             )
             .saturating_add(row_retained_bytes(&projected_row.row, &mut shared_text));
     }
@@ -297,7 +297,7 @@ fn row_retained_bytes(row: &Row, shared_text: &mut HashSet<usize>) -> usize {
     bytes = bytes.saturating_add(
         row.document
             .len()
-            .saturating_mul(std::mem::size_of::<Fragment>()),
+            .saturating_mul(size_of::<Fragment>()),
     );
     for fragment in row.document.iter() {
         bytes = bytes.saturating_add(match fragment {
@@ -323,7 +323,7 @@ fn row_retained_bytes(row: &Row, shared_text: &mut HashSet<usize>) -> usize {
 /// multiple cached rows. Its two-word refcount header is included.
 fn shared_text_retained_bytes(text: &str, seen: &mut HashSet<usize>) -> usize {
     if seen.insert(text.as_ptr().addr()) {
-        text.len().saturating_add(2 * std::mem::size_of::<usize>())
+        text.len().saturating_add(2 * size_of::<usize>())
     } else {
         0
     }
@@ -1322,7 +1322,7 @@ fn admit(
     residence: &mut ImageRowResidence,
     stale: bool,
 ) -> Vec<Row> {
-    let mut symbols = std::collections::BTreeSet::new();
+    let mut symbols = BTreeSet::new();
     let mut rows = Vec::new();
     let mut remaining = usize::MAX;
     let mut sink = SemanticRowSink {

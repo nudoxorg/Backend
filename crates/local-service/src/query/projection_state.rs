@@ -6,7 +6,6 @@
 
 use backend_extension_qdrant as qdrant;
 use backend_platform::{DirectoryCapability, EntryKind, FileIdentity};
-use backend_version::WorkspaceRoot;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -1112,7 +1111,7 @@ fn read_bounded(
     name: &str,
     maximum: usize,
 ) -> io::Result<Option<Vec<u8>>> {
-    let mut file = match directory.open_private_file(name) {
+    let file = match directory.open_private_file(name) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),

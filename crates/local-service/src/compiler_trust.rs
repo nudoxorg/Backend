@@ -368,7 +368,7 @@ impl TrustedCompilerWorkerPolicy {
         if metadata.len() > MAX_POLICY_BYTES as u64 {
             return Err(CompilerTrustError::InvalidFile);
         }
-        let mut file =
+        let file =
             backend_platform::durable::open_private_read(path).map_err(private_policy_io_error)?;
         validate_open_policy_file(&file)?;
         let mut bytes = Vec::new();

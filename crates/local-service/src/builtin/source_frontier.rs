@@ -119,9 +119,9 @@ fn source_frontier_cache() -> &'static Mutex<SourceFrontierCache> {
 
 fn source_frontier_cache_entry_charge(frontier: &SourceFrontier) -> usize {
     let root_bytes = frontier.root.as_os_str().as_encoded_bytes().len();
-    let inline_overhead = std::mem::size_of::<SourceFrontier>()
-        .saturating_add(std::mem::size_of::<SourceFrontierKey>())
-        .saturating_add(std::mem::size_of::<(SourceFrontierKey, SourceFrontier)>());
+    let inline_overhead = size_of::<SourceFrontier>()
+        .saturating_add(size_of::<SourceFrontierKey>())
+        .saturating_add(size_of::<(SourceFrontierKey, SourceFrontier)>());
     frontier
         .estimated_bytes
         .saturating_add(SOURCE_FRONTIER_CACHE_ENTRY_OVERHEAD_BYTES.max(inline_overhead))
@@ -849,7 +849,7 @@ fn source_frontier_from_snapshot(
             continue;
         };
         let (record_digest, encoded_record_bytes) = source_record_digest(record)?;
-        let entry_bytes = std::mem::size_of::<SourceFrontierFile>()
+        let entry_bytes = size_of::<SourceFrontierFile>()
             .saturating_add(fields.path.len())
             .saturating_add(indexed.blob.len());
         estimated_bytes = estimated_bytes.checked_add(entry_bytes)?;
@@ -871,7 +871,7 @@ fn source_frontier_from_snapshot(
     let mut policy_bytes = 0usize;
     for (path, blob) in &state.policy_blobs {
         policy_bytes = policy_bytes.checked_add(
-            std::mem::size_of::<(String, String)>()
+            size_of::<(String, String)>()
                 .saturating_add(path.len())
                 .saturating_add(blob.len()),
         )?;

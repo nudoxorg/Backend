@@ -892,9 +892,9 @@ fn registry_max_archive_bytes() -> usize {
 /// overhead, and unrelated resident data are excluded.
 pub(crate) fn default_package_graph_limits() -> backend_library::PackageGraphIndexLimits {
     let bytes = crate::builtin::MAX_REBUILD_BYTES;
-    let rows = bytes / std::mem::size_of::<backend_library::PackageDependencyRecord>();
+    let rows = bytes / size_of::<backend_library::PackageDependencyRecord>();
     backend_library::PackageGraphIndexLimits {
-        max_sources: bytes / std::mem::size_of::<backend_library::PackageDependencySourceFacts>(),
+        max_sources: bytes / size_of::<backend_library::PackageDependencySourceFacts>(),
         max_total_rows: rows,
         max_reverse_edges: rows,
         max_index_key_bytes: bytes,
