@@ -18,7 +18,7 @@ use std::{
 use backend_engine::driver::{
     AuthorityFailure, CompileControl, CompileFailure, CompileOutput, CompileRequest,
     CompileScratch, NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
-    compile_ir,
+    compile, compile_ir,
 };
 use backend_frontend_typescript::legacy::AuthorityError;
 use backend_semantic::ir::{
