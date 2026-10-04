@@ -8,16 +8,14 @@ use backend_library::{
     CheckedPackageGraphFacts, DependencyAuthority, DependencyFacts, DependencyScope,
     MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord,
     PackageDependencySourceFacts, PackageGraphSourceAuthority, PackageGraphSourceKey,
-    PackageReference, PackageReferenceKind,
+    PackageReference,
 };
 use backend_platform::FileIdentity;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 const MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT: i64 = MAX_PACKAGE_GRAPH_ROWS as i64 + 1;
-const MAX_GRAPH_SOURCE_KEYS_FOR_SPELLING: usize = MAX_PACKAGE_GRAPH_AUTHORITIES.saturating_mul(2);
-const MAX_GRAPH_SOURCE_KEY_READ_LIMIT: i64 =
-    MAX_GRAPH_SOURCE_KEYS_FOR_SPELLING.saturating_add(1) as i64;
+const MAX_GRAPH_SOURCE_AUTHORITY_READ_LIMIT: i64 = MAX_PACKAGE_GRAPH_AUTHORITIES as i64 + 1;
 
 /// A graph query result fenced to the immutable root that supplied its facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,8 +37,8 @@ pub struct RootedPackageGraph {
 /// A typed explanation for a package with no usable dependency edges.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageGraphState {
-    /// Exact typed source coordinate whose state was recorded.
-    pub source: PackageReference,
+    /// Canonical source spelling.
+    pub source: String,
     /// Exact authority whose source state was recorded.
     pub authority: PackageGraphSourceAuthority,
     /// `1` is unknown and `2` is unavailable.
@@ -323,23 +321,21 @@ impl TursoProjection {
         let mut desired_index = 0_usize;
         let mut stored = tx
             .query(
-                "SELECT source, coordinate_kind, source_authority_kind, source_authority_id, facts_witness \
+                "SELECT source, source_authority_kind, source_authority_id, facts_witness \
                  FROM backend_projection_package_source_witnesses \
-                 ORDER BY source, coordinate_kind, source_authority_kind, source_authority_id",
+                 ORDER BY source, source_authority_kind, source_authority_id",
                 (),
             )
             .await?;
         while let Some(row) = stored.next().await? {
             let source_text: String = row.get(0)?;
-            let coordinate_kind: i64 = row.get(1)?;
-            let authority_kind: i64 = row.get(2)?;
-            let authority_id = graph_digest(row.get(3)?, "graph_source_authority_id")?;
-            let witness = graph_digest(row.get(4)?, "graph_source_facts_witness")?;
+            let authority_kind: i64 = row.get(1)?;
+            let authority_id = graph_digest(row.get(2)?, "graph_source_authority_id")?;
+            let witness = graph_digest(row.get(3)?, "graph_source_facts_witness")?;
             loop {
                 let Some((incoming_source, _)) = facts.get(desired_index) else {
                     removed.push(decode_source_key(
                         source_text,
-                        coordinate_kind,
                         authority_kind,
                         authority_id,
                     )?);
@@ -347,7 +343,6 @@ impl TursoProjection {
                 };
                 match compare_stored_source(
                     &source_text,
-                    coordinate_kind,
                     authority_kind,
                     &authority_id,
                     incoming_source,
@@ -355,7 +350,6 @@ impl TursoProjection {
                     Ordering::Less => {
                         removed.push(decode_source_key(
                             source_text,
-                            coordinate_kind,
                             authority_kind,
                             authority_id,
                         )?);
@@ -492,7 +486,29 @@ impl TursoProjection {
             tx.rollback().await?;
             return Err(ProjectionError::StaleTransition);
         }
-        let keys = source_inventory(&tx, source).await?;
+        let mut source_rows = tx
+            .query(
+                "SELECT source_authority_kind, source_authority_id \
+                 FROM backend_projection_package_sources WHERE source=?1 \
+                 ORDER BY source_authority_kind, source_authority_id LIMIT ?2",
+                turso::params![source.as_str(), MAX_GRAPH_SOURCE_AUTHORITY_READ_LIMIT],
+            )
+            .await?;
+        let mut keys = Vec::new();
+        while let Some(row) = source_rows.next().await? {
+            if keys.len() == MAX_PACKAGE_GRAPH_AUTHORITIES {
+                drop(source_rows);
+                tx.rollback().await?;
+                return Err(ProjectionError::ReadLimitExceeded {
+                    maximum: MAX_PACKAGE_GRAPH_AUTHORITIES,
+                });
+            }
+            keys.push(PackageGraphSourceKey::new(
+                source.clone(),
+                decode_source_authority(row.get(0)?, row.get(1)?)?,
+            ));
+        }
+        drop(source_rows);
         if keys.is_empty() {
             let root = metadata.root.into_boxed_slice();
             tx.rollback().await?;
@@ -518,15 +534,14 @@ impl TursoProjection {
         let selected = keys.remove(0);
         let mut rows = tx
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE source=?1 \
-                 AND coordinate_kind=?2 AND source_authority_kind=?3 AND source_authority_id=?4 \
-                 ORDER BY edge_id LIMIT ?5",
+                 AND source_authority_kind=?2 AND source_authority_id=?3 \
+                 ORDER BY edge_id LIMIT ?4",
                 turso::params![
                     selected.coordinate.as_str(),
-                    i64::from(selected.coordinate.kind().tag()),
                     selected.authority.kind_tag(),
                     selected.authority.id_bytes().as_slice(),
                     MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT
@@ -563,10 +578,19 @@ impl TursoProjection {
             tx.rollback().await?;
             return Err(ProjectionError::StaleTransition);
         }
-        let exists = source_inventory(&tx, &source.coordinate)
-            .await?
-            .iter()
-            .any(|candidate| candidate == source);
+        let mut source_rows = tx
+            .query(
+                "SELECT 1 FROM backend_projection_package_sources WHERE source=?1 \
+                 AND source_authority_kind=?2 AND source_authority_id=?3",
+                turso::params![
+                    source.coordinate.as_str(),
+                    source.authority.kind_tag(),
+                    source.authority.id_bytes().as_slice()
+                ],
+            )
+            .await?;
+        let exists = source_rows.next().await?.is_some();
+        drop(source_rows);
         if !exists {
             let root = metadata.root.into_boxed_slice();
             tx.rollback().await?;
@@ -580,15 +604,14 @@ impl TursoProjection {
         }
         let mut rows = tx
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE source=?1 \
-                 AND coordinate_kind=?2 AND source_authority_kind=?3 AND source_authority_id=?4 \
-                 ORDER BY edge_id LIMIT ?5",
+                 AND source_authority_kind=?2 AND source_authority_id=?3 \
+                 ORDER BY edge_id LIMIT ?4",
                 turso::params![
                     source.coordinate.as_str(),
-                    i64::from(source.coordinate.kind().tag()),
                     source.authority.kind_tag(),
                     source.authority.id_bytes().as_slice(),
                     MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT
@@ -642,7 +665,7 @@ impl TursoProjection {
         };
         let mut rows = tx
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE target_ecosystem=?1 \
@@ -736,70 +759,6 @@ pub(crate) async fn graph_root_matches_selected_view(
     Ok(graph.root.as_slice() == view.root.as_slice())
 }
 
-/// Checks both source inventories for one spelling, validates every stored
-/// coordinate tag, then returns the exact requested typed coordinate. Scanning
-/// both tags prevents an invalid persisted kind from being reported as a
-/// misleading Missing result for a PURL or Local query.
-async fn source_inventory(
-    connection: &turso::Connection,
-    coordinate: &PackageReference,
-) -> Result<Vec<PackageGraphSourceKey>, ProjectionError> {
-    let sources = source_keys_for_table(
-        connection,
-        "backend_projection_package_sources",
-        coordinate.as_str(),
-    )
-    .await?;
-    let witnesses = source_keys_for_table(
-        connection,
-        "backend_projection_package_source_witnesses",
-        coordinate.as_str(),
-    )
-    .await?;
-    if sources != witnesses {
-        return Err(ProjectionError::Database(turso::Error::Misuse(
-            "package graph source inventory differs from its witness index".to_owned(),
-        )));
-    }
-    Ok(sources
-        .into_iter()
-        .filter(|source| &source.coordinate == coordinate)
-        .collect())
-}
-
-async fn source_keys_for_table(
-    connection: &turso::Connection,
-    table: &'static str,
-    spelling: &str,
-) -> Result<Vec<PackageGraphSourceKey>, ProjectionError> {
-    let sql = format!(
-        "SELECT source, coordinate_kind, source_authority_kind, source_authority_id \
-         FROM {table} WHERE source=?1 \
-         ORDER BY coordinate_kind, source_authority_kind, source_authority_id LIMIT ?2"
-    );
-    let mut rows = connection
-        .query(
-            &sql,
-            turso::params![spelling, MAX_GRAPH_SOURCE_KEY_READ_LIMIT],
-        )
-        .await?;
-    let mut keys = Vec::with_capacity(MAX_GRAPH_SOURCE_KEYS_FOR_SPELLING);
-    while let Some(row) = rows.next().await? {
-        if keys.len() == MAX_GRAPH_SOURCE_KEYS_FOR_SPELLING {
-            drop(rows);
-            return Err(ProjectionError::ReadLimitExceeded {
-                maximum: MAX_GRAPH_SOURCE_KEYS_FOR_SPELLING,
-            });
-        }
-        keys.push(PackageGraphSourceKey::new(
-            decode_package_reference(row.get(1)?, row.get(0)?)?,
-            decode_source_authority(row.get(2)?, row.get(3)?)?,
-        ));
-    }
-    drop(rows);
-    Ok(keys)
-}
-
 async fn package_state_from(
     connection: &turso::Connection,
     source: &PackageGraphSourceKey,
@@ -807,10 +766,9 @@ async fn package_state_from(
     let mut rows = connection
         .query(
             "SELECT state, reason FROM backend_projection_package_states \
-             WHERE source=?1 AND coordinate_kind=?2 AND source_authority_kind=?3 AND source_authority_id=?4",
+             WHERE source=?1 AND source_authority_kind=?2 AND source_authority_id=?3",
             turso::params![
                 source.coordinate.as_str(),
-                i64::from(source.coordinate.kind().tag()),
                 source.authority.kind_tag(),
                 source.authority.id_bytes().as_slice()
             ],
@@ -820,7 +778,7 @@ async fn package_state_from(
         return Ok(None);
     };
     Ok(Some(PackageGraphState {
-        source: source.coordinate.clone(),
+        source: source.coordinate.as_str().to_owned(),
         authority: source.authority,
         kind: row.get(0)?,
         reason: row.get(1)?,
@@ -831,19 +789,21 @@ const EDGE_WRITE_BATCH: usize = 64;
 const SOURCE_KEY_BATCH: usize = 128;
 
 fn compare_source_keys(left: &PackageGraphSourceKey, right: &PackageGraphSourceKey) -> Ordering {
-    left.canonical_cmp(right)
+    left.coordinate
+        .as_str()
+        .cmp(right.coordinate.as_str())
+        .then_with(|| left.authority.kind_tag().cmp(&right.authority.kind_tag()))
+        .then_with(|| left.authority.id_bytes().cmp(&right.authority.id_bytes()))
 }
 
 fn compare_stored_source(
     source: &str,
-    coordinate_kind: i64,
     authority_kind: i64,
     authority_id: &[u8; 32],
     desired: &PackageGraphSourceKey,
 ) -> Ordering {
     source
         .cmp(desired.coordinate.as_str())
-        .then_with(|| coordinate_kind.cmp(&i64::from(desired.coordinate.kind().tag())))
         .then_with(|| authority_kind.cmp(&desired.authority.kind_tag()))
         .then_with(|| authority_id.cmp(&desired.authority.id_bytes()))
 }
@@ -856,42 +816,18 @@ fn graph_digest(value: Vec<u8>, field: &'static str) -> Result<[u8; 32], Project
 
 fn decode_source_key(
     source: String,
-    coordinate_kind: i64,
     authority_kind: i64,
     authority_id: [u8; 32],
 ) -> Result<PackageGraphSourceKey, ProjectionError> {
-    let coordinate = decode_package_reference(coordinate_kind, source)?;
+    let coordinate = PackageReference::parse(source).map_err(|_| {
+        ProjectionError::Database(turso::Error::Misuse(
+            "invalid package graph source witness key".to_owned(),
+        ))
+    })?;
     Ok(PackageGraphSourceKey::new(
         coordinate,
         decode_source_authority(authority_kind, authority_id.to_vec())?,
     ))
-}
-
-pub(crate) fn decode_package_reference(
-    coordinate_kind: i64,
-    coordinate: String,
-) -> Result<PackageReference, ProjectionError> {
-    let tag = u8::try_from(coordinate_kind).map_err(|_| {
-        ProjectionError::Database(turso::Error::Misuse(
-            "invalid package graph coordinate kind".to_owned(),
-        ))
-    })?;
-    let kind = PackageReferenceKind::try_from(tag).map_err(|_| {
-        ProjectionError::Database(turso::Error::Misuse(
-            "invalid package graph coordinate kind".to_owned(),
-        ))
-    })?;
-    let reference = PackageReference::from_kind(kind, coordinate.clone()).map_err(|_| {
-        ProjectionError::Database(turso::Error::Misuse(
-            "invalid package graph source coordinate".to_owned(),
-        ))
-    })?;
-    if reference.as_str() != coordinate {
-        return Err(ProjectionError::Database(turso::Error::Misuse(
-            "noncanonical package graph source coordinate".to_owned(),
-        )));
-    }
-    Ok(reference)
 }
 
 async fn stored_edge_ids_for_sources(
@@ -908,7 +844,7 @@ async fn stored_edge_ids_for_sources(
             if index != 0 {
                 sql.push_str(" OR ");
             }
-            sql.push_str("(source=? AND coordinate_kind=? AND source_authority_kind=? AND source_authority_id=?)");
+            sql.push_str("(source=? AND source_authority_kind=? AND source_authority_id=?)");
         }
         let values = batch.iter().flat_map(source_key_values).collect::<Vec<_>>();
         let mut rows = connection
@@ -930,7 +866,7 @@ async fn insert_package_edges(
     }
     let mut sql = String::from(
         "INSERT INTO backend_projection_package_edges (\
-         edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, target_ecosystem, \
+         edge_id, source, source_authority_kind, source_authority_id, target_ecosystem, \
          target_name, requirement, resolved, scope, optional, authority, frontier, provenance, \
          facts_version) VALUES ",
     );
@@ -938,9 +874,9 @@ async fn insert_package_edges(
         if index != 0 {
             sql.push(',');
         }
-        sql.push_str("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        sql.push_str("(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     }
-    let mut values = Vec::with_capacity(records.len().saturating_mul(15));
+    let mut values = Vec::with_capacity(records.len().saturating_mul(14));
     for record in records {
         values.extend(edge_values(record));
     }
@@ -950,7 +886,7 @@ async fn insert_package_edges(
     Ok(())
 }
 
-fn edge_values(record: &PackageDependencyRecord) -> [turso::Value; 15] {
+fn edge_values(record: &PackageDependencyRecord) -> [turso::Value; 14] {
     let resolved = record
         .target
         .resolved
@@ -961,7 +897,6 @@ fn edge_values(record: &PackageDependencyRecord) -> [turso::Value; 15] {
     [
         turso::Value::Blob(record.facts_version.to_vec()),
         turso::Value::Text(record.source.as_str().to_owned()),
-        turso::Value::Integer(i64::from(record.source.kind().tag())),
         turso::Value::Integer(record.source_authority.kind_tag()),
         turso::Value::Blob(record.source_authority.id_bytes().to_vec()),
         turso::Value::Integer(i64::from(record.target.ecosystem as u8)),
@@ -1002,10 +937,9 @@ async fn delete_edge_ids(
     Ok(())
 }
 
-fn source_key_values(source: &PackageGraphSourceKey) -> [turso::Value; 4] {
+fn source_key_values(source: &PackageGraphSourceKey) -> [turso::Value; 3] {
     [
         turso::Value::Text(source.coordinate.as_str().to_owned()),
-        turso::Value::Integer(i64::from(source.coordinate.kind().tag())),
         turso::Value::Integer(source.authority.kind_tag()),
         turso::Value::Blob(source.authority.id_bytes().to_vec()),
     ]
@@ -1025,7 +959,7 @@ async fn delete_package_source_rows(
             if index != 0 {
                 sql.push_str(" OR ");
             }
-            sql.push_str("(source=? AND coordinate_kind=? AND source_authority_kind=? AND source_authority_id=?)");
+            sql.push_str("(source=? AND source_authority_kind=? AND source_authority_id=?)");
         }
         let values = batch.iter().flat_map(source_key_values).collect::<Vec<_>>();
         connection
@@ -1045,9 +979,9 @@ async fn insert_package_sources(
         }
         let mut sql = String::from(
             "INSERT OR IGNORE INTO backend_projection_package_sources \
-             (source, coordinate_kind, source_authority_kind, source_authority_id) VALUES ",
+             (source, source_authority_kind, source_authority_id) VALUES ",
         );
-        append_value_rows(&mut sql, batch.len(), 4);
+        append_value_rows(&mut sql, batch.len(), 3);
         let values = batch
             .iter()
             .flat_map(|source| source_key_values(source))
@@ -1071,11 +1005,11 @@ async fn upsert_package_source_witnesses(
         }
         let mut sql = String::from(
             "INSERT INTO backend_projection_package_source_witnesses \
-             (source, coordinate_kind, source_authority_kind, source_authority_id, facts_witness) VALUES ",
+             (source, source_authority_kind, source_authority_id, facts_witness) VALUES ",
         );
-        append_value_rows(&mut sql, batch.len(), 5);
+        append_value_rows(&mut sql, batch.len(), 4);
         sql.push_str(
-            " ON CONFLICT(source, coordinate_kind, source_authority_kind, source_authority_id) \
+            " ON CONFLICT(source, source_authority_kind, source_authority_id) \
              DO UPDATE SET facts_witness=excluded.facts_witness \
              WHERE backend_projection_package_source_witnesses.facts_witness != excluded.facts_witness",
         );
@@ -1117,11 +1051,11 @@ async fn upsert_package_states(
         }
         let mut sql = String::from(
             "INSERT INTO backend_projection_package_states \
-             (source, coordinate_kind, source_authority_kind, source_authority_id, state, reason) VALUES ",
+             (source, source_authority_kind, source_authority_id, state, reason) VALUES ",
         );
-        append_value_rows(&mut sql, batch.len(), 6);
+        append_value_rows(&mut sql, batch.len(), 5);
         sql.push_str(
-            " ON CONFLICT(source, coordinate_kind, source_authority_kind, source_authority_id) \
+            " ON CONFLICT(source, source_authority_kind, source_authority_id) \
              DO UPDATE SET state=excluded.state, reason=excluded.reason",
         );
         let values = batch
@@ -1199,10 +1133,12 @@ fn decode_source_authority(
 }
 
 fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, ProjectionError> {
-    let source = decode_package_reference(row.get(2)?, row.get::<String>(1)?)?;
-    let source_authority = decode_source_authority(row.get(3)?, row.get(4)?)?;
+    let source = PackageReference::parse(row.get::<String>(1)?).map_err(|_| {
+        ProjectionError::Database(turso::Error::Misuse("invalid graph source".to_owned()))
+    })?;
+    let source_authority = decode_source_authority(row.get(2)?, row.get(3)?)?;
     let target_ecosystem =
-        backend_library::RegistryEcosystem::parse_canonical(match row.get::<i64>(5)? {
+        backend_library::RegistryEcosystem::parse_canonical(match row.get::<i64>(4)? {
             1 => "cargo",
             2 => "npm",
             3 => "pypi",
@@ -1219,20 +1155,20 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
         .map_err(|_| {
             ProjectionError::Database(turso::Error::Misuse("invalid graph ecosystem".to_owned()))
         })?;
-    let name = backend_library::ProductText::new(row.get::<String>(6)?).map_err(|_| {
+    let name = backend_library::ProductText::new(row.get::<String>(5)?).map_err(|_| {
         ProjectionError::Database(turso::Error::Misuse("invalid graph target name".to_owned()))
     })?;
-    let requirement = backend_library::ProductText::new(row.get::<String>(7)?).map_err(|_| {
+    let requirement = backend_library::ProductText::new(row.get::<String>(6)?).map_err(|_| {
         ProjectionError::Database(turso::Error::Misuse("invalid graph requirement".to_owned()))
     })?;
     let resolved = row
-        .get::<Option<String>>(8)?
-        .map(|value| PackageReference::from_kind(PackageReferenceKind::Purl, value))
+        .get::<Option<String>>(7)?
+        .map(|value| PackageReference::parse(value))
         .transpose()
         .map_err(|_| {
             ProjectionError::Database(turso::Error::Misuse("invalid graph resolution".to_owned()))
         })?;
-    let scope = match row.get::<i64>(9)? {
+    let scope = match row.get::<i64>(8)? {
         0 => DependencyScope::Runtime,
         1 => DependencyScope::Optional,
         2 => DependencyScope::Development,
@@ -1244,7 +1180,7 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
             )));
         }
     };
-    let authority = match row.get::<i64>(11)? {
+    let authority = match row.get::<i64>(10)? {
         0 => DependencyAuthority::RegistryMetadata,
         1 => DependencyAuthority::ArchiveManifest,
         2 => DependencyAuthority::ForgeManifest,
@@ -1255,9 +1191,9 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
             )));
         }
     };
-    let frontier: Vec<u8> = row.get(12)?;
-    let provenance: Vec<u8> = row.get(13)?;
-    let facts_version: Vec<u8> = row.get(14)?;
+    let frontier: Vec<u8> = row.get(11)?;
+    let provenance: Vec<u8> = row.get(12)?;
+    let facts_version: Vec<u8> = row.get(13)?;
     let frontier: [u8; 32] = frontier.try_into().map_err(|_| {
         ProjectionError::Database(turso::Error::Misuse("invalid graph frontier".to_owned()))
     })?;
@@ -1269,23 +1205,17 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
             "invalid graph facts version".to_owned(),
         ))
     })?;
-    let target = backend_library::PackageDependencyTarget::new(
-        target_ecosystem,
-        name.as_str(),
-        requirement.as_str(),
-        resolved,
-    )
-    .map_err(|_| {
-        ProjectionError::Database(turso::Error::Misuse(
-            "invalid graph target".to_owned(),
-        ))
-    })?;
     let record = PackageDependencyRecord::new_with_source_authority(
         source,
         source_authority,
-        target,
+        backend_library::PackageDependencyTarget {
+            ecosystem: target_ecosystem,
+            name,
+            requirement,
+            resolved,
+        },
         scope,
-        row.get::<i64>(10)? != 0,
+        row.get::<i64>(9)? != 0,
         backend_library::DependencyEvidence {
             authority,
             frontier,

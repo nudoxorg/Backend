@@ -1,0 +1,41 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T10:55:20.555946+00:00",
+  "label": "typed-turso",
+  "branch": "codex/checkpoint-typed-turso-20261004T105520Z",
+  "worktree": "/private/tmp/nudox-typed-graph-turso-20261004",
+  "parent": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "merge_parents": [],
+  "working_source_tree": "5ce0db2ece901f762c673da09f8d9c304b3cea7b",
+  "description": "Partial/frozen Turso typed-key storage and decoding cutover, schema bump, collision/cursor/corruption fixtures. Final completeness review and Rust tests remain pending.",
+  "changed_paths": [
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "source_sha256": {
+    "extensions/turso/src/graph.rs": "85224176e1fd4ef38560c0f21570f5d1122b4c3c22f08878ac0a79e32f4414bb",
+    "extensions/turso/src/package_graph_read.rs": "5c95be264cb8d906f6cb93789f93c9886ca3700e2f5a60199d53593ab8503910",
+    "extensions/turso/src/schema.rs": "919ab00251f1aafd97833b7f501b6c10b5e6ef73e26ee4270c9016cba4cfcb82",
+    "extensions/turso/src/tests.rs": "5212dd27247afef5903d6e33a0880a27689dcb4924fa0f92fd963a1e3e35c603"
+  },
+  "untracked_source_paths": [],
+  "original_index_sha256": "491c0e58b8b4f0c30c76b7c18ec31a1f00c9d538817345f7d3fa04f5722ac539",
+  "original_index_stages_sha256": "19e759851a453f892618d262000a13d13e784228649d1d64e902147578272051",
+  "original_status_sha256": "5a05af6ce5963380b25d7963180cf26602e0b622fb78df7cf6ac6154d61e0f5f",
+  "preserved_index_blobs": [
+    "10d85b1da87e940065734a812db23146fc283144",
+    "916200b50a3e1590feb49424da38d0c835f2ab80",
+    "a18d364604abb10a0710d8b7926b92a5e6661c46",
+    "d54e6d925e01b7e1bb078f14da627715b272a184"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {},
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}
