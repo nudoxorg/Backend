@@ -156,7 +156,7 @@ impl GraphFixture {
 
     fn failure(&self, key: &Key) -> Arc<str> {
         self.cx
-            .background_executor
+            .foreground_executor
             .block_test(super::read(key, &self.cancellation))
             .err()
             .expect("a fresh empty owner or withdrawn generation has a precise graph diagnostic")

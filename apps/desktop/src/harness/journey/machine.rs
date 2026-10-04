@@ -139,16 +139,14 @@ pub(super) fn open_production(root: &Path, size: (u32, u32), scale: u8) -> Resul
 /// runs and the window closes), then the owner's thread goes (the host lets
 /// the workspace go).
 ///
-/// The shut-down app is not dropped: the owner watch task
-/// (`runtime::owner::watch`) holds the root and the store for the app's
-/// whole life and never ends, so dropping the app trips gpui's leak detector
-/// on those two handles. A real process simply exits there; the harness
-/// leaves the shut-down app to the end of its own process.
+/// The owner watch holds the root and store weakly and ends on `Closed`,
+/// so the shut-down session can release its app and run GPUI's leak detector
+/// before the owner thread is joined.
 pub(super) fn quit(mut session: Session, launched: Launched) {
     // `shutdown` inside a window update: the window is out of the map while
     // it runs, so the update reports "window not found" once it is closed.
     let _ = session.update(|_, cx| cx.shutdown());
-    std::mem::forget(session);
+    drop(session);
     launched.gate.close();
     drop(launched.owner);
 }
