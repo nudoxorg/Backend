@@ -568,9 +568,15 @@ pub enum SemanticArrayShape {
     /// Growable or unsized sequence.
     Sequence,
     /// Rectangular array with a positive rank.
-    Rectangular { rank: std::num::NonZeroU16 },
+    Rectangular {
+        /// Number of dimensions in the rectangular array shape.
+        rank: std::num::NonZeroU16,
+    },
     /// Fixed array with exact element count.
-    FixedValue { length: u64 },
+    FixedValue {
+        /// Number of elements in the fixed array.
+        length: u64,
+    },
     /// Constant-expression extent retained as source text.
     ConstExpression(SourceAtomText),
     /// Incomplete native array with no known extent.
@@ -628,22 +634,33 @@ pub enum SemanticPropertyKey {
 pub enum SemanticObjectMember {
     /// Named or computed property.
     Property {
+        /// Property key as represented by the compiler.
         key: SemanticPropertyKey,
+        /// Property value type, including explicit unavailability.
         ty: SemanticTypeFact,
+        /// Whether the compiler marks the property optional.
         optional: bool,
+        /// Whether the compiler marks the property read-only.
         readonly: bool,
     },
     /// Named or computed method signature.
     Method {
+        /// Method key as represented by the compiler.
         key: SemanticPropertyKey,
+        /// Method's callable type fact.
         signature: SemanticTypeFact,
+        /// Whether the compiler marks the method optional.
         optional: bool,
     },
     /// Index signature with a named parameter and independent key/value types.
     Index {
+        /// Compiler-owned spelling of the index parameter.
         parameter: SourceAtomText,
+        /// Type accepted for property keys.
         key: SemanticTypeFact,
+        /// Type produced by reading a matching property.
         value: SemanticTypeFact,
+        /// Whether the compiler marks the index signature read-only.
         readonly: bool,
     },
     /// Call signature.
@@ -698,13 +715,24 @@ pub enum SemanticDeclarationShape {
 /// Language-specific compiler facts needed to avoid erasing shape modifiers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticShapeLanguageFacts {
-    /// No extension row was captured for this entity in the selected profile.
-    Unavailable { profile: LanguageProfile },
-    /// Only language-neutral compiler facts are represented.
-    CommonOnly { profile: LanguageProfile },
+    /// The selected image has no extension row for this entity and profile.
+    /// This does not claim that the source-language facts are empty.
+    Unavailable {
+        /// Closed compiler profile against which the missing row was checked.
+        profile: LanguageProfile,
+    },
+    /// Only language-neutral shape facts are represented; no
+    /// profile-specific extension facts are attached to this result.
+    CommonOnly {
+        /// Profile selected for the image that supplied the common facts.
+        profile: LanguageProfile,
+    },
     /// A bounded subset of profile-specific facts was captured.
     Partial {
+        /// Profile whose extension facts were read from the selected image.
         profile: LanguageProfile,
+        /// Facts from a present extension row. Empty source collections are
+        /// authoritative empty values; optional fields may still be absent.
         facts: SemanticShapeLanguageFact,
     },
 }
@@ -718,33 +746,50 @@ pub enum SemanticShapeLanguageFact {
     GoVariadic(bool),
     /// Python parameter convention and dynamic confidence.
     PythonParameter {
+        /// Source parameter convention recorded by the Python frontend.
         kind: PythonParameterKind,
+        /// Confidence qualifier recorded for dynamic type evidence.
         confidence: Confidence,
     },
     /// C# nullable/reference convention and callable effects.
     CSharp {
+        /// Compiler-observed nullability state.
         nullability: CSharpNullability,
+        /// Compiler-observed `ref`/`out`/`in` convention.
         reference_kind: CSharpReferenceKind,
+        /// Whether the callable is asynchronous.
         is_async: bool,
+        /// Whether the callable yields an iterator or async iterator.
         is_iterator: bool,
+        /// Whether the callable is an extension member.
         is_extension: bool,
     },
     /// TypeScript declaration and observed checker types.
     TypeScript {
+        /// Type declared in source, when the image captured one.
         declared: Option<Box<SemanticTypeFact>>,
+        /// Type observed by the TypeScript checker, when captured.
         observed: Option<Box<SemanticTypeFact>>,
     },
     /// Java throws types and annotations.
     Java {
+        /// Declared thrown types in compiler order; empty is a captured empty
+        /// list when the Java extension row exists.
         throws: Box<[SemanticTypeFact]>,
+        /// Exact compiler-owned annotation spellings in compiler order.
         annotations: Box<[SourceAtomText]>,
     },
     /// Clang qualifiers and measured layout.
     Clang {
+        /// Whether the declaration has the C/C++ `const` qualifier.
         is_const: bool,
+        /// Whether the declaration has the C/C++ `volatile` qualifier.
         is_volatile: bool,
+        /// Whether the declaration has the C/C++ `restrict` qualifier.
         is_restrict: bool,
+        /// Measured ABI size in bits, absent when the selected image has no layout.
         size_bits: Option<u32>,
+        /// Measured ABI alignment in bits, absent when the selected image has no layout.
         align_bits: Option<u32>,
     },
 }

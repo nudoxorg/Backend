@@ -519,7 +519,7 @@ pub(crate) fn semantic_shape_batch_from_wire(
     let preimage = admit_shape_wire_tree(&value)?;
     let batch_key = ObjectKey::<crate::SemanticShapeBatchSchema>::from_value(preimage.as_slice());
     certificate.key_commitment(
-        crate::WireSchema::SemanticShapeBatch,
+        WireSchema::SemanticShapeBatch,
         &encode_id(batch_key.as_bytes()),
     )?;
     let basis = certificate
@@ -891,7 +891,7 @@ fn origin_from_wire(
         return Err("semantic-shape source witness commitment does not match".to_owned());
     }
     certificate.key_bytes::<crate::SemanticShapeSourceSchema>(
-        crate::WireSchema::SemanticShapeSource,
+        WireSchema::SemanticShapeSource,
         &origin.source_commitment,
     )?;
     Ok(admitted)

@@ -1093,7 +1093,7 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         source: input.source.clone(),
         root: input.root.clone(),
         request_binding: None,
-        name: std::path::Path::new(&input.root).file_name().map_or_else(
+        name: Path::new(&input.root).file_name().map_or_else(
             || input.root.clone(),
             |name| name.to_string_lossy().into_owned(),
         ),

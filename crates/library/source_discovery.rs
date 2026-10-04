@@ -316,14 +316,19 @@ pub enum DiscoverySourceEvent {
     /// An exact NuGet catalog commit. `commit_id` identifies the event but is
     /// opaque and never used to order equal timestamps.
     NugetCatalog {
+        /// Commit time normalized to UTC for timestamp ordering.
         timestamp: DiscoveryTimestamp,
+        /// Exact catalog commit identifier; compared for event identity only.
         commit_id: String,
     },
     /// An exact npm changes row. Only `sequence` is ordered; revision and row
     /// proof are equality evidence.
     NpmChange {
+        /// Positive ordered sequence from the npm changes feed.
         sequence: u64,
+        /// Exact package revision advertised by the row, if present.
         revision: Option<String>,
+        /// Opaque source-row proof commitment, not an ordering key.
         change_proof: [u8; 32],
     },
 }
@@ -482,27 +487,38 @@ pub struct DiscoveryAdvisory {
 /// syntax semantics.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CratesSparseFeature {
+    /// Cargo feature name exactly as declared in this index row.
     pub name: String,
+    /// Feature members in the row's declared order.
     pub members: Vec<String>,
 }
 
 /// One exact dependency declaration from a Cargo sparse-index row.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CratesSparseDependency {
+    /// Dependency alias used in the package manifest.
     pub name: String,
+    /// Cargo version requirement spelling from the sparse row.
     pub requirement: String,
+    /// Renamed package name, when the row supplies one.
     #[serde(default)]
     pub package: DiscoveryFacet<String>,
+    /// Requested feature names; a known empty list differs from missing data.
     #[serde(default)]
     pub features: DiscoveryFacet<Vec<String>>,
+    /// Whether this dependency is optional.
     #[serde(default)]
     pub optional: DiscoveryFacet<bool>,
+    /// Whether Cargo enables the dependency's default features.
     #[serde(default)]
     pub default_features: DiscoveryFacet<bool>,
+    /// Target platform expression, when supplied by the row.
     #[serde(default)]
     pub target: DiscoveryFacet<String>,
+    /// Dependency kind such as normal, build, or development.
     #[serde(default)]
     pub kind: DiscoveryFacet<String>,
+    /// Registry selector for a non-default registry, when present.
     #[serde(default)]
     pub registry: DiscoveryFacet<String>,
 }
@@ -511,16 +527,23 @@ pub struct CratesSparseDependency {
 /// Missing arrays stay `Unknown`; an explicit empty array is `Known([])`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CratesSparseMetadata {
+    /// 64-character checksum spelling from the sparse-index record.
     pub checksum: String,
+    /// Sparse-index schema version recorded for this release.
     pub schema_version: u32,
+    /// Minimum Rust version spelling, if the row reports one.
     #[serde(default)]
     pub rust_version: DiscoveryFacet<String>,
+    /// Native-library link name declared by the crate, if any.
     #[serde(default)]
     pub links: DiscoveryFacet<String>,
+    /// Features from the original sparse-index feature map.
     #[serde(default)]
     pub features: DiscoveryFacet<Vec<CratesSparseFeature>>,
+    /// Features from Cargo's newer `features2` map.
     #[serde(default)]
     pub features2: DiscoveryFacet<Vec<CratesSparseFeature>>,
+    /// Dependency declarations from this exact sparse-index row.
     #[serde(default)]
     pub dependencies: DiscoveryFacet<Vec<CratesSparseDependency>>,
 }
@@ -705,13 +728,19 @@ fn cargo_sparse_dependencies_valid(value: &DiscoveryFacet<Vec<CratesSparseDepend
 /// compiler artifact.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryFact {
+    /// Registry source identity that made this claim.
     pub source: DiscoverySourceIdentity,
+    /// Exact registry package coordinate; its ecosystem must match `source`.
     pub coordinate: PackageCoordinate,
+    /// Current registry standing, independent of optional metadata facets.
     pub standing: DiscoveryStanding,
+    /// Local time this observation was admitted; not part of immutable fact identity.
     pub observed_at: DiscoveryObservedAt,
     /// Typed source event evidence. Raw source spelling remains separate.
     pub source_event: DiscoverySourceEvent,
+    /// Exact source event-time spelling used to validate typed event evidence.
     pub source_event_time: Option<String>,
+    /// Source-adapter proof bytes retained as opaque evidence for this row.
     pub proof: [u8; 32],
     /// Optional, source-attributed package and version metadata.
     #[serde(default)]
@@ -728,8 +757,11 @@ pub struct DiscoveryFact {
 /// identity. Source event spelling and every metadata facet are included.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct RegistryFactVersionId {
+    /// Source whose immutable observation this version identifies.
     pub source: DiscoverySourceIdentity,
+    /// Exact package coordinate in the source's registry ecosystem.
     pub coordinate: PackageCoordinate,
+    /// BLAKE3 digest committing to the typed immutable fact content.
     pub full_fact_digest: [u8; 32],
 }
 
@@ -802,12 +834,19 @@ impl RegistryFactVersionId {
 /// state, including a known count of zero.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryCargoSparseSummary {
+    /// Checksum spelling from the sparse-index release row.
     pub checksum: String,
+    /// Sparse-index schema version associated with the detail record.
     pub schema_version: u32,
+    /// Minimum Rust version state from the source row.
     pub rust_version: DiscoveryFacet<String>,
+    /// Native link-name state from the source row.
     pub links: DiscoveryFacet<String>,
+    /// Count of original `features` entries; facet state is preserved.
     pub features: DiscoveryFacet<u32>,
+    /// Count of newer `features2` entries; facet state is preserved.
     pub features2: DiscoveryFacet<u32>,
+    /// Count of dependency declarations; facet state is preserved.
     pub dependencies: DiscoveryFacet<u32>,
     /// Length of the canonical typed JSON encoding of this sparse metadata.
     pub detail_encoded_bytes: u32,
@@ -821,15 +860,25 @@ pub struct DiscoveryCargoSparseSummary {
 /// the immutable full-fact payload and are available through page reads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryFactMetadataSummary {
+    /// Number of alternate names; `Absent`/`Unknown` remain distinct from zero.
     pub aliases: DiscoveryFacet<u32>,
+    /// Inline description or exact encoded Text-row byte-count reference.
     pub description: DiscoveryFacet<DiscoveryMetadataDelivery<DiscoveryDescriptionText, u32>>,
+    /// Number of keywords, preserving source facet state.
     pub keywords: DiscoveryFacet<u32>,
+    /// Inline license or exact encoded Text-row byte-count reference.
     pub license: DiscoveryFacet<DiscoveryMetadataDelivery<SourceAtomText, u32>>,
+    /// Inline original release-time spelling or exact encoded Text-row byte count.
     pub published_at: DiscoveryFacet<DiscoveryMetadataDelivery<SourceAtomText, u32>>,
+    /// Inline deprecation text or exact encoded Text-row byte-count reference.
     pub deprecation: DiscoveryFacet<DiscoveryMetadataDelivery<SourceAtomText, u32>>,
+    /// Exact release-yank state reported by the source, if known.
     pub yanked: DiscoveryFacet<bool>,
+    /// Number of advisory headers, preserving source facet state.
     pub advisories: DiscoveryFacet<u32>,
+    /// Exact-release download count; absence is not interpreted as zero.
     pub downloads: DiscoveryFacet<u64>,
+    /// Bounded summary of this release's Cargo sparse-index record.
     pub cargo_sparse: DiscoveryFacet<DiscoveryCargoSparseSummary>,
 }
 
@@ -897,11 +946,17 @@ impl DiscoveryFactMetadataSummary {
 /// `read_fact_core(version: &RegistryFactVersionId) -> Result<DiscoveryFactCore, RegistryFactReadError>`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryFactCore {
+    /// Immutable key used to retrieve the source fact and its detail payload.
     pub version: RegistryFactVersionId,
+    /// Standing committed by the immutable source fact.
     pub standing: DiscoveryStanding,
+    /// Typed ordering evidence committed by the immutable fact.
     pub source_event: DiscoverySourceEvent,
+    /// Original source event-time spelling, when supplied.
     pub source_event_time: Option<String>,
+    /// Opaque source proof bytes committed by the fact version.
     pub proof: [u8; 32],
+    /// Bounded scalars and counts; large collections stay in pageable details.
     pub metadata: DiscoveryFactMetadataSummary,
     /// Encoded byte length of the immutable payload identified by `version`.
     pub payload_encoded_bytes: u32,
@@ -952,7 +1007,9 @@ impl DiscoveryFactCore {
 /// in one authority read. An unknown coordinate returns `Ok(None)`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoverySelectedHead {
+    /// Exact immutable fact version currently selected for this source-coordinate pair.
     pub version: RegistryFactVersionId,
+    /// Local observation receipt associated with the current mutable selection.
     pub observed_at: DiscoveryObservedAt,
 }
 
@@ -976,13 +1033,20 @@ impl DiscoverySelectedHead {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "section", content = "index", rename_all = "snake_case")]
 pub enum DiscoveryMetadataSection {
+    /// Alternate package or release names.
     Aliases,
+    /// Source-provided search keywords.
     Keywords,
+    /// Advisory header rows for this release.
     Advisories,
+    /// Alternate identifiers for one zero-based advisory row.
     AdvisoryAliases {
+        /// Zero-based advisory row whose identifier collection is read.
         advisory_index: u32,
     },
+    /// Fixed versions for one zero-based advisory row.
     AdvisoryFixedIn {
+        /// Zero-based advisory row whose fixed-version collection is read.
         advisory_index: u32,
     },
     /// One source prose value; `Known("")` is retained as one empty row.
@@ -993,16 +1057,25 @@ pub enum DiscoveryMetadataSection {
     PublishedAt,
     /// One source deprecation reason; `Known("")` is retained as one empty row.
     Deprecation,
+    /// Original Cargo sparse-index feature declarations.
     CargoFeatures,
+    /// Member names for one zero-based feature row.
     CargoFeatureMembers {
+        /// Zero-based feature row whose members are read.
         feature_index: u32,
     },
+    /// Cargo sparse-index `features2` declarations.
     CargoFeatures2,
+    /// Member names for one zero-based `features2` row.
     CargoFeatures2Members {
+        /// Zero-based `features2` row whose members are read.
         feature_index: u32,
     },
+    /// Dependency declarations from the Cargo sparse-index record.
     CargoDependencies,
+    /// Requested feature names for one zero-based dependency row.
     CargoDependencyFeatures {
+        /// Zero-based dependency row whose feature names are read.
         dependency_index: u32,
     },
 }
@@ -1012,8 +1085,11 @@ pub enum DiscoveryMetadataSection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryMetadataFacetState {
+    /// The source supplied this facet; an empty row set can be authoritative.
     Known,
+    /// The source schema does not provide this facet.
     Absent,
+    /// The observation did not establish whether the facet has a value.
     Unknown,
 }
 
@@ -1033,14 +1109,23 @@ impl DiscoveryMetadataFacetState {
 /// list is paged separately and represented by the exact count facet here.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryCargoDependencySummary {
+    /// Manifest dependency alias.
     pub name: String,
+    /// Version requirement exactly as reported by the source.
     pub requirement: String,
+    /// Renamed package value, if reported.
     pub package: DiscoveryFacet<String>,
+    /// Number of requested dependency features.
     pub features: DiscoveryFacet<u32>,
+    /// Whether the dependency is optional.
     pub optional: DiscoveryFacet<bool>,
+    /// Whether default features are enabled.
     pub default_features: DiscoveryFacet<bool>,
+    /// Target platform expression, if reported.
     pub target: DiscoveryFacet<String>,
+    /// Dependency kind, if reported.
     pub kind: DiscoveryFacet<String>,
+    /// Non-default registry selector, if reported.
     pub registry: DiscoveryFacet<String>,
 }
 
@@ -1049,10 +1134,15 @@ pub struct DiscoveryCargoDependencySummary {
 /// an unbounded nested row.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryAdvisorySummary {
+    /// Source-native advisory identifier.
     pub id: String,
+    /// Number of alternate identifiers, preserving source facet state.
     pub aliases: DiscoveryFacet<u32>,
+    /// Short source-provided advisory description.
     pub summary: DiscoveryFacet<String>,
+    /// Source-provided severity spelling; no score is inferred.
     pub severity: DiscoveryFacet<String>,
+    /// Number of source-provided fixed versions, preserving facet state.
     pub fixed_in: DiscoveryFacet<u32>,
 }
 
@@ -1060,9 +1150,17 @@ pub struct DiscoveryAdvisorySummary {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum DiscoveryMetadataRow {
+    /// One exact scalar or collection text value; empty text is retained.
     Text(String),
+    /// One bounded advisory header with nested lists paged separately.
     Advisory(DiscoveryAdvisorySummary),
-    CargoFeature { name: String, member_count: u32 },
+    CargoFeature {
+        /// Cargo feature name from this feature row.
+        name: String,
+        /// Number of member names available through its nested page.
+        member_count: u32,
+    },
+    /// One bounded Cargo dependency row with features paged separately.
     CargoDependency(DiscoveryCargoDependencySummary),
 }
 
@@ -1153,13 +1251,19 @@ impl DiscoveryMetadataPageCursor {
 /// the DTO's schema-only `admit` method.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryMetadataPage {
+    /// Immutable fact version whose metadata is being paged.
     pub version: RegistryFactVersionId,
+    /// Exact source facet or nested collection returned by this page.
     pub section: DiscoveryMetadataSection,
+    /// Zero-based first row offset in the selected section.
     pub start_index: u32,
+    /// Whether this page's source facet is known, absent, or unknown.
     pub facet_state: DiscoveryMetadataFacetState,
     /// Exact number of rows in this source facet or nested collection.
     pub total_rows: u32,
+    /// Rows starting at `start_index`, subject to the fixed page row bound.
     pub rows: Vec<DiscoveryMetadataRow>,
+    /// Opaque continuation for the same immutable version and section.
     pub next_cursor: Option<DiscoveryMetadataPageCursor>,
 }
 
@@ -1524,12 +1628,19 @@ fn metadata_summary_valid(metadata: &DiscoveryFactMetadataSummary) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistryFactReadError {
+    /// No retained immutable fact or selected head exists at this key.
     NotFound,
+    /// A durable tombstone proves this immutable version was pruned.
     Pruned,
+    /// A transient store or snapshot conflict prevented this read.
     Busy,
+    /// The authority is not configured or enabled.
     Unavailable,
+    /// A supplied version, section, or continuation failed validation.
     InvalidCursor,
+    /// The requested or recovered value exceeded a fixed resource bound.
     Bounds,
+    /// Stored bytes or returned authority data failed integrity checks.
     Corrupt,
 }
 
@@ -1575,20 +1686,26 @@ impl io::Write for HashingWriter<'_> {
 /// advanced.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryBatch {
+    /// Source whose local progress row fences this commit.
     pub source: DiscoverySourceIdentity,
     /// Local per-source sequence captured before this batch's network work.
     /// This is a CAS fence; source cursors and upstream watermarks remain
     /// opaque adapter hints and never substitute for this local sequence.
     pub expected_base_sequence: u64,
+    /// Opaque cursor committed by the preceding local source-progress row.
     pub previous_cursor: DiscoveryCursor,
+    /// Opaque cursor to commit together with facts and completeness.
     pub next_cursor: DiscoveryCursor,
     /// Source's captured high watermark for this observation.
     pub source_high_watermark: DiscoveryCursor,
     /// Whether `next_cursor` reached the source's captured high watermark.
     /// Mutable windowed feeds leave this false.
     pub caught_up: bool,
+    /// Local wall-clock time at which the batch observation was admitted.
     pub observed_at: DiscoveryObservedAt,
+    /// Coverage claim made by the source adapter for this batch.
     pub completeness: DiscoveryCompleteness,
+    /// Release facts and metadata admitted in this source observation.
     pub facts: Vec<DiscoveryFact>,
     /// Package-level deletion events that the durable owner expands against
     /// this source's previously observed releases.
@@ -1601,14 +1718,23 @@ pub struct DiscoveryBatch {
 /// sequence or make a source observation look like an admitted CAS batch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DiscoveryBatchDraft {
+    /// Source whose parsed observation will be fenced before submission.
     pub source: DiscoverySourceIdentity,
+    /// Opaque adapter cursor used to fetch this draft.
     pub previous_cursor: DiscoveryCursor,
+    /// Opaque adapter cursor after the parsed source work.
     pub next_cursor: DiscoveryCursor,
+    /// Source high watermark captured with this observation.
     pub source_high_watermark: DiscoveryCursor,
+    /// Whether the draft reached that captured high watermark.
     pub caught_up: bool,
+    /// Local time at which the source work was admitted.
     pub observed_at: DiscoveryObservedAt,
+    /// Coverage claim retained from the source adapter.
     pub completeness: DiscoveryCompleteness,
+    /// Parsed immutable release claims, before local sequence fencing.
     pub facts: Vec<DiscoveryFact>,
+    /// Source deletion events awaiting expansion against prior releases.
     pub package_retractions: Vec<DiscoveryPackageRetraction>,
 }
 

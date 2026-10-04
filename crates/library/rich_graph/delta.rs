@@ -110,7 +110,8 @@ where
 }
 
 impl RichGraphDelta {
-    /// Checks the fixed work bound before a client applies this delta.
+    /// Checks the fixed change-count bound and canonical id ordering before a
+    /// client applies this delta. Base-root applicability is checked separately.
     pub fn admit(&self) -> Result<(), RichGraphError> {
         let total = self.added_nodes.len()
             + self.updated_nodes.len()

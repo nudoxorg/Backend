@@ -646,10 +646,15 @@ pub struct CargoPackageReadmeOriginV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CargoPackageReadmeLinkTargetV1 {
     /// A fragment on the current README page.
-    Anchor { fragment: Box<str> },
+    Anchor {
+        /// Percent-decoded fragment without the leading `#`.
+        fragment: Box<str>,
+    },
     /// A normalized same-root file path and optional fragment.
     File {
+        /// Canonical package-relative target path after dot-segment resolution.
         path: CargoPackageSourcePathV1,
+        /// Percent-decoded fragment without the leading `#`, if present.
         fragment: Option<Box<str>>,
     },
 }

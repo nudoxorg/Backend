@@ -220,18 +220,27 @@ pub enum PackageGraphKnowledge {
     /// The selected authority answered; an empty complete page means known-empty.
     Known,
     /// No dependency answer was recorded, or the coordinate is absent.
-    Unknown { reason: Option<ProductText> },
+    Unknown {
+        /// Bounded explanation when the owner can identify why no answer exists.
+        reason: Option<ProductText>,
+    },
     /// The source authority could not answer the dependency request.
-    Unavailable { reason: ProductText },
+    Unavailable {
+        /// Bounded explanation of the unavailable authority result.
+        reason: ProductText,
+    },
     /// Some sources answered, but other sources in the selected graph
     /// snapshot did not. Rows remain useful as positive evidence while the
     /// reason makes the incomplete coverage explicit.
     Partial {
+        /// Bounded explanation of which graph coverage is incomplete.
         reason: ProductText,
+        /// Whether one or more selected source authorities were unavailable.
         unavailable: bool,
     },
     /// Several authorities publish this coordinate and must be selected.
     Ambiguous {
+        /// Candidate authorities that report this coordinate and need selection.
         sources: Box<[PackageGraphSourceKey]>,
     },
 }
