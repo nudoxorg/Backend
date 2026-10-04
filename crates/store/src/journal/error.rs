@@ -50,6 +50,7 @@ pub enum CommitIoStep {
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum HeaderError {
     #[error("journal header is truncated: required {required:?}, observed {actual:?}")]
+    /// The available header bytes are shorter than the minimum header width.
     Truncated {
         /// Minimum header length required by this format.
         required: JournalOffset,
@@ -57,16 +58,19 @@ pub enum HeaderError {
         actual: JournalOffset,
     },
     #[error("journal magic is unknown: {observed:?}")]
+    /// The header's magic field does not identify this journal format.
     Magic {
         /// Eight-byte magic value read from the file.
         observed: [u8; 8],
     },
     #[error("journal physical version {observed} is unsupported")]
+    /// The header names a physical format version this implementation does not read.
     PhysicalVersion {
         /// Physical format version found in the header.
         observed: u16,
     },
     #[error("journal declares header width {observed}, expected {expected}")]
+    /// The stored header width differs from this implementation's width.
     HeaderWidth {
         /// Header width required by this implementation.
         expected: u16,
@@ -74,6 +78,7 @@ pub enum HeaderError {
         observed: u16,
     },
     #[error("journal declares workflow-record width {observed}, expected {expected}")]
+    /// The stored workflow-record width differs from this implementation's width.
     RecordWidth {
         /// Workflow-record width required by this implementation.
         expected: u16,
@@ -81,6 +86,7 @@ pub enum HeaderError {
         observed: u16,
     },
     #[error("journal reserved field is nonzero: {observed}")]
+    /// A field reserved by the format contains a nonzero value.
     Reserved {
         /// Unexpected value in the reserved header field.
         observed: u16,
@@ -94,6 +100,7 @@ pub enum HeaderError {
 #[derive(Debug, Error)]
 pub enum JournalError {
     #[error("journal I/O failed during {step:?}")]
+    /// An operating-system I/O operation failed while opening, recovering, or replaying.
     Io {
         /// Physical journal operation that failed.
         step: JournalIoStep,
@@ -108,6 +115,7 @@ pub enum JournalError {
     #[error(transparent)]
     Header(#[from] HeaderError),
     #[error("journal frame checksum is invalid at {offset:?} for {sequence:?}")]
+    /// A journal frame's stored checksum does not match its contents.
     FrameChecksum {
         /// Frame whose checksum failed validation.
         sequence: FrameSequence,
@@ -115,6 +123,7 @@ pub enum JournalError {
         offset: JournalOffset,
     },
     #[error("journal sequence expected {expected:?}, observed {observed:?}")]
+    /// A frame carries a sequence other than the next sequence required by replay.
     Sequence {
         /// Next sequence required by the journal.
         expected: FrameSequence,
@@ -122,6 +131,7 @@ pub enum JournalError {
         observed: FrameSequence,
     },
     #[error("journal offset cannot represent {sequence:?}")]
+    /// The byte offset for a frame sequence cannot be represented by the journal offset type.
     OffsetOverflow {
         /// Sequence whose frame offset could not be represented.
         sequence: FrameSequence,
@@ -153,11 +163,13 @@ pub enum CommitError {
     #[error("journal is poisoned; reopen it before reconciling")]
     Poisoned,
     #[error("journal receipt cannot represent {sequence:?}")]
+    /// The appended event's sequence cannot be represented in its commit receipt.
     ReceiptOverflow {
         /// Sequence whose receipt could not be represented.
         sequence: FrameSequence,
     },
     #[error("journal append outcome is unknown for {sequence:?} during {step:?}")]
+    /// The append could not be confirmed; reopening is required to determine its durable state.
     OutcomeUnknown {
         /// Event whose append may have reached durable storage.
         attempted: WorkflowRecord,
