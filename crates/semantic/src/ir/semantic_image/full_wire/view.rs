@@ -933,7 +933,7 @@ fn entity_rows<'view, 'bytes>(
         view.layout().entry(FullDirectoryKind::EntityLists),
         view.layout().entry(FullDirectoryKind::EntityListBytes),
         id.raw,
-        super::FullSemanticImageField::EntityLists,
+        FullSemanticImageField::EntityLists,
     )
     .ok()?;
     let end = read_u32(value, 1)?;
@@ -956,7 +956,7 @@ fn doc_rows<'view, 'bytes>(
         view.layout().entry(FullDirectoryKind::Documentation),
         view.layout().entry(FullDirectoryKind::DocumentationBytes),
         id.raw,
-        super::FullSemanticImageField::Documentation,
+        FullSemanticImageField::Documentation,
     )
     .ok()?;
     let count = read_u32(value, 1)?;
@@ -980,20 +980,20 @@ fn entity_list_row(
         layout.entry(FullDirectoryKind::EntityLists),
         layout.entry(FullDirectoryKind::EntityListBytes),
         coordinate,
-        super::FullSemanticImageField::EntityLists,
+        FullSemanticImageField::EntityLists,
     )?;
     let offset = usize::try_from(index)
         .map_err(|_| super::FullSemanticImageFault::LengthOverflow {
-            field: super::FullSemanticImageField::EntityLists,
+            field: FullSemanticImageField::EntityLists,
         })?
         .checked_mul(4)
         .and_then(|offset| offset.checked_add(5))
         .ok_or(super::FullSemanticImageFault::LengthOverflow {
-            field: super::FullSemanticImageField::EntityLists,
+            field: FullSemanticImageField::EntityLists,
         })?;
     Ok(EntityId::new(read_u32(value, offset).ok_or(
         super::FullSemanticImageFault::Truncated {
-            field: super::FullSemanticImageField::EntityLists,
+            field: FullSemanticImageField::EntityLists,
             offset,
         },
     )?))
@@ -1120,7 +1120,7 @@ fn binding(
     let entry = layout.entry(kind);
     if row >= entry.count {
         return Err(super::FullSemanticImageFault::Reference {
-            field: super::FullSemanticImageField::ExtensionBindings,
+            field: FullSemanticImageField::ExtensionBindings,
             row,
             expected: entry.count,
             observed: row,
@@ -1131,27 +1131,19 @@ fn binding(
         .checked_add(
             usize::try_from(row)
                 .map_err(|_| super::FullSemanticImageFault::LengthOverflow {
-                    field: super::FullSemanticImageField::ExtensionBindings,
+                    field: FullSemanticImageField::ExtensionBindings,
                 })?
                 .checked_mul(SPARSE_BINDING_ROW_BYTES)
                 .ok_or(super::FullSemanticImageFault::LengthOverflow {
-                    field: super::FullSemanticImageField::ExtensionBindings,
+                    field: FullSemanticImageField::ExtensionBindings,
                 })?,
         )
         .ok_or(super::FullSemanticImageFault::LengthOverflow {
-            field: super::FullSemanticImageField::ExtensionBindings,
+            field: FullSemanticImageField::ExtensionBindings,
         })?;
     Ok((
-        get_u32(
-            bytes,
-            offset,
-            super::FullSemanticImageField::ExtensionBindings,
-        )?,
-        get_u32(
-            bytes,
-            offset + 4,
-            super::FullSemanticImageField::ExtensionBindings,
-        )?,
+        get_u32(bytes, offset, FullSemanticImageField::ExtensionBindings)?,
+        get_u32(bytes, offset + 4, FullSemanticImageField::ExtensionBindings)?,
     ))
 }
 

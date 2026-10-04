@@ -21,6 +21,10 @@ use crate::ir::{
 };
 
 impl<'fragment> FragmentView<'fragment> {
+    /// Validates the complete fragment envelope and returns a borrowed view on success.
+    ///
+    /// The view is produced only after required sections, directory geometry, record
+    /// contents, canonical ordering, and cross-section references have been admitted.
     pub fn validate(envelope: &'fragment [u8]) -> Result<Self, FragmentError> {
         let layout = validate_fragment_layout(envelope)?;
         Ok(Self::from_validated_layout(envelope, layout))
@@ -76,6 +80,7 @@ impl<'fragment> FragmentView<'fragment> {
         self.occurrence_lane
     }
 
+    /// Lazily decodes the validated type-fact plane, if the fragment contains one.
     pub fn type_facts(&self) -> Option<crate::ir::type_facts::TypeFactCursor<'fragment>> {
         self.type_fact_lane
             .map(|payload| crate::ir::type_facts::TypeFactCursor::new(payload, self.layout.schema))
@@ -100,6 +105,7 @@ impl<'fragment> FragmentView<'fragment> {
         self.layout.type_fact_counts
     }
 
+    /// Returns the validated type-fact section payload without decoding its records.
     pub fn type_fact_payload(&self) -> Option<&'fragment [u8]> {
         self.type_fact_lane
     }

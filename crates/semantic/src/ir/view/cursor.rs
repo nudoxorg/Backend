@@ -13,6 +13,7 @@ use crate::ir::{
 };
 
 impl<'fragment> FragmentView<'fragment> {
+    /// Iterates validated entity rows in wire order, assigning their zero-based entity ordinals.
     pub fn entities(&self) -> EntityCursor<'fragment> {
         EntityCursor {
             remaining: self.entities,
@@ -20,12 +21,14 @@ impl<'fragment> FragmentView<'fragment> {
         }
     }
 
+    /// Iterates validated type-node rows in their canonical wire order.
     pub fn type_nodes(&self) -> TypeNodeCursor<'fragment> {
         TypeNodeCursor {
             remaining: self.type_nodes,
         }
     }
 
+    /// Iterates atom records and borrows each atom's bytes from the validated pool.
     pub fn atoms(&self) -> AtomCursor<'fragment> {
         AtomCursor {
             records: self.atoms,
@@ -35,6 +38,9 @@ impl<'fragment> FragmentView<'fragment> {
     }
 }
 
+/// Exact-size, fused iterator over validated entity records.
+///
+/// Each yielded [`EntityType`] carries the row ordinal as its [`EntityId`].
 pub struct EntityCursor<'fragment> {
     remaining: &'fragment [u8],
     next_ordinal: u32,
@@ -66,6 +72,9 @@ impl Iterator for EntityCursor<'_> {
 impl ExactSizeIterator for EntityCursor<'_> {}
 impl core::iter::FusedIterator for EntityCursor<'_> {}
 
+/// Exact-size, fused iterator over validated type-node records.
+///
+/// Items retain the canonical row order established by fragment validation.
 pub struct TypeNodeCursor<'fragment> {
     remaining: &'fragment [u8],
 }
@@ -91,10 +100,13 @@ impl core::iter::FusedIterator for TypeNodeCursor<'_> {}
 /// One atom borrowing the fragment's validated atom-byte pool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Atom<'fragment> {
+    /// Zero-based atom-record ordinal from the fragment's atom lane.
     pub ordinal: AtomId,
+    /// Borrowed bytes selected by this record's validated start and length.
     pub bytes: &'fragment [u8],
 }
 
+/// Exact-size, fused iterator over atom records and their borrowed byte slices.
 pub struct AtomCursor<'fragment> {
     records: &'fragment [u8],
     bytes: &'fragment [u8],

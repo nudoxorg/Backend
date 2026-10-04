@@ -61,7 +61,12 @@ pub enum MappedSemanticImageRangeError<E> {
     /// Mapping allocation or full image admission failed.
     Mapping(MappedSemanticImageError),
     /// The exact source range could not be read.
-    Read { offset: u64, source: E },
+    Read {
+        /// Starting byte offset requested from the range source.
+        offset: u64,
+        /// Source-specific failure returned by the range callback.
+        source: E,
+    },
     /// The source did not fill the requested exact range.
     ShortRead {
         /// Starting byte offset requested from the source.
@@ -205,7 +210,6 @@ pub fn load_semantic_image_mmap_from_ranges<E>(
     let (observed_identity, observed_generation) = identity_builder.finish();
     let image = admit_mapping_with_identities(
         mapping,
-        mapping_length,
         expected_identity,
         expected_generation,
         observed_identity,
@@ -339,12 +343,7 @@ pub unsafe fn open_semantic_image_mmap(
                 source,
             }
         })?;
-    admit_mapping(
-        mapping,
-        mapping_length,
-        expected_identity,
-        expected_generation,
-    )
+    admit_mapping(mapping, expected_identity, expected_generation)
 }
 
 /// Loads and validates a bounded full image into a read-only anonymous mapping.
@@ -401,24 +400,17 @@ pub fn load_semantic_image_mmap(
             phase: MappedSemanticImageIoPhase::Map,
             source,
         })?;
-    admit_mapping(
-        mapping,
-        mapping_length,
-        expected_identity,
-        expected_generation,
-    )
+    admit_mapping(mapping, expected_identity, expected_generation)
 }
 
 fn admit_mapping(
     mapping: Mmap,
-    mapping_length: usize,
     expected_identity: SemanticImageIdentity,
     expected_generation: GenerationId,
 ) -> Result<MappedSemanticImage, MappedSemanticImageError> {
     let (observed_identity, observed_generation) = identities(&mapping);
     admit_mapping_with_identities(
         mapping,
-        mapping_length,
         expected_identity,
         expected_generation,
         observed_identity,
@@ -428,7 +420,6 @@ fn admit_mapping(
 
 fn admit_mapping_with_identities(
     mapping: Mmap,
-    mapping_length: usize,
     expected_identity: SemanticImageIdentity,
     expected_generation: GenerationId,
     observed_identity: SemanticImageIdentity,

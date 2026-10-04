@@ -91,7 +91,7 @@ pub(crate) fn reopen_full_semantic_image(
     let header_layout = header::image_layout(layout)?;
     let image = super::super::decode::decode_image_facts(bytes, header_layout)?;
     let typed = typed::validate_typed(bytes, layout)?;
-    super::typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
+    typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
     validate_entities(bytes, layout, typed)?;
     validate_signature_carrier_roles(bytes, layout)?;
     if layout.schema == SCHEMA_CARRIER_BINDINGS {
@@ -841,7 +841,7 @@ fn validate_entity_sparse_authority(
         let doc_count = list_count(doc_value, row, FullSemanticImageField::Documentation)?;
         sparse_availability(row, 5, entity.authority.documentation, doc_count)?;
         let attribute_count =
-            super::typed_decode::list_count(bytes, layout, typed, 5, entity.attributes.raw)?;
+            typed_decode::list_count(bytes, layout, typed, 5, entity.attributes.raw)?;
         sparse_availability(row, 7, entity.authority.attributes, attribute_count)?;
     }
     Ok(())

@@ -18,8 +18,8 @@ mod tests;
 pub(crate) use model::*;
 
 pub(crate) use graph::for_each_edge;
-pub use model::{TypedPlanFault, TypedPlanNode, TypedPlanTerminal};
-pub use traverse::TypedPlanError;
+pub(crate) use model::{TypedPlanFault, TypedPlanNode, TypedPlanTerminal};
+pub(crate) use traverse::TypedPlanError;
 pub(crate) use traverse::{TypedDependencyPlan, compare_role, target_tag};
 
 // The full-image planner consumes only canonical coordinates from the typed
@@ -28,48 +28,48 @@ pub(crate) use traverse::{TypedDependencyPlan, compare_role, target_tag};
 // remain separate.
 impl<'image> TypedDependencyPlan<'image> {
     pub(crate) fn canonical_type(&self, id: crate::ir::TypeId) -> Result<u32, TypedPlanError> {
-        self.canonical_node(model::TypedPlanNode::Type(id))
+        self.canonical_node(TypedPlanNode::Type(id))
     }
 
     pub(crate) fn canonical_atom_list(
         &self,
         id: crate::ir::AtomListId,
     ) -> Result<u32, TypedPlanError> {
-        self.canonical_node(model::TypedPlanNode::AtomList(id))
+        self.canonical_node(TypedPlanNode::AtomList(id))
     }
 
     pub(crate) fn canonical_type_list(
         &self,
         id: crate::ir::TypeListId,
     ) -> Result<u32, TypedPlanError> {
-        self.canonical_node(model::TypedPlanNode::TypeList(id))
+        self.canonical_node(TypedPlanNode::TypeList(id))
     }
 
     pub(crate) fn canonical_type_parameters(
         &self,
         id: crate::ir::TypeParameterListId,
     ) -> Result<u32, TypedPlanError> {
-        self.canonical_node(model::TypedPlanNode::TypeParameters(id))
+        self.canonical_node(TypedPlanNode::TypeParameters(id))
     }
 
     pub(crate) fn canonical_free_predicates(
         &self,
         id: crate::ir::FreePredicateListId,
     ) -> Result<u32, TypedPlanError> {
-        self.canonical_node(model::TypedPlanNode::FreePredicates(id))
+        self.canonical_node(TypedPlanNode::FreePredicates(id))
     }
 
     pub(crate) fn canonical(&self) -> &CanonicalFullPlan<'image> {
         &self.canonical
     }
 
-    fn canonical_node(&self, node: model::TypedPlanNode) -> Result<u32, TypedPlanError> {
+    fn canonical_node(&self, node: TypedPlanNode) -> Result<u32, TypedPlanError> {
         let slot = self.slot(node)?;
         self.scratch
             .canonical_slots
             .get(slot)
             .copied()
-            .ok_or(model::TypedPlanFault::MissingNode {
+            .ok_or(TypedPlanFault::MissingNode {
                 node,
                 count: self.counts.at(node.domain()),
             })

@@ -104,7 +104,7 @@ impl TypedPlanDomain {
 /// so structurally similar rows from different pools cannot alias.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum TypedPlanDomain {
+pub(crate) enum TypedPlanDomain {
     Type,
     TypeList,
     TupleElements,

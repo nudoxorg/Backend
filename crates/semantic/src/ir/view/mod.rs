@@ -13,6 +13,10 @@ pub(crate) use validate::validate_fragment_layout;
 
 pub use crate::ir::wire::SectionKind;
 
+/// Borrowed fragment whose declared sections and cross-section references have been validated.
+///
+/// Construct a view with [`FragmentView::validate`]. Cursors borrow the original
+/// envelope, while optional fact accessors report `None` when that section is absent.
 pub struct FragmentView<'fragment> {
     pub(super) envelope: &'fragment [u8],
     pub(super) entities: &'fragment [u8],
