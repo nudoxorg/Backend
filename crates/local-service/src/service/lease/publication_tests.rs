@@ -18,7 +18,9 @@ use crate::listener::{
     FilesystemPeerPolicy, ListenerConfig, ListenerShutdown, PeerPolicy, PeerPolicyError,
     UnixListenerService,
 };
-use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, ProtocolError};
+use crate::protocol::{
+    EngineRequest, EngineStatus, FrameLimits, ProtocolError, ResponseFrame, encode_response,
+};
 use crate::service::{LocaldService, OwnerService};
 use crate::test_support::socket_path;
 use backend_client::LocalSubscriptionTransport;
@@ -124,6 +126,20 @@ impl PublicationOwner {
             released: self.table.released(),
         };
     }
+
+    fn subscription_prepared(
+        &mut self,
+        request_id: u64,
+        request: backend_engine::LocalSubscriptionRequest,
+        prepare: &mut dyn FnMut(
+            backend_engine::LocalSubscriptionResponse,
+        ) -> Result<Vec<u8>, ProtocolError>,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let result = LeaseHost::new(&mut self.table, &mut self.source)
+            .handle_prepared(request_id, request, prepare);
+        self.publish();
+        result
+    }
 }
 
 impl OwnerService for PublicationOwner {
@@ -144,6 +160,36 @@ impl OwnerService for PublicationOwner {
         let result = LeaseHost::new(&mut self.table, &mut self.source).handle(request_id, request);
         self.publish();
         result
+    }
+
+    fn engine_prepared(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        match request {
+            EngineRequest::Subscription(request) => self.subscription_prepared(
+                request_id,
+                request,
+                &mut |response| {
+                    encode_response(
+                        &ResponseFrame::Engine {
+                            request_id,
+                            status: EngineStatus::Subscription(response),
+                        },
+                        limits,
+                    )
+                },
+            ),
+            _ => encode_response(
+                &ResponseFrame::Engine {
+                    request_id,
+                    status: self.engine(request_id, request)?,
+                },
+                limits,
+            ),
+        }
     }
 
     fn serve_one(&mut self) -> bool {
@@ -416,6 +462,36 @@ impl OwnerService for RewritingOwner {
         })
     }
 
+    fn engine_prepared(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        match request {
+            EngineRequest::Subscription(request) => {
+                let rewrite = &mut self.rewrite;
+                self.inner.subscription_prepared(request_id, request, &mut |response| {
+                    let response = rewrite(request_id, response);
+                    encode_response(
+                        &ResponseFrame::Engine {
+                            request_id,
+                            status: EngineStatus::Subscription(response),
+                        },
+                        limits,
+                    )
+                })
+            }
+            request => encode_response(
+                &ResponseFrame::Engine {
+                    request_id,
+                    status: self.inner.engine(request_id, request)?,
+                },
+                limits,
+            ),
+        }
+    }
+
     fn serve_one(&mut self) -> bool {
         self.inner.serve_one()
     }
@@ -611,6 +687,75 @@ fn a_page_from_a_different_root_cannot_continue_a_reset() {
         error,
         protocol_error("publication reset changed its row budget")
     );
+}
+
+#[test]
+fn a_correlated_page_on_the_241st_frame_is_cancelled_on_its_exact_replacement_socket() {
+    let clock = ManualClock::new();
+    let base = certified_root(0, 0);
+    let cursor = Cursor::for_view_root_at(&base, 0);
+    let target = certified_root(3, 1);
+    let wire = rewriting_wire(
+        &clock,
+        |source| {
+            source.set_owner_cursor(cursor);
+            source.replies.push_back(Ok(SubscriptionReply::Accepted {
+                credit: PUBLICATION_CREDIT,
+            }));
+            source.replies.push_back(Ok(reset_to(&target, 1)));
+        },
+        |_request_id, response| {
+            use backend_engine::LocalSubscriptionResponse::SnapshotPage;
+            let SnapshotPage {
+                request_id,
+                lease,
+                page,
+                next,
+                credit,
+                mut payload,
+            } = response
+            else {
+                return response;
+            };
+            payload[0] = b'!';
+            SnapshotPage {
+                request_id,
+                lease,
+                page,
+                next,
+                credit,
+                payload,
+            }
+        },
+    );
+    let mut client = wire.client();
+    let mut state = client
+        .acquire_publications(Arc::clone(&base), cursor, &|| false)
+        .expect("quiet publication lease");
+    // Open plus these renewals fills the current connection's complete
+    // 240-frame budget. The following Resume must rotate to a replacement.
+    for _ in 0..239 {
+        client
+            .renew_publications(&mut state)
+            .expect("renew on the same owner socket");
+    }
+    assert!(
+        client.resume_publications(&mut state, &|| false).is_err(),
+        "the rewritten producer proof is refused before the root is admitted"
+    );
+    assert_eq!(
+        wire.accepted.load(Ordering::SeqCst),
+        2,
+        "the 241st request used a fresh authenticated connection"
+    );
+    client
+        .cancel_publications_current(&state)
+        .expect("cancel through the exact correlated replacement socket");
+    let released = wire.wait_until("the lease to be released on that socket", |ledger| {
+        ledger.active == 0
+    });
+    assert_eq!(released.released.count(ReleaseReason::Cancelled), 1);
+    assert_eq!(released.released.count(ReleaseReason::Expired), 0);
 }
 
 #[test]

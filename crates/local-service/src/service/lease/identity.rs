@@ -54,14 +54,27 @@ pub(crate) struct OwnerLeaseIdentity {
     pub(crate) next_nonce: u64,
 }
 
+/// An identity that can be disclosed in a prepared reply, then consumed only
+/// after the exact outer frame has encoded successfully.
+pub(crate) struct PreparedLeaseIdentity {
+    lease: LocalSubscriptionId,
+    nonce: u64,
+}
+
+impl PreparedLeaseIdentity {
+    pub(crate) const fn lease(&self) -> LocalSubscriptionId {
+        self.lease
+    }
+}
+
 impl OwnerLeaseIdentity {
-    /// Allocates an identity that `is_active` does not already hold.
-    pub(crate) fn allocate(
+    /// Prepares an identity without advancing its retained ordinal.
+    pub(crate) fn prepare(
         &mut self,
         request_id: u64,
         cursor: &[u8],
         is_active: impl Fn(&LocalSubscriptionId) -> bool,
-    ) -> Result<LocalSubscriptionId, ProtocolError> {
+    ) -> Result<PreparedLeaseIdentity, ProtocolError> {
         if self.boot_nonce.is_none() {
             self.boot_nonce =
                 Some(OwnerBootNonce::fresh().map_err(|_| ProtocolError::LeaseEntropyUnavailable)?);
@@ -70,16 +83,40 @@ impl OwnerLeaseIdentity {
             .boot_nonce
             .as_ref()
             .ok_or(ProtocolError::LeaseEntropyUnavailable)?;
+        let mut nonce = self.next_nonce;
         loop {
-            self.next_nonce = self
-                .next_nonce
+            nonce = nonce
                 .checked_add(1)
                 .ok_or(ProtocolError::LeaseIdsExhausted)?;
-            if let Some(lease) = boot_nonce.lease_id(self.next_nonce, request_id, cursor)
+            if let Some(lease) = boot_nonce.lease_id(nonce, request_id, cursor)
                 && !is_active(&lease)
             {
-                return Ok(lease);
+                return Ok(PreparedLeaseIdentity { lease, nonce });
             }
         }
+    }
+
+    /// Consumes an identity only after the caller prepared its reply.
+    pub(crate) fn commit(
+        &mut self,
+        prepared: PreparedLeaseIdentity,
+    ) -> Result<LocalSubscriptionId, ProtocolError> {
+        if prepared.nonce <= self.next_nonce {
+            return Err(ProtocolError::LeaseIdsExhausted);
+        }
+        self.next_nonce = prepared.nonce;
+        Ok(prepared.lease)
+    }
+
+    /// Allocates an identity immediately for tests that exercise this pure
+    /// identity boundary directly.
+    pub(crate) fn allocate(
+        &mut self,
+        request_id: u64,
+        cursor: &[u8],
+        is_active: impl Fn(&LocalSubscriptionId) -> bool,
+    ) -> Result<LocalSubscriptionId, ProtocolError> {
+        let prepared = self.prepare(request_id, cursor, is_active)?;
+        self.commit(prepared)
     }
 }

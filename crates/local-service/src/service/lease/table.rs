@@ -1,6 +1,6 @@
 //! The set of leases the owner retains, and when it stops retaining them.
 
-use super::identity::OwnerLeaseIdentity;
+use super::identity::{OwnerLeaseIdentity, PreparedLeaseIdentity};
 use super::limits::SubscriptionLeaseLimits;
 use super::state::{Failure, Lease, LeaseRefusal, ReleaseReason};
 use crate::protocol::ProtocolError;
@@ -122,15 +122,33 @@ impl LeaseTable {
             .ok_or(LeaseRefusal::LeaseBounds)
     }
 
-    /// Allocates a lease identity no retained lease already holds.
+    /// Prepares a lease identity no retained lease already holds.
+    pub(crate) fn prepare_id(
+        &mut self,
+        request_id: u64,
+        cursor: &[u8],
+    ) -> Result<PreparedLeaseIdentity, ProtocolError> {
+        let entries = &self.entries;
+        self.identity
+            .prepare(request_id, cursor, |lease| entries.contains_key(lease))
+    }
+
+    /// Consumes a prepared identity only when its response is ready to send.
+    pub(crate) fn commit_id(
+        &mut self,
+        prepared: PreparedLeaseIdentity,
+    ) -> Result<LocalSubscriptionId, ProtocolError> {
+        self.identity.commit(prepared)
+    }
+
+    #[cfg(test)]
     pub(crate) fn allocate_id(
         &mut self,
         request_id: u64,
         cursor: &[u8],
     ) -> Result<LocalSubscriptionId, ProtocolError> {
-        let entries = &self.entries;
-        self.identity
-            .allocate(request_id, cursor, |lease| entries.contains_key(lease))
+        let prepared = self.prepare_id(request_id, cursor)?;
+        self.commit_id(prepared)
     }
 
     /// Refuses early, before any daemon round trip is spent, when no lease

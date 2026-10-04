@@ -6,7 +6,10 @@
 //! owner loop and is therefore safe to put behind a Unix listener without
 //! accidentally creating a second head writer per connection.
 
-use crate::protocol::{CompletionClaim, EngineRequest, EngineStatus, ProtocolError};
+use crate::protocol::{
+    CompletionClaim, EngineRequest, EngineStatus, FrameLimits, ProtocolError, ResponseFrame,
+    encode_response,
+};
 use backend_engine::{DaemonReply, LocalSubscriptionRequest};
 use std::fmt;
 
@@ -198,13 +201,18 @@ where
         self
     }
 
-    fn durable_subscription(
+    fn durable_subscription_prepared(
         &mut self,
         request_id: u64,
         request: LocalSubscriptionRequest,
-    ) -> Result<EngineStatus, ProtocolError> {
+        encode: &mut dyn FnMut(EngineStatus) -> Result<Vec<u8>, ProtocolError>,
+    ) -> Result<Vec<u8>, ProtocolError> {
         let mut source = OwnerSource::new(&mut self.daemon);
-        LeaseHost::new(&mut self.leases, &mut source).handle(request_id, request)
+        LeaseHost::new(&mut self.leases, &mut source).handle_prepared(
+            request_id,
+            request,
+            &mut |response| encode(EngineStatus::Subscription(response)),
+        )
     }
 }
 
@@ -383,8 +391,10 @@ where
             EngineRequest::Complete(claim) => {
                 return self.completion.admit(&mut self.daemon, request_id, claim);
             }
-            EngineRequest::Subscription(subscription) => {
-                return self.durable_subscription(request_id, subscription);
+            EngineRequest::Subscription(_) => {
+                return Err(ProtocolError::InvalidControl(
+                    "durable subscriptions require prepared response encoding",
+                ));
             }
             EngineRequest::SemanticRangeGet(request) => {
                 return match self.semantic_ranges.serve(request_id, request) {
@@ -437,6 +447,23 @@ where
                 EngineStatus::Rejected("operation was sent to the wrong engine lane".to_owned())
             }
         })
+    }
+
+    fn engine_prepared(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let mut encode = |status| {
+            encode_response(&ResponseFrame::Engine { request_id, status }, limits)
+        };
+        match request {
+            EngineRequest::Subscription(subscription) => {
+                self.durable_subscription_prepared(request_id, subscription, &mut encode)
+            }
+            request => encode(self.engine(request_id, request)?),
+        }
     }
 
     fn serve_one(&mut self) -> bool {

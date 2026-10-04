@@ -52,6 +52,24 @@ pub trait OwnerService {
         request: EngineRequest,
     ) -> Result<EngineStatus, ProtocolError>;
 
+    /// Handles an engine operation while preparing the exact bounded outer
+    /// response frame before returning. Durable lease owners override this so
+    /// a failed frame encode cannot commit undisclosed lease state.
+    fn engine_prepared(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        encode_response(
+            &ResponseFrame::Engine {
+                request_id,
+                status: self.engine(request_id, request)?,
+            },
+            limits,
+        )
+    }
+
     /// Runs one fair owner-loop operation. Returning `true` means the
     /// replication-admission poll or daemon engine lane made progress;
     /// lease-expiry reclamation is housekeeping and returns `false`. The
@@ -212,10 +230,10 @@ impl<O: OwnerService> LocaldService<O> {
             RequestFrame::Engine {
                 request_id,
                 request,
-            } => ResponseFrame::Engine {
-                request_id,
-                status: self.owner.engine(request_id, *request)?,
-            },
+            } => {
+                let limits = self.limits;
+                return self.owner.engine_prepared(request_id, *request, limits);
+            }
         };
         encode_response(&response, self.limits)
     }

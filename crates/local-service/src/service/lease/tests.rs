@@ -15,14 +15,14 @@ use super::state::{
     ReleaseReason, ResetFault, ResetPage,
 };
 use super::table::LeaseTable;
-use crate::protocol::{EngineStatus, ProtocolError};
+use crate::protocol::{EngineStatus, FrameLimits, ProtocolError, ResponseFrame, encode_response};
 use backend_client::lease_contract::{BOOTSTRAP_LEASE, LeaseMs, PUBLICATION_LEASE, ResetPages};
 use backend_client::monotonic::{Deadline, ManualClock, MonotonicClock};
 use backend_engine::{
     Basis, Cursor, CursorEvent, CursorResetReason, Frontier, Lane, LocalSubscriptionId,
     LocalSubscriptionOperation, LocalSubscriptionRequest, LocalSubscriptionResponse, Reason, Row,
-    RowId, SubscriptionReply, ViewCoverage, ViewPageCursor, ViewRoot, object_version, symbol_key,
-    view_key, view_state_root,
+    RowId, SubscriptionReply, TransportLimits, ViewCoverage, ViewPageCursor, ViewRoot,
+    object_version, symbol_key, view_key, view_state_root,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
@@ -295,6 +295,23 @@ impl Harness {
             EngineStatus::Subscription(response) => Ok(response),
             other => panic!("lease operations answer with subscription responses: {other:?}"),
         }
+    }
+
+    fn call_prepared(
+        &mut self,
+        operation: LocalSubscriptionOperation,
+        prepare: &mut dyn FnMut(LocalSubscriptionResponse) -> Result<Vec<u8>, ProtocolError>,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        self.next_request += 1;
+        let request_id = self.next_request;
+        LeaseHost::new(&mut self.table, &mut self.source).handle_prepared(
+            request_id,
+            LocalSubscriptionRequest {
+                request_id,
+                operation,
+            },
+            prepare,
+        )
     }
 
     pub(super) fn open_with(
@@ -571,6 +588,162 @@ fn event_and_page_credit_are_bounded_at_both_ends() {
         "credit addition cannot exceed its bound"
     );
     assert!(max.checked_add(max).is_none());
+}
+
+#[test]
+fn an_open_whose_exact_outer_reply_does_not_fit_does_not_retain_or_consume_a_lease() {
+    let mut harness = Harness::default();
+    harness.script(SubscriptionReply::Accepted { credit: CREDIT });
+    let limits = FrameLimits {
+        max_frame: 96,
+        max_cursor: 96,
+        max_frames_per_connection: 8,
+        transport: TransportLimits {
+            max_frame: 96,
+            max_chunk: 96,
+            ..TransportLimits::default()
+        },
+    };
+    let result = harness.call_prepared(
+        LocalSubscriptionOperation::Open {
+            cursor: Box::new([]),
+            credit: CREDIT,
+            lease_ms: PUBLICATION_LEASE.get(),
+        },
+        &mut |response| {
+            encode_response(
+                &ResponseFrame::Engine {
+                    request_id: 1,
+                    status: EngineStatus::Subscription(response),
+                },
+                limits,
+            )
+        },
+    );
+    assert_eq!(result, Err(ProtocolError::FrameTooLarge));
+    assert_eq!(harness.table.len(), 0, "no undisclosed lease was installed");
+    assert_eq!(
+        harness.table.identity().next_nonce,
+        0,
+        "the identity ordinal is committed only with the lease"
+    );
+}
+
+#[test]
+fn an_unencodable_page_reply_leaves_the_exact_continuation_unconsumed() {
+    let mut harness = Harness::default();
+    let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
+    let token = token.expect("continuation");
+    let (cursor, credit, pages_left, window_ends) = {
+        let retained = harness.table.get(lease).expect("retained reset");
+        let LeasePhase::Hydrating(hydration) = retained.phase() else {
+            panic!("reset is hydrating");
+        };
+        (
+            retained.cursor().to_vec(),
+            retained.credit().get(),
+            hydration.pages_left(),
+            hydration.window_ends(),
+        )
+    };
+    let limits = FrameLimits {
+        max_frame: 96,
+        max_cursor: 96,
+        max_frames_per_connection: 8,
+        transport: TransportLimits {
+            max_frame: 96,
+            max_chunk: 96,
+            ..TransportLimits::default()
+        },
+    };
+    let result = harness.call_prepared(
+        LocalSubscriptionOperation::Page {
+            lease,
+            page: token.clone(),
+            credit: 1,
+        },
+        &mut |response| {
+            encode_response(
+                &ResponseFrame::Engine {
+                    request_id: 2,
+                    status: EngineStatus::Subscription(response),
+                },
+                limits,
+            )
+        },
+    );
+    assert_eq!(result, Err(ProtocolError::FrameTooLarge));
+    let retained = harness.table.get(lease).expect("lease retained");
+    assert_eq!(retained.cursor(), cursor.as_slice());
+    assert_eq!(retained.credit().get(), credit);
+    let LeasePhase::Hydrating(hydration) = retained.phase() else {
+        panic!("unencodable page cannot finish the reset");
+    };
+    assert_eq!(hydration.pages_left(), pages_left);
+    assert_eq!(hydration.window_ends(), window_ends);
+    assert!(
+        matches!(
+            harness.page(lease, &token),
+            Ok(LocalSubscriptionResponse::SnapshotPage { .. })
+        ),
+        "the owner still accepts the exact undisclosed continuation"
+    );
+}
+
+#[test]
+fn page_credit_is_retained_exactly_and_invalid_credit_preserves_the_old_state() {
+    let mut harness = Harness::default();
+    let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
+    let token = token.expect("continuation");
+    let before = harness.table.get(lease).expect("lease").credit().get();
+    let (pages_left, window_ends) = {
+        let LeasePhase::Hydrating(hydration) = harness.table.get(lease).expect("lease").phase()
+        else {
+            panic!("reset is hydrating");
+        };
+        (hydration.pages_left(), hydration.window_ends())
+    };
+
+    for invalid in [0, backend_engine::MAX_SNAPSHOT_PAGE_ROWS + 1, usize::MAX] {
+        assert_eq!(
+            harness.call(LocalSubscriptionOperation::Page {
+                lease,
+                page: token.clone(),
+                credit: invalid,
+            }),
+            Err(refused(LeaseRefusal::PageCreditBounds))
+        );
+        let retained = harness.table.get(lease).expect("refusal preserves lease");
+        assert_eq!(retained.credit().get(), before);
+        let LeasePhase::Hydrating(hydration) = retained.phase() else {
+            panic!("invalid credit cannot finish the reset");
+        };
+        assert_eq!(hydration.pages_left(), pages_left);
+        assert_eq!(hydration.window_ends(), window_ends);
+    }
+
+    let admitted = harness
+        .call(LocalSubscriptionOperation::Page {
+            lease,
+            page: token,
+            credit: backend_engine::MAX_SNAPSHOT_PAGE_ROWS,
+        })
+        .expect("maximum valid page credit");
+    assert!(matches!(
+        admitted,
+        LocalSubscriptionResponse::SnapshotPage { credit, .. }
+            if credit == backend_engine::MAX_SNAPSHOT_PAGE_ROWS
+    ));
+    assert_eq!(
+        harness
+            .table
+            .get(lease)
+            .expect("lease retained")
+            .credit()
+            .get(),
+        backend_engine::MAX_SNAPSHOT_PAGE_ROWS,
+        "the page's exact admitted credit becomes the model credit"
+    );
 }
 
 #[test]

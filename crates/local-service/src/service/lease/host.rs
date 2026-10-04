@@ -22,12 +22,15 @@
 //! therefore finds the lease gone instead of resurrecting it.
 
 use super::super::subscription;
+use super::identity::PreparedLeaseIdentity;
 use super::state::{
     EventCredit, Failure, Hydration, Lease, LeasePhase, LeaseRefusal, PageCredit, PagePlan,
     ReleaseReason, ResetFault, ResetPage,
 };
 use super::table::LeaseTable;
-use crate::protocol::{EngineStatus, ProtocolError};
+use crate::protocol::ProtocolError;
+#[cfg(test)]
+use crate::protocol::{EngineStatus, FrameLimits, ResponseFrame, encode_response};
 use backend_client::lease_contract::LeaseMs;
 use backend_engine::{
     Cursor, CursorEvent, LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionRequest,
@@ -112,19 +115,24 @@ pub(crate) fn production_reset_page(
 }
 
 /// Whether a reply attaches a brand-new lease or re-attaches a retained one.
-#[derive(Clone, Copy)]
 enum Attachment {
-    Open(LocalSubscriptionId),
+    Open {
+        lease: LocalSubscriptionId,
+        identity: PreparedLeaseIdentity,
+    },
     Resume(LocalSubscriptionId),
 }
 
 impl Attachment {
-    const fn lease(self) -> LocalSubscriptionId {
+    const fn lease(&self) -> LocalSubscriptionId {
         match self {
-            Self::Open(lease) | Self::Resume(lease) => lease,
+            Self::Open { lease, .. } | Self::Resume(lease) => *lease,
         }
     }
 }
+
+pub(crate) type PrepareSubscriptionReply =
+    dyn FnMut(LocalSubscriptionResponse) -> Result<Vec<u8>, ProtocolError>;
 
 /// The lease a request operates on, if it names one.
 fn target_lease(operation: &LocalSubscriptionOperation) -> Option<LocalSubscriptionId> {
@@ -150,16 +158,18 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         Self { table, source }
     }
 
-    /// Handles one correlated lease request.
+    /// Handles one correlated lease request after the caller's exact outer
+    /// response encoder has prepared the bytes it will send.
     ///
     /// # Errors
     /// Returns the typed refusal or fault. A fault that makes a retained
     /// reset unservable has already released the lease it targeted.
-    pub(crate) fn handle(
+    pub(crate) fn handle_prepared(
         &mut self,
         request_id: u64,
         request: LocalSubscriptionRequest,
-    ) -> Result<EngineStatus, ProtocolError> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, ProtocolError> {
         if request.request_id != request_id {
             return Err(ProtocolError::InvalidControl(
                 "subscription request correlation mismatch",
@@ -170,8 +180,8 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         // observe, count against, or be served by it.
         let began = self.table.now();
         self.table.reclaim_due(began);
-        match self.dispatch(request_id, request.operation) {
-            Ok(response) => Ok(EngineStatus::Subscription(response)),
+        match self.dispatch(request_id, request.operation, prepare) {
+            Ok(encoded) => Ok(encoded),
             Err(failure) => {
                 if let (Some(reason), Some(lease)) = (failure.release, target) {
                     self.table.release(lease, reason);
@@ -181,41 +191,68 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         }
     }
 
+    /// Source-level convenience for lease unit tests. Production callers must
+    /// provide the listener's configured outer encoder through
+    /// [`Self::handle_prepared`].
+    #[cfg(test)]
+    pub(crate) fn handle(
+        &mut self,
+        request_id: u64,
+        request: LocalSubscriptionRequest,
+    ) -> Result<EngineStatus, ProtocolError> {
+        let mut admitted = None;
+        self.handle_prepared(request_id, request, &mut |response| {
+            let status = EngineStatus::Subscription(response.clone());
+            let encoded = encode_response(
+                &ResponseFrame::Engine { request_id, status },
+                FrameLimits::default(),
+            )?;
+            admitted = Some(response);
+            Ok(encoded)
+        })?;
+        admitted
+            .map(EngineStatus::Subscription)
+            .ok_or(ProtocolError::Closed)
+    }
+
     fn dispatch(
         &mut self,
         request_id: u64,
         operation: LocalSubscriptionOperation,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         match operation {
             LocalSubscriptionOperation::Open {
                 cursor,
                 credit,
                 lease_ms,
-            } => self.open(request_id, &cursor, credit, lease_ms),
+            } => self.open(request_id, &cursor, credit, lease_ms, prepare),
             LocalSubscriptionOperation::Resume {
                 lease,
                 cursor,
                 credit,
                 lease_ms,
-            } => self.resume(request_id, lease, &cursor, credit, lease_ms),
+            } => self.resume(request_id, lease, &cursor, credit, lease_ms, prepare),
             LocalSubscriptionOperation::Credit { lease, credit } => {
-                self.credit(request_id, lease, credit)
+                self.credit(request_id, lease, credit, prepare)
             }
             LocalSubscriptionOperation::Ack { lease, cursor } => {
-                self.acknowledge(request_id, lease, cursor)
+                self.acknowledge(request_id, lease, cursor, prepare)
             }
             LocalSubscriptionOperation::Renew {
                 lease,
                 cursor,
                 credit,
                 lease_ms,
-            } => self.renew(request_id, lease, cursor, credit, lease_ms),
-            LocalSubscriptionOperation::Cancel { lease } => self.cancel(request_id, lease),
+            } => self.renew(request_id, lease, cursor, credit, lease_ms, prepare),
+            LocalSubscriptionOperation::Cancel { lease } => {
+                self.cancel(request_id, lease, prepare)
+            }
             LocalSubscriptionOperation::Page {
                 lease,
                 page,
                 credit,
-            } => self.page(request_id, lease, page, credit),
+            } => self.page(request_id, lease, page, credit, prepare),
         }
     }
 
@@ -225,14 +262,23 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         cursor: &[u8],
         credit: usize,
         lease_ms: u64,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::LeaseBounds)?;
         let term = self.table.grant_term(lease_ms)?;
         let at = self.table.now();
         self.table.reserve(at)?;
-        let lease = self.table.allocate_id(request_id, cursor)?;
+        let identity = self.table.prepare_id(request_id, cursor)?;
+        let lease = identity.lease();
         let reply = self.source.subscribe(request_id, cursor, credit.get())?;
-        self.attach(Attachment::Open(lease), request_id, cursor, term, reply)
+        self.attach(
+            Attachment::Open { lease, identity },
+            request_id,
+            cursor,
+            term,
+            reply,
+            prepare,
+        )
     }
 
     fn resume(
@@ -242,13 +288,21 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         cursor: &[u8],
         credit: usize,
         lease_ms: u64,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::LeaseBounds)?;
         let term = self.table.grant_term(lease_ms)?;
         let at = self.table.now();
         self.table.active(lease, at)?.expect_resumable_at(cursor)?;
         let reply = self.source.subscribe(request_id, cursor, credit.get())?;
-        self.attach(Attachment::Resume(lease), request_id, cursor, term, reply)
+        self.attach(
+            Attachment::Resume(lease),
+            request_id,
+            cursor,
+            term,
+            reply,
+            prepare,
+        )
     }
 
     /// Turns the daemon's reply into the lease it grants and the response
@@ -260,32 +314,34 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         requested: &[u8],
         term: LeaseMs,
         reply: SubscriptionReply,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let lease = attachment.lease();
         match reply {
             SubscriptionReply::Accepted { credit } => {
                 let credit = granted_credit(credit)?;
                 let cursor = self.source.owner_cursor()?.encode_control();
-                self.commit(attachment, cursor.clone(), credit, term, |_| {
-                    Ok(LeasePhase::Live)
-                })?;
-                let (credit, lease_ms) = (credit.get(), term.get());
-                Ok(match attachment {
-                    Attachment::Open(_) => LocalSubscriptionResponse::Opened {
+                let response = match &attachment {
+                    Attachment::Open { .. } => LocalSubscriptionResponse::Opened {
                         request_id,
                         lease,
-                        cursor,
-                        credit,
-                        lease_ms,
+                        cursor: cursor.clone(),
+                        credit: credit.get(),
+                        lease_ms: term.get(),
                     },
                     Attachment::Resume(_) => LocalSubscriptionResponse::Resumed {
                         request_id,
                         lease,
-                        cursor,
-                        credit,
-                        lease_ms,
+                        cursor: cursor.clone(),
+                        credit: credit.get(),
+                        lease_ms: term.get(),
                     },
-                })
+                };
+                let encoded = prepare(response).map_err(Failure::from)?;
+                self.commit(attachment, cursor, credit, term, |_| {
+                    Ok(LeasePhase::Live)
+                })?;
+                Ok(encoded)
             }
             SubscriptionReply::Events {
                 credit,
@@ -296,17 +352,19 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
                 let batch = self
                     .source
                     .event_batch(requested, credit.get(), &target, &events)?;
-                self.commit(attachment, target.clone(), credit, term, |_| {
-                    Ok(LeasePhase::Live)
-                })?;
-                Ok(LocalSubscriptionResponse::Batch {
+                let response = LocalSubscriptionResponse::Batch {
                     request_id,
                     lease,
                     previous: batch.previous,
-                    cursor: target,
+                    cursor: target.clone(),
                     credit: credit.get(),
                     payload: batch.payload,
-                })
+                };
+                let encoded = prepare(response).map_err(Failure::from)?;
+                self.commit(attachment, target, credit, term, |_| {
+                    Ok(LeasePhase::Live)
+                })?;
+                Ok(encoded)
             }
             SubscriptionReply::ResetWithRoot {
                 credit,
@@ -329,18 +387,33 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
                     .map_err(|error| Failure::reset(ResetFault::Unservable(error)))?;
                 let limits = self.table.limits().reset();
                 let next = first.next.as_ref().map(|next| next.token.clone());
-                self.commit(attachment, target.clone(), credit, term, |granted_at| {
-                    Hydration::begin_phase(granted_at, limits, root, target_cursor, reason, &first)
-                        .map_err(Failure::reset)
-                })?;
-                Ok(LocalSubscriptionResponse::SnapshotPage {
+                let first_for_phase = ResetPage {
+                    served: first.served,
+                    rows: first.rows,
+                    next: first.next.clone(),
+                    payload: Box::new([]),
+                };
+                let response = LocalSubscriptionResponse::SnapshotPage {
                     request_id,
                     lease,
                     page: Box::new([]),
                     next,
                     credit: credit.get(),
                     payload: first.payload,
-                })
+                };
+                let encoded = prepare(response).map_err(Failure::from)?;
+                self.commit(attachment, target, credit, term, |granted_at| {
+                    Hydration::begin_phase(
+                        granted_at,
+                        limits,
+                        root,
+                        target_cursor,
+                        reason,
+                        &first_for_phase,
+                    )
+                        .map_err(Failure::reset)
+                })?;
+                Ok(encoded)
             }
             SubscriptionReply::Reset { .. } => Err(ProtocolError::InvalidControl(
                 "subscription reset omitted its replacement root",
@@ -361,14 +434,24 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         phase: impl FnOnce(Instant) -> Result<LeasePhase, Failure>,
     ) -> Result<(), Failure> {
         let granted_at = self.table.now();
-        if let Attachment::Resume(lease) = attachment {
+        if let Attachment::Resume(lease) = &attachment {
             // The daemon round trip and the page encode may have outlived it.
-            self.table.active(lease, granted_at)?;
+            self.table.active(*lease, granted_at)?;
         }
         let phase = phase(granted_at)?;
         let granted = Lease::grant(granted_at, term, cursor, credit, phase)?;
         match attachment {
-            Attachment::Open(lease) => self.table.install(lease, granted)?,
+            Attachment::Open { lease, identity } => {
+                self.table.reserve(granted_at)?;
+                let committed = self.table.commit_id(identity)?;
+                if committed != lease {
+                    return Err(ProtocolError::InvalidControl(
+                        "prepared lease identity changed before commit",
+                    )
+                    .into());
+                }
+                self.table.install(lease, granted)?;
+            }
             Attachment::Resume(lease) => {
                 if !self.table.replace(lease, granted) {
                     return Err(LeaseRefusal::UnknownLease.into());
@@ -383,7 +466,8 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         request_id: u64,
         lease: LocalSubscriptionId,
         credit: usize,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::CreditBounds)?;
         let at = self.table.now();
         let current = self.table.active(lease, at)?;
@@ -395,8 +479,13 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
             credit: updated.credit().get(),
             lease_ms: updated.remaining_term(at).get(),
         };
-        self.table.replace(lease, updated);
-        Ok(response)
+        let encoded = prepare(response).map_err(Failure::from)?;
+        let committed = self.table.now();
+        self.table.active(lease, committed)?;
+        if !self.table.replace(lease, updated) {
+            return Err(LeaseRefusal::UnknownLease.into());
+        }
+        Ok(encoded)
     }
 
     fn acknowledge(
@@ -404,16 +493,23 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         request_id: u64,
         lease: LocalSubscriptionId,
         cursor: Box<[u8]>,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let at = self.table.now();
         self.table
             .active(lease, at)?
             .expect_acknowledgeable(&cursor)?;
-        Ok(LocalSubscriptionResponse::Acked {
+        let encoded = prepare(LocalSubscriptionResponse::Acked {
             request_id,
             lease,
-            cursor,
+            cursor: cursor.clone(),
         })
+        .map_err(Failure::from)?;
+        let committed = self.table.now();
+        self.table
+            .active(lease, committed)?
+            .expect_acknowledgeable(&cursor)?;
+        Ok(encoded)
     }
 
     fn renew(
@@ -423,31 +519,45 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         cursor: Box<[u8]>,
         credit: usize,
         lease_ms: u64,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::LeaseBounds)?;
         let term = self.table.grant_term(lease_ms)?;
         let at = self.table.now();
-        let renewed = self
-            .table
-            .active(lease, at)?
-            .renewed(at, &cursor, term, credit)?;
-        self.table.replace(lease, renewed);
-        Ok(LocalSubscriptionResponse::Renewed {
+        self.table.active(lease, at)?.renewed(at, &cursor, term, credit)?;
+        let encoded = prepare(LocalSubscriptionResponse::Renewed {
             request_id,
             lease,
-            cursor,
+            cursor: cursor.clone(),
             credit: credit.get(),
             lease_ms: term.get(),
         })
+        .map_err(Failure::from)?;
+        let committed = self.table.now();
+        let renewed = self
+            .table
+            .active(lease, committed)?
+            .renewed(committed, &cursor, term, credit)?;
+        if !self.table.replace(lease, renewed) {
+            return Err(LeaseRefusal::UnknownLease.into());
+        }
+        Ok(encoded)
     }
 
     fn cancel(
         &mut self,
         request_id: u64,
         lease: LocalSubscriptionId,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
+        let committed = self.table.now();
+        self.table.active(lease, committed)?;
+        let encoded = prepare(LocalSubscriptionResponse::Cancelled { request_id, lease })
+            .map_err(Failure::from)?;
+        let committed = self.table.now();
+        self.table.active(lease, committed)?;
         if self.table.release(lease, ReleaseReason::Cancelled) {
-            Ok(LocalSubscriptionResponse::Cancelled { request_id, lease })
+            Ok(encoded)
         } else {
             Err(LeaseRefusal::UnknownLease.into())
         }
@@ -466,7 +576,8 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         lease: LocalSubscriptionId,
         token: Box<[u8]>,
         credit: usize,
-    ) -> Result<LocalSubscriptionResponse, Failure> {
+        prepare: &mut PrepareSubscriptionReply,
+    ) -> Result<Vec<u8>, Failure> {
         let credit = PageCredit::new(credit).ok_or(LeaseRefusal::PageCreditBounds)?;
         let began = self.table.now();
         let plan = self.table.active(lease, began)?.page_plan(&token)?;
@@ -477,20 +588,31 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         if !page.advances_from(plan.requested) {
             return Err(Failure::reset(ResetFault::Stalled));
         }
+        let page_state = ResetPage {
+            served: page.served,
+            rows: page.rows,
+            next: page.next.clone(),
+            payload: Box::new([]),
+        };
+        let next = page.next.map(|next| next.token);
+        let response = LocalSubscriptionResponse::SnapshotPage {
+            request_id,
+            lease,
+            page: token,
+            next,
+            credit: credit.get(),
+            payload: page.payload,
+        };
+        let encoded = prepare(response).map_err(Failure::from)?;
         let committed = self.table.now();
         let next = self
             .table
             .active(lease, committed)?
-            .after_page(committed, &page, credit)?;
-        self.table.replace(lease, next);
-        Ok(LocalSubscriptionResponse::SnapshotPage {
-            request_id,
-            lease,
-            page: token,
-            next: page.next.map(|next| next.token),
-            credit: credit.get(),
-            payload: page.payload,
-        })
+            .after_page(committed, &page_state, credit)?;
+        if !self.table.replace(lease, next) {
+            return Err(LeaseRefusal::UnknownLease.into());
+        }
+        Ok(encoded)
     }
 }
 
