@@ -723,6 +723,83 @@ fn land_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, answ
     ));
 }
 
+/// The old native Compare return selected `from_str` instead of the clicked
+/// `advance_signal`. Keep both names in immutable, exact package evidence so
+/// that default-selection fallback cannot make the history test pass.
+fn compare_history_fixture(selection: &CompareSet, insert_before: bool, omit_selected: bool) -> BrowseValue {
+    let BrowseValue::Compare(base) = compare_fixture(selection, true, true) else { unreachable!() };
+    let apis = selection.packages().iter().enumerate().map(|(column, package)| {
+        let mut names = match column {
+            0 => (0..26).map(|at| format!("function_{at:02}")).collect::<Vec<_>>(),
+            1 => vec!["from_str".to_owned()],
+            _ => Vec::new(),
+        };
+        if column == 0 {
+            if !omit_selected { names.insert(0, "advance_signal".to_owned()); }
+            if insert_before { names.insert(0, "aa_added".to_owned()); }
+        }
+        let items = names.into_iter().enumerate().map(|(at, name)| {
+            let line = at as u32 + 1;
+            ApiItem {
+                decl: DeclRef::from_label(
+                    &format!("{}::src/cadence.rs:{line}::{name}", package.as_str()),
+                    None, Some(DeclarationKind::Function), Some(("src/cadence.rs", line)),
+                ).expect("exact comparison declaration"),
+                signature: Known::Known(SignatureText {
+                    text: Arc::from(format!("pub fn {name}()")), tokens: Arc::from([]),
+                    name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
+                }),
+                summary: None,
+            }
+        }).collect::<Vec<_>>();
+        Known::Known(PackageApi { package: package.clone(), complete: true, items: items.into() })
+    }).collect::<Vec<_>>();
+    let prepared = Arc::new(crate::runtime::browse_views::prepare_compare(&base.packages, &apis));
+    BrowseValue::Compare(Arc::new(CompareModel {
+        packages: Arc::clone(&base.packages), apis: apis.into(), prepared,
+    }))
+}
+
+fn land_history_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, insert_before: bool, omit_selected: bool) {
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+        BrowseKey::Compare(selection.clone()), compare_history_fixture(selection, insert_before, omit_selected), cx,
+    ));
+}
+
+/// `advance_signal` starts in slot 17 of the first 18-name page. An extra
+/// exact name before it moves that same identity to slot 18 and the next
+/// page; `from_str` remains a tempting but incorrect fallback detail.
+fn compare_boundary_fixture(selection: &CompareSet, insert_before: bool, omit_selected: bool) -> BrowseValue {
+    let BrowseValue::Compare(base) = compare_history_fixture(selection, false, false) else { unreachable!() };
+    let mut apis = base.apis.to_vec();
+    let Known::Known(first) = &mut apis[0] else { unreachable!() };
+    let mut names = (0..17).map(|at| format!("aa_{at:02}")).collect::<Vec<_>>();
+    if insert_before { names.push("aa_17".to_owned()); }
+    if !omit_selected { names.push("advance_signal".to_owned()); }
+    first.items = names.into_iter().enumerate().map(|(at, name)| {
+        let line = at as u32 + 1;
+        ApiItem {
+            decl: DeclRef::from_label(
+                &format!("{}::src/cadence.rs:{line}::{name}", first.package.as_str()),
+                None, Some(DeclarationKind::Function), Some(("src/cadence.rs", line)),
+            ).expect("boundary declaration"),
+            signature: Known::Known(SignatureText {
+                text: Arc::from(format!("pub fn {name}()")), tokens: Arc::from([]),
+                name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
+            }),
+            summary: None,
+        }
+    }).collect::<Vec<_>>().into();
+    let prepared = Arc::new(crate::runtime::browse_views::prepare_compare(&base.packages, &apis));
+    BrowseValue::Compare(Arc::new(CompareModel { packages: Arc::clone(&base.packages), apis: apis.into(), prepared }))
+}
+
+fn land_boundary_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, insert_before: bool, omit_selected: bool) {
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+        BrowseKey::Compare(selection.clone()), compare_boundary_fixture(selection, insert_before, omit_selected), cx,
+    ));
+}
+
 #[gpui::test]
 fn compare_source_callbacks_open_members_and_remove_only_from_the_current_reading(cx: &mut TestAppContext) {
     let selection = compare_selection();
@@ -853,4 +930,197 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
     rig.keys("secondary-[");
     assert!(rig.said().iter().any(|words| words == "Hide package facts"));
+}
+
+#[gpui::test]
+fn mounted_compare_distinct_selected_code_back_restores_the_exact_reading_visit(cx: &mut TestAppContext) {
+    use crate::navigation::{Intent, View, presentation::ReadingPresentation};
+    use facet::icons::Kind;
+    use gpui::Modifiers;
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(route.clone()), 1440.0, 900.0);
+    land_history_compare(&mut rig, &selection, false, false);
+    rig.settle();
+    let different = crate::shell::tests::native_bounds(&mut rig, "Button", "Different names", true)
+        .expect("mounted Compare filter");
+    rig.cx.simulate_click(different.center(), Modifiers::none());
+    rig.settle();
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let selected_row = ledger.texts.iter().find(|text| text.content == "advance_signal" && text.key.contains("row-"))
+        .expect("the exact aligned row is painted under Different names");
+    let at = gpui::point(gpui::px(selected_row.bounds.x + selected_row.bounds.width / 2.0),
+        gpui::px(selected_row.bounds.y + selected_row.bounds.height / 2.0));
+    rig.cx.simulate_click(at, Modifiers::none());
+    rig.settle();
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
+    assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Distinct));
+    assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)));
+    let code = crate::shell::tests::native_bounds(&mut rig, "Button", "Code", true)
+        .expect("the selected exact declaration has its own native Code action");
+    rig.cx.simulate_click(code.center(), Modifiers::none());
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(ref symbol)
+        if symbol.view == View::Code && symbol.id.as_str().ends_with("::advance_signal")));
+    rig.keys("secondary-[");
+    assert_eq!(rig.route(), route);
+    let returned = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    assert_eq!(returned, before, "Back restores the selected alignment and filter on the original VisitId");
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    assert!(ledger.texts.iter().any(|text| text.key.contains("focused-name") && text.content == "advance_signal"),
+        "the detail must paint advance_signal, not the default from_str fallback");
+
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.go(Intent::Navigate(route));
+    land_history_compare(&mut rig, &selection, false, false);
+    rig.settle();
+    let fresh = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &fresh.presentation else { panic!("fresh Compare visit") };
+    assert_ne!(fresh.id, before.id, "new navigation cannot reuse the returned visit's identity");
+    assert_eq!(*comparison, facet::browse::compare::Presentation::default(),
+        "a new Compare visit starts without another visit's selection or filter");
+}
+
+#[gpui::test]
+fn compare_selected_identity_and_scroll_survive_reflow_and_back(cx: &mut TestAppContext) {
+    use crate::navigation::{Intent, View, presentation::ReadingPresentation};
+    use facet::icons::Kind;
+    use gpui::{Modifiers, point, px};
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(route.clone()), 1440.0, 900.0);
+    land_history_compare(&mut rig, &selection, false, false);
+    rig.settle();
+    let different = crate::shell::tests::native_bounds(&mut rig, "Button", "Different names", true).expect("filter");
+    rig.cx.simulate_click(different.center(), Modifiers::none());
+    rig.settle();
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let row = ledger.texts.iter().find(|text| text.content == "advance_signal" && text.key.contains("row-"))
+        .expect("alignment row");
+    rig.cx.simulate_click(point(px(row.bounds.x + row.bounds.width / 2.0),
+        px(row.bounds.y + row.bounds.height / 2.0)), Modifiers::none());
+    rig.settle();
+    let visit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
+    land_history_compare(&mut rig, &selection, true, false);
+    rig.settle();
+    let after_insert = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &after_insert.presentation else { panic!("Compare") };
+    assert_eq!(after_insert.id, visit);
+    assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)),
+        "a new immutable alignment order cannot turn a selected name into a row index");
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    assert!(rig.cx.update(|_, cx| facet::probe::take(cx)).texts.iter()
+        .any(|text| text.key.contains("focused-name") && text.content == "advance_signal"));
+
+    land_history_compare(&mut rig, &selection, true, true);
+    rig.settle();
+    let without = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &without.presentation else { panic!("Compare") };
+    assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)),
+        "a temporarily absent alignment must not erase the visit's semantic choice");
+    land_history_compare(&mut rig, &selection, true, false);
+    rig.settle();
+    rig.cx.simulate_scroll(point(px(1200.0), px(700.0)), point(px(0.0), px(-96.0)));
+    rig.repaint();
+    rig.settle();
+    let saved = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let y = saved.presentation.controls().offset.pixels().1;
+    assert!(y < -1.0, "native wheel moves the actual overflowing Reader viewport");
+    let source = compare_callback(&mut rig, &selection);
+    let code = super::compare_symbol_action(source, true);
+    rig.cx.update(|window, cx| code("/fixture/present::src/cadence.rs:2::advance_signal".into(), window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(ref symbol) if symbol.view == View::Code));
+    rig.keys("secondary-[");
+    rig.settle();
+    assert_eq!(rig.route(), route);
+    let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    assert_eq!(restored.id, visit);
+    assert_eq!(restored.presentation, saved.presentation,
+        "Back restores filter, selected identity, and recorded scroll together");
+    let actual = rig.shell.read_with(rig.cx, |shell, cx| f32::from(shell.source_reader_scroll_offset(cx).y));
+    assert!((actual - y).abs() <= 2.0, "the mounted Reader must restore its measured viewport: {y} → {actual}");
+}
+
+#[gpui::test]
+fn compare_follows_a_selected_name_across_the_page_boundary_without_overriding_explicit_pagination(cx: &mut TestAppContext) {
+    use crate::navigation::presentation::ReadingPresentation;
+    use facet::icons::Kind;
+    use gpui::{Modifiers, point, px};
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(route), 1440.0, 2000.0);
+    land_boundary_compare(&mut rig, &selection, false, false);
+    rig.settle();
+    let different = crate::shell::tests::native_bounds(&mut rig, "Button", "Different names", true).expect("native filter");
+    rig.cx.simulate_click(different.center(), Modifiers::none());
+    rig.settle();
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let row = ledger.texts.iter().find(|text| text.content == "advance_signal" && text.key.contains("row-"))
+        .expect("selected row is actually rendered at slot 17 on page one");
+    assert!(ledger.texts.iter().any(|text| text.key.contains("page-reading") && text.content == "1–18 of 19 recorded names"));
+    rig.cx.simulate_click(point(px(row.bounds.x + row.bounds.width / 2.0),
+        px(row.bounds.y + row.bounds.height / 2.0)), Modifiers::none());
+    rig.settle();
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &original.presentation else { panic!("Compare") };
+    assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)));
+    assert!(comparison.follow_selected);
+    assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Distinct));
+
+    land_boundary_compare(&mut rig, &selection, true, false);
+    rig.settle();
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let shifted = rig.cx.update(|_, cx| facet::probe::take(cx));
+    assert!(shifted.texts.iter().any(|text| text.key.contains("page-reading") && text.content == "19–20 of 20 recorded names"),
+        "insertion before slot 17 must move the selected name to the second actual page");
+    assert!(shifted.texts.iter().any(|text| text.key.contains("row-") && text.content == "advance_signal"));
+    assert!(shifted.texts.iter().any(|text| text.key.contains("focused-name") && text.content == "advance_signal"),
+        "the detail follows the typed name and kind, never its previous numeric row");
+    let shifted_visit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    assert_eq!(shifted_visit.id, original.id, "immutable data reflow is not navigation");
+    let ReadingPresentation::Compare { comparison, .. } = &shifted_visit.presentation else { panic!("Compare") };
+    assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Distinct));
+    assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)));
+
+    land_boundary_compare(&mut rig, &selection, true, true);
+    rig.settle();
+    let absent = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &absent.presentation else { panic!("Compare") };
+    assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)),
+        "temporary absence cannot silently rewrite the visit's semantic selection");
+    land_boundary_compare(&mut rig, &selection, true, false);
+    rig.settle();
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let returned = rig.cx.update(|_, cx| facet::probe::take(cx));
+    assert!(returned.texts.iter().any(|text| text.key.contains("focused-name") && text.content == "advance_signal"));
+    assert!(returned.texts.iter().any(|text| text.key.contains("page-reading") && text.content == "19–20 of 20 recorded names"));
+
+    let previous = crate::shell::tests::native_bounds(&mut rig, "Button", "Previous names", true)
+        .expect("a real native paginator on the followed second page");
+    rig.cx.simulate_click(previous.center(), Modifiers::none());
+    rig.settle();
+    let explicit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let ReadingPresentation::Compare { comparison, .. } = &explicit.presentation else { panic!("Compare") };
+    assert_eq!(explicit.id, original.id);
+    assert_eq!(comparison.page, 0);
+    assert!(!comparison.follow_selected, "Previous names is a deliberate page choice, not a request to follow the old row");
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let first_page = rig.cx.update(|_, cx| facet::probe::take(cx));
+    assert!(first_page.texts.iter().any(|text| text.key.contains("page-reading") && text.content == "1–18 of 20 recorded names"));
+    assert!(!first_page.texts.iter().any(|text| text.key.contains("focused-name") && text.content == "advance_signal"),
+        "explicit pagination must not be undone by the previous selection");
 }

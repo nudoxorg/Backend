@@ -175,15 +175,21 @@ pub struct Presentation {
     pub selected: Option<(SharedString, Kind)>,
     pub family: Option<Family>,
     pub scope: Option<Scope>,
+    /// Last explicit page, also the fallback while a followed name is absent
+    /// from the current immutable evidence. Pagination clears follow intent.
     pub page: usize,
+    /// A selected name moves with fresh prepared alignment order; explicit
+    /// filters and page buttons remain in charge until a row is chosen again.
+    pub follow_selected: bool,
     pub facts: bool,
     pub more_overloads: bool,
 }
 impl Default for Presentation {
-    fn default() -> Self { Self { selected: None, family: None, scope: None, page: 0, facts: false, more_overloads: false } }
+    fn default() -> Self { Self { selected: None, family: None, scope: None, page: 0, follow_selected: false, facts: false, more_overloads: false } }
 }
 impl Presentation {
-    pub fn valid(&self) -> bool { self.page <= 4096 && self.selected.as_ref().is_none_or(|(name, _)| name.len() <= 1024 && !name.chars().any(char::is_control)) }
+    pub fn valid(&self) -> bool { self.page <= 4096 && (!self.follow_selected || self.selected.is_some())
+        && self.selected.as_ref().is_none_or(|(name, _)| name.len() <= 1024 && !name.chars().any(char::is_control)) }
 }
 
 struct State { presentation: Presentation, on_change: Option<Rc<dyn Fn(Presentation, &mut App)>>, reveal: KeyboardReveal, focus: FocusHandle, focus_claimed: bool }
@@ -285,12 +291,22 @@ impl RenderOnce for Compare {
             let selected = state.clone();
             filters = filters.child(button(child(&self.id, format!("scope-{at}")), name, &m).size(Control::Small)
                 .intent(if choice == scope { crate::controls::button::Intent::Edge } else { crate::controls::button::Intent::Ghost })
-                .on_click(move |_, cx| selected.update(cx, |state, cx| { state.presentation.scope = Some(choice); state.presentation.page = 0; state.changed(cx); })));
+                .on_click(move |_, cx| selected.update(cx, |state, cx| {
+                    state.presentation.scope = Some(choice);
+                    state.presentation.page = 0;
+                    state.presentation.follow_selected = false;
+                    state.changed(cx);
+                })));
         }
         if let Some(filter) = state.read(cx).presentation.family {
             let clear = state.clone();
             filters = filters.child(button(child(&self.id, "clear-family"), format!("{} ×", filter.words()), &m).ghost().size(Control::Small)
-                .on_click(move |_, cx| clear.update(cx, |state, cx| { state.presentation.family = None; state.presentation.page = 0; state.changed(cx); })));
+                .on_click(move |_, cx| clear.update(cx, |state, cx| {
+                    state.presentation.family = None;
+                    state.presentation.page = 0;
+                    state.presentation.follow_selected = false;
+                    state.changed(cx);
+                })));
         }
         page = page.child(filters);
         let visible = alignments.iter().filter(|row| {
@@ -299,11 +315,18 @@ impl RenderOnce for Compare {
                 Scope::Distinct => row.differs(),
             }
         }).collect::<Vec<_>>();
-        let (offset, shown) = page_span(visible.len(), state.read(cx).presentation.page);
+        let remembered = state.read(cx).presentation.clone();
+        let requested_page = if remembered.follow_selected {
+            remembered.selected.as_ref().and_then(|(name, kind)| visible.iter()
+                .position(|row| row.name == *name && row.kind == *kind))
+                .map_or(remembered.page, |at| at / ROW_PAGE)
+        } else { remembered.page };
+        let (offset, shown) = page_span(visible.len(), requested_page);
+        let page_index = offset / ROW_PAGE;
         let page_rows = &visible[offset..offset + shown];
         // Keep the remembered identity across filters and pages, but inspect
         // only a row actually shown now. Returning restores the old focus.
-        let selected = state.read(cx).presentation.selected.clone();
+        let selected = remembered.selected.clone();
         let chosen = chosen_visible(page_rows, selected.as_ref());
         let modes = Modes::keyed(child(&self.id, "modes"), window, cx);
         let split = modes.settle(&COMPARE, m.fluid_room());
@@ -312,7 +335,7 @@ impl RenderOnce for Compare {
         let rows_m = if beside { m.within(m.width() - px(detail_width) - m.space(Space::Section)) } else { m };
         let detail_m = if beside { m.within(px(detail_width)) } else { m };
         let flow = Flow::scoped(format!("compare-{:?}", self.id), cx);
-        flow.epoch((split.epoch, beside, state.read(cx).presentation.family, scope, state.read(cx).presentation.page));
+        flow.epoch((split.epoch, beside, remembered.family, scope, page_index));
         let keys = page_rows.iter().map(|row| (row.name.clone(), row.kind)).collect::<Vec<_>>();
         let keyboard = state.clone();
         page = page.on_key_down(move |event, _, cx| {
@@ -322,6 +345,8 @@ impl RenderOnce for Compare {
                 let next = at.map_or(0, |at| at.saturating_add_signed(delta).min(keys.len().saturating_sub(1)));
                 if let Some(key) = keys.get(next) && state.presentation.selected.as_ref() != Some(key) {
                     state.presentation.selected = Some(key.clone());
+                    state.presentation.page = page_index;
+                    state.presentation.follow_selected = true;
                     state.reveal.request();
                 }
                 state.changed(cx);
@@ -332,7 +357,7 @@ impl RenderOnce for Compare {
         for (at, row) in page_rows.iter().enumerate() {
             let active = chosen.is_some_and(|selected| selected.name == row.name && selected.kind == row.kind);
             let row_id = child(&self.id, format!("row-{at}"));
-            let painted = aligned_row(&row_id, row, active, &self.model, &state, &rows_m, cx);
+            let painted = aligned_row(&row_id, row, active, page_index, &self.model, &state, &rows_m, cx);
             let painted = if active { state.read(cx).reveal.selected(painted) } else { painted };
             rows = rows.child(flow.item(format!("{:?}-{}", row.kind, row.name), painted));
         }
@@ -345,10 +370,18 @@ impl RenderOnce for Compare {
             let next = state.clone();
             rows = rows.child(div().flex().flex_wrap().gap(m.space(Space::Roomy))
                 .child(button(child(&self.id, "previous"), "Previous names", &rows_m).ghost().disabled(offset == 0)
-                    .on_click(move |_, cx| previous.update(cx, |state, cx| { state.presentation.page = state.presentation.page.saturating_sub(1); state.changed(cx); })))
+                    .on_click(move |_, cx| previous.update(cx, |state, cx| {
+                        state.presentation.page = page_index.saturating_sub(1);
+                        state.presentation.follow_selected = false;
+                        state.changed(cx);
+                    })))
                 .child(words(child(&self.id, "page-reading"), format!("{}–{} of {} recorded names", offset + 1, offset + shown, visible.len()), ty::CAPTION, p.ink2, &rows_m))
                 .child(button(child(&self.id, "next"), "Next names", &rows_m).ghost().disabled(offset + shown >= visible.len())
-                    .on_click(move |_, cx| next.update(cx, |state, cx| { state.presentation.page += 1; state.changed(cx); }))));
+                    .on_click(move |_, cx| next.update(cx, |state, cx| {
+                        state.presentation.page = page_index.saturating_add(1);
+                        state.presentation.follow_selected = false;
+                        state.changed(cx);
+                    }))));
         }
         let mut comparison = if beside { div().flex().items_start().gap(m.space(Space::Section)) } else { div().flex().flex_col().gap(m.space(Space::Wide)) };
         comparison = comparison.child(rows);
@@ -400,12 +433,17 @@ fn silhouette(id: &ElementId, candidate: &Candidate, counts: &[usize; 4], state:
         let label = count.map_or_else(|| "unread".to_owned(), |count| format!("{count} {}", family_.words()));
         let selected = state.clone();
         strip = strip.child(button(child(id, format!("family-{at}")), label, m).ghost().size(Control::Small).icon(family_.icon())
-            .disabled(count.is_none()).on_click(move |_, cx| selected.update(cx, |state, cx| { state.presentation.family = if state.presentation.family == Some(family_) { None } else { Some(family_) }; state.presentation.page = 0; state.changed(cx); })));
+            .disabled(count.is_none()).on_click(move |_, cx| selected.update(cx, |state, cx| {
+                state.presentation.family = if state.presentation.family == Some(family_) { None } else { Some(family_) };
+                state.presentation.page = 0;
+                state.presentation.follow_selected = false;
+                state.changed(cx);
+            })));
     }
     strip.into_any_element()
 }
 
-fn aligned_row(id: &ElementId, row: &Alignment, active: bool, model: &Model, state: &Entity<State>, m: &Measure, cx: &mut App) -> AnyElement {
+fn aligned_row(id: &ElementId, row: &Alignment, active: bool, page: usize, model: &Model, state: &Entity<State>, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let select = state.clone();
     let selection = (row.name.clone(), row.kind);
@@ -425,7 +463,13 @@ fn aligned_row(id: &ElementId, row: &Alignment, active: bool, model: &Model, sta
         .child(div().flex_1().min_w_0().child(words_ellipsis(child(id, "name"), row.name.clone(), ty::MONO_ROW, if active { p.ink0 } else { p.ink1 }, m)))
         .child(constellation)
         .child(words(child(id, "presence"), label, ty::CAPTION, p.ink2, m))
-        .on_click(move |_, _, cx| select.update(cx, |state, cx| { state.presentation.selected = Some(selection.clone()); state.presentation.more_overloads = false; state.changed(cx); }))
+        .on_click(move |_, _, cx| select.update(cx, |state, cx| {
+            state.presentation.selected = Some(selection.clone());
+            state.presentation.page = page;
+            state.presentation.follow_selected = true;
+            state.presentation.more_overloads = false;
+            state.changed(cx);
+        }))
         .into_any_element()
 }
 
