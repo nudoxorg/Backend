@@ -1692,13 +1692,7 @@ fn push_rust_use_list(
             "identifier" => {
                 let exported = node_text(child, text);
                 if !exported.is_empty() {
-                    imports.push(value_import(
-                        exported.clone(),
-                        line,
-                        specifier,
-                        &exported,
-                        excerpt,
-                    ));
+                    imports.push(value_import(exported, line, specifier, &exported, excerpt));
                 }
             }
             "use_list" => push_rust_use_list(child, text, line, specifier, excerpt, imports),

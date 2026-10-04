@@ -10,9 +10,9 @@
 //! `AuthorityNamespace::namespace_id()`; this crate does not reproduce that hash grammar.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fmt,
-    fs::{self, File},
+    fs::File,
     future::Future,
     io::{self, Read, Seek, SeekFrom, Write},
     net::SocketAddr,
@@ -26,7 +26,7 @@ use std::{
 
 use backend_store::{
     ArtifactClosureClaim, ArtifactObjectClaim, ArtifactObjectReader, ArtifactSession, ArtifactSink,
-    ClosureId, StoredClosureReceipt, TypedObject, UntrustedObjectId, VerifiedClosureMember,
+    ClosureId, TypedObject, UntrustedObjectId, VerifiedClosureMember,
 };
 use backend_version::SchemaIdentity;
 use bao_tree::{
@@ -45,6 +45,9 @@ use iroh_io::{
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
+
+#[cfg(test)]
+use std::{collections::BTreeMap, fs};
 
 /// ALPN reserved for artifact range transfer.
 pub const ALPN: &[u8] = b"/backend/index-artifacts/1";
@@ -517,7 +520,7 @@ pub struct AdmissionPolicy {
     /// Trusted scheduler/controller signing key.
     pub issuer: EndpointId,
     /// Explicit endpoint identities allowed to connect.
-    pub allowed_peers: std::collections::HashSet<EndpointId>,
+    pub allowed_peers: HashSet<EndpointId>,
     /// The one exact work/attempt/fence/closure accepted by this listener.
     pub scope: TransferScope,
     owner_routes: Option<OwnerClusterAdmissionRegistry>,
@@ -772,8 +775,7 @@ impl DirectoryBlobCatalog {
             data: outboard_file,
         };
         let data = tokio::fs::File::from_std(safe_open_read(payload_path)?);
-        bao_tree::io::fsm::CreateOutboard::init_from(&mut outboard, TokioStreamReader::new(data))
-            .await?;
+        CreateOutboard::init_from(&mut outboard, TokioStreamReader::new(data)).await?;
         outboard.data.sync().await?;
         if outboard.root != blake3::Hash::from(expected_hash.0) {
             return Err(TransportError::BlobHashMismatch);
@@ -886,7 +888,7 @@ impl StoreBlobCatalog {
         safe_ensure_directory(&self.root)?;
         let tree = BaoTree::new(mapping.payload_length, BAO_BLOCK_SIZE);
         let stage = unique_temp_path(&self.root, "store-bao");
-        let mut outboard_file = FileRangeSource::create_sparse(&stage, tree.outboard_size())?;
+        let outboard_file = FileRangeSource::create_sparse(&stage, tree.outboard_size())?;
         let source = ArtifactPayloadSource::new(reader);
         let mut outboard = bao_tree::io::outboard::PreOrderOutboard {
             root: blake3::hash(&[]),
@@ -1858,6 +1860,7 @@ impl AsyncSliceWriter for FileRangeSource {
     }
 }
 
+/// Async range-reader adapter for a shared blocking random-access source.
 #[derive(Debug, Clone)]
 pub struct SourceReader(Arc<dyn RandomAccessSource>);
 
@@ -2063,7 +2066,7 @@ impl VerifiedCoverage {
             now_unix_ms()?,
         )?;
         let checkpoint = checkpoint_path.as_ref().to_path_buf();
-        let mut state = match safe_open_read(&checkpoint) {
+        let state = match safe_open_read(&checkpoint) {
             Ok(_) => ResumeState::load(&checkpoint, claims)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 ResumeState::empty(&checkpoint, claims)?
@@ -2127,7 +2130,7 @@ impl VerifiedCoverage {
             ResumeState::data_path(&self.checkpoint),
             claims.object.payload_length,
         )?;
-        let mut outboard_file = FileRangeSource::create_sparse(
+        let outboard_file = FileRangeSource::create_sparse(
             ResumeState::outboard_path(&self.checkpoint),
             BaoTree::new(claims.object.payload_length, BAO_BLOCK_SIZE).outboard_size(),
         )?;

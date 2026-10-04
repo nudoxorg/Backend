@@ -1,5 +1,6 @@
 //! Deterministic metric scoring for exact local reranking.
 
+#[cfg(test)]
 use crate::Error;
 use crate::incremental::vector::{AdmittedEncodedPoint, Metric};
 
@@ -86,6 +87,7 @@ pub(super) fn score_admitted(
 /// coordinate vector. The four-byte dimension and each coordinate are read
 /// as big-endian integers, so the payload may begin at any byte alignment and
 /// behaves identically on every host endian.
+#[cfg(test)]
 pub(super) fn score_encoded(metric: Metric, query: &[f32], payload: &[u8]) -> Result<f32, Error> {
     let dimension_bytes: [u8; 4] = payload
         .get(..4)
@@ -98,7 +100,7 @@ pub(super) fn score_encoded(metric: Metric, query: &[f32], payload: &[u8]) -> Re
         return Err(Error::MalformedInput);
     }
     let expected_bytes = dimension
-        .checked_mul(std::mem::size_of::<u32>())
+        .checked_mul(size_of::<u32>())
         .and_then(|bytes| bytes.checked_add(4))
         .ok_or(Error::SizeLimit)?;
     if expected_bytes != payload.len() {
@@ -144,6 +146,7 @@ pub(super) fn score_encoded(metric: Metric, query: &[f32], payload: &[u8]) -> Re
     }
 }
 
+#[cfg(test)]
 fn decode_coordinate(bytes: &[u8]) -> Result<f32, Error> {
     let bits = u32::from_be_bytes(bytes.try_into().map_err(|_| Error::MalformedInput)?);
     let value = f32::from_bits(bits);

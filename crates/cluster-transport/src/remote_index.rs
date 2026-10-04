@@ -7,17 +7,15 @@
 
 use std::time::Duration;
 
+use crate::{
+    Endpoint, TransportError, frame_error, read_frame_bounded, write_frame_bounded,
+    write_frame_bytes_bounded,
+};
 use iroh::{
     EndpointAddr, EndpointId, SecretKey, Signature,
     endpoint::{Connection, RecvStream, SendStream},
 };
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
-
-use crate::{
-    Endpoint, TransportError, frame_error, read_frame_bounded, write_frame_bounded,
-    write_frame_bytes_bounded,
-};
 
 /// Encrypted Iroh ALPN for a read-only remote index client session.
 pub const REMOTE_INDEX_ALPN: &[u8] = b"/backend/remote-index/3";
@@ -276,18 +274,24 @@ pub enum RemoteIndexOutcome {
     Payload(Box<[u8]>),
     /// The product grant's view root is no longer the owner's selected root.
     StaleProductRoot {
+        /// View root pinned by the product grant.
         expected: [u8; 32],
+        /// View root selected when the owner executed the query.
         observed: [u8; 32],
     },
     /// Producer coverage changed while the owner executed one query.
     StaleProductSource {
+        /// Source-coverage identity pinned by the product grant.
         expected: [u8; 32],
+        /// Current source-coverage identity at query execution.
         observed: [u8; 32],
     },
     /// The exact acquired/discovered/local search snapshot authorized by the
     /// grant is no longer the current composite index snapshot.
     StaleProductSnapshot {
+        /// Composite snapshot identity pinned by the grant.
         expected: [u8; 32],
+        /// Current composite snapshot identity at query execution.
         observed: [u8; 32],
     },
     /// The semantic target now selects another exact generation/catalog root.

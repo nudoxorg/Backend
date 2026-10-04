@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AnnCursor, AnnPage, AnnSource, Binding, CandidateId, DocumentVector, EmbeddingEncoding,
-    EmbeddingRecipe, ProjectionBinding, ProjectionIdentity, Recipe, SchemaVersion, SearchQuality,
+    EmbeddingRecipe, ProjectionBinding, ProjectionIdentity, SchemaVersion, SearchQuality,
     VectorSearchRequest,
 };
 
@@ -1190,6 +1190,7 @@ impl BindingText {
 }
 
 impl PointPayload {
+    #[cfg(test)]
     fn for_candidate(binding: Binding, candidate: CandidateId, values: &[f32]) -> Self {
         let mut scratch = Vec::new();
         Self::for_bound(
@@ -1219,6 +1220,7 @@ impl PointPayload {
         }
     }
 
+    #[cfg(test)]
     fn for_residence(
         binding: Binding,
         residence: PointResidence,
@@ -1251,6 +1253,7 @@ impl PointPayload {
         self.matches_text(bound) && self.candidate() == Some(candidate)
     }
 
+    #[cfg(test)]
     fn physical_id(&self, binding: Binding, candidate: CandidateId) -> PhysicalPointId {
         let projection = ProjectionIdentity::from_binding(binding);
         self.physical_id_with(
@@ -1272,6 +1275,7 @@ impl PointPayload {
         }
     }
 
+    #[cfg(test)]
     fn matches_binding(&self, binding: Binding) -> bool {
         self.matches_text(&BindingText::from_binding(binding))
     }
@@ -1366,6 +1370,7 @@ impl PhysicalPointId {
         hasher
     }
 
+    #[cfg(test)]
     fn for_candidate(binding: Binding, candidate: CandidateId) -> Self {
         Self::from_candidate_prefix(&Self::candidate_prefix(binding), candidate)
     }
@@ -1383,6 +1388,7 @@ impl PhysicalPointId {
         hasher
     }
 
+    #[cfg(test)]
     fn for_residence(projection: ProjectionIdentity, residence: PointResidence) -> Self {
         Self::from_residence_prefix(&Self::residence_prefix(projection), residence.digest())
     }
@@ -1436,6 +1442,7 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
+#[cfg(test)]
 fn coordinate_key(values: &[f32]) -> String {
     let mut bytes = Vec::new();
     coordinate_key_with(values, &mut bytes)

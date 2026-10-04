@@ -20,7 +20,7 @@ pub const PROBE_ALPN: &[u8] = b"/backend/cluster-probe/1";
 /// Maximum ObjectIds carried in one challenge page.
 pub const MAX_PROBE_OBJECTS_PER_PAGE: usize = 4_096;
 /// Maximum members in one full-workspace closure inventory.
-pub const MAX_PROBE_OBJECTS: u32 = 2_000_001;
+const MAX_PROBE_OBJECTS: u32 = 2_000_001;
 /// Maximum pages exchanged over one bounded probe stream.
 pub const MAX_PROBE_PAGES: u32 = 512;
 /// Maximum encoded canonical package-target/unit descriptor.
@@ -373,7 +373,10 @@ pub enum ProbeCapabilityReject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProbeCapability {
     /// Configured portable capability profile accepts this exact work recipe.
-    Supported { capability_digest: [u8; 32] },
+    Supported {
+        /// Digest of the configured capability profile that accepted this recipe.
+        capability_digest: [u8; 32],
+    },
     /// This worker cannot execute the exact requested recipe.
     Rejected(ProbeCapabilityReject),
 }
@@ -978,8 +981,6 @@ async fn write_probe_frame<T: Serialize>(
     stream: &mut iroh::endpoint::SendStream,
     value: &T,
 ) -> Result<(), TransportError> {
-    use tokio::io::AsyncWriteExt;
-
     let bytes = postcard::to_allocvec(value).map_err(frame_error)?;
     if bytes.is_empty() || bytes.len() > MAX_PROBE_FRAME_BYTES {
         return Err(probe_error("probe frame exceeds its byte bound"));
@@ -999,8 +1000,6 @@ async fn write_probe_frame<T: Serialize>(
 async fn read_probe_frame<T: DeserializeOwned>(
     stream: &mut iroh::endpoint::RecvStream,
 ) -> Result<T, TransportError> {
-    use tokio::io::AsyncReadExt;
-
     let mut prefix = [0_u8; 4];
     stream
         .read_exact(&mut prefix)

@@ -2619,6 +2619,7 @@ struct TempInput {
 
 struct TempStagingDirectory {
     name: String,
+    #[cfg(test)]
     path: PathBuf,
     parent: backend_platform::DirectoryCapability,
     directory: backend_platform::DirectoryCapability,
@@ -2635,6 +2636,7 @@ impl TempStagingDirectory {
             match parent.create_private_dir(&name) {
                 Ok(directory) => {
                     return Ok(Self {
+                        #[cfg(test)]
                         path: base.join(&name),
                         name,
                         parent,
@@ -2660,6 +2662,7 @@ impl TempStagingDirectory {
             .map_err(|_| ProcessError::Io)
     }
 
+    #[cfg(test)]
     fn file_path(&self) -> PathBuf {
         self.path.join("stream.out")
     }
