@@ -58,5 +58,13 @@ let
 in
 {
   inherit (evaluated.config.build) configFile wrapper;
-  check = evaluated.config.build.check workspaceRoot;
+  # The check copies its source and runs `git init; git add .; git commit`.
+  # Under `nix flake check path:.` the source carries the checkout's own
+  # .git, so that commit finds nothing new, exits 1, and no formatter runs.
+  check = evaluated.config.build.check (
+    pkgs.lib.cleanSourceWith {
+      src = workspaceRoot;
+      filter = path: _type: baseNameOf path != ".git";
+    }
+  );
 }

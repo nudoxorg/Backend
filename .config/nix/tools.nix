@@ -31,6 +31,8 @@ let
     # All vendored path dependencies (gpui-ce, components, scheduler, …):
     # whitelisting the whole vendor tree keeps future vendored crates working.
     "vendor"
+    # Embedded by local-service's browse.rs (include_bytes!).
+    ".config/scripts/cargo-rustc-cache.sh"
   ];
   workspaceSource =
     if workspaceAvailable then
@@ -66,11 +68,15 @@ let
   # sccache shares immutable third-party library compilation results across
   # the four isolated lanes; callers wait or fail with status 75 when every
   # lane is occupied.
+  # writeShellScript appends its own final newline. local-service's browse.rs
+  # admits this wrapper only if its body ends exactly like the template, so
+  # drop the template's newline first or every Cargo read refuses the wrapper.
   dependencyRustcCache = pkgs.writeShellScript "nudox-dependency-rustc-cache" (
-    builtins.replaceStrings
-      [ "@sccache@" ]
-      [ "${pkgs.sccache}/bin/sccache" ]
-      (builtins.readFile ../scripts/cargo-rustc-cache.sh)
+    pkgs.lib.removeSuffix "\n" (
+      builtins.replaceStrings [ "@sccache@" ] [ "${pkgs.sccache}/bin/sccache" ] (
+        builtins.readFile ../scripts/cargo-rustc-cache.sh
+      )
+    )
   );
   parallelCargo = pkgs.writeShellApplication {
     name = "cargo";
