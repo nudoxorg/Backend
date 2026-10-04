@@ -221,6 +221,7 @@ struct FindQueryClaim {
     links: super::super::region::Links,
     input: Option<PageInputScope>,
     input_generation: Option<u64>,
+    native_input_at_paint: bool,
 }
 
 impl FindQueryClaim {
@@ -229,12 +230,20 @@ impl FindQueryClaim {
             let shell = shell.read(cx);
             (shell.page_input_scope(cx), shell.focus_return_generation())
         });
-        Self { visit: source.visit.clone(), links: source.links.clone(), input, input_generation }
+        let native_input_at_paint = source.visit.reader.upgrade().is_some_and(|reader| reader.read(cx).native_input_for(&source.visit.route, None));
+        Self { visit: source.visit.clone(), links: source.links.clone(), input, input_generation, native_input_at_paint }
     }
 
     fn same_initial_owner(&self, cx: &App) -> bool {
         let (Some(initial), Some(shell)) = (self.input.as_ref(), self.links.shell.upgrade()) else { return false; };
         self.visit.local(cx) && shell.read(cx).page_input_scope(cx).as_ref().is_some_and(|current| initial.same_attachment(current))
+    }
+
+    fn scene_changed(&self, cx: &App) -> bool {
+        self.links.snapshot(cx).key() != self.visit.root
+            || self.links.shell.upgrade().is_none_or(|shell| shell.read(cx).page_input_scope(cx).as_ref() != self.input.as_ref())
+            || self.visit.reader.upgrade().is_none_or(|reader|
+                reader.read(cx).native_input_for(&self.visit.route, None) != self.native_input_at_paint)
     }
 
     fn disposition(&self, query: &FocusHandle, intent: facet::browse::find::ClaimIntent, window: &Window, cx: &App) -> facet::browse::find::ClaimDisposition {
@@ -589,6 +598,7 @@ fn find_actions(
     let claim = FindQueryClaim::new(source, cx);
     let claim_input_generation = claim.input_generation;
     let claim_owner = claim.clone();
+    let claim_scene = claim.clone();
     let acquire = Some(crate::shell::acquire::add_actions(
         &ctx.links,
         cx.entity_id(),
@@ -617,6 +627,7 @@ fn find_actions(
         claim_focus: Rc::new(move |query, intent, window, cx| claim.disposition(query, intent, window, cx)),
         claim_input_generation,
         claim_owner: Rc::new(move |cx| claim_owner.same_initial_owner(cx)),
+        claim_scene_changed: Rc::new(move |cx| claim_scene.scene_changed(cx)),
         query_input: Rc::new(query_input),
         refine: Rc::new(move |text, cx| {
             if !refine_visit.local(cx) { return; }

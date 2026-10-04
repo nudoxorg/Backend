@@ -145,6 +145,9 @@ pub struct Actions {
     pub claim_input_generation: Option<u64>,
     /// The first paint's owner attachment must survive every fresh claim.
     pub claim_owner: Rc<dyn Fn(&App) -> bool>,
+    /// Whether the exact root, input scope, or native landing changed since
+    /// this paint. Waiting claims never retry on an unchanged frame.
+    pub claim_scene_changed: Rc<dyn Fn(&App) -> bool>,
     /// Classifies the first deferred focus claim against the fresh native
     /// visit, input scope and original focus intent.
     pub claim_focus: Rc<dyn Fn(&gpui::FocusHandle, ClaimIntent, &Window, &App) -> ClaimDisposition>,
@@ -234,12 +237,25 @@ struct State {
     all_packages: bool,
     all_answers: bool,
     source: bool,
-    initial_focus_pending: bool,
-    initial_focus_intent: Option<ClaimIntent>,
-    initial_claim_owner: Option<Rc<dyn Fn(&App) -> bool>>,
-    initial_focus_refresh_requested: bool,
+    first_focus: FirstFocus,
     pending: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone)]
+struct FrozenClaim {
+    intent: ClaimIntent,
+    owner: Rc<dyn Fn(&App) -> bool>,
+    scene_changed: Rc<dyn Fn(&App) -> bool>,
+    attempt: u64,
+    refresh_used: bool,
+}
+
+enum FirstFocus {
+    Fresh,
+    Queued(FrozenClaim),
+    Waiting(FrozenClaim),
+    Retired,
 }
 
 impl State {
@@ -311,7 +327,7 @@ impl State {
         let held = Held(actions.initial_held.clone());
         let reveal = KeyboardReveal::new(actions.scroll.clone());
         Self { active: true, read_admission: ReadAdmission::Current, input, route_query: query, refine, actions, keyboard: vec![], loaded_query: None, snapshot: None, submitted: None, generation: 0, selected: None, reveal, held,
-            all_packages: false, all_answers: false, source: false, initial_focus_pending: true, initial_focus_intent: None, initial_claim_owner: None, initial_focus_refresh_requested: false, pending: None, _subscriptions: vec![subscription] }
+            all_packages: false, all_answers: false, source: false, first_focus: FirstFocus::Fresh, pending: None, _subscriptions: vec![subscription] }
     }
     /// A release added to the library changes its address (the offer's
     /// package URL becomes the tree the owner indexed): the selection follows
@@ -355,7 +371,7 @@ impl State {
 /// the exact mounted query to its host, which uses that registration when Add
 /// covers the field immediately after arrival.
 enum QueryFocus {
-    Claim(gpui::WeakEntity<State>, ClaimIntent),
+    Claim(gpui::WeakEntity<State>, u64),
     Return,
 }
 
@@ -369,35 +385,48 @@ impl QueryFocus {
         cx: &mut App,
     ) {
         window.defer(cx, move |window, cx| {
-            if let Self::Claim(state, intent) = self {
+            if let Self::Claim(state, attempt) = self {
                 let Some(state) = state.upgrade() else { return; };
+                let frozen = {
+                    let state = state.read(cx);
+                    match &state.first_focus {
+                        FirstFocus::Queued(frozen) if state.active && frozen.attempt == attempt => frozen.clone(),
+                        _ => return,
+                    }
+                };
                 let input = state.read(cx).input.clone();
-                let original_owner = state.read(cx).initial_claim_owner.clone();
                 let disposition = if input.read(cx).focus_handle(cx) != query
-                    || original_owner.as_ref().is_none_or(|owner| !owner(cx)) {
+                    || !(frozen.owner)(cx) {
                     ClaimDisposition::Retired
                 } else {
-                    claim(&query, intent, window, cx)
+                    claim(&query, frozen.intent, window, cx)
                 };
                 match disposition {
-                    ClaimDisposition::Admitted if state.read(cx).active => {
-                        state.update(cx, |state, _| { state.initial_focus_intent = None; state.initial_claim_owner = None; });
-                        input.update(cx, |input, cx| input.focus(window, cx));
+                    ClaimDisposition::Admitted => {
+                        let admitted = state.update(cx, |state, _| {
+                            if !state.active || !matches!(&state.first_focus, FirstFocus::Queued(current) if current.attempt == attempt) { return false; }
+                            state.first_focus = FirstFocus::Retired;
+                            true
+                        });
+                        if admitted { input.update(cx, |input, cx| input.focus(window, cx)); }
                     }
                     ClaimDisposition::WaitForFreshFrame => {
                         let refresh = state.update(cx, |state, _| {
-                            state.initial_focus_pending = true;
-                            if state.initial_focus_refresh_requested { false } else {
-                                state.initial_focus_refresh_requested = true;
-                                true
-                            }
+                            if !state.active || !matches!(&state.first_focus, FirstFocus::Queued(current) if current.attempt == attempt) { return false; }
+                            let refresh = !frozen.refresh_used;
+                            state.first_focus = FirstFocus::Waiting(FrozenClaim { refresh_used: true, ..frozen });
+                            refresh
                         });
                         // One corrective paint is enough. A still-unpainted
                         // Reader waits for its own landing/producer event.
                         if refresh { window.refresh(); }
                     }
-                    ClaimDisposition::Admitted | ClaimDisposition::Retired => {
-                        state.update(cx, |state, _| { state.initial_focus_intent = None; state.initial_claim_owner = None; });
+                    ClaimDisposition::Retired => {
+                        state.update(cx, |state, _| {
+                            if matches!(&state.first_focus, FirstFocus::Queued(current) if current.attempt == attempt) {
+                                state.first_focus = FirstFocus::Retired;
+                            }
+                        });
                     }
                 }
             }
@@ -458,21 +487,53 @@ impl RenderOnce for Find {
         state.update(cx, |state, _| {
             state.read_admission = read_admission.clone();
             state.active = self.active;
-            if !self.active { state.pending = None; state.generation = state.generation.wrapping_add(1); }
+            if !self.active {
+                state.pending = None;
+                state.generation = state.generation.wrapping_add(1);
+                if !matches!(&state.first_focus, FirstFocus::Fresh) { state.first_focus = FirstFocus::Retired; }
+            }
         });
         if self.active { state.update(cx, |state, cx| {
             // A retained/departing Find may mount for pixels while another
             // route owns the keyboard. Active paints transfer only after the
             // frame, when native accessibility has finished reporting focus.
-            let transfer = if std::mem::take(&mut state.initial_focus_pending) {
-                let intent = *state.initial_focus_intent.get_or_insert(ClaimIntent {
-                    focus_epoch: window.focus_epoch(),
-                    input_generation: self.actions.claim_input_generation,
-                });
-                state.initial_claim_owner.get_or_insert_with(|| Rc::clone(&self.actions.claim_owner));
-                QueryFocus::Claim(cx.weak_entity(), intent)
-            } else {
-                QueryFocus::Return
+            let transfer = match &state.first_focus {
+                FirstFocus::Fresh => {
+                    let frozen = FrozenClaim {
+                        intent: ClaimIntent {
+                            focus_epoch: window.focus_epoch(),
+                            input_generation: self.actions.claim_input_generation,
+                        },
+                        owner: Rc::clone(&self.actions.claim_owner),
+                        scene_changed: Rc::clone(&self.actions.claim_scene_changed),
+                        attempt: 0,
+                        refresh_used: false,
+                    };
+                    state.first_focus = FirstFocus::Queued(frozen);
+                    QueryFocus::Claim(cx.weak_entity(), 0)
+                }
+                FirstFocus::Waiting(frozen) => {
+                    if window.focus_epoch() != frozen.intent.focus_epoch
+                        || self.actions.claim_input_generation != frozen.intent.input_generation
+                        || !(frozen.owner)(cx) {
+                        state.first_focus = FirstFocus::Retired;
+                        QueryFocus::Return
+                    } else if frozen.attempt > 0 && !(frozen.scene_changed)(cx) {
+                        QueryFocus::Return
+                    } else if let Some(attempt) = frozen.attempt.checked_add(1) {
+                        let next = FrozenClaim {
+                            attempt,
+                            scene_changed: Rc::clone(&self.actions.claim_scene_changed),
+                            ..frozen.clone()
+                        };
+                        state.first_focus = FirstFocus::Queued(next);
+                        QueryFocus::Claim(cx.weak_entity(), attempt)
+                    } else {
+                        state.first_focus = FirstFocus::Retired;
+                        QueryFocus::Return
+                    }
+                }
+                FirstFocus::Queued(_) | FirstFocus::Retired => QueryFocus::Return,
             };
             transfer.after_frame(
                 state.input.read(cx).focus_handle(cx),

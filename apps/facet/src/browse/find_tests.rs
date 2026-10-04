@@ -17,6 +17,7 @@ struct ClaimFixture {
     input: Rc<Cell<u64>>,
     owner: Rc<Cell<u64>>,
     replace_owner_after_wait: bool,
+    always_wait: bool,
     outcomes: Rc<RefCell<Vec<ClaimDisposition>>>,
 }
 
@@ -32,14 +33,19 @@ impl Render for MountedFind {
             let painted_input = fixture.input.get();
             let painted_owner = fixture.owner.get();
             let owner = Rc::clone(&fixture.owner);
+            let scene_root = Rc::clone(&fixture.root);
+            let scene_input = Rc::clone(&fixture.input);
+            let scene_owner = Rc::clone(&fixture.owner);
             actions.claim_input_generation = Some(painted_input);
             actions.claim_owner = Rc::new(move |_| owner.get() == painted_owner);
+            actions.claim_scene_changed = Rc::new(move |_| scene_root.get() != painted_root
+                || scene_input.get() != painted_input || scene_owner.get() != painted_owner);
             actions.claim_focus = Rc::new(move |_, intent, window, _| {
                 let disposition = if window.focus_epoch() != intent.focus_epoch
                     || intent.input_generation != Some(painted_input)
                     || fixture.input.get() != painted_input {
                     ClaimDisposition::Retired
-                } else if fixture.root.get() != painted_root {
+                } else if fixture.root.get() != painted_root || fixture.always_wait {
                     ClaimDisposition::WaitForFreshFrame
                 } else { ClaimDisposition::Admitted };
                 fixture.outcomes.borrow_mut().push(disposition);
@@ -66,7 +72,7 @@ fn first_find_claim_focuses_on_ordinary_mount(cx: &mut TestAppContext) {
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
         active: true,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
@@ -84,7 +90,7 @@ fn queued_claim_case(cx: &mut TestAppContext, interrupt_input: bool, replace_own
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait, always_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
         active: false,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
@@ -102,6 +108,8 @@ fn queued_claim_case(cx: &mut TestAppContext, interrupt_input: bool, replace_own
         host.update(cx, |host, cx| { host.active = true; cx.notify(); });
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
+        window.refresh();
+        window.draw(cx).clear(cx);
     });
     draw(cx);
     let state = host.read_with(cx, |host, _| host.state.clone());
@@ -114,7 +122,7 @@ fn queued_claim_case(cx: &mut TestAppContext, interrupt_input: bool, replace_own
     } else if replace_owner_after_wait {
         assert_eq!(fixture.outcomes.borrow().as_slice(), &[ClaimDisposition::WaitForFreshFrame]);
         assert!(!focused, "a replacement owner after Wait cannot inherit the first focus intent");
-        assert!(!state.read_with(cx, |state, _| state.initial_focus_pending));
+        assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Retired)));
     } else {
         assert_eq!(fixture.outcomes.borrow().as_slice(), &[ClaimDisposition::WaitForFreshFrame, ClaimDisposition::Admitted]);
         assert!(focused, "the same uninterrupted Find visit claims focus after its fresh paint");
@@ -134,6 +142,89 @@ fn queued_late_input_retires_first_find_claim(cx: &mut TestAppContext) {
 #[gpui::test]
 fn replaced_owner_after_wait_retires_first_find_claim(cx: &mut TestAppContext) {
     queued_claim_case(cx, false, true);
+}
+
+#[gpui::test]
+fn unchanged_wait_uses_one_refresh_and_never_queues_again(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let actions = actions(&reads, &opened);
+    let model = model("package", true);
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: true, outcomes: Rc::new(RefCell::new(vec![])) };
+    let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
+        active: true,
+        state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
+        scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
+    });
+    draw(cx); draw(cx);
+    let after_refresh = fixture.outcomes.borrow().len();
+    assert_eq!(after_refresh, 2, "the first Wait gets exactly one corrective frame");
+    draw(cx); draw(cx);
+    assert_eq!(fixture.outcomes.borrow().len(), after_refresh, "unchanged paints must not queue more claims");
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Waiting(_))));
+    assert!(!cx.update(|window, cx| state.read(cx).input.read(cx).focus_handle(cx).is_focused(window)));
+}
+
+#[gpui::test]
+fn waiting_find_departure_and_reentry_never_revive_first_claim(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let actions = actions(&reads, &opened);
+    let model = model("package", true);
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: true, outcomes: Rc::new(RefCell::new(vec![])) };
+    let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
+        active: true,
+        state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
+        scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
+    });
+    draw(cx);
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Waiting(_))));
+    let before_departure = fixture.outcomes.borrow().len();
+    host.update(cx, |host, cx| { host.active = false; cx.notify(); });
+    draw(cx);
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Retired)));
+    fixture.root.set(1);
+    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    draw(cx);
+    assert_eq!(fixture.outcomes.borrow().len(), before_departure, "reentry cannot reuse a queued Wait");
+    assert!(!cx.update(|window, cx| state.read(cx).input.read(cx).focus_handle(cx).is_focused(window)));
+}
+
+#[gpui::test]
+fn queued_find_claim_cannot_run_after_departure_or_reentry(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let actions = actions(&reads, &opened);
+    let model = model("package", true);
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
+    let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
+        active: false,
+        state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
+        scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
+    });
+    let departing = host.clone();
+    cx.update(|window, cx| {
+        window.defer(cx, move |window, cx| {
+            departing.update(cx, |host, cx| { host.active = false; cx.notify(); });
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Retired)));
+    assert!(fixture.outcomes.borrow().is_empty(), "the departed queued claim must not call the host");
+    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    draw(cx);
+    assert!(fixture.outcomes.borrow().is_empty(), "the retired claim must not run on reentry");
+    assert!(!cx.update(|window, cx| state.read(cx).input.read(cx).focus_handle(cx).is_focused(window)));
 }
 
 fn assert_package_visible(cx: &mut VisualTestContext, scroll: &ScrollHandle, name: &str) {
@@ -202,6 +293,7 @@ fn actions(reads: &Rc<RefCell<Vec<SharedString>>>, opened: &Rc<RefCell<Vec<Share
         return_focus: Rc::new(|_, _, _| crate::browse::library::ReturnDisposition::Invalid),
         claim_input_generation: Some(0),
         claim_owner: Rc::new(|_| true),
+        claim_scene_changed: Rc::new(|_| true),
         claim_focus: Rc::new(|_, _, _, _| ClaimDisposition::Admitted),
         query_input: Rc::new(|text| if text.trim().chars().any(char::is_control) {
             QueryInput::Invalid("fixture invalid query".into())
