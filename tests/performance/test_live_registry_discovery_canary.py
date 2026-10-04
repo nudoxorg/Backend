@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -51,6 +53,10 @@ class OsVResponseTests(unittest.TestCase):
             ([], "next"),
         )
         self.assertEqual(
+            CANARY.parse_osv_query_page({"next_page_token": ""}),
+            ([], None),
+        )
+        self.assertEqual(
             CANARY.parse_osv_query_page({"vulns": [{"id": "GHSA-1"}]}),
             ([{"id": "GHSA-1"}], None),
         )
@@ -65,7 +71,6 @@ class OsVResponseTests(unittest.TestCase):
             {"vulns": [{"id": "   "}]},
             {"next_page_token": None},
             {"next_page_token": 1},
-            {"next_page_token": ""},
         )
         for value in malformed:
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -183,6 +188,7 @@ class BoundedProcessTests(unittest.TestCase):
         stdout_limit: int = 1024,
         stderr_limit: int = 1024,
         timeout: float = 2.0,
+        drain_timeout: float | None = None,
     ) -> CANARY.BoundedProcess:
         return CANARY.BoundedProcess(
             [sys.executable, "-c", code],
@@ -192,6 +198,7 @@ class BoundedProcessTests(unittest.TestCase):
             max_stdout_bytes=stdout_limit,
             max_stderr_bytes=stderr_limit,
             timeout_seconds=timeout,
+            drain_timeout_seconds=drain_timeout,
         )
 
     def test_stdout_and_stderr_are_separately_capped_with_receipts(self) -> None:
@@ -261,6 +268,193 @@ class BoundedProcessTests(unittest.TestCase):
             self.assertIn("wall-time deadline", receipt["failure_reason"])
             self.assertEqual(Path(receipt["stdout_path"]).read_bytes(), b"partial\n")
             self.assertTrue(Path(receipt["receipt_path"]).is_file())
+
+    def test_detached_descendant_holding_pipes_returns_bounded_partial_failure(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nudox-bounded-process-detached-") as temporary:
+            root = Path(temporary)
+            marker = root / "detached-child-finished"
+            detached_child = (
+                "import pathlib,time; time.sleep(0.7); "
+                f"pathlib.Path({str(marker)!r}).write_text('survived')"
+            )
+            parent = (
+                "import subprocess,sys; "
+                f"subprocess.Popen([sys.executable,'-c',{detached_child!r}],start_new_session=True); "
+                "print('parent output', flush=True)"
+            )
+            process = self.make_process(
+                root, "detached", parent, timeout=2.0, drain_timeout=0.15
+            )
+            started = time.monotonic()
+            with self.assertRaises(CANARY.BoundedProcessError) as caught:
+                process.wait()
+            elapsed = time.monotonic() - started
+            receipt = caught.exception.receipt
+            self.assertLess(elapsed, 1.0)
+            self.assertIn("kept an output pipe open", receipt["failure_reason"])
+            self.assertEqual(Path(receipt["stdout_path"]).read_bytes(), b"parent output\n")
+            self.assertTrue(receipt["drain_threads_stopped"])
+            deadline = time.monotonic() + 2.0
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.exists(), "group cleanup killed a new-session descendant")
+
+
+class _LoopbackHttpHandler(socketserver.StreamRequestHandler):
+    def handle(self) -> None:
+        request_line = self.rfile.readline(8192)
+        pieces = request_line.split()
+        path = pieces[1].decode("ascii", errors="replace") if len(pieces) > 1 else "/"
+        for _ in range(100):
+            line = self.rfile.readline(8192)
+            if not line or line in (b"\r\n", b"\n"):
+                break
+        mode = self.server.mode  # type: ignore[attr-defined]
+        try:
+            if mode == "slow-headers":
+                self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+                self.wfile.flush()
+                time.sleep(0.20)
+                self.wfile.write(b"Content-Length: 2\r\n")
+                self.wfile.flush()
+                time.sleep(0.20)
+                self.wfile.write(b"\r\nok")
+                self.wfile.flush()
+            elif mode == "slow-body":
+                self.wfile.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n"
+                )
+                self.wfile.flush()
+                for _ in range(8):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.16)
+            elif mode == "redirect-chain":
+                self.server.paths.append(path)  # type: ignore[attr-defined]
+                if path != "/end":
+                    time.sleep(0.30 if path == "/start" else 0.90)
+                    next_path = "/middle" if path == "/start" else "/end"
+                    location = f"{self.server.base_url}{next_path}".encode()  # type: ignore[attr-defined]
+                    self.wfile.write(
+                        b"HTTP/1.1 302 Found\r\nLocation: " + location
+                        + b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    self.wfile.flush()
+                else:
+                    self.wfile.write(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                    )
+                    self.wfile.flush()
+            else:
+                payload = b'{"next_page_token":""}'
+                self.wfile.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: "
+                    + str(len(payload)).encode()
+                    + b"\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                    + payload
+                )
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+
+class _LoopbackHttpServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    block_on_close = False
+
+
+class HttpEvidenceDeadlineTests(unittest.TestCase):
+    def start_server(self, mode: str) -> tuple[_LoopbackHttpServer, threading.Thread, str]:
+        server = _LoopbackHttpServer(("127.0.0.1", 0), _LoopbackHttpHandler)
+        server.mode = mode  # type: ignore[attr-defined]
+        server.paths = []  # type: ignore[attr-defined]
+        server.base_url = f"http://127.0.0.1:{server.server_address[1]}"  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, server.base_url
+
+    def assert_bounded_timeout(self, mode: str, path: str = "/") -> None:
+        server, thread, base_url = self.start_server(mode)
+        try:
+            with tempfile.TemporaryDirectory(prefix="nudox-http-deadline-") as temporary:
+                root = Path(temporary)
+                evidence = CANARY.HttpEvidence(root, timeout_seconds=2.0, total_seconds=0.35)
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    evidence.request("adversarial", f"{base_url}{path}", maximum_bytes=128)
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 1.1)
+                self.assertEqual(len(evidence.rows), 1)
+                row = evidence.rows[0]
+                self.assertEqual(row["status"], "unavailable")
+                receipt_path = Path(str(row["transport_process_receipt_path"]))
+                self.assertTrue(receipt_path.is_file())
+                self.assertTrue(Path(str(row["transport_stdout_path"])).is_file())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1.0)
+
+    def test_whole_request_deadline_covers_slow_headers(self) -> None:
+        self.assert_bounded_timeout("slow-headers")
+
+    def test_whole_request_deadline_covers_slow_response_body_and_keeps_partial_bytes(self) -> None:
+        server, thread, base_url = self.start_server("slow-body")
+        try:
+            with tempfile.TemporaryDirectory(prefix="nudox-http-slow-body-") as temporary:
+                root = Path(temporary)
+                evidence = CANARY.HttpEvidence(root, timeout_seconds=2.0, total_seconds=0.35)
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    evidence.request("slow-body", base_url, maximum_bytes=128)
+                self.assertLess(time.monotonic() - started, 1.1)
+                row = evidence.rows[0]
+                self.assertGreater(row["partial_response_bytes"], 0)
+                partial = Path(str(row["partial_response_path"]))
+                self.assertTrue(partial.is_file())
+                self.assertEqual(
+                    CANARY.sha256_file(partial), row["partial_response_sha256"]
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1.0)
+
+    def test_whole_request_deadline_covers_multiple_individually_fast_redirects(self) -> None:
+        server, thread, base_url = self.start_server("redirect-chain")
+        try:
+            with tempfile.TemporaryDirectory(prefix="nudox-http-redirects-") as temporary:
+                root = Path(temporary)
+                evidence = CANARY.HttpEvidence(root, timeout_seconds=3.0, total_seconds=1.0)
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    evidence.request("redirects", f"{base_url}/start", maximum_bytes=128)
+                self.assertLess(time.monotonic() - started, 1.6)
+                self.assertIn("/start", server.paths)  # type: ignore[attr-defined]
+                self.assertIn("/middle", server.paths)  # type: ignore[attr-defined]
+                self.assertEqual(evidence.rows[0]["status"], "unavailable")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1.0)
+
+    def test_empty_osv_token_is_normalized_but_raw_http_body_is_retained(self) -> None:
+        server, thread, base_url = self.start_server("normal")
+        try:
+            with tempfile.TemporaryDirectory(prefix="nudox-http-osv-empty-token-") as temporary:
+                root = Path(temporary)
+                evidence = CANARY.HttpEvidence(root, timeout_seconds=1.0, total_seconds=2.0)
+                payload = evidence.request("osv-empty-token", base_url, maximum_bytes=128)
+                self.assertEqual(CANARY.parse_osv_query_page(json.loads(payload)), ([], None))
+                row = evidence.rows[0]
+                response_path = Path(str(row["response_path"]))
+                self.assertEqual(response_path.read_bytes(), b'{"next_page_token":""}')
+                self.assertEqual(CANARY.sha256_file(response_path), row["response_sha256"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1.0)
 
 
 if __name__ == "__main__":

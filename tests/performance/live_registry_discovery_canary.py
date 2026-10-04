@@ -13,6 +13,7 @@ the owner has advisory acquisition disabled and does not ingest those replies.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import http.client
@@ -21,11 +22,13 @@ import math
 import os
 import platform
 import re
+import selectors
 import shutil
 import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -67,8 +70,12 @@ MAX_B3_TIMEOUT_SECONDS = 10.0
 MAX_STDERR_BYTES = 4 * 1024 * 1024
 MAX_OWNER_LOG_BYTES = 64 * 1024 * 1024
 MAX_PROCESS_DRAIN_SECONDS = 3.0
+MAX_HTTP_WORKER_DRAIN_SECONDS = 0.25
 MAX_PROCESS_TIMEOUT_SECONDS = 3600.0
 PROCESS_READ_CHUNK_BYTES = 64 * 1024
+HTTP_FRAME_MAGIC = b"NUDOXHTTP1"
+MAX_HTTP_FRAME_HEADER_BYTES = 64 * 1024
+MAX_HTTP_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_PROCESS_CENSUS_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_CENSUS_ROWS = 32768
 BUILD_PROCESS_NAMES = (
@@ -172,6 +179,7 @@ class BoundedProcess:
         max_stdout_bytes: int,
         max_stderr_bytes: int,
         timeout_seconds: float,
+        drain_timeout_seconds: float | None = None,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         input_data: bytes | None = None,
@@ -180,20 +188,30 @@ class BoundedProcess:
             raise ValueError("bounded process timeout is outside its finite limit")
         if max_stdout_bytes < 0 or max_stderr_bytes < 0:
             raise ValueError("bounded process output limits must be non-negative")
+        if drain_timeout_seconds is None:
+            drain_timeout_seconds = MAX_PROCESS_DRAIN_SECONDS
+        if (
+            not math.isfinite(drain_timeout_seconds)
+            or not 0 < drain_timeout_seconds <= MAX_PROCESS_DRAIN_SECONDS
+        ):
+            raise ValueError("bounded process drain timeout is outside its finite limit")
         self.command = command
         self.stdout_path = stdout_path
         self.stderr_path = stderr_path
         self.receipt_path = receipt_path
         self.maxima = {"stdout": max_stdout_bytes, "stderr": max_stderr_bytes}
         self.timeout_seconds = timeout_seconds
+        self.drain_timeout_seconds = drain_timeout_seconds
         self.started_at_utc = utc_now()
         self.started_ns = time.perf_counter_ns()
+        process_deadline = time.monotonic() + timeout_seconds
         self.input_bytes = len(input_data) if input_data is not None else 0
         self.output_bytes = {"stdout": 0, "stderr": 0}
         self.stored_bytes = {"stdout": 0, "stderr": 0}
         self.failure_reason: str | None = None
         self._lock = threading.Lock()
         self._finalizing = False
+        self._stop_readers = threading.Event()
         self._finished = False
         self._receipt: dict[str, Any] | None = None
         for path in (stdout_path, stderr_path, receipt_path):
@@ -227,8 +245,7 @@ class BoundedProcess:
 
         self.pid = self.process.pid
         self._reader_threads = [
-            threading.Thread(target=self._drain, args=("stdout", self.process.stdout), daemon=True),
-            threading.Thread(target=self._drain, args=("stderr", self.process.stderr), daemon=True),
+            threading.Thread(target=self._drain_streams, daemon=True),
         ]
         for thread in self._reader_threads:
             thread.start()
@@ -238,7 +255,9 @@ class BoundedProcess:
                 target=self._write_input, args=(input_data,), daemon=True
             )
             self._writer_thread.start()
-        self._timer = threading.Timer(timeout_seconds, self._on_timeout)
+        self._timer = threading.Timer(
+            max(0.001, process_deadline - time.monotonic()), self._on_timeout
+        )
         self._timer.daemon = True
         self._timer.start()
 
@@ -272,14 +291,51 @@ class BoundedProcess:
     def _on_timeout(self) -> None:
         self._fail_and_kill(f"wall-time limit exceeded ({self.timeout_seconds:g}s)")
 
-    def _drain(self, name: str, pipe: Any) -> None:
-        path = self.stdout_path if name == "stdout" else self.stderr_path
+    def _drain_streams(self) -> None:
+        """Drain raw nonblocking descriptors; never block on BufferedReader.read()."""
+        streams = {
+            "stdout": (self.process.stdout, self.stdout_path),
+            "stderr": (self.process.stderr, self.stderr_path),
+        }
+        selector = selectors.DefaultSelector()
+        registered: dict[int, tuple[str, Any]] = {}
+        outputs: dict[str, Any] = {}
         try:
-            with path.open("ab", buffering=0) as output:
-                while True:
-                    block = pipe.read(PROCESS_READ_CHUNK_BYTES)
+            for name, (pipe, path) in streams.items():
+                if pipe is None:
+                    continue
+                descriptor = pipe.fileno()
+                os.set_blocking(descriptor, False)
+                selector.register(descriptor, selectors.EVENT_READ, name)
+                registered[descriptor] = (name, pipe)
+                outputs[name] = path.open("ab", buffering=0)
+            while registered and not self._stop_readers.is_set():
+                try:
+                    events = selector.select(timeout=0.05)
+                except OSError as error:
+                    self._fail_and_kill(f"failed selecting child output pipes: {error}")
+                    break
+                for key, _ in events:
+                    descriptor = key.fd
+                    name, pipe = registered[descriptor]
+                    try:
+                        block = os.read(descriptor, PROCESS_READ_CHUNK_BYTES)
+                    except BlockingIOError:
+                        continue
+                    except OSError as error:
+                        self._fail_and_kill(f"failed draining {name}: {error}")
+                        block = b""
                     if not block:
-                        break
+                        try:
+                            selector.unregister(descriptor)
+                        except (KeyError, OSError, ValueError):
+                            pass
+                        registered.pop(descriptor, None)
+                        try:
+                            pipe.close()
+                        except OSError:
+                            pass
+                        continue
                     with self._lock:
                         if self._finalizing:
                             continue
@@ -287,18 +343,31 @@ class BoundedProcess:
                         remaining = max(0, self.maxima[name] - self.stored_bytes[name])
                         kept = block[:remaining]
                         if kept:
-                            output.write(kept)
+                            outputs[name].write(kept)
                             self.stored_bytes[name] += len(kept)
                         exceeded = self.output_bytes[name] > self.maxima[name]
                     if exceeded:
-                        self._fail_and_kill(f"{name} byte limit exceeded ({self.maxima[name]} bytes)")
+                        self._fail_and_kill(
+                            f"{name} byte limit exceeded ({self.maxima[name]} bytes)"
+                        )
         except (OSError, ValueError) as error:
-            self._fail_and_kill(f"failed draining {name}: {error}")
+            self._fail_and_kill(f"failed initializing child output drain: {error}")
         finally:
-            try:
-                pipe.close()
-            except OSError:
-                pass
+            for descriptor, (name, pipe) in list(registered.items()):
+                try:
+                    selector.unregister(descriptor)
+                except (KeyError, OSError, ValueError):
+                    pass
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+            selector.close()
+            for output in outputs.values():
+                try:
+                    output.close()
+                except OSError:
+                    pass
 
     def _write_input(self, input_data: bytes) -> None:
         assert self.process.stdin is not None
@@ -325,7 +394,15 @@ class BoundedProcess:
                     f"{self.failure_reason}; receipt: {self.receipt_path}", self._receipt
                 )
             return self._receipt
-        wait_limit = timeout if timeout is not None else self.timeout_seconds + MAX_PROCESS_DRAIN_SECONDS
+        if timeout is not None and (
+            not math.isfinite(timeout) or timeout <= 0 or timeout > MAX_PROCESS_TIMEOUT_SECONDS
+        ):
+            raise ValueError("bounded process wait timeout is outside its finite limit")
+        wait_limit = (
+            timeout
+            if timeout is not None
+            else self.timeout_seconds + self.drain_timeout_seconds
+        )
         try:
             self.process.wait(timeout=wait_limit)
         except subprocess.TimeoutExpired:
@@ -333,36 +410,33 @@ class BoundedProcess:
                 raise
             self._fail_and_kill("owned process did not exit by its wall-time deadline")
             try:
-                self.process.wait(timeout=MAX_PROCESS_DRAIN_SECONDS)
+                self.process.wait(timeout=self.drain_timeout_seconds)
             except subprocess.TimeoutExpired:
                 with self._lock:
                     if self.failure_reason is None:
                         self.failure_reason = "owned process remained alive after group kill"
+        self._timer.cancel()
+        drain_deadline = time.monotonic() + self.drain_timeout_seconds
         for thread in self._reader_threads:
-            thread.join(MAX_PROCESS_DRAIN_SECONDS)
-        if self._writer_thread is not None:
-            self._writer_thread.join(MAX_PROCESS_DRAIN_SECONDS)
+            thread.join(max(0.0, drain_deadline - time.monotonic()))
         if any(thread.is_alive() for thread in self._reader_threads):
-            self._fail_and_kill("owned child kept an output pipe open after its parent exited")
+            self._fail_and_kill("child or descendant kept an output pipe open after its parent exited")
+            with self._lock:
+                self._finalizing = True
+            self._stop_readers.set()
+            cleanup_deadline = time.monotonic() + 0.15
             for thread in self._reader_threads:
-                thread.join(MAX_PROCESS_DRAIN_SECONDS)
+                thread.join(max(0.0, cleanup_deadline - time.monotonic()))
         drain_threads_incomplete = any(thread.is_alive() for thread in self._reader_threads)
         if drain_threads_incomplete:
             with self._lock:
                 self._finalizing = True
                 if self.failure_reason is None:
                     self.failure_reason = "output drain did not close before the evidence deadline"
-            for pipe in (self.process.stdout, self.process.stderr):
-                try:
-                    pipe.close()
-                except (AttributeError, OSError):
-                    pass
-            for thread in self._reader_threads:
-                thread.join(0.1)
+            self._stop_readers.set()
         if self._writer_thread is not None and self._writer_thread.is_alive():
             self._fail_and_kill("owned child did not close stdin before the drain deadline")
-            self._writer_thread.join(MAX_PROCESS_DRAIN_SECONDS)
-        self._timer.cancel()
+            self._writer_thread.join(0.1)
         with self._lock:
             receipt = {
                 "argv": self.command,
@@ -406,6 +480,7 @@ def run_bounded_process(
     max_stdout_bytes: int,
     max_stderr_bytes: int,
     timeout_seconds: float,
+    drain_timeout_seconds: float | None = None,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     input_data: bytes | None = None,
@@ -419,6 +494,7 @@ def run_bounded_process(
         max_stdout_bytes=max_stdout_bytes,
         max_stderr_bytes=max_stderr_bytes,
         timeout_seconds=timeout_seconds,
+        drain_timeout_seconds=drain_timeout_seconds,
         cwd=cwd,
         env=env,
         input_data=input_data,
@@ -511,9 +587,12 @@ def parse_osv_query_page(value: Any) -> tuple[list[dict[str, Any]], str | None]:
     else:
         vulnerabilities = []
     token = value.get("next_page_token")
-    if "next_page_token" in value and (not isinstance(token, str) or not token):
-        raise ValueError("OSV next_page_token must be a non-empty string when present")
-    return vulnerabilities, token
+    if "next_page_token" in value and not isinstance(token, str):
+        raise ValueError("OSV next_page_token must be a string when present")
+    # OSV's published v1 schema leaves this optional string unconstrained by
+    # minLength. Treat its exact empty sentinel as exhausted pagination while
+    # keeping the original response bytes in the independent source evidence.
+    return vulnerabilities, token or None
 
 
 def discovery_journal_content_signature(summary: dict[str, Any]) -> dict[str, Any]:
@@ -608,8 +687,172 @@ def b3sum(
     return digest
 
 
+def is_loopback_http_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def validate_source_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" and not is_loopback_http_url(url):
+        raise ValueError("direct source URL must use HTTPS (HTTP is allowed only for loopback tests)")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("direct source URL must not embed credentials")
+
+
+class SourceRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        file: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        original_is_https = urllib.parse.urlsplit(request.full_url).scheme == "https"
+        if original_is_https:
+            if urllib.parse.urlsplit(newurl).scheme != "https":
+                raise ValueError("source redirect attempted to leave HTTPS")
+        elif not (is_loopback_http_url(request.full_url) and is_loopback_http_url(newurl)):
+            raise ValueError("loopback test redirect attempted to leave loopback HTTP")
+        return super().redirect_request(request, file, code, message, headers, newurl)
+
+
+def source_http_environment() -> dict[str, str]:
+    allowed = {
+        "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TZ",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH",
+    }
+    return {key: value for key, value in os.environ.items() if key in allowed}
+
+
+def http_worker_main() -> int:
+    """Perform one source exchange in a cancellable process with framed evidence."""
+    try:
+        raw_config = sys.stdin.buffer.read(MAX_HTTP_REQUEST_BYTES * 2)
+        if len(raw_config) >= MAX_HTTP_REQUEST_BYTES * 2:
+            raise ValueError("HTTP worker request configuration exceeded its byte bound")
+        config = json.loads(raw_config)
+        if not isinstance(config, dict):
+            raise ValueError("HTTP worker request configuration must be an object")
+        url = config.get("url")
+        method = config.get("method")
+        headers = config.get("headers")
+        body_encoded = config.get("body_base64")
+        maximum_bytes = config.get("maximum_bytes")
+        timeout_seconds = config.get("timeout_seconds")
+        if not isinstance(url, str) or not isinstance(method, str) or not isinstance(headers, dict):
+            raise ValueError("HTTP worker request fields have invalid types")
+        validate_source_url(url)
+        if type(maximum_bytes) is not int or not 1 <= maximum_bytes <= MAX_TOTAL_SOURCE_BYTES:
+            raise ValueError("HTTP worker response byte bound is invalid")
+        if (
+            type(timeout_seconds) not in (int, float)
+            or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= MAX_SOURCE_TIMEOUT_SECONDS
+        ):
+            raise ValueError("HTTP worker inactivity timeout is invalid")
+        if any(not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()):
+            raise ValueError("HTTP worker headers must be string pairs")
+        body = None
+        if body_encoded is not None:
+            if not isinstance(body_encoded, str):
+                raise ValueError("HTTP worker body must be base64 text")
+            body = base64.b64decode(body_encoded, validate=True)
+            if len(body) > MAX_HTTP_REQUEST_BYTES:
+                raise ValueError("HTTP worker body exceeded its byte bound")
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        handlers: list[Any] = [SourceRedirectHandler()]
+        if is_loopback_http_url(url):
+            handlers.insert(0, urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(*handlers)
+        with opener.open(request, timeout=float(timeout_seconds)) as response:
+            selected_headers = {
+                key.lower(): response.headers.get(key)
+                for key in (
+                    "content-type", "content-encoding", "date", "etag",
+                    "last-modified", "x-pypi-last-serial",
+                )
+                if response.headers.get(key) is not None
+            }
+            metadata = {
+                "final_url": response.geturl(),
+                "status": int(response.status),
+                "response_headers": selected_headers,
+            }
+            frame_header = json.dumps(
+                metadata, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+            if len(frame_header) > MAX_HTTP_FRAME_HEADER_BYTES:
+                raise ValueError("HTTP response metadata frame exceeded its byte bound")
+            output = sys.stdout.buffer
+            output.write(HTTP_FRAME_MAGIC + len(frame_header).to_bytes(4, "big") + frame_header)
+            output.flush()
+            body_bytes = 0
+            body_limit = maximum_bytes + 1
+            while body_bytes < body_limit:
+                block = response.read1(min(PROCESS_READ_CHUNK_BYTES, body_limit - body_bytes))
+                if not block:
+                    break
+                output.write(block)
+                output.flush()
+                body_bytes += len(block)
+        return 0
+    except BaseException as error:
+        message = {
+            "error_type": type(error).__name__,
+            "error": str(error)[:2048],
+        }
+        try:
+            sys.stderr.buffer.write(
+                (json.dumps(message, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            )
+            sys.stderr.buffer.flush()
+        except OSError:
+            pass
+        return 2
+
+
+def parse_http_worker_output(raw: bytes) -> tuple[dict[str, Any] | None, bytes]:
+    prefix_bytes = len(HTTP_FRAME_MAGIC) + 4
+    if len(raw) < prefix_bytes or not raw.startswith(HTTP_FRAME_MAGIC):
+        return None, b""
+    header_length = int.from_bytes(raw[len(HTTP_FRAME_MAGIC) : prefix_bytes], "big")
+    if header_length > MAX_HTTP_FRAME_HEADER_BYTES or len(raw) < prefix_bytes + header_length:
+        return None, b""
+    try:
+        metadata = json.loads(raw[prefix_bytes : prefix_bytes + header_length])
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, b""
+    if not isinstance(metadata, dict):
+        return None, b""
+    return metadata, raw[prefix_bytes + header_length :]
+
+
 class HttpEvidence:
     def __init__(self, root: Path, timeout_seconds: float, total_seconds: float) -> None:
+        if (
+            not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= MAX_SOURCE_TIMEOUT_SECONDS
+        ):
+            raise ValueError("source HTTP inactivity timeout is outside its finite limit")
+        if (
+            not math.isfinite(total_seconds)
+            or not 0 < total_seconds <= MAX_SOURCE_BUDGET_SECONDS
+        ):
+            raise ValueError("source HTTP total budget is outside its finite limit")
         self.root = root
         self.timeout_seconds = timeout_seconds
         self.deadline = time.monotonic() + total_seconds
@@ -635,6 +878,7 @@ class HttpEvidence:
             raise ValueError(f"direct source evidence exceeded {MAX_SOURCE_REQUESTS} requests")
         if type(maximum_bytes) is not int or not 1 <= maximum_bytes <= MAX_TOTAL_SOURCE_BYTES:
             raise ValueError("HTTP response byte bound must be a positive admitted integer")
+        validate_source_url(url)
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("direct public-source evidence exceeded its total time budget")
@@ -645,7 +889,6 @@ class HttpEvidence:
         if body is not None:
             headers["Content-Type"] = "application/json"
         headers.update(extra_headers or {})
-        request = urllib.request.Request(url, data=body, headers=headers, method=method)
         started = utc_now()
         began_ns = time.perf_counter_ns()
         self.request_count += 1
@@ -654,64 +897,194 @@ class HttpEvidence:
             request_body_file = self.root / f"{name}.request"
             write_new(request_body_file, body)
             request_body_path = str(request_body_file)
+        response_path = self.root / f"{name}.response"
+        partial_path = self.root / f"{name}.partial-response"
+        worker_stdout_path = self.root / f"{name}.transport.stdout"
+        worker_stderr_path = self.root / f"{name}.transport.stderr"
+        worker_receipt_path = self.root / f"{name}.transport.process.json"
+        request_config = {
+            "url": url,
+            "method": method,
+            "headers": headers,
+            "body_base64": base64.b64encode(body).decode("ascii") if body is not None else None,
+            "maximum_bytes": maximum_bytes,
+            "timeout_seconds": min(self.timeout_seconds, remaining),
+        }
+        request_config_bytes = json.dumps(
+            request_config, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        if len(request_config_bytes) > MAX_HTTP_REQUEST_BYTES * 2:
+            raise ValueError("HTTP request configuration exceeded its byte bound")
+        worker = None
+        receipt: dict[str, Any] | None = None
+        failure: Exception | None = None
+        process_deadline_seconds = min(self.timeout_seconds, remaining)
         try:
-            with urllib.request.urlopen(request, timeout=min(self.timeout_seconds, remaining)) as response:
-                final_url = response.geturl()
-                status = int(response.status)
-                payload_parts = []
-                payload_length = 0
-                while payload_length <= maximum_bytes:
-                    remaining = self.deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError("direct public-source evidence exceeded its total time budget")
-                    stream = getattr(response, "fp", None)
-                    raw = getattr(stream, "raw", None)
-                    sock = getattr(raw, "_sock", None)
-                    if sock is not None:
-                        sock.settimeout(min(self.timeout_seconds, remaining))
-                    read_chunk = getattr(response, "read1", response.read)
-                    block = read_chunk(min(PROCESS_READ_CHUNK_BYTES, maximum_bytes + 1 - payload_length))
-                    if not block:
-                        break
-                    payload_parts.append(block)
-                    payload_length += len(block)
-                if time.monotonic() > self.deadline:
-                    raise TimeoutError("direct public-source evidence exceeded its total time budget")
-                payload = b"".join(payload_parts)
-                selected_headers = {
-                    key.lower(): response.headers.get(key)
-                    for key in (
-                        "content-type", "content-encoding", "date", "etag",
-                        "last-modified", "x-pypi-last-serial",
-                    )
-                    if response.headers.get(key) is not None
-                }
-        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as error:
+            worker = BoundedProcess(
+                [sys.executable, str(Path(__file__).resolve()), "--_http-worker"],
+                stdout_path=worker_stdout_path,
+                stderr_path=worker_stderr_path,
+                receipt_path=worker_receipt_path,
+                max_stdout_bytes=(
+                    maximum_bytes + len(HTTP_FRAME_MAGIC) + 4 + MAX_HTTP_FRAME_HEADER_BYTES + 1
+                ),
+                max_stderr_bytes=16 * 1024,
+                timeout_seconds=process_deadline_seconds,
+                drain_timeout_seconds=MAX_HTTP_WORKER_DRAIN_SECONDS,
+                env=source_http_environment(),
+                input_data=request_config_bytes,
+            )
+            receipt = worker.wait()
+            if receipt["exit_code"] != 0:
+                failure = RuntimeError(
+                    f"HTTP worker exited {receipt['exit_code']}; receipt: {worker_receipt_path}"
+                )
+        except BoundedProcessError as error:
+            receipt = error.receipt
+            failure = error
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            failure = error
+        raw_worker_stdout = b""
+        if worker_stdout_path.is_file():
+            raw_worker_stdout = read_regular_file(
+                worker_stdout_path,
+                maximum_bytes + len(HTTP_FRAME_MAGIC) + 4 + MAX_HTTP_FRAME_HEADER_BYTES + 1,
+                "bounded HTTP worker stdout",
+            )
+        metadata, partial_payload = parse_http_worker_output(raw_worker_stdout)
+        raw_worker_stderr = b""
+        if worker_stderr_path.is_file():
+            raw_worker_stderr = read_regular_file(
+                worker_stderr_path, 16 * 1024, "bounded HTTP worker stderr"
+            )
+        if failure is not None or metadata is None:
+            if metadata is not None and partial_payload:
+                write_new(partial_path, partial_payload)
+            timed_out = (
+                isinstance(failure, BoundedProcessError)
+                and "wall-time limit" in str(failure)
+            ) or self.deadline - time.monotonic() <= 0.05
+            error_message = str(failure) if failure is not None else "HTTP worker returned an incomplete response frame"
+            row = {
+                "name": name,
+                "url": url,
+                "method": method,
+                "started_at_utc": started,
+                "elapsed_ns": time.perf_counter_ns() - began_ns,
+                "status": "unavailable",
+                "error": error_message,
+                "request_body_sha256": sha256_bytes(body) if body is not None else None,
+                "request_body_path": request_body_path,
+                "transport_stdout_path": str(worker_stdout_path),
+                "transport_stdout_bytes": len(raw_worker_stdout),
+                "transport_stdout_sha256": sha256_bytes(raw_worker_stdout),
+                "transport_stderr_path": str(worker_stderr_path),
+                "transport_stderr_bytes": len(raw_worker_stderr),
+                "transport_stderr_sha256": sha256_bytes(raw_worker_stderr),
+                "transport_process_receipt_path": str(worker_receipt_path),
+                "transport_process_receipt": receipt,
+                "partial_response_path": str(partial_path) if metadata is not None and partial_payload else None,
+                "partial_response_bytes": len(partial_payload) if metadata is not None else None,
+                "partial_response_sha256": sha256_bytes(partial_payload) if metadata is not None else None,
+                "partial_response_headers": metadata.get("response_headers") if metadata else None,
+            }
+            self.rows.append(row)
+            if timed_out:
+                raise TimeoutError(
+                    f"direct source request exceeded its whole-request deadline ({process_deadline_seconds:g}s); "
+                    f"partial evidence: {worker_receipt_path}"
+                ) from failure
+            raise RuntimeError(f"direct source request failed; partial evidence: {worker_receipt_path}: {error_message}") from failure
+
+        final_url = metadata.get("final_url")
+        status = metadata.get("status")
+        selected_headers = metadata.get("response_headers")
+        if (
+            not isinstance(final_url, str)
+            or type(status) is not int
+            or not isinstance(selected_headers, dict)
+        ):
+            write_new(partial_path, partial_payload)
             self.rows.append(
                 {
                     "name": name,
                     "url": url,
-                    "method": method,
                     "started_at_utc": started,
-                    "elapsed_ns": time.perf_counter_ns() - began_ns,
                     "status": "unavailable",
-                    "error": str(error),
-                    "request_body_sha256": sha256_bytes(body) if body is not None else None,
-                    "request_body_path": request_body_path,
+                    "error": "HTTP worker response metadata has invalid types",
+                    "transport_stdout_path": str(worker_stdout_path),
+                    "transport_process_receipt_path": str(worker_receipt_path),
+                    "partial_response_path": str(partial_path),
+                    "partial_response_bytes": len(partial_payload),
+                    "partial_response_sha256": sha256_bytes(partial_payload),
                 }
             )
-            raise
-        if not final_url.startswith("https://"):
-            raise ValueError(f"public metadata request redirected outside HTTPS: {final_url}")
-        if status < 200 or status >= 300:
-            raise RuntimeError(f"public source returned HTTP {status}: {url}")
-        if len(payload) > maximum_bytes:
+            raise RuntimeError(f"HTTP worker returned invalid response metadata; evidence: {worker_receipt_path}")
+        source_was_https = urllib.parse.urlsplit(url).scheme == "https"
+        final_url_valid = (
+            final_url.startswith("https://") if source_was_https else is_loopback_http_url(final_url)
+        )
+        if not final_url_valid:
+            if partial_payload:
+                write_new(partial_path, partial_payload)
+            self.rows.append(
+                {
+                    "name": name,
+                    "url": url,
+                    "final_url": final_url,
+                    "method": method,
+                    "started_at_utc": started,
+                    "status": "unavailable",
+                    "error": "public metadata request redirected outside its source URL policy",
+                    "transport_stdout_path": str(worker_stdout_path),
+                    "transport_process_receipt_path": str(worker_receipt_path),
+                    "partial_response_path": str(partial_path) if partial_payload else None,
+                    "partial_response_bytes": len(partial_payload),
+                    "partial_response_sha256": sha256_bytes(partial_payload),
+                }
+            )
+            raise ValueError(f"public metadata request redirected outside its source policy: {final_url}")
+        if len(partial_payload) > maximum_bytes:
+            write_new(partial_path, partial_payload)
+            self.rows.append(
+                {
+                    "name": name,
+                    "url": url,
+                    "final_url": final_url,
+                    "method": method,
+                    "started_at_utc": started,
+                    "status": "unavailable",
+                    "error": f"response exceeded its {maximum_bytes}-byte bound",
+                    "transport_stdout_path": str(worker_stdout_path),
+                    "transport_process_receipt_path": str(worker_receipt_path),
+                    "partial_response_path": str(partial_path),
+                    "partial_response_bytes": len(partial_payload),
+                    "partial_response_sha256": sha256_bytes(partial_payload),
+                }
+            )
             raise ValueError(f"{name} exceeded its {maximum_bytes}-byte response bound")
-        if self.total_bytes + len(payload) > MAX_TOTAL_SOURCE_BYTES:
+        if self.total_bytes + len(partial_payload) > MAX_TOTAL_SOURCE_BYTES:
+            write_new(partial_path, partial_payload)
+            self.rows.append(
+                {
+                    "name": name,
+                    "url": url,
+                    "final_url": final_url,
+                    "method": method,
+                    "started_at_utc": started,
+                    "status": "unavailable",
+                    "error": f"direct source evidence exceeded {MAX_TOTAL_SOURCE_BYTES} response bytes",
+                    "transport_stdout_path": str(worker_stdout_path),
+                    "transport_process_receipt_path": str(worker_receipt_path),
+                    "partial_response_path": str(partial_path),
+                    "partial_response_bytes": len(partial_payload),
+                    "partial_response_sha256": sha256_bytes(partial_payload),
+                }
+            )
             raise ValueError(f"direct source evidence exceeded {MAX_TOTAL_SOURCE_BYTES} response bytes")
+        payload = partial_payload
         self.total_bytes += len(payload)
-        path = self.root / f"{name}.response"
-        write_new(path, payload)
+        write_new(response_path, payload)
         self.rows.append(
             {
                 "name": name,
@@ -726,11 +1099,17 @@ class HttpEvidence:
                 "request_body_sha256": sha256_bytes(body) if body is not None else None,
                 "request_body_path": request_body_path,
                 "response_headers": selected_headers,
-                "response_path": str(path),
+                "response_path": str(response_path),
                 "response_bytes": len(payload),
                 "response_sha256": sha256_bytes(payload),
+                "transport_stdout_path": str(worker_stdout_path),
+                "transport_stderr_path": str(worker_stderr_path),
+                "transport_process_receipt_path": str(worker_receipt_path),
+                "transport_process_receipt": receipt,
             }
         )
+        if status < 200 or status >= 300:
+            raise RuntimeError(f"public source returned HTTP {status}: {url}")
         return payload
 
     def persist(self) -> None:
@@ -914,7 +1293,7 @@ def npm_input(http: HttpEvidence, b3_tool: Path, max_pages: int) -> dict[str, An
             raise ValueError("npm changes response contained a malformed package row")
         latest[row["id"]] = row
     packages: dict[str, Any] = {}
-    packument_rows: list[tuple[int, str, dict[str, Any], dict[str, Any], list[str]]] = []
+    packument_rows: list[tuple[int, str, dict[str, Any], list[str]]] = []
     owner_fact_count = 0
     for ordinal, (name, change) in enumerate(sorted(latest.items())):
         if change.get("deleted") is True:
@@ -1851,36 +2230,31 @@ def process_rss_bytes(pid: int) -> int | None:
     )
     for command in commands:
         process: subprocess.Popen[bytes] | None = None
-        timer: threading.Timer | None = None
+        capture = tempfile.TemporaryFile(mode="w+b")
         try:
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
+                stdout=capture,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            timer = threading.Timer(1.0, kill_process_if_running, args=(process,))
-            timer.daemon = True
-            timer.start()
-            assert process.stdout is not None
-            raw = process.stdout.read(65)
-            if len(raw) > 64:
-                kill_process_group_if_present(process.pid)
             status = process.wait(timeout=1.0)
+            if capture.tell() > 64:
+                kill_process_group_if_present(process.pid)
+                continue
+            capture.seek(0)
+            raw = capture.read(65)
         except (OSError, subprocess.TimeoutExpired, ProcessLookupError):
             if process is not None and process.poll() is None:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=1.0)
+                    process.wait(timeout=0.25)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             continue
         finally:
-            if timer is not None:
-                timer.cancel()
-            if process is not None and process.stdout is not None:
-                process.stdout.close()
+            capture.close()
         if status == 0 and len(raw) <= 64 and raw.strip():
             try:
                 return int(raw.decode("ascii").strip().splitlines()[-1]) * 1024
@@ -1894,11 +2268,6 @@ def kill_process_group_if_present(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
     except (AttributeError, ProcessLookupError, PermissionError):
         pass
-
-
-def kill_process_if_running(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
-        kill_process_group_if_present(process.pid)
 
 
 class RssSampler:
@@ -3446,4 +3815,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--_http-worker"]:
+        raise SystemExit(http_worker_main())
     raise SystemExit(main())

@@ -103,8 +103,13 @@ commit must equal the clean worktree commit and its locald/CLI path, size, and
 SHA-256 must match the executed files before and after each owner.
 
 Owner, CLI, Turso, BLAKE3, Git provenance, and full process-census subprocesses
-run in their own process groups with wall-time bounds. CLI output is capped at
-64 MiB stdout plus 4 MiB stderr; owner output is capped at 32 MiB per stream;
+run in their own process groups with wall-time bounds. Direct HTTPS evidence
+runs in a cancellable child process so one absolute deadline covers name
+resolution, connection setup, redirects, response headers, and body reads.
+Each exchange retains bounded raw transport stdout/stderr and its process
+receipt, including partial body bytes when response headers arrived. CLI output
+is capped at 64 MiB stdout plus 4 MiB stderr; owner output is capped at 32 MiB
+per stream;
 Turso dumps, BLAKE3 hashing, Git checks, and process census output each have
 separate byte limits. Partial stdout/stderr and a receipt with exit status,
 elapsed time, observed/stored bytes, hashes, and failure reason are retained on
@@ -213,6 +218,6 @@ allocated scale run.
 - [npm replication API](https://github.com/npm/registry/blob/main/docs/REPLICATE-API.md) and [public registry API](https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md): bounded change feed and current package metadata endpoints.
 - [PyPI Index API](https://docs.pypi.org/api/index-api/) and [PyPI JSON API](https://docs.pypi.org/api/json/): release file/yanked metadata; the deprecated project `downloads` key is always `-1`, and the project vulnerabilities list describes the latest release.
 - [OSV query API](https://github.com/google/osv.dev/blob/master/docs/api/post-v1-query.md): independent point query by package/version with explicit page-token closure; it does not establish local feed coverage or freshness.
-- [OSV query response schema](https://osv.dev/docs/osv_service_v1.swagger.json): successful `v1VulnerabilityList` responses define both `vulns` and `next_page_token` as optional fields, so `{}` and a token-only page are valid empty-page shapes; malformed present fields are rejected.
+- [OSV query response schema](https://osv.dev/docs/osv_service_v1.swagger.json) and [query pagination guide](https://github.com/google/osv.dev/blob/master/docs/api/post-v1-query.md): successful `v1VulnerabilityList` responses define both `vulns` and `next_page_token` as optional fields, so `{}` and token-only pages are valid. The canary treats an explicit empty token as exhausted pagination, rejects present null/non-string tokens, and retains the exact response body for review.
 - [GitHub REST Git References](https://docs.github.com/en/rest/git/refs) and [Git tags](https://docs.github.com/en/rest/git/tags): resolve a tag reference and peel annotated tags to their commit object.
 - [SQLite `VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html#vacuum_with_an_into_clause): produces a consistent logical database snapshot. The canary adds stopped-owner checks across all databases, journals, and workspace files because `VACUUM INTO` covers only one database at a time.
