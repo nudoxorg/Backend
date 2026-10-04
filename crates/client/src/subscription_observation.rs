@@ -543,12 +543,10 @@ impl LocalSubscriptionTransport {
             },
             PublicationOperation::Renew,
         )?;
-        match response {
+        let lease_ms = match response {
             LocalSubscriptionResponse::Renewed {
                 cursor, lease_ms, ..
-            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => {
-                granted_term(lease_ms)?;
-            }
+            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => lease_ms,
             _ => {
                 return Err(PublicationExchangeError::Invalid(protocol(
                     "publication renewal did not fence the admitted cursor",
@@ -556,6 +554,7 @@ impl LocalSubscriptionTransport {
             }
         }
         observer.check()?;
+        granted_term(lease_ms)?;
         state.held_on = self.connection();
         Ok(())
     }
