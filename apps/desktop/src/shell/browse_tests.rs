@@ -640,6 +640,41 @@ fn same_visit_root_rebases_wait_for_fresh_find_claim_without_renewing_input_inte
 }
 
 #[gpui::test]
+fn find_visit_survives_real_reader_native_pause_and_producer_repaint(cx: &mut TestAppContext) {
+    use facet::browse::find::{ClaimDisposition, ClaimIntent};
+    let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route), 1200.0, 800.0);
+    rig.settle();
+    let source = find_callback(&mut rig, &browse);
+    let claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&source, cx));
+    let input_generation = rig.shell.read_with(rig.cx, |shell, _| shell.focus_return_generation());
+    let (query, intent) = rig.cx.update(|window, cx| (window.focused(cx).expect("Find query"), ClaimIntent {
+        focus_epoch: window.focus_epoch(), input_generation,
+    }));
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    reader.update(rig.cx, |reader, cx| reader.test_pause_native_input(true, cx));
+    rig.repaint();
+    assert!(rig.cx.update(|_, cx| source.visit.local(cx)), "the exact Find place survives native input motion");
+    assert!(!reader.read_with(rig.cx, |reader, _| reader.native_input_for(&source.visit.route, None)));
+    assert_eq!(rig.cx.update(|window, cx| claim.disposition(&query, intent, window, cx)), ClaimDisposition::WaitForFreshFrame);
+
+    let previous = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let next = VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "paused producer".into())]), 9);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(previous.with_key(next, None)), cx));
+    rig.repaint();
+    assert!(rig.cx.update(|_, cx| source.visit.local(cx)), "producer paint must not replace the local Find visit");
+    assert_eq!(rig.cx.update(|window, cx| claim.disposition(&query, intent, window, cx)), ClaimDisposition::WaitForFreshFrame);
+
+    reader.update(rig.cx, |reader, cx| reader.test_pause_native_input(false, cx));
+    rig.repaint();
+    let landed = find_callback(&mut rig, &browse);
+    let landed_claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&landed, cx));
+    assert!(rig.cx.update(|_, cx| landed.visit.local(cx)));
+    assert_eq!(rig.cx.update(|window, cx| landed_claim.disposition(&query, intent, window, cx)), ClaimDisposition::Admitted);
+}
+
+#[gpui::test]
 fn failed_owner_still_admits_the_local_find_query_claim(cx: &mut TestAppContext) {
     let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
     let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));

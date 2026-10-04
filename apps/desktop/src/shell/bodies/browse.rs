@@ -76,6 +76,9 @@ pub(super) fn body(
             )
         } else { find_admission(&reading) };
         let source = FindActionSource::new(route, ctx, cx);
+        let editing_visit = if source.visit.local(cx) {
+            facet::browse::find::EditingVisit::Present
+        } else { facet::browse::find::EditingVisit::Departed };
         let mut actions = find_actions(ctx, cx, &source);
         if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
             actions.retry = Some(Rc::new(move |window, cx| {
@@ -90,6 +93,7 @@ pub(super) fn body(
             facet::browse::find::find("find", model, actions, &ctx.measure)
                 .admission(admission)
                 .local_activation(ctx.native_local_activation_scope(cx))
+                .editing_visit(editing_visit)
                 .active(ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none()),
         )];
         return leaves;

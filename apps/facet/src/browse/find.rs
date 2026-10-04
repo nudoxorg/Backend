@@ -173,6 +173,9 @@ pub struct ClaimIntent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClaimDisposition { Admitted, WaitForFreshFrame, Retired }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditingVisit { Present, Departed }
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Selection { Package(SharedString), Answer(SharedString) }
 
@@ -450,11 +453,11 @@ fn action_notice(reason: &str, window: &mut Window, cx: &mut App) {
 /// Compose a native Find folio.
 #[must_use]
 pub fn find(id: impl Into<ElementId>, model: Arc<Model>, actions: Actions, measure: &Measure) -> Find {
-    Find { id: id.into(), model, actions, admission: None, active: true, local_activation: None, measure: *measure, #[cfg(test)] test_state: None }
+    Find { id: id.into(), model, actions, admission: None, active: true, editing_visit: EditingVisit::Present, local_activation: None, measure: *measure, #[cfg(test)] test_state: None }
 }
 
 #[derive(IntoElement)]
-pub struct Find { admission: Option<ReadAdmission>, active: bool, local_activation: Option<gpui::NativeActivationScope>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
+pub struct Find { admission: Option<ReadAdmission>, active: bool, editing_visit: EditingVisit, local_activation: Option<gpui::NativeActivationScope>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
 
 impl Find {
     /// Existing structural input receipt for the independent local query field.
@@ -469,6 +472,11 @@ impl Find {
     /// Only the settled reader owns input and exposes controls to native clients.
     #[must_use]
     pub fn active(mut self, active: bool) -> Self { self.active = active; self }
+
+    /// The exact Reader editing visit can remain mounted while native input
+    /// pauses for arrival or motion. A departed visit cannot regain its claim.
+    #[must_use]
+    pub fn editing_visit(mut self, visit: EditingVisit) -> Self { self.editing_visit = visit; self }
 }
 
 impl RenderOnce for Find {
@@ -484,16 +492,36 @@ impl RenderOnce for Find {
         let read_admission = self.admission.unwrap_or_else(|| if self.model.loading {
             ReadAdmission::Retained("Waiting for the current query; result actions are unavailable.".into())
         } else { ReadAdmission::Current });
-        state.update(cx, |state, _| {
+        state.update(cx, |state, cx| {
             state.read_admission = read_admission.clone();
             state.active = self.active;
-            if !self.active {
+            if self.editing_visit == EditingVisit::Departed {
+                state.active = false;
+                state.first_focus = FirstFocus::Retired;
+            }
+            if !state.active {
                 state.pending = None;
                 state.generation = state.generation.wrapping_add(1);
-                if !matches!(&state.first_focus, FirstFocus::Fresh) { state.first_focus = FirstFocus::Retired; }
+                if self.editing_visit == EditingVisit::Present {
+                    match &state.first_focus {
+                        FirstFocus::Queued(frozen) | FirstFocus::Waiting(frozen) => {
+                            if window.focus_epoch() != frozen.intent.focus_epoch
+                                || self.actions.claim_input_generation != frozen.intent.input_generation
+                                || !(frozen.owner)(cx) {
+                                state.first_focus = FirstFocus::Retired;
+                            } else {
+                                state.first_focus = FirstFocus::Waiting(FrozenClaim {
+                                    scene_changed: Rc::clone(&self.actions.claim_scene_changed),
+                                    ..frozen.clone()
+                                });
+                            }
+                        }
+                        FirstFocus::Fresh | FirstFocus::Retired => {}
+                    }
+                }
             }
         });
-        if self.active { state.update(cx, |state, cx| {
+        if self.active && self.editing_visit == EditingVisit::Present { state.update(cx, |state, cx| {
             // A retained/departing Find may mount for pixels while another
             // route owns the keyboard. Active paints transfer only after the
             // frame, when native accessibility has finished reporting focus.

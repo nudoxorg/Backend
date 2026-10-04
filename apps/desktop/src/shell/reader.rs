@@ -495,6 +495,8 @@ pub(crate) struct Reader {
     arrival: Option<Arrival>,
     /// The place change in flight.
     transit: Option<Transit>,
+    #[cfg(test)]
+    native_input_test_paused: bool,
     /// The row a Close came back to, tinted for a moment.
     tint: Option<Tint>,
     /// The reader's bounds in window space, as last laid out.
@@ -569,6 +571,8 @@ impl Reader {
             }],
             arrival: None,
             transit: None,
+            #[cfg(test)]
+            native_input_test_paused: false,
             tint: None,
             frame: Rc::new(Cell::new(None)),
             held: None,
@@ -2234,7 +2238,15 @@ impl Reader {
     }
 
     pub(crate) fn native_input_allowed(&self) -> bool {
+        #[cfg(test)]
+        if self.native_input_test_paused { return false; }
         self.ask_background_input_allowed && self.native_motion_settled()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_pause_native_input(&mut self, paused: bool, cx: &mut Context<Self>) {
+        self.native_input_test_paused = paused;
+        cx.notify();
     }
 
     pub(crate) fn native_input_for(&self, route: &Route, overlay: Option<Overlay>) -> bool {

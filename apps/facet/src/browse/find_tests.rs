@@ -17,11 +17,11 @@ struct ClaimFixture {
     input: Rc<Cell<u64>>,
     owner: Rc<Cell<u64>>,
     replace_owner_after_wait: bool,
-    always_wait: bool,
+    native_ready: Rc<Cell<bool>>,
     outcomes: Rc<RefCell<Vec<ClaimDisposition>>>,
 }
 
-struct MountedFind { active: bool, state: Entity<State>, scroll: ScrollHandle, model: Arc<Model>, actions: Actions, claim_fixture: Option<ClaimFixture> }
+struct MountedFind { active: bool, editing_visit: EditingVisit, state: Entity<State>, scroll: ScrollHandle, model: Arc<Model>, actions: Actions, claim_fixture: Option<ClaimFixture> }
 impl Render for MountedFind {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::probe::draw_started(cx);
@@ -32,20 +32,23 @@ impl Render for MountedFind {
             let painted_root = fixture.root.get();
             let painted_input = fixture.input.get();
             let painted_owner = fixture.owner.get();
+            let painted_native = fixture.native_ready.get();
             let owner = Rc::clone(&fixture.owner);
             let scene_root = Rc::clone(&fixture.root);
             let scene_input = Rc::clone(&fixture.input);
             let scene_owner = Rc::clone(&fixture.owner);
+            let scene_native = Rc::clone(&fixture.native_ready);
             actions.claim_input_generation = Some(painted_input);
             actions.claim_owner = Rc::new(move |_| owner.get() == painted_owner);
             actions.claim_scene_changed = Rc::new(move |_| scene_root.get() != painted_root
-                || scene_input.get() != painted_input || scene_owner.get() != painted_owner);
+                || scene_input.get() != painted_input || scene_owner.get() != painted_owner
+                || scene_native.get() != painted_native);
             actions.claim_focus = Rc::new(move |_, intent, window, _| {
                 let disposition = if window.focus_epoch() != intent.focus_epoch
                     || intent.input_generation != Some(painted_input)
                     || fixture.input.get() != painted_input {
                     ClaimDisposition::Retired
-                } else if fixture.root.get() != painted_root || fixture.always_wait {
+                } else if fixture.root.get() != painted_root || !fixture.native_ready.get() {
                     ClaimDisposition::WaitForFreshFrame
                 } else { ClaimDisposition::Admitted };
                 fixture.outcomes.borrow_mut().push(disposition);
@@ -56,7 +59,7 @@ impl Render for MountedFind {
             });
         }
         div().id("mounted-find-scroll").w(px(360.0)).h(px(220.0)).overflow_y_scroll().track_scroll(&self.scroll)
-            .child(Find { admission: None, local_activation: None, active: self.active, id, model: Arc::clone(&self.model), actions, measure, test_state: Some(self.state.clone()) })
+            .child(Find { admission: None, local_activation: None, active: self.active, editing_visit: self.editing_visit, id, model: Arc::clone(&self.model), actions, measure, test_state: Some(self.state.clone()) })
     }
 }
 
@@ -72,9 +75,9 @@ fn first_find_claim_focuses_on_ordinary_mount(cx: &mut TestAppContext) {
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, native_ready: Rc::new(Cell::new(true)), outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
-        active: true,
+        active: true, editing_visit: EditingVisit::Present,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
         scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
     });
@@ -90,9 +93,9 @@ fn queued_claim_case(cx: &mut TestAppContext, interrupt_input: bool, replace_own
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait, always_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait, native_ready: Rc::new(Cell::new(true)), outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
-        active: false,
+        active: false, editing_visit: EditingVisit::Present,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
         scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
     });
@@ -151,9 +154,9 @@ fn unchanged_wait_uses_one_refresh_and_never_queues_again(cx: &mut TestAppContex
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: true, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, native_ready: Rc::new(Cell::new(false)), outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
-        active: true,
+        active: true, editing_visit: EditingVisit::Present,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
         scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
     });
@@ -174,9 +177,9 @@ fn waiting_find_departure_and_reentry_never_revive_first_claim(cx: &mut TestAppC
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: true, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, native_ready: Rc::new(Cell::new(false)), outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
-        active: true,
+        active: true, editing_visit: EditingVisit::Present,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
         scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
     });
@@ -184,14 +187,48 @@ fn waiting_find_departure_and_reentry_never_revive_first_claim(cx: &mut TestAppC
     let state = host.read_with(cx, |host, _| host.state.clone());
     assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Waiting(_))));
     let before_departure = fixture.outcomes.borrow().len();
-    host.update(cx, |host, cx| { host.active = false; cx.notify(); });
+    host.update(cx, |host, cx| { host.active = false; host.editing_visit = EditingVisit::Departed; cx.notify(); });
     draw(cx);
     assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Retired)));
     fixture.root.set(1);
-    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    host.update(cx, |host, cx| { host.active = true; host.editing_visit = EditingVisit::Present; cx.notify(); });
     draw(cx);
     assert_eq!(fixture.outcomes.borrow().len(), before_departure, "reentry cannot reuse a queued Wait");
     assert!(!cx.update(|window, cx| state.read(cx).input.read(cx).focus_handle(cx).is_focused(window)));
+}
+
+#[gpui::test]
+fn same_find_visit_keeps_first_claim_through_native_pause_and_landing(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let actions = actions(&reads, &opened);
+    let model = model("package", true);
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, native_ready: Rc::new(Cell::new(true)), outcomes: Rc::new(RefCell::new(vec![])) };
+    let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
+        active: false, editing_visit: EditingVisit::Present,
+        state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
+        scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
+    });
+    let paused = Rc::clone(&fixture.native_ready);
+    cx.update(|window, cx| {
+        window.defer(cx, move |_, _| paused.set(false));
+        host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    host.update(cx, |host, cx| { host.active = false; cx.notify(); });
+    draw(cx);
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Waiting(_))));
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Waiting(_))),
+        "a motion pause is still the exact editing visit");
+    fixture.native_ready.set(true);
+    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    draw(cx);
+    assert!(cx.update(|window, cx| state.read(cx).input.read(cx).focus_handle(cx).is_focused(window)),
+        "the landed same visit should claim its originally authorized focus");
+    assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Retired)));
 }
 
 #[gpui::test]
@@ -201,16 +238,16 @@ fn queued_find_claim_cannot_run_after_departure_or_reentry(cx: &mut TestAppConte
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
     let model = model("package", true);
-    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, always_wait: false, outcomes: Rc::new(RefCell::new(vec![])) };
+    let fixture = ClaimFixture { root: Rc::new(Cell::new(0)), input: Rc::new(Cell::new(0)), owner: Rc::new(Cell::new(0)), replace_owner_after_wait: false, native_ready: Rc::new(Cell::new(true)), outcomes: Rc::new(RefCell::new(vec![])) };
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
-        active: false,
+        active: false, editing_visit: EditingVisit::Present,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
         scroll: ScrollHandle::new(), model, actions, claim_fixture: Some(fixture.clone()),
     });
     let departing = host.clone();
     cx.update(|window, cx| {
         window.defer(cx, move |window, cx| {
-            departing.update(cx, |host, cx| { host.active = false; cx.notify(); });
+            departing.update(cx, |host, cx| { host.active = false; host.editing_visit = EditingVisit::Departed; cx.notify(); });
             window.refresh();
             window.draw(cx).clear(cx);
         });
@@ -221,7 +258,7 @@ fn queued_find_claim_cannot_run_after_departure_or_reentry(cx: &mut TestAppConte
     let state = host.read_with(cx, |host, _| host.state.clone());
     assert!(state.read_with(cx, |state, _| matches!(&state.first_focus, FirstFocus::Retired)));
     assert!(fixture.outcomes.borrow().is_empty(), "the departed queued claim must not call the host");
-    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    host.update(cx, |host, cx| { host.active = true; host.editing_visit = EditingVisit::Present; cx.notify(); });
     draw(cx);
     assert!(fixture.outcomes.borrow().is_empty(), "the retired claim must not run on reentry");
     assert!(!cx.update(|window, cx| state.read(cx).input.read(cx).focus_handle(cx).is_focused(window)));
@@ -249,7 +286,7 @@ fn mounted_find_arrows_reveal_offscreen_choice_without_pointer_auto_scroll(cx: &
     let model = Arc::new(Model { query: "package".into(), candidates, loose: vec![], coverage: vec![], more_answers: false, loading: false });
     let (host, cx) = cx.add_window_view(|window, cx| {
         let state = cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx));
-        MountedFind { active: true, state, scroll: scroll.clone(), model, actions, claim_fixture: None }
+        MountedFind { active: true, editing_visit: EditingVisit::Present, state, scroll: scroll.clone(), model, actions, claim_fixture: None }
     });
     draw(cx);
     let state = host.read_with(cx, |host, _| host.state.clone());
@@ -432,7 +469,7 @@ fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut 
     let actions = actions(&reads, &opened);
     let model = model("from_str", false);
     let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
-        active: true,
+        active: true, editing_visit: EditingVisit::Present,
         state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
         scroll: ScrollHandle::new(), model, actions, claim_fixture: None,
     });
@@ -440,7 +477,7 @@ fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut 
     let state = host.read_with(cx, |host, _| host.state.clone());
     edit(&state, "toml", cx);
     assert!(state.read_with(cx, |state, _| state.pending.is_some()));
-    host.update(cx, |host, cx| { host.active = false; cx.notify(); });
+    host.update(cx, |host, cx| { host.active = false; host.editing_visit = EditingVisit::Departed; cx.notify(); });
     draw(cx);
     let departing = cx.update(|_, cx| crate::probe::take(cx));
     assert!(departing.texts.iter().any(|text| text.content == "FIND"), "the departing page keeps its visible body");
@@ -451,7 +488,7 @@ fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut 
     edit(&state, "stale edit", cx);
     advance(cx, 200);
     assert!(reads.borrow().is_empty());
-    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    host.update(cx, |host, cx| { host.active = true; host.editing_visit = EditingVisit::Present; cx.notify(); });
     draw(cx);
     assert!(state.read_with(cx, |state, _| state.active));
     edit(&state, "Deserialize", cx);
