@@ -76,6 +76,8 @@ mod shelf_tests;
 #[cfg(test)]
 mod settings_focus_tests;
 #[cfg(test)]
+mod reader_scroll_tests;
+#[cfg(test)]
 mod transient_input_tests;
 #[cfg(test)]
 pub(crate) mod tests;

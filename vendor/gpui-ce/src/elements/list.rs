@@ -69,15 +69,28 @@ struct StateInner {
     reset: bool,
     #[allow(clippy::type_complexity)]
     scroll_handler: Option<Box<dyn FnMut(&ListScrollEvent, &mut Window, &mut App)>>,
+    user_scroll_handler: Option<Box<dyn FnMut()>>,
     scrollbar_drag_start_height: Option<Pixels>,
     measuring_behavior: ListMeasuringBehavior,
     pending_scroll: Option<PendingScroll>,
+    prepaint_reveal: Option<PrepaintReveal>,
     follow_state: FollowState,
     /// NUDOX: the height the owner declared for items not yet measured at
     /// the current width ([`ListState::with_uniform_item_height`] and its
     /// reset/remeasure forms). A width change falls back to it instead of
     /// to no hint, which counted those items as zero height.
     uniform_item_height: Option<Pixels>,
+}
+
+/// One owner-checked reveal admitted before the list freezes its frame layout.
+/// The inset callback derives the sticky cover from the *current* viewport
+/// and the candidate first item. It is local to this ListState, not a timer.
+struct PrepaintReveal {
+    ticket: u64,
+    item_ix: usize,
+    baseline: Pixels,
+    inset: Rc<dyn Fn(usize, Pixels) -> Pixels>,
+    applied: bool,
 }
 
 /// Deferred scroll adjustment applied after the scroll-top item has been remeasured.
@@ -325,10 +338,12 @@ impl ListState {
             alignment,
             overdraw,
             scroll_handler: None,
+            user_scroll_handler: None,
             reset: false,
             scrollbar_drag_start_height: None,
             measuring_behavior: ListMeasuringBehavior::default(),
             pending_scroll: None,
+            prepaint_reveal: None,
             follow_state: FollowState::default(),
             uniform_item_height: None,
         })));
@@ -365,6 +380,7 @@ impl ListState {
             state.measuring_behavior.reset();
             state.logical_scroll_top = None;
             state.pending_scroll = None;
+            state.prepaint_reveal = None;
             state.scrollbar_drag_start_height = None;
             state.items.summary().count
         };
@@ -532,6 +548,9 @@ impl ListState {
         focus_handles: impl IntoIterator<Item = Option<FocusHandle>>,
     ) {
         let state = &mut *self.0.borrow_mut();
+        // NUDOX: a declared baseline applies to newly inserted offscreen rows too.
+        // Keep existing measured rows intact; their real heights replace hints.
+        let size_hint = state.uniform_item_height.map(|height| Size { width: px(0.), height });
 
         let mut old_items = state.items.cursor::<Count>(());
         let mut new_items = old_items.slice(&Count(old_range.start), Bias::Right);
@@ -542,7 +561,7 @@ impl ListState {
             focus_handles.into_iter().map(|focus_handle| {
                 spliced_count += 1;
                 ListItem::Unmeasured {
-                    size_hint: None,
+                    size_hint,
                     focus_handle,
                 }
             }),
@@ -566,12 +585,74 @@ impl ListState {
         }
     }
 
+    /// Replace one row's native focus identity without discarding its
+    /// measured height or changing the logical scroll anchor. Virtualized
+    /// owners can keep only their focused row registered across scrolls.
+    pub fn set_item_focus_handle(&self, ix: usize, focus_handle: Option<FocusHandle>) {
+        let state = &mut *self.0.borrow_mut();
+        if ix >= state.items.summary().count { return; }
+        let mut cursor = state.items.cursor::<Count>(());
+        // NUDOX: slice advances the cursor and preserves the traversed prefix.
+        // Seeking first would make this slice empty and drop earlier rows.
+        let mut items = cursor.slice(&Count(ix), Bias::Right);
+        let Some(item) = cursor.item().cloned() else { return; };
+        let replacement = match item {
+            ListItem::Unmeasured { size_hint, .. } => ListItem::Unmeasured { size_hint, focus_handle },
+            ListItem::Measured { size, .. } => ListItem::Measured { size, focus_handle },
+        };
+        cursor.seek_forward(&Count(ix + 1), Bias::Right);
+        items.extend([replacement], ());
+        items.append(cursor.suffix(), ());
+        drop(cursor);
+        state.items = items;
+    }
+
     /// Set a handler that will be called when the list is scrolled.
     pub fn set_scroll_handler(
         &self,
         handler: impl FnMut(&ListScrollEvent, &mut Window, &mut App) + 'static,
     ) {
         self.0.borrow_mut().scroll_handler = Some(Box::new(handler))
+    }
+
+    /// Observe user-controlled wheel or scrollbar movement. Programmatic
+    /// scroll, remeasurement, and restoration do not invoke this callback.
+    pub fn set_user_scroll_handler(&self, handler: impl FnMut() + 'static) {
+        self.0.borrow_mut().user_scroll_handler = Some(Box::new(handler));
+    }
+
+    /// Ask the list to reveal `item_ix` during its next positive-size
+    /// prepaint, using the current viewport and actual sizes of the target
+    /// and only the immediately preceding candidate rows. The inset closure
+    /// receives the candidate first row and current viewport height.
+    pub fn request_prepaint_reveal(
+        &self,
+        ticket: u64,
+        item_ix: usize,
+        baseline: Pixels,
+        inset: impl Fn(usize, Pixels) -> Pixels + 'static,
+    ) {
+        let mut state = self.0.borrow_mut();
+        state.prepaint_reveal = (item_ix < state.items.summary().count).then(|| PrepaintReveal {
+            ticket,
+            item_ix,
+            baseline: baseline.max(px(1.0)),
+            inset: Rc::new(inset),
+            applied: false,
+        });
+    }
+
+    /// Clear only the request whose owner ticket is still current.
+    pub fn clear_prepaint_reveal(&self, ticket: u64) {
+        let mut state = self.0.borrow_mut();
+        if state.prepaint_reveal.as_ref().is_some_and(|request| request.ticket == ticket) {
+            state.prepaint_reveal = None;
+        }
+    }
+
+    pub fn prepaint_reveal_applied(&self, ticket: u64) -> bool {
+        self.0.borrow().prepaint_reveal.as_ref()
+            .is_some_and(|request| request.ticket == ticket && request.applied)
     }
 
     /// Get the current scroll offset, in terms of the list's items.
@@ -686,6 +767,35 @@ impl ListState {
 
         state.rebase_pending_scroll(scroll_top);
         state.logical_scroll_top = Some(scroll_top);
+    }
+
+    /// Position an item at a fractional offset after its next measurement.
+    /// This is applied during the list's own prepaint, before the item layout
+    /// and paint for that frame are fixed. Offscreen estimates never stand in
+    /// for the measured height of the requested item.
+    pub fn scroll_to_proportional(&self, item_ix: usize, fraction: f32) {
+        let state = &mut *self.0.borrow_mut();
+        let count = state.items.summary().count;
+        let item_ix = item_ix.min(count);
+        if item_ix < count {
+            state.follow_state.stop_following();
+            state.pending_scroll = Some(PendingScroll::Proportional(PendingScrollFraction {
+                item_ix,
+                fraction: if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 0.0 },
+            }));
+        } else {
+            state.pending_scroll = None;
+        }
+        state.logical_scroll_top = Some(ListOffset {
+            item_ix,
+            offset_in_item: px(0.0),
+        });
+    }
+
+    /// Retire a measurement adjustment when the owner has accepted newer
+    /// direct input. The logical offset produced by that input remains intact.
+    pub fn clear_pending_scroll_adjustment(&self) {
+        self.0.borrow_mut().pending_scroll = None;
     }
 
     /// Scroll the list to the given item, such that the item is fully visible.
@@ -857,6 +967,54 @@ impl ListState {
 }
 
 impl StateInner {
+    fn prepare_prepaint_reveal(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        padding: &Edges<Pixels>,
+        render_item: &mut RenderItemFn,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(request) = self.prepaint_reveal.as_ref() else { return; };
+        if bounds.size.height <= padding.top + padding.bottom
+            || request.item_ix >= self.items.summary().count { return; }
+        let target = request.item_ix;
+        let baseline = request.baseline;
+        let inset = Rc::clone(&request.inset);
+        let available = size(AvailableSpace::Definite(bounds.size.width), AvailableSpace::MinContent);
+        let mut measure = |ix| {
+            let mut element = render_item(ix, window, cx);
+            element.layout_as_root(available, window, cx).height.max(px(0.0))
+        };
+        let target_height = measure(target);
+        let mut first = target;
+        let mut first_height = target_height;
+        let mut before_target = px(0.0);
+        let mut remaining = ((f32::from(bounds.size.height) / f32::from(baseline)).ceil() as usize)
+            .saturating_add(2).min(256);
+        let offset = loop {
+            let cover = inset(first, bounds.size.height)
+                .max(px(0.0))
+                .min((bounds.size.height - target_height).max(px(0.0)));
+            if before_target >= cover {
+                break (before_target - cover).min(first_height).max(px(0.0));
+            }
+            if first == 0 || remaining == 0 {
+                break px(0.0);
+            }
+            first -= 1;
+            first_height = measure(first);
+            before_target += first_height;
+            remaining -= 1;
+        };
+        self.follow_state.stop_following();
+        self.pending_scroll = None;
+        self.logical_scroll_top = Some(ListOffset { item_ix: first, offset_in_item: offset });
+        if let Some(request) = self.prepaint_reveal.as_mut() {
+            request.applied = true;
+        }
+    }
+
     /// Re-anchor a pending scroll adjustment from a remeasure onto a newly set
     /// scroll position, so it clamps to the remeasured item's new height on
     /// the next layout instead of reverting the scroll.
@@ -923,6 +1081,11 @@ impl StateInner {
         // the new logical scroll top without the item heights
         if self.reset {
             return;
+        }
+
+        self.prepaint_reveal = None;
+        if let Some(handler) = self.user_scroll_handler.as_mut() {
+            handler();
         }
 
         let padding = self.last_padding.unwrap_or_default();
@@ -1384,6 +1547,10 @@ impl StateInner {
     // Scrollbar support
 
     fn set_offset_from_scrollbar(&mut self, point: Point<Pixels>) {
+        self.prepaint_reveal = None;
+        if let Some(handler) = self.user_scroll_handler.as_mut() {
+            handler();
+        }
         let Some(bounds) = self.last_layout_bounds else {
             return;
         };
@@ -1584,6 +1751,7 @@ impl Element for List {
         let padding = style
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
+        state.prepare_prepaint_reveal(bounds, &padding, &mut self.render_item, window, cx);
         let layout =
             match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
                 Ok(layout) => layout,
@@ -1765,6 +1933,179 @@ mod test {
         assert_eq!(items.items.iter().nth(7).and_then(|item| item.focus_handle()), Some(focus));
     }
 
+    #[gpui::test]
+    fn replacing_focus_preserves_every_row_and_scroll_geometry(cx: &mut TestAppContext) {
+        use super::{ListItem, PendingScroll, PrepaintReveal};
+
+        let old_focus = cx.update(|cx| cx.focus_handle());
+        let other_focus = cx.update(|cx| cx.focus_handle());
+        let replacement_focus = cx.update(|cx| cx.focus_handle());
+        let rows = vec![
+            ListItem::Measured {
+                size: size(px(13.), px(11.)),
+                focus_handle: Some(old_focus),
+            },
+            ListItem::Unmeasured {
+                size_hint: Some(size(px(21.), px(22.))),
+                focus_handle: None,
+            },
+            ListItem::Unmeasured {
+                size_hint: None,
+                focus_handle: Some(other_focus),
+            },
+            ListItem::Measured {
+                size: size(px(43.), px(44.)),
+                focus_handle: None,
+            },
+            ListItem::Unmeasured {
+                size_hint: Some(size(px(51.), px(55.))),
+                focus_handle: None,
+            },
+        ];
+        let geometry: Vec<_> = rows.iter().map(|row| (row.size(), row.size_hint())).collect();
+        let mut expected_focus: Vec<_> = rows.iter().map(ListItem::focus_handle).collect();
+        let state = ListState::new(0, gpui::ListAlignment::Top, px(0.));
+        {
+            let mut inner = state.0.borrow_mut();
+            inner.items = sum_tree::SumTree::from_iter(rows, ());
+            inner.last_layout_bounds = Some(Bounds::new(point(px(0.), px(0.)), size(px(100.), px(60.))));
+            inner.last_padding = Some(crate::Edges { top: px(2.), bottom: px(3.), ..Default::default() });
+            inner.logical_scroll_top = Some(crate::ListOffset { item_ix: 3, offset_in_item: px(7.) });
+            inner.pending_scroll = Some(PendingScroll::Absolute { item_ix: 3, offset: px(7.) });
+            inner.prepaint_reveal = Some(PrepaintReveal {
+                ticket: 42, item_ix: 2, baseline: px(20.), inset: Rc::new(|_, _| px(3.)), applied: false,
+            });
+        }
+
+        // Start in the middle: a lost prefix must fail before any first-row case.
+        // Both measured and hinted rows, the unknown-height row, and both ends
+        // retain their identities when focus is assigned and then removed.
+        for ix in [3, 1, 4, 0, 2, 5, usize::MAX] {
+            for focus in [Some(replacement_focus.clone()), None] {
+                state.set_item_focus_handle(ix, focus.clone());
+                if let Some(expected) = expected_focus.get_mut(ix) { *expected = focus; }
+                assert_eq!(state.item_count(), 5, "focus update at {ix} keeps every row");
+                let inner = state.0.borrow();
+                let actual_geometry: Vec<_> = inner.items.iter().map(|row| (row.size(), row.size_hint())).collect();
+                let actual_focus: Vec<_> = inner.items.iter().map(ListItem::focus_handle).collect();
+                assert_eq!(actual_geometry, geometry, "row order, measured sizes and hints survive {ix}");
+                assert_eq!(actual_focus, expected_focus, "only the selected row's handle changes");
+                let summary = inner.items.summary();
+                assert_eq!((summary.rendered_count, summary.unrendered_count), (2, 3));
+                assert_eq!(summary.height, px(132.));
+                assert!(summary.has_unknown_height);
+                assert_eq!(summary.has_focus_handles, expected_focus.iter().any(Option::is_some));
+                let top = inner.logical_scroll_top.unwrap();
+                assert_eq!((top.item_ix, top.offset_in_item), (3, px(7.)));
+                assert!(matches!(inner.pending_scroll.as_ref(), Some(PendingScroll::Absolute { item_ix: 3, offset }) if *offset == px(7.)));
+                let reveal = inner.prepaint_reveal.as_ref().unwrap();
+                assert_eq!((reveal.ticket, reveal.item_ix, reveal.applied), (42, 2, false));
+                drop(inner);
+                assert_eq!(state.max_offset_for_scrollbar().y, px(72.));
+                assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-40.));
+            }
+        }
+
+        let empty = ListState::new(0, gpui::ListAlignment::Top, px(0.));
+        empty.set_item_focus_handle(0, Some(replacement_focus));
+        assert_eq!(empty.item_count(), 0);
+    }
+
+    #[gpui::test]
+    fn focused_item_keeps_native_keyboard_when_parked_outside_the_viewport(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let state = ListState::new(100, gpui::ListAlignment::Top, px(20.))
+            .with_uniform_item_height(px(20.));
+        let focus = cx.update(|cx| cx.focus_handle());
+        let keys = Rc::new(Cell::new(0));
+        state.set_item_focus_handle(7, Some(focus.clone()));
+        struct View(ListState, crate::FocusHandle, Rc<Cell<u32>>);
+        impl Render for View {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let focus = self.1.clone();
+                let keys = Rc::clone(&self.2);
+                list(self.0.clone(), move |index, _, _| {
+                    let row = div().id(format!("focus-row-{index}")).h(px(20.)).w_full();
+                    if index == 7 {
+                        let keys = Rc::clone(&keys);
+                        row.track_focus(&focus)
+                            .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
+                            .into_any_element()
+                    } else { row.into_any_element() }
+                }).size_full()
+            }
+        }
+        let view = cx.update(|_, cx| cx.new(|_| View(state.clone(), focus.clone(), Rc::clone(&keys))));
+        let paint = |cx: &mut gpui::VisualTestContext| cx.draw(point(px(0.), px(0.)),
+            size(px(100.), px(60.)), |_, _| view.clone().into_any_element());
+        state.scroll_to(crate::ListOffset { item_ix: 7, offset_in_item: px(0.) });
+        paint(cx);
+        cx.update(|window, cx| window.focus(&focus, cx));
+        state.scroll_to(crate::ListOffset { item_ix: 50, offset_in_item: px(0.) });
+        paint(cx);
+        assert!(cx.update(|window, _| focus.is_focused(window)),
+            "the same mounted handle remains the native keyboard owner while offscreen");
+        cx.simulate_keystrokes("x");
+        assert_eq!(keys.get(), 1, "the parked native row still receives keyboard input");
+    }
+
+    #[gpui::test]
+    fn user_scroll_observer_distinguishes_wheel_and_scrollbar_from_programmatic_position(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let state = ListState::new(40, gpui::ListAlignment::Top, px(20.))
+            .with_uniform_item_height(px(20.));
+        let inputs = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&inputs);
+        state.set_user_scroll_handler(move || observed.set(observed.get() + 1));
+        struct View(ListState);
+        impl Render for View {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                list(self.0.clone(), |_, _, _| div().h(px(20.)).w_full().into_any_element())
+                    .size_full()
+            }
+        }
+        let view = cx.update(|_, cx| cx.new(|_| View(state.clone())));
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)),
+            |_, _| view.clone().into_any_element());
+        state.scroll_to(crate::ListOffset { item_ix: 8, offset_in_item: px(0.) });
+        state.scroll_by(px(20.));
+        assert_eq!(inputs.get(), 0, "owner-controlled positions do not claim user input");
+        state.set_offset_from_scrollbar(point(px(0.), px(-160.)));
+        assert_eq!(inputs.get(), 1, "a scrollbar move claims the position");
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(50.), px(30.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+            ..Default::default()
+        });
+        assert_eq!(inputs.get(), 2, "a native wheel claims the position independently");
+    }
+
+    #[gpui::test]
+    fn proportional_target_is_measured_before_its_first_paint(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let state = ListState::new(50, crate::ListAlignment::Top, px(0.))
+            .with_uniform_item_height(px(20.));
+        struct TestView(ListState);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                list(self.0.clone(), |index, _, _| {
+                    let row = div().h(if index == 20 { px(80.) } else { px(20.) }).w_full();
+                    if index == 20 { row.id("target").into_any() } else { row.into_any() }
+                }).w_full().h_full()
+            }
+        }
+        state.scroll_to_proportional(20, 0.25);
+        let view = cx.update(|_, cx| cx.new(|_| TestView(state.clone())));
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, _| {
+            view.into_any_element()
+        });
+        let top = state.logical_scroll_top();
+        assert_eq!(top.item_ix, 20);
+        assert_eq!(top.offset_in_item, px(20.), "the 80px row, not its 20px hint, determines the first-frame fraction");
+        let painted = cx.debug_bounds("target").expect("the target mounted in the first list paint");
+        assert_eq!(painted.top(), px(-20.), "the first painted row uses the corrected offset");
+    }
+
     /// NUDOX: a declared uniform height outlives the first layout and a width
     /// change (both invalidate measured heights). 100 rows are declared 30 px
     /// and render 20 px; a 60 px viewport measures a handful of them.
@@ -1798,6 +2139,43 @@ mod test {
         // A scroll beyond the measured rows lands among the hinted ones.
         state.scroll_by(px(600.));
         assert!(state.logical_scroll_top().item_ix >= 20, "{:?}", state.logical_scroll_top());
+    }
+
+    #[gpui::test]
+    fn offscreen_splice_keeps_measured_rows_and_extends_the_hinted_scroll_range(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let hinted = ListState::new(100, crate::ListAlignment::Top, px(0.))
+            .with_uniform_item_height(px(30.));
+        let plain = ListState::new(100, crate::ListAlignment::Top, px(0.));
+
+        struct TestView(ListState);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                list(self.0.clone(), |_, _, _| div().h(px(20.)).w_full().into_any())
+                    .w_full().h_full()
+            }
+        }
+
+        for state in [&hinted, &plain] {
+            cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, cx| {
+                cx.new(|_| TestView(state.clone())).into_any_element()
+            });
+        }
+        let before = hinted.max_offset_for_scrollbar().y;
+        let plain_before = plain.max_offset_for_scrollbar().y;
+        let measured_before = hinted.0.borrow().items.iter().filter(|item| item.size().is_some()).count();
+        assert!(measured_before > 0 && measured_before < 100);
+        hinted.splice(50..50, 10);
+        plain.splice(50..50, 10);
+        assert_eq!(hinted.item_count(), 110);
+        assert_eq!(plain.item_count(), 110);
+        assert_eq!(hinted.max_offset_for_scrollbar().y, before + px(300.));
+        assert_eq!(plain.max_offset_for_scrollbar().y, plain_before,
+            "callers without a declared baseline keep the old estimated extent");
+        assert_eq!(hinted.0.borrow().items.iter().filter(|item| item.size().is_some()).count(), measured_before);
+        assert!(plain.0.borrow().items.iter().skip(50).take(10).all(|item| item.size_hint().is_none()));
+        hinted.scroll_by(px(1_500.));
+        assert!(hinted.logical_scroll_top().item_ix >= 40);
     }
 
     #[gpui::test]
