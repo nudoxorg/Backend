@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
+#[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
