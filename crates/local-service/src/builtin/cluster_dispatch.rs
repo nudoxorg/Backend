@@ -170,7 +170,7 @@ impl ProbeFailureClass {
 /// The enum is the sole reason vocabulary used by both the error path and summary counters.
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProbeFailureReason {
+pub(crate) enum ProbeFailureReason {
     TrustChangedDuringProbe,
     ConnectTimeout,
     ConnectRejected,
