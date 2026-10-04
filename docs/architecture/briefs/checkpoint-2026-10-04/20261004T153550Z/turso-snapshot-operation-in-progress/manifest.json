@@ -1,0 +1,41 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T15:35:50.732380+00:00",
+  "label": "turso-snapshot-operation-in-progress",
+  "branch": "codex/checkpoint-turso-snapshot-operation-in-progress-20261004T153550Z",
+  "worktree": "/private/tmp/nudox-turso-owner-snapshot-20261004",
+  "parent": "14c68d2bb5d2a36f59bce2441302a397b639ceb3",
+  "merge_parents": [],
+  "working_source_tree": "a21ea052fd974c86bc10412ecf104ef4ad1df48f",
+  "description": "Frozen in-progress owner-borrowing snapshot operation and cancellation/failure receipt repair. Includes digest slice compile fix and precreation apostrophe-path refusal for a pinned Turso parser limitation. Source recovery only; tests and deep review are unfinished, Rust/storage/process validation remains pending.",
+  "changed_paths": [
+    "extensions/turso/src/authority/mod.rs",
+    "extensions/turso/src/authority/snapshot.rs",
+    "extensions/turso/src/authority/snapshot_tests.rs",
+    "extensions/turso/src/lib.rs"
+  ],
+  "source_sha256": {
+    "extensions/turso/src/authority/mod.rs": "76fe32f325b3e2ae52a568ce24d5ed998ded77e3571501f1f9cd4670052635b6",
+    "extensions/turso/src/authority/snapshot.rs": "441bdf1a14fa8679a955f78d1d6f0b54b6b20980b150476cb7b141d07b5c2eee",
+    "extensions/turso/src/authority/snapshot_tests.rs": "a580d223a08586cddf2cbb1f5115e631dd68b7dab96efbd46e905e63945dd67d",
+    "extensions/turso/src/lib.rs": "15b1f850d6d7eeb3400c57fc10cd316d9f899013993a7de53106985f942da457"
+  },
+  "untracked_source_paths": [],
+  "original_index_sha256": "89aa35e5cf6f26d3940970d03868062b1e62a704ae3288d9023a05e23b0df35b",
+  "original_index_stages_sha256": "ce190f2abf8d02c9f0d1b860a7aefbace11f79e08edfe0be8d75de707c16acc4",
+  "original_status_sha256": "219892f90e02ed1758ebb16949aa3d60afde479395454910e44a331b068499f6",
+  "preserved_index_blobs": [
+    "5e86e4692af7492e71b9786ef63f8d0dc6335155",
+    "ee05ee54d7ccb6e990bd9db32ad663279478d439",
+    "f29aada8e9e22d357edb6d7273b18348f05f611e",
+    "fd01b5d5a149757ee146cf2326cb8c42da5bd1c4"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {},
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}

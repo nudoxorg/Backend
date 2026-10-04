@@ -40,8 +40,7 @@ pub use envelope::{
 pub use error::AuthorityError;
 pub use snapshot::{
     AuthoritySnapshotBudget, AuthoritySnapshotError, AuthoritySnapshotFailure,
-    AuthoritySnapshotOperation, AuthoritySnapshotReceipt, IncompleteAuthoritySnapshot,
-    TursoAuthoritySnapshot,
+    AuthoritySnapshotReceipt, IncompleteAuthoritySnapshot, TursoAuthoritySnapshot,
 };
 use types::DurableClosureVerifier;
 pub use types::{
