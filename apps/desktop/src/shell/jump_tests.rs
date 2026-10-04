@@ -124,6 +124,9 @@ fn cmd_shift_c_copies_the_address(cx: &mut TestAppContext) {
 #[gpui::test]
 fn titlebar_find_is_a_local_door_to_the_real_package_index_reader(cx: &mut TestAppContext) {
     let mut rig = open(cx, "RelationLabel");
+    let visible_add = crate::shell::tests::native_bounds(&mut rig, "Button", "Add package", true)
+        .expect("the quick package Add button is a real enabled native control");
+    assert!(visible_add.size.width > gpui::px(0.0));
     click(&mut rig, "tb-find-packages", MouseButton::Left);
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)));
     let native = rig.cx.update(|window, _| window.a11y_tree().expect("Find native tree")

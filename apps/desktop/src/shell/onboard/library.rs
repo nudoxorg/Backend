@@ -337,12 +337,12 @@ fn find_packages(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
     let target_action = ctx.target_local_action(act, cx);
     let act = target_action.callback();
     ctx.targets.push(Target {
-        id: "find-packages".into(), label: "Find packages".into(),
+        id: "find-packages".into(), label: "Add package".into(),
         action: target_action, peek: None, source: None,
     });
     let focus = ctx.native_handle(&SharedString::from("find-packages"), cx);
-    let mut control = button("find-packages", "Find packages", &ctx.measure)
-        .ghost().icon(Icon::Search).on_click(move |window, cx| act(window, cx));
+    let mut control = button("find-packages", "Add package", &ctx.measure)
+        .ghost().icon(Icon::Plus).on_click(move |window, cx| act(window, cx));
     if let Some(focus) = focus { control = control.focus_handle(focus); }
     ctx.targets.track("find-packages", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)).into_any_element()
 }

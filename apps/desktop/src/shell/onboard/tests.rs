@@ -108,7 +108,7 @@ fn empty_library_opens_real_find_without_adding_a_project_or_claiming_an_index(c
     for width in [480.0, 1440.0] {
         let mut rig = first_run(cx, width);
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
-        let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Find packages")
+        let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Add package")
             .expect("a separate package door beside Add a folder").clone();
         assert!(drawn(&mut rig).iter().any(|line| line.contains("exact version")),
             "the Library explains how an observed registry result differs from a ready index");

@@ -314,10 +314,10 @@ impl Render for Titlebar {
             ));
             let target_action = local_target_action(&self.links, act, cx);
             let act = target_action.callback();
-            self.targets.push(Target { id: id.into(), label: "Find packages".into(), action: target_action, peek: None, source: None });
+            self.targets.push(Target { id: id.into(), label: "Add package".into(), action: target_action, peek: None, source: None });
             right = right.child(self.targets.track(
                 id,
-                facet::controls::icon_button(id, Icon::Search, "Find packages", &measure)
+                facet::controls::icon_button(id, Icon::Plus, "Add package", &measure)
                     .on_click(move |window, cx| act(window, cx)),
             ));
         }
