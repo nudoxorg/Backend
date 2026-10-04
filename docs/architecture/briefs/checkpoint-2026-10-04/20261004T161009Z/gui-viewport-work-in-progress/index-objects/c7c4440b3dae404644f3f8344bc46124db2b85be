@@ -432,162 +432,6 @@ pub(crate) enum ViewportScroll {
     Bottom,
 }
 
-/// A viewport choice remains the scroll owner across reflow until a new
-/// target walk. Top and bottom stay anchored to their respective edge;
-/// displaced pages retain their actual pixel position on later reflows.
-#[derive(Clone, Copy)]
-enum ViewportOrigin {
-    Offset(Pixels),
-    Restored(Pixels),
-    Top,
-    Bottom,
-}
-
-/// Keys wait for the next layout, where the Reader's actual content height
-/// and viewport are both known. Their order is preserved before that paint:
-/// Home followed by Page Down is one page from the new top.
-struct ViewportIntent {
-    place: u64,
-    origin: ViewportOrigin,
-    from: Point<Pixels>,
-    focused: Option<SharedString>,
-    commands: Vec<ViewportRun>,
-}
-
-/// Autorepeat is one operation regardless of how many Page keys arrive
-/// before a usable layout. Absolute commands discard preceding runs because
-/// their result is independent of the earlier position.
-struct ViewportRun {
-    command: ViewportScroll,
-    count: u64,
-}
-
-const MAX_QUEUED_VIEWPORT_RUNS: usize = 128;
-
-struct PendingScrollRestore {
-    place: u64,
-    offset: Point<Pixels>,
-    /// A returned reading visit owns even a saved Home at zero. A fresh
-    /// visit may instead reveal its initial source target.
-    origin: Option<ViewportOrigin>,
-}
-
-/// Visit IDs are checked monotonic allocations. The previous live place
-/// seeds the first comparison; thereafter one high watermark identifies a
-/// Back/Forward return even if unpainted intermediate visits were abandoned.
-fn returned_visit(
-    highest: &mut Option<crate::navigation::presentation::VisitId>,
-    previous: crate::navigation::presentation::VisitId,
-    incoming: crate::navigation::presentation::VisitId,
-) -> bool {
-    let watermark = (*highest).unwrap_or(previous);
-    let returning = incoming <= watermark;
-    *highest = Some(watermark.max(incoming));
-    returning
-}
-
-#[cfg(test)]
-mod viewport_intent_tests {
-    use super::*;
-    use crate::navigation::presentation::VisitId;
-
-    #[test]
-    fn visit_watermark_recognizes_an_old_return_after_a_full_history_branch() {
-        let first = VisitId::initial();
-        let mut highest = None;
-        let mut current = first;
-        for _ in 0..crate::navigation::MAX_ROUTE_HISTORY {
-            let next = current.next().expect("checked visit allocation");
-            assert!(!returned_visit(&mut highest, current, next));
-            current = next;
-        }
-        let old = current;
-        let prior = first.next().expect("first fresh visit");
-        assert!(returned_visit(&mut highest, old, prior), "Back returns to an issued ID");
-        let branch = old.next().expect("new branch visit");
-        assert!(!returned_visit(&mut highest, prior, branch));
-        assert!(returned_visit(&mut highest, branch, first),
-            "the oldest still-retained visit remains a return after forward history was abandoned");
-    }
-
-    #[test]
-    fn queued_runs_refuse_only_a_new_alternation_at_capacity() {
-        let mut intent = ViewportIntent {
-            place: 1,
-            origin: ViewportOrigin::Offset(px(0.0)),
-            from: point(px(0.0), px(0.0)),
-            focused: None,
-            commands: Vec::new(),
-        };
-        for index in 0..MAX_QUEUED_VIEWPORT_RUNS {
-            let command = if index % 2 == 0 { ViewportScroll::PageDown } else { ViewportScroll::PageUp };
-            assert!(intent.push(command));
-        }
-        let before = intent.resolve(px(100.0), px(250.0));
-        assert_eq!(intent.commands.len(), MAX_QUEUED_VIEWPORT_RUNS);
-        assert!(!intent.push(ViewportScroll::PageDown), "an alternating overflow is refused");
-        assert_eq!(intent.commands.len(), MAX_QUEUED_VIEWPORT_RUNS);
-        assert_eq!(intent.resolve(px(100.0), px(250.0)), before,
-            "refusal does not silently alter an accepted program");
-        assert!(intent.push(ViewportScroll::PageUp), "same-direction repeat coalesces at capacity");
-        assert_eq!(intent.commands.len(), MAX_QUEUED_VIEWPORT_RUNS);
-        assert_eq!(intent.commands.last().map(|run| run.count), Some(2));
-        assert!(intent.push(ViewportScroll::Top), "Home supersedes a full queue");
-        assert_eq!(intent.commands.len(), 1);
-        assert!(intent.push(ViewportScroll::PageDown));
-        assert_eq!(intent.resolve(px(100.0), px(250.0)), px(-100.0));
-    }
-}
-
-impl ViewportIntent {
-    /// Refuse an additional alternating run at the cap. Same-direction
-    /// autorepeat and absolute Home/End remain admissible. The caller then
-    /// propagates a refused key without changing focus or reveal ownership.
-    fn push(&mut self, command: ViewportScroll) -> bool {
-        if matches!(command, ViewportScroll::Top | ViewportScroll::Bottom) {
-            self.commands.clear();
-        } else if let Some(last) = self.commands.last_mut()
-            && last.command == command && last.count < u64::MAX {
-            last.count += 1;
-            return true;
-        } else if self.commands.len() >= MAX_QUEUED_VIEWPORT_RUNS {
-            return false;
-        }
-        self.commands.push(ViewportRun { command, count: 1 });
-        true
-    }
-
-    fn resolve(&self, height: Pixels, max: Pixels) -> Pixels {
-        let mut y = match self.origin {
-            ViewportOrigin::Offset(y) | ViewportOrigin::Restored(y) => y.clamp(-max, px(0.0)),
-            ViewportOrigin::Top => px(0.0),
-            ViewportOrigin::Bottom => -max,
-        };
-        // More than this many pages always reaches an edge, regardless of
-        // the starting offset. Bound the multiplication, not the key count.
-        let to_edge = ((f32::from(max) / f32::from(height)).ceil() as u64).saturating_add(1);
-        for run in &self.commands {
-            let distance = height * run.count.min(to_edge) as f32;
-            y = match run.command {
-                ViewportScroll::PageDown => y - distance,
-                ViewportScroll::PageUp => y + distance,
-                ViewportScroll::Top => px(0.0),
-                ViewportScroll::Bottom => -max,
-            }.clamp(-max, px(0.0));
-        }
-        y
-    }
-
-    fn settled_origin(&self, y: Pixels) -> ViewportOrigin {
-        match self.commands.last().map(|run| run.command) {
-            Some(ViewportScroll::Top) => ViewportOrigin::Top,
-            Some(ViewportScroll::Bottom) => ViewportOrigin::Bottom,
-            Some(ViewportScroll::PageDown | ViewportScroll::PageUp) => ViewportOrigin::Offset(y),
-            None => self.origin,
-        }
-    }
-}
-
 /// Exactly the Reader branch that mounts the shared GPUI scroll container.
 /// A Settings/Inbox page replaces even a Graph route, and a retained World
 /// body uses the Reader when there is no live Graph to paint.
@@ -611,9 +455,6 @@ pub(crate) struct Reader {
     /// The visit whose actual scroll container completed prepaint. A route
     /// render alone cannot make the previous body's measured extent current.
     scroll_mounted: Rc<Cell<Option<u64>>>,
-    /// A typed viewport origin remains ahead of target-follow through
-    /// subsequent reflows. A new target walk or visit retires that ownership.
-    viewport_intent: Rc<RefCell<Option<ViewportIntent>>>,
     /// Bounded source cursor/history memory keyed by exact code route and owner revision.
     source_paging: SourcePagingMemory,
     /// Shared empty handle for non-code bodies; they never write paging state.
@@ -623,10 +464,7 @@ pub(crate) struct Reader {
     /// Bounded neutral README pagination for this Reader's window and visits.
     readme_paging: Rc<RefCell<bodies::ReadmePagingMemory>>,
     /// Applied only after the destination content can paint.
-    pending_scroll_restore: Option<PendingScrollRestore>,
-    /// One checked monotonic visit watermark, seeded from the live place on
-    /// first arrival; no parallel cache of route history is kept.
-    highest_visit: Option<crate::navigation::presentation::VisitId>,
+    pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
     /// keyboard walk, or a reflow that may have moved it).
     reveal: Rc<Cell<bool>>,
@@ -710,13 +548,11 @@ impl Reader {
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
             scroll_mounted: Rc::new(Cell::new(None)),
-            viewport_intent: Rc::new(RefCell::new(None)),
             source_paging: SourcePagingMemory::default(),
             empty_source_paging: Rc::new(RefCell::new(None)),
             library_state: LibraryStateMemory::default(),
             readme_paging: Rc::new(RefCell::new(bodies::ReadmePagingMemory::default())),
             pending_scroll_restore: None,
-            highest_visit: None,
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
             native_return: None,
@@ -977,9 +813,6 @@ impl Reader {
     /// Keeps the focused target on screen after a keyboard walk (in the
     /// frame that draws the walk, from that frame's layout).
     pub(crate) fn reveal_focused(&self) {
-        // A new keyboard target is a new intent; it may follow again after
-        // the user explicitly chose Home, End or a page displacement.
-        self.viewport_intent.borrow_mut().take();
         self.reveal.set(true);
     }
 
@@ -992,47 +825,44 @@ impl Reader {
             && self.targets.native_focused(window).is_some()
     }
 
-    /// Admit a command for the one persistent Reader scroller. Prepaint uses
-    /// its new measured geometry, so a resize or zoom waiting to paint cannot
-    /// make Page Down use the previous viewport or End use the old extent.
+    /// Scroll the one persistent Reader scroller using GPUI's last mounted
+    /// viewport and content extent. This applies to every ordinary body,
+    /// including local Settings, package, documentation and source pages.
     pub(crate) fn keyboard_scroll(&mut self, command: ViewportScroll, cx: &mut Context<Self>) -> bool {
         let snapshot = self.links.snapshot(cx);
-        let Some(place) = self.places.last().map(|place| place.key) else { return false; };
         if !mounts_scroll_body(self.links.store.read(cx), snapshot.route(), snapshot.page_overlay())
             || !self.native_input_for(snapshot.route(), snapshot.page_overlay())
             || RouteDependencies::new(snapshot.route(), snapshot.page_overlay())
                 .display_phase(self.links.store.read(cx)) == DestinationState::Pending
             || self.pending_scroll_restore.is_some()
-            || self.scroll_mounted.get() != Some(place)
+            || self.places.last().is_none_or(|place| self.scroll_mounted.get() != Some(place.key))
         {
             return false;
         }
+        let height = f32::from(self.scroll.bounds().size.height);
+        let max = f32::from(self.scroll.max_offset().y);
         let offset = self.scroll.offset();
-        if !f32::from(offset.y).is_finite() { return false; }
-        let focused = self.targets.focused();
-        let accepted = {
-            let mut intent = self.viewport_intent.borrow_mut();
-            match intent.as_mut() {
-                Some(queued) if queued.place == place && queued.from == offset && queued.focused == focused =>
-                    queued.push(command),
-                _ => {
-                    let mut queued = ViewportIntent {
-                        place,
-                        origin: ViewportOrigin::Offset(offset.y),
-                        from: offset,
-                        focused,
-                        commands: Vec::new(),
-                    };
-                    let accepted = queued.push(command);
-                    *intent = Some(queued);
-                    accepted
-                }
-            }
-        };
-        if !accepted { return false; }
-        // Even a boundary Home or End supersedes a queued target reveal.
-        self.reveal.set(false);
-        cx.notify();
+        let current = f32::from(offset.y);
+        if !height.is_finite() || height <= 0.0 || !max.is_finite() || max < 0.0 || !current.is_finite() {
+            return false;
+        }
+        let current = current.clamp(-max, 0.0);
+        let next = match command {
+            ViewportScroll::PageDown => current - height,
+            ViewportScroll::PageUp => current + height,
+            ViewportScroll::Top => 0.0,
+            ViewportScroll::Bottom => -max,
+        }.clamp(-max, 0.0);
+        // Even a boundary command is an explicit viewport choice. Consume a
+        // queued target reveal before prepaint can undo Home or End.
+        let canceled_reveal = self.reveal.replace(false);
+        let moved = next != f32::from(offset.y);
+        if moved {
+            self.scroll.set_offset(point(offset.x, px(next)));
+        }
+        if canceled_reveal || moved {
+            cx.notify();
+        }
         true
     }
 
@@ -1359,7 +1189,6 @@ impl Reader {
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>, reading: &crate::navigation::presentation::ReadingVisit) {
         self.scroll_mounted.set(None);
-        self.viewport_intent.borrow_mut().take();
         // The first Tree departure records the opened release. A later
         // departure from its returning visit abandons that pending focus,
         // even when no virtual row mounted to schedule a deferred callback.
@@ -1412,7 +1241,6 @@ impl Reader {
         let hop_forward = arrival.as_ref().is_some_and(|arrival| arrival.verb == Verb::Open);
         self.graph_source = if self.overlay.is_none() { immediate_page_source(&self.route, next) } else { None };
         let from = (self.route.clone(), self.overlay);
-        let previous_visit = self.places.last().map_or(reading.id, |place| place.visit);
         self.route = next.clone();
         self.overlay = overlay;
         self.descents = self.descents.wrapping_add(1);
@@ -1435,12 +1263,7 @@ impl Reader {
             self.lens = if overlay.is_none() { reader_lens(reading.presentation.controls().lens) } else { Lens::Reference };
         }
         let (x, y) = if overlay.is_none() { reading.presentation.controls().offset.pixels() } else { (0.0, 0.0) };
-        let returning = returned_visit(&mut self.highest_visit, previous_visit, reading.id);
-        self.pending_scroll_restore = Some(PendingScrollRestore {
-            place: self.descents,
-            offset: point(px(x), px(y)),
-            origin: (returning || y < 0.0).then_some(ViewportOrigin::Restored(px(y))),
-        });
+        self.pending_scroll_restore = Some((self.descents, point(px(x), px(y))));
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
         self.native_return = None;
@@ -2657,9 +2480,7 @@ impl Render for Reader {
         // into view in the same frame.
         let laid_out = (self.core.width(), window.viewport_size().height, facet.text_scale, facet.density);
         let reflowed = self.laid_out.is_some_and(|last| last != laid_out) && self.targets.focused().is_some();
-        if reflowed && self.viewport_intent.borrow().is_none() {
-            // A reflow follows the target only when the user has not chosen
-            // an explicit viewport for this upcoming layout.
+        if reflowed {
             self.reveal.set(true);
         }
         self.laid_out = Some(laid_out);
@@ -2688,23 +2509,21 @@ impl Render for Reader {
         let layout = self.layout(&current.route, current.overlay, &measure, &facet);
         let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
-        let mut restored_origin = None;
         // Scroll restoration waits for the primary pane's current read. The
         // requested route itself paints even when that read is pending, so
         // local navigation and later focus belong to its own visit.
         if !waiting && RouteDependencies::new(&current.route, current.overlay).display_loaded(self.links.store.read(cx)) {
-            if let Some(restore) = self.pending_scroll_restore.take() {
-                if restore.place == current.key {
-                    self.scroll.set_offset(restore.offset);
-                    restored_origin = restore.origin;
+            if let Some((key, offset)) = self.pending_scroll_restore.take() {
+                if key == current.key {
+                    self.scroll.set_offset(offset);
                 } else {
-                    self.pending_scroll_restore = Some(restore);
+                    self.pending_scroll_restore = Some((key, offset));
                 }
             }
         } else if !waiting && self
             .pending_scroll_restore
             .as_ref()
-            .is_some_and(|restore| restore.place != current.key)
+            .is_some_and(|(key, _)| *key != current.key)
         {
             self.pending_scroll_restore = None;
         }
@@ -2796,9 +2615,6 @@ impl Render for Reader {
             self.publish(staged, tint.map(|(_, strength)| strength), cx);
             let framed = Reveal {
                 pending: Rc::new(Cell::new(false)),
-                viewport_intent: Rc::new(RefCell::new(None)),
-                viewport_admitted: false,
-                content_layout: Rc::new(Cell::new(None)),
                 targets: self.targets.clone(),
                 scroll: self.scroll.clone(),
                 frame: Rc::clone(&self.frame),
@@ -2954,21 +2770,6 @@ impl Render for Reader {
         let glow = if waiting {
             gpui::inert("waiting-focus-glow", "Focus resumes when the destination arrives", glow).into_any_element()
         } else { glow.into_any_element() };
-        if let Some(origin) = restored_origin {
-            self.viewport_intent.borrow_mut().replace(ViewportIntent {
-                place: current.key,
-                origin,
-                from: self.scroll.offset(),
-                focused: self.targets.focused(),
-                commands: Vec::new(),
-            });
-        }
-        let content_layout = Rc::new(Cell::new(None));
-        let content = ScrollContent {
-            layout: Rc::clone(&content_layout),
-            child: div().w_full().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale))
-                .child(stack).into_any_element(),
-        };
         let scroller = div()
             .id("reader-scroll")
             .debug_selector(|| "reader-scroll".to_owned())
@@ -2976,7 +2777,7 @@ impl Render for Reader {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .key_context(super::keys::READER_VIEWPORT)
-            .child(content);
+            .child(div().w_full().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale)).child(stack));
         // A reflow that scrolls to keep the focus in view lands the page's
         // moving parts: a flight from where they were would carry the focus
         // back off screen.
@@ -2991,10 +2792,6 @@ impl Render for Reader {
         };
         let scroller = facet::probe::scroll_scope("reader-scroll", Reveal {
             pending: Rc::clone(&self.reveal),
-            viewport_intent: Rc::clone(&self.viewport_intent),
-            viewport_admitted: !waiting && self.pending_scroll_restore.is_none()
-                && self.native_input_for(snapshot.route(), snapshot.page_overlay()),
-            content_layout,
             targets: self.targets.clone(),
             scroll: self.scroll.clone(),
             frame: Rc::clone(&self.frame),
@@ -3214,66 +3011,6 @@ impl Reader {
     }
 }
 
-/// Exposes the actual content layout before GPUI's scroll container prepaints.
-/// The container has this single direct child, so its measured height is the
-/// extent GPUI itself uses when clamping the offset.
-struct ScrollContent {
-    layout: Rc<Cell<Option<gpui::LayoutId>>>,
-    child: gpui::AnyElement,
-}
-
-impl IntoElement for ScrollContent {
-    type Element = Self;
-
-    fn into_element(self) -> Self { self }
-}
-
-impl gpui::Element for ScrollContent {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> { None }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) -> (gpui::LayoutId, ()) {
-        let layout = self.child.request_layout(window, cx);
-        self.layout.set(Some(layout));
-        (layout, ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _state: &mut (),
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) {
-        self.child.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _state: &mut (),
-        _prepaint: &mut (),
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) {
-        self.child.paint(window, cx);
-    }
-}
-
 /// The reader's scroll container, bringing the focused target into view
 /// when asked. It runs before the container applies its offset, from this
 /// frame's layout, so the frame that walks or reflows already shows the
@@ -3281,9 +3018,6 @@ impl gpui::Element for ScrollContent {
 /// text grew).
 struct Reveal {
     pending: Rc<Cell<bool>>,
-    viewport_intent: Rc<RefCell<Option<ViewportIntent>>>,
-    viewport_admitted: bool,
-    content_layout: Rc<Cell<Option<gpui::LayoutId>>>,
     targets: Targets,
     scroll: ScrollHandle,
     /// Where the reader is laid out, in window space, for the next frame's
@@ -3336,52 +3070,7 @@ impl gpui::Element for Reveal {
         cx: &mut gpui::App,
     ) {
         self.frame.set(Some(window.layer_transform().apply_bounds(view)));
-        // Resolve the explicit command against this frame's Taffy content
-        // layout before GPUI's scroll Div prepaints. Its single child and zero
-        // container padding make this the same extent Div clamps to below.
-        let mut viewport_owned = false;
-        {
-            let mut viewport = self.viewport_intent.borrow_mut();
-            if let Some(intent) = viewport.as_mut() {
-                if self.scroll_mount.as_ref().is_none_or(|(_, place)| *place != intent.place) {
-                    viewport.take();
-                } else if self.viewport_admitted {
-                    if self.targets.focused() != intent.focused {
-                        // A new native target walk restores target-follow.
-                        viewport.take();
-                        self.pending.set(true);
-                    } else {
-                        let offset = self.scroll.offset();
-                        if offset != intent.from {
-                            // A newer wheel or programmatic scroll supersedes
-                            // queued keys and becomes the viewport's origin.
-                            intent.origin = ViewportOrigin::Offset(offset.y);
-                            intent.commands.clear();
-                            intent.from = offset;
-                        } else {
-                            let height = f32::from(view.size.height);
-                            let content = self.content_layout.get().map(|layout|
-                                f32::from(window.layout_bounds(layout).size.height));
-                            if let Some(content) = content
-                                && height.is_finite() && height > 0.0 && content.is_finite() && content >= 0.0 {
-                                // Match ScrollHandle's two-decimal scroll-range clamp.
-                                let max = px(((content - height).max(0.0) * 100.0).round() / 100.0);
-                                let y = intent.resolve(view.size.height, max);
-                                self.scroll.set_offset(point(offset.x, y));
-                                intent.origin = intent.settled_origin(y);
-                                intent.from = point(offset.x, y);
-                                intent.commands.clear();
-                            }
-                            // If layout has no usable size, retain the exact
-                            // command order for a positive-size mounted frame.
-                        }
-                        self.pending.set(false);
-                        viewport_owned = true;
-                    }
-                }
-            }
-        }
-        if self.viewport_admitted && !viewport_owned && self.pending.take()
+        if self.pending.take()
             && let Some(layout) = self.targets.focused_layout()
         {
             // The target's place in the content, as if unscrolled.

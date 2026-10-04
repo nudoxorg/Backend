@@ -426,9 +426,6 @@ impl Shell {
     pub(crate) fn reader_entity(&self) -> Entity<Reader> { self.reader.clone() }
 
     #[cfg(test)]
-    pub(crate) fn shelf_entity(&self) -> Entity<Shelf> { self.shelf.clone() }
-
-    #[cfg(test)]
     pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
         self.reader.read(cx).graph_canvas_geometry(node, cx)
     }
@@ -2178,10 +2175,6 @@ impl Shell {
         let links = self.links.clone();
         let mut veil = div()
             .id(if self.ask_open { "ask-veil" } else { "ask-exit-veil" })
-            // The retained Reader and Shelf still prepaint beneath this
-            // sheet. Exclude their hitboxes, including native wheel input,
-            // while later-painted Ask results remain interactive above it.
-            .occlude()
             .absolute()
             .top(frame.titlebar)
             .bottom(px(status))

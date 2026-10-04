@@ -8,7 +8,7 @@ pub const MAX_READING_TEXT: usize = 1024;
 pub const MAX_READING_FOLDS: usize = 128;
 
 /// Checked monotonic identity; zero is reserved for route-only cold history.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub struct VisitId(u64);
 impl VisitId {
     pub const fn initial() -> Self {
