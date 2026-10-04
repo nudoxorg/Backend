@@ -1226,15 +1226,17 @@ impl GraphView {
             return false;
         };
         if let (Some(drag), true) = (&mut self.drag, pressed) {
+            let was_click = drag.moved <= 3.0;
             drag.moved = drag.moved.max((x - drag.x).hypot(y - drag.y));
             drag.hist.push((motion::now(cx), x, y));
             if drag.hist.len() > 6 {
                 drag.hist.remove(0);
             }
             if drag.moved > 3.0 {
-                self.state.apply(Event::Pan);
-                if let Some(prism) = &mut self.prism { prism.target = 0.0; }
-                self.reach_started = None;
+                if was_click {
+                    self.state.apply(Event::Pan);
+                    self.reach_started = None;
+                }
                 let k = f64::from(view.w) / drag.from.w;
                 let to = Camera::new(
                     drag.from.x - f64::from(x - drag.x) / k,
@@ -1249,7 +1251,8 @@ impl GraphView {
             }
             return false;
         }
-        self.state.selected = None; self.state.prism_sel = None;
+        // Hover is a preview. Moving the pointer after a pan must not retire
+        // the keyboard or clicked relation that still owns the reading card.
         self.pointer = Some((x, y));
         let cam = rig.cam;
         let slot = self.pick_prism(x, y);
@@ -1386,11 +1389,10 @@ impl GraphView {
         cx.notify();
     }
 
-    /// Navigation is not reading: a wheel or pinch drops the hover and its
-    /// peek; what is under the pointer is picked again when the map settles.
+    /// Camera navigation drops the transient hover and peek, while the
+    /// inspected declaration remains selected until an explicit clear.
     fn navigate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.apply(Event::Pan);
-        if let Some(prism) = &mut self.prism { prism.target = 0.0; }
         self.reach_started = None;
         self.hover_terr = None;
         if self.hover.is_some() || self.peek.is_some() {
@@ -3212,6 +3214,77 @@ mod tests {
         }
         cx.simulate_mouse_up(point(start.x + px(120.0), start.y), gpui::MouseButton::Left, Modifiers::none());
         assert!(view.read_with(cx, |v, _| v.drag.is_none()));
+    }
+
+    #[gpui::test]
+    fn native_canvas_pan_keeps_selected_detail_but_a_blank_click_clears_it(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+        for deliver_move in [false, true] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (graph, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Focus(3), window, cx));
+            cx.update(|window, _| window.set_a11y_forced(true));
+            frames(cx, 30);
+            cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+            cx.simulate_keystrokes("right");
+            let (before, selected, start) = graph.read_with(cx, |graph, _| {
+                let card = graph.card_bounds.expect("native focused card");
+                (graph.camera().expect("settled camera"), graph.state.selected.expect("native walked relation"),
+                    point(card.left() - px(40.0), card.top() + card.size.height * 0.5))
+            });
+            cx.simulate_mouse_move(start, None, Modifiers::none());
+            cx.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::none());
+            assert!(graph.read_with(cx, |graph, _| graph.drag.is_some()), "the empty canvas owns the press");
+            let end = point(start.x + px(140.0), start.y + px(95.0));
+            if deliver_move { cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), Modifiers::none()); }
+            cx.simulate_mouse_up(end, gpui::MouseButton::Left, Modifiers::none());
+            frames(cx, 20);
+            graph.read_with(cx, |graph, _| {
+                assert_ne!(graph.camera(), Some(before), "the native gesture actually pans");
+                assert_eq!(graph.state.focus, Some(3), "camera motion must retain the selected declaration");
+                assert_eq!(graph.state.selected, Some(selected), "camera motion must retain the exact walked relation");
+                assert!(graph.card_bounds.is_some(), "the detail card remains mounted");
+                assert!(graph.drag.is_none());
+            });
+            cx.update(|window, _| {
+                assert!(window.a11y_tree().expect("native graph tree").nodes.iter().any(|(_, node)|
+                    node.label().is_some_and(|label| label.starts_with("Selected declaration "))),
+                    "the selected detail remains in native semantics after pan");
+            });
+
+            let blank = graph.read_with(cx, |graph, cx| {
+                let region = graph.view.expect("canvas viewport");
+                let camera = graph.camera().expect("panned camera");
+                let scene = graph.scene.as_ref().expect("native scene");
+                for row in 1..10 {
+                    for column in 1..10 {
+                        let x = region.x + region.w * column as f32 / 10.0;
+                        let y = region.y + region.h * row as f32 / 10.0;
+                        if !graph.over_chrome(x, y) && graph.admits_painted_pointer(x, y, cx)
+                            && graph.pick_prism(x, y).is_none()
+                            && graph.painted_node(&region, &camera, x, y, cx).is_none()
+                            && graph.painted_territory(&region, &camera, x, y).is_none()
+                            && scene.pick(&region, &camera, x, y).is_none()
+                            && super::pointer_territory(scene, &region, &camera, x, y).is_none() {
+                            return point(px(x), px(y));
+                        }
+                    }
+                }
+                panic!("the actual canvas has no empty click target");
+            });
+            cx.simulate_mouse_move(blank, None, Modifiers::none());
+            assert_eq!(graph.read_with(cx, |graph, _| graph.state.selected), Some(selected), "hover alone cannot clear a selected relation");
+            cx.simulate_mouse_down(blank, gpui::MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_up(blank, gpui::MouseButton::Left, Modifiers::none());
+            assert_eq!(graph.read_with(cx, |graph, _| (graph.state.focus, graph.state.selected)), (None, None),
+                "a deliberate blank click still clears the selected declaration");
+            frames(cx, 2);
+            cx.update(|window, _| {
+                assert!(!window.a11y_tree().expect("native cleared graph tree").nodes.iter().any(|(_, node)|
+                    node.label().is_some_and(|label| label.starts_with("Selected declaration "))),
+                    "clearing removes the detail card from native semantics");
+            });
+        }
     }
 
     #[gpui::test]

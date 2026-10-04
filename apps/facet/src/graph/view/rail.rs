@@ -193,13 +193,11 @@ impl GraphView {
             || self.frame.as_ref().is_none_or(|frame| frame.node != owner || frame.e < 0.8)
             || self.rail_geometry.as_ref().is_none_or(|geometry| geometry.owner != owner || !geometry.viewport.contains(&event.position)) { return; }
         let at = (f32::from(event.position.x), f32::from(event.position.y));
-        let selection_changed = self.pointer != Some(at) && self.state.selected.is_some();
-        if self.pointer != Some(at) { self.state.selected = None; self.state.prism_sel = None; }
         self.pointer = Some(at);
         let slot = self.frame.as_ref().filter(|frame| self.state.focus == Some(frame.node)).and_then(|frame| frame.locate(key));
         let before = (self.hover, self.hover_slot);
         self.set_hover(Some(key.node), slot);
         self.sync_peek(window, cx);
-        if selection_changed || before != (self.hover, self.hover_slot) { cx.notify(); }
+        if before != (self.hover, self.hover_slot) { cx.notify(); }
     }
 }

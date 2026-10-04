@@ -43,7 +43,10 @@ impl Navigation {
     pub(crate) fn apply(&mut self, event: Event) -> Effect {
         match event {
             Event::Focus(node) => { self.find_open = false; self.invalidate(); self.focus = node; self.prism_sel = None; self.selected = None; self.exploration = Exploration::Free; Effect::Focus(node) }
-            Event::Pan => { self.invalidate(); self.focus = None; self.prism_sel = None; self.selected = None; self.exploration = Exploration::Free; Effect::None }
+            // Moving the camera cancels a pending exploration, not the
+            // declaration being read. Only an explicit blank click, Escape,
+            // or another Focus event releases that selection.
+            Event::Pan => { self.invalidate(); self.exploration = Exploration::Free; Effect::None }
             Event::OpenFind => { self.find_open = true; self.exploration = Exploration::Free; self.prism_sel = None; self.selected = None; self.result_sel = 0; self.invalidate(); Effect::None }
             Event::CloseFind => { self.find_open = false; self.result_sel = 0; self.invalidate(); Effect::CloseFind }
             Event::QueryChanged => { self.result_sel = 0; self.invalidate(); Effect::None }
@@ -114,6 +117,21 @@ mod tests {
         state.apply(Event::OpenFind); let old = state.generation; state.apply(Event::QueryChanged); assert!(!state.accepts(old));
         let current = state.generation; assert!(state.accepts(current)); assert_eq!(state.apply(Event::Escape), Effect::CloseFind); assert!(!state.accepts(current));
         assert_eq!(state.apply(Event::Escape), Effect::BackOut(5)); assert_eq!(state.apply(Event::Escape), Effect::World);
+    }
+    #[test]
+    fn camera_pan_keeps_the_reading_selection_but_an_explicit_clear_releases_it() {
+        let key = SlotKey { node: 3, side: 1, word: crate::semantics::Word::Calls };
+        let mut state = Navigation::default();
+        state.apply(Event::Focus(Some(5)));
+        state.apply(Event::Walk(2, key));
+        let previous = state.generation;
+        state.apply(Event::Pan);
+        assert_eq!(state.focus, Some(5));
+        assert_eq!(state.selected, Some(key));
+        assert_eq!(state.prism_sel, Some(2));
+        assert_ne!(state.generation, previous, "camera input still retires pending work");
+        state.apply(Event::Focus(None));
+        assert_eq!((state.focus, state.selected, state.prism_sel), (None, None, None));
     }
     #[test]
     fn seeded_command_storms_preserve_one_owner_and_valid_stops() {
