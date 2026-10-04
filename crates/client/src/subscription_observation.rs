@@ -244,6 +244,16 @@ enum PublicationObserver<'control, 'callback> {
 }
 
 impl PublicationObserver<'_, '_> {
+    fn clock<'a>(
+        &'a self,
+        transport_clock: &'a dyn MonotonicClock,
+    ) -> &'a dyn MonotonicClock {
+        match self {
+            Self::Legacy(_) => transport_clock,
+            Self::Observed(control) => control.clock.as_ref(),
+        }
+    }
+
     fn check(&self) -> Result<(), PublicationExchangeError> {
         match self {
             Self::Legacy(cancelled) if cancelled() => Err(PublicationExchangeError::Invalid(
@@ -420,7 +430,11 @@ pub struct PublicationLease {
     lease: LocalSubscriptionId,
     cursor: Cursor,
     root: Arc<ViewRoot>,
+    /// Socket that most recently proved this admitted root/cursor.
     held_on: ConnectionId,
+    /// Socket carrying the latest fully correlated response, even when its
+    /// page or cursor has not been admitted into the retained root yet.
+    cleanup_on: ConnectionId,
 }
 
 impl PublicationLease {
@@ -440,8 +454,8 @@ impl PublicationLease {
         PUBLICATION_LEASE.renewal_interval()
     }
 
-    fn connection(&self) -> ConnectionId {
-        self.held_on.clone()
+    fn cleanup_connection(&self) -> ConnectionId {
+        self.cleanup_on.clone()
     }
 }
 
@@ -501,6 +515,7 @@ impl LocalSubscriptionTransport {
             cursor,
             root,
             held_on: self.connection(),
+            cleanup_on: self.connection(),
         };
         if let Err(error) = self.admit_publications(&mut state, response, &mut observer) {
             let _ = self.cancel_publications_current(&state);
@@ -560,6 +575,7 @@ impl LocalSubscriptionTransport {
     /// Returns an error if the owner no longer retains this exact lease.
     pub fn renew_publications(&mut self, state: &mut PublicationLease) -> Result<(), ClientError> {
         let response = self.renew_lease(state.lease, state.cursor, CREDIT, LEASE_MS)?;
+        state.cleanup_on = self.connection();
         match response {
             LocalSubscriptionResponse::Renewed {
                 cursor, lease_ms, ..
@@ -595,6 +611,7 @@ impl LocalSubscriptionTransport {
             },
             PublicationOperation::Renew,
         )?;
+        state.cleanup_on = self.connection();
         let lease_ms = match response {
             LocalSubscriptionResponse::Renewed {
                 cursor, lease_ms, ..
@@ -631,7 +648,11 @@ impl LocalSubscriptionTransport {
         &mut self,
         state: &PublicationLease,
     ) -> Result<(), ClientError> {
-        self.cancel_lease_current(state.lease, state.connection(), Duration::from_millis(50))
+        self.cancel_lease_current(
+            state.lease,
+            state.cleanup_connection(),
+            Duration::from_millis(50),
+        )
     }
 
     fn admit_publications(
@@ -640,7 +661,11 @@ impl LocalSubscriptionTransport {
         mut response: LocalSubscriptionResponse,
         observer: &mut PublicationObserver<'_, '_>,
     ) -> Result<(), PublicationExchangeError> {
-        let mut hydration = ResetHydration::begin(state.cursor, self.now())
+        // `response` arrived as a fully correlated frame. Cleanup may use its
+        // exact socket even if local proof or cursor admission fails below.
+        state.cleanup_on = self.connection();
+        let clock = observer.clock(self.clock.as_ref());
+        let mut hydration = ResetHydration::begin(state.cursor, clock.now())
             .map_err(|failure| observer.budget_error(failure))?;
         observer.begin_admission(hydration.budget());
         let previous = state.cursor;
@@ -711,14 +736,13 @@ impl LocalSubscriptionTransport {
                     let peer = self.authenticated_peer().ok_or_else(|| {
                         protocol("publication reset requires authenticated producer")
                     })?;
-                    let clock = Arc::clone(&self.clock);
                     let progress = hydration
                         .admit_page(
                             &page,
                             next.as_deref(),
                             &payload,
                             peer,
-                            clock.as_ref(),
+                            observer.clock(self.clock.as_ref()),
                         )
                         .map_err(|failure| match failure {
                             ResetHydrationError::Budget(fault) => observer.budget_error(fault),
@@ -748,6 +772,7 @@ impl LocalSubscriptionTransport {
                                 },
                                 PublicationOperation::Page,
                             )?;
+                            state.cleanup_on = self.connection();
                         }
                     }
                 }
@@ -761,14 +786,16 @@ impl LocalSubscriptionTransport {
             state.held_on = self.connection();
             return Ok(());
         }
-        match observer.request(
+        let acknowledgement = observer.request(
             self,
             LocalSubscriptionOperation::Ack {
                 lease: state.lease,
                 cursor: cursor.encode_control().into_vec().into_boxed_slice(),
             },
             PublicationOperation::Ack,
-        )? {
+        )?;
+        state.cleanup_on = self.connection();
+        match acknowledgement {
             LocalSubscriptionResponse::Acked {
                 cursor: admitted, ..
             } if admitted.as_ref() == cursor.encode_control().as_ref() => {}
@@ -915,6 +942,7 @@ mod tests {
             cursor,
             root,
             held_on: transport.connection(),
+            cleanup_on: transport.connection(),
         }
     }
     fn authenticated_pair(
@@ -2000,7 +2028,7 @@ mod tests {
     }
 
     #[test]
-    fn reusing_the_same_endpoint_after_rotation_does_not_reuse_a_socket_identity() {
+    fn a_fully_correlated_renewal_updates_cleanup_to_the_replacement_socket() {
         let path = std::path::PathBuf::from(format!(
             "/tmp/nudox-pub-rotate-{}-{}.sock",
             std::process::id(),
@@ -2043,6 +2071,18 @@ mod tests {
                     lease_ms: LEASE_MS,
                 }),
             );
+            let (cancel_id, operation) = request(&mut replacement);
+            assert!(matches!(
+                operation,
+                LocalSubscriptionOperation::Cancel { lease: cancelled } if cancelled == lease
+            ));
+            reply(
+                &mut replacement,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                    request_id: cancel_id,
+                    lease,
+                }),
+            );
             assert!(read_frame(&mut replacement, crate::limits()).is_err());
         });
         let mut transport = LocalSubscriptionTransport::connect_with_timeouts(
@@ -2051,17 +2091,17 @@ mod tests {
             Duration::from_millis(200),
         )
         .expect("connect to endpoint");
-        let state = lease_on(&transport, lease, root, cursor);
-        let original = state.connection();
+        let mut state = lease_on(&transport, lease, root, cursor);
+        let original = state.cleanup_connection();
         transport.exhaust_connection_budget_for_test();
         transport
-            .renew_lease(lease, cursor, CREDIT, LEASE_MS)
+            .renew_publications(&mut state)
             .expect("the new socket can serve an ordinary renewal");
         assert_ne!(transport.connection(), original);
-        assert_eq!(
-            transport.cancel_publications_current(&state),
-            Err(protocol("publication lease is not held on this socket"))
-        );
+        assert_eq!(state.cleanup_connection(), transport.connection());
+        transport
+            .cancel_publications_current(&state)
+            .expect("the correlated replacement response binds cleanup to its socket");
         drop(transport);
         server.join().expect("replacement owner");
         std::fs::remove_file(path).expect("remove endpoint path");
