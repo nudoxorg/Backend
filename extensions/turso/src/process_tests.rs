@@ -280,7 +280,7 @@ fn another_process_refuses_an_unsupported_selected_schema_without_mutation() {
                 .selected()
                 .expect("selector")
                 .expect("old generation");
-            assert_eq!(selected.generation.get(), old_generation);
+            assert_eq!(selected.generation, old_generation);
             assert_eq!(selected.schema_version, crate::schema::SCHEMA_VERSION - 1);
             assert_eq!(Some(selected), selected_before);
             assert_eq!(

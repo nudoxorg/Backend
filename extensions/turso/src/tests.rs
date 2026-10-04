@@ -2079,7 +2079,7 @@ fn unpaged_graph_reader_rejects_edge_id_separate_from_typed_fact_identity() {
                 vec![dependency_edge(&source, "edge-id-target", "^1")].into_boxed_slice(),
             ),
         )];
-        let projection = open_test(&path).await.expect("open");
+        let mut projection = open_test(&path).await.expect("open");
         projection
             .synchronize_package_graph_current_for_test(fallback_seed_view().root(), &facts)
             .await
@@ -3726,7 +3726,7 @@ async fn stored_state_rowid(projection: &TursoProjection, source: &PackageRefere
         .next()
         .await
         .unwrap_or_else(|error| panic!("state rowid next: {error}"))
-        .unwrap_or_else(|| panic!("missing state {source}"));
+        .unwrap_or_else(|| panic!("missing state {}", source.as_str()));
     row.get(0)
         .unwrap_or_else(|error| panic!("state rowid decode: {error}"))
 }
