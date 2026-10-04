@@ -20,9 +20,8 @@ use std::{
 };
 
 use backend_platform::{
-    CreatedDirectory, CreatedDirectoryRenameError, CreatedFile, CreatedFileRemovalError,
-    DirectoryCapability, DirectoryCreateFailure, DirectoryEntry, DirectoryRenameError,
-    FileCreateFailure, FileIdentity,
+    CreatedDirectory, CreatedDirectoryRenameError, DirectoryCapability, DirectoryCreateFailure,
+    DirectoryEntry, DirectoryRenameError, FileIdentity,
 };
 
 const DENIAL_BACKOFF: [Duration; 4] = [
@@ -72,8 +71,9 @@ impl NamespaceFence {
         self.directory.verify_path(&self.namespace_path)?;
         if !self.file.metadata()?.is_file()
             || FileIdentity::of_file(&self.file)? != self.identity
-            || FileIdentity::of_path_nofollow(&self.namespace_path.join(self.kind.file_name()))?
-                != self.identity
+            || FileIdentity::of_path_nofollow(
+                &self.namespace_path.join(self.kind.file_name()),
+            )? != self.identity
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -141,12 +141,6 @@ pub(crate) enum StageDisposition {
     PreservedForRecovery,
     /// The exact unpublished stage and its lease marker were removed.
     Removed,
-    /// The stage and marker were removed, but marker-removal durability could
-    /// not be confirmed.
-    RemovedButNotDurable,
-    /// The stage was removed, but the lease marker's post-removal name could
-    /// not be verified. A later recovery pass must re-admit the namespace.
-    CleanupUnverified,
 }
 
 #[derive(Debug)]
@@ -323,50 +317,18 @@ impl PrivateNamespace {
         name: &str,
         fence: &NamespaceFence,
     ) -> io::Result<PreparedStage> {
-        self.create_stage_with(name, fence, |directory, name| {
-            directory.create_private_dir_tracked(name)
-        })
-    }
-
-    fn create_stage_with(
-        &self,
-        name: &str,
-        fence: &NamespaceFence,
-        create_directory: impl FnOnce(
-            &DirectoryCapability,
-            &str,
-        ) -> Result<CreatedDirectory, DirectoryCreateFailure>,
-    ) -> io::Result<PreparedStage> {
         fence.verify_for(self)?;
-        let mut lease = StageLease::create(self, name, fence)?;
-        let created = match create_directory(&self.directory, name) {
+        let created = match self.directory.create_private_dir_tracked(name) {
             Ok(created) => created,
-            Err(DirectoryCreateFailure::NotCreated(source)) => {
-                return match lease.remove_under(self, fence, true) {
-                    Ok(()) => Err(source),
-                    Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                        create: source,
-                        cleanup: cleanup.into_io_error(),
-                    })),
-                };
-            }
+            Err(DirectoryCreateFailure::NotCreated(source)) => return Err(source),
             Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => {
-                // The stage name has no creation receipt. Keep its lease token
-                // so the next fenced sweep can resolve it by the ordinary
-                // stage-name and marker checks.
-                return Err(io::Error::other(
-                    DirectoryCreateFailure::CreatedButUnpinned(source),
-                ));
+                return Err(io::Error::other(DirectoryCreateFailure::CreatedButUnpinned(
+                    source,
+                )));
             }
             Err(DirectoryCreateFailure::CreatedButUnready { directory, source }) => {
                 return match directory.remove_all(MAX_STAGE_CLEANUP_ENTRIES) {
-                    Ok(()) => match lease.remove_under(self, fence, true) {
-                        Ok(()) => Err(source),
-                        Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                            create: source,
-                            cleanup: cleanup.into_io_error(),
-                        })),
-                    },
+                    Ok(()) => Err(source),
                     Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
                         create: source,
                         cleanup,
@@ -374,32 +336,128 @@ impl PrivateNamespace {
                 };
             }
         };
-        let stage = PreparedStage {
+        let lease_name = stage_lease_file_name(name);
+        let mut lease_file = match self.directory.create_file_exclusive(&lease_name) {
+            Ok(file) => file,
+            Err(create) => {
+                return match created.remove_all(MAX_STAGE_CLEANUP_ENTRIES) {
+                    Ok(()) => Err(create),
+                    Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
+                        create,
+                        cleanup,
+                    })),
+                };
+            }
+        };
+        let lease_identity = match FileIdentity::of_file(&lease_file) {
+            Ok(identity) => identity,
+            Err(create) => {
+                drop(lease_file);
+                let cleanup = created.remove_all(MAX_STAGE_CLEANUP_ENTRIES);
+                return match cleanup {
+                    Ok(()) => Err(create),
+                    Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
+                        create,
+                        cleanup,
+                    })),
+                };
+            }
+        };
+        if let Err(create) = lease_file
+            .write_all(name.as_bytes())
+            .and_then(|()| lease_file.sync_all())
+        {
+            drop(lease_file);
+            return match self.remove_stage_and_lease(&created, &lease_name, lease_identity) {
+                Ok(()) => Err(create),
+                Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
+                    create,
+                    cleanup,
+                })),
+            };
+        }
+        let named_identity_error = match
+            FileIdentity::of_path_nofollow(&self.path.join(&lease_name))
+        {
+            Ok(identity) if identity == lease_identity => None,
+            Ok(_) => Some(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "new stage lease name does not identify its held file",
+            )),
+            Err(error) => Some(error),
+        };
+        if let Some(create) = named_identity_error {
+            drop(lease_file);
+            return match self.remove_stage_and_lease(&created, &lease_name, lease_identity) {
+                Ok(()) => Err(create),
+                Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
+                    create,
+                    cleanup,
+                })),
+            };
+        }
+        if let Err(error) = lease_file.try_lock() {
+            drop(lease_file);
+            let cleanup = self.remove_stage_and_lease(&created, &lease_name, lease_identity);
+            return match cleanup {
+                Ok(()) => Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("new stage lease could not be locked: {error}"),
+                )),
+                Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
+                    create: error,
+                    cleanup,
+                })),
+            };
+        }
+        if let Err(error) = fence.verify_for(self).and_then(|()| {
+            if FileIdentity::of_file(&lease_file)? != lease_identity
+                || FileIdentity::of_path_nofollow(&self.path.join(&lease_name))? != lease_identity
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stage lease identity changed during acquisition",
+                ));
+            }
+            Ok(())
+        }) {
+            drop(lease_file);
+            // The stage and marker stay named for the next fence holder. This
+            // failure has no proof that cleanup can safely target the names.
+            return Err(error);
+        }
+        Ok(PreparedStage {
+            parent: self.directory.clone(),
             created,
             name: name.to_owned(),
             path: self.path.join(name),
             namespace: self.clone(),
             namespace_path: self.path.clone(),
             fence_kind: fence.kind,
-            lease,
+            lease_name,
+            lease_file: Some(lease_file),
+            lease_identity,
             disposition: StageDisposition::Prepared,
             armed: true,
-        };
-        if let Err(create) = fence
-            .verify_for(self)
-            .and_then(|()| stage.created.verify_named())
-            .and_then(|()| stage.created.verify_path(&stage.path))
-            .and_then(|()| stage.lease.verify_under(self, fence))
-        {
-            return match stage.discard_under(fence) {
-                Ok(()) => Err(create),
-                Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                    create,
-                    cleanup: cleanup.into_io_error(),
-                })),
-            };
+        })
+    }
+
+    fn remove_stage_and_lease(
+        &self,
+        created: &CreatedDirectory,
+        lease_name: &str,
+        lease_identity: FileIdentity,
+    ) -> io::Result<()> {
+        created.remove_all(MAX_STAGE_CLEANUP_ENTRIES)?;
+        match FileIdentity::of_path_nofollow(&self.path.join(lease_name)) {
+            Ok(identity) if identity == lease_identity => self.directory.remove_file(lease_name),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stage lease name changed identity during cleanup",
+            )),
+            Err(error) => Err(error),
         }
-        Ok(stage)
     }
 
     pub(crate) fn entries(
@@ -542,7 +600,11 @@ impl PrivateNamespace {
         Ok(StageSweepDisposition::Removed)
     }
 
-    pub(crate) fn remove_entry(&self, name: &str, fence: &NamespaceFence) -> io::Result<()> {
+    pub(crate) fn remove_entry(
+        &self,
+        name: &str,
+        fence: &NamespaceFence,
+    ) -> io::Result<()> {
         fence.verify_for(self)?;
         let result = match self.directory.open_dir(name) {
             Ok(_) => self
@@ -581,249 +643,6 @@ impl PrivateNamespace {
     }
 }
 
-/// One exact stage marker and its active lock. The marker is created, locked,
-/// written, and flushed before its corresponding stage directory is created.
-/// Cleanup keeps this exact receipt and lock through the final identity/token
-/// checks and deletion attempt; it never reopens the marker by name.
-struct StageLease {
-    name: String,
-    stage_name: String,
-    identity: FileIdentity,
-    state: StageLeaseState,
-}
-
-enum StageLeaseState {
-    Held(CreatedFile),
-    Removed,
-    RemovalUnconfirmed,
-}
-
-impl StageLease {
-    fn create(
-        namespace: &PrivateNamespace,
-        stage_name: &str,
-        fence: &NamespaceFence,
-    ) -> io::Result<Self> {
-        fence.verify_for(namespace)?;
-        let name = stage_lease_file_name(stage_name);
-        let file = match namespace.directory.create_file_exclusive_tracked(&name) {
-            Ok(file) => file,
-            Err(FileCreateFailure::NotCreated(source)) => return Err(source),
-            Err(FileCreateFailure::CreatedButUnready { file, source }) => {
-                return match file.remove_with_outcome() {
-                    Ok(()) => Err(source),
-                    Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                        create: source,
-                        cleanup: cleanup.into_io_error(),
-                    })),
-                };
-            }
-        };
-        let identity = match FileIdentity::of_file(file.file()) {
-            Ok(identity) => identity,
-            Err(source) => {
-                return match file.remove_with_outcome() {
-                    Ok(()) => Err(source),
-                    Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                        create: source,
-                        cleanup: cleanup.into_io_error(),
-                    })),
-                };
-            }
-        };
-        let mut lease = Self {
-            name,
-            stage_name: stage_name.to_owned(),
-            identity,
-            state: StageLeaseState::Held(file),
-        };
-        let initialized = (|| {
-            let file = lease.held_file_mut()?;
-            file.file_mut().try_lock()?;
-            file.file_mut().write_all(stage_name.as_bytes())?;
-            file.file_mut().sync_all()?;
-            namespace.directory.sync_all()?;
-            fence.verify_for(namespace)?;
-            lease.verify_under(namespace, fence)
-        })();
-        if let Err(create) = initialized {
-            return match lease.remove_under(namespace, fence, false) {
-                Ok(()) => Err(create),
-                Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                    create,
-                    cleanup: cleanup.into_io_error(),
-                })),
-            };
-        }
-        Ok(lease)
-    }
-
-    fn verify_under(&self, namespace: &PrivateNamespace, fence: &NamespaceFence) -> io::Result<()> {
-        fence.verify_for(namespace)?;
-        let file = self.held_file()?;
-        if FileIdentity::of_file(file.file())? != self.identity
-            || FileIdentity::of_path_nofollow(&namespace.path.join(&self.name))? != self.identity
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stage lease identity changed",
-            ));
-        }
-        verify_stage_lease_token(&mut file.file().try_clone()?, &self.stage_name)
-    }
-
-    fn remove_under(
-        &mut self,
-        namespace: &PrivateNamespace,
-        fence: &NamespaceFence,
-        verify_token: bool,
-    ) -> Result<(), StageLeaseCleanupError> {
-        self.remove_under_with(
-            namespace,
-            fence,
-            verify_token,
-            CreatedFile::remove_with_outcome,
-        )
-    }
-
-    fn remove_under_with(
-        &mut self,
-        namespace: &PrivateNamespace,
-        fence: &NamespaceFence,
-        verify_token: bool,
-        remove: impl FnOnce(CreatedFile) -> Result<(), CreatedFileRemovalError>,
-    ) -> Result<(), StageLeaseCleanupError> {
-        fence
-            .verify_for(namespace)
-            .map_err(StageLeaseCleanupError::NotRemoved)?;
-        let file = self
-            .held_file()
-            .map_err(StageLeaseCleanupError::NotRemoved)?;
-        if FileIdentity::of_file(file.file()).map_err(StageLeaseCleanupError::NotRemoved)?
-            != self.identity
-            || FileIdentity::of_path_nofollow(&namespace.path.join(&self.name))
-                .map_err(StageLeaseCleanupError::NotRemoved)?
-                != self.identity
-        {
-            return Err(StageLeaseCleanupError::NotRemoved(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stage lease identity changed before removal",
-            )));
-        }
-        if verify_token {
-            verify_stage_lease_token(
-                &mut file
-                    .file()
-                    .try_clone()
-                    .map_err(StageLeaseCleanupError::NotRemoved)?,
-                &self.stage_name,
-            )
-            .map_err(StageLeaseCleanupError::NotRemoved)?;
-        }
-
-        let file = match std::mem::replace(&mut self.state, StageLeaseState::RemovalUnconfirmed) {
-            StageLeaseState::Held(file) => file,
-            state => {
-                self.state = state;
-                return Err(StageLeaseCleanupError::NotRemoved(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "stage lease was already removed or its removal is unconfirmed",
-                )));
-            }
-        };
-        match remove(file) {
-            Ok(()) => {
-                self.state = StageLeaseState::Removed;
-                Ok(())
-            }
-            Err(CreatedFileRemovalError::NotRemoved { file, source }) => {
-                self.state = StageLeaseState::Held(file);
-                Err(StageLeaseCleanupError::NotRemoved(source))
-            }
-            Err(CreatedFileRemovalError::RemovedButNotDurable(source)) => {
-                self.state = StageLeaseState::RemovalUnconfirmed;
-                Err(StageLeaseCleanupError::RemovedButNotDurable(source))
-            }
-            Err(CreatedFileRemovalError::RemovedButUnverified(source)) => {
-                self.state = StageLeaseState::RemovalUnconfirmed;
-                Err(StageLeaseCleanupError::RemovedButUnverified(source))
-            }
-        }
-    }
-
-    fn held_file(&self) -> io::Result<&CreatedFile> {
-        match &self.state {
-            StageLeaseState::Held(file) => Ok(file),
-            StageLeaseState::Removed => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stage lease is already removed",
-            )),
-            StageLeaseState::RemovalUnconfirmed => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stage lease removal is unconfirmed",
-            )),
-        }
-    }
-
-    fn held_file_mut(&mut self) -> io::Result<&mut CreatedFile> {
-        match &mut self.state {
-            StageLeaseState::Held(file) => Ok(file),
-            StageLeaseState::Removed | StageLeaseState::RemovalUnconfirmed => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stage lease is not held",
-            )),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum StageLeaseCleanupError {
-    NotRemoved(io::Error),
-    RemovedButNotDurable(io::Error),
-    RemovedButUnverified(io::Error),
-}
-
-impl StageLeaseCleanupError {
-    fn into_io_error(self) -> io::Error {
-        let kind = self.cause().kind();
-        io::Error::new(kind, self)
-    }
-
-    fn cause(&self) -> &io::Error {
-        match self {
-            Self::NotRemoved(source)
-            | Self::RemovedButNotDurable(source)
-            | Self::RemovedButUnverified(source) => source,
-        }
-    }
-}
-
-impl std::fmt::Display for StageLeaseCleanupError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotRemoved(source) => write!(formatter, "stage lease was not removed: {source}"),
-            Self::RemovedButNotDurable(source) => {
-                write!(
-                    formatter,
-                    "stage lease removal committed but was not durable: {source}"
-                )
-            }
-            Self::RemovedButUnverified(source) => {
-                write!(
-                    formatter,
-                    "stage lease removal committed but was unverified: {source}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for StageLeaseCleanupError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cause())
-    }
-}
-
 #[derive(Debug)]
 struct StageCreateRollbackFailure {
     create: io::Error,
@@ -856,13 +675,16 @@ impl std::error::Error for StageCreateRollbackFailure {
 /// conforming writers across that interval; actors that bypass it remain outside
 /// the guarantee.
 pub(crate) struct PreparedStage {
+    parent: DirectoryCapability,
     created: CreatedDirectory,
     name: String,
     path: PathBuf,
     namespace: PrivateNamespace,
     namespace_path: PathBuf,
     fence_kind: NamespaceFenceKind,
-    lease: StageLease,
+    lease_name: String,
+    lease_file: Option<File>,
+    lease_identity: FileIdentity,
     disposition: StageDisposition,
     armed: bool,
 }
@@ -932,7 +754,7 @@ impl PreparedStage {
         }
         let cleanup = retry_while_denied(|| self.created.remove_all(MAX_STAGE_CLEANUP_ENTRIES));
         let lease_cleanup = if cleanup.is_ok() {
-            self.lease.remove_under(&self.namespace, fence, true)
+            self.remove_lease_under(fence)
         } else {
             Ok(())
         };
@@ -942,7 +764,7 @@ impl PreparedStage {
                 self.disposition = StageDisposition::Removed;
                 Ok(())
             }
-            (Err(source), _) => {
+            (Err(source), _) | (Ok(()), Err(source)) => {
                 self.disposition = StageDisposition::PreservedForRecovery;
                 Err(StageCleanupFailure {
                     disposition: self.disposition,
@@ -950,29 +772,14 @@ impl PreparedStage {
                     source,
                 })
             }
-            (Ok(()), Err(source)) => {
-                self.disposition = match &source {
-                    StageLeaseCleanupError::NotRemoved(_) => StageDisposition::PreservedForRecovery,
-                    StageLeaseCleanupError::RemovedButNotDurable(_) => {
-                        StageDisposition::RemovedButNotDurable
-                    }
-                    StageLeaseCleanupError::RemovedButUnverified(_) => {
-                        StageDisposition::CleanupUnverified
-                    }
-                };
-                Err(StageCleanupFailure {
-                    disposition: self.disposition,
-                    stage_name: self.name.clone(),
-                    source: source.into_io_error(),
-                })
-            }
         }
     }
 
     fn prepare_for_publication(&mut self, fence: &NamespaceFence) -> io::Result<()> {
         self.verify_fence_and_lease(fence)?;
+        self.remove_lease_under(fence)?;
         self.created.capability().sync_all()?;
-        self.namespace.directory.sync_all()?;
+        self.parent.sync_all()?;
         fence.verify_for(&self.namespace)
     }
 
@@ -1010,7 +817,7 @@ impl PreparedStage {
         if let Err(source) = self.prepare_for_publication(fence) {
             let operation = PublicationFailure::NotCommitted(source);
             if self.armed {
-                if let Err(cleanup) = self.discard_inner(fence) {
+            if let Err(cleanup) = self.discard_inner(fence) {
                     return Err(PublicationFailure::Cleanup {
                         operation: Some(Box::new(operation)),
                         source: cleanup.into_io_error(),
@@ -1022,7 +829,7 @@ impl PreparedStage {
         let published = retry_publish_with(
             &self.namespace,
             &self.created,
-            &self.namespace.directory,
+            &self.parent,
             &self.path,
             &self.path.with_file_name(destination),
             destination,
@@ -1037,30 +844,7 @@ impl PreparedStage {
             self.disposition = StageDisposition::Published;
         }
         match published {
-            Ok(DirectoryPublication::Published) => {
-                self.disposition = StageDisposition::Published;
-                match self.lease.remove_under(&self.namespace, fence, true) {
-                    Ok(()) => Ok(DirectoryPublication::Published),
-                    Err(StageLeaseCleanupError::NotRemoved(source)) => {
-                        Err(PublicationFailure::CommittedButLeaseCleanupRefused {
-                            destination: self.path.with_file_name(destination),
-                            source,
-                        })
-                    }
-                    Err(StageLeaseCleanupError::RemovedButNotDurable(source)) => {
-                        Err(PublicationFailure::CommittedButLeaseCleanupNotDurable {
-                            destination: self.path.with_file_name(destination),
-                            source,
-                        })
-                    }
-                    Err(StageLeaseCleanupError::RemovedButUnverified(source)) => {
-                        Err(PublicationFailure::CommittedButLeaseCleanupUnverified {
-                            destination: self.path.with_file_name(destination),
-                            source,
-                        })
-                    }
-                }
-            }
+            Ok(DirectoryPublication::Published) => Ok(DirectoryPublication::Published),
             Ok(DirectoryPublication::AlreadyPresent) => {
                 self.discard_inner(fence)
                     .map_err(|source| PublicationFailure::Cleanup {
@@ -1093,7 +877,48 @@ impl PreparedStage {
         fence.verify_for(&self.namespace)?;
         self.created.verify_named()?;
         self.created.verify_path(&self.path)?;
-        self.lease.verify_under(&self.namespace, fence)
+        if let Some(file) = &self.lease_file {
+            if FileIdentity::of_file(file)? != self.lease_identity
+                || FileIdentity::of_path_nofollow(&self.namespace_path.join(&self.lease_name))?
+                    != self.lease_identity
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stage active-lease identity changed",
+                ));
+            }
+            verify_stage_lease_token(&mut file.try_clone()?, &self.name)?;
+        }
+        Ok(())
+    }
+
+    fn remove_lease_under(&mut self, fence: &NamespaceFence) -> io::Result<()> {
+        fence.verify_for(&self.namespace)?;
+        if let Some(file) = &self.lease_file {
+            if FileIdentity::of_file(file)? != self.lease_identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stage active-lease handle changed identity before removal",
+                ));
+            }
+            verify_stage_lease_token(&mut file.try_clone()?, &self.name)?;
+        }
+        match FileIdentity::of_path_nofollow(&self.namespace_path.join(&self.lease_name)) {
+            Ok(identity) if identity == self.lease_identity => {
+                self.parent.remove_file(&self.lease_name)?;
+                self.lease_file.take();
+                fence.verify_for(&self.namespace)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.lease_file.take();
+                Ok(())
+            }
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stage active-lease name changed identity",
+            )),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -1245,9 +1070,9 @@ fn publish_once(
             }
             Ok(DirectoryPublication::Published)
         }
-        Err(CreatedDirectoryRenameError::Rename(DirectoryRenameError::CommittedButNotDurable(
-            source,
-        ))) => {
+        Err(CreatedDirectoryRenameError::Rename(
+            DirectoryRenameError::CommittedButNotDurable(source),
+        )) => {
             *armed = false;
             if let Err(verification) = fence
                 .verify_for(namespace)
@@ -1320,31 +1145,6 @@ pub(crate) enum PublicationFailure {
         /// The failed post-commit identity check.
         verification: io::Error,
     },
-    /// The rename committed and the destination was verified, but removing its
-    /// now-orphaned active lease failed. The published generation must be kept
-    /// and the rename must never be replayed.
-    CommittedButLeaseCleanupRefused {
-        /// The path at which the generation rename committed.
-        destination: PathBuf,
-        /// The exact marker identity/token cleanup refusal.
-        source: io::Error,
-    },
-    /// The generation rename committed and the marker's delete request
-    /// committed, but the marker's parent could not be confirmed durable.
-    CommittedButLeaseCleanupNotDurable {
-        /// The path at which the generation rename committed.
-        destination: PathBuf,
-        /// The parent flush refusal after marker deletion.
-        source: io::Error,
-    },
-    /// The generation rename committed and the marker's delete request
-    /// committed, but the direct-name postcondition could not be verified.
-    CommittedButLeaseCleanupUnverified {
-        /// The path at which the generation rename committed.
-        destination: PathBuf,
-        /// The failed marker postcondition.
-        source: io::Error,
-    },
     /// Stage cleanup failed. `operation` retains the publication result that
     /// led to cleanup; `None` means cleanup followed an already-present winner.
     Cleanup {
@@ -1371,36 +1171,6 @@ impl PublicationFailure {
                 Self::CommittedButOwnershipUnverified {
                     rename,
                     verification,
-                },
-            ),
-            Self::CommittedButLeaseCleanupRefused {
-                destination,
-                source,
-            } => io::Error::new(
-                source.kind(),
-                Self::CommittedButLeaseCleanupRefused {
-                    destination,
-                    source,
-                },
-            ),
-            Self::CommittedButLeaseCleanupNotDurable {
-                destination,
-                source,
-            } => io::Error::new(
-                source.kind(),
-                Self::CommittedButLeaseCleanupNotDurable {
-                    destination,
-                    source,
-                },
-            ),
-            Self::CommittedButLeaseCleanupUnverified {
-                destination,
-                source,
-            } => io::Error::new(
-                source.kind(),
-                Self::CommittedButLeaseCleanupUnverified {
-                    destination,
-                    source,
                 },
             ),
             Self::Cleanup { operation, source } => {
@@ -1437,30 +1207,6 @@ impl std::fmt::Display for PublicationFailure {
                 }
                 Ok(())
             }
-            Self::CommittedButLeaseCleanupRefused {
-                destination,
-                source,
-            } => write!(
-                formatter,
-                "generation committed at {} but active lease cleanup was refused: {source}",
-                destination.display()
-            ),
-            Self::CommittedButLeaseCleanupNotDurable {
-                destination,
-                source,
-            } => write!(
-                formatter,
-                "generation committed at {} and its active lease was removed, but cleanup durability failed: {source}",
-                destination.display()
-            ),
-            Self::CommittedButLeaseCleanupUnverified {
-                destination,
-                source,
-            } => write!(
-                formatter,
-                "generation committed at {} but active lease removal could not be verified: {source}",
-                destination.display()
-            ),
             Self::Cleanup { operation, source } => {
                 write!(formatter, "unpublished stage cleanup failed: {source}")?;
                 if let Some(operation) = operation {
@@ -1479,9 +1225,6 @@ impl std::error::Error for PublicationFailure {
             | Self::OwnershipChanged(source)
             | Self::CommittedButNotDurable(source) => Some(source),
             Self::CommittedButOwnershipUnverified { verification, .. } => Some(verification),
-            Self::CommittedButLeaseCleanupRefused { source, .. } => Some(source),
-            Self::CommittedButLeaseCleanupNotDurable { source, .. }
-            | Self::CommittedButLeaseCleanupUnverified { source, .. } => Some(source),
             Self::Cleanup { source, .. } => Some(source),
         }
     }
@@ -1574,8 +1317,8 @@ fn retry_with<T, E: TransientDenial>(
 mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
 
-    use super::*;
     use backend_platform::FileIdentity;
+    use super::*;
     use std::{cell::Cell, fs};
 
     fn scratch(label: &str) -> PathBuf {
@@ -1621,25 +1364,14 @@ mod tests {
         let root = scratch("winner");
         let namespace = namespace(&root);
         let winner = stage(&namespace, ".winner", "winner bytes");
-        let winner_lease = stage_lease_file_name(winner.name());
         assert_eq!(
             publish(winner, "generation").expect("first publisher"),
             DirectoryPublication::Published
-        );
-        assert!(
-            !namespace.path().join(winner_lease).exists(),
-            "a committed stage removes its lease after the no-replace rename"
         );
         let loser = stage(&namespace, ".loser", "loser bytes");
         assert_eq!(
             publish(loser, "generation").expect("second publisher"),
             DirectoryPublication::AlreadyPresent
-        );
-        assert!(
-            !namespace
-                .path()
-                .join(stage_lease_file_name(".loser"))
-                .exists()
         );
         assert_eq!(
             fs::read(namespace.path().join("generation/payload")).expect("winner payload"),
@@ -1656,7 +1388,6 @@ mod tests {
         let namespace = namespace(&root);
         let stage = stage(&namespace, ".stage", "admitted bytes");
         let source_name = stage.name().to_owned();
-        let lease_name = stage.lease.name.clone();
         let attempts = Cell::new(0_u32);
         let pauses = Cell::new(Vec::new());
         let schedule = [Duration::from_millis(3), Duration::from_millis(7)];
@@ -1669,11 +1400,6 @@ mod tests {
             |created, destination| {
                 attempts.set(attempts.get() + 1);
                 assert_eq!(created.name(), source_name.as_str());
-                let lease = namespace
-                    .directory
-                    .open_private_file_read_write(&lease_name, false)
-                    .expect("active lease remains named during publication retries");
-                assert!(matches!(lease.try_lock(), Err(TryLockError::WouldBlock)));
                 assert_eq!(
                     fs::read(namespace.path().join(&source_name).join("payload"))
                         .expect("stage bytes"),
@@ -1706,268 +1432,7 @@ mod tests {
             fs::read(namespace.path().join("generation/payload")).expect("published bytes"),
             b"admitted bytes"
         );
-        assert!(!namespace.path().join(lease_name).exists());
         assert!(!namespace.path().join(".stage").exists());
-        drop(namespace);
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn stage_lease_is_locked_and_flushed_before_the_stage_directory_attempt() {
-        let root = scratch("lease-before-stage");
-        let namespace = namespace(&root);
-        let fence = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("stage gate");
-        let failure =
-            match namespace.create_stage_with(".stage", &fence, |directory, stage_name| {
-                let lease_name = stage_lease_file_name(stage_name);
-                let mut lease = directory
-                    .open_private_file_read_write(&lease_name, false)
-                    .expect("lease must be created before the stage operation");
-                verify_stage_lease_token(&mut lease, stage_name)
-                    .expect("lease token is already flushed");
-                assert!(matches!(lease.try_lock(), Err(TryLockError::WouldBlock)));
-                assert!(!namespace.path().join(stage_name).exists());
-                Err(DirectoryCreateFailure::NotCreated(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "injected pre-create refusal",
-                )))
-            }) {
-                Err(failure) => failure,
-                Ok(_) => panic!("injected stage refusal must be returned"),
-            };
-        assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
-        assert!(!namespace.path().join(".stage").exists());
-        assert!(
-            !namespace
-                .path()
-                .join(stage_lease_file_name(".stage"))
-                .exists()
-        );
-        drop(fence);
-        drop(namespace);
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn precommit_lease_cleanup_refusal_retains_the_original_locked_receipt_for_retry() {
-        let root = scratch("lease-retry-original-receipt");
-        let namespace = namespace(&root);
-        let fence = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("stage gate");
-        let stage_name = ".stage";
-        let mut lease = StageLease::create(&namespace, stage_name, &fence).expect("lease");
-        let marker_name = lease.name.clone();
-        let identity = lease.identity;
-
-        let refusal = lease
-            .remove_under_with(&namespace, &fence, true, |file| {
-                assert_eq!(
-                    FileIdentity::of_file(file.file()).expect("original receipt identity"),
-                    identity
-                );
-                Err(CreatedFileRemovalError::NotRemoved {
-                    file,
-                    source: io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "injected refusal before delete commit",
-                    ),
-                })
-            })
-            .expect_err("precommit cleanup refusal preserves the marker receipt");
-        assert!(matches!(
-            refusal,
-            StageLeaseCleanupError::NotRemoved(ref source)
-                if source.kind() == io::ErrorKind::PermissionDenied
-        ));
-        lease
-            .verify_under(&namespace, &fence)
-            .expect("the original held receipt remains verifiable");
-        let mut probe = namespace
-            .directory
-            .open_private_file_read_write(&marker_name, false)
-            .expect("marker remains named");
-        assert!(matches!(probe.try_lock(), Err(TryLockError::WouldBlock)));
-        drop(probe);
-
-        lease
-            .remove_under(&namespace, &fence, true)
-            .expect("retry removes through the retained receipt");
-        assert!(!namespace.path().join(marker_name).exists());
-        drop(fence);
-        drop(namespace);
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn stage_creation_never_creates_a_directory_when_lease_admission_refuses() {
-        let root = scratch("lease-admission-before-stage");
-        let namespace = namespace(&root);
-        let stage_name = ".stage";
-        let lease_name = stage_lease_file_name(stage_name);
-        let mut preexisting = namespace
-            .directory
-            .create_file_exclusive(&lease_name)
-            .expect("seed conflicting lease name");
-        preexisting
-            .write_all(b"leave existing lease alone")
-            .expect("write existing bytes");
-        preexisting.sync_all().expect("flush existing bytes");
-        drop(preexisting);
-
-        let fence = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("stage gate");
-        let failure = match namespace.create_stage(stage_name, &fence) {
-            Err(failure) => failure,
-            Ok(_) => panic!("existing lease name must refuse stage admission"),
-        };
-        assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
-        assert!(
-            !namespace.path().join(stage_name).exists(),
-            "stage directory must not precede lease admission"
-        );
-        assert_eq!(
-            fs::read(namespace.path().join(&lease_name)).expect("existing lease remains"),
-            b"leave existing lease alone"
-        );
-
-        drop(fence);
-        drop(namespace);
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn created_but_unready_stage_rolls_back_from_both_exact_receipts() {
-        let root = scratch("stage-created-but-unready");
-        let namespace = namespace(&root);
-        let fence = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("stage gate");
-        let failure =
-            match namespace.create_stage_with(".stage", &fence, |directory, stage_name| {
-                let created = directory
-                    .create_private_dir_tracked(stage_name)
-                    .expect("create exact stage receipt");
-                Err(DirectoryCreateFailure::CreatedButUnready {
-                    directory: created,
-                    source: io::Error::other("injected post-create initialization failure"),
-                })
-            }) {
-                Err(failure) => failure,
-                Ok(_) => panic!("injected post-create failure must be returned"),
-            };
-        assert!(
-            failure
-                .to_string()
-                .contains("injected post-create initialization failure")
-        );
-        assert!(!namespace.path().join(".stage").exists());
-        assert!(
-            !namespace
-                .path()
-                .join(stage_lease_file_name(".stage"))
-                .exists()
-        );
-        drop(fence);
-        drop(namespace);
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn crash_after_flushed_lease_and_before_stage_creation_leaves_reclaimable_orphan() {
-        let root = scratch("lease-flushed-before-stage-crash");
-        let namespace = namespace(&root);
-        let marker_name = stage_lease_file_name(".stage");
-        let fence = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("stage gate");
-        let lease = StageLease::create(&namespace, ".stage", &fence)
-            .expect("create and flush active lease");
-        assert!(!namespace.path().join(".stage").exists());
-        assert!(namespace.path().join(&marker_name).is_file());
-
-        // Releasing the owner handle models process death in the narrow window
-        // after the lease is durable but before the stage directory is made.
-        drop(lease);
-        drop(fence);
-        let recovery = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("recovery gate");
-        assert_eq!(
-            namespace
-                .sweep_orphan_stage_lease(&marker_name, ".stage", &recovery)
-                .expect("reclaim marker for absent stage"),
-            StageSweepDisposition::Removed
-        );
-        assert!(!namespace.path().join(&marker_name).exists());
-        drop(recovery);
-        drop(namespace);
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn committed_rename_with_refused_lease_cleanup_keeps_the_published_generation() {
-        let root = scratch("committed-lease-cleanup-refusal");
-        let namespace = namespace(&root);
-        let candidate = stage(&namespace, ".stage", "committed bytes");
-        let lease_name = candidate.lease.name.clone();
-        let lease_path = namespace.path().join(&lease_name);
-        let displaced = namespace.path().join("displaced-active-lease");
-        let old_identity = candidate.lease.identity;
-        let replacement_identity = Cell::new(None);
-        let fence = namespace
-            .acquire_fence(NamespaceFenceKind::DurableCache)
-            .expect("publication gate");
-        let failure = candidate
-            .publish_with(
-                "generation",
-                &fence,
-                |created, destination| {
-                    created.rename_noreplace(destination)?;
-                    fs::rename(&lease_path, &displaced).expect("displace committed stage lease");
-                    let mut replacement = namespace
-                        .directory
-                        .create_file_exclusive(&lease_name)
-                        .expect("replace lease name after commit");
-                    replacement
-                        .write_all(b"replacement marker")
-                        .expect("write replacement marker");
-                    replacement.sync_all().expect("flush replacement marker");
-                    replacement_identity.set(Some(
-                        FileIdentity::of_file(&replacement).expect("replacement identity"),
-                    ));
-                    Ok(())
-                },
-                io_is_transient_denial,
-                &[],
-                |_| {},
-            )
-            .expect_err("lease cleanup must report the already-committed destination");
-        assert!(matches!(
-            failure,
-            PublicationFailure::CommittedButLeaseCleanupRefused { ref destination, .. }
-                if destination == &namespace.path().join("generation")
-        ));
-        assert_eq!(
-            fs::read(namespace.path().join("generation/payload")).expect("published payload"),
-            b"committed bytes"
-        );
-        assert_eq!(
-            FileIdentity::of_path_nofollow(&displaced).expect("displaced lease identity"),
-            old_identity
-        );
-        assert_eq!(
-            FileIdentity::of_path_nofollow(&lease_path).expect("replacement lease identity"),
-            replacement_identity
-                .get()
-                .expect("replacement identity captured")
-        );
-        assert!(!namespace.path().join(".stage").exists());
-        drop(fence);
         drop(namespace);
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -2005,12 +1470,6 @@ mod tests {
         assert_eq!(attempts.get(), schedule.len() as u32 + 1);
         assert_eq!(pauses.take(), schedule);
         assert!(!namespace.path().join(".stage").exists());
-        assert!(
-            !namespace
-                .path()
-                .join(stage_lease_file_name(".stage"))
-                .exists()
-        );
         assert!(!namespace.path().join("next").exists());
         assert_eq!(
             fs::read(previous.path().join("payload")).expect("prior generation"),
@@ -2088,8 +1547,8 @@ mod tests {
         let namespace = namespace(&root);
         let candidate = stage(&namespace, ".stage", "original staged bytes");
         let stage_path = candidate.path().to_path_buf();
-        let original_identity =
-            FileIdentity::of_path_nofollow(&stage_path).expect("original stage identity");
+        let original_identity = FileIdentity::of_path_nofollow(&stage_path)
+            .expect("original stage identity");
         let moved_path = namespace.path().join("moved-original-stage");
         fs::rename(&stage_path, &moved_path).expect("move original stage away");
         let replacement = namespace
@@ -2179,10 +1638,7 @@ mod tests {
         else {
             panic!("changed-name cleanup must preserve the original operation");
         };
-        assert!(matches!(
-            *operation,
-            PublicationFailure::OwnershipChanged(_)
-        ));
+        assert!(matches!(*operation, PublicationFailure::OwnershipChanged(_)));
         assert_eq!(attempts.get(), 1, "identity failures are never retried");
         assert_eq!(pauses.get(), 0);
         assert!(!namespace.path().join("generation").exists());
@@ -2212,8 +1668,11 @@ mod tests {
             FileIdentity::of_path_nofollow(&namespace_path).expect("original parent identity");
         fs::rename(&namespace_path, &moved_namespace).expect("move pinned namespace");
         fs::create_dir(&namespace_path).expect("install replacement namespace");
-        fs::set_permissions(&namespace_path, fs::Permissions::from_mode(0o700))
-            .expect("make replacement namespace private");
+        fs::set_permissions(
+            &namespace_path,
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("make replacement namespace private");
         let replacement_parent_identity =
             FileIdentity::of_path_nofollow(&namespace_path).expect("replacement parent identity");
         assert_ne!(original_parent_identity, replacement_parent_identity);
@@ -2266,8 +1725,8 @@ mod tests {
                 fs::create_dir(&namespace_path).expect("install replacement namespace");
                 fs::set_permissions(&namespace_path, fs::Permissions::from_mode(0o700))
                     .expect("make replacement namespace private");
-                let replacement_parent =
-                    DirectoryCapability::open(&namespace_path).expect("pin replacement namespace");
+                let replacement_parent = DirectoryCapability::open(&namespace_path)
+                    .expect("pin replacement namespace");
                 let replacement = replacement_parent
                     .create_private_dir("generation")
                     .expect("install replacement generation name");
@@ -2322,8 +1781,11 @@ mod tests {
                 created.rename_noreplace(destination)?;
                 fs::rename(&namespace_path, &moved_namespace).expect("move committed namespace");
                 fs::create_dir(&namespace_path).expect("install replacement namespace");
-                fs::set_permissions(&namespace_path, fs::Permissions::from_mode(0o700))
-                    .expect("make replacement namespace private");
+                fs::set_permissions(
+                    &namespace_path,
+                    fs::Permissions::from_mode(0o700),
+                )
+                .expect("make replacement namespace private");
                 Ok(())
             },
             |_| false,
@@ -2379,7 +1841,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(PublicationFailure::CommittedButOwnershipUnverified { rename: None, .. })
+            Err(PublicationFailure::CommittedButOwnershipUnverified {
+                rename: None,
+                ..
+            })
         ));
         assert_eq!(attempts.get(), 1, "the committed rename is never replayed");
         assert_eq!(pauses.get(), 0);
@@ -2441,7 +1906,9 @@ mod tests {
                     .rename_noreplace(destination)
                     .expect("the injected post-commit failure follows a real rename");
                 Err(CreatedDirectoryRenameError::Rename(
-                    DirectoryRenameError::CommittedButNotDurable(io::Error::from_raw_os_error(32)),
+                    DirectoryRenameError::CommittedButNotDurable(
+                        io::Error::from_raw_os_error(32),
+                    ),
                 ))
             },
             |_| true,
@@ -2456,21 +1923,6 @@ mod tests {
         assert_eq!(
             fs::read(namespace.path().join("generation/payload")).expect("committed payload"),
             b"committed bytes"
-        );
-        let lease_name = stage_lease_file_name(".stage");
-        assert!(
-            namespace.path().join(&lease_name).is_file(),
-            "a committed-but-not-durable rename retains its lease for recovery"
-        );
-        assert_eq!(
-            namespace
-                .sweep_orphan_stage_lease(&lease_name, ".stage", &fence)
-                .expect("reclaim the now-orphaned lease"),
-            StageSweepDisposition::Removed
-        );
-        assert!(
-            namespace.path().join("generation/payload").is_file(),
-            "orphan-lease cleanup does not touch the committed generation"
         );
         drop(namespace);
         fs::remove_dir_all(root).expect("cleanup");
@@ -2530,8 +1982,10 @@ mod tests {
         let fence = namespace
             .acquire_fence(NamespaceFenceKind::DurableCache)
             .expect("first gate");
-        let busy = namespace
-            .acquire_fence_with_wait(NamespaceFenceKind::DurableCache, Duration::from_millis(5));
+        let busy = namespace.acquire_fence_with_wait(
+            NamespaceFenceKind::DurableCache,
+            Duration::from_millis(5),
+        );
         assert!(matches!(busy, Err(ref error) if error.kind() == io::ErrorKind::WouldBlock));
 
         let gate_path = namespace.path().join("durable-cache.lock");
@@ -2542,10 +1996,7 @@ mod tests {
             .directory
             .create_file_exclusive("durable-cache.lock")
             .expect("create replacement gate");
-        assert_ne!(
-            FileIdentity::of_file(&replacement).expect("replacement identity"),
-            old_identity
-        );
+        assert_ne!(FileIdentity::of_file(&replacement).expect("replacement identity"), old_identity);
         assert!(fence.verify_for(&namespace).is_err());
         drop(replacement);
         drop(fence);
@@ -2557,16 +2008,13 @@ mod tests {
     fn an_active_stage_is_skipped_and_unwound_stage_is_recovered_under_the_fence() {
         let root = scratch("active-stage-sweep");
         let namespace = namespace(&root);
-        let stage_name =
-            ".0000000000000000000000000000000000000000000000000000000000000000.building-1-2";
+        let stage_name = ".0000000000000000000000000000000000000000000000000000000000000000.building-1-2";
         let stage = stage(&namespace, stage_name, "still building");
         let fence = namespace
             .acquire_fence(NamespaceFenceKind::DurableCache)
             .expect("sweep gate");
         assert_eq!(
-            namespace
-                .sweep_stage(stage_name, &fence)
-                .expect("active sweep"),
+            namespace.sweep_stage(stage_name, &fence).expect("active sweep"),
             StageSweepDisposition::Active
         );
         assert!(stage.path().join("payload").is_file());
@@ -2581,18 +2029,14 @@ mod tests {
             .acquire_fence(NamespaceFenceKind::DurableCache)
             .expect("recovery gate");
         assert_eq!(
-            namespace
-                .sweep_stage(stage_name, &fence)
-                .expect("stale sweep"),
+            namespace.sweep_stage(stage_name, &fence).expect("stale sweep"),
             StageSweepDisposition::Removed
         );
         assert!(!namespace.path().join(stage_name).exists());
-        assert!(
-            !namespace
-                .path()
-                .join(stage_lease_file_name(stage_name))
-                .exists()
-        );
+        assert!(!namespace
+            .path()
+            .join(stage_lease_file_name(stage_name))
+            .exists());
         drop(fence);
         drop(namespace);
         fs::remove_dir_all(root).expect("cleanup");
@@ -2608,14 +2052,13 @@ mod tests {
         let marker_name = stage_lease_file_name(stage_name);
         let marker_path = namespace.path().join(&marker_name);
         let displaced = namespace.path().join("displaced-active-marker");
-        let held_identity = stage.lease.identity;
+        let held_identity = stage.lease_identity;
         fs::rename(&marker_path, &displaced).expect("move original active marker");
         let replacement = namespace
             .directory
             .create_file_exclusive(&marker_name)
             .expect("replace active marker");
-        let replacement_identity =
-            FileIdentity::of_file(&replacement).expect("replacement identity");
+        let replacement_identity = FileIdentity::of_file(&replacement).expect("replacement identity");
         assert_ne!(held_identity, replacement_identity);
         drop(replacement);
 

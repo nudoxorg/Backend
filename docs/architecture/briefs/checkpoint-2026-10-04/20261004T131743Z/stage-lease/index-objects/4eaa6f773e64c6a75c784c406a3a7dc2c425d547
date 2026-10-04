@@ -2,8 +2,9 @@
 
 use crate::publish::{
     DirectoryPublication, NamespaceFence, NamespaceFenceKind, PrivateNamespace,
-    STAGE_LEASE_FILE_PREFIX, StagePreparationFailure, TransientDenial, backend_is_transient_denial,
+    StagePreparationFailure, TransientDenial, backend_is_transient_denial,
     failed_stage_preparation, io_is_transient_denial, retry_while_denied,
+    STAGE_LEASE_FILE_PREFIX,
 };
 use crate::{
     Binding, Cursor, DocumentState, Error, FieldSelection, LexicalPage, LexicalSource, Limits,
@@ -772,31 +773,33 @@ impl TantivySource {
         let selected = version_root.join(&key);
 
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
+        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) =
             Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
         {
-            let source = Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
+            let source =
+                Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
             fence.verify_for(namespace)?;
             return Ok((source, DurableProjectionAction::Opened));
         }
-        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         drop(fence);
 
         // Build a uniquely leased stage without holding the namespace fence.
         // The final admission section rechecks the winner under the gate.
         let stage = Self::build_durable_stage(state, limits, namespace, &key, budget)?;
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
+        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) =
             Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
         {
-            stage
-                .discard_under(&fence)
-                .map_err(|source| TantivySourceError::Io(source.into_io_error()))?;
-            let source = Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
+            stage.discard_under(&fence).map_err(|source| {
+                TantivySourceError::Io(source.into_io_error())
+            })?;
+            let source =
+                Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
             fence.verify_for(namespace)?;
             return Ok((source, DurableProjectionAction::Opened));
         }
-        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if path_exists(&selected)? {
             if path_is_real_directory(&selected)? {
                 namespace.verify_child_path(&key)?;
@@ -878,16 +881,12 @@ impl TantivySource {
         let stage = retry_while_denied(|| {
             let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
             let stage_name = format!(".{key}.building-{}-{stage_id}", std::process::id());
-            let fence = namespace
-                .acquire_fence(NamespaceFenceKind::DurableCache)
-                .map_err(|error| {
-                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-                })?;
-            let stage = namespace
-                .create_stage(&stage_name, &fence)
-                .map_err(|error| {
-                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-                })?;
+            let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache).map_err(|error| {
+                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+            })?;
+            let stage = namespace.create_stage(&stage_name, &fence).map_err(|error| {
+                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+            })?;
             drop(fence);
             if let Err(error) = stage.verify_path() {
                 return Err(failed_stage_preparation(
@@ -1022,34 +1021,39 @@ impl TantivySource {
         let next_key = hex_fingerprint(projection_fingerprint(next.binding()));
         let selected = version_root.join(&next_key);
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
-        if let Some(source) =
-            Self::open_selected_root(next, limits, namespace, &next_key, cache_budget, &fence)?
-        {
-            let source =
-                Self::retain_selected_root(source, namespace, &selected, cache_budget, &fence)?;
+        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
+        if let Some(source) = Self::open_selected_root(
+            next,
+            limits,
+            namespace,
+            &next_key,
+            cache_budget,
+            &fence,
+        )? {
+            let source = Self::retain_selected_root(
+                source,
+                namespace,
+                &selected,
+                cache_budget,
+                &fence,
+            )?;
             fence.verify_for(namespace)?;
             return Ok((source, None, DurableProjectionAction::Opened));
         }
-        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         drop(fence);
 
         let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
         let previous_path = version_root.join(&previous_key);
-        let (previous_source, _) =
-            Self::open_or_build_locked(previous, limits, namespace, cache_budget)?;
+        let (previous_source, _) = Self::open_or_build_locked(previous, limits, namespace, cache_budget)?;
         let prepared = retry_while_denied(|| {
             let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
             let stage_name = format!(".{next_key}.building-{}-{stage_id}", std::process::id());
-            let fence = namespace
-                .acquire_fence(NamespaceFenceKind::DurableCache)
-                .map_err(|error| {
-                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-                })?;
-            let stage = namespace
-                .create_stage(&stage_name, &fence)
-                .map_err(|error| {
-                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-                })?;
+            let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache).map_err(|error| {
+                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+            })?;
+            let stage = namespace.create_stage(&stage_name, &fence).map_err(|error| {
+                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+            })?;
             drop(fence);
             if let Err(error) = stage.verify_path() {
                 return Err(failed_stage_preparation(
@@ -1098,7 +1102,9 @@ impl TantivySource {
                     )),
                 },
                 Ok(None) => stage.discard().map(|()| None).map_err(|error| {
-                    StagePreparationFailure::Terminal(TantivySourceError::Io(error.into_io_error()))
+                    StagePreparationFailure::Terminal(TantivySourceError::Io(
+                        error.into_io_error(),
+                    ))
                 }),
                 Err(error) => Err(failed_stage_preparation(stage, error)),
             }
@@ -1111,9 +1117,15 @@ impl TantivySource {
         };
 
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
-        if let Some(source) =
-            Self::open_selected_root(next, limits, namespace, &next_key, cache_budget, &fence)?
-        {
+        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
+        if let Some(source) = Self::open_selected_root(
+            next,
+            limits,
+            namespace,
+            &next_key,
+            cache_budget,
+            &fence,
+        )? {
             stage
                 .discard_under(&fence)
                 .map_err(|source| TantivySourceError::Io(source.into_io_error()))?;
@@ -1123,7 +1135,6 @@ impl TantivySource {
             fence.verify_for(namespace)?;
             return Ok((source, None, DurableProjectionAction::Opened));
         }
-        retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if path_exists(&selected)? {
             if path_is_real_directory(&selected)? {
                 namespace.verify_child_path(&next_key)?;
@@ -1139,13 +1150,22 @@ impl TantivySource {
             .map_err(|error| TantivySourceError::Io(error.into_io_error()))?;
 
         drop(previous_source);
-        let source =
-            Self::open_selected_root(next, limits, namespace, &next_key, cache_budget, &fence)?
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "published root vanished")
-                })?;
-        let source =
-            Self::retain_selected_root(source, namespace, &selected, cache_budget, &fence)?;
+        let source = Self::open_selected_root(
+            next,
+            limits,
+            namespace,
+            &next_key,
+            cache_budget,
+            &fence,
+        )?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "published root vanished"))?;
+        let source = Self::retain_selected_root(
+            source,
+            namespace,
+            &selected,
+            cache_budget,
+            &fence,
+        )?;
         fence.verify_for(namespace)?;
         Ok(match publication {
             DirectoryPublication::Published => {
@@ -1693,9 +1713,10 @@ impl TantivySource {
         }
         drop(searcher);
         if segment_ids.len() < 2 {
-            return Err(
-                Self::corrupt("forced merge fixture needs multiple committed segments").into(),
-            );
+            return Err(Self::corrupt(
+                "forced merge fixture needs multiple committed segments",
+            )
+            .into());
         }
 
         let mut writer = self._index.writer::<TantivyDocument>(WRITER_MEMORY_BYTES)?;
@@ -3175,7 +3196,10 @@ fn remove_incomplete_stages(
         .into_iter()
         .map(|entry| {
             entry.name.into_string().map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid cache filename")
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid cache filename",
+                )
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -3371,28 +3395,6 @@ fn prune_durable_roots(
         let name = entry.file_name().into_string().map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid durable root name")
         })?;
-        let stage_lease = name
-            .strip_prefix(STAGE_LEASE_FILE_PREFIX)
-            .is_some_and(is_projection_stage_name);
-        if is_projection_stage_name(&name) || stage_lease {
-            let metadata = fs::symlink_metadata(entry.path())?;
-            let expected_kind = if stage_lease {
-                metadata.file_type().is_file()
-            } else {
-                metadata.file_type().is_dir()
-            };
-            if !expected_kind {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "recognized durable stage entry has an unexpected file type",
-                )
-                .into());
-            }
-            // Stage maintenance is deferred on a valid warm hit. These exact
-            // names are neither durable roots nor part of their byte budget;
-            // a cold admission still performs the fenced lease-aware sweep.
-            continue;
-        }
         if !name.bytes().all(|byte| byte.is_ascii_hexdigit()) || name.len() != 64 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -4003,8 +4005,8 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn force_merge_next_maintenance_for_test() -> ForceMergeNextMaintenanceForTest {
-        let previous =
-            super::TEST_FORCE_MERGE_AFTER_NEXT_COMMIT.with(|requested| requested.replace(true));
+        let previous = super::TEST_FORCE_MERGE_AFTER_NEXT_COMMIT
+            .with(|requested| requested.replace(true));
         super::TEST_FORCED_MERGE_INPUTS.with(|inputs| inputs.set(0));
         ForceMergeNextMaintenanceForTest { previous }
     }

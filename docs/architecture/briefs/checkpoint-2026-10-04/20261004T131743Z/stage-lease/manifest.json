@@ -1,0 +1,49 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T13:17:43.230173+00:00",
+  "label": "stage-lease",
+  "branch": "codex/checkpoint-stage-lease-20261004T131743Z",
+  "worktree": "/private/tmp/nudox-stage-lease-lifecycle-20261004",
+  "parent": "f0e8eb153335a41657fc949edeb11865b1a2aab2",
+  "merge_parents": [],
+  "working_source_tree": "6e589fc3d27fc3fe228624aaeaf3a84e449c542b",
+  "description": "Frozen coherent source packet for exact-created-file removal outcomes, original held StageLease retention on precommit refusal and single-shot committed publication. Windows caller/helper updates are now present. Parsing and diff checks passed; final owning-API review and Rust/Unix/Windows runtime execution remain pending.",
+  "changed_paths": [
+    "crates/platform/directory.rs",
+    "crates/platform/lib.rs",
+    "crates/platform/win32/workspace_fs.rs",
+    "extensions/tantivy/src/engine.rs",
+    "extensions/tantivy/src/publish.rs",
+    "extensions/tantivy/src/tests.rs"
+  ],
+  "source_sha256": {
+    "crates/platform/directory.rs": "ffd3b7085fa8e8d1eacf5ba74162af6da8050094a205bef2c9c8ea47c12ffb14",
+    "crates/platform/lib.rs": "8fe605e4e58122b02f58e038048674017a4f062d2d95ee204cfd4a1f9e1f1542",
+    "crates/platform/win32/workspace_fs.rs": "5bd4e5e83e6384ec9df52a6bc5acab395fa248a4eb31f026eca746300e96d034",
+    "extensions/tantivy/src/engine.rs": "08d91b44a482ac763c188e9112119ee34cbfd77235b9bdab5e566f9fb48b6d1b",
+    "extensions/tantivy/src/publish.rs": "0335dc52bfe8a84b3b3cee47e9120e8cddb85615a67689808ee4d0cefb2fe147",
+    "extensions/tantivy/src/tests.rs": "dca389e54e6560791e50a64e93f11fe8fc2324396913682080049b2206801c05"
+  },
+  "untracked_source_paths": [],
+  "original_index_sha256": "ba75bd4f29bb488b76d821d4600312a5eb73e65065aa912e34f9bf22c7aa711a",
+  "original_index_stages_sha256": "7f9e6104f354da972c1b599f4e58cbc79423b045aec693e4c6c78527b2a3be6d",
+  "original_status_sha256": "13a4972eb717b35cc329e1d17db15c610f975794307ee78066e4f75b750e2f84",
+  "preserved_index_blobs": [
+    "0a57605ca64839f5b5ea732e13b8dd469b650bbd",
+    "19ec6456aa6500ff1c6d03f08b910ecf31141fbb",
+    "254ed5b11b9ee425134c706cba6e52f31630076d",
+    "40b0ccb83e5906225261725a83f5417d4e0ccc68",
+    "4eaa6f773e64c6a75c784c406a3a7dc2c425d547",
+    "5d26d21429a12ca9630117ace930fa1d79298d43"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {
+    "preserved_files": {}
+  },
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}
