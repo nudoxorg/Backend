@@ -5262,10 +5262,28 @@ mod tests {
         let error = fix.named(b"", b"error", &[]);
         let brew = fix.func(&[int, string], &[int, error], false);
         fix.declaration(KIND_FUNC, b"Brew", Some(brew));
+        for (ordinal, name) in [
+            &b"count"[..],
+            &b"label"[..],
+            &b"total"[..],
+            &b"err"[..],
+        ]
+            .into_iter()
+            .enumerate()
+        {
+            fix.name_signature_parameter(brew, u32::try_from(ordinal)?, name);
+        }
         let slice = fix.unary(ROW_SLICE, int);
         let variadic = fix.func(&[slice], &[], true);
         fix.declaration(KIND_FUNC, b"V", Some(variadic));
-        let bytes = lower(&fix, b"package demo\n")?;
+        fix.name_signature_parameter(variadic, 0, b"xs");
+        let source = concat!(
+            "package demo\n",
+            "func Brew(count int, label string) (total int, err error) { return }\n",
+            "func V(xs ...int) {}\n",
+        )
+        .as_bytes();
+        let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
         // Facts: 0 int carrier, 1 string carrier, 2 int result carrier,
         // 3 error result carrier, 4 Brew, 5 xs carrier, 6 V.
@@ -5305,7 +5323,7 @@ mod tests {
         if !variadic_facts.signature.variadic || variadic_facts.signature.results.raw != 0 {
             return Err(TestError::Missing("variadic signature fact"));
         }
-        let owned = lower_ir(&fix, b"package demo\n")?;
+        let owned = lower_ir(&fix, source)?;
         let brew = owned
             .items()
             .find(|item| {
@@ -5327,32 +5345,43 @@ mod tests {
             }
             _ => return Err(TestError::Missing("owned Go signature bindings")),
         };
-        let slots: Vec<_> = bindings
-            .iter()
-            .map(|binding| (binding.owner, binding.role, binding.position))
-            .collect();
-        if slots
+        let carrier = |name: &[u8]| {
+            owned.items().find(|item| {
+                item.kind() == backend_semantic::ir::ItemKind::Parameter
+                    && item.name() == name
+                    && item.parent() == Some(brew.id())
+            })
+        };
+        let count = carrier(b"count").ok_or(TestError::Missing("Go count carrier"))?;
+        let label = carrier(b"label").ok_or(TestError::Missing("Go label carrier"))?;
+        let total = carrier(b"total").ok_or(TestError::Missing("Go total result carrier"))?;
+        let err = carrier(b"err").ok_or(TestError::Missing("Go error result carrier"))?;
+        if bindings
             != vec![
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
-                    0,
-                ),
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
-                    1,
-                ),
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
-                    0,
-                ),
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
-                    1,
-                ),
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: count.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 1,
+                    carrier: label.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: total.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 1,
+                    carrier: err.id(),
+                },
             ]
         {
             return Err(TestError::Missing("Go ordered multi-result bindings"));
