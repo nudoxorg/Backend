@@ -54,11 +54,13 @@ pub enum CanonicalTypeRenderReference {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CanonicalTypeRenderError {
+    /// The requested root coordinate is not present in the reader.
     #[error("canonical type root {root:?} is absent")]
     MissingRoot {
         /// Requested root coordinate.
         root: TypeId,
     },
+    /// A type node points to a coordinate the reader cannot resolve.
     #[error("canonical type {owner:?} names absent semantic reference {reference:?}")]
     MissingReference {
         /// Type row that carried the rejected coordinate.
@@ -66,6 +68,7 @@ pub enum CanonicalTypeRenderError {
         /// Exact typed coordinate which could not be resolved.
         reference: CanonicalTypeRenderReference,
     },
+    /// Traversal would visit a type node deeper than the selected limit.
     #[error("canonical type traversal from {root:?} reached {at:?} beyond depth limit {limit}")]
     TraversalLimit {
         /// Original requested root.
@@ -75,11 +78,13 @@ pub enum CanonicalTypeRenderError {
         /// Caller-selected nonzero depth limit.
         limit: NonZeroUsize,
     },
+    /// Computing the exact UTF-8 output length overflowed `usize`.
     #[error("canonical type rendering length overflowed for {root:?}")]
     OutputLengthOverflow {
         /// Requested root whose canonical length overflowed.
         root: TypeId,
     },
+    /// The caller's output buffer is shorter than the prepared byte count.
     #[error("canonical type {root:?} needs {required} bytes but caller supplied {available}")]
     OutputTooSmall {
         /// Prepared root.
@@ -89,6 +94,7 @@ pub enum CanonicalTypeRenderError {
         /// Caller output capacity.
         available: usize,
     },
+    /// Writing did not reproduce the exact length established by preparation.
     #[error("prepared canonical type {root:?} wrote {written} bytes rather than {promised}")]
     PreparedLengthMismatch {
         /// Prepared root.
@@ -98,11 +104,13 @@ pub enum CanonicalTypeRenderError {
         /// Bytes actually written before the invariant failed.
         written: usize,
     },
+    /// The caller-provided formatter returned an error while writing.
     #[error("the caller formatter rejected canonical type output for {root:?}")]
     OutputWrite {
         /// Root whose output the formatter rejected.
         root: TypeId,
     },
+    /// The byte writer produced a sequence that failed UTF-8 validation.
     #[error("canonical type output for {root:?} was not UTF-8 after byte {valid_up_to}")]
     OutputEncoding {
         /// Prepared root.
@@ -118,11 +126,12 @@ pub enum CanonicalTypeRenderError {
 /// Bounded traversal law for a canonical type rendering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CanonicalTypeRenderLimits {
-    /// Largest permitted number of nested semantic type nodes.
+    /// Largest permitted traversal depth in semantic type nodes, including the root.
     pub maximum_depth: NonZeroUsize,
 }
 
 impl CanonicalTypeRenderLimits {
+    /// Sets the maximum traversal depth; the root type counts as depth one.
     #[must_use]
     pub const fn new(maximum_depth: NonZeroUsize) -> Self {
         Self { maximum_depth }

@@ -22,7 +22,7 @@ const MAX_CACHED_NODE_PAYLOAD_ROW_BYTES: usize = 4096;
 // while resolving every terminal through `SemanticReader`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TypedPlanNode {
-    Type(crate::ir::TypeId),
+    Type(TypeId),
     TypeList(crate::ir::TypeListId),
     TupleElements(crate::ir::TupleElementListId),
     ObjectMembers(crate::ir::ObjectMemberListId),
@@ -104,7 +104,6 @@ struct TypedPlanEdge {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TypedPlanFault {
-    AnonymousCycle,
     InvalidProjection,
 }
 #[derive(Debug)]
@@ -133,7 +132,15 @@ pub enum TypesRowHandle {
     /// One declaration's optional semantic-type association.
     EntityRoot(DeclarationIdentity),
     /// One structurally keyed typed or typed-list node.
-    Node { domain: u8, raw: u32 },
+    Node {
+        /// Closed planner code selecting the coordinate pool: type (0), type
+        /// list (1), tuple elements (2), object members (3), template parts
+        /// (4), atom list (5), parameters (6), parameter bounds (7), or free
+        /// predicates (8).
+        domain: u8,
+        /// Raw ordinal in the pool selected by `domain`.
+        raw: u32,
+    },
     /// One exact byte atom reached from a typed or extension row.
     Atom(crate::ir::AtomId),
     /// One exact external endpoint in this image.
@@ -266,7 +273,7 @@ impl TypedRecordPlan {
     }
 
     /// Stable key for a reachable semantic type row.
-    pub fn type_key(&self, id: crate::ir::TypeId) -> Result<[u8; 32], SemanticPlaneRecordError> {
+    pub fn type_key(&self, id: TypeId) -> Result<[u8; 32], SemanticPlaneRecordError> {
         self.node_key(TypedPlanNode::Type(id))
     }
 
@@ -993,9 +1000,6 @@ fn push_limited_plan_row_fact<T>(
 
 fn map_typed_plan_error(error: TypedPlanError) -> SemanticPlaneRecordError {
     match error {
-        TypedPlanError::Typed(TypedPlanFault::AnonymousCycle) => {
-            SemanticPlaneRecordError::TypedDependencyCycle
-        }
         TypedPlanError::Typed(TypedPlanFault::InvalidProjection) => {
             SemanticPlaneRecordError::ReaderReference
         }
@@ -1020,7 +1024,7 @@ fn node_key(node: TypedPlanNode) -> (u8, u32) {
 }
 fn node_from_key(domain: u8, raw: u32) -> Result<TypedPlanNode, SemanticPlaneRecordError> {
     Ok(match domain {
-        0 => TypedPlanNode::Type(crate::ir::TypeId::new(raw)),
+        0 => TypedPlanNode::Type(TypeId::new(raw)),
         1 => TypedPlanNode::TypeList(crate::ir::TypeListId::new(raw)),
         2 => TypedPlanNode::TupleElements(crate::ir::TupleElementListId::new(raw)),
         3 => TypedPlanNode::ObjectMembers(crate::ir::ObjectMemberListId::new(raw)),

@@ -167,6 +167,7 @@ pub enum ImageProvenance {
         /// Coordinate-free scope commitment used for idempotent provenance
         /// admission and exact rebind diagnostics.
         claim: SemanticScopeClaim,
+        /// Queryable package and source-path atoms retained in the image.
         scope: SemanticScopeFacts,
     },
 }

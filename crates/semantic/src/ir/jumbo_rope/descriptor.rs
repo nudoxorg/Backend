@@ -6,7 +6,7 @@ use super::*;
 
 const DESCRIPTOR_MAGIC: &[u8; 4] = b"JVD1";
 const DESCRIPTOR_VERSION: u8 = 1;
-const DESCRIPTOR_WIRE_BYTES: usize = super::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES;
+const DESCRIPTOR_WIRE_BYTES: usize = JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES;
 
 /// Content identity of the complete typed value descriptor.
 #[repr(transparent)]

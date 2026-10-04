@@ -109,6 +109,7 @@ pub struct SemanticImageCensus {
     pub occurrence_source_authority: AvailabilityCensus,
     /// Present row count in each language-specific sparse extension plane.
     pub language_extensions: LanguageExtensionCensus,
+    /// Captured/unavailable distribution for each common entity fact plane.
     pub entity_authority: EntityAuthorityCensus,
 }
 

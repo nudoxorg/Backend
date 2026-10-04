@@ -1844,6 +1844,7 @@ pub enum SemanticDeltaAction {
         /// closure claim is equal, so these exact bytes satisfy it without a
         /// target range read.
         segment_id: SemanticSegmentId,
+        /// Stable-key range descriptor for the reused immutable segment.
         segment: SemanticPlaneSegment,
     },
     /// Fetch the changed or missing target range.
@@ -2801,6 +2802,7 @@ pub enum SemanticManifestError {
     /// Re-admitted witness does not match the canonical coverage claim.
     #[error("re-admitted coverage evidence differs from its canonical manifest claim")]
     CoverageClaimMismatch,
+    /// Supplied plane or segment witness counts differ from the manifest's exact requirements.
     #[error(
         "manifest admission supplied {observed_planes}/{expected_planes} plane and {observed_segments}/{expected_segments} segment witnesses"
     )]

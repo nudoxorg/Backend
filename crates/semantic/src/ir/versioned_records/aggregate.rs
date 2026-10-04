@@ -34,8 +34,7 @@ use super::types::{
 use super::wire::{Cursor, read_identity};
 use super::{
     CanonicalPlaneSegmentBoundaryPolicy, LanguageExtensionVerificationLimitsV2,
-    TypesFamilyVerificationLimitsV2, validate_language_extension_family_v2_with_limits,
-    validate_types_family_v2_with_limits,
+    TypesFamilyVerificationLimitsV2,
 };
 use crate::ir::semantic_generation::TypedPlaneSegmentSourceV2;
 
@@ -131,27 +130,26 @@ const SOURCE_RELATION_TAG: u8 = 2;
 const RELATION_SOURCE_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.relation-source-key.v1\0";
 const SEMANTIC_FAMILY_ROW_ROOT_DOMAIN: &[u8] = b"backend.semantic.ir.family-row-index-root.v2\0";
 
-/// Exact descriptor and payload pair borrowed from a decoded V2 manifest.
-/// The manifest owns the untrusted metadata; this adapter makes the payload
-/// pairing explicit without copying the c004 bytes.
+/// Descriptor claims for one decoded V2 manifest segment.
+///
+/// Exact c004 payloads are supplied separately in manifest order to the
+/// verifier, so this adapter retains only the c005 metadata.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TypedPlaneSegmentPayloadV2<'bytes> {
+pub(crate) struct TypedPlaneSegmentPayloadV2 {
     pub(crate) first_key: [u8; 32],
     pub(crate) last_key: [u8; 32],
     pub(crate) row_count: u32,
     pub(crate) byte_length: u64,
     pub(crate) id_claim: UntrustedSemanticSegmentId,
-    pub(crate) payload: &'bytes [u8],
 }
 
-impl<'bytes> TypedPlaneSegmentPayloadV2<'bytes> {
+impl TypedPlaneSegmentPayloadV2 {
     pub(crate) const fn new(
         first_key: [u8; 32],
         last_key: [u8; 32],
         row_count: u32,
         byte_length: u64,
         id_claim: UntrustedSemanticSegmentId,
-        payload: &'bytes [u8],
     ) -> Self {
         Self {
             first_key,
@@ -159,7 +157,6 @@ impl<'bytes> TypedPlaneSegmentPayloadV2<'bytes> {
             row_count,
             byte_length,
             id_claim,
-            payload,
         }
     }
 }
@@ -171,7 +168,7 @@ pub(crate) struct TypedPlaneFamilyPayloadsV2<'bytes> {
     pub(crate) family: SemanticIrPlane,
     pub(crate) row_count: u64,
     pub(crate) boundary_policy: CanonicalPlaneSegmentBoundaryPolicy,
-    pub(crate) segments: &'bytes [TypedPlaneSegmentPayloadV2<'bytes>],
+    pub(crate) segments: &'bytes [TypedPlaneSegmentPayloadV2],
 }
 
 impl<'bytes> TypedPlaneFamilyPayloadsV2<'bytes> {
@@ -179,7 +176,7 @@ impl<'bytes> TypedPlaneFamilyPayloadsV2<'bytes> {
         family: SemanticIrPlane,
         row_count: u64,
         boundary_policy: CanonicalPlaneSegmentBoundaryPolicy,
-        segments: &'bytes [TypedPlaneSegmentPayloadV2<'bytes>],
+        segments: &'bytes [TypedPlaneSegmentPayloadV2],
     ) -> Self {
         Self {
             family,
@@ -333,16 +330,15 @@ pub(crate) enum SemanticTypedPlaneInventoryV2Error {
     #[error("typed semantic aggregate exceeds its {budget} budget")]
     AggregateBudget { budget: &'static str },
     #[error("typed semantic segment source failed: {0}")]
-    SegmentSource(alloc::string::String),
+    SegmentSource(String),
     #[error(transparent)]
     RowIndex(#[from] StableRowIndexError),
     #[error("typed semantic cross-family closure is inconsistent: {fact}")]
     CrossFamily { fact: &'static str },
 }
 
-/// One borrowed source for the descriptor closures carried by Docs and
-/// SourceProvenance rows. This small object-safe seam lets the long-standing
-/// no-object verifier remain available while rejecting descriptor rows.
+/// Object-safe source for authenticating descriptor closures in Docs and
+/// SourceProvenance rows; without one, the verifier rejects those descriptors.
 pub(crate) trait JumboPlaneClosureAdmissionV2 {
     fn admit(
         &mut self,
@@ -507,6 +503,7 @@ where
 /// family descriptors, and every cross-family semantic join. The supplied
 /// input witness is the manifest's decoded claim only; its coverage capability
 /// is not consulted or reconstructed here.
+#[cfg(test)]
 pub(crate) fn verify_semantic_typed_plane_inventory_v2(
     build: SemanticBuildIdentity,
     image_facts: SemanticImageFacts,
@@ -526,9 +523,10 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2(
     )
 }
 
-/// Source-aware inventory verifier used by cold c007 reopen. Every descriptor
-/// row is context-checked and its full rope closure is authenticated before
-/// the inventory token can be returned.
+/// Materialized-payload test oracle with source-backed jumbo closure admission.
+/// Every descriptor row is context-checked and its full rope closure is
+/// authenticated before the inventory token can be returned.
+#[cfg(test)]
 pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_jumbo_source<S>(
     build: SemanticBuildIdentity,
     image_facts: SemanticImageFacts,
@@ -814,7 +812,7 @@ pub(crate) fn verify_semantic_typed_plane_inventory_v2_with_segment_source<S>(
     families: &[SemanticTypedPlaneFamilyDescriptorV2; 7],
     source: &mut S,
     limits: SemanticTypedPlaneVerificationLimitsV2,
-    mut jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
+    jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
 ) -> Result<VerifiedTypedPlaneInventoryV2, SemanticTypedPlaneInventoryV2Error>
 where
     S: TypedPlaneSegmentSourceV2 + ?Sized,
@@ -3366,7 +3364,7 @@ mod tests {
             }
             segments
         });
-        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2<'_>>; 7] =
+        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2>; 7] =
             core::array::from_fn(|index| {
                 encoded[index]
                     .iter()
@@ -3377,7 +3375,6 @@ mod tests {
                         byte_length: u64::try_from(segment.bytes.len())
                             .expect("fixture payload length fits u64"),
                         id_claim: UntrustedSemanticSegmentId::from_raw(*segment.id.as_bytes()),
-                        payload: &segment.bytes,
                     })
                     .collect()
             });
@@ -3745,7 +3742,7 @@ mod tests {
                 vec![encode_family_segment(kinds[index], family_rows)]
             }
         });
-        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2<'_>>; 7] =
+        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2>; 7] =
             core::array::from_fn(|index| {
                 encoded[index]
                     .iter()
@@ -3756,7 +3753,6 @@ mod tests {
                         byte_length: u64::try_from(segment.bytes.len())
                             .expect("fixture payload length fits u64"),
                         id_claim: UntrustedSemanticSegmentId::from_raw(*segment.id.as_bytes()),
-                        payload: &segment.bytes,
                     })
                     .collect()
             });
@@ -4361,7 +4357,7 @@ mod tests {
         mark_core_source_available(&mut rows, owner);
 
         let (encoded, row_counts) = encode_all_rows(&rows);
-        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2<'_>>; 7] =
+        let segment_claims: [Vec<TypedPlaneSegmentPayloadV2>; 7] =
             core::array::from_fn(|index| {
                 encoded[index]
                     .iter()
@@ -4372,7 +4368,6 @@ mod tests {
                             segment.row_count,
                             u64::try_from(segment.bytes.len()).expect("fixture size fits u64"),
                             UntrustedSemanticSegmentId::from_raw(*segment.id.as_bytes()),
-                            &segment.bytes,
                         )
                     })
                     .collect()

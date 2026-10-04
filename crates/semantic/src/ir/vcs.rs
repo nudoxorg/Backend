@@ -90,6 +90,7 @@ impl<Reader: SemanticReader + ?Sized> fmt::Debug for SemanticSnapshot<'_, Reader
     }
 }
 
+/// Result of comparing one value across two source generations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Delta<T> {
     /// The compared values are equal.

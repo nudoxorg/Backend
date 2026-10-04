@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 
 use crate::ir::{SemanticIrPlane, SemanticPlaneKind, SemanticPlaneRecordError};
 
-use super::EXTERNAL_TARGET_TAG;
 use super::ROOT_TAG;
 use super::plan::TypesClosureSemantics;
 use super::wire::parse_types_row_with_reference_limit;
@@ -119,14 +118,14 @@ pub struct TypesReferenceV2 {
 /// references. Every intra-Types reference has already been resolved and every
 /// row payload has passed the independent strict decoder.
 pub struct CheckedTypesFamilyV2 {
-    row_keys: alloc::boxed::Box<[[u8; 32]]>,
-    row_domains: alloc::boxed::Box<[TypesRowDomainV2]>,
-    edge_offsets: alloc::boxed::Box<[usize]>,
-    row_edges: alloc::boxed::Box<[TypesReferenceV2]>,
-    root_identities: alloc::boxed::Box<[[u8; 32]]>,
-    root_type_presence: alloc::boxed::Box<[([u8; 32], bool)]>,
-    declaration_references: alloc::boxed::Box<[[u8; 32]]>,
-    external_target_keys: alloc::boxed::Box<[[u8; 32]]>,
+    row_keys: Box<[[u8; 32]]>,
+    row_domains: Box<[TypesRowDomainV2]>,
+    edge_offsets: Box<[usize]>,
+    row_edges: Box<[TypesReferenceV2]>,
+    root_identities: Box<[[u8; 32]]>,
+    root_type_presence: Box<[([u8; 32], bool)]>,
+    declaration_references: Box<[[u8; 32]]>,
+    external_target_keys: Box<[[u8; 32]]>,
     local_root: [u8; 32],
     row_count: u64,
     reference_count: u64,

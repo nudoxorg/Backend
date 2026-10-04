@@ -84,13 +84,18 @@ pub enum SemanticDocumentReference {
 pub enum SemanticDocumentError {
     /// The requested declaration is absent from the finalized image.
     #[error("semantic document requested missing entity {entity:?}")]
-    MissingEntity { entity: EntityId },
+    MissingEntity {
+        /// Image-local declaration coordinate that could not be resolved.
+        entity: EntityId,
+    },
     /// A shared image does not prove a language profile for document dialect selection.
     #[error(
         "semantic document for {entity:?} requires a language image, but authority is {authority:?}"
     )]
     ProfileUnavailable {
+        /// Declaration for which document rendering was requested.
         entity: EntityId,
+        /// Image-level authority that did not provide a language profile.
         authority: SemanticImageAuthority,
     },
     /// The caller selected a profile other than the image's authority profile.
@@ -98,8 +103,11 @@ pub enum SemanticDocumentError {
         "semantic document for {entity:?} requested {requested:?}, but image authority retained {observed:?}"
     )]
     ProfileMismatch {
+        /// Declaration for which document rendering was requested.
         entity: EntityId,
+        /// Profile selected by the caller.
         requested: LanguageProfile,
+        /// Profile recorded by the image authority.
         observed: LanguageProfile,
     },
     /// A required semantic plane was explicitly unavailable.
@@ -107,8 +115,11 @@ pub enum SemanticDocumentError {
         "semantic document for {entity:?} under {profile:?} cannot render unavailable {fact:?}"
     )]
     UnsupportedFact {
+        /// Declaration whose required fact is unavailable.
         entity: EntityId,
+        /// Language profile whose document grammar was selected.
         profile: LanguageProfile,
+        /// Required semantic fact plane not retained by the image.
         fact: SemanticDocumentFact,
     },
     /// Authority availability and the retained value disagree.
@@ -116,23 +127,32 @@ pub enum SemanticDocumentError {
         "semantic document entity {entity:?} has {fact:?} availability {claimed:?} but value presence is {present}"
     )]
     AuthorityMismatch {
+        /// Declaration whose value and authority availability disagree.
         entity: EntityId,
+        /// Fact plane whose row disagrees with its authority claim.
         fact: SemanticDocumentFact,
+        /// Availability recorded by the authority row.
         claimed: FactAvailability,
+        /// Whether the corresponding semantic value was present.
         present: bool,
     },
     /// A retained semantic coordinate could not be resolved through the reader.
     #[error("semantic document entity {entity:?} names missing {reference:?}")]
     MissingReference {
+        /// Declaration that contains the unresolved coordinate.
         entity: EntityId,
+        /// Exact image-local pool coordinate that could not be resolved.
         reference: SemanticDocumentReference,
     },
     /// The shared canonical type renderer rejected an admitted semantic type.
     #[error("semantic document entity {entity:?} rejected canonical type {semantic_type:?}")]
     CanonicalType {
+        /// Declaration whose semantic type could not be rendered.
         entity: EntityId,
+        /// Image-local semantic-type coordinate requested for rendering.
         semantic_type: TypeId,
         #[source]
+        /// Failure from the shared canonical type renderer.
         cause: CanonicalTypeRenderError,
     },
     /// Exact output did not fit the caller's storage before writing began.
@@ -140,33 +160,48 @@ pub enum SemanticDocumentError {
         "semantic document entity {entity:?} needs {required} bytes but caller supplied {available}"
     )]
     OutputTooSmall {
+        /// Declaration whose prepared document did not fit.
         entity: EntityId,
+        /// Exact prepared output length in bytes.
         required: usize,
+        /// Length of the caller's output slice in bytes.
         available: usize,
     },
     /// Measuring the canonical semantic-document grammar overflowed `usize`.
     #[error("semantic document entity {entity:?} output length overflowed")]
-    OutputLengthOverflow { entity: EntityId },
+    OutputLengthOverflow {
+        /// Declaration whose exact output length could not be represented.
+        entity: EntityId,
+    },
     /// A prepared output did not reproduce its admission length.
     #[error(
         "prepared semantic document entity {entity:?} wrote {written} bytes rather than promised {promised}"
     )]
     PreparedLengthMismatch {
+        /// Declaration whose write disagreed with the prepared measurement.
         entity: EntityId,
+        /// Promised output length established during preparation, in bytes.
         promised: usize,
+        /// Number of bytes emitted by the writer before the mismatch.
         written: usize,
     },
     /// A caller formatter rejected an otherwise admitted semantic document.
     #[error("the caller formatter rejected semantic document output for {entity:?}")]
-    OutputWrite { entity: EntityId },
+    OutputWrite {
+        /// Declaration whose formatter rejected the output.
+        entity: EntityId,
+    },
     /// The byte writer violated the all-ASCII semantic-document grammar.
     #[error(
         "semantic document entity {entity:?} output was invalid UTF-8 after byte {valid_up_to}"
     )]
     OutputEncoding {
+        /// Declaration whose byte output failed UTF-8 validation.
         entity: EntityId,
+        /// Offset of the first invalid byte in the emitted output.
         valid_up_to: usize,
         #[source]
+        /// UTF-8 validation failure returned by the byte writer.
         source: str::Utf8Error,
     },
 }
@@ -176,13 +211,18 @@ pub enum SemanticDocumentError {
 pub enum SourceSyntaxError {
     /// The requested entity was absent before source-syntax admission.
     #[error("source syntax requested missing entity {entity:?}")]
-    MissingEntity { entity: EntityId },
+    MissingEntity {
+        /// Image-local declaration coordinate that could not be resolved.
+        entity: EntityId,
+    },
     /// The image did not prove one language source grammar.
     #[error(
         "source syntax for {entity:?} requires a language image, but authority is {authority:?}"
     )]
     ProfileUnavailable {
+        /// Declaration for which source syntax was requested.
         entity: EntityId,
+        /// Image-level authority that did not provide a source-language profile.
         authority: SemanticImageAuthority,
     },
     /// The caller-selected source grammar did not match image authority.
@@ -190,8 +230,11 @@ pub enum SourceSyntaxError {
         "source syntax for {entity:?} requested {requested:?}, but image authority retained {observed:?}"
     )]
     ProfileMismatch {
+        /// Declaration for which source syntax was requested.
         entity: EntityId,
+        /// Source grammar selected by the caller.
         requested: LanguageProfile,
+        /// Source grammar recorded by the image authority.
         observed: LanguageProfile,
     },
     /// The durable semantic image does not prove lossless source syntax.
@@ -199,8 +242,11 @@ pub enum SourceSyntaxError {
         "source syntax for {entity:?} under {profile:?} is unsupported because {fact:?} is not retained"
     )]
     UnsupportedFact {
+        /// Declaration whose source syntax cannot be reconstructed.
         entity: EntityId,
+        /// Language profile whose source grammar was requested.
         profile: LanguageProfile,
+        /// Required source-syntax fact absent from the durable semantic image.
         fact: SemanticDocumentFact,
     },
 }

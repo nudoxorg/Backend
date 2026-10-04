@@ -37,7 +37,6 @@ use crate::ir::{
     SignatureCarrierBindingRole, SignatureCarrierOwnerInput, SignatureCarrierRole, SourceIdentity,
     TextId, TypeId,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
-    columnar::SlabPlan,
     interner::{HashIndex, hash},
 };
 use crate::vocabulary::{CompileRecipeFact, LanguageProfile, PackageUrl};

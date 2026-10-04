@@ -238,7 +238,7 @@ impl CanonicalSemanticPlaneBoundaryFamilyVerifier {
             return Err(SemanticPlaneRecordError::NonCanonicalSegmentBoundary);
         }
         if actual_cut || self.row_count == 0 {
-            self.current_segment_bytes = crate::ir::versioned_records::SPIR_HEADER_BYTES;
+            self.current_segment_bytes = SPIR_HEADER_BYTES;
         }
         self.current_segment_bytes = self
             .current_segment_bytes

@@ -956,19 +956,19 @@ fn external_display(target: &crate::ir::ExternalTarget) -> Option<crate::ir::Ato
     }
 }
 
-const fn link_kind_name(kind: crate::ir::LinkKind) -> &'static str {
+const fn link_kind_name(kind: LinkKind) -> &'static str {
     match kind {
-        crate::ir::LinkKind::Calls => "calls",
-        crate::ir::LinkKind::MethodCall => "method-call",
-        crate::ir::LinkKind::TypeReference => "type-reference",
-        crate::ir::LinkKind::Reads => "reads",
-        crate::ir::LinkKind::Writes => "writes",
-        crate::ir::LinkKind::Imports => "imports",
-        crate::ir::LinkKind::Implements => "implements",
-        crate::ir::LinkKind::Overrides => "overrides",
-        crate::ir::LinkKind::Reexports => "reexports",
-        crate::ir::LinkKind::Inherits => "inherits",
-        crate::ir::LinkKind::Documents => "documents",
+        LinkKind::Calls => "calls",
+        LinkKind::MethodCall => "method-call",
+        LinkKind::TypeReference => "type-reference",
+        LinkKind::Reads => "reads",
+        LinkKind::Writes => "writes",
+        LinkKind::Imports => "imports",
+        LinkKind::Implements => "implements",
+        LinkKind::Overrides => "overrides",
+        LinkKind::Reexports => "reexports",
+        LinkKind::Inherits => "inherits",
+        LinkKind::Documents => "documents",
     }
 }
 

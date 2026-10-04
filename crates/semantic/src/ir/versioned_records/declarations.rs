@@ -4,7 +4,7 @@ use alloc::{boxed::Box, vec::Vec};
 use std::io::{self, Write};
 
 use super::wire::{
-    Cursor, encode_identity, put_bytes, put_text, put_u32, read_checked_jumbo_descriptor,
+    Cursor, encode_identity, put_bytes, put_u32, read_checked_jumbo_descriptor,
     read_identity, validate_jumbo_row_size,
 };
 use crate::ir::{
@@ -64,7 +64,7 @@ pub(super) struct DocsWireValidator {
     allocation_error: Option<alloc::collections::TryReserveError>,
 }
 
-pub(super) struct DocsWireReferences {
+pub(crate) struct DocsWireReferences {
     pub(super) local: Vec<[u8; 32]>,
     pub(super) external: Vec<[u8; 32]>,
 }
@@ -602,23 +602,6 @@ pub fn encode_declaration_planes<Reader: SemanticReader + ?Sized>(
     Ok((core, docs))
 }
 
-pub(super) fn validate_record(
-    kind: SemanticPlaneKind,
-    key: [u8; 32],
-    tag: u8,
-    payload: &[u8],
-) -> Result<(), SemanticPlaneRecordError> {
-    // Legacy grammar validation uses the global threshold. Policy-bearing
-    // callers use `validate_record_with_row_limit` below.
-    validate_record_with_row_limit(
-        kind,
-        key,
-        tag,
-        payload,
-        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
-    )
-}
-
 pub(super) fn validate_record_with_row_limit(
     kind: SemanticPlaneKind,
     key: [u8; 32],
@@ -732,6 +715,7 @@ pub(super) fn validate_record_with_row_limit(
 
 /// Extracts a Docs jumbo descriptor under the legacy global spill threshold.
 /// Policy-bound callers must use `jumbo_descriptor_for_record_with_row_limit`.
+#[cfg(test)]
 pub(super) fn jumbo_descriptor_for_record(
     record: super::CanonicalSemanticPlaneRecordView<'_>,
 ) -> Result<Option<CheckedJumboValueDescriptor>, SemanticPlaneRecordError> {

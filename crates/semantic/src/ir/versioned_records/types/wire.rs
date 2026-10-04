@@ -834,6 +834,7 @@ impl<'bytes> RowCursor<'bytes> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn external_identity_from_payload(
     payload: &[u8],
 ) -> Result<([u8; 32], Vec<TypesReferenceV2>), SemanticPlaneRecordError> {

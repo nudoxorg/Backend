@@ -66,6 +66,7 @@ pub struct DecodedTypeParameter<'payload> {
 /// Exact or legacy semantic fields carried by one decoded type parameter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecodedTypeParameterSemantics {
+    /// Complete variance, kind, requirements, and ordered bounds from an exact schema row.
     Exact {
         /// Exact range of bounds for schema versions that encode bound lanes.
         bounds: ExtensionTypeParameterBoundRange,
@@ -76,6 +77,7 @@ pub enum DecodedTypeParameterSemantics {
         /// Language-specific generic requirements.
         requirements: TypeParameterRequirements,
     },
+    /// Legacy single-constraint form, without fields the older row did not encode.
     Legacy {
         /// Optional single legacy constraint type coordinate.
         constraint: Option<u32>,

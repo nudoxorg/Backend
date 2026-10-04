@@ -92,7 +92,12 @@ pub enum DocFragment {
     /// UTF-8 code content stored in the text pool.
     Code(TextId),
     /// UTF-8 link label and its local or external destination.
-    Link { label: TextId, target: LinkTarget },
+    Link {
+        /// Text-pool coordinate for the displayed label.
+        label: TextId,
+        /// Local entity or external-target coordinate opened by the link.
+        target: LinkTarget,
+    },
     /// A soft documentation line break.
     SoftBreak,
     /// A hard documentation line break.

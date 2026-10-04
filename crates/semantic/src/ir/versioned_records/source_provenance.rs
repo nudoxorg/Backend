@@ -161,7 +161,7 @@ impl CanonicalPlaneRowEncoder for SourceProvenanceRows {
 fn encode_source_row<Reader: SemanticReader + ?Sized>(
     reader: &Reader,
     handle: SourceProvenanceHandle,
-    mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
     maximum_segment_bytes: usize,
     jumbo_limits: crate::ir::JumboRopeLimits,
     peak_jumbo_scratch_bytes: &mut u64,
@@ -305,23 +305,6 @@ fn relation_source_row_key(relation: [u8; 32]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-pub(super) fn validate_record(
-    kind: SemanticPlaneKind,
-    key: [u8; 32],
-    tag: u8,
-    payload: &[u8],
-) -> Result<(), SemanticPlaneRecordError> {
-    // Legacy grammar validation uses the global threshold. Policy-bearing
-    // callers use `validate_record_with_row_limit` below.
-    validate_record_with_row_limit(
-        kind,
-        key,
-        tag,
-        payload,
-        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
-    )
-}
-
 pub(super) fn validate_record_with_row_limit(
     kind: SemanticPlaneKind,
     key: [u8; 32],
@@ -357,9 +340,9 @@ pub(super) fn validate_record_with_row_limit(
         let descriptor = read_checked_jumbo_descriptor(
             &mut cursor,
             expected_key,
-            crate::ir::JumboValueFamily::SourceProvenance,
+            JumboValueFamily::SourceProvenance,
             0,
-            crate::ir::JumboValueEncoding::Bytes,
+            JumboValueEncoding::Bytes,
         )?;
         validate_jumbo_row_size(
             &descriptor,
@@ -397,6 +380,7 @@ pub(super) fn validate_record_with_row_limit(
 /// Extracts a SourceProvenance jumbo descriptor under the legacy global spill
 /// threshold. Policy-bound callers must use
 /// `jumbo_descriptor_for_record_with_row_limit`.
+#[cfg(test)]
 pub(super) fn jumbo_descriptor_for_record(
     record: super::CanonicalSemanticPlaneRecordView<'_>,
 ) -> Result<Option<CheckedJumboValueDescriptor>, SemanticPlaneRecordError> {
@@ -421,9 +405,9 @@ pub(super) fn jumbo_descriptor_for_record_with_row_limit(
     let descriptor = read_checked_jumbo_descriptor(
         &mut cursor,
         record.key(),
-        crate::ir::JumboValueFamily::SourceProvenance,
+        JumboValueFamily::SourceProvenance,
         0,
-        crate::ir::JumboValueEncoding::Bytes,
+        JumboValueEncoding::Bytes,
     )?;
     validate_jumbo_row_size(
         &descriptor,

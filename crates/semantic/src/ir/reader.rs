@@ -708,6 +708,7 @@ pub trait SemanticReader: SemanticCoreReader {
     /// Borrows free predicates retained for one type expression.
     fn free_predicates(&self, id: FreePredicateListId) -> Option<Self::FreePredicates<'_>>;
 
+    /// Enumerates every declaration exactly once in canonical stable-key order.
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_>;
     /// Enumerates every graph relation exactly once in canonical stable-key
     /// order. This is the graph counterpart to [`Self::canonical_entities`]

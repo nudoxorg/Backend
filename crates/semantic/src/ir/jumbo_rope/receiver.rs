@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::ops::Range;
 use std::io::Write;
 
-use super::descriptor::{descriptor_identity, empty_rope_root};
+use super::descriptor::empty_rope_root;
 use super::wire::{
     RopeObjectKind, RopeObjectRef, leaf_identity, validate_leaf_length, validate_ref,
 };

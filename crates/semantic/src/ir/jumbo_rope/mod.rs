@@ -168,7 +168,7 @@ impl JumboRopeLimits {
     /// implementation's optional per-leaf receipt metadata ceiling.
     #[must_use]
     pub fn max_admissible_leaf_count(self) -> u64 {
-        let per_leaf = core::mem::size_of::<Option<LeafReceipt>>();
+        let per_leaf = size_of::<Option<LeafReceipt>>();
         if per_leaf == 0 {
             return self.max_leaf_count;
         }
@@ -274,7 +274,12 @@ pub enum JumboRopeError {
     InvalidLimits,
     /// Descriptor wire payload has the wrong exact size.
     #[error("descriptor wire size is {observed}, expected {expected}")]
-    DescriptorWireLength { expected: usize, observed: usize },
+    DescriptorWireLength {
+        /// Required descriptor payload size in bytes.
+        expected: usize,
+        /// Supplied descriptor payload size in bytes.
+        observed: usize,
+    },
     /// Descriptor magic or wire version is unsupported.
     #[error("descriptor wire magic or version is invalid")]
     DescriptorWireVersion,
@@ -286,13 +291,28 @@ pub enum JumboRopeError {
     UnknownEncoding(u8),
     /// Descriptor's total byte length exceeds configured limits.
     #[error("jumbo value has {observed} bytes; limit is {maximum}")]
-    ValueTooLarge { observed: u64, maximum: u64 },
+    ValueTooLarge {
+        /// Descriptor-declared value length in bytes.
+        observed: u64,
+        /// Active maximum value length in bytes.
+        maximum: u64,
+    },
     /// Descriptor's leaf count exceeds configured limits.
     #[error("jumbo value has {observed} leaves; limit is {maximum}")]
-    TooManyLeaves { observed: u64, maximum: u64 },
+    TooManyLeaves {
+        /// Descriptor-declared number of leaves.
+        observed: u64,
+        /// Active maximum leaf count.
+        maximum: u64,
+    },
     /// Descriptor's fixed receipt metadata exceeds configured limits.
     #[error("jumbo closure metadata uses {observed} bytes; limit is {maximum}")]
-    MetadataTooLarge { observed: usize, maximum: usize },
+    MetadataTooLarge {
+        /// Required receipt-metadata size in bytes.
+        observed: usize,
+        /// Configured receipt-metadata bound in bytes.
+        maximum: usize,
+    },
     /// Empty values must use the unique empty root and no leaves.
     #[error("empty jumbo descriptor has a non-empty root or leaf count")]
     InvalidEmptyDescriptor,
@@ -307,19 +327,44 @@ pub enum JumboRopeError {
     Allocation,
     /// The allocator provided more leaf scratch than the configured bound.
     #[error("leaf scratch capacity {observed} exceeds {maximum}")]
-    ScratchCapacity { observed: usize, maximum: usize },
+    ScratchCapacity {
+        /// Allocator-reported leaf scratch capacity in elements.
+        observed: usize,
+        /// Maximum permitted leaf scratch capacity in elements.
+        maximum: usize,
+    },
     /// The allocator provided more frontier storage than the configured bound.
     #[error("rope frontier capacity {observed} exceeds {maximum}")]
-    FrontierCapacity { observed: usize, maximum: usize },
+    FrontierCapacity {
+        /// Allocator-reported Merkle frontier capacity in nodes.
+        observed: usize,
+        /// Maximum permitted frontier capacity in nodes.
+        maximum: usize,
+    },
     /// One leaf length violates the min/maximum policy.
     #[error("leaf length {observed} is invalid at ordinal {ordinal}")]
-    InvalidLeafLength { ordinal: u64, observed: usize },
+    InvalidLeafLength {
+        /// Zero-based leaf ordinal in the descriptor's ordered leaf sequence.
+        ordinal: u64,
+        /// Observed leaf payload length in bytes.
+        observed: usize,
+    },
     /// A leaf ordinal is outside the descriptor's exact range.
     #[error("leaf ordinal {ordinal} is outside {leaf_count} leaves")]
-    LeafOrdinalOutOfRange { ordinal: u64, leaf_count: u64 },
+    LeafOrdinalOutOfRange {
+        /// Requested zero-based leaf ordinal.
+        ordinal: u64,
+        /// Number of leaves committed by the descriptor.
+        leaf_count: u64,
+    },
     /// Proof exceeds the bounded Merkle depth.
     #[error("proof depth {observed} exceeds {maximum}")]
-    ProofTooDeep { observed: usize, maximum: usize },
+    ProofTooDeep {
+        /// Number of interior nodes in the supplied proof path.
+        observed: usize,
+        /// Maximum accepted proof depth.
+        maximum: usize,
+    },
     /// Proof ranges do not form one exact ordered sequence.
     #[error("rope proof has a gap, overlap, or reordered range")]
     NonContiguousRopeRange,
@@ -334,7 +379,10 @@ pub enum JumboRopeError {
     ConflictingDuplicateLeaf,
     /// A value closure is incomplete and therefore cannot be published.
     #[error("jumbo value is missing {missing} leaves")]
-    MissingLeaves { missing: u64 },
+    MissingLeaves {
+        /// Number of descriptor-declared leaves not admitted into the closure.
+        missing: u64,
+    },
     /// Empty ropes do not have a leaf path.
     #[error("empty rope has no leaf object")]
     EmptyRopeHasNoLeaf,

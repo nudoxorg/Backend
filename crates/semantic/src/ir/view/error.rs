@@ -18,15 +18,30 @@ pub enum WireField {
     /// Total envelope byte length declared by the header.
     DeclaredLength,
     /// Item count in a directory entry at this zero-based entry ordinal.
-    SectionItemCount { ordinal: u16 },
+    SectionItemCount {
+        /// Zero-based directory entry whose item count was decoded.
+        ordinal: u16,
+    },
     /// Payload byte offset in a directory entry at this zero-based entry ordinal.
-    SectionOffset { ordinal: u16 },
+    SectionOffset {
+        /// Zero-based directory entry whose payload offset was decoded.
+        ordinal: u16,
+    },
     /// Payload byte length in a directory entry at this zero-based entry ordinal.
-    SectionByteLength { ordinal: u16 },
+    SectionByteLength {
+        /// Zero-based directory entry whose payload length was decoded.
+        ordinal: u16,
+    },
     /// Atom-pool start offset in the record for this atom ordinal.
-    AtomStart { ordinal: crate::ir::AtomId },
+    AtomStart {
+        /// Atom coordinate whose encoded start offset could not be represented.
+        ordinal: crate::ir::AtomId,
+    },
     /// Atom-pool byte length in the record for this atom ordinal.
-    AtomLength { ordinal: crate::ir::AtomId },
+    AtomLength {
+        /// Atom coordinate whose encoded byte length could not be represented.
+        ordinal: crate::ir::AtomId,
+    },
 }
 
 /// Rejection of section-directory ordering or geometry.

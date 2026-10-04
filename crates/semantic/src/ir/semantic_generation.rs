@@ -782,9 +782,8 @@ fn verify_typed_plane_content_v2_with_admission(
             .try_reserve_exact(family.segments().len())
             .map_err(|_| SemanticGenerationProofError::Allocation)?;
         for segment in family.segments() {
-            let payload = exact_ordered_payloads
+            exact_ordered_payloads
                 .get(ordered_payload_index)
-                .copied()
                 .ok_or(SemanticGenerationProofError::PayloadCountMismatch {
                     expected: expected_payload_count,
                     observed: ordered_payload_index,
@@ -798,7 +797,6 @@ fn verify_typed_plane_content_v2_with_admission(
                 segment.row_count(),
                 segment.byte_length(),
                 segment.id_claim(),
-                payload,
             ));
         }
         segment_payload_sets.push(segments);
@@ -871,12 +869,12 @@ fn enforce_verification_adapter_bound(
     segment_count: usize,
 ) -> Result<(), SemanticGenerationProofError> {
     let segment_bytes = segment_count
-        .checked_mul(size_of::<TypedPlaneSegmentPayloadV2<'static>>())
+        .checked_mul(size_of::<TypedPlaneSegmentPayloadV2>())
         .ok_or(SemanticGenerationProofError::ManifestResourcePolicy)?;
     let fixed_bytes = IR_FAMILY_COUNT
         .checked_mul(
             size_of::<TypedPlaneFamilyPayloadsV2<'static>>()
-                + size_of::<Vec<TypedPlaneSegmentPayloadV2<'static>>>(),
+                + size_of::<Vec<TypedPlaneSegmentPayloadV2>>(),
         )
         .and_then(|bytes| bytes.checked_add(4096))
         .ok_or(SemanticGenerationProofError::ManifestResourcePolicy)?;
@@ -1341,7 +1339,7 @@ mod tests {
     fn verify_empty_inventory(
         manifest: &SemanticTypedPlaneManifestV2,
     ) -> VerifiedTypedPlaneInventoryV2 {
-        let empty_segments: [Vec<TypedPlaneSegmentPayloadV2<'static>>; IR_FAMILY_COUNT] =
+        let empty_segments: [Vec<TypedPlaneSegmentPayloadV2>; IR_FAMILY_COUNT] =
             core::array::from_fn(|_| Vec::new());
         let families = core::array::from_fn(|index| {
             let claimed = &manifest.families()[index];

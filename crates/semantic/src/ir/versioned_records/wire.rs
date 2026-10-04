@@ -19,10 +19,6 @@ pub(super) fn put_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<(), SemanticP
     Ok(())
 }
 
-pub(super) fn put_text(out: &mut Vec<u8>, value: &str) -> Result<(), SemanticPlaneRecordError> {
-    put_bytes(out, value.as_bytes())
-}
-
 pub(super) fn put_u32(out: &mut Vec<u8>, value: usize) -> Result<(), SemanticPlaneRecordError> {
     let value = u32::try_from(value).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
     out.extend_from_slice(&value.to_be_bytes());

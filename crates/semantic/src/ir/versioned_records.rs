@@ -2253,16 +2253,27 @@ pub enum SemanticPlaneRecordError {
     StableKeyCollision,
     /// One typed row cannot fit below the selected segment byte ceiling.
     #[error("one canonical row needs {observed} bytes; segment ceiling is {maximum}")]
-    OversizedRow { observed: usize, maximum: usize },
+    OversizedRow {
+        /// Minimum single-segment size for this encoded row, including header and framing, in bytes.
+        observed: usize,
+        /// Maximum encoded row size permitted by the active segment policy, in bytes.
+        maximum: usize,
+    },
     /// A family row length cannot be represented in the canonical u32 cell.
     #[error("canonical row length exceeds the u32 wire limit")]
     RowTooLarge,
     /// Stable-key collection exceeded the active aggregate family-row budget.
     #[error("canonical family row count exceeds the aggregate limit {maximum}")]
-    RowBudgetExceeded { maximum: u64 },
+    RowBudgetExceeded {
+        /// Maximum number of canonical rows admitted across the family window.
+        maximum: u64,
+    },
     /// Typed graph edge/root facts exceeded the active reference-work budget.
     #[error("canonical type plan reference facts exceed the aggregate limit {maximum}")]
-    ReferenceBudgetExceeded { maximum: u64 },
+    ReferenceBudgetExceeded {
+        /// Maximum number of typed graph references admitted in the plan.
+        maximum: u64,
+    },
     /// A typed row refers to a missing canonical-reader coordinate.
     #[error("canonical row refers to a missing reader fact")]
     ReaderReference,
@@ -2305,7 +2316,10 @@ pub enum SemanticPlaneRecordError {
     /// retained so family-scoped verifier diagnostics can identify the row
     /// without exposing its potentially sensitive payload.
     #[error("canonical row key {key:?} does not match its typed identity")]
-    StableKeyMismatchAt { key: [u8; 32] },
+    StableKeyMismatchAt {
+        /// Claimed 32-byte stable key whose payload identity did not match.
+        key: [u8; 32],
+    },
     /// This build has no strict decoder for the selected family yet.
     #[error("canonical decoder for this semantic plane family is unavailable")]
     UnsupportedFamily,

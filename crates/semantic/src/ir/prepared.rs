@@ -163,9 +163,11 @@ pub enum PrepareError {
     /// rejection is retained as the source.
     #[error("semantic data canonicalization failed")]
     SemanticData {
+        /// Exact semantic graph validation, budget, or capacity failure.
         #[source]
         cause: CanonicalDataError,
     },
+    /// A captured graph occurrence failed semantic lane admission.
     #[error("occurrence lane admission rejected a reference fact: {fault}")]
     OccurrenceLane {
         /// Occurrence ordinal rejected by admission.
@@ -174,22 +176,25 @@ pub enum PrepareError {
         /// Exact validation failure for that occurrence fact.
         fault: crate::ir::view::OccurrenceFault,
     },
+    /// The type-fact lane failed validation or coordinate checks.
     #[error("type-fact lane admission rejected: {fault}")]
     TypeFacts {
-        #[source]
         /// Type-fact validation or coordinate failure.
+        #[source]
         fault: crate::ir::TypeFactFault,
     },
+    /// The documentation lane failed validation or coordinate checks.
     #[error("documentation lane admission rejected: {fault}")]
     Documentation {
-        #[source]
         /// Documentation-lane validation failure.
+        #[source]
         fault: crate::ir::DocFactFault,
     },
+    /// A language extension pool failed validation or coordinate checks.
     #[error("extension-pool admission rejected: {fault}")]
     ExtensionPools {
-        #[source]
         /// Shared extension-pool validation failure.
+        #[source]
         fault: crate::ir::ExtensionPoolFault,
     },
     /// Extension rows and the support pools they reference were not supplied as one unit.
