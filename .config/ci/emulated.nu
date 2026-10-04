@@ -100,14 +100,18 @@ def --env start-wine []: nothing -> nothing {
     if ($local | is-empty) or ($local | str starts-with "%") {
         let users = ($env.WINEPREFIX | path join "drive_c" "users")
         let profiles = (try { ls $users | where type == dir | get name | path basename | where {|name| $name != "Public" } } catch { [] })
-        if ($profiles | is-empty) {
-            print $"   no Wine user profile under ($users)"
+        # On CI wineboot makes no user profile at all (the container's root
+        # has no account for it to map), so make one the tests can use.
+        let name = if ($profiles | is-empty) {
+            mkdir ($users | path join "nudox-ci" "AppData" "Local")
+            "nudox-ci"
         } else {
-            let profile = $"C:\\users\\($profiles | first)"
-            $env.USERPROFILE = $profile
-            $env.LOCALAPPDATA = $"($profile)\\AppData\\Local"
-            print $"   set USERPROFILE=($env.USERPROFILE) LOCALAPPDATA=($env.LOCALAPPDATA)"
+            $profiles | first
         }
+        let profile = $"C:\\users\\($name)"
+        $env.USERPROFILE = $profile
+        $env.LOCALAPPDATA = $"($profile)\\AppData\\Local"
+        print $"   set USERPROFILE=($env.USERPROFILE) LOCALAPPDATA=($env.LOCALAPPDATA)"
     }
 }
 
