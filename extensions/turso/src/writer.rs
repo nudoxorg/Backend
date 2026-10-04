@@ -5,31 +5,152 @@ use crate::schema::{
     MAX_AUDIT_ROOTS, REBUILD_BATCH_ROWS, SCHEMA_VERSION, UPSERT_COLUMNS, UPSERT_CONFLICT,
     UPSERT_ROW,
 };
+use crate::projection_namespace::ProjectionGenerationId;
+use crate::schema::Metadata;
 use crate::{ProjectionError, ProjectionUpdate, TursoProjection};
+use backend_platform::FileIdentity;
 use backend_library::{
     CommittedViewDelta, Fragment, Row, RowChange, RowId, RowState, ViewDelta, ViewRoot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Opaque SQL-root revision captured before a caller reads or admits a source
+/// snapshot. Pass it to [`TursoProjection::synchronize_from`] so a stale
+/// snapshot cannot replace a root published after the revision was captured.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionRevision {
+    generation: ProjectionGenerationId,
+    marker_identity: FileIdentity,
+    root: [u8; 32],
+    view_version: [u8; 32],
+}
+
+impl ProjectionRevision {
+    /// Exact selected generation whose logical root was captured.
+    #[must_use]
+    pub const fn generation(self) -> ProjectionGenerationId {
+        self.generation
+    }
+
+    /// Exact view root present when the revision was captured.
+    #[must_use]
+    pub const fn root(self) -> [u8; 32] {
+        self.root
+    }
+
+    /// Exact view version present when the revision was captured.
+    #[must_use]
+    pub const fn view_version(self) -> [u8; 32] {
+        self.view_version
+    }
+}
+
 impl TursoProjection {
-    /// Aligns the database with a complete immutable root.
+    /// Captures the current logical root before a caller reads a source view.
     ///
-    /// The exact-root fast path performs one metadata read and no writes.
-    /// A different frontier with the same row-set digest updates the fence
-    /// and does not read row hashes. A hot delta clears that digest, so the
-    /// next synchronize compares borrowed rows and writes only the identities
-    /// that appeared, changed, or disappeared. Rebuild is reserved for first
-    /// boot, recovery, or a missed transition.
+    /// A later full-root replacement must pass this token to
+    /// [`Self::synchronize_from`]. The token is generation-bound and cannot be
+    /// fabricated by callers. Capture it before reading the view that will be
+    /// synchronized; reading a stale view first and then capturing its base
+    /// does not establish source freshness.
+    pub async fn revision(&self) -> Result<ProjectionRevision, ProjectionError> {
+        let _operation_guard = self.operation_guard()?;
+        let metadata = self
+            .metadata()
+            .await?
+            .ok_or(ProjectionError::StaleTransition)?;
+        Ok(ProjectionRevision {
+            generation: self.generation,
+            marker_identity: self.marker_identity,
+            root: metadata.root.as_slice().try_into().map_err(|_| {
+                ProjectionError::CorruptMetadata { field: "root" }
+            })?,
+            view_version: metadata.view_version.as_slice().try_into().map_err(|_| {
+                ProjectionError::CorruptMetadata {
+                    field: "view_version",
+                }
+            })?,
+        })
+    }
+
+    /// Returns the exact-root fast path for an already selected generation.
+    ///
+    /// A selected generation is never mutated by this compatibility method.
+    /// Complete-root replacement requires [`Self::synchronize_from`] with a
+    /// revision captured before the source snapshot was read. Private staging
+    /// generations may be initialized here because they are not yet visible.
     ///
     /// # Errors
     ///
-    /// Returns an error when Turso rejects the atomic rebuild or the row count
-    /// cannot be represented by the projection schema.
+    /// Returns [`ProjectionError::StaleTransition`] when a selected database
+    /// does not already name `view`.
     pub async fn synchronize(
         &mut self,
         view: &ViewRoot,
     ) -> Result<ProjectionUpdate, ProjectionError> {
-        let expected = self.metadata().await?;
+        let _operation_guard = self.operation_guard()?;
+        if !self.staging {
+            let metadata = self
+                .metadata()
+                .await?
+                .ok_or(ProjectionError::StaleTransition)?;
+            return if metadata.root.as_slice() == view.root().as_bytes()
+                && metadata.view_version.as_slice() == view.version().as_bytes()
+            {
+                Ok(ProjectionUpdate::Reused {
+                    rows: metadata.row_count.cast_unsigned(),
+                })
+            } else {
+                Err(ProjectionError::StaleTransition)
+            };
+        }
+        synchronize_guarded(self, view, None).await
+    }
+
+    /// Reconciles one complete root only when the selected SQL root still
+    /// equals `expected`, captured before the source snapshot was read.
+    ///
+    /// The token prevents a delayed source read from rolling back a newer
+    /// projection commit. The caller remains responsible for obtaining `view`
+    /// from its authoritative current source; this local token proves only
+    /// the projection-side base and is not a source-authority certificate.
+    pub async fn synchronize_from(
+        &mut self,
+        expected: ProjectionRevision,
+        view: &ViewRoot,
+    ) -> Result<ProjectionUpdate, ProjectionError> {
+        if self.staging
+            || expected.generation != self.generation
+            || expected.marker_identity != self.marker_identity
+        {
+            return Err(ProjectionError::StaleTransition);
+        }
+        let _operation_guard = self.operation_guard()?;
+        let current = self
+            .metadata()
+            .await?
+            .ok_or(ProjectionError::StaleTransition)?;
+        if current.root.as_slice() == view.root().as_bytes()
+            && current.view_version.as_slice() == view.version().as_bytes()
+        {
+            return Ok(ProjectionUpdate::Reused {
+                rows: current.row_count.cast_unsigned(),
+            });
+        }
+        if current.root.as_slice() != expected.root
+            || current.view_version.as_slice() != expected.view_version
+        {
+            return Err(ProjectionError::StaleTransition);
+        }
+        synchronize_guarded(self, view, Some(current)).await
+    }
+}
+
+async fn synchronize_guarded(
+    projection: &mut TursoProjection,
+    view: &ViewRoot,
+    expected: Option<Metadata>,
+) -> Result<ProjectionUpdate, ProjectionError> {
         if let Some(metadata) = expected.as_ref()
             && metadata.root.as_slice() == view.root().as_bytes()
             && metadata.view_version.as_slice() == view.version().as_bytes()
@@ -49,7 +170,7 @@ impl TursoProjection {
         // metadata check is repeated inside this transaction so a writer that
         // waited behind another publisher returns a typed stale transition and
         // performs zero row work.
-        let tx = self
+        let tx = projection
             .connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
@@ -108,12 +229,13 @@ impl TursoProjection {
         Ok(ProjectionUpdate::Rebuilt {
             rows: view.row_count(),
         })
-    }
+}
 
+impl TursoProjection {
     /// Applies one checked view transition against the exact cached base root.
     ///
-    /// Reset events intentionally use [`Self::synchronize`]. All ordinary row
-    /// changes update one row and the root fence in the same transaction.
+    /// Reset events rebuild from the complete target only after the reset's
+    /// exact base root and version pass the same transaction fence as patches.
     ///
     /// # Errors
     ///
@@ -144,6 +266,7 @@ impl TursoProjection {
         &mut self,
         deltas: &[CommittedViewDelta],
     ) -> Result<ProjectionUpdate, ProjectionError> {
+        let _operation_guard = self.operation_guard()?;
         let Some(first) = deltas.first() else {
             let metadata = self
                 .metadata()
@@ -159,12 +282,6 @@ impl TursoProjection {
                 || pair[0].target_version() != pair[1].base_version()
         }) {
             return Err(ProjectionError::StaleTransition);
-        }
-        if deltas
-            .iter()
-            .any(|delta| matches!(delta.delta(), ViewDelta::Reset { .. }))
-        {
-            return self.synchronize(last.target_view()).await;
         }
         let Some(metadata) = self.metadata().await? else {
             return Err(ProjectionError::StaleTransition);
@@ -188,6 +305,78 @@ impl TursoProjection {
         let target = last.target_view();
         let target_count =
             i64::try_from(target.row_count()).map_err(|_| ProjectionError::RowCountOverflow)?;
+        if deltas
+            .iter()
+            .any(|delta| matches!(delta.delta(), ViewDelta::Reset { .. }))
+        {
+            let target_digest = row_set_digest(target.row_refs());
+            let tx = self
+                .connection
+                .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+                .await?;
+            let Some(current) = metadata_from(&tx).await? else {
+                tx.rollback().await?;
+                return Err(ProjectionError::StaleTransition);
+            };
+            if current.root.as_slice() != first.base_root().as_bytes()
+                || current.view_version.as_slice() != first.base_version().as_bytes()
+            {
+                tx.rollback().await?;
+                return Err(ProjectionError::StaleTransition);
+            }
+            let digest_matches = current.row_digest.as_deref() == Some(target_digest.as_slice());
+            let changed_rows = if digest_matches {
+                0
+            } else if target.row_count() == 0 {
+                tx.execute("DELETE FROM backend_projection_rows", ()).await?
+            } else {
+                let stored = stored_row_hashes(&tx).await?;
+                let (desired, due, changed_rows) =
+                    projection_mutations(&stored, target.row_refs());
+                for rows in due.chunks(REBUILD_BATCH_ROWS) {
+                    upsert_rows(&tx, rows).await?;
+                }
+                delete_absent_rows(&tx, &stored, &desired).await?;
+                changed_rows
+            };
+            let fenced = tx
+                .execute(
+                    "UPDATE backend_projection_meta SET root=?1, view_version=?2, row_count=?3, \
+                     row_digest=?4 \
+                     WHERE singleton=1 AND schema_version=?5 AND root=?6 AND view_version=?7",
+                    turso::params![
+                        target.root().as_bytes().as_slice(),
+                        target.version().as_bytes().as_slice(),
+                        target_count,
+                        target_digest.as_slice(),
+                        SCHEMA_VERSION,
+                        first.base_root().as_bytes().as_slice(),
+                        first.base_version().as_bytes().as_slice()
+                    ],
+                )
+                .await?;
+            if fenced != 1 {
+                return Err(ProjectionError::StaleTransition);
+            }
+            let changed_rows_i64 =
+                i64::try_from(changed_rows).map_err(|_| ProjectionError::RowCountOverflow)?;
+            let delta_id = (deltas.len() == 1).then(|| first.id());
+            record_commit(
+                &tx,
+                target.root().as_bytes(),
+                Some(first.base_root().as_bytes()),
+                delta_id
+                    .as_ref()
+                    .map(backend_library::ViewDeltaId::as_bytes),
+                changed_rows_i64,
+            )
+            .await?;
+            prune_commits(&tx).await?;
+            tx.commit().await?;
+            return Ok(ProjectionUpdate::Rebuilt {
+                rows: target.row_count(),
+            });
+        }
         let tx = self
             .connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)

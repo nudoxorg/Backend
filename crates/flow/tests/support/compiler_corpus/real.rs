@@ -2185,6 +2185,7 @@ mod worker_isolation_tests {
     /// A worker process killed by a signal must map to a typed
     /// `RowProcessCrash` carrying the exact signal, and an outcome file
     /// without an outcome record must parse as no disposition.
+    #[cfg(unix)]
     #[test]
     fn lost_worker_process_becomes_a_typed_crash_row() {
         let mut suicide = Command::new("sh");
@@ -2201,6 +2202,51 @@ mod worker_isolation_tests {
             ),
             "a SIGKILLed worker must keep its signal: {cause:?}"
         );
+        assert_a_transcript_without_an_outcome_is_a_lost_row();
+    }
+
+    /// Windows has no signals, so a lost worker is identified by its exit
+    /// code alone: the typed row carries signal 0 and the exact code, and a
+    /// process the harness kills reports `TerminateProcess`'s code 1. This
+    /// uses `cmd.exe`, which every Windows host provides, instead of the
+    /// MSYS `sh` whose `kill -9` encodes the signal in a shifted exit code.
+    #[cfg(windows)]
+    #[test]
+    fn lost_worker_process_becomes_a_typed_crash_row() {
+        let exits = Command::new("cmd")
+            .args(["/d", "/c", "exit 3"])
+            .status()
+            .expect("child status");
+        assert!(
+            matches!(
+                row_crash_cause(&exits),
+                AuthorityUnavailableCause::RowProcessCrash { signal: 0, code: 3 }
+            ),
+            "an exiting worker keeps its exit code: {:?}",
+            row_crash_cause(&exits)
+        );
+
+        let mut sleeper = Command::new("cmd")
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("sleeping child");
+        sleeper.kill().expect("kill sleeping child");
+        let killed = sleeper.wait().expect("killed child status");
+        assert!(
+            matches!(
+                row_crash_cause(&killed),
+                AuthorityUnavailableCause::RowProcessCrash { signal: 0, code: 1 }
+            ),
+            "a killed worker reports TerminateProcess's code: {:?}",
+            row_crash_cause(&killed)
+        );
+        assert_a_transcript_without_an_outcome_is_a_lost_row();
+    }
+
+    /// An outcome transcript with only diagnostics parses to no disposition
+    /// and adds neither unavailable nor mismatch entries.
+    fn assert_a_transcript_without_an_outcome_is_a_lost_row() {
         let mut unavailable = Vec::new();
         let mut mismatches = Vec::new();
         let case = inventory::real_package_cases()
@@ -2306,8 +2352,14 @@ mod worker_isolation_tests {
             // report over the trivial entry.
             Ok(_) => {}
             // Staging finished; the child program itself could not start on
-            // this host (no `NUDOX_TYPESCRIPT_CHECKER_BIN`, no `node`).
-            Err(backend_frontend_typescript::legacy::CheckerError::Spawn { .. }) => {}
+            // this host (no `NUDOX_TYPESCRIPT_CHECKER_BIN`, no `node`), or it
+            // started and reported the vendored `typescript` module missing.
+            // All three are the checker's typed host-unavailable terminals.
+            Err(
+                backend_frontend_typescript::legacy::CheckerError::Spawn { .. }
+                | backend_frontend_typescript::legacy::CheckerError::ToolingUnavailable { .. }
+                | backend_frontend_typescript::legacy::CheckerError::ModuleUnavailable { .. },
+            ) => {}
             Err(backend_frontend_typescript::legacy::CheckerError::PackageFileLimit {
                 observed,
                 limit,

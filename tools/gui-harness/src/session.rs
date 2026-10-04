@@ -280,9 +280,8 @@ impl Session {
             gpui_platform::current_platform(true)
         };
         let text_system: Arc<dyn PlatformTextSystem> = platform.text_system();
-        if gpui_platform::current_headless_renderer().is_none() {
-            return Err(CaptureError::NoRenderer);
-        }
+        gpui_platform::try_current_headless_renderer()
+            .map_err(|error| CaptureError::NoRenderer(error.to_string()))?;
         // Frame tracing counts invalidations per drawn frame, which is how a
         // session tells a requested frame from an idle one.
         gpui::set_frame_trace_enabled(true);

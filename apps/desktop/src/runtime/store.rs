@@ -43,7 +43,7 @@ use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 pub use super::reads::PoolLoad;
-use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
+use super::reads::{Delivery, Evicted, Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
 use crate::core::{
     ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason,
@@ -366,6 +366,7 @@ impl DataStore {
         let generation = self
             .pages
             .begin_forced(&key, self.snapshot.key())
+            .expect("page generation admission")
             .expect("forced fixture reading");
         assert_eq!(
             self.pages.land(
@@ -577,7 +578,7 @@ impl DataStore {
     pub fn pool_activity(&self) -> PoolLoad {
         self.pool
             .as_ref()
-            .map_or_else(PoolLoad::default, ReadPool::load)
+            .map_or_else(PoolLoad::default, |pool| pool.load().activity())
     }
 
     /// Legacy `(waiting, running)` view. Waiting includes both queued jobs
@@ -695,9 +696,8 @@ impl DataStore {
                 return self.pages.stamp(&key);
             }
         }
-        let root = self.snapshot.key();
         let before = self.pages.stamp(&key);
-        if let Some(generation) = self.pages.begin(&key, root) {
+        if let Some(generation) = self.begin_read(&key, false, Priority::Normal, cx) {
             self.prefetching.remove(&key);
             self.submit(
                 key.clone(),
@@ -787,9 +787,8 @@ impl DataStore {
             return;
         }
         self.keep_focused_resident();
-        let root = self.snapshot.key();
         let before = self.pages.stamp(&key);
-        if let Some(generation) = self.pages.begin(&key, root) {
+        if let Some(generation) = self.begin_read(&key, false, Priority::Prefetch, cx) {
             self.prefetching.insert(key.clone());
             self.stats.prefetched = self.stats.prefetched.saturating_add(1);
             self.submit(
@@ -857,8 +856,7 @@ impl DataStore {
                 return;
             }
         }
-        let root = self.snapshot.key();
-        if let Some(generation) = self.pages.begin_forced(&key, root) {
+        if let Some(generation) = self.begin_read(&key, true, Priority::Normal, cx) {
             self.prefetching.remove(&key);
             self.submit(
                 key.clone(),
@@ -887,8 +885,7 @@ impl DataStore {
             return false;
         };
         let key = PageKey::Search(query.clone());
-        let root = self.snapshot.key();
-        let Some(generation) = self.pages.begin_forced(&key, root) else {
+        let Some(generation) = self.begin_read(&key, true, Priority::Normal, cx) else {
             return false;
         };
         self.submit(
@@ -904,6 +901,58 @@ impl DataStore {
         );
         self.emit(StoreEvent::Resource(key), cx);
         true
+    }
+
+    /// One admission boundary for visible pages, hints, retries, continuations
+    /// and owner faults. A failed mint never changes model fetch ownership.
+    fn begin_read(
+        &mut self,
+        key: &PageKey,
+        force: bool,
+        priority: Priority,
+        cx: &mut Context<Self>,
+    ) -> Option<Generation> {
+        let root = self.snapshot.key();
+        let previous = self.pages.inflight(key);
+        let admitted = if force {
+            self.pages.begin_forced(key, root)
+        } else {
+            self.pages.begin(key, root)
+        };
+        match admitted {
+            Ok(generation) => generation,
+            Err(_) if priority == Priority::Prefetch => {
+                // A hover hint did not start: preserve its previous bytes and
+                // idle state, with no orphaned prefetch bookkeeping.
+                self.prefetching.remove(key);
+                None
+            }
+            Err(_) => {
+                // Capture and fence the previous UI generation before any
+                // cancellation callback can run. cancel captures old ReadIds
+                // before callbacks, so a reentrant newer pool read survives.
+                if self.pages.inflight(key) != previous {
+                    return None;
+                }
+                if previous.is_some() {
+                    if let Some(pool) = &self.pool {
+                        let _ = pool.cancel(key);
+                    }
+                }
+                if self.pages.inflight(key) != previous {
+                    return None;
+                }
+                self.prefetching.remove(key);
+                let before = self.pages.stamp(key);
+                if self.pages.refuse_generation_exhaustion(key, root, previous) {
+                    if previous.is_some() {
+                        self.stats.cancelled = self.stats.cancelled.saturating_add(1);
+                    }
+                    self.emit_moved(key.clone(), before, cx);
+                }
+                None
+            }
+        }
     }
 
     fn submit(
@@ -931,7 +980,7 @@ impl DataStore {
             return;
         };
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
-        let accepted = pool.submit(ReadJob {
+        let admitted = pool.submit(ReadJob {
             key: key.clone(),
             request,
             generation,
@@ -939,23 +988,43 @@ impl DataStore {
             cancel: CancellationToken::new(),
             affinity,
         });
-        if accepted {
-            self.stats.submitted = self.stats.submitted.saturating_add(1);
-        } else if priority == Priority::Prefetch {
-            self.prefetching.remove(&key);
-            let before = self.pages.stamp(&key);
-            let _ = self.pages.cancel(&key);
-            self.emit_moved(key, before, cx);
-        } else if self.pages.land(
-            &key,
-            generation,
-            Err(ReadFailure::Fault(ErrorValue::new(
-                FaultCode::Transport,
-                "The reader is busy with too many pages. Try this page again.",
-            ))),
-        ) == Landing::Applied
-        {
-            self.emit(StoreEvent::Resource(key), cx);
+        match admitted {
+            Ok(admitted) => {
+                self.stats.submitted = self.stats.submitted.saturating_add(1);
+                if let Some(evicted) = admitted.evicted {
+                    self.cancel_evicted(evicted, cx);
+                }
+            }
+            // A refused prefetch leaves its slot as it was: hover is a hint.
+            Err(_) if priority == Priority::Prefetch => {
+                if self.pages.inflight(&key) != Some(generation) {
+                    return;
+                }
+                self.prefetching.remove(&key);
+                let before = self.pages.stamp(&key);
+                let _ = self.pages.cancel(&key);
+                self.emit_moved(key, before, cx);
+            }
+            // A view waits on this read: say why it will not come.
+            Err(refused) => {
+                if self.pages.land(&key, generation, Err(refused.failure())) == Landing::Applied {
+                    self.emit(StoreEvent::Resource(key), cx);
+                }
+            }
+        }
+    }
+
+    /// A queued prefetch gave its admission to a read a view waits on. It
+    /// never runs and posts nothing, so its slot is cancelled here, at once.
+    fn cancel_evicted(&mut self, evicted: Evicted, cx: &mut Context<Self>) {
+        if self.pages.inflight(&evicted.key) != Some(evicted.generation) {
+            return;
+        }
+        self.prefetching.remove(&evicted.key);
+        let before = self.pages.stamp(&evicted.key);
+        if self.pages.cancel(&evicted.key).is_some() {
+            self.stats.cancelled = self.stats.cancelled.saturating_add(1);
+            self.emit_moved(evicted.key, before, cx);
         }
     }
 
@@ -1053,8 +1122,7 @@ impl DataStore {
 
     /// Lands the owner's failure in `key`'s slot, once per root.
     fn fail(&mut self, key: &PageKey, fault: &OwnerFault, cx: &mut Context<Self>) {
-        let root = self.snapshot.key();
-        let Some(generation) = self.pages.begin(key, root) else {
+        let Some(generation) = self.begin_read(key, false, Priority::Normal, cx) else {
             return;
         };
         let failure = ReadFailure::Fault(ErrorValue::new(
@@ -1080,48 +1148,42 @@ impl DataStore {
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {
-            if !outcome.complete {
-                match outcome.result {
-                    Ok(value) => match self.pages.stage(&outcome.key, outcome.generation, value) {
+            // Ownership travels through admission into the slot, and drops
+            // only after this closure lands or discards the value.
+            outcome.land(|key, generation, delivery| match delivery {
+                Delivery::Partial(value) => match self.pages.stage(&key, generation, value) {
+                    Landing::Applied => {
+                        applied += 1;
+                        self.stats.landed = self.stats.landed.saturating_add(1);
+                        self.emit(StoreEvent::Resource(key), cx);
+                    }
+                    Landing::Superseded => {
+                        self.stats.superseded = self.stats.superseded.saturating_add(1)
+                    }
+                    Landing::Unchanged => {}
+                },
+                Delivery::Terminal(result) => {
+                    if self.pages.inflight(&key) == Some(generation) {
+                        self.prefetching.remove(&key);
+                    }
+                    match self.pages.land(&key, generation, result) {
                         Landing::Applied => {
                             applied += 1;
                             self.stats.landed = self.stats.landed.saturating_add(1);
-                            self.emit(StoreEvent::Resource(outcome.key), cx);
+                            save |= kept_keys(self.snapshot.route()).contains(&key);
+                            self.emit(StoreEvent::Resource(key), cx);
+                        }
+                        Landing::Unchanged => {
+                            super::trace::mark("read.same", format_args!("{key:?}"));
+                            self.stats.landed = self.stats.landed.saturating_add(1);
+                            save |= kept_keys(self.snapshot.route()).contains(&key);
                         }
                         Landing::Superseded => {
                             self.stats.superseded = self.stats.superseded.saturating_add(1)
                         }
-                        Landing::Unchanged => {}
-                    },
-                    Err(_) => self.stats.superseded = self.stats.superseded.saturating_add(1),
+                    }
                 }
-                continue;
-            }
-            if self.pages.inflight(&outcome.key) == Some(outcome.generation) {
-                self.prefetching.remove(&outcome.key);
-            }
-            match self
-                .pages
-                .land(&outcome.key, outcome.generation, outcome.result)
-            {
-                Landing::Applied => {
-                    applied += 1;
-                    super::trace::mark("read.land", format_args!("{:?}", outcome.key));
-                    self.stats.landed = self.stats.landed.saturating_add(1);
-                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
-                    self.emit(StoreEvent::Resource(outcome.key), cx);
-                }
-                Landing::Unchanged => {
-                    // The launch snapshot's value, confirmed at the new root:
-                    // nothing to draw.
-                    super::trace::mark("read.same", format_args!("{:?}", outcome.key));
-                    self.stats.landed = self.stats.landed.saturating_add(1);
-                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
-                }
-                Landing::Superseded => {
-                    self.stats.superseded = self.stats.superseded.saturating_add(1);
-                }
-            }
+            });
         }
         if save {
             self.keeper.save_at_rest(cx);
@@ -1413,10 +1475,25 @@ mod tests {
     }
 
     fn rig(cx: &mut TestAppContext, workers: usize) -> Rig {
+        rig_with_limits(cx, workers, crate::runtime::reads::ReadLimits::DEFAULT)
+    }
+
+    fn limits(reads: usize, prefetch: usize) -> crate::runtime::reads::ReadLimits {
+        crate::runtime::reads::ReadLimits::new(
+            std::num::NonZeroUsize::new(reads).expect("nonzero"),
+            prefetch,
+        )
+    }
+
+    fn rig_with_limits(
+        cx: &mut TestAppContext,
+        workers: usize,
+        limits: crate::runtime::reads::ReadLimits,
+    ) -> Rig {
         cx.executor().allow_parking();
         let gate: Gate = Arc::new((Mutex::new(BTreeSet::new()), Condvar::new()));
         let reader_gate = Arc::clone(&gate);
-        let pool = ReadPool::start(workers, move |_| FixtureReader {
+        let pool = ReadPool::start_with(workers, limits, move |_| FixtureReader {
             gate: Arc::clone(&reader_gate),
         })
         .expect("pool");
@@ -1471,6 +1548,322 @@ mod tests {
 
     fn symbol(name: &str) -> SymbolRef {
         SymbolRef::new(name).expect("symbol")
+    }
+
+    fn exhaust_page_generations(store: &mut DataStore) {
+        let last = Generation::new(u64::MAX).expect("final nonzero generation");
+        store.pages.test_advance_generation_to(last);
+        let root = store.snapshot.key();
+        let generation = store
+            .pages
+            .begin_forced(&PageKey::Health, root)
+            .expect("last mint admitted")
+            .expect("last fetch");
+        assert_eq!(generation, last);
+        assert_eq!(
+            store.pages.land(
+                &PageKey::Health,
+                generation,
+                Ok(crate::model::pages::PageValue::Health(health(7)))
+            ),
+            Landing::Applied
+        );
+    }
+
+    fn assert_exhaustion_fault<T>(resource: &Resource<T>) {
+        assert_eq!(resource.activity(), Activity::Stopped);
+        assert_eq!(
+            resource.terminal(),
+            &ResourceTerminal::Fault(crate::model::pages::store::GenerationExhausted.fault())
+        );
+    }
+
+    #[gpui::test]
+    fn exhausted_foreground_admission_is_discoverable_and_ensure_retry_are_stamp_stable(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx, 1);
+        let reference = symbol("fast-exhausted");
+        let key = PageKey::Symbol(reference.clone());
+        rig.store.update(cx, |store, cx| {
+            exhaust_page_generations(store);
+            store.ensure(key.clone(), cx);
+            assert_exhaustion_fault(&store.symbol(&reference));
+            assert_eq!(store.pages.inflight(&key), None);
+            assert!(!store.prefetching.contains(&key));
+            assert_eq!(store.stats.submitted, rig.base.submitted);
+        });
+        assert_eq!(rig.take_events(), [StoreEvent::Resource(key.clone())]);
+        let stamp = rig.store.read_with(cx, |store, _| store.stamp(&key));
+        rig.store.update(cx, |store, cx| {
+            assert_eq!(store.ensure(key.clone(), cx), stamp);
+            store.retry(key.clone(), cx);
+            assert_eq!(store.stamp(&key), stamp);
+            assert_exhaustion_fault(&store.symbol(&reference));
+            assert_eq!(store.pages.inflight(&key), None);
+            assert_eq!(store.stats.submitted, rig.base.submitted);
+            assert!(store.pool_activity().is_idle());
+        });
+        assert!(
+            rig.take_events().is_empty(),
+            "permanent refusal cannot trigger a render/event loop"
+        );
+    }
+
+    #[gpui::test]
+    fn an_exhausted_prefetch_starts_nothing_and_a_visible_visit_faults_once(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx, 1);
+        let reference = symbol("fast-hint-exhausted");
+        let key = PageKey::Symbol(reference.clone());
+        rig.store.update(cx, |store, cx| {
+            exhaust_page_generations(store);
+            let stamp = store.stamp(&key);
+            store.prefetch(key.clone(), cx);
+            assert_eq!(store.stamp(&key), stamp);
+            assert_eq!(store.pages.inflight(&key), None);
+            assert!(!store.prefetching.contains(&key));
+            assert_eq!(store.symbol(&reference).activity(), Activity::NotYet);
+            assert_eq!(store.stats.prefetched, rig.base.prefetched);
+            assert_eq!(store.stats.submitted, rig.base.submitted);
+            let retained = symbol("retained-exhausted-hint");
+            let retained_key = PageKey::Symbol(retained.clone());
+            let old_root = crate::core::VersionedRoot::synthetic(
+                backend_library::view_state_root(&[(
+                    "old-hint".to_owned(),
+                    "authority".to_owned(),
+                )]),
+                3,
+            );
+            assert!(store.pages.seed(
+                crate::model::pages::SeedEntry::Symbol(retained.clone(), Arc::new(page(&retained))),
+                old_root
+            ));
+            let before = store.symbol(&retained);
+            let stamp = store.stamp(&retained_key);
+            store.prefetch(retained_key.clone(), cx);
+            assert_eq!(
+                store.symbol(&retained),
+                before,
+                "failed hint mint preserves retained bytes and activity"
+            );
+            assert_eq!(store.symbol(&retained).value_root(), Some(old_root));
+            assert_eq!(store.stamp(&retained_key), stamp);
+            assert_eq!(store.pages.inflight(&retained_key), None);
+            assert!(!store.prefetching.contains(&retained_key));
+            assert_eq!(store.stats.prefetched, rig.base.prefetched);
+            assert_eq!(store.stats.submitted, rig.base.submitted);
+        });
+        assert!(rig.take_events().is_empty());
+        rig.store.update(cx, |store, cx| {
+            store.ensure(key.clone(), cx);
+        });
+        assert_eq!(rig.take_events(), [StoreEvent::Resource(key.clone())]);
+        rig.store.read_with(cx, |store, _| {
+            assert_exhaustion_fault(&store.symbol(&reference));
+            assert!(store.pool_activity().is_idle());
+        });
+    }
+
+    #[gpui::test]
+    fn an_exhausted_forced_request_cancels_the_previous_worker_before_its_terminal_can_land(
+        cx: &mut TestAppContext,
+    ) {
+        struct Witness {
+            began: std::sync::mpsc::Sender<CancellationToken>,
+            interrupted: std::sync::mpsc::Sender<bool>,
+            gate: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl PageReader for Witness {
+            fn read(
+                &mut self,
+                request: &ReadRequest,
+                context: &ReadContext<'_>,
+            ) -> Result<crate::model::pages::PageValue, ReadFailure> {
+                let ReadRequest::Symbol(reference) = request else {
+                    return match request {
+                        ReadRequest::Health => {
+                            Ok(crate::model::pages::PageValue::Health(health(7)))
+                        }
+                        _ => Err(ReadFailure::Unavailable(
+                            UnavailableReason::Unsupported,
+                            Arc::from("fixture"),
+                        )),
+                    };
+                };
+                let gate = Arc::clone(&self.gate);
+                let interrupt = context.cancel.on_cancel(move || {
+                    let (lock, ready) = &*gate;
+                    *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
+                    ready.notify_all();
+                });
+                self.began
+                    .send(context.cancel.clone())
+                    .expect("actual reader token");
+                let (lock, ready) = &*self.gate;
+                let (released, timeout) = ready
+                    .wait_timeout_while(
+                        lock.lock().expect("wait predicate"),
+                        crate::runtime::wait::HUNG,
+                        |released| !*released,
+                    )
+                    .expect("bounded reader interruption wait");
+                self.interrupted
+                    .send(*released && !timeout.timed_out() && context.cancel.is_cancelled())
+                    .expect("outside-callback interruption observation");
+                drop((released, interrupt));
+                // Deliberately return useful success after cancellation: the
+                // real pool must convert it to its cancelled terminal.
+                Ok(crate::model::pages::PageValue::Symbol(page(reference)))
+            }
+        }
+        cx.executor().allow_parking();
+        let (began, entered) = std::sync::mpsc::channel();
+        let (interrupted, observed) = std::sync::mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let pool = ReadPool::start(1, move |_| Witness {
+            began: began.clone(),
+            interrupted: interrupted.clone(),
+            gate: Arc::clone(&gate),
+        })
+        .expect("actual worker");
+        let store = cx.update(|cx| DataStore::install(cx, snapshot(), Some(pool)));
+        crate::runtime::wait::until("initial route is settled", || {
+            cx.run_until_parked();
+            store.read_with(cx, |store, _| {
+                store.health().is_loaded() && store.pool_activity().is_idle()
+            })
+        });
+        let reference = symbol("slow-final-generation");
+        let key = PageKey::Symbol(reference.clone());
+        let last = Generation::new(u64::MAX).expect("last");
+        let base = store.read_with(cx, |store, _| store.stats());
+        store.update(cx, |store, cx| {
+            store.pages.test_advance_generation_to(last);
+            store.ensure(key.clone(), cx);
+        });
+        let actual_token = entered
+            .recv_timeout(crate::runtime::wait::HUNG)
+            .expect("registered real worker");
+        store.update(cx, |store, cx| {
+            assert_eq!(store.pages.inflight(&key), Some(last));
+            store.retry(key.clone(), cx);
+            assert!(
+                actual_token.is_cancelled(),
+                "old fetch was cancelled before the fault became visible"
+            );
+            assert_exhaustion_fault(&store.symbol(&reference));
+            assert_eq!(store.pages.inflight(&key), None);
+            assert_eq!(store.stats.cancelled - base.cancelled, 1);
+            assert_eq!(store.stats.submitted - base.submitted, 1);
+            assert_eq!(
+                store.pages.stage(
+                    &key,
+                    last,
+                    crate::model::pages::PageValue::Symbol(page(&reference))
+                ),
+                Landing::Superseded
+            );
+            assert_eq!(
+                store.pages.land(
+                    &key,
+                    last,
+                    Ok(crate::model::pages::PageValue::Symbol(page(&reference)))
+                ),
+                Landing::Superseded
+            );
+        });
+        assert_eq!(
+            observed.recv_timeout(crate::runtime::wait::HUNG),
+            Ok(true),
+            "actual blocking reader was interrupted; a caught timeout panic cannot masquerade as cancellation"
+        );
+        let fault_stamp = store.read_with(cx, |store, _| store.stamp(&key));
+        crate::runtime::wait::until("late terminal is drained", || {
+            cx.run_until_parked();
+            store.read_with(cx, |store, _| store.pool_activity().is_idle())
+        });
+        store.read_with(cx, |store, _| {
+            assert_exhaustion_fault(&store.symbol(&reference));
+            assert!(store.symbol(&reference).loaded_value().is_none());
+            assert_eq!(store.stamp(&key), fault_stamp);
+            assert_eq!(
+                store.pool.as_ref().expect("pool").load().held,
+                crate::runtime::reads::Held::default()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn exhausted_load_more_retains_the_page_without_issuing_a_continuation(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx, 1);
+        let query = SearchQuery::new("more-at-exhaustion", 12).expect("query");
+        let key = PageKey::Search(query.clone());
+        rig.store.update(cx, |store, cx| {
+            let root = store.snapshot.key();
+            let generation = store
+                .pages
+                .begin_forced(&key, root)
+                .expect("admission")
+                .expect("search generation");
+            let value = SearchPage {
+                query: Arc::clone(&query.text),
+                rows: Arc::from([]),
+                coverage: backend_present::CoverageLine::new(&[], Some(0)),
+                next: Some(crate::model::pages::SearchContinuation {
+                    cursor: backend_library::PageContinuation::from_cursor(
+                        backend_library::Cursor::new(),
+                    ),
+                    worker: 0,
+                }),
+            };
+            assert_eq!(
+                store.pages.land(
+                    &key,
+                    generation,
+                    Ok(crate::model::pages::PageValue::Search(value.clone()))
+                ),
+                Landing::Applied
+            );
+            exhaust_page_generations(store);
+            assert!(!store.load_more(&query, cx));
+            assert_exhaustion_fault(&store.search(&query));
+            assert_eq!(store.search(&query).loaded_value(), Some(&value));
+            assert_eq!(store.pages.inflight(&key), None);
+            assert_eq!(store.stats.submitted, rig.base.submitted);
+            let stamp = store.stamp(&key);
+            assert!(!store.load_more(&query, cx));
+            assert_eq!(store.stamp(&key), stamp);
+        });
+        assert_eq!(rig.take_events(), [StoreEvent::Resource(key)]);
+    }
+
+    #[gpui::test]
+    fn owner_failure_at_generation_exhaustion_is_a_terminal_resource_with_retained_bytes(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx, 1);
+        rig.store.update(cx, |store, cx| {
+            store.focus(vec![PageKey::Health], cx);
+            exhaust_page_generations(store);
+            let root = store.health().value_root();
+            store.owner_failed(&OwnerFault::Lost("fixture owner vanished".into()), cx);
+            assert_exhaustion_fault(&store.health());
+            assert_eq!(
+                store.health().loaded_value().map(|value| value.rows),
+                Some(7)
+            );
+            assert_eq!(store.health().value_root(), root);
+            assert_eq!(store.pages.inflight(&PageKey::Health), None);
+            let stamp = store.stamp(&PageKey::Health);
+            store.ensure(PageKey::Health, cx);
+            assert_eq!(store.stamp(&PageKey::Health), stamp);
+            assert_eq!(store.stats.submitted, rig.base.submitted);
+            assert!(store.pool_activity().is_idle());
+        });
     }
 
     /// Finish real worker reads while the foreground executor is withheld.
@@ -1841,6 +2234,198 @@ mod tests {
             orbit.terminal(),
             crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Unavailable(_)
         ));
+    }
+
+    fn held(rig: &Rig, cx: &mut TestAppContext) -> crate::runtime::reads::Held {
+        rig.store
+            .read_with(cx, |store, _| {
+                store.pool.as_ref().map(|pool| pool.load().held)
+            })
+            .expect("the rig has a pool")
+    }
+
+    /// Schedule: the pages a view waits on hold every admission. A further
+    /// read is refused with a typed busy fault instead of growing the pool,
+    /// and the next ask succeeds once the held reads land.
+    #[gpui::test]
+    fn a_read_refused_at_capacity_shows_a_busy_fault_and_recovers(cx: &mut TestAppContext) {
+        let rig = rig_with_limits(cx, 2, limits(2, 1));
+        let held_keys = vec![
+            PageKey::Symbol(symbol("slow-held-1")),
+            PageKey::Symbol(symbol("slow-held-2")),
+        ];
+        rig.store.update(cx, |store, cx| store.focus(held_keys, cx));
+        let refused = symbol("fast-refused");
+        rig.store.update(cx, |store, cx| {
+            store.ensure(PageKey::Symbol(refused.clone()), cx);
+        });
+        let busy = rig.store.read_with(cx, |store, _| store.symbol(&refused));
+        assert_eq!(busy.activity(), Activity::Stopped);
+        assert!(
+            matches!(busy.terminal(), ResourceTerminal::Fault(error) if error.code() == FaultCode::Transport && error.message().contains("busy")),
+            "{busy:?}"
+        );
+        assert_eq!(
+            held(&rig, cx).total(),
+            2,
+            "the refused read took no admission"
+        );
+        rig.open("slow-held-1");
+        rig.open("slow-held-2");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.update(cx, |store, cx| {
+            store.retry(PageKey::Symbol(refused.clone()), cx)
+        });
+        rig.until(cx, |store| store.symbol(&refused).is_loaded());
+    }
+
+    /// Schedule: every admission is held while a hover prefetch is still
+    /// queued, and a view asks for another page. The prefetch gives up its
+    /// admission and its slot is cancelled at once; it never runs.
+    #[gpui::test]
+    fn an_evicted_prefetch_is_cancelled_at_once_and_never_lands(cx: &mut TestAppContext) {
+        let rig = rig_with_limits(cx, 1, limits(3, 1));
+        let busy = PageKey::Symbol(symbol("slow-busy"));
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![busy.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        let hover = PageKey::Symbol(symbol("fast-hover"));
+        let waiting = PageKey::Symbol(symbol("fast-waiting"));
+        let evicting = PageKey::Symbol(symbol("fast-evicting"));
+        rig.store.update(cx, |store, cx| {
+            store.prefetch(hover.clone(), cx);
+            store.ensure(waiting.clone(), cx);
+        });
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.is_prefetching(&hover))
+        );
+        rig.take_events();
+        rig.store.update(cx, |store, cx| {
+            store.ensure(evicting.clone(), cx);
+        });
+        let (prefetching, hover_loading, evicting_loading) = rig.store.read_with(cx, |store, _| {
+            (
+                store.is_prefetching(&hover),
+                store.is_loading(&hover),
+                store.is_loading(&evicting),
+            )
+        });
+        assert!(
+            !prefetching && !hover_loading,
+            "the evicted prefetch's slot was cancelled"
+        );
+        assert!(evicting_loading, "the view's read took the admission");
+        assert!(
+            rig.take_events()
+                .contains(&StoreEvent::Resource(hover.clone()))
+        );
+        rig.open("slow-busy");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.read_with(cx, |store, _| {
+            assert!(store.symbol(&symbol("fast-evicting")).is_loaded());
+            assert!(store.symbol(&symbol("fast-waiting")).is_loaded());
+            assert!(
+                store.symbol(&symbol("fast-hover")).loaded_value().is_none(),
+                "the evicted prefetch never ran"
+            );
+        });
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default());
+    }
+
+    /// Schedule: the owner is lost while a read runs, and its late reply
+    /// arrives after the slot was revoked. It never lands, and its
+    /// admission returns once the UI discards it.
+    #[gpui::test]
+    fn a_late_generation_never_lands_and_returns_its_admission(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let late = symbol("slow-late");
+        let key = PageKey::Symbol(late.clone());
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        rig.store.update(cx, |store, cx| {
+            store.owner_failed(&OwnerFault::Lost("socket closed".into()), cx)
+        });
+        assert_eq!(held(&rig, cx).total(), 1, "the revoked read still runs");
+        rig.open("slow-late");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.symbol(&late).loaded_value().is_none())
+        );
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default());
+    }
+
+    /// A delayed eviction receipt is generation-specific. It cannot cancel
+    /// a newer prefetch, and a duplicate receipt emits no second event.
+    #[gpui::test]
+    fn stale_prefetch_eviction_cannot_revoke_a_newer_generation(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let key = PageKey::Symbol(symbol("eviction-generation"));
+        let (old, current, before, cancelled) = rig.store.update(cx, |store, _| {
+            let root = store.snapshot.key();
+            let old = store
+                .pages
+                .begin_forced(&key, root)
+                .expect("page generation admission")
+                .expect("old prefetch slot");
+            let current = store
+                .pages
+                .begin_forced(&key, root)
+                .expect("page generation admission")
+                .expect("new selected generation");
+            store.prefetching.insert(key.clone());
+            (old, current, store.pages.stamp(&key), store.stats.cancelled)
+        });
+        rig.take_events();
+        rig.store.update(cx, |store, cx| {
+            store.cancel_evicted(
+                Evicted {
+                    key: key.clone(),
+                    generation: old,
+                },
+                cx,
+            )
+        });
+        rig.store.read_with(cx, |store, _| {
+            assert_eq!(store.pages.inflight(&key), Some(current));
+            assert!(store.prefetching.contains(&key));
+            assert_eq!(store.pages.stamp(&key), before);
+            assert_eq!(store.stats.cancelled, cancelled);
+        });
+        assert!(
+            rig.take_events().is_empty(),
+            "old receipt changed no current page"
+        );
+        rig.store.update(cx, |store, cx| {
+            store.cancel_evicted(
+                Evicted {
+                    key: key.clone(),
+                    generation: current,
+                },
+                cx,
+            )
+        });
+        assert_eq!(rig.take_events(), vec![StoreEvent::Resource(key.clone())]);
+        rig.store.update(cx, |store, cx| {
+            store.cancel_evicted(
+                Evicted {
+                    key: key.clone(),
+                    generation: current,
+                },
+                cx,
+            )
+        });
+        assert!(
+            rig.take_events().is_empty(),
+            "duplicate receipt cannot revoke twice"
+        );
+        rig.store.read_with(cx, |store, _| {
+            assert_eq!(store.pages.inflight(&key), None);
+            assert!(!store.prefetching.contains(&key));
+            assert_eq!(store.stats.cancelled, cancelled + 1);
+        });
     }
 
     #[test]

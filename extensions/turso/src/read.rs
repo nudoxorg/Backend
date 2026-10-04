@@ -26,6 +26,7 @@ impl TursoProjection {
         label: &str,
         limit: u32,
     ) -> Result<RootedRows, ProjectionError> {
+        let _operation_guard = self.operation_guard()?;
         // Keep the root fence and the rows in one read transaction. A pair of
         // independent statements can otherwise observe `base` for the fence
         // and `target` for the rows when a writer commits between them.

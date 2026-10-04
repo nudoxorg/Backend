@@ -1080,10 +1080,25 @@ fn update_text(hasher: &mut blake3::Hasher, value: &str) {
 mod tests {
     use super::*;
 
+    /// Spells a POSIX fixture path as an absolute path on this host. These
+    /// facts are synthetic test inputs; production admission remains unchanged.
+    fn fixture_path_text(posix: &str) -> String {
+        debug_assert!(posix.starts_with('/') && !posix.starts_with("//"));
+        if cfg!(windows) {
+            format!("C:{posix}")
+        } else {
+            posix.to_owned()
+        }
+    }
+
+    fn fixture_path(posix: &str) -> PathBuf {
+        PathBuf::from(fixture_path_text(posix))
+    }
+
     fn fixture_facts() -> RustCargoWorkspaceFactsV1 {
         RustCargoWorkspaceFactsV1 {
-            manifest_path: PathBuf::from("/workspace/Cargo.toml"),
-            workspace_root: PathBuf::from("/workspace"),
+            manifest_path: fixture_path("/workspace/Cargo.toml"),
+            workspace_root: fixture_path("/workspace"),
             selected_package_id: Some("path+file:///workspace#fixture@1.0.0".into()),
             requested_features: RustCargoFeatureSelectionV1 {
                 all_features: false,
@@ -1094,7 +1109,7 @@ mod tests {
                 package_id: "path+file:///workspace#fixture@1.0.0".into(),
                 name: "fixture".into(),
                 version: "1.0.0".into(),
-                manifest_path: PathBuf::from("/workspace/Cargo.toml"),
+                manifest_path: fixture_path("/workspace/Cargo.toml"),
                 features: vec![RustCargoFeatureFactV1 {
                     name: "default".into(),
                     enables: Box::new([]),
@@ -1104,7 +1119,7 @@ mod tests {
                     name: "fixture".into(),
                     kinds: vec!["lib".into()].into_boxed_slice(),
                     crate_types: vec!["lib".into()].into_boxed_slice(),
-                    source_path: PathBuf::from("/workspace/src/lib.rs"),
+                    source_path: fixture_path("/workspace/src/lib.rs"),
                     required_features: Box::new([]),
                     edition: "2024".into(),
                     test: true,
@@ -1128,7 +1143,7 @@ mod tests {
 
     fn metadata_fixture() -> serde_json::Value {
         serde_json::json!({
-            "workspace_root": "/workspace",
+            "workspace_root": fixture_path_text("/workspace"),
             "workspace_members": [
                 "path+file:///workspace/crates/a#a@1.0.0",
                 "path+file:///workspace/crates/b#b@1.0.0"
@@ -1138,13 +1153,13 @@ mod tests {
                     "id": "path+file:///workspace/crates/a#a@1.0.0",
                     "name": "a",
                     "version": "1.0.0",
-                    "manifest_path": "/workspace/crates/a/Cargo.toml",
+                    "manifest_path": fixture_path_text("/workspace/crates/a/Cargo.toml"),
                     "features": {"default": []},
                     "targets": [{
                         "name": "a_lib",
                         "kind": ["lib"],
                         "crate_types": ["lib"],
-                        "src_path": "/workspace/crates/a/src/lib.rs",
+                        "src_path": fixture_path_text("/workspace/crates/a/src/lib.rs"),
                         "edition": "2024",
                         "test": true,
                         "doctest": true,
@@ -1155,13 +1170,13 @@ mod tests {
                     "id": "path+file:///workspace/crates/b#b@1.0.0",
                     "name": "b",
                     "version": "1.0.0",
-                    "manifest_path": "/workspace/crates/b/Cargo.toml",
+                    "manifest_path": fixture_path_text("/workspace/crates/b/Cargo.toml"),
                     "features": {"default": []},
                     "targets": [{
                         "name": "b_bin",
                         "kind": ["bin"],
                         "crate_types": ["bin"],
-                        "src_path": "/workspace/crates/b/src/main.rs",
+                        "src_path": fixture_path_text("/workspace/crates/b/src/main.rs"),
                         "edition": "2021",
                         "test": true,
                         "doctest": false,
@@ -1190,7 +1205,7 @@ mod tests {
         let make_facts = |manifest_path| {
             RustCargoWorkspaceFactsV1::from_metadata_value(
                 &metadata,
-                PathBuf::from(manifest_path),
+                fixture_path(manifest_path),
                 RustCargoFeatureSelectionV1 {
                     all_features: false,
                     no_default_features: false,
@@ -1223,7 +1238,7 @@ mod tests {
         let make_facts = |metadata: &serde_json::Value| {
             RustCargoWorkspaceFactsV1::from_metadata_value(
                 metadata,
-                PathBuf::from("/workspace/Cargo.toml"),
+                fixture_path("/workspace/Cargo.toml"),
                 RustCargoFeatureSelectionV1 {
                     all_features: false,
                     no_default_features: false,

@@ -12,10 +12,8 @@ use backend_engine::cluster_transport::{
     RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
     RemoteIndexSemanticSelection, ScopedClusterInvite, SecretKey, remote_index_now,
 };
-use backend_engine::{
-    PackageReference, ProductText, SurfaceCommand, SurfaceReply,
-};
-use backend_library::{interface::PackageUrl, IndexSearchCursor};
+use backend_engine::{PackageReference, ProductText, SurfaceCommand, SurfaceReply};
+use backend_library::{IndexSearchCursor, interface::PackageUrl};
 use backend_local_service::builtin::{
     ProductCompilerScope, ProductCompilerTargetKind, RemoteIndexUsage, product_compiler_scope,
 };
@@ -1971,9 +1969,12 @@ mod tests {
             ProductCompilerTargetKind::PinnedRegistry
         );
 
+        // The toolchain resolver rejects relative executables, and a bare
+        // `/test/...` is relative on Windows (no drive), so the fixture is
+        // anchored at the temporary directory, which is absolute everywhere.
         let runtime_toolchain = LocalRuntimeToolchain::resolved(
             NativeTool::Rustc,
-            PathBuf::from("/test/toolchain/rustc"),
+            std::env::temp_dir().join("test-toolchain").join("rustc"),
             b"rustc 1.0.0 test",
         )
         .expect("resolved compiler toolchain fixture");

@@ -75,6 +75,7 @@ impl TursoProjection {
         request: &PackageGraphPageRequest,
     ) -> Result<PackageGraphPage, PackageGraphReadError> {
         request.admit()?;
+        let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
         let Some(metadata) = crate::graph::package_graph_metadata_from(&tx).await? else {
             tx.rollback().await?;
@@ -809,6 +810,10 @@ mod tests {
     }
 
     fn remove_database(path: &std::path::Path) {
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            let namespace = path.with_file_name(format!("{name}.namespace-v1"));
+            let _ = std::fs::remove_dir_all(namespace);
+        }
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(std::path::PathBuf::from(format!(
                 "{}{suffix}",
@@ -846,7 +851,9 @@ mod tests {
     fn first_and_keyset_pages_use_turso_edge_indexes_without_sorting() {
         futures_executor::block_on(async {
             let path = database_path();
-            let projection = TursoProjection::open(&path).await.expect("projection");
+            let projection = crate::tests::open_test(&path)
+                .await
+                .expect("projection");
             let coordinate = "pkg:cargo/toml@0.8.23";
             let authority = [0x31; 32];
             let after = [0x72; 32];
@@ -947,12 +954,14 @@ mod tests {
         root_byte: u8,
     ) -> (std::path::PathBuf, TursoProjection) {
         let path = database_path();
-        let mut projection = TursoProjection::open(&path).await.expect("open projection");
-        projection
-            .synchronize_package_graph(
-                view_state_root(&[("package-graph".to_owned(), root_byte.to_string())]),
-                facts,
-            )
+        let mut projection = crate::tests::open_test(&path)
+            .await
+            .expect("open projection");
+        crate::tests::synchronize_graph_from_current_for_test(
+            &mut projection,
+            view_state_root(&[("package-graph".to_owned(), root_byte.to_string())]),
+            facts,
+        )
             .await
             .expect("project package graph snapshot");
         (path, projection)
@@ -1454,11 +1463,11 @@ mod tests {
                     ),
                 ),
             ];
-            projection
-                .synchronize_package_graph(
-                    view_state_root(&[("package-graph".to_owned(), "5".to_owned())]),
-                    &states,
-                )
+            crate::tests::synchronize_graph_from_current_for_test(
+                &mut projection,
+                view_state_root(&[("package-graph".to_owned(), "5".to_owned())]),
+                &states,
+            )
                 .await
                 .expect("advance graph snapshot");
             let stale = projection

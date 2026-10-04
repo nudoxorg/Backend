@@ -42,6 +42,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use backend_platform::FileIdentity;
 use backend_store::{
     ObjectId, RelationAdmissionRegistry, StoreError, TypedObject, UntrustedObjectId,
 };
@@ -1173,7 +1174,7 @@ fn parse_content_range(raw: &str) -> Result<(AllowedRange, u64), RemoteStoreErro
 struct TempEnvelope {
     path: PathBuf,
     file: Arc<File>,
-    identity: TempFileSnapshot,
+    identity: FileIdentity,
     len: u64,
     sha256: [u8; 32],
     snapshot: Option<TempFileSnapshot>,
@@ -1187,10 +1188,7 @@ struct TempEnvelope {
 struct TempFileSnapshot {
     len: u64,
     modified: Option<SystemTime>,
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    ino: u64,
+    identity: FileIdentity,
     #[cfg(unix)]
     ctime: i64,
     #[cfg(unix)]
@@ -1198,27 +1196,22 @@ struct TempFileSnapshot {
     #[cfg(unix)]
     nlink: u64,
     #[cfg(windows)]
-    volume_serial: Option<u32>,
-    #[cfg(windows)]
-    file_index: Option<u64>,
-    #[cfg(windows)]
     last_write_time: u64,
 }
 
 impl TempFileSnapshot {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
+    /// Captures the size, times, and identity of the object `file` holds open.
+    fn capture(file: &File) -> io::Result<Self> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         #[cfg(windows)]
         use std::os::windows::fs::MetadataExt;
 
-        Self {
+        let metadata = file.metadata()?;
+        Ok(Self {
             len: metadata.len(),
             modified: metadata.modified().ok(),
-            #[cfg(unix)]
-            dev: metadata.dev(),
-            #[cfg(unix)]
-            ino: metadata.ino(),
+            identity: FileIdentity::of_file(file)?,
             #[cfg(unix)]
             ctime: metadata.ctime(),
             #[cfg(unix)]
@@ -1226,31 +1219,8 @@ impl TempFileSnapshot {
             #[cfg(unix)]
             nlink: metadata.nlink(),
             #[cfg(windows)]
-            volume_serial: metadata.volume_serial_number(),
-            #[cfg(windows)]
-            file_index: metadata.file_index(),
-            #[cfg(windows)]
             last_write_time: metadata.last_write_time(),
-        }
-    }
-
-    fn same_file(&self, other: &Self) -> bool {
-        #[cfg(unix)]
-        {
-            self.dev == other.dev && self.ino == other.ino
-        }
-        #[cfg(windows)]
-        {
-            self.volume_serial.is_some()
-                && self.file_index.is_some()
-                && self.volume_serial == other.volume_serial
-                && self.file_index == other.file_index
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = other;
-            false
-        }
+        })
     }
 }
 
@@ -1319,11 +1289,8 @@ impl TempEnvelope {
                     let retained = file
                         .try_clone()
                         .map_err(|_| RemoteStoreError::Unavailable)?;
-                    let identity = TempFileSnapshot::from_metadata(
-                        &retained
-                            .metadata()
-                            .map_err(|_| RemoteStoreError::Unavailable)?,
-                    );
+                    let identity = FileIdentity::of_file(&retained)
+                        .map_err(|_| RemoteStoreError::Unavailable)?;
                     return Ok((
                         Self {
                             path,
@@ -1346,10 +1313,8 @@ impl TempEnvelope {
     fn open(&self) -> Result<File, RemoteStoreError> {
         self.verify_snapshot()?;
         let file = File::open(&self.path).map_err(|_| RemoteStoreError::Unavailable)?;
-        let opened = TempFileSnapshot::from_metadata(
-            &file.metadata().map_err(|_| RemoteStoreError::Unavailable)?,
-        );
-        if !self.identity.same_file(&opened)
+        let opened = TempFileSnapshot::capture(&file).map_err(|_| RemoteStoreError::Unavailable)?;
+        if self.identity != opened.identity
             || self
                 .snapshot
                 .as_ref()
@@ -1368,7 +1333,8 @@ impl TempEnvelope {
         if metadata.len() != self.len {
             return Err(RemoteStoreError::Identity);
         }
-        self.snapshot = Some(TempFileSnapshot::from_metadata(&metadata));
+        self.snapshot =
+            Some(TempFileSnapshot::capture(&self.file).map_err(|_| RemoteStoreError::Unavailable)?);
         Ok(())
     }
 
@@ -1376,17 +1342,12 @@ impl TempEnvelope {
         let Some(expected) = self.snapshot.as_ref() else {
             return Ok(());
         };
-        let metadata = self
-            .file
-            .metadata()
-            .map_err(|_| RemoteStoreError::Unavailable)?;
-        if TempFileSnapshot::from_metadata(&metadata) != *expected {
+        let current =
+            TempFileSnapshot::capture(&self.file).map_err(|_| RemoteStoreError::Unavailable)?;
+        if current != *expected {
             return Err(RemoteStoreError::Identity);
         }
-        let path_metadata =
-            fs::symlink_metadata(&self.path).map_err(|_| RemoteStoreError::Identity)?;
-        let path_snapshot = TempFileSnapshot::from_metadata(&path_metadata);
-        if !path_metadata.file_type().is_file() || !self.identity.same_file(&path_snapshot) {
+        if !self.path_is_same_file() {
             return Err(RemoteStoreError::Identity);
         }
         Ok(())
@@ -1451,9 +1412,8 @@ impl TempEnvelope {
             return false;
         };
         metadata.file_type().is_file()
-            && self
-                .identity
-                .same_file(&TempFileSnapshot::from_metadata(&metadata))
+            && FileIdentity::of_path_nofollow(&self.path)
+                .is_ok_and(|identity| identity == self.identity)
     }
 }
 

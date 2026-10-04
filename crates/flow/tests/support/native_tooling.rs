@@ -66,7 +66,7 @@ impl HostTool {
         let executable = match env::var_os(variable).map(PathBuf::from) {
             Some(configured) => {
                 let executable = if tool == NativeTool::Rustc {
-                    configured.join("bin/rustc")
+                    configured.join(["bin/rustc", env::consts::EXE_SUFFIX].concat())
                 } else {
                     configured
                 };
@@ -126,9 +126,9 @@ impl HostTool {
 
 fn path_executable(tool: NativeTool) -> Result<PathBuf, NativeToolingError> {
     let paths = env::var_os("PATH").ok_or(NativeToolingError::MissingPath { tool })?;
-    let name = executable_name(tool);
+    let name = [executable_name(tool), env::consts::EXE_SUFFIX].concat();
     for directory in env::split_paths(&paths) {
-        let candidate = directory.join(name);
+        let candidate = directory.join(&name);
         if candidate.is_file() {
             return candidate
                 .canonicalize()
@@ -138,10 +138,20 @@ fn path_executable(tool: NativeTool) -> Result<PathBuf, NativeToolingError> {
     Err(NativeToolingError::MissingTool { tool })
 }
 
+/// The tool's file stem; the caller appends the host executable suffix
+/// (`.exe` on Windows). Standard Windows CPython installs provide `python.exe`
+/// and no `python3.exe`; the `python3` entry a Microsoft Store alias adds is an
+/// app-execution link, not a regular file.
 const fn executable_name(tool: NativeTool) -> &'static str {
     match tool {
         NativeTool::Rustc => "rustc",
-        NativeTool::Python => "python3",
+        NativeTool::Python => {
+            if cfg!(windows) {
+                "python"
+            } else {
+                "python3"
+            }
+        }
         NativeTool::Clang => "clang",
         NativeTool::TypeScriptCompiler => "tsc",
         NativeTool::GoCompiler => "go",

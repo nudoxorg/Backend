@@ -6,17 +6,18 @@
 //! a dropped event or reset.
 
 #[cfg(any(unix, windows))]
-use crate::subscription::{
-    snapshot_page_from_bytes_with_verifier, subscription_read_from_bytes,
-    subscription_read_from_bytes_against,
-};
+use crate::lease_contract::{BOOTSTRAP_LEASE, PUBLICATION_CREDIT};
+#[cfg(any(unix, windows))]
+use crate::reset_hydration::{ResetHydration, ResetHydrationError, ResetPageProgress};
+#[cfg(any(unix, windows))]
+use crate::subscription::{subscription_read_from_bytes, subscription_read_from_bytes_against};
 #[cfg(any(unix, windows))]
 use crate::{
     CertifiedSubscriptionTransport, ClientError, MAX_EVENTS, MAX_FRAME, SubscriptionRequest,
     SubscriptionTransport,
 };
 #[cfg(any(unix, windows))]
-use backend_library::{CoverageCapability, Cursor, CursorRead, SnapshotHydrator, ViewRoot};
+use backend_library::{CoverageCapability, Cursor, CursorRead, ViewRoot};
 #[cfg(any(unix, windows))]
 use backend_replication::{
     LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR, LocalControlClient, LocalControlError,
@@ -28,11 +29,45 @@ use backend_replication::{
 #[cfg(any(unix, windows))]
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 #[cfg(any(unix, windows))]
 const CONNECTION_FRAME_BUDGET: usize = 240;
+
+/// Identity for one physical connection, including each replacement after a
+/// frame budget or interrupted exchange. A retained clone prevents allocator
+/// reuse from making a stale socket appear current.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Debug)]
+pub(crate) struct ConnectionId(Arc<()>);
+
+#[cfg(any(unix, windows))]
+impl ConnectionId {
+    fn next() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl PartialEq for ConnectionId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl Eq for ConnectionId {}
+
+/// A terminal cancel makes its socket permanently unavailable to the
+/// transport, even when the owner never acknowledges the cancel.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lifecycle {
+    Serving,
+    Released,
+}
 
 /// Failure starting or completing one resumable local-control request.
 #[cfg(any(unix, windows))]
@@ -98,10 +133,25 @@ fn map_control_error(error: LocalControlError) -> ClientError {
     crate::map_frame(error)
 }
 
+#[cfg(any(unix, windows))]
+fn subscription_exchange_error(error: LocalSubscriptionExchangeError) -> ClientError {
+    match error {
+        LocalSubscriptionExchangeError::Setup(error)
+        | LocalSubscriptionExchangeError::Invalid(error) => error,
+        LocalSubscriptionExchangeError::Rejected { message, .. } => {
+            ClientError::Protocol(format!("locald subscription: {message}"))
+        }
+        LocalSubscriptionExchangeError::Exchange(error) => ClientError::Protocol(error.to_string()),
+    }
+}
+
 /// A bounded local endpoint subscription adapter.
 #[cfg(any(unix, windows))]
 pub struct LocalSubscriptionTransport {
     client: LocalControlClient<backend_replication::LocalStream>,
+    connection: ConnectionId,
+    lifecycle: Lifecycle,
+    clock: Arc<dyn crate::monotonic::MonotonicClock>,
     interrupt: Option<crate::TransportInterrupt>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<PathBuf>,
@@ -154,6 +204,9 @@ impl LocalSubscriptionTransport {
         let interrupt = Some(crate::TransportInterrupt::new(&stream)?);
         Ok(Self {
             client: LocalControlClient::new(stream, control_limits()),
+            connection: ConnectionId::next(),
+            lifecycle: Lifecycle::Serving,
+            clock: Arc::new(crate::monotonic::SystemClock),
             interrupt,
             peer: Some(peer),
             endpoint: Some(path.to_path_buf()),
@@ -174,6 +227,9 @@ impl LocalSubscriptionTransport {
         let interrupt = crate::TransportInterrupt::new(&stream).ok();
         Self {
             client: LocalControlClient::new(stream, control_limits()),
+            connection: ConnectionId::next(),
+            lifecycle: Lifecycle::Serving,
+            clock: Arc::new(crate::monotonic::SystemClock),
             interrupt,
             peer: None,
             endpoint: None,
@@ -184,6 +240,37 @@ impl LocalSubscriptionTransport {
         }
     }
 
+    /// Replaces the clock used for publication and reset deadlines. Production
+    /// transports use the system monotonic clock; deterministic tests may
+    /// inject a manual clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn crate::monotonic::MonotonicClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    pub(crate) fn monotonic_clock(&self) -> Arc<dyn crate::monotonic::MonotonicClock> {
+        Arc::clone(&self.clock)
+    }
+
+    pub(crate) fn request_deadline(&self) -> Option<Instant> {
+        self.now().checked_add(self.io_timeout)
+    }
+
+    /// The physical socket currently carrying this transport's requests.
+    pub(crate) fn connection(&self) -> ConnectionId {
+        self.connection.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_connection_budget_for_test(&mut self) {
+        self.frames_on_connection = CONNECTION_FRAME_BUDGET;
+    }
+
     /// Returns a handle for the exact currently connected control socket.
     #[must_use]
     pub fn interrupt_handle(&self) -> Option<crate::TransportInterrupt> {
@@ -191,26 +278,76 @@ impl LocalSubscriptionTransport {
     }
 
     fn prepare_request(&mut self) -> Result<(), ClientError> {
-        if self.frames_on_connection < CONNECTION_FRAME_BUDGET && !self.client.requires_reconnect() {
+        self.prepare_request_with_deadline(None)
+    }
+
+    fn prepare_request_until(&mut self, deadline: Instant) -> Result<(), ClientError> {
+        self.prepare_request_with_deadline(Some(deadline))
+    }
+
+    /// Reconnect work is part of reset setup. Bound the blocking dial by the
+    /// clock's remaining allowance when possible, then recheck after each
+    /// synchronous setup phase before installing the replacement connection.
+    /// The OS dial itself cannot be interrupted by an injected clock jump, so
+    /// the configured connect timeout remains a separate upper bound on that
+    /// blocking phase.
+    fn prepare_request_with_deadline(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<(), ClientError> {
+        if deadline.is_some_and(|deadline| deadline <= self.now()) {
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
+        }
+        if self.frames_on_connection < CONNECTION_FRAME_BUDGET && !self.client.requires_reconnect()
+        {
             return Ok(());
         }
         let endpoint = self.endpoint.as_deref().ok_or_else(|| {
             ClientError::Io("local control connection reached its bounded frame budget".to_owned())
         })?;
-        let stream = connect_stream(endpoint, self.connect_timeout)?;
+        let remaining = deadline.map(|deadline| deadline.saturating_duration_since(self.now()));
+        if remaining.is_some_and(|remaining| remaining.is_zero()) {
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
+        }
+        let connect_timeout = remaining.map_or(self.connect_timeout, |remaining| {
+            self.connect_timeout.min(remaining)
+        });
+        let stream = connect_stream(endpoint, connect_timeout)?;
+        if deadline.is_some_and(|deadline| deadline <= self.now()) {
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
+        }
+        let remaining_after_dial =
+            deadline.map(|deadline| deadline.saturating_duration_since(self.now()));
+        if remaining_after_dial.is_some_and(|remaining| remaining.is_zero()) {
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
+        }
+        let io_timeout = remaining_after_dial
+            .map_or(self.io_timeout, |remaining| self.io_timeout.min(remaining));
         stream
-            .set_read_timeout(Some(self.io_timeout))
-            .and_then(|()| stream.set_write_timeout(Some(self.io_timeout)))
+            .set_read_timeout(Some(io_timeout))
+            .and_then(|()| stream.set_write_timeout(Some(io_timeout)))
             .map_err(|error| ClientError::Io(error.to_string()))?;
+        if deadline.is_some_and(|deadline| deadline <= self.now()) {
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
+        }
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint)
             .map_err(crate::map_peer_authentication_error)?;
-        self.client = LocalControlClient::new(stream, control_limits());
-        if let Some(interrupt) = &self.interrupt {
-            interrupt.replace(self.client.stream())?;
-        } else {
-            self.interrupt = Some(crate::TransportInterrupt::new(self.client.stream())?);
+        if deadline.is_some_and(|deadline| deadline <= self.now()) {
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
         }
+        let client = LocalControlClient::new(stream, control_limits());
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.replace(client.stream())?;
+        } else {
+            self.interrupt = Some(crate::TransportInterrupt::new(client.stream())?);
+        }
+        if deadline.is_some_and(|deadline| deadline <= self.now()) {
+            self.retire_connection();
+            return Err(crate::reset_budget::ResetFault::TimeBudget.into());
+        }
+        self.client = client;
         self.peer = Some(peer);
+        self.connection = ConnectionId::next();
         self.frames_on_connection = 0;
         Ok(())
     }
@@ -229,12 +366,47 @@ impl LocalSubscriptionTransport {
     /// continuation, descriptor, or final root commitment fails admission.
     pub fn bootstrap_root(&mut self) -> Result<(ViewRoot, Cursor), ClientError> {
         let previous = Cursor::new();
-        let mut response = self.open_lease(None, MAX_EVENTS, 30_000)?;
-        let mut expected_page: Box<[u8]> = Box::new([]);
-        let mut hydrator: Option<SnapshotHydrator> = None;
+        let mut hydration = ResetHydration::begin(previous, self.now())?;
+        let response = self.lease_request_until(
+            LocalSubscriptionOperation::Open {
+                cursor: Box::new([]),
+                credit: PUBLICATION_CREDIT,
+                lease_ms: BOOTSTRAP_LEASE.get(),
+            },
+            hydration.budget().deadline(),
+        )?;
+        let lease = response.lease();
+        let mut cleanup_on = self.connection();
+        let root = self.bootstrap_pages(response, lease, &mut hydration, &mut cleanup_on);
+        let cleanup =
+            self.release_bootstrap_lease_current(lease, cleanup_on, Duration::from_millis(50));
+        match root {
+            Err(error) => {
+                let _ = cleanup;
+                Err(error)
+            }
+            Ok(root) => cleanup.map(|()| root),
+        }
+    }
+
+    fn bootstrap_pages(
+        &mut self,
+        mut response: LocalSubscriptionResponse,
+        lease: LocalSubscriptionId,
+        hydration: &mut ResetHydration,
+        cleanup_on: &mut ConnectionId,
+    ) -> Result<(ViewRoot, Cursor), ClientError> {
         loop {
+            // This operation completed and was correlated before any proof is
+            // inspected. It may therefore be the exact cleanup socket even
+            // if local admission of the returned page fails.
+            *cleanup_on = self.connection();
+            if response.lease() != lease {
+                return Err(ClientError::Protocol(
+                    "bootstrap response changed its lease identity".to_owned(),
+                ));
+            }
             let LocalSubscriptionResponse::SnapshotPage {
-                lease,
                 page,
                 next,
                 payload,
@@ -245,48 +417,154 @@ impl LocalSubscriptionTransport {
                     "bootstrap lease did not return a snapshot page".to_owned(),
                 ));
             };
-            if page != expected_page {
-                return Err(ClientError::Protocol(
-                    "bootstrap snapshot page continuation mismatch".to_owned(),
-                ));
-            }
             let peer = self.peer.as_ref().ok_or_else(|| {
                 ClientError::Protocol("bootstrap requires an authenticated local peer".to_owned())
             })?;
-            let claim = snapshot_page_from_bytes_with_verifier(&payload, previous, None, peer)?;
-            let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
-            if admitted_next.as_deref() != next.as_deref() {
-                return Err(ClientError::Protocol(
-                    "bootstrap snapshot continuation is not authenticated".to_owned(),
-                ));
-            }
-            let current = match hydrator.take() {
-                Some(mut current) => {
-                    current.push_page(claim).map_err(ClientError::Protocol)?;
-                    current
+            let clock = Arc::clone(&self.clock);
+            let progress = hydration
+                .admit_page(&page, next.as_deref(), &payload, peer, clock.as_ref())
+                .map_err(ResetHydrationError::into_client_error)?;
+            match progress {
+                ResetPageProgress::Complete { cursor, root, .. } => return Ok((*root, cursor)),
+                ResetPageProgress::Continue { continuation, .. } => {
+                    hydration.check(clock.as_ref()).map_err(ClientError::from)?;
+                    response = self.lease_request_until(
+                        LocalSubscriptionOperation::Page {
+                            lease,
+                            page: continuation,
+                            credit: PUBLICATION_CREDIT,
+                        },
+                        hydration.budget().deadline(),
+                    )?;
                 }
-                None => SnapshotHydrator::start(previous, claim).map_err(ClientError::Protocol)?,
-            };
-            if current.is_complete() {
-                return match current.finish().map_err(ClientError::Protocol)? {
-                    CursorRead::Reset { cursor, root, .. } => Ok((*root, cursor)),
-                    CursorRead::Events { .. } => Err(ClientError::Protocol(
-                        "bootstrap snapshot completed as an event batch".to_owned(),
-                    )),
-                };
             }
-            expected_page = next.ok_or_else(|| {
-                ClientError::Protocol("bootstrap snapshot omitted its continuation".to_owned())
-            })?;
-            hydrator = Some(current);
-            response = self.snapshot_page(lease, expected_page.to_vec(), MAX_EVENTS)?;
         }
+    }
+
+    fn lease_request_until(
+        &mut self,
+        operation: LocalSubscriptionOperation,
+        deadline: Instant,
+    ) -> Result<LocalSubscriptionResponse, ClientError> {
+        let clock = Arc::clone(&self.clock);
+        let mut expired = false;
+        match self.lease_request_with_tick(operation, deadline, |_| {
+            if clock.now() >= deadline {
+                expired = true;
+                LocalControlExchangeDecision::Cancel
+            } else {
+                LocalControlExchangeDecision::Continue
+            }
+        }) {
+            Ok(response) => Ok(response),
+            Err(LocalSubscriptionExchangeError::Exchange(exchange))
+                if (expired
+                    && exchange.failure
+                        == backend_replication::LocalControlExchangeFailure::Cancelled)
+                    || (clock.now() >= deadline
+                        && exchange.failure
+                            == backend_replication::LocalControlExchangeFailure::Stalled) =>
+            {
+                Err(crate::reset_budget::ResetFault::TimeBudget.into())
+            }
+            Err(error) => Err(subscription_exchange_error(error)),
+        }
+    }
+
+    /// Releases a one-shot bootstrap lease on its last correlated socket. An
+    /// exact acknowledgement restores normal timeouts and leaves the
+    /// transport usable; any ambiguous exchange retires the exact socket.
+    fn release_bootstrap_lease_current(
+        &mut self,
+        lease: LocalSubscriptionId,
+        cleanup_on: ConnectionId,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        if self.connection != cleanup_on {
+            return Err(ClientError::Protocol(
+                "bootstrap lease cleanup socket is no longer current".to_owned(),
+            ));
+        }
+        if self.lifecycle == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            ));
+        }
+        let request_id = self.next_request_id;
+        let Some(next_request_id) = request_id.checked_add(1) else {
+            // No cancellation can be correlated without a fresh ID. Retire
+            // the exact last-correlated socket and let the finite bootstrap
+            // term expire at the owner; never leave this stream reusable.
+            self.retire_connection();
+            return Err(ClientError::Protocol(
+                "subscription request id exhausted".to_owned(),
+            ));
+        };
+        self.next_request_id = next_request_id;
+        let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+            request_id,
+            operation: LocalSubscriptionOperation::Cancel { lease },
+        });
+        let configured = self
+            .client
+            .stream()
+            .set_read_timeout(Some(timeout))
+            .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)));
+        if let Err(error) = configured {
+            self.retire_connection();
+            return Err(ClientError::Io(error.to_string()));
+        }
+        let result = match self
+            .client
+            .begin_exchange(&request, Instant::now() + timeout)
+        {
+            Ok(mut exchange) => exchange
+                .wait_with(|_| LocalControlExchangeDecision::Continue)
+                .map_err(|error| ClientError::Protocol(error.to_string())),
+            Err(error) => Err(map_control_error(error)),
+        };
+        let acknowledged = match &result {
+            Ok(LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                request_id: observed,
+                lease: acknowledged,
+            })) if *observed == request_id && *acknowledged == lease => true,
+            _ => false,
+        };
+        if !acknowledged {
+            self.retire_connection();
+            return Err(match result {
+                Err(error) => error,
+                Ok(_) => ClientError::Protocol(
+                    "bootstrap lease cancellation was not acknowledged".to_owned(),
+                ),
+            });
+        }
+        self.frames_on_connection = self.frames_on_connection.saturating_add(1);
+        if let Err(error) = self
+            .client
+            .stream()
+            .set_read_timeout(Some(self.io_timeout))
+            .and_then(|()| {
+                self.client
+                    .stream()
+                    .set_write_timeout(Some(self.io_timeout))
+            })
+        {
+            self.retire_connection();
+            return Err(ClientError::Io(error.to_string()));
+        }
+        Ok(())
     }
 
     fn request(
         &mut self,
         request: &LocalControlRequest,
     ) -> Result<LocalControlResponse, ClientError> {
+        if self.lifecycle == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            ));
+        }
         self.prepare_request()?;
         let response = self.client.request(request).map_err(map_control_error)?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
@@ -316,7 +594,12 @@ impl LocalSubscriptionTransport {
         deadline: Instant,
         tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
     ) -> Result<LocalControlResponse, LocalSubscriptionExchangeError> {
-        self.prepare_request()
+        if self.lifecycle == Lifecycle::Released {
+            return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            )));
+        }
+        self.prepare_request_until(deadline)
             .map_err(LocalSubscriptionExchangeError::Setup)?;
         let result = {
             let mut exchange = self
@@ -466,24 +749,48 @@ impl LocalSubscriptionTransport {
     pub(crate) fn cancel_lease_current(
         &mut self,
         lease: LocalSubscriptionId,
+        held_on: ConnectionId,
         timeout: Duration,
     ) -> Result<(), ClientError> {
-        self.client.stream().set_read_timeout(Some(timeout))
-            .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)))
-            .map_err(|error| ClientError::Io(error.to_string()))?;
-        let request_id = self.next_request_id;
-        self.next_request_id = request_id.checked_add(1)
-            .ok_or_else(|| ClientError::Protocol("subscription request id exhausted".into()))?;
-        let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
-            request_id,
-            operation: LocalSubscriptionOperation::Cancel { lease },
-        });
-        match self.client.request(&request).map_err(map_control_error)? {
-            LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
-                request_id: observed, lease: acknowledged,
-            }) if observed == request_id && acknowledged == lease => Ok(()),
-            _ => Err(ClientError::Protocol("exact-socket lease cancellation was not acknowledged".into())),
+        if self.connection != held_on {
+            return Err(ClientError::Protocol(
+                "publication lease is not held on this socket".to_owned(),
+            ));
         }
+        if self.lifecycle == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            ));
+        }
+        self.lifecycle = Lifecycle::Released;
+        let result = (|| {
+            self.client
+                .stream()
+                .set_read_timeout(Some(timeout))
+                .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)))
+                .map_err(|error| ClientError::Io(error.to_string()))?;
+            let request_id = self.next_request_id;
+            self.next_request_id = request_id.checked_add(1).ok_or_else(|| {
+                ClientError::Protocol("subscription request id exhausted".to_owned())
+            })?;
+            let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+                request_id,
+                operation: LocalSubscriptionOperation::Cancel { lease },
+            });
+            match self.client.request(&request).map_err(map_control_error)? {
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                    request_id: observed,
+                    lease: acknowledged,
+                }) if observed == request_id && acknowledged == lease => Ok(()),
+                _ => Err(ClientError::Protocol(
+                    "exact-socket lease cancellation was not acknowledged".to_owned(),
+                )),
+            }
+        })();
+        // Cancellation is terminal even when its bounded exchange fails. Do
+        // not leave an ambiguous frame or an idle socket alive for reuse.
+        self.retire_connection();
+        result
     }
 
     /// Requests one bounded snapshot page for a reset descriptor. The page
@@ -683,6 +990,123 @@ impl LocalSubscriptionTransport {
     }
 }
 
+#[cfg(all(test, any(unix, windows)))]
+#[allow(clippy::expect_used, clippy::panic)]
+mod bootstrap_exhaustion_tests {
+    use super::*;
+    use backend_replication::{decode_request, encode_response, read_frame, write_frame};
+
+    #[test]
+    fn exhausted_bootstrap_cancel_retires_the_exact_socket_without_sending_cancel() {
+        let (stream, mut owner) = crate::test_socket::local_pair();
+        owner
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded owner read");
+        let lease = LocalSubscriptionId::from_bytes([83; 16]);
+        let owner_thread = std::thread::spawn(move || {
+            let request_body = read_frame(&mut owner, control_limits()).expect("open frame");
+            let LocalControlRequest::Subscription(open) =
+                decode_request(&request_body, control_limits()).expect("open request")
+            else {
+                panic!("expected subscription open");
+            };
+            assert_eq!(open.request_id, u64::MAX - 1);
+            assert!(matches!(
+                open.operation,
+                LocalSubscriptionOperation::Open { lease_ms, .. }
+                    if lease_ms == BOOTSTRAP_LEASE.get()
+            ));
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                        request_id: open.request_id,
+                        lease,
+                        page: Box::new([]),
+                        next: None,
+                        credit: PUBLICATION_CREDIT,
+                        payload: Box::from(b"unused without an authenticated peer".as_slice()),
+                    }),
+                    control_limits(),
+                )
+                .expect("bounded page response"),
+                control_limits(),
+            )
+            .expect("send page response");
+
+            // Exhaustion happens before a Cancel frame is built or sent. The
+            // stream must close promptly; otherwise the known lease relies on
+            // its finite bootstrap term for owner-side expiry.
+            matches!(
+                read_frame(&mut owner, control_limits()),
+                Err(backend_replication::LocalControlError::Closed)
+            )
+        });
+
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        transport.next_request_id = u64::MAX - 1;
+        let correlated_socket = transport.connection();
+        let error = transport
+            .bootstrap_root()
+            .expect_err("a stream without peer proof cannot hydrate");
+
+        assert!(
+            matches!(&error, ClientError::Protocol(message) if message.contains("authenticated")),
+            "the original hydration failure remains primary: {error:?}"
+        );
+        assert_eq!(transport.next_request_id, u64::MAX);
+        assert_eq!(transport.connection(), correlated_socket);
+        assert_eq!(transport.lifecycle, Lifecycle::Serving);
+        assert_eq!(transport.frames_on_connection, CONNECTION_FRAME_BUDGET);
+        assert!(
+            transport.interrupt.is_none(),
+            "the exact stream was retired"
+        );
+        assert!(transport.peer.is_none(), "retirement clears peer authority");
+        assert_eq!(
+            transport.io_timeout,
+            Duration::from_secs(30),
+            "request-ID refusal happens before temporary cancel timeouts are installed"
+        );
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                transport
+                    .client
+                    .stream()
+                    .read_timeout()
+                    .expect("read timeout getter"),
+                Some(Duration::from_secs(30)),
+                "retirement preserves the exact socket's read timeout"
+            );
+            assert_eq!(
+                transport
+                    .client
+                    .stream()
+                    .write_timeout()
+                    .expect("write timeout getter"),
+                Some(Duration::from_secs(30)),
+                "retirement preserves the exact socket's write timeout"
+            );
+        }
+
+        assert!(
+            owner_thread.join().expect("owner thread observes EOF"),
+            "no Cancel frame was sent and the exact socket closed"
+        );
+        let next = transport.request(&LocalControlRequest::Subscription(
+            LocalSubscriptionRequest {
+                request_id: 1,
+                operation: LocalSubscriptionOperation::Cancel { lease },
+            },
+        ));
+        assert!(matches!(
+            next,
+            Err(ClientError::Io(message)) if message.contains("frame budget")
+        ));
+    }
+}
+
 #[cfg(any(unix, windows))]
 fn connect_stream(
     path: &Path,
@@ -777,9 +1201,141 @@ impl CertifiedSubscriptionTransport for LocalSubscriptionTransport {
 #[allow(clippy::expect_used, clippy::panic)]
 mod exchange_tests {
     use super::*;
-    use backend_replication::{LocalControlExchangeFailure, LocalControlExchangePhase};
-    use std::io::Read as _;
+    use backend_replication::{
+        LocalControlExchangeFailure, LocalControlExchangePhase, decode_request, encode_response,
+        read_frame, write_frame,
+    };
+    use std::io::{Read as _, Write as _};
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn bootstrap_releases_a_known_lease_on_the_same_socket_and_restores_transport_timeouts() {
+        let lease = LocalSubscriptionId::from_bytes([19; 16]);
+        let cursor = Cursor::new();
+        let (stream, mut owner) = UnixStream::pair().expect("socket pair");
+        owner
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("owner read timeout");
+        let server = std::thread::spawn(move || {
+            let first = read_frame(&mut owner, control_limits()).expect("open frame");
+            let LocalControlRequest::Subscription(open) =
+                decode_request(&first, control_limits()).expect("open request")
+            else {
+                panic!("expected subscription open");
+            };
+            let (request_id, operation) = (open.request_id, open.operation);
+            assert!(matches!(
+                operation,
+                LocalSubscriptionOperation::Open {
+                    credit,
+                    lease_ms,
+                    ..
+                } if credit == PUBLICATION_CREDIT && lease_ms == BOOTSTRAP_LEASE.get()
+            ));
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                        request_id,
+                        lease,
+                        page: Box::new([]),
+                        next: None,
+                        credit: PUBLICATION_CREDIT,
+                        payload: Box::from(b"not a producer proof".as_slice()),
+                    }),
+                    control_limits(),
+                )
+                .expect("bootstrap page response"),
+                control_limits(),
+            )
+            .expect("send bootstrap page");
+
+            let cancel = read_frame(&mut owner, control_limits()).expect("cancel frame");
+            let LocalControlRequest::Subscription(cancel) =
+                decode_request(&cancel, control_limits()).expect("cancel request")
+            else {
+                panic!("expected subscription cancel");
+            };
+            assert!(
+                matches!(cancel.operation, LocalSubscriptionOperation::Cancel { lease: id } if id == lease)
+            );
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                        request_id: cancel.request_id,
+                        lease,
+                    }),
+                    control_limits(),
+                )
+                .expect("cancel response"),
+                control_limits(),
+            )
+            .expect("send cancel acknowledgement");
+
+            let renew = read_frame(&mut owner, control_limits()).expect("reused socket frame");
+            let LocalControlRequest::Subscription(renew) =
+                decode_request(&renew, control_limits()).expect("renew request")
+            else {
+                panic!("expected subscription renewal");
+            };
+            assert!(
+                matches!(renew.operation, LocalSubscriptionOperation::Renew { lease: id, .. } if id == lease)
+            );
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::Renewed {
+                        request_id: renew.request_id,
+                        lease,
+                        cursor: cursor.encode_control(),
+                        credit: PUBLICATION_CREDIT,
+                        lease_ms: BOOTSTRAP_LEASE.get(),
+                    }),
+                    control_limits(),
+                )
+                .expect("renew response"),
+                control_limits(),
+            )
+            .expect("send renewal");
+        });
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let error = transport
+            .bootstrap_root()
+            .expect_err("unauthenticated stream cannot admit the returned proof");
+        assert!(
+            matches!(error, ClientError::Protocol(message) if message.contains("authenticated"))
+        );
+        transport
+            .renew_lease(lease, cursor, PUBLICATION_CREDIT, BOOTSTRAP_LEASE.get())
+            .expect("successful bootstrap cleanup leaves the transport usable");
+        server.join().expect("owner");
+    }
+
+    #[test]
+    fn bootstrap_observes_an_injected_clock_expiry_during_a_partial_frame() {
+        use crate::monotonic::ManualClock;
+
+        let clock = ManualClock::new();
+        let owner_clock = Arc::clone(&clock);
+        let (stream, mut owner) = UnixStream::pair().expect("socket pair");
+        let server = std::thread::spawn(move || {
+            let request = read_frame(&mut owner, control_limits()).expect("open request");
+            let _ = decode_request(&request, control_limits()).expect("open control");
+            owner
+                .write_all(&1_u32.to_be_bytes()[..1])
+                .expect("partial response header");
+            owner_clock.advance(crate::lease_contract::RESET_BASE_TIME);
+            let mut byte = [0_u8; 1];
+            assert_eq!(owner.read(&mut byte).expect("observe retired socket"), 0);
+        });
+        let mut transport = LocalSubscriptionTransport::from_stream(stream).with_clock(clock);
+        let error = transport
+            .bootstrap_root()
+            .expect_err("manual time expires while a response header is incomplete");
+        assert!(matches!(error, ClientError::Protocol(message) if message.contains("time budget")));
+        server.join().expect("owner");
+    }
 
     #[test]
     fn terminal_exchange_closes_exact_socket_and_fails_closed_without_endpoint() {
@@ -804,9 +1360,10 @@ mod exchange_tests {
         ));
         let mut byte = [0_u8; 1];
         assert_eq!(peer.read(&mut byte).expect("peer observes close"), 0);
-        let next = transport.request_with_tick(&request, Instant::now() + Duration::from_secs(1), |_| {
-            LocalControlExchangeDecision::Continue
-        });
+        let next =
+            transport.request_with_tick(&request, Instant::now() + Duration::from_secs(1), |_| {
+                LocalControlExchangeDecision::Continue
+            });
         assert!(matches!(
             next,
             Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(_)))

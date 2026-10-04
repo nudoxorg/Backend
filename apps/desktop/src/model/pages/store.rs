@@ -21,6 +21,7 @@ use super::source::SourceView;
 use super::symbol::SymbolPage;
 use crate::core::{Activity, ErrorValue, Resource, ResourceTerminal, UnavailableReason, VersionedRoot};
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 /// One read-model value produced by the read pool.
@@ -146,23 +147,41 @@ impl Stamp {
 /// Which fetch owns a slot: every fetch allocates a new one, and a result is
 /// admitted only when it names the slot's current one.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Generation(u64);
+pub struct Generation(NonZeroU64);
 
 impl Generation {
-    const FIRST: Self = Self(1);
+    const FIRST: Self = Self(NonZeroU64::MIN);
 
-    /// A generation by number (a test names one).
+    /// Admits a numeric generation only when it is nonzero.
     #[must_use]
-    pub const fn new(number: u64) -> Self {
-        Self(number)
+    pub const fn new(number: u64) -> Option<Self> {
+        match NonZeroU64::new(number) {
+            Some(number) => Some(Self(number)),
+            None => None,
+        }
     }
 
-    /// The next one (never zero, even when the count wraps).
-    const fn next(self) -> Self {
-        Self(match self.0.wrapping_add(1) {
-            0 => 1,
-            next => next,
-        })
+    const fn next(self) -> Option<Self> {
+        match self.0.get().checked_add(1) {
+            Some(next) => Self::new(next),
+            None => None,
+        }
+    }
+}
+
+/// This page store permanently consumed its final fetch generation.
+/// Releasing pages or retrying cannot make an old identity reusable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationExhausted;
+
+impl GenerationExhausted {
+    /// The existing resource fault surface explains why no fetch can start.
+    #[must_use]
+    pub fn fault(self) -> ErrorValue {
+        ErrorValue::new(
+            crate::core::FaultCode::Protocol,
+            "This window has exhausted its page read generations.",
+        )
     }
 }
 
@@ -271,17 +290,29 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         root: VersionedRoot,
         force: bool,
         clock: Tick,
-        generation: Generation,
-    ) -> Option<Generation> {
+        generation: Option<Generation>,
+    ) -> Result<Option<Generation>, GenerationExhausted> {
+        // Current and already-running slots need no identity. A refused
+        // fetch must not insert, evict, touch, or change any existing slot.
+        if self
+            .map
+            .get(key)
+            .is_some_and(|slot| !(force || slot.wants_fetch(root)))
+        {
+            if let Some(slot) = self.map.get_mut(key) {
+                slot.used = clock;
+            }
+            return Ok(None);
+        }
+        let generation = generation.ok_or(GenerationExhausted)?;
         if !self.map.contains_key(key) {
             self.evict_for_insert();
             self.map.insert(key.clone(), Slot::new(clock));
         }
-        let slot = self.map.get_mut(key)?;
+        let Some(slot) = self.map.get_mut(key) else {
+            return Ok(None);
+        };
         slot.used = clock;
-        if !(force || slot.wants_fetch(root)) {
-            return None;
-        }
         slot.asked_at = Some(root);
         // A snapshot value is revalidated quietly: it stays exactly as drawn
         // (no "working", no stamp) until a different value lands.
@@ -291,7 +322,50 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).working();
             slot.revision = slot.revision.next();
         }
-        Some(generation)
+        Ok(Some(generation))
+    }
+
+    /// A refused foreground request has no generation to land. The caller
+    /// first cancels its old fetch, then names that exact previous ownership.
+    /// A newer fetch can never be cleared by this refusal.
+    fn refuse_generation_exhaustion(
+        &mut self,
+        key: &K,
+        root: VersionedRoot,
+        expected: Option<Generation>,
+        clock: Tick,
+    ) -> bool {
+        if self.inflight(key) != expected {
+            return false;
+        }
+        if !self.map.contains_key(key) {
+            self.evict_for_insert();
+            self.map.insert(key.clone(), Slot::new(clock));
+        }
+        let Some(slot) = self.map.get_mut(key) else {
+            return false;
+        };
+        let fault = GenerationExhausted.fault();
+        let changed = slot.running()
+            || slot.resource.activity() != Activity::Stopped
+            || slot.resource.terminal() != &ResourceTerminal::Fault(fault.clone());
+        slot.fetch = Fetch::Idle;
+        slot.asked_at = Some(root);
+        slot.used = clock;
+        if !changed {
+            return false;
+        }
+        // A partial is not a last-good complete value. Complete retained
+        // bytes keep their original root; refusal never revalidates them.
+        let previous = std::mem::replace(&mut slot.resource, Resource::not_yet());
+        let previous = if previous.terminal() == &ResourceTerminal::Partial {
+            Resource::not_yet()
+        } else {
+            previous
+        };
+        slot.resource = previous.mark_error(fault.code(), fault.message());
+        slot.revision = slot.revision.next();
+        true
     }
 
     /// Fills a slot from the launch snapshot, current at `root` (the
@@ -587,7 +661,7 @@ pub struct PageStore {
     health: Slots<(), HealthModel>,
     browse: Slots<crate::model::browse::BrowseKey, crate::model::browse::BrowseValue>,
     clock: Tick,
-    next_generation: Generation,
+    next_generation: Option<Generation>,
 }
 
 impl Default for PageStore {
@@ -704,33 +778,79 @@ impl PageStore {
             health: Slots::new(1),
             browse: Slots::new(4),
             clock: Tick(0),
-            next_generation: Generation::FIRST,
+            next_generation: Some(Generation::FIRST),
         }
     }
 
     /// Records an access and, when the slot needs data at `root` (never asked,
     /// or asked at an older root), starts a fetch: the slot turns working
     /// (keeping any last good value) and the new generation is returned.
-    /// Returns `None` when the slot is current or already in flight.
-    pub fn begin(&mut self, key: &PageKey, root: VersionedRoot) -> Option<Generation> {
+    /// Returns `Ok(None)` when the slot is current or already in flight.
+    ///
+    /// # Errors
+    /// Returns [`GenerationExhausted`] before changing a slot when a needed
+    /// fetch has no new identity. Current slots still need no new identity.
+    pub fn begin(
+        &mut self,
+        key: &PageKey,
+        root: VersionedRoot,
+    ) -> Result<Option<Generation>, GenerationExhausted> {
         self.begin_with(key, root, false)
     }
 
     /// Starts a fetch even when the slot is current (retry, "load more").
-    pub fn begin_forced(&mut self, key: &PageKey, root: VersionedRoot) -> Option<Generation> {
+    ///
+    /// # Errors
+    /// Returns [`GenerationExhausted`] without replacing a previous fetch
+    /// when no new identity remains; the runtime handles that refusal.
+    pub fn begin_forced(
+        &mut self,
+        key: &PageKey,
+        root: VersionedRoot,
+    ) -> Result<Option<Generation>, GenerationExhausted> {
         self.begin_with(key, root, true)
     }
 
-    fn begin_with(&mut self, key: &PageKey, root: VersionedRoot, force: bool) -> Option<Generation> {
-        self.clock = self.clock.next();
-        let clock = self.clock;
+    fn begin_with(
+        &mut self,
+        key: &PageKey,
+        root: VersionedRoot,
+        force: bool,
+    ) -> Result<Option<Generation>, GenerationExhausted> {
+        let clock = self.clock.next();
         let generation = self.next_generation;
         let started = dispatch!(self, key, |slots, k| slots
-            .begin(k, root, force, clock, generation));
-        if started.is_some() {
-            self.next_generation = self.next_generation.next();
+            .begin(k, root, force, clock, generation))?;
+        self.clock = clock;
+        if let Some(generation) = started {
+            self.next_generation = generation.next();
         }
-        started
+        Ok(started)
+    }
+
+    /// Applies a permanent admission fault after the runtime cancelled the
+    /// captured previous fetch. No identity is minted for this terminal state.
+    pub fn refuse_generation_exhaustion(
+        &mut self,
+        key: &PageKey,
+        root: VersionedRoot,
+        expected: Option<Generation>,
+    ) -> bool {
+        if self.next_generation.is_some() {
+            return false;
+        }
+        let clock = self.clock.next();
+        let changed = dispatch!(self, key, |slots, k| slots
+            .refuse_generation_exhaustion(k, root, expected, clock));
+        self.clock = clock;
+        changed
+    }
+
+    /// Tests may advance, never rewind or reopen, the remaining mint state.
+    #[cfg(test)]
+    pub(crate) fn test_advance_generation_to(&mut self, next: Generation) {
+        assert!(self.next_generation.is_some_and(|current| next >= current));
+        self.next_generation = Some(next);
     }
 
     /// Fills `key`'s slot with a launch-snapshot value, current at `root`

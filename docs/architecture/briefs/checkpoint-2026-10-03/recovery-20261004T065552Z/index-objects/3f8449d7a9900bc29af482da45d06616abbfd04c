@@ -1,0 +1,334 @@
+//! A coalescing, executor-neutral wake signal from worker threads to the UI.
+//!
+//! Worker threads (the engine actor lanes and the read pool) push results into
+//! bounded mailboxes and then call [`WakeSender::wake`]. The UI side awaits
+//! [`WakeReceiver::wait`] inside one `cx.spawn` task and, when it resolves,
+//! drains a batch before awaiting again. A bounded consumer rearms this same
+//! signal for remaining results and yields between batches. Many wakes
+//! collapse into one pending bit, and nothing polls while no work lands: an idle window with a
+//! long-running request schedules no frame at all.
+//!
+//! The signal carries no payload on purpose. The payload stays in the bounded
+//! mailbox that already owns backpressure; this type only answers "is there
+//! anything to drain?".
+//!
+//! A pending wake resolves without suspending the task, so a consumer that
+//! lands work in bounded turns re-arms the wake and awaits [`yield_now`]
+//! between turns: one executor poll then covers one turn, and input, paint,
+//! and other tasks run before the next.
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll, Waker};
+
+/// Suspend the consuming task once, even when its next wake is already ready.
+/// No timer or recurring idle wake is scheduled.
+pub(crate) async fn yield_turn() {
+    let mut yielded = false;
+    std::future::poll_fn(move |cx| {
+        if std::mem::replace(&mut yielded, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+}
+
+#[derive(Debug, Default)]
+struct WakeState {
+    pending: bool,
+    closed: bool,
+    waker: Option<Waker>,
+    /// Total wake calls, for tests that prove coalescing.
+    signals: u64,
+    /// Total resolved `next()` futures, for tests that prove coalescing.
+    turns: u64,
+}
+
+#[derive(Debug, Default)]
+struct Shared {
+    state: Mutex<WakeState>,
+}
+
+impl Shared {
+    fn with<R>(&self, f: impl FnOnce(&mut WakeState) -> R) -> R {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        f(&mut state)
+    }
+}
+
+/// Producer half: cheap to clone, callable from any thread.
+#[derive(Clone, Debug)]
+pub struct WakeSender {
+    shared: Arc<Shared>,
+}
+
+/// Consumer half, owned by exactly one UI task.
+#[derive(Debug)]
+pub struct WakeReceiver {
+    shared: Arc<Shared>,
+}
+
+/// Creates one connected wake pair.
+#[must_use]
+pub fn wake_channel() -> (WakeSender, WakeReceiver) {
+    let shared = Arc::new(Shared::default());
+    (
+        WakeSender {
+            shared: Arc::clone(&shared),
+        },
+        WakeReceiver { shared },
+    )
+}
+
+impl WakeSender {
+    /// Marks work pending and wakes the waiting task, if any.
+    ///
+    /// The waker is invoked outside the lock so an executor that polls
+    /// synchronously inside `wake` cannot deadlock on this signal.
+    pub fn wake(&self) {
+        let waker = self.shared.with(|state| {
+            state.signals = state.signals.saturating_add(1);
+            if state.closed {
+                return None;
+            }
+            state.pending = true;
+            state.waker.take()
+        });
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// Closes the signal. A pending wake is still delivered once; after that
+    /// the receiver resolves to `None` and its task ends.
+    pub fn close(&self) {
+        let waker = self.shared.with(|state| {
+            state.closed = true;
+            state.waker.take()
+        });
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+impl WakeReceiver {
+    /// Resolves when work is pending (`Some(())`) or the signal closed with
+    /// nothing pending (`None`). Resolving clears the pending bit, so every
+    /// wake that happened before the resolution is covered by one drain.
+    pub fn wait(&mut self) -> Next<'_> {
+        Next { receiver: self }
+    }
+
+    /// Takes the pending bit without waiting.
+    pub fn try_take(&mut self) -> bool {
+        self.shared.with(|state| {
+            let pending = std::mem::take(&mut state.pending);
+            if pending {
+                state.turns = state.turns.saturating_add(1);
+            }
+            pending
+        })
+    }
+
+    /// Returns `(wake calls, resolved turns)`; a test proves coalescing when
+    /// turns are fewer than wake calls.
+    #[must_use]
+    pub fn counts(&self) -> (u64, u64) {
+        self.shared.with(|state| (state.signals, state.turns))
+    }
+
+    /// Returns a sender connected to this receiver.
+    #[must_use]
+    pub fn sender(&self) -> WakeSender {
+        WakeSender {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+/// Future returned by [`WakeReceiver::wait`].
+#[derive(Debug)]
+pub struct Next<'a> {
+    receiver: &'a mut WakeReceiver,
+}
+
+impl Future for Next<'_> {
+    type Output = Option<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.receiver.shared.with(|state| {
+            if std::mem::take(&mut state.pending) {
+                state.turns = state.turns.saturating_add(1);
+                return Poll::Ready(Some(()));
+            }
+            if state.closed {
+                return Poll::Ready(None);
+            }
+            match &state.waker {
+                Some(waker) if waker.will_wake(cx.waker()) => {}
+                _ => state.waker = Some(cx.waker().clone()),
+            }
+            Poll::Pending
+        })
+    }
+}
+
+/// Suspends the awaiting task once: it is woken at once and rescheduled
+/// behind the work its executor already queued, so input, paint, and other
+/// tasks run before it resumes.
+pub fn yield_now() -> YieldNow {
+    YieldNow { yielded: false }
+}
+
+/// Future returned by [`yield_now`].
+#[derive(Debug)]
+#[must_use = "a yield does nothing unless awaited"]
+pub struct YieldNow {
+    yielded: bool,
+}
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.yielded {
+            return Poll::Ready(());
+        }
+        self.yielded = true;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Wake;
+
+    struct CountingWaker(AtomicUsize);
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn poll_once(receiver: &mut WakeReceiver, waker: &Waker) -> Poll<Option<()>> {
+        let mut context = Context::from_waker(waker);
+        let mut future = receiver.wait();
+        Pin::new(&mut future).poll(&mut context)
+    }
+
+    #[gpui::test]
+    fn bounded_read_batches_yield_to_another_foreground_task(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let foreground = cx.foreground_executor().clone();
+        let recorded = Rc::clone(&events);
+        let executor = foreground.clone();
+        foreground
+            .spawn(async move {
+                let (sender, mut receiver) = wake_channel();
+                sender.wake();
+                for batch in 0..3 {
+                    assert!(receiver.wait().await.is_some());
+                    recorded.borrow_mut().push(batch);
+                    if batch == 0 {
+                        let probe = Rc::clone(&recorded);
+                        executor
+                            .spawn(async move {
+                                probe.borrow_mut().push(99);
+                            })
+                            .detach();
+                    }
+                    sender.wake();
+                    yield_turn().await;
+                }
+            })
+            .detach();
+        cx.run_until_parked();
+        assert_eq!(
+            &*events.borrow(),
+            &[0, 99, 1, 2],
+            "the real foreground executor polls the unrelated task before the next ready batch"
+        );
+    }
+
+    #[test]
+    fn a_burst_of_wakes_is_one_turn_and_an_idle_signal_never_resolves() {
+        let (sender, mut receiver) = wake_channel();
+        let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Pending);
+        for _ in 0..50 {
+            sender.wake();
+        }
+        // Only the first wake found a registered waker; the rest coalesced.
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(Some(())));
+        // Nothing new happened: the signal stays pending forever, it does not spin.
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Pending);
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Pending);
+        assert_eq!(receiver.counts(), (50, 1));
+    }
+
+    #[test]
+    fn close_delivers_a_pending_wake_once_then_ends() {
+        let (sender, mut receiver) = wake_channel();
+        let waker = Waker::from(Arc::new(CountingWaker(AtomicUsize::new(0))));
+        sender.wake();
+        sender.close();
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(Some(())));
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(None));
+    }
+
+    #[test]
+    fn a_yield_suspends_once_and_reschedules_itself() {
+        let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut turn = yield_now();
+        assert_eq!(Pin::new(&mut turn).poll(&mut context), Poll::Pending);
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "it asked to run again");
+        assert_eq!(Pin::new(&mut turn).poll(&mut context), Poll::Ready(()));
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "and only once");
+    }
+
+    #[test]
+    fn a_rearmed_wake_coalesces_with_a_workers_wake() {
+        let (sender, mut receiver) = wake_channel();
+        let rearm = receiver.sender();
+        let waker = Waker::from(Arc::new(CountingWaker(AtomicUsize::new(0))));
+        rearm.wake();
+        sender.wake();
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(Some(())));
+        assert_eq!(
+            poll_once(&mut receiver, &waker),
+            Poll::Pending,
+            "one turn covers both"
+        );
+    }
+
+    #[test]
+    fn a_wake_from_another_thread_reaches_the_registered_waker() {
+        let (sender, mut receiver) = wake_channel();
+        let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Pending);
+        std::thread::spawn(move || sender.wake())
+            .join()
+            .expect("waking thread");
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+        assert!(receiver.try_take());
+        assert!(!receiver.try_take());
+    }
+}

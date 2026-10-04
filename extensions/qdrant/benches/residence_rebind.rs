@@ -1,9 +1,8 @@
-//! Loopback benchmark for a view-fence rebind of resident Qdrant coordinates.
+//! Loopback benchmark for binding-scoped resident Qdrant coordinates.
 //!
-//! A cold batch uploads every vector. A later batch with the same coordinates,
-//! a new frontier, and reminted candidate ids restamps payload and uploads no
-//! vector. A one-document coordinate change uploads that vector and restamps
-//! the siblings' payloads.
+//! Each complete binding has distinct physical residences. A new frontier
+//! therefore publishes its own vectors instead of restamping live old points.
+//! The embedding layer can still reuse exact-input vectors before this boundary.
 //!
 //! Timers wrap only the resident upsert. Document construction and the
 //! loopback ledger stay outside the measurement.
@@ -30,7 +29,8 @@ use backend_extension_qdrant::{
     Authority, Binding, CandidateId, CandidateRelation, CoordinateWrite, DocumentVector,
     EmbeddingEncoding, EmbeddingNormalization, EmbeddingPooling, EmbeddingRecipe, Frontier, Metric,
     ModelVersion, PointResidence, QdrantHttpClient, QdrantHttpConfig, ReadManifest,
-    ResidentDocument, ResidentMutationReceipt, TokenizerVersion, TreatmentVersion,
+    ProjectionBinding, ResidentDocument, ResidentMutationReceipt, TokenizerVersion,
+    TreatmentVersion,
 };
 use backend_version::{
     AuthorityScopeClaim, CoverageWitness, ProducerObservationClaims, ProducerObservationVerifier,
@@ -268,11 +268,11 @@ fn prepare(
     revised: Option<usize>,
 ) -> (Binding, Vec<PointResidence>, Vec<DocumentVector>) {
     let binding = binding(embedding, frontier);
+    let projection = ProjectionBinding::new(binding);
     let residences = (0..size)
         .map(|index| {
             PointResidence::for_row(
-                binding.workspace,
-                binding.recipe,
+                projection.identity(),
                 &format!("row-{sample}-{index}"),
             )
             .expect("residence")
@@ -340,29 +340,29 @@ fn run(size: usize, dimensions: usize) {
         let (cold_binding, residences, cold_documents) =
             prepare(embedding, [3; 32], sample, size, origin, None);
         let cold_residents = residents(&residences, &cold_documents, None);
-        let (fence_binding, _, fence_documents) =
+        let (fence_binding, fence_residences, fence_documents) =
             prepare(embedding, [4; 32], sample, size, origin + 100_000, None);
-        let fence_residents = residents(&residences, &fence_documents, None);
-        let (revise_binding, _, revise_documents) =
+        let fence_residents = residents(&fence_residences, &fence_documents, None);
+        let (revise_binding, revise_residences, revise_documents) =
             prepare(embedding, [5; 32], sample, size, origin + 200_000, Some(0));
-        let revise_residents = residents(&residences, &revise_documents, Some(0));
+        let revise_residents = residents(&revise_residences, &revise_documents, Some(0));
         let (puts_before, payloads_before) = {
             let ledger = ledger.lock().expect("ledger");
             (ledger.puts.len(), ledger.payloads.len())
         };
         let started = Instant::now();
         let cold_receipt = client
-            .upsert_resident(cold_binding, &cold_residents)
+            .upsert_resident(ProjectionBinding::new(cold_binding), &cold_residents)
             .expect("cold upsert");
         let cold_elapsed = started.elapsed().as_nanos();
         let started = Instant::now();
         let rebind_receipt = client
-            .upsert_resident(fence_binding, &fence_residents)
+            .upsert_resident(ProjectionBinding::new(fence_binding), &fence_residents)
             .expect("fence rebind");
         let rebind_elapsed = started.elapsed().as_nanos();
         let started = Instant::now();
         let revise_receipt = client
-            .upsert_resident(revise_binding, &revise_residents)
+            .upsert_resident(ProjectionBinding::new(revise_binding), &revise_residents)
             .expect("one revision");
         let revise_elapsed = started.elapsed().as_nanos();
         assert_eq!(
@@ -377,8 +377,8 @@ fn run(size: usize, dimensions: usize) {
         assert_eq!(
             rebind_receipt,
             ResidentMutationReceipt {
-                vectors: 0,
-                payloads: size,
+                vectors: size,
+                payloads: 0,
                 unchanged: 0,
                 batches: 1,
             }
@@ -386,33 +386,34 @@ fn run(size: usize, dimensions: usize) {
         assert_eq!(
             revise_receipt,
             ResidentMutationReceipt {
-                vectors: 1,
-                payloads: size.saturating_sub(1),
+                vectors: size,
+                payloads: 0,
                 unchanged: 0,
                 batches: 2,
             }
         );
         let ledger = ledger.lock().expect("ledger");
         let cold_put = &ledger.puts[puts_before];
-        let revise_put = &ledger.puts[puts_before + 1];
-        let rebind_payload = &ledger.payloads[payloads_before];
+        let rebind_put = &ledger.puts[puts_before + 1];
+        let revise_put = &ledger.puts[puts_before + 2];
         assert_eq!(cold_put.points, size);
-        assert_eq!(rebind_payload.points, size);
-        assert_eq!(revise_put.points, 1);
-        assert!(rebind_payload.bytes < cold_put.bytes);
-        assert!(revise_put.bytes < cold_put.bytes);
+        assert_eq!(rebind_put.points, size);
+        assert_eq!(revise_put.points, size);
+        assert_eq!(ledger.payloads.len(), payloads_before);
+        assert_eq!(rebind_put.bytes, cold_put.bytes);
+        assert_eq!(revise_put.bytes, cold_put.bytes);
         if sample >= WARMUPS {
             let recorded = sample - WARMUPS;
             cold[recorded] = cold_elapsed;
             rebind[recorded] = rebind_elapsed;
             revise[recorded] = revise_elapsed;
             cold_bytes[recorded] = cold_put.bytes;
-            rebind_bytes[recorded] = rebind_payload.bytes;
+            rebind_bytes[recorded] = rebind_put.bytes;
             revise_bytes[recorded] = revise_put.bytes;
         }
     }
     println!(
-        "residence_rebind size={size} dimensions={dimensions} samples={SAMPLES} warmups={WARMUPS} cold_vectors median={}ns p95={}ns put_bytes={} fence_rebind median={}ns p95={}ns payload_bytes={} vector_put_bytes=0 one_replace median={}ns p95={}ns vector_put_bytes={}",
+        "residence_binding size={size} dimensions={dimensions} samples={SAMPLES} warmups={WARMUPS} cold_vectors median={}ns p95={}ns put_bytes={} next_binding median={}ns p95={}ns put_bytes={} changed_binding median={}ns p95={}ns put_bytes={}",
         percentile(&mut cold, SAMPLES / 2),
         percentile(&mut cold, SAMPLES * 95 / 100),
         cold_bytes[0],

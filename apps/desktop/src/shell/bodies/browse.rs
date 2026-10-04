@@ -19,7 +19,7 @@ use crate::shell::reader::NativeActionLease;
 use crate::shell::root::PageInputScope;
 use facet::browse::library::{InventoryHandle, ReleaseHandle};
 use facet::browse::{LibraryActions, LibraryModel, library};
-use gpui::{App, AppContext as _, Context, FocusHandle, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div};
+use gpui::{App, AppContext as _, Context, FocusHandle, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div};
 use std::rc::Rc;
 use std::sync::Arc;
 

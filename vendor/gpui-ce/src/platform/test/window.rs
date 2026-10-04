@@ -44,7 +44,14 @@ pub(crate) struct TestWindowState {
     start_external_drag_result: bool,
     presentation_results: VecDeque<DrawResult>,
     presentation_attempts: usize,
+    /// NUDOX: the display scale this window reports and renders its device
+    /// surface at (was a fixed 2.0, so a 1x capture drew into a 2x surface and
+    /// every simulated resize reset the window to 2x for a frame).
+    scale_factor: f32,
 }
+
+/// NUDOX: the scale a test window starts at, upstream's fixed value.
+const DEFAULT_TEST_SCALE_FACTOR: f32 = 2.0;
 
 #[derive(Clone)]
 pub struct TestWindow(pub(crate) Rc<Mutex<TestWindowState>>);
@@ -108,7 +115,15 @@ impl TestWindow {
             start_external_drag_result: false,
             presentation_results: VecDeque::new(),
             presentation_attempts: 0,
+            scale_factor: DEFAULT_TEST_SCALE_FACTOR,
         })))
+    }
+
+    /// NUDOX: sets the display scale this window reports, as a monitor's DPI
+    /// does for a native window. `Window::set_scale_factor` calls this, so the
+    /// device surface, the next resize callback and the scene agree.
+    pub fn set_scale_factor(&self, scale_factor: f32) {
+        self.0.lock().scale_factor = scale_factor;
     }
 
     pub fn simulate_resize(&mut self, size: Size<Pixels>) {
@@ -211,7 +226,8 @@ impl PlatformWindow for TestWindow {
     }
 
     fn scale_factor(&self) -> f32 {
-        2.0
+        // NUDOX: was a fixed 2.0.
+        self.0.lock().scale_factor
     }
 
     fn appearance(&self) -> WindowAppearance {
@@ -464,8 +480,13 @@ impl PlatformWindow for TestWindow {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
 
+    // NUDOX: asks its headless renderer (was `None`), like `compositing`.
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        None
+        self.0
+            .lock()
+            .renderer
+            .as_ref()
+            .and_then(|renderer| renderer.gpu_specs())
     }
 }
 
