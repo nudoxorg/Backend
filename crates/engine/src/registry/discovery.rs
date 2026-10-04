@@ -8,495 +8,35 @@
 //! paginated recent-updates view and is therefore always marked windowed.
 
 use backend_library::CargoPublishTime;
-use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
-    fmt,
 };
 
-use super::{PackageCoordinate, RegistryEcosystem, RegistryEndpoint, admit_registry_coordinate};
+use super::{PackageCoordinate, RegistryEndpoint};
 
-/// Upper bound for an opaque source cursor persisted by a local discovery
-/// owner. Source cursors are never interpreted by generic storage code.
-pub const MAX_DISCOVERY_CURSOR_BYTES: usize = 4096;
-/// Upper bound for one source page before it is admitted into the durable
-/// discovery journal.
-pub const MAX_DISCOVERY_PAGE_ITEMS: usize = 4096;
-/// Bound for a source-only package-name snapshot (not a release fact page).
-pub const MAX_DISCOVERY_PROJECTS: usize = 2_000_000;
+pub use backend_library::{
+    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
+    DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
+    DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
+    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
+    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
+    MAX_DISCOVERY_REVISION_BYTES,
+};
 
-/// Stable identity of the source that made a catalog claim.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct DiscoverySourceIdentity {
-    ecosystem: RegistryEcosystem,
-    id: [u8; 32],
+/// Derives the neutral discovery source identity from an admitted endpoint.
+#[must_use]
+pub const fn discovery_source_identity(endpoint: &RegistryEndpoint) -> DiscoverySourceIdentity {
+    DiscoverySourceIdentity::from_parts(endpoint.ecosystem(), endpoint.id().as_bytes())
 }
-
-impl DiscoverySourceIdentity {
-    /// Builds a discovery identity from an already admitted credential-free
-    /// registry endpoint.
-    #[must_use]
-    pub const fn from_endpoint(endpoint: &RegistryEndpoint) -> Self {
-        Self {
-            ecosystem: endpoint.ecosystem(),
-            id: endpoint.id().as_bytes(),
-        }
-    }
-
-    /// Ecosystem whose coordinates this source may report.
-    #[must_use]
-    pub const fn ecosystem(self) -> RegistryEcosystem {
-        self.ecosystem
-    }
-
-    /// Credential-free source identifier.
-    #[must_use]
-    pub const fn id(self) -> [u8; 32] {
-        self.id
-    }
-}
-
-/// Opaque cursor owned by one source adapter.
-///
-/// The byte representation is intentionally not public as text. NuGet stores
-/// its catalog timestamp here; the crates.io adapter stores a page hint, which
-/// never upgrades its windowed coverage to complete.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct DiscoveryCursor(Vec<u8>);
-
-impl DiscoveryCursor {
-    /// Admits a source cursor within the storage bound.
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, DiscoveryError> {
-        let bytes = bytes.into();
-        if bytes.len() > MAX_DISCOVERY_CURSOR_BYTES {
-            return Err(DiscoveryError::Bounds);
-        }
-        Ok(Self(bytes))
-    }
-
-    /// Returns the opaque source bytes.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// True when the adapter has not committed an initial position.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Revalidates a cursor recovered from durable storage.
-    pub fn admit(&self) -> Result<(), DiscoveryError> {
-        if self.0.len() > MAX_DISCOVERY_CURSOR_BYTES {
-            Err(DiscoveryError::Bounds)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Time at which the local owner admitted a source observation, in Unix
-/// milliseconds. This is independent from a source's event timestamp.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct DiscoveryObservedAt(u64);
-
-impl DiscoveryObservedAt {
-    /// Constructs an observation time from the local wall clock.
-    #[must_use]
-    pub const fn from_unix_millis(value: u64) -> Self {
-        Self(value)
-    }
-
-    /// Returns the local observation time.
-    #[must_use]
-    pub const fn as_unix_millis(self) -> u64 {
-        self.0
-    }
-}
-
-/// Completeness promised by the source adapter for this observation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiscoveryCompleteness {
-    /// All source events through the attached cursor were admitted.
-    CompleteThroughCursor,
-    /// A bounded or mutable source view may omit events or older coordinates.
-    Windowed,
-    /// This source does not expose the requested discovery surface.
-    Unsupported,
-    /// The source response was valid but could not be admitted in full.
-    Incomplete,
-}
-
-/// Current package standing reported by a registry source.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiscoveryStanding {
-    /// The source currently reports this release as published/listed.
-    Published,
-    /// The release is published but explicitly yanked or unlisted.
-    Yanked,
-    /// The source explicitly reports a deletion or withdrawal.
-    Withdrawn,
-    /// A source tree declares a package recipe, but does not prove a release
-    /// was published or built by the binary registry.
-    RecipeAvailable,
-}
-
-/// Source claim for an optional metadata facet. `Absent` means the source
-/// schema does not provide the facet, while `Unknown` means this observation
-/// did not establish a value. A known empty list is distinct from both.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", content = "value", rename_all = "snake_case")]
-pub enum DiscoveryFacet<T> {
-    /// Source supplied the value, including a deliberately empty collection.
-    Known(T),
-    /// This source surface does not report the facet.
-    Absent,
-    /// The facet may exist, but this response did not establish its value.
-    Unknown,
-}
-
-impl<T> Default for DiscoveryFacet<T> {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
-/// Bounded advisory evidence reported alongside a package release.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryAdvisory {
-    /// Source-native advisory identifier, if supplied.
-    pub id: String,
-    /// Alternate canonical advisory identifiers, if supplied.
-    pub aliases: Vec<String>,
-    /// Short source-provided advisory description.
-    pub summary: DiscoveryFacet<String>,
-    /// Source-provided severity text; no normalized score is inferred.
-    pub severity: DiscoveryFacet<String>,
-    /// Source-provided versions at which the issue is fixed, when available.
-    /// The adapter preserves this scope without inferring version ordering.
-    #[serde(default)]
-    pub fixed_in: DiscoveryFacet<Vec<String>>,
-}
-
-/// One feature declaration from a Cargo sparse-index row. `features` and
-/// `features2` remain separate because Cargo gives the latter newer feature
-/// syntax semantics.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CratesSparseFeature {
-    pub name: String,
-    pub members: Vec<String>,
-}
-
-/// One exact dependency declaration from a Cargo sparse-index row.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CratesSparseDependency {
-    pub name: String,
-    pub requirement: String,
-    #[serde(default)]
-    pub package: DiscoveryFacet<String>,
-    #[serde(default)]
-    pub features: DiscoveryFacet<Vec<String>>,
-    #[serde(default)]
-    pub optional: DiscoveryFacet<bool>,
-    #[serde(default)]
-    pub default_features: DiscoveryFacet<bool>,
-    #[serde(default)]
-    pub target: DiscoveryFacet<String>,
-    #[serde(default)]
-    pub kind: DiscoveryFacet<String>,
-    #[serde(default)]
-    pub registry: DiscoveryFacet<String>,
-}
-
-/// Cargo-specific release facts from one sparse-index version record.
-/// Missing arrays stay `Unknown`; an explicit empty array is `Known([])`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CratesSparseMetadata {
-    pub checksum: String,
-    pub schema_version: u32,
-    #[serde(default)]
-    pub rust_version: DiscoveryFacet<String>,
-    #[serde(default)]
-    pub links: DiscoveryFacet<String>,
-    #[serde(default)]
-    pub features: DiscoveryFacet<Vec<CratesSparseFeature>>,
-    #[serde(default)]
-    pub features2: DiscoveryFacet<Vec<CratesSparseFeature>>,
-    #[serde(default)]
-    pub dependencies: DiscoveryFacet<Vec<CratesSparseDependency>>,
-}
-
-/// Optional package and release metadata retained with its source claim.
-/// Download counts are represented only when a feed reports a value for this
-/// exact release; package totals are not copied onto every version.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryMetadata {
-    /// Registry-native alternate names or aliases.
-    #[serde(default)]
-    pub aliases: DiscoveryFacet<Vec<String>>,
-    /// Human-readable package or release description.
-    #[serde(default)]
-    pub description: DiscoveryFacet<String>,
-    /// Source-provided search keywords.
-    #[serde(default)]
-    pub keywords: DiscoveryFacet<Vec<String>>,
-    /// License text, only when the registry itself reports it.
-    #[serde(default)]
-    pub license: DiscoveryFacet<String>,
-    /// Source upload/release time in its original representation.
-    #[serde(default)]
-    pub published_at: DiscoveryFacet<String>,
-    /// Exact-revision deprecation reason where the ecosystem reports it.
-    #[serde(default)]
-    pub deprecation: DiscoveryFacet<String>,
-    /// Exact release yank/unlist flag, kept distinct from other standing.
-    #[serde(default)]
-    pub yanked: DiscoveryFacet<bool>,
-    /// Advisory evidence attached to this exact release by the source.
-    #[serde(default)]
-    pub advisories: DiscoveryFacet<Vec<DiscoveryAdvisory>>,
-    /// Exact per-release download observation; absent is never zero.
-    #[serde(default)]
-    pub downloads: DiscoveryFacet<u64>,
-    /// Cargo sparse-index source record, when this release came from Cargo.
-    #[serde(default)]
-    pub cargo_sparse: DiscoveryFacet<CratesSparseMetadata>,
-}
-
-impl Default for DiscoveryMetadata {
-    fn default() -> Self {
-        Self {
-            aliases: DiscoveryFacet::Unknown,
-            description: DiscoveryFacet::Unknown,
-            keywords: DiscoveryFacet::Unknown,
-            license: DiscoveryFacet::Unknown,
-            published_at: DiscoveryFacet::Unknown,
-            deprecation: DiscoveryFacet::Unknown,
-            yanked: DiscoveryFacet::Unknown,
-            advisories: DiscoveryFacet::Unknown,
-            downloads: DiscoveryFacet::Unknown,
-            cargo_sparse: DiscoveryFacet::Unknown,
-        }
-    }
-}
-
-impl DiscoveryMetadata {
-    /// Checks source text and collection bounds before it enters the journal.
-    pub fn admit(&self) -> Result<(), DiscoveryError> {
-        fn strings_valid(values: &[String], maximum_items: usize, maximum_bytes: usize) -> bool {
-            values.len() <= maximum_items
-                && values
-                    .iter()
-                    .all(|value| value.len() <= maximum_bytes && !value.contains('\0'))
-        }
-        fn text_valid(value: &DiscoveryFacet<String>, maximum_bytes: usize) -> bool {
-            !matches!(value, DiscoveryFacet::Known(text) if text.len() > maximum_bytes || text.contains('\0'))
-        }
-        let lists_valid = match &self.aliases {
-            DiscoveryFacet::Known(values) => strings_valid(values, 64, 1024),
-            _ => true,
-        } && match &self.keywords {
-            DiscoveryFacet::Known(values) => strings_valid(values, 128, 256),
-            _ => true,
-        };
-        let advisories_valid = match &self.advisories {
-            DiscoveryFacet::Known(advisories) => {
-                advisories.len() <= 128
-                    && advisories.iter().all(|advisory| {
-                        !advisory.id.is_empty()
-                            && advisory.id.len() <= 256
-                            && strings_valid(&advisory.aliases, 32, 256)
-                            && text_valid(&advisory.summary, 4096)
-                            && text_valid(&advisory.severity, 128)
-                            && match &advisory.fixed_in {
-                                DiscoveryFacet::Known(versions) => {
-                                    strings_valid(versions, 128, 256)
-                                }
-                                _ => true,
-                            }
-                    })
-            }
-            _ => true,
-        };
-        let cargo_sparse_valid = match &self.cargo_sparse {
-            DiscoveryFacet::Known(metadata) => {
-                metadata.checksum.len() == 64
-                    && metadata.checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    && matches!(metadata.schema_version, 1 | 2)
-                    && cargo_string_facet_valid(&metadata.rust_version, 128)
-                    && cargo_string_facet_valid(&metadata.links, 256)
-                    && cargo_sparse_features_valid(&metadata.features)
-                    && cargo_sparse_features_valid(&metadata.features2)
-                    && cargo_sparse_dependencies_valid(&metadata.dependencies)
-            }
-            _ => true,
-        };
-        if !lists_valid
-            || !advisories_valid
-            || !cargo_sparse_valid
-            || !text_valid(&self.description, 16 * 1024)
-            || !text_valid(&self.license, 1024)
-            || !text_valid(&self.published_at, 128)
-            || !text_valid(&self.deprecation, 4096)
-        {
-            return Err(DiscoveryError::Bounds);
-        }
-        Ok(())
-    }
-}
-
-fn cargo_string_facet_valid(value: &DiscoveryFacet<String>, maximum_bytes: usize) -> bool {
-    !matches!(value, DiscoveryFacet::Known(text) if text.is_empty() || text.len() > maximum_bytes || text.contains('\0'))
-}
-
-fn cargo_sparse_features_valid(value: &DiscoveryFacet<Vec<CratesSparseFeature>>) -> bool {
-    match value {
-        DiscoveryFacet::Known(features) => {
-            features.len() <= 4096
-                && features.iter().all(|feature| {
-                    !feature.name.is_empty()
-                        && feature.name.len() <= 256
-                        && !feature.name.contains('\0')
-                        && feature.members.len() <= 4096
-                        && feature.members.iter().all(|member| {
-                            !member.is_empty() && member.len() <= 1024 && !member.contains('\0')
-                        })
-                })
-        }
-        _ => true,
-    }
-}
-
-fn cargo_sparse_dependencies_valid(
-    value: &DiscoveryFacet<Vec<CratesSparseDependency>>,
-) -> bool {
-    fn strings(value: &DiscoveryFacet<Vec<String>>) -> bool {
-        !matches!(value, DiscoveryFacet::Known(values) if values.len() > 256 || values.iter().any(|value| value.is_empty() || value.len() > 1024 || value.contains('\0')))
-    }
-    fn text(value: &DiscoveryFacet<String>, maximum: usize) -> bool {
-        !matches!(value, DiscoveryFacet::Known(value) if value.is_empty() || value.len() > maximum || value.contains('\0'))
-    }
-    match value {
-        DiscoveryFacet::Known(dependencies) => {
-            dependencies.len() <= 4096
-                && dependencies.iter().all(|dependency| {
-                    !dependency.name.is_empty()
-                        && dependency.name.len() <= 256
-                        && !dependency.name.contains('\0')
-                        && !dependency.requirement.is_empty()
-                        && dependency.requirement.len() <= 1024
-                        && !dependency.requirement.contains('\0')
-                        && text(&dependency.package, 256)
-                        && strings(&dependency.features)
-                        && text(&dependency.target, 1024)
-                        && text(&dependency.kind, 32)
-                        && text(&dependency.registry, 2048)
-                })
-        }
-        _ => true,
-    }
-}
-
-/// One source-specific release claim. It contains no archive URL, digest, or
-/// compiler artifact.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryFact {
-    pub source: DiscoverySourceIdentity,
-    pub coordinate: PackageCoordinate,
-    pub standing: DiscoveryStanding,
-    pub observed_at: DiscoveryObservedAt,
-    pub source_event_time: Option<String>,
-    pub proof: [u8; 32],
-    /// Optional, source-attributed package and version metadata.
-    #[serde(default)]
-    pub metadata: DiscoveryMetadata,
-}
-
-/// A committed unit of discovery work. The caller must persist `facts`,
-/// `completeness`, and `next_cursor` together before treating the cursor as
-/// advanced.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryBatch {
-    pub source: DiscoverySourceIdentity,
-    pub previous_cursor: DiscoveryCursor,
-    pub next_cursor: DiscoveryCursor,
-    /// Source's captured high watermark for this observation.
-    pub source_high_watermark: DiscoveryCursor,
-    /// Whether `next_cursor` reached the source's captured high watermark.
-    /// Mutable windowed feeds leave this false.
-    pub caught_up: bool,
-    pub observed_at: DiscoveryObservedAt,
-    pub completeness: DiscoveryCompleteness,
-    pub facts: Vec<DiscoveryFact>,
-    /// Package-level deletion events that the durable owner expands against
-    /// this source's previously observed releases.
-    #[serde(default)]
-    pub package_retractions: Vec<DiscoveryPackageRetraction>,
-}
-
-impl DiscoveryBatch {
-    /// Checks bounds and source/cursor invariants before durable commit.
-    pub fn admit(&self) -> Result<(), DiscoveryError> {
-        self.previous_cursor.admit()?;
-        self.next_cursor.admit()?;
-        self.source_high_watermark.admit()?;
-        if self.facts.len() > MAX_DISCOVERY_PAGE_ITEMS
-            || self.package_retractions.len() > MAX_DISCOVERY_PAGE_ITEMS
-            || self.facts.iter().any(|fact| fact.source != self.source)
-            || self.facts.iter().any(|fact| {
-                admit_registry_coordinate(&fact.coordinate).map_or(true, |coordinate| {
-                    coordinate.ecosystem() != self.source.ecosystem()
-                }) || fact.metadata.admit().is_err()
-            })
-            || (self.completeness == DiscoveryCompleteness::CompleteThroughCursor
-                && self.next_cursor.is_empty())
-            || (self.caught_up && self.next_cursor != self.source_high_watermark)
-            || (!self.package_retractions.is_empty()
-                && self.source.ecosystem() != RegistryEcosystem::Npm)
-            || self.package_retractions.iter().any(|retraction| {
-                !valid_package_name(&retraction.package_name)
-                    || retraction.source_event_time.is_empty()
-                    || retraction.source_event_time.len() > 128
-            })
-        {
-            return Err(DiscoveryError::Protocol);
-        }
-        Ok(())
-    }
-}
-
-/// Bounded source format or cursor admission failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DiscoveryError {
-    /// A source response did not match the documented shape.
-    Protocol,
-    /// A coordinate or source origin was invalid for this adapter.
-    InvalidIdentity,
-    /// An input exceeded a configured parser bound.
-    Bounds,
-}
-
-impl fmt::Display for DiscoveryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Protocol => formatter.write_str("invalid registry discovery response"),
-            Self::InvalidIdentity => formatter.write_str("invalid registry discovery identity"),
-            Self::Bounds => formatter.write_str("registry discovery response exceeds bounds"),
-        }
-    }
-}
-
-impl std::error::Error for DiscoveryError {}
 
 /// One page URL and its high-water commit time from the NuGet catalog index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NugetCatalogPageRef {
     pub url: String,
     pub commit_timestamp: String,
+    pub timestamp: DiscoveryTimestamp,
     pub commit_id: String,
     pub count: usize,
 }
@@ -520,6 +60,7 @@ pub struct NugetCatalogPlan {
 pub struct NugetCatalogLeafRef {
     pub url: String,
     pub commit_timestamp: String,
+    pub timestamp: DiscoveryTimestamp,
     pub commit_id: String,
 }
 
@@ -529,6 +70,7 @@ pub struct NugetCatalogEvent {
     pub coordinate: PackageCoordinate,
     pub standing: DiscoveryStanding,
     pub commit_timestamp: String,
+    pub timestamp: DiscoveryTimestamp,
     pub commit_id: String,
     pub proof: [u8; 32],
     pub metadata: DiscoveryMetadata,
@@ -579,18 +121,6 @@ pub struct NpmPackument {
     pub revision: Option<String>,
     pub releases: Vec<DiscoveryReleaseObservation>,
     pub is_truncated: bool,
-}
-
-/// Package-level removal event from npm. The durable owner expands this only
-/// to release coordinates already observed from the same source.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryPackageRetraction {
-    /// Registry-native package name, including namespace when present.
-    pub package_name: String,
-    /// Monotonic source sequence for this deletion event.
-    pub source_event_time: String,
-    /// Hash of the source event row that reported deletion.
-    pub proof: [u8; 32],
 }
 
 /// Parsed PEP 691 project catalog. PyPI's project list is a mutable snapshot,
@@ -717,18 +247,36 @@ pub fn parse_npm_changes_page(
         let proof = *blake3::hash(&serde_json::to_vec(row).map_err(|_| DiscoveryError::Protocol)?)
             .as_bytes();
         let document = row.get("doc").and_then(serde_json::Value::as_object);
-        let revision = row
+        let revision_value = row
             .get("changes")
             .and_then(serde_json::Value::as_array)
             .and_then(|changes| changes.first())
             .and_then(serde_json::Value::as_object)
-            .and_then(|change| change.get("rev"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|revision| !revision.is_empty() && revision.len() <= 256)
-            .map(str::to_owned);
+            .and_then(|change| change.get("rev"));
+        let revision = match revision_value {
+            None => None,
+            Some(serde_json::Value::String(value)) if !value.is_empty() => {
+                if value.len() > MAX_DISCOVERY_REVISION_BYTES
+                    || value.bytes().any(|byte| byte.is_ascii_control())
+                {
+                    return Err(DiscoveryError::Bounds);
+                }
+                Some(value.clone())
+            }
+            Some(serde_json::Value::String(_)) => return Err(DiscoveryError::Protocol),
+            Some(_) => return Err(DiscoveryError::Protocol),
+        };
         let (releases, is_truncated) = if deleted {
             (Vec::new(), false)
         } else if let Some(document) = document {
+            let document_revision = document.get("_rev").and_then(serde_json::Value::as_str);
+            if let (Some(row_revision), Some(document_revision)) =
+                (revision.as_deref(), document_revision)
+            {
+                if row_revision != document_revision {
+                    return Err(DiscoveryError::Protocol);
+                }
+            }
             let doc_name = document
                 .get("name")
                 .and_then(serde_json::Value::as_str)
@@ -797,11 +345,19 @@ pub fn parse_npm_packument_document(
     if !same_npm_name(name, expected_name) {
         return Err(DiscoveryError::InvalidIdentity);
     }
-    let revision = object
-        .get("_rev")
-        .and_then(serde_json::Value::as_str)
-        .filter(|revision| !revision.is_empty() && revision.len() <= 256)
-        .map(str::to_owned);
+    let revision = match object.get("_rev") {
+        None => None,
+        Some(serde_json::Value::String(value)) if !value.is_empty() => {
+            if value.len() > MAX_DISCOVERY_REVISION_BYTES
+                || value.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(DiscoveryError::Bounds);
+            }
+            Some(value.clone())
+        }
+        Some(serde_json::Value::String(_)) => return Err(DiscoveryError::Protocol),
+        Some(_) => return Err(DiscoveryError::Protocol),
+    };
     let (releases, is_truncated) =
         parse_npm_packument_object(object, expected_name, sequence, max_versions)?;
     Ok(NpmPackument {
@@ -1444,7 +1000,7 @@ fn valid_version(value: &str) -> bool {
 }
 
 /// Parses NuGet's ordered catalog index and selects pages newer than the
-/// durable `(timestamp, commitId)` cursor. The first poll starts from the oldest retained
+/// durable `(normalized timestamp, exact commitId)` cursor. The first poll starts from the oldest retained
 /// page. If the page budget leaves more work, `is_caught_up` stays false;
 /// `next_cursor` still describes gap-free coverage through the last selected
 /// page.
@@ -1486,7 +1042,7 @@ pub fn parse_nuget_catalog_index(
             let timestamp = required_text(item, "commitTimeStamp")?.to_owned();
             let commit_id = required_text(item, "commitId")?.to_owned();
             let url = required_text(item, "@id")?.to_owned();
-            let _cursor = nuget_cursor(&timestamp, &commit_id)?;
+            let timestamp_value = nuget_cursor(&timestamp, &commit_id)?.timestamp;
             let count = item
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
@@ -1498,6 +1054,7 @@ pub fn parse_nuget_catalog_index(
             Ok(NugetCatalogPageRef {
                 url,
                 commit_timestamp: timestamp,
+                timestamp: timestamp_value,
                 commit_id,
                 count,
             })
@@ -1506,28 +1063,60 @@ pub fn parse_nuget_catalog_index(
     if pages.len() > MAX_DISCOVERY_PAGE_ITEMS {
         return Err(DiscoveryError::Bounds);
     }
-    pages.sort_by(|left, right| {
-        left.commit_timestamp
-            .cmp(&right.commit_timestamp)
-            .then_with(|| left.commit_id.cmp(&right.commit_id))
-    });
-    let previous = parse_nuget_cursor(previous_cursor)?;
-    let high = parse_nuget_cursor(&source_high_cursor)?.ok_or(DiscoveryError::Protocol)?;
-    if previous.as_ref().is_some_and(|previous| high < *previous) {
+    pages.sort_by_key(|page| page.timestamp);
+    if pages.windows(2).any(|pair| {
+        pair[0].timestamp == pair[1].timestamp && pair[0].commit_id != pair[1].commit_id
+    }) {
         return Err(DiscoveryError::Protocol);
     }
-    pages.retain(|page| {
-        previous.as_ref().is_none_or(|previous| {
-            (page.commit_timestamp.as_str(), page.commit_id.as_str())
-                > (previous.0.as_str(), previous.1.as_str())
-        }) && (page.commit_timestamp.as_str(), page.commit_id.as_str())
-            <= (high.0.as_str(), high.1.as_str())
-    });
+    let previous = parse_nuget_cursor(previous_cursor)?;
+    let high = parse_nuget_cursor(&source_high_cursor)?.ok_or(DiscoveryError::Protocol)?;
+    if let Some(previous) = &previous {
+        if compare_nuget_positions(&high, previous)?.is_lt() {
+            return Err(DiscoveryError::Protocol);
+        }
+    }
+    let mut selected = Vec::with_capacity(pages.len().min(max_pages));
+    for page in pages {
+        let page_position = NugetCursor {
+            timestamp: page.timestamp,
+            commit_id: page.commit_id.clone(),
+        };
+        let after_previous = previous
+            .as_ref()
+            .map(|previous| compare_nuget_positions(&page_position, previous))
+            .transpose()?
+            .is_none_or(|order| order.is_gt());
+        let at_or_before_high = !compare_nuget_positions(&page_position, &high)?.is_gt();
+        if after_previous && at_or_before_high {
+            selected.push(page);
+        }
+    }
+    let mut pages = selected;
     pages.truncate(max_pages);
     let next = match pages.last() {
-        Some(page) => nuget_cursor(&page.commit_timestamp, &page.commit_id)?,
-        None if previous_cursor.is_empty() => source_high_cursor.clone(),
-        None => previous_cursor.clone(),
+        Some(page) => {
+            let page_position = NugetCursor {
+                timestamp: page.timestamp,
+                commit_id: page.commit_id.clone(),
+            };
+            if compare_nuget_positions(&page_position, &high)?.is_eq() {
+                source_high_cursor.clone()
+            } else {
+                nuget_cursor(&page.commit_timestamp, &page.commit_id)?
+            }
+        }
+        None => {
+            if let Some(previous) = &previous {
+                if compare_nuget_positions(previous, &high)?.is_eq() {
+                    source_high_cursor.clone()
+                } else {
+                    previous_cursor.clone()
+                }
+            } else {
+                source_high_cursor.clone()
+            }
+        }
     };
     // A page budget can leave the source head behind, but the selected pages
     // are chronological and gap-free through this cursor.
@@ -1567,14 +1156,16 @@ pub fn parse_nuget_catalog_page(
     if page_commit_id != expected_commit_id {
         return Err(DiscoveryError::Protocol);
     }
+    let page_position = parse_nuget_cursor(&nuget_cursor(page_timestamp, page_commit_id)?)?
+        .ok_or(DiscoveryError::Protocol)?;
     let previous = parse_nuget_cursor(previous_cursor)?;
     let high = parse_nuget_cursor(source_high_watermark)?.ok_or(DiscoveryError::Protocol)?;
-    let page_key = (page_timestamp, page_commit_id);
-    if previous
-        .as_ref()
-        .is_some_and(|previous| page_key <= (previous.0.as_str(), previous.1.as_str()))
-        || page_key > (high.0.as_str(), high.1.as_str())
-    {
+    if let Some(previous) = &previous {
+        if !compare_nuget_positions(&page_position, previous)?.is_gt() {
+            return Err(DiscoveryError::Protocol);
+        }
+    }
+    if compare_nuget_positions(&page_position, &high)?.is_gt() {
         return Err(DiscoveryError::Protocol);
     }
     let declared_count = page
@@ -1596,26 +1187,30 @@ pub fn parse_nuget_catalog_page(
         .iter()
         .map(|item| {
             let item = item.as_object().ok_or(DiscoveryError::Protocol)?;
-            let timestamp = required_text(item, "commitTimeStamp")?.to_owned();
+            let timestamp = required_text(item, "commitTimeStamp")?;
             let url = required_text(item, "@id")?.to_owned();
-            let commit_id = required_text(item, "commitId")?.to_owned();
-            let _cursor = nuget_cursor(&timestamp, &commit_id)?;
-            if !same_catalog_path(catalog_origin, &url) || timestamp.as_str() > page_timestamp {
+            let commit_id = required_text(item, "commitId")?;
+            let item_position = parse_nuget_cursor(&nuget_cursor(timestamp, commit_id)?)?
+                .ok_or(DiscoveryError::Protocol)?;
+            if !same_catalog_path(catalog_origin, &url)
+                || compare_nuget_positions(&item_position, &page_position)?.is_gt()
+            {
                 return Err(DiscoveryError::InvalidIdentity);
             }
             Ok(NugetCatalogLeafRef {
                 url,
-                commit_timestamp: timestamp,
-                commit_id,
+                commit_timestamp: timestamp.to_owned(),
+                timestamp: item_position.timestamp,
+                commit_id: commit_id.to_owned(),
             })
         })
         .collect::<Result<Vec<_>, DiscoveryError>>()?;
-    leaves.retain(|leaf| leaf.commit_timestamp.as_str() <= page_timestamp);
-    leaves.sort_by(|left, right| {
-        left.commit_timestamp
-            .cmp(&right.commit_timestamp)
-            .then_with(|| left.commit_id.cmp(&right.commit_id))
-    });
+    leaves.sort_by_key(|leaf| leaf.timestamp);
+    if leaves.windows(2).any(|pair| {
+        pair[0].timestamp == pair[1].timestamp && pair[0].commit_id != pair[1].commit_id
+    }) {
+        return Err(DiscoveryError::Protocol);
+    }
     if leaves.len() > max_items {
         return Err(DiscoveryError::Bounds);
     }
@@ -1633,9 +1228,11 @@ pub fn parse_nuget_catalog_leaf(bytes: &[u8]) -> Result<NugetCatalogEvent, Disco
     let object = value.as_object().ok_or(DiscoveryError::Protocol)?;
     let package_id = required_text(object, "nuget:id")?;
     let version = required_text(object, "nuget:version")?;
-    let timestamp = required_text(object, "commitTimeStamp")?.to_owned();
+    let timestamp = required_text(object, "commitTimeStamp")?;
     let commit_id = required_text(object, "commitId")?.to_owned();
-    let _cursor = nuget_cursor(&timestamp, &commit_id)?;
+    let timestamp_value = parse_nuget_cursor(&nuget_cursor(timestamp, &commit_id)?)?
+        .ok_or(DiscoveryError::Protocol)?
+        .timestamp;
     let event_type = object.get("@type").ok_or(DiscoveryError::Protocol)?;
     let is_deleted = type_contains(event_type, "PackageDelete");
     let listed = object
@@ -1687,7 +1284,8 @@ pub fn parse_nuget_catalog_leaf(bytes: &[u8]) -> Result<NugetCatalogEvent, Disco
     Ok(NugetCatalogEvent {
         coordinate,
         standing,
-        commit_timestamp: timestamp,
+        commit_timestamp: timestamp.to_owned(),
+        timestamp: timestamp_value,
         commit_id,
         proof,
         metadata,
@@ -2269,6 +1867,23 @@ fn same_origin(origin: &str, url: &str) -> bool {
 
 const NUGET_CURSOR_SEPARATOR: char = '\u{1f}';
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NugetCursor {
+    timestamp: DiscoveryTimestamp,
+    commit_id: String,
+}
+
+fn compare_nuget_positions(
+    left: &NugetCursor,
+    right: &NugetCursor,
+) -> Result<Ordering, DiscoveryError> {
+    match left.timestamp.cmp(&right.timestamp) {
+        Ordering::Equal if left.commit_id == right.commit_id => Ok(Ordering::Equal),
+        Ordering::Equal => Err(DiscoveryError::Protocol),
+        order => Ok(order),
+    }
+}
+
 fn nuget_cursor(timestamp: &str, commit_id: &str) -> Result<DiscoveryCursor, DiscoveryError> {
     if timestamp.is_empty()
         || timestamp.len() > 128
@@ -2281,12 +1896,11 @@ fn nuget_cursor(timestamp: &str, commit_id: &str) -> Result<DiscoveryCursor, Dis
     {
         return Err(DiscoveryError::Protocol);
     }
+    DiscoveryTimestamp::parse_rfc3339(timestamp)?;
     DiscoveryCursor::new(format!("{timestamp}{NUGET_CURSOR_SEPARATOR}{commit_id}").into_bytes())
 }
 
-fn parse_nuget_cursor(
-    cursor: &DiscoveryCursor,
-) -> Result<Option<(String, String)>, DiscoveryError> {
+fn parse_nuget_cursor(cursor: &DiscoveryCursor) -> Result<Option<NugetCursor>, DiscoveryError> {
     if cursor.is_empty() {
         return Ok(None);
     }
@@ -2304,7 +1918,10 @@ fn parse_nuget_cursor(
     {
         return Err(DiscoveryError::Protocol);
     }
-    Ok(Some((timestamp.to_owned(), commit_id.to_owned())))
+    Ok(Some(NugetCursor {
+        timestamp: DiscoveryTimestamp::parse_rfc3339(timestamp)?,
+        commit_id: commit_id.to_owned(),
+    }))
 }
 
 fn same_catalog_path(catalog_index: &str, candidate: &str) -> bool {
@@ -2353,6 +1970,7 @@ fn same_catalog_path(catalog_index: &str, candidate: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::RegistryEcosystem;
     use super::*;
 
     fn cursor(value: &str) -> DiscoveryCursor {
@@ -2363,7 +1981,7 @@ mod tests {
     fn nuget_catalog_page_and_leaf_preserve_unlist_and_delete() {
         let origin = "http://127.0.0.1:8080/v3/catalog0/index.json";
         let plan = parse_nuget_catalog_index(
-            br#"{"commitId":"tip","commitTimeStamp":"2026-09-01T00:00:00Z","count":1,"items":[{"@id":"http://127.0.0.1:8080/v3/catalog0/page2.json","commitId":"tip","commitTimeStamp":"2026-09-01T00:00:00Z","count":2}]}"#,
+            br#"{"commitId":"tip","commitTimeStamp":"2026-09-01T00:00:02Z","count":1,"items":[{"@id":"http://127.0.0.1:8080/v3/catalog0/page2.json","commitId":"tip","commitTimeStamp":"2026-09-01T00:00:02Z","count":2}]}"#,
             origin,
             &cursor("2026-08-31T00:00:00Z"),
             10,
@@ -2376,7 +1994,7 @@ mod tests {
         );
         assert!(plan.is_caught_up);
         let refs = parse_nuget_catalog_page(
-            br#"{"commitId":"tip","commitTimeStamp":"2026-09-01T00:00:00Z","count":2,"items":[{"@id":"http://127.0.0.1:8080/v3/catalog0/data/a.json","commitTimeStamp":"2026-09-01T00:00:00Z","commitId":"one"},{"@id":"http://127.0.0.1:8080/v3/catalog0/data/b.json","commitTimeStamp":"2026-09-01T00:00:00Z","commitId":"two"}]}"#,
+            br#"{"commitId":"tip","commitTimeStamp":"2026-09-01T00:00:02Z","count":2,"items":[{"@id":"http://127.0.0.1:8080/v3/catalog0/data/a.json","commitTimeStamp":"2026-09-01T00:00:00Z","commitId":"one"},{"@id":"http://127.0.0.1:8080/v3/catalog0/data/b.json","commitTimeStamp":"2026-09-01T00:00:01Z","commitId":"two"}]}"#,
             origin,
             &cursor("2026-08-31T00:00:00Z"),
             &plan.source_high_watermark,
@@ -2418,16 +2036,15 @@ mod tests {
     }
 
     #[test]
-    fn nuget_catalog_cursor_orders_equal_timestamps_and_rejects_sibling_paths() {
+    fn nuget_catalog_cursor_rejects_equal_time_id_order_and_sibling_paths() {
         let origin = "https://api.nuget.org/v3/catalog0/index.json";
         let timestamp = "2026-09-02T00:00:00Z";
         let previous = nuget_cursor(timestamp, "a").expect("previous event cursor");
         let index = br#"{"commitId":"z","commitTimeStamp":"2026-09-02T00:00:00Z","count":2,"items":[{"@id":"https://api.nuget.org/v3/catalog0/page-a.json","commitId":"a","commitTimeStamp":"2026-09-02T00:00:00Z","count":1},{"@id":"https://api.nuget.org/v3/catalog0/page-z.json","commitId":"z","commitTimeStamp":"2026-09-02T00:00:00Z","count":1}] }"#;
-        let plan = parse_nuget_catalog_index(index, origin, &previous, 10)
-            .expect("total ordered page cursor");
-        assert_eq!(plan.pages.len(), 1);
-        assert_eq!(plan.pages[0].commit_id, "z");
-        assert!(plan.is_caught_up);
+        assert_eq!(
+            parse_nuget_catalog_index(index, origin, &previous, 10),
+            Err(DiscoveryError::Protocol)
+        );
         let sibling_path = br#"{"commitId":"z","commitTimeStamp":"2026-09-02T00:00:00Z","count":1,"items":[{"@id":"https://api.nuget.org/v3/catalog0-evil/page.json","commitId":"z","commitTimeStamp":"2026-09-02T00:00:00Z","count":1}]}"#;
         assert_eq!(
             parse_nuget_catalog_index(sibling_path, origin, &DiscoveryCursor::default(), 10),
@@ -2509,23 +2126,29 @@ mod tests {
         };
         assert_eq!(cargo.schema_version, 2);
         assert_eq!(cargo.rust_version, DiscoveryFacet::Known("1.56".to_owned()));
-        assert_eq!(cargo.features2, DiscoveryFacet::Known(vec![
-            CratesSparseFeature {
-                name: "derive".to_owned(),
-                members: vec!["dep:serde_derive".to_owned()],
-            },
-            CratesSparseFeature {
-                name: "new_api".to_owned(),
-                members: vec!["serde?/alloc".to_owned()],
-            },
-        ]));
+        assert_eq!(
+            cargo.features2,
+            DiscoveryFacet::Known(vec![
+                CratesSparseFeature {
+                    name: "derive".to_owned(),
+                    members: vec!["dep:serde_derive".to_owned()],
+                },
+                CratesSparseFeature {
+                    name: "new_api".to_owned(),
+                    members: vec!["serde?/alloc".to_owned()],
+                },
+            ])
+        );
         let DiscoveryFacet::Known(dependencies) = &cargo.dependencies else {
             panic!("sparse record should retain dependency declarations");
         };
         assert_eq!(dependencies.len(), 2);
         assert_eq!(dependencies[0].name, "serde_derive");
         assert_eq!(dependencies[0].optional, DiscoveryFacet::Known(true));
-        assert_eq!(dependencies[0].kind, DiscoveryFacet::Known("normal".to_owned()));
+        assert_eq!(
+            dependencies[0].kind,
+            DiscoveryFacet::Known("normal".to_owned())
+        );
         let mutated_identity = std::str::from_utf8(sparse_index_fixture)
             .expect("fixture is UTF-8")
             .replacen("\"name\":\"serde\"", "\"name\":\"other\"", 1);
@@ -2778,7 +2401,7 @@ mod tests {
         let endpoint =
             RegistryEndpoint::new(RegistryEcosystem::Nuget, "https://nuget.example.test")
                 .expect("source endpoint");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let coordinate = PackageCoordinate::parse("pkg:nuget/Widget@1.0.0").expect("coordinate");
         let batch = DiscoveryBatch {
             source,
@@ -2793,6 +2416,7 @@ mod tests {
                 coordinate,
                 standing: DiscoveryStanding::Published,
                 observed_at: DiscoveryObservedAt::from_unix_millis(10),
+                source_event: DiscoverySourceEvent::Unordered,
                 source_event_time: None,
                 proof: [1; 32],
                 metadata: DiscoveryMetadata::default(),

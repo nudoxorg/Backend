@@ -10,13 +10,13 @@ use crate::process::RegistryDiscoveryConfig;
 use backend_engine::registry::{
     DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
     DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
-    DiscoveryReleaseObservation, DiscoverySourceIdentity, DiscoveryStanding,
-    MAX_DISCOVERY_PAGE_ITEMS, NugetCatalogEvent, RegistryEcosystem, RegistryEndpoint,
-    crates_sparse_index_path, parse_conan_recipe_tree, parse_conan_recipe_versions,
-    parse_crates_recent_page, parse_crates_sparse_package, parse_go_module_index_page,
-    parse_maven_search_page, parse_npm_changes_page, parse_npm_packument_document,
-    parse_nuget_catalog_index, parse_nuget_catalog_leaf, parse_nuget_catalog_page,
-    parse_pypi_project_list, parse_pypi_project_metadata,
+    DiscoveryReleaseObservation, DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
+    DiscoveryTimestamp, MAX_DISCOVERY_PAGE_ITEMS, NugetCatalogEvent, RegistryEcosystem,
+    RegistryEndpoint, crates_sparse_index_path, discovery_source_identity, parse_conan_recipe_tree,
+    parse_conan_recipe_versions, parse_crates_recent_page, parse_crates_sparse_package,
+    parse_go_module_index_page, parse_maven_search_page, parse_npm_changes_page,
+    parse_npm_packument_document, parse_nuget_catalog_index, parse_nuget_catalog_leaf,
+    parse_nuget_catalog_page, parse_pypi_project_list, parse_pypi_project_metadata,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -162,7 +162,7 @@ impl DiscoveryGateway {
         let mut seen = BTreeSet::new();
         let mut sources = Vec::new();
         for endpoint in config.sources {
-            let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+            let source = discovery_source_identity(&endpoint);
             if seen.insert(source) {
                 sources.push((endpoint, source));
             }
@@ -266,7 +266,7 @@ fn discovery_worker(
     sender: SyncSender<DiscoveryWorkerMessage>,
     cancelled: Arc<AtomicBool>,
 ) {
-    let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+    let source = discovery_source_identity(&endpoint);
     let mut retry_delay = DISCOVERY_REFRESH_INTERVAL;
     let mut sparse_cache = BTreeMap::new();
     while !cancelled.load(Ordering::Acquire) {
@@ -394,7 +394,7 @@ fn refresh_crates(
     cancelled: &AtomicBool,
     sparse_cache: &mut BTreeMap<String, CachedSparsePackage>,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let page_number = if previous.is_empty() {
         1
     } else {
@@ -490,6 +490,7 @@ fn refresh_crates(
                             coordinate,
                             standing: release.standing,
                             observed_at,
+                            source_event: DiscoverySourceEvent::Unordered,
                             source_event_time: None,
                             proof: release.proof,
                             metadata,
@@ -565,7 +566,7 @@ fn refresh_npm(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let since = parse_npm_cursor(&previous)?;
     let root_bytes = fetch_metadata(endpoint.as_str(), 1024 * 1024, deadline, cancelled)?;
     let root: serde_json::Value =
@@ -606,10 +607,20 @@ fn refresh_npm(
         latest_by_package.insert(package.name.clone(), package);
     }
     for package in latest_by_package.into_values() {
+        let sequence = package
+            .source_event_time
+            .parse::<u64>()
+            .map_err(|_| DiscoveryStoreError::Corrupt)?;
+        let source_event = DiscoverySourceEvent::NpmChange {
+            sequence,
+            revision: package.revision.clone(),
+            change_proof: package.proof,
+        };
         if package.deleted {
             package_retractions.push(DiscoveryPackageRetraction {
                 package_name: package.name,
                 source_event_time: package.source_event_time,
+                source_event,
                 proof: package.proof,
             });
             continue;
@@ -642,15 +653,18 @@ fn refresh_npm(
                 if facts.len() >= MAX_DISCOVERY_PAGE_ITEMS {
                     return Err(DiscoveryStoreError::Bounds);
                 }
-                facts.push(discovery_fact(source, release, observed_at, None));
+                facts.push(discovery_fact(
+                    source,
+                    release,
+                    observed_at,
+                    None,
+                    source_event.clone(),
+                ));
             }
         } else {
-            facts.extend(
-                package
-                    .releases
-                    .into_iter()
-                    .map(|release| discovery_fact(source, release, observed_at, None)),
-            );
+            facts.extend(package.releases.into_iter().map(|release| {
+                discovery_fact(source, release, observed_at, None, source_event.clone())
+            }));
         }
         if facts.len() > MAX_DISCOVERY_PAGE_ITEMS {
             return Err(DiscoveryStoreError::Bounds);
@@ -679,7 +693,7 @@ fn refresh_pypi(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let previous_project = parse_pypi_cursor(&previous)?;
     let list_url = format!("{}/simple/", endpoint.as_str().trim_end_matches('/'));
     let list_bytes = fetch_metadata_with_accept(
@@ -724,15 +738,16 @@ fn refresh_pypi(
             parse_pypi_project_metadata(&bytes, &project.name, PYPI_VERSIONS_PER_PROJECT)
                 .map_err(DiscoveryStoreError::from)?;
         metadata_truncated |= metadata.is_truncated;
-        let event_serial = project.serial.map(|serial| format!("{serial:020}"));
         facts.extend(metadata.releases.into_iter().map(|mut release| {
-            if event_serial.is_none() {
-                // PEP 691 does not define a source event serial. In that case
-                // the observation time orders repeated facts locally, while
-                // `source_event_time` remains genuinely unknown.
-                release.source_event_time = None;
-            }
-            discovery_fact(source, release, observed_at, event_serial.clone())
+            // PEP 691 project serials do not establish release order. Keep
+            // the release's own source timestamp separately when present.
+            discovery_fact(
+                source,
+                release,
+                observed_at,
+                None,
+                DiscoverySourceEvent::Unordered,
+            )
         }));
         if facts.len() > MAX_DISCOVERY_PAGE_ITEMS {
             return Err(DiscoveryStoreError::Bounds);
@@ -787,7 +802,7 @@ fn refresh_maven(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let rows = MAVEN_SEARCH_PAGE_SIZE.min(MAX_DISCOVERY_PAGE_ITEMS);
     // Maven Central's timestamp-sorted offset view is mutable: inserting or
     // updating a document can shift every later offset without changing the
@@ -806,7 +821,15 @@ fn refresh_maven(
     let facts = page
         .releases
         .into_iter()
-        .map(|release| discovery_fact(source, release, observed_at, None))
+        .map(|release| {
+            discovery_fact(
+                source,
+                release,
+                observed_at,
+                None,
+                DiscoverySourceEvent::Unordered,
+            )
+        })
         .collect::<Vec<_>>();
     let next_cursor = next_maven_window_cursor(&previous)?;
     let batch = DiscoveryBatch {
@@ -833,7 +856,7 @@ fn refresh_go_modules(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let since =
         std::str::from_utf8(previous.as_bytes()).map_err(|_| DiscoveryStoreError::Corrupt)?;
     let limit = GO_INDEX_PAGE_SIZE
@@ -851,7 +874,15 @@ fn refresh_go_modules(
     let facts = page
         .releases
         .into_iter()
-        .map(|release| discovery_fact(source, release, observed_at, None))
+        .map(|release| {
+            discovery_fact(
+                source,
+                release,
+                observed_at,
+                None,
+                DiscoverySourceEvent::Unordered,
+            )
+        })
         .collect::<Vec<_>>();
     let caught_up = facts.len() < limit;
     let batch = DiscoveryBatch {
@@ -876,7 +907,7 @@ fn refresh_conan_center(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let (previous_generation, previous_sha, previous_offset) = parse_conan_cursor(&previous)?;
     let tree_url = format!(
         "{}/git/trees/master?recursive=1",
@@ -944,11 +975,15 @@ fn refresh_conan_center(
         let releases =
             parse_conan_recipe_versions(&decoded, &recipe.name, MAX_DISCOVERY_PAGE_ITEMS)
                 .map_err(DiscoveryStoreError::from)?;
-        facts.extend(
-            releases
-                .into_iter()
-                .map(|release| discovery_fact(source, release, observed_at, None)),
-        );
+        facts.extend(releases.into_iter().map(|release| {
+            discovery_fact(
+                source,
+                release,
+                observed_at,
+                None,
+                DiscoverySourceEvent::Unordered,
+            )
+        }));
         if facts.len() > MAX_DISCOVERY_PAGE_ITEMS {
             return Err(DiscoveryStoreError::Bounds);
         }
@@ -981,12 +1016,14 @@ fn discovery_fact(
     release: DiscoveryReleaseObservation,
     observed_at: DiscoveryObservedAt,
     source_event_override: Option<String>,
+    source_event: DiscoverySourceEvent,
 ) -> DiscoveryFact {
     DiscoveryFact {
         source,
         coordinate: release.coordinate,
         standing: release.standing,
         observed_at,
+        source_event,
         source_event_time: source_event_override.or(release.source_event_time),
         proof: release.proof,
         metadata: release.metadata,
@@ -1133,7 +1170,7 @@ fn refresh_nuget(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
-    let source = DiscoverySourceIdentity::from_endpoint(endpoint);
+    let source = discovery_source_identity(endpoint);
     let index = fetch_metadata(endpoint.as_str(), 16 * 1024 * 1024, deadline, cancelled)?;
     let plan = parse_nuget_catalog_index(&index, endpoint.as_str(), &previous, max_pages)
         .map_err(DiscoveryStoreError::from)?;
@@ -1166,9 +1203,8 @@ fn refresh_nuget(
         }
     }
     events.sort_by(|left, right| {
-        left.commit_timestamp
-            .cmp(&right.commit_timestamp)
-            .then_with(|| left.commit_id.cmp(&right.commit_id))
+        left.timestamp
+            .cmp(&right.timestamp)
             .then_with(|| left.coordinate.cmp(&right.coordinate))
     });
     let observed_at = DiscoveryObservedAt::from_unix_millis(discovery_now());
@@ -1179,7 +1215,11 @@ fn refresh_nuget(
             coordinate: event.coordinate,
             standing: event.standing,
             observed_at,
-            source_event_time: Some(format!("{}|{}", event.commit_timestamp, event.commit_id)),
+            source_event: DiscoverySourceEvent::NugetCatalog {
+                timestamp: event.timestamp,
+                commit_id: event.commit_id,
+            },
+            source_event_time: Some(event.commit_timestamp),
             proof: event.proof,
             metadata: event.metadata,
         })
@@ -1468,26 +1508,21 @@ impl DiscoveryStore {
             return Err(DiscoveryStoreError::Corrupt);
         }
         batch.admit()?;
+        let input_fingerprint = batch_fingerprint(&batch)?;
+        if self
+            .sources
+            .get(&batch.source)
+            .is_some_and(|state| state.last_batch_fingerprint == Some(input_fingerprint))
+        {
+            return Ok(DiscoveryCommit::AlreadyCommitted);
+        }
         let current = self
             .sources
             .get(&batch.source)
             .map_or_else(DiscoveryCursor::default, |state| state.cursor.clone());
         if current != batch.previous_cursor {
-            if current == batch.next_cursor && self.is_replay_of_committed_batch(&batch)? {
-                return Ok(DiscoveryCommit::AlreadyCommitted);
-            }
             return Err(DiscoveryStoreError::Conflict);
         }
-        if batch.source.ecosystem() == backend_engine::RegistryEcosystem::Nuget
-            && (batch.next_cursor.as_bytes() < batch.previous_cursor.as_bytes()
-                || batch.source_high_watermark.as_bytes() < batch.previous_cursor.as_bytes()
-                || self.sources.get(&batch.source).is_some_and(|state| {
-                    batch.source_high_watermark.as_bytes() < state.source_high_watermark.as_bytes()
-                }))
-        {
-            return Err(DiscoveryStoreError::Conflict);
-        }
-        let input_fingerprint = batch_fingerprint(&batch)?;
         let materialized = self.materialize_package_retractions(&batch)?;
         let new_documents = self.validate_fact_transition(&materialized)?;
         let next_search_revision = self
@@ -1500,10 +1535,19 @@ impl DiscoveryStore {
             .ok_or(DiscoveryStoreError::Bounds)?;
         let previous_search_revision = self.search_revision;
 
-        let encoded = serde_json::to_vec(&JournalTransaction {
-            version: JOURNAL_VERSION,
-            batch: batch.clone(),
-        })
+        let batch_encoded_len = batch.encoded_len_bounded()?;
+        let transaction_capacity = batch_encoded_len
+            .checked_add(64)
+            .filter(|capacity| *capacity <= MAX_FRAME_BYTES)
+            .ok_or(DiscoveryStoreError::Bounds)?;
+        let mut encoded = Vec::with_capacity(transaction_capacity);
+        serde_json::to_writer(
+            &mut encoded,
+            &JournalWriteTransaction {
+                version: JOURNAL_VERSION,
+                batch: &batch,
+            },
+        )
         .map_err(|_| DiscoveryStoreError::Decode)?;
         if encoded.len() > MAX_FRAME_BYTES {
             return Err(DiscoveryStoreError::Bounds);
@@ -1692,15 +1736,6 @@ impl DiscoveryStore {
         if batch.previous_cursor != expected {
             return Err(DiscoveryStoreError::Corrupt);
         }
-        if batch.source.ecosystem() == backend_engine::RegistryEcosystem::Nuget
-            && (batch.next_cursor.as_bytes() < batch.previous_cursor.as_bytes()
-                || batch.source_high_watermark.as_bytes() < batch.previous_cursor.as_bytes()
-                || self.sources.get(&batch.source).is_some_and(|state| {
-                    batch.source_high_watermark.as_bytes() < state.source_high_watermark.as_bytes()
-                }))
-        {
-            return Err(DiscoveryStoreError::Corrupt);
-        }
         let input_fingerprint = batch_fingerprint(&batch)?;
         let materialized = self.materialize_package_retractions(&batch)?;
         let new_documents = self.validate_fact_transition(&materialized)?;
@@ -1791,6 +1826,7 @@ impl DiscoveryStore {
                 withdrawn.standing = DiscoveryStanding::Withdrawn;
                 withdrawn.observed_at = batch.observed_at;
                 withdrawn.source_event_time = Some(retraction.source_event_time.clone());
+                withdrawn.source_event = retraction.source_event.clone();
                 withdrawn.proof = retraction.proof;
                 materialized.facts.push(withdrawn);
             }
@@ -1815,16 +1851,6 @@ impl DiscoveryStore {
                 self.search_changes.pop_front();
             }
         }
-    }
-
-    fn is_replay_of_committed_batch(
-        &self,
-        batch: &DiscoveryBatch,
-    ) -> Result<bool, DiscoveryStoreError> {
-        let Some(state) = self.sources.get(&batch.source) else {
-            return Ok(false);
-        };
-        Ok(state.last_batch_fingerprint == Some(batch_fingerprint(batch)?))
     }
 
     fn validate_fact_transition(
@@ -1878,31 +1904,65 @@ struct JournalTransaction {
     batch: DiscoveryBatch,
 }
 
+#[derive(Serialize)]
+struct JournalWriteTransaction<'a> {
+    version: u16,
+    batch: &'a DiscoveryBatch,
+}
+
 fn is_newer(
     previous: &DiscoveryFact,
     incoming: &DiscoveryFact,
 ) -> Result<bool, DiscoveryStoreError> {
-    match (
-        previous.source_event_time.as_deref(),
-        incoming.source_event_time.as_deref(),
-    ) {
-        (Some(old), Some(new)) if old == new => {
-            if previous.proof != incoming.proof || previous.standing != incoming.standing {
-                return Err(DiscoveryStoreError::Conflict);
+    let same_content = || {
+        previous.source == incoming.source
+            && previous.coordinate == incoming.coordinate
+            && previous.standing == incoming.standing
+            && previous.source_event == incoming.source_event
+            && previous.source_event_time == incoming.source_event_time
+            && previous.proof == incoming.proof
+            && previous.metadata == incoming.metadata
+    };
+    match (&previous.source_event, &incoming.source_event) {
+        (DiscoverySourceEvent::Unordered, DiscoverySourceEvent::Unordered) => Ok(true),
+        (
+            DiscoverySourceEvent::NugetCatalog {
+                timestamp: old_timestamp,
+                commit_id: old_commit,
+            },
+            DiscoverySourceEvent::NugetCatalog {
+                timestamp: new_timestamp,
+                commit_id: new_commit,
+            },
+        ) => {
+            if old_commit == new_commit {
+                if old_timestamp != new_timestamp || !same_content() {
+                    return Err(DiscoveryStoreError::Conflict);
+                }
+                return Ok(false);
             }
-            Ok(incoming.observed_at > previous.observed_at)
-        }
-        (Some(old), Some(new)) if new > old => Ok(true),
-        (Some(old), Some(new)) if new < old => Ok(false),
-        (Some(_), Some(_)) => {
-            if previous.standing != incoming.standing || previous.proof != incoming.proof {
-                return Err(DiscoveryStoreError::Conflict);
+            match new_timestamp.cmp(old_timestamp) {
+                std::cmp::Ordering::Greater => Ok(true),
+                std::cmp::Ordering::Less => Ok(false),
+                std::cmp::Ordering::Equal => Err(DiscoveryStoreError::Conflict),
             }
-            Ok(incoming.observed_at > previous.observed_at)
         }
-        (None, Some(_)) => Ok(true),
-        (Some(_), None) => Ok(false),
-        (None, None) => Ok(incoming.observed_at > previous.observed_at),
+        (
+            DiscoverySourceEvent::NpmChange {
+                sequence: old_sequence,
+                ..
+            },
+            DiscoverySourceEvent::NpmChange {
+                sequence: new_sequence,
+                ..
+            },
+        ) => match new_sequence.cmp(old_sequence) {
+            std::cmp::Ordering::Greater => Ok(true),
+            std::cmp::Ordering::Less => Ok(false),
+            std::cmp::Ordering::Equal if same_content() => Ok(false),
+            std::cmp::Ordering::Equal => Err(DiscoveryStoreError::Conflict),
+        },
+        _ => Err(DiscoveryStoreError::Conflict),
     }
 }
 
@@ -1925,11 +1985,24 @@ fn frame_checksum(payload: &[u8]) -> [u8; 32] {
 }
 
 fn batch_fingerprint(batch: &DiscoveryBatch) -> Result<[u8; 32], DiscoveryStoreError> {
-    let payload = serde_json::to_vec(batch).map_err(|_| DiscoveryStoreError::Decode)?;
     let mut hasher = backend_engine::blake3::Hasher::new();
     hasher.update(b"backend.registry.discovery.batch.v1\0");
-    hasher.update(&payload);
+    serde_json::to_writer(&mut Blake3Writer(&mut hasher), batch)
+        .map_err(|_| DiscoveryStoreError::Decode)?;
     Ok(*hasher.finalize().as_bytes())
+}
+
+struct Blake3Writer<'a>(&'a mut backend_engine::blake3::Hasher);
+
+impl Write for Blake3Writer<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1954,7 +2027,7 @@ mod tests {
             "https://api.nuget.org/v3/index.json",
         )
         .expect("admitted source");
-        DiscoverySourceIdentity::from_endpoint(&endpoint)
+        discovery_source_identity(&endpoint)
     }
 
     fn batch(
@@ -1982,6 +2055,11 @@ mod tests {
                 .expect("coordinate"),
                 standing: status,
                 observed_at: observed,
+                source_event: DiscoverySourceEvent::NugetCatalog {
+                    timestamp: DiscoveryTimestamp::parse_rfc3339(event_time)
+                        .expect("NuGet event timestamp"),
+                    commit_id: format!("test-{event_time}"),
+                },
                 source_event_time: Some(event_time.to_owned()),
                 proof: [u8::from(status as u8); 32],
                 metadata: DiscoveryMetadata::default(),

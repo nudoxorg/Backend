@@ -12,9 +12,9 @@ use backend_engine::{ForgeCoordinate, ProductPackageCoordinate, registry};
 use registry::{
     CARGO_SPARSE_INDEX, CONAN_CENTER, DiscoveryAdvisory, DiscoveryBatch, DiscoveryCompleteness,
     DiscoveryCursor, DiscoveryFacet, DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt,
-    DiscoveryPackageRetraction, DiscoverySourceIdentity, DiscoveryStanding, GO_MODULE_PROXY,
-    MAVEN_CENTRAL, MAX_DISCOVERY_PAGE_ITEMS, NPM_REGISTRY, NUGET_V3, PYPI_SIMPLE_API,
-    RegistryEcosystem, RegistryEndpoint,
+    DiscoveryPackageRetraction, DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
+    GO_MODULE_PROXY, MAVEN_CENTRAL, MAX_DISCOVERY_PAGE_ITEMS, NPM_REGISTRY, NUGET_V3,
+    PYPI_SIMPLE_API, RegistryEcosystem, RegistryEndpoint,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -550,7 +550,12 @@ impl BenchmarkIndex {
                 facts: Vec::new(),
                 package_retractions: vec![DiscoveryPackageRetraction {
                     package_name: package_name.clone(),
-                    source_event_time: format!("benchmark-retraction-{:016}", self.update_sequence),
+                    source_event_time: format!("{:020}", self.update_sequence),
+                    source_event: DiscoverySourceEvent::NpmChange {
+                        sequence: self.update_sequence,
+                        revision: None,
+                        change_proof: [0xA7; 32],
+                    },
                     proof: [0xA7; 32],
                 }],
             })
@@ -915,7 +920,7 @@ fn parse_document(row: Value) -> Result<BenchmarkDocument, String> {
             )
         })?;
     let endpoint = endpoint(ecosystem)?;
-    let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+    let source = registry::discovery_source_identity(&endpoint);
     Ok(BenchmarkDocument {
         row,
         source: Some(DiscoverySearchSource::Registry(source)),
@@ -1032,6 +1037,7 @@ fn fact_from_row(
         coordinate,
         standing,
         observed_at: DiscoveryObservedAt::from_unix_millis(SNAPSHOT_OBSERVED_AT_MS),
+        source_event: DiscoverySourceEvent::Unordered,
         source_event_time: None,
         proof,
         metadata,
