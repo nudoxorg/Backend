@@ -1,0 +1,66 @@
+--- a/crates/library/package_graph/index/benchmark.rs
++++ b/crates/library/package_graph/index/benchmark.rs
+@@ -37,6 +37,10 @@
+         Ok(Self::from_checked(checked))
+     }
+ 
++    fn facts(&self) -> &[PackageDependencySourceFacts] {
++        self.checked.facts()
++    }
++
+     fn copied_lookup_text_bytes(&self) -> usize {
+         let source_key_bytes = self
+             .index
+@@ -455,7 +459,7 @@
+                         "one first query call on a newly constructed candidate; candidate build and result cardinality barrier are outside elapsed interval; process caches are not claimed cold"
+                     }
+                     ("build_from_checked_snapshot", false) => {
+-                        "index construction from prechecked immutable facts"
++                        "index construction from a prechecked immutable snapshot; the per-trial snapshot clone is outside the elapsed interval"
+                     }
+                     ("borrowed_admission_plus_build", false) => {
+                         "borrowed admission, checked-fact construction, and index build"
+@@ -609,8 +613,9 @@
+     let mut samples = Vec::new();
+     for trial in 0..BUILD_TRIALS {
+         if trial % 2 == 0 {
++            let checked_snapshot = checked.clone();
+             let start = Instant::now();
+-            let graph = MapCandidate::from_checked(checked.clone());
++            let graph = MapCandidate::from_checked(checked_snapshot);
+             let elapsed_ns = start.elapsed().as_nanos();
+             retain_verified_witness(&graph, expected_witness);
+             samples.push(TimingSample {
+@@ -623,8 +628,9 @@
+             });
+             drop(graph);
+ 
++            let checked_snapshot = checked.clone();
+             let start = Instant::now();
+-            let graph = FlatCheckedGraph::from_checked(checked.clone()).expect("flat build");
++            let graph = FlatCheckedGraph::from_checked(checked_snapshot).expect("flat build");
+             let elapsed_ns = start.elapsed().as_nanos();
+             retain_verified_witness(&graph, expected_witness);
+             samples.push(TimingSample {
+@@ -637,8 +643,9 @@
+             });
+             drop(graph);
+         } else {
++            let checked_snapshot = checked.clone();
+             let start = Instant::now();
+-            let graph = FlatCheckedGraph::from_checked(checked.clone()).expect("flat build");
++            let graph = FlatCheckedGraph::from_checked(checked_snapshot).expect("flat build");
+             let elapsed_ns = start.elapsed().as_nanos();
+             retain_verified_witness(&graph, expected_witness);
+             samples.push(TimingSample {
+@@ -651,8 +658,9 @@
+             });
+             drop(graph);
+ 
++            let checked_snapshot = checked.clone();
+             let start = Instant::now();
+-            let graph = MapCandidate::from_checked(checked.clone());
++            let graph = MapCandidate::from_checked(checked_snapshot);
+             let elapsed_ns = start.elapsed().as_nanos();
+             retain_verified_witness(&graph, expected_witness);
+             samples.push(TimingSample {
