@@ -28,7 +28,12 @@ pub enum PublicationBudgetKind {
     /// Caller recovery deadline, or the initial ordinary admission window.
     Ordinary,
     /// Authenticated descriptor fixed the complete reset's larger allowance.
-    AuthenticatedReset { rows: u64, pages: u64 },
+    AuthenticatedReset {
+        /// Maximum event rows authorized by the reset descriptor.
+        rows: u64,
+        /// Maximum pages authorized by the reset descriptor.
+        pages: u64,
+    },
 }
 
 /// Fixed timing context exposed to the short observation callback.

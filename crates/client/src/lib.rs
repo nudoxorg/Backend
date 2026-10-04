@@ -48,7 +48,7 @@ use backend_library::{
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
     GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
     IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexOperationKey,
-    IndexOperationObservation, IndexProgressPage, IndexStartResult, NameQuery, OutlineQuery,
+    IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery,
     PackageReference, PageContinuation, PageRequest, PageTerminal, Query, QueryLimit,
     ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
     SemanticLanguageProfile, SemanticShapeBatch, SemanticShapeBudget, SemanticShapeRequest,
@@ -1612,7 +1612,7 @@ fn configure(stream: &backend_replication::LocalStream) -> Result<(), ClientErro
     configure_timeout(stream, CLIENT_REQUEST_TIMEOUT)
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(all(test, any(unix, windows)))]
 fn configure_request(
     stream: &backend_replication::LocalStream,
     request: &CommandDto,

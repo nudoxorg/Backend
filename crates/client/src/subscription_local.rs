@@ -13,7 +13,7 @@ use crate::reset_hydration::{ResetHydration, ResetHydrationError, ResetPageProgr
 use crate::subscription::{subscription_read_from_bytes, subscription_read_from_bytes_against};
 #[cfg(any(unix, windows))]
 use crate::{
-    CertifiedSubscriptionTransport, ClientError, MAX_EVENTS, MAX_FRAME, SubscriptionRequest,
+    CertifiedSubscriptionTransport, ClientError, MAX_FRAME, SubscriptionRequest,
     SubscriptionTransport,
 };
 #[cfg(any(unix, windows))]

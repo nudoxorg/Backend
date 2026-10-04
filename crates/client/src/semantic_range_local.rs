@@ -4,8 +4,10 @@ use crate::{ClientError, MAX_FRAME};
 use backend_engine::cluster_transport::{
     Endpoint, EndpointAddr, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
     RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey, TransportError,
-    accept_remote_index, bind_direct, connect_remote_index, remote_index_now,
+    bind_direct, connect_remote_index, remote_index_now,
 };
+#[cfg(test)]
+use backend_engine::cluster_transport::accept_remote_index;
 use backend_replication::{
     AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore,
     HydrationCredits, IrHydrationCursor, IrHydrationError, IrHydrationPoll, IrHydrationRequest,
@@ -790,7 +792,7 @@ impl LocalSemanticRangeTransport {
 
         let mut transferred_bytes = 0_u64;
         let mut page_requests = 0_usize;
-        let mut resume = store
+        let resume = store
             .resume_semantic_image_transfer(&snapshot.target, image)
             .map_err(ClientError::Io)?;
         // A fresh owner page binds the content identity before even a complete
@@ -874,24 +876,17 @@ impl LocalSemanticRangeTransport {
             store
                 .discard_semantic_image_transfer(&snapshot.target, image)
                 .map_err(ClientError::Io)?;
-            resume = None;
         }
-        resume = Some(
-            store
-                .stage_semantic_image_page(
-                    &snapshot.target,
-                    image,
-                    chunk.image_identity,
-                    chunk.total_length,
-                    chunk.byte_range,
-                    &chunk.payload,
-                )
-                .map_err(ClientError::Io)?,
-        );
-
-        let mut resume = resume.ok_or_else(|| {
-            ClientError::Protocol("semantic-image first page did not create a stage".to_owned())
-        })?;
+        let mut resume = store
+            .stage_semantic_image_page(
+                &snapshot.target,
+                image,
+                chunk.image_identity,
+                chunk.total_length,
+                chunk.byte_range,
+                &chunk.payload,
+            )
+            .map_err(ClientError::Io)?;
         if resume.image() != image
             || resume.total_length() == 0
             || resume.total_length() > MAX_SEMANTIC_IMAGE_BYTES
@@ -992,7 +987,7 @@ impl LocalSemanticRangeTransport {
     /// network request and before acknowledging complete segment coverage.
     pub fn request_and_accept<A, C>(
         &mut self,
-        target: backend_replication::SemanticTargetKey,
+        target: SemanticTargetKey,
         cursor: &mut IrHydrationCursor<'_, '_>,
         source: &mut A,
         request: &IrHydrationRequest,

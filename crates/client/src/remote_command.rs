@@ -9,7 +9,7 @@ use backend_engine::cluster_transport::{
     remote_index_now,
 };
 use backend_engine::{
-    ProducerObservationClaims, ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation,
+    ProducerObservationClaims, ProducerObservationVerifier, UntrustedProducerObservation,
 };
 use backend_library::{
     Command, CommandDto, CommandReply, ReplyDto, RevisionReceipt, encode_command_body,
@@ -500,6 +500,7 @@ impl RemoteIndexCommandTransport {
         }
     }
 
+    #[cfg(test)]
     fn reconnect(&mut self) -> Result<(), ClientError> {
         self.active = None;
         self.open_session_until(Instant::now() + crate::CLIENT_REQUEST_TIMEOUT)
@@ -517,6 +518,7 @@ fn validate_revision_root(expected: [u8; 32], observed: [u8; 32]) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backend_engine::ScopeRoot;
     use backend_engine::cluster_transport::{
         RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexPermission,
         RemoteIndexProductScope, RemoteIndexQueryOperation, RemoteIndexResponse,
