@@ -808,6 +808,18 @@ fn cargo_projection_uses_only_workspace_members() -> Outcome {
     Ok(())
 }
 
+/// A capture of `program` with no arguments in the inherited environment.
+#[cfg(unix)]
+fn program_command(program: PathBuf) -> backend_platform::child_output::CaptureCommand {
+    backend_platform::child_output::CaptureCommand {
+        program: program.into_os_string(),
+        args: Vec::new(),
+        cwd: None,
+        environment: backend_platform::child_output::CaptureEnvironment::Inherit,
+        overrides: Vec::new(),
+    }
+}
+
 #[cfg(unix)]
 fn fake_cargo(scratch: &Scratch, body: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -823,7 +835,7 @@ fn cargo_output_returns_at_normal_eof_with_exact_budget() -> Outcome {
     let scratch = workspace_fixture("normal-eof")?;
     let program = fake_cargo(&scratch, "printf 'ok'")?;
     let bytes = bounded_output(
-        std::process::Command::new(program),
+        &program_command(program),
         Duration::from_secs(1),
         2,
     )
@@ -839,7 +851,7 @@ fn unrepresentable_cargo_timeout_never_starts_a_child() -> Outcome {
     let marker = scratch.0.join("started");
     let program = fake_cargo(&scratch, &format!("printf started > '{}'", marker.display()))?;
     let result = bounded_output(
-        std::process::Command::new(program),
+        &program_command(program),
         Duration::MAX,
         64,
     );
@@ -862,7 +874,7 @@ fn cargo_exit_with_inherited_stdout_retires_descendant_at_deadline() -> Outcome 
     )?;
     let started = Instant::now();
     let result = bounded_output(
-        std::process::Command::new(program),
+        &program_command(program),
         Duration::from_millis(200),
         64,
     );

@@ -1,0 +1,86 @@
+{
+  "created_utc": "2026-10-04T12:39:14.641360+00:00",
+  "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z",
+  "main": {
+    "label": "integration",
+    "branch": "codex/checkpoint-integration-20261004T123914Z",
+    "commit": "2769830290b23d562cc18bbfbf476ac4e11f42d8",
+    "tree": "41290ceae38f2e185a38ad51140374272478fe05",
+    "source_tree": "a7affdb27ff789fa6e277bc3a1da3814be2ec25f",
+    "changed_paths": 277,
+    "preserved_index_blobs": 65,
+    "original_state_unchanged": true,
+    "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/integration"
+  },
+  "slices": [
+    {
+      "label": "typed-library",
+      "branch": "codex/checkpoint-typed-library-20261004T123914Z",
+      "commit": "869c9b6d2ca69294742920d205304bc6c1846588",
+      "tree": "dbb2abc4cd89985a59f9c555422d051aa326c8cf",
+      "source_tree": "fce0769975e3ff4e4bc80b25fd4272d2883337b8",
+      "changed_paths": 4,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/typed-library"
+    },
+    {
+      "label": "typed-turso",
+      "branch": "codex/checkpoint-typed-turso-20261004T123914Z",
+      "commit": "464a3449d790781690abaf089ba1f239cd3319f1",
+      "tree": "b52b892261b597236b659b97e2ec6ac2bf6f557c",
+      "source_tree": "7c594d2640b150d72a48b78845d5e8ab77256375",
+      "changed_paths": 4,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/typed-turso"
+    },
+    {
+      "label": "flat-graph",
+      "branch": "codex/checkpoint-flat-graph-20261004T123914Z",
+      "commit": "8d2291ee161cd29364113797deb0e7dfb007e06e",
+      "tree": "76a5ad80d0061698ec7fe66d595c8b5986eb4c1e",
+      "source_tree": "c6dfc17d9a04bc4fb2adde896e51eee6b50327d5",
+      "changed_paths": 4,
+      "preserved_index_blobs": 2,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/flat-graph"
+    },
+    {
+      "label": "flat-typed",
+      "branch": "codex/checkpoint-flat-typed-20261004T123914Z",
+      "commit": "0c9c1af557d1160d937b5c130383772ea11f9930",
+      "tree": "3a575f34c2e209b8e203f92e646b818613542cf9",
+      "source_tree": "827fd39d13fee2433ccfde53dba140b1f7f32738",
+      "changed_paths": 6,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/flat-typed"
+    },
+    {
+      "label": "shelf-layout",
+      "branch": "codex/checkpoint-shelf-layout-20261004T123914Z",
+      "commit": "07c735cd6aade3942c7042299cf43cbaf2d7c4da",
+      "tree": "fe8e2e9b735b1bf13ece131e41b077455944201b",
+      "source_tree": "2b8b8de2e5cd56dfda9786fb453b80c68bc4e668",
+      "changed_paths": 8,
+      "preserved_index_blobs": 8,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/shelf-layout"
+    },
+    {
+      "label": "stage-lease",
+      "branch": "codex/checkpoint-stage-lease-20261004T123914Z",
+      "commit": "8fdf3108819acba9828c5c5955e4ff36275d5a88",
+      "tree": "90a689cf0ccc75ce486f6b7f8b8052de574a1c6f",
+      "source_tree": "637ce6ec292e466e45c497caa4aa57fc1285d70d",
+      "changed_paths": 6,
+      "preserved_index_blobs": 6,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/stage-lease"
+    }
+  ],
+  "push_status": "PUSHED_AND_INDEPENDENTLY_VERIFIED",
+  "canonical_unchanged": true,
+  "push_verification": "/private/tmp/nudox-user-checkpoint-20261004T123914Z/push-verification.json"
+}

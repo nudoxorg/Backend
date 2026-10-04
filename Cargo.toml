@@ -11,6 +11,7 @@ members = [
     "tools/*",
     "vendor/gpui-ce",
     "vendor/gpui_ce_components",
+    "vendor/gpui_ce_wgpu",
 ]
 exclude = [
     ".config/dylint",
@@ -45,7 +46,7 @@ futures-util = { version = "0.3.31", default-features = false, features = ["allo
 ignore = "0.4.33"
 libc = { version = "0.2.189", default-features = false }
 # Keep the entire CE family on one published GPUI type universe. Cargo.lock
-# records registry checksums for each of these exact versions.
+# pins these exact versions; local path patches have no registry checksum.
 gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }
 gpui_platform = { package = "gpui_ce_platform", version = "=0.1.0", default-features = false }
 gpui_component = { package = "gpui_ce_components", version = "=0.2.0" }
@@ -178,6 +179,11 @@ gpui_ce_components = { path = "vendor/gpui_ce_components" }
 gpui-ce = { path = "vendor/gpui-ce" }
 gpui_ce_components_base = { path = "vendor/gpui_ce_components_base" }
 gpui_ce_macos = { path = "vendor/gpui_ce_macos" }
+# Windows headless rendering: the wgpu renderer the Windows window uses gains an
+# offscreen target with readback, and the platform crate hands it out from
+# `current_headless_renderer` (vendor/gpui-ce/NUDOX-PATCHES.md).
+gpui_ce_platform = { path = "vendor/gpui_ce_platform" }
+gpui_ce_wgpu = { path = "vendor/gpui_ce_wgpu" }
 # The headless test scheduler took its two locks in opposite orders in
 # `block` and `schedule_local`: a journey hung for good when an engine
 # thread woke a local task (vendor/gpui_ce_scheduler/src/test_scheduler.rs).

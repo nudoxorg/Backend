@@ -152,6 +152,9 @@ pub struct ProcessConfig {
     /// Source-only package catalog discovery, backed by the official public
     /// feed for each ecosystem unless explicit discovery sources are set.
     pub discovery: RegistryDiscoveryConfig,
+    /// Aggregate admission policy for resident dependency facts and their index.
+    /// These bound counts and copied key payloads, not total process RSS.
+    pub package_graph_limits: backend_library::PackageGraphIndexLimits,
     /// Compiler paths an embedding host supplies itself. Each one stands in
     /// for the process variable of the same name; every other variable is
     /// still read from the process. [`Self::parse`] leaves it empty, so a
@@ -882,6 +885,57 @@ fn registry_max_archive_bytes() -> usize {
         .clamp(1, REGISTRY_MAX_ARCHIVE_CEILING_BYTES)
 }
 
+/// Uses the existing product source-admission slab size for each graph input
+/// pool. Operators can scale the independent ceilings for a vertical index;
+/// embedded clients need no additional configuration. Fact content and lookup
+/// text have independent logical byte ceilings; allocator slack, heap node
+/// overhead, and unrelated resident data are excluded.
+pub(crate) fn default_package_graph_limits() -> backend_library::PackageGraphIndexLimits {
+    let bytes = crate::builtin::MAX_REBUILD_BYTES;
+    let rows = bytes / std::mem::size_of::<backend_library::PackageDependencyRecord>();
+    backend_library::PackageGraphIndexLimits {
+        max_sources: bytes / std::mem::size_of::<backend_library::PackageDependencySourceFacts>(),
+        max_total_rows: rows,
+        max_reverse_edges: rows,
+        max_index_key_bytes: bytes,
+        max_fact_bytes: bytes,
+    }
+}
+
+fn package_graph_limits_from_environment()
+-> Result<backend_library::PackageGraphIndexLimits, ProcessError> {
+    let limit = |name, fallback| package_graph_limit(name, std::env::var(name), fallback);
+    let defaults = default_package_graph_limits();
+    Ok(backend_library::PackageGraphIndexLimits {
+        max_sources: limit("NUDOX_GRAPH_MAX_SOURCES", defaults.max_sources)?,
+        max_total_rows: limit("NUDOX_GRAPH_MAX_ROWS", defaults.max_total_rows)?,
+        max_reverse_edges: limit("NUDOX_GRAPH_MAX_REVERSE_EDGES", defaults.max_reverse_edges)?,
+        max_index_key_bytes: limit("NUDOX_GRAPH_MAX_KEY_BYTES", defaults.max_index_key_bytes)?,
+        max_fact_bytes: limit("NUDOX_GRAPH_MAX_FACT_BYTES", defaults.max_fact_bytes)?,
+    })
+}
+
+fn package_graph_limit(
+    name: &str,
+    value: Result<String, std::env::VarError>,
+    fallback: usize,
+) -> Result<usize, ProcessError> {
+    let raw = match value {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(fallback),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(ProcessError::Usage(format!(
+                "{name} must be a positive integer"
+            )));
+        }
+    };
+    raw.trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| ProcessError::Usage(format!("{name} must be a positive integer")))
+}
+
 impl ProcessConfig {
     /// Applies preferences read by a desktop before it starts its embedded
     /// service. Existing operator-level offline settings remain restrictive;
@@ -1059,6 +1113,7 @@ impl ProcessConfig {
             advisory,
             forge,
             discovery,
+            package_graph_limits: package_graph_limits_from_environment()?,
             compiler_environment: Vec::new(),
         })
     }
@@ -1464,6 +1519,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn graph_admission_configuration_rejects_invalid_limits_without_environment_mutation() {
+        const NAME: &str = "NUDOX_GRAPH_MAX_ROWS";
+        assert_eq!(
+            package_graph_limit(NAME, Err(std::env::VarError::NotPresent), 17)
+                .expect("absent limit retains the embedding policy"),
+            17
+        );
+        assert_eq!(
+            package_graph_limit(NAME, Ok(" 42 ".to_owned()), 17)
+                .expect("operator can raise the limit"),
+            42
+        );
+        for value in ["", "0", "-1", "1.5", "unlimited"] {
+            assert!(matches!(
+                package_graph_limit(NAME, Ok(value.to_owned()), 17),
+                Err(ProcessError::Usage(message)) if message.contains(NAME)
+            ));
+        }
+        let overflow = format!("{}0", usize::MAX);
+        assert!(matches!(
+            package_graph_limit(NAME, Ok(overflow), 17),
+            Err(ProcessError::Usage(_))
+        ));
+        assert!(matches!(
+            package_graph_limit(
+                NAME,
+                Err(std::env::VarError::NotUnicode(std::ffi::OsString::from(
+                    "invalid OS value"
+                ))),
+                17
+            ),
+            Err(ProcessError::Usage(_))
+        ));
+    }
+
+    #[test]
     fn configuration_derives_workspace_and_endpoint() {
         let result = ProcessConfig::parse(std::iter::empty());
         assert!(result.is_ok(), "zero-configuration locald: {result:?}");
@@ -1569,10 +1660,11 @@ mod tests {
 
     #[test]
     fn forge_policy_limits_and_provider_credentials_are_process_local() {
+        // Not the thread name: it is the test's path, and `::` is not a valid
+        // file name on Windows.
         let token_path = std::env::temp_dir().join(format!(
-            "backend-locald-forge-auth-{}-{}.token",
+            "backend-locald-forge-auth-{}-process-local.token",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
         ));
         fs::write(&token_path, "forge-secret\n").expect("write scoped forge credential");
         let parsed = ProcessConfig::parse([

@@ -860,10 +860,15 @@ impl Shell {
             self.ask_results_mounted = false;
             if wants_ask {
                 if self.ask_return.is_none() {
-                    self.ask_return = Some(self.capture_transient_return(snapshot.session().covered_overlay(), window, cx));
+                    let mut saved = self.capture_transient_return(snapshot.session().covered_overlay(), window, cx);
+                    // A component query can own native focus while the Shell's
+                    // last zone still belongs to the Shelf that opened Find.
+                    // Its mounted proof, rather than that zone's target list,
+                    // owns the return just as it does for an Add cover.
+                    saved.find_query = self.reader.update(cx, |reader, cx|
+                        reader.begin_mounted_find_focus_return(saved.focus.clone(), cx));
+                    self.ask_return = Some(saved);
                 }
-                let focused = window.focused(cx);
-                self.reader.update(cx, |reader, cx| reader.begin_find_focus_return(focused, cx));
             } else {
                 // Retire the old Ask owner before a newly opened dialog
                 // captures focus; never overwrite that dialog's focus later.
@@ -932,7 +937,7 @@ impl Shell {
             }
             if self.return_identity_current(&saved, cx) {
                 let input_generation = self.transient_generation;
-                if self.reader.update(cx, |reader, _| reader.arm_find_focus_return_after_add(
+                if self.reader.update(cx, |reader, _| reader.arm_find_focus_return_after_cover(
                     saved.focus.as_ref(), input_generation,
                 )) {
                     self.pending_transient_return = None;

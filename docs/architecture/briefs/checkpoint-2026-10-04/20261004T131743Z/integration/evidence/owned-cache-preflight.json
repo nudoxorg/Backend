@@ -1,0 +1,22 @@
+{
+  "artifact_dir": "/private/tmp/nudox-validation-delta-9a896bf-20261004/runtime-preflight-20261004T124848Z",
+  "result": {
+    "completed_utc": "2026-10-04T12:48:50.170205+00:00",
+    "kind": "OWNED_CACHE_PREFLIGHT_NO_COMPILATION",
+    "wrapper_hashes": {
+      "run-cargo-v4.sh": "4bb3d396fd06e24d26063fbeb9a061e4c3ebcff6c7a95d8c825681218df0425a",
+      "execute-stage-v4.sh": "2c26b8fa8b5e94b9ecf853fe4f3b9e0699a64c5876c15668db2e360993f0bcfc",
+      "run-sequence-v4.sh": "b16b19a55a4926c99f1a40ea1c749fd73e1a4b5e60f31c58e6c608affaf8dd01"
+    },
+    "socket": "/tmp/nudox-sccache-1893584017/validation-9a896bf-v1/s.sock",
+    "socket_uid": 1893584017,
+    "private_socket_dir": "/tmp/nudox-sccache-1893584017/validation-9a896bf-v1",
+    "sccache_sha256": "06085ce600d07001ab162307d7df787d83d3ffec17ceec6eace9f218db81c972",
+    "cargo_wrapper_sha256": "4cd4c3787d3ec84aa949705284b9a9a64cbe02c98931eb5bcb495edebca19055",
+    "cache_start_exit": 0,
+    "cache_response_exit": 0,
+    "cache_response_sha256": "06add5d5d3aac7d1054003b10935376e8d1f3abd82f6ae5d97f41b4fa8559943",
+    "old_socket_identity_unchanged": true,
+    "cargo_launched": false
+  }
+}

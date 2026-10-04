@@ -267,7 +267,7 @@ mod tests {
         assert!(pool.submit(ReadJob {
             key: PageKey::Health,
             request: ReadRequest::Health,
-            generation: Generation::new(1),
+            generation: Generation::new(1).expect("nonzero fixture generation"),
             priority: Priority::Normal,
             cancel: CancellationToken::new(),
             affinity: None

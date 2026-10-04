@@ -1,0 +1,12 @@
+{
+  "commit": "d8ce9ce61e040cb0e8f60a243aef92204d48e035",
+  "tree": "9e35a5d2937560e14292979d2259b7778c713c70",
+  "branch": "codex/wire-fixture-repair-20261004T130704Z",
+  "base": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "changed_path": "crates/library/wire/tests.rs",
+  "source_sha256": "696c93bb4b5d264d73561c20bdcad2f1311470a2b43e7dffd4c1997b9750a31e",
+  "repair_patch_sha256": "8b391661e2f0aa3de14bfd86c78728759c9e286e5e09b18a8e1db7ac423805b0",
+  "acceptance": "SOURCE FIX; follow-up Rust execution pending",
+  "artifact_dir": "/private/tmp/nudox-wire-fixture-repair-20261004T130704Z",
+  "main_index_and_merge_preserved": true
+}

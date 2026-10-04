@@ -188,7 +188,7 @@ fn path_from_wire(wire: &NativePathWire) -> Result<PathBuf, NativePathError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NativePath, NativePathWire};
+    use super::{NativePath, NativePathError, NativePathWire};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -219,5 +219,53 @@ mod tests {
                 .as_path(),
             path
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unpaired_surrogates_round_trip_without_loss() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+        // A lone high surrogate is a legal Windows file name but not Unicode.
+        // A raw string: `"C:\nudox-"` would put a newline in the path.
+        let units = r"C:\nudox-"
+            .encode_utf16()
+            .chain([0xD800])
+            .collect::<Vec<u16>>();
+        assert!(
+            !units.contains(&u16::from(b'\n')),
+            "the fixture is a backslash path, not one with a line break"
+        );
+        let path = PathBuf::from(OsString::from_wide(&units));
+        let native = NativePath::from_path(&path).expect("native path");
+        assert!(native.to_str().is_err());
+        let NativePathWire::Windows(wire_units) = native.to_wire().expect("native wire") else {
+            panic!("windows path changed wire family")
+        };
+        assert_eq!(wire_units, units);
+        assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), units);
+        assert_eq!(
+            NativePath::from_wire(&NativePathWire::Windows(wire_units))
+                .expect("wire round trip")
+                .as_path(),
+            path
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_a_wire_recorded_on_unix() {
+        let error = NativePath::from_wire(&NativePathWire::Unix(b"/tmp/nudox".to_vec()))
+            .expect_err("a Unix byte path is not a Windows path");
+        assert!(matches!(error, NativePathError::Platform));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_refuses_a_wire_recorded_on_windows() {
+        let error = NativePath::from_wire(&NativePathWire::Windows(vec![0x43, 0x3a]))
+            .expect_err("UTF-16 units are not a Unix path");
+        assert!(matches!(error, NativePathError::Platform));
     }
 }

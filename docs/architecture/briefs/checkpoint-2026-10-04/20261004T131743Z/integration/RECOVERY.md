@@ -1,0 +1,7 @@
+# Recovery checkpoint
+
+Latest exact unfinished integration source and original merge index, with seven isolated slices linked below, including the GUI work. The test fixture shadowing repair d8ce9ce is also included in the main working source. The 9a library gate ran and stopped at E0618 before executing tests; post-run source verification passed all 9,233 entries and the dependent client gate stayed unrun. The fixture repair has not yet been rerun. Prior platform gate: 70 tests passed. Motion Python harness: 55 tests passed, not native GUI acceptance. Owned cache runtime preflight passed without changing the old socket. New cache gate and coherent stage lease packets are recovery slices pending final review/runtime acceptance. No new deployment or live-ingest database snapshot. Existing real worktree index, HEAD and unfinished merge state are preserved. This commit is a recoverable checkpoint, not a release or a validated canonical integration.
+
+This preserves frozen working source, not an accepted integration or release. No real worktree index, HEAD, branch, or merge state was changed. The default canonical branch was not moved.
+
+`merge-index-stages.nul` and `index-objects/` preserve staged-only content. To reconstruct the index, use a separate checkout and temporary GIT_INDEX_FILE; feed the NUL records to git update-index -z --index-info after git read-tree --empty. Do not overwrite the existing integration index.
