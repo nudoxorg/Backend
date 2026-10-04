@@ -568,7 +568,7 @@ impl Pyrefly {
     /// Runs one bounded `pyrefly check` over one file and returns stdout.
     fn run_check(
         &self,
-        file: &std::path::Path,
+        file: &Path,
         profile: PythonVersion,
         package_root: Option<&Path>,
     ) -> Result<Vec<u8>, CheckerError> {

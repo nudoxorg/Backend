@@ -30,27 +30,40 @@ use ruff_python_parser::{Mode, ParseOptions, Parsed, parse_unchecked};
 use ruff_text_size::Ranged;
 use thiserror::Error;
 
+/// Half-open byte range in the original UTF-8 Python source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
+    /// First byte offset included in the range.
     pub start: u32,
+    /// Exclusive byte offset immediately after the range.
     pub end: u32,
 }
+/// Why an annotation could not be projected as a concrete syntax fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeReason {
     /// The position carried no annotation at all.
-    Unannotated { position: AnnotationPosition },
+    Unannotated {
+        /// Annotation position for which Ruff supplied no annotation.
+        position: AnnotationPosition,
+    },
     /// Ruff proved the expression class but this extractor has no projection for it.
     UnsupportedSyntax {
+        /// Closed Ruff expression category that the extractor does not project.
         kind: AnnotationSyntaxKind,
+        /// Source byte range occupied by the unsupported annotation expression.
         span: Span,
     },
     /// The quoted-annotation recursion guard fired before resolution finished.
     TruncatedAtDepthLimit,
 }
+/// Source location where an annotation was written or expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationPosition {
+    /// Annotation on one function parameter.
     Parameter,
+    /// Annotation on a function return value.
     Return,
+    /// Annotation on a class-body field.
     Field,
     /// A function-body `AnnAssign` whose target is a simple name (`obj: Child =
     /// ...` and `obj: Child` with no value). Not a class-body field and not a
@@ -62,6 +75,7 @@ pub enum AnnotationPosition {
     /// The value expression of a PEP 695 `type` alias statement.
     AliasValue,
 }
+/// Source-preserving projection of a Python annotation expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Annotation {
     /// One name whose extractor-proved source span is retained independently
@@ -75,110 +89,192 @@ pub enum Annotation {
         /// coordinates, so it explicitly carries `None`.
         span: Option<Span>,
     },
+    /// A parameterized annotation with one base expression and ordered arguments.
     Generic {
+        /// The generic type expression being applied.
         base: Box<Annotation>,
+        /// Type arguments written inside the generic brackets, in source order.
         args: Vec<Annotation>,
     },
     /// A bracketed list display inside an annotation, such as the parameter
     /// list of `Callable[[int], str]`.
     List(Vec<Annotation>),
+    /// Decoded contents of a quoted annotation literal.
     StringLiteral(String),
+    /// Annotation alternatives written with the union operator, in source order.
     Union(Vec<Annotation>),
+    /// Values retained from a `Literal[...]` annotation.
     Literal(Vec<LiteralValue>),
+    /// The Python `None` annotation.
     None,
+    /// An annotation form that is retained but not resolved to a known type.
     Unknown(TypeReason),
 }
 
+/// Ruff AST expression class encountered in an annotation position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationSyntaxKind {
+    /// A name expression such as `T` or `list`.
     Name,
+    /// An attribute expression such as `module.Type`.
     Attribute,
+    /// A subscription expression such as `list[T]`.
     Subscript,
+    /// A boolean operator expression such as `A and B`.
     BooleanOperator,
+    /// A named expression such as `(value := T)`.
     NamedExpression,
+    /// A binary operator expression such as `A | B`.
     BinaryOperator,
+    /// A unary operator expression such as `~T`.
     UnaryOperator,
+    /// A lambda expression.
     Lambda,
+    /// A conditional expression using `if` and `else`.
     Conditional,
+    /// A dictionary display expression.
     Dictionary,
+    /// A set display expression.
     Set,
+    /// A list comprehension expression.
     ListComprehension,
+    /// A set comprehension expression.
     SetComprehension,
+    /// A dictionary comprehension expression.
     DictionaryComprehension,
+    /// A generator expression.
     Generator,
+    /// An `await` expression.
     Await,
+    /// A `yield` expression.
     Yield,
+    /// A `yield from` expression.
     YieldFrom,
+    /// A comparison expression.
     Comparison,
+    /// A function or method call expression.
     Call,
+    /// A formatted string expression.
     FormattedString,
+    /// A template string expression.
     TemplateString,
+    /// A string literal expression.
     StringLiteral,
+    /// A bytes literal expression.
     Bytes,
+    /// A numeric literal expression.
     Number,
+    /// A boolean literal expression.
     Boolean,
+    /// A `None` literal expression.
     NoneLiteral,
+    /// An ellipsis literal expression.
     Ellipsis,
+    /// A starred expression.
     Starred,
+    /// A list display expression.
     List,
+    /// A tuple display expression.
     Tuple,
+    /// A slice expression.
     Slice,
+    /// An IPython escape command expression.
     IpythonEscape,
 }
 
+/// Literal value forms retained from Python annotation syntax.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiteralValue {
+    /// Decoded string literal content.
     String(String),
+    /// Parsed integer value serialized as decimal text to avoid numeric narrowing.
     Integer(String),
+    /// Floating-point literal represented by its IEEE-754 bits.
     Float {
+        /// IEEE-754 bit pattern for the parsed real value.
         ieee_bits: u64,
     },
+    /// Complex literal represented by separate IEEE-754 component bits.
     Complex {
+        /// IEEE-754 bit pattern for the real component.
         real_ieee_bits: u64,
+        /// IEEE-754 bit pattern for the imaginary component.
         imaginary_ieee_bits: u64,
     },
+    /// Boolean literal value.
     Boolean(bool),
+    /// The `None` literal value.
     None,
+    /// The ellipsis literal value.
     Ellipsis,
+    /// Literal form not represented by the closed literal-value vocabulary.
     Unsupported(AnnotationSyntaxKind),
 }
 
+/// Kinds of declarations observed in a Python module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclarationKind {
+    /// The module-level declaration itself.
     Module,
+    /// A class declaration.
     Class,
+    /// A synchronous or asynchronous function declaration.
     Function,
+    /// A class field declaration.
     Field,
+    /// A module or class constant binding.
     Constant,
+    /// An import or type-alias declaration.
     Alias,
 }
+/// Recognized class-body forms that affect declaration facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassForm {
+    /// A class not recognized as a specialized form.
     Plain,
+    /// A class decorated as a dataclass.
     Dataclass,
+    /// A class that declares a typing protocol.
     Protocol,
+    /// A class declared as a `TypedDict`.
     TypedDict,
+    /// A class based on an enum type.
     Enum,
 }
+/// How a function declaration is bound to its containing class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiverKind {
+    /// A regular function without a recognized method decorator.
     Plain,
+    /// A function decorated as a static method.
     StaticMethod,
+    /// A function decorated as a class method.
     ClassMethod,
+    /// A function recognized as a property accessor.
     Property,
 }
+/// How a Python parameter is passed at the call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterKind {
+    /// A positional-only parameter before `/`.
     PositionalOnly,
+    /// A parameter that accepts positional or keyword passing.
     PositionalOrKeyword,
+    /// A variadic positional parameter introduced by `*`.
     VarArgs,
+    /// A keyword-only parameter after `*`.
     KeywordOnly,
+    /// A variadic keyword parameter introduced by `**`.
     KwArgs,
 }
+/// Syntactic kind of a recorded name or member occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OccurrenceKind {
+    /// A call through a bare function name.
     FunctionCall,
+    /// A call through an attribute or method receiver.
     MethodCall,
+    /// A read of an attribute without a call.
     AttributeRead,
 }
 /// How a call's receiver was written, which decides the target key the
@@ -188,10 +284,17 @@ pub enum OccurrenceKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttributeChainRoot {
     /// `self` / `cls` inside a class-body method at function_depth 1.
-    Enclosing { class: String },
+    Enclosing {
+        /// Name of the class whose method lexically encloses the receiver.
+        class: String,
+    },
     /// Any other plain name, including `obj` in a nested function.
-    Name { name: String },
+    Name {
+        /// Plain-name expression used as the receiver root.
+        name: String,
+    },
 }
+/// One step in a receiver attribute chain before the member being resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttributeStep {
     /// One field name, root to leaf, excluding the member being resolved.
@@ -204,6 +307,7 @@ pub enum AttributeStep {
     /// back to that class, which is how `Child[int].note` stays `Child.note`.
     NameIndex,
 }
+/// How the receiver syntax constrains occurrence resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OccurrenceReceiver {
     /// A bare-name call (`fn()`): resolved through module names alone.
@@ -214,13 +318,17 @@ pub enum OccurrenceReceiver {
     Module,
     /// `self.method()` / `cls.method()`: keyed by the attribute name and
     /// the enclosing class, proven by the declaration walk.
-    EnclosingClass { class: String },
+    EnclosingClass {
+        /// Enclosing class that provides the receiver key.
+        class: String,
+    },
     /// `super()` or `super(Start, self)` / `super(Start, cls)` written
     /// directly in a class-body function (`super().note`, `super(Child,
     /// self).note()`). The search starts after `class` when `after` is
     /// `None`, or after `Start` when `after` is `Some`. Nested functions and
     /// the bare name `super` are not this variant.
     Super {
+        /// Class whose method contains the direct `super` call.
         class: String,
         /// `None` for zero-argument `super()`: search starts after `class`.
         /// `Some` for `super(Start, self)` or `super(Start, cls)`: search
@@ -232,22 +340,37 @@ pub enum OccurrenceReceiver {
     /// to one simple name. The lowerer binds that class's member when the name
     /// is one live class. Non-class names (`factory`, `list`) and attribute
     /// callees (`pkg.Child[int]().note()`) keep universe keys.
-    Constructed { class: String },
+    Constructed {
+        /// Class name proven by the constructor expression.
+        class: String,
+    },
     /// `self.child.note` / `self.child.note()` and the `cls` form, one attribute
     /// deep. `class` is the enclosing class. `attribute` is the field name
     /// (`child`). Two or more fields before the member are `ChainedAttribute`.
     /// Index subscripts (`self.child[0].note`) are `SubscriptedAttribute`.
-    InstanceAttribute { class: String, attribute: String },
+    InstanceAttribute {
+        /// Class containing the `self` or `cls` receiver.
+        class: String,
+        /// Field name traversed before resolving the member.
+        attribute: String,
+    },
     /// `obj.child.note` / `obj.child.note()` when `obj` is a plain name other than
     /// the enclosing `self`/`cls` form. `name` is `obj`. `attribute` is `child`.
     /// Two or more fields before the member are `ChainedAttribute`. Index
     /// subscripts are `SubscriptedAttribute`.
-    NamedAttribute { name: String, attribute: String },
+    NamedAttribute {
+        /// Plain-name expression that owns the receiver value.
+        name: String,
+        /// Field name traversed before resolving the member.
+        attribute: String,
+    },
     /// `self.child.other.note` and `obj.child.other.note`, two or more fields
     /// before the member. Deeper chains are included. Index subscripts are
     /// `SubscriptedAttribute`.
     ChainedAttribute {
+        /// Enclosing-class or plain-name root of the receiver chain.
         root: AttributeChainRoot,
+        /// Field names traversed from the root toward the resolved member.
         attributes: Vec<String>,
     },
     /// `self.child[0].note`, `items[0].note`, `self.child[0].other.note` when the
@@ -255,7 +378,9 @@ pub enum OccurrenceReceiver {
     /// base. `steps` are root-to-leaf and exclude the member. A slice, a subscript
     /// of a call, and a chain with no index are not this variant.
     SubscriptedAttribute {
+        /// Enclosing-class or plain-name root of the receiver chain.
         root: AttributeChainRoot,
+        /// Attribute and index steps from the root toward the resolved member.
         steps: Vec<AttributeStep>,
     },
     /// `self.note()[0].extra` when the call's return annotation is peeled by the
@@ -263,7 +388,9 @@ pub enum OccurrenceReceiver {
     /// root-to-leaf after that call and before the member, and contain at least
     /// one index. A slice is not this variant.
     SubscriptedCall {
+        /// Call whose annotated result is indexed before member access.
         call: Box<OccurrenceReceiver>,
+        /// Indexing steps applied to the call result before member access.
         steps: Vec<AttributeStep>,
     },
     /// `self.note().extra` / `obj.note().extra()` / `note().extra()` and one
@@ -277,45 +404,68 @@ pub enum OccurrenceReceiver {
     /// `SubscriptedCall`, `Constructed`, or a nested `CallReturn` for successive
     /// calls. Still not `Super`, not `Module`, and not a slice.
     CallReturn {
+        /// Method name invoked to produce the receiver value.
         method: String,
+        /// Receiver syntax associated with the call.
         receiver: Box<OccurrenceReceiver>,
     },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
     /// through its own package key; it is never resolved to a local row.
-    Foreign { receiver: Option<String> },
+    Foreign {
+        /// Written receiver name, when it is a plain name expression.
+        receiver: Option<String>,
+    },
 }
+/// Source facts extracted for one function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterFact {
+    /// Parameter name without the variadic marker, which is recorded by `kind`.
     pub name: String,
     /// Exact source span of the declared identifier, so every consumer can
     /// borrow the name bytes without re-tokenizing the parameter range.
     pub name_span: Span,
+    /// Call-site passing mode of this parameter.
     pub kind: ParameterKind,
+    /// Whether a default expression was written.
     pub has_default: bool,
+    /// Exact source spelling of the default expression, when present.
     pub default_source: Option<String>,
+    /// Projected annotation syntax, or an explicit unknown/unannotated fact.
     pub annotation: Annotation,
     /// Exact source span of the written annotation expression, if any.
     pub annotation_span: Option<Span>,
+    /// Source range covering the parameter declaration.
     pub span: Span,
 }
+/// Source facts for one module, class, function, field, constant, or alias.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclarationFact {
+    /// Declared name as written in the source.
     pub name: String,
     /// Exact source span of the declared identifier.
     pub name_span: Span,
+    /// Classification of the declaration.
     pub kind: DeclarationKind,
+    /// Source range covering the declaration.
     pub span: Span,
+    /// Base-class expressions in the order written.
     pub bases: Vec<Annotation>,
+    /// Recognized class form, absent when the declaration is not a class.
     pub class_form: Option<ClassForm>,
+    /// Decorator spellings in declaration order.
     pub decorators: Vec<String>,
     /// Source span of each decorator spelling, parallel to `decorators`;
     /// every span covers the leading `@` so the spelling is the tail.
     pub decorator_spans: Vec<Span>,
+    /// Whether the declaration is an `async def`.
     pub is_async: bool,
+    /// Method binding form inferred from the declaration and decorators.
     pub receiver: ReceiverKind,
+    /// Parameters in declaration order, including their source ranges.
     pub parameters: Vec<ParameterFact>,
+    /// Source spelling of the assigned value when one was captured.
     pub value_source: Option<String>,
     /// For alias declarations, the source span of the imported module
     /// spelling (`json` in `from json import loads`, `os.path` in
@@ -335,61 +485,93 @@ pub struct DeclarationFact {
     /// extent covers the complete definition, so the header boundary is
     /// carried explicitly; `None` for every non-function declaration.
     pub header_end: Option<u32>,
+    /// Docstring captured for this declaration, when present.
     pub docstring: Option<DocstringFact>,
 }
+/// Source-spelled docstring literal and its exact source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocstringFact {
+    /// Exact source spelling of the docstring literal, including its delimiters.
     pub raw: String,
+    /// Source range of the docstring expression.
     pub span: Span,
 }
+/// One syntax-derived call or attribute-read occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OccurrenceFact {
+    /// Declaration or module that owns the occurrence.
     pub owner: String,
+    /// Written target spelling recorded by the extractor.
     pub target: String,
+    /// Call, method call, or attribute-read category.
     pub kind: OccurrenceKind,
+    /// Evidence level; `Index` denotes syntax extraction without type resolution.
     pub confidence: Confidence,
+    /// Source range of the call or attribute expression.
     pub span: Span,
+    /// Receiver syntax retained for downstream key selection.
     pub receiver: OccurrenceReceiver,
 }
+/// Provenance level for an extracted occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
+    /// The fact comes from the syntax index, without claiming compiler resolution.
     Index,
 }
 /// One `for` clause of a comprehension. Its iterable is evaluated before
 /// `targets` exist. The leftmost iterable is also outside the comprehension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComprehensionClause {
+    /// Source range of the iterable expression.
     pub iterable: Span,
+    /// Names introduced by this clause, in target order.
     pub targets: Vec<String>,
 }
 
+/// Names and ranges collected for one Python lexical binding scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingScopeFact {
     /// Span of the function, lambda, or comprehension.
     pub span: Span,
     /// Empty for functions and lambdas. Comprehension clauses are in source order.
     pub clauses: Vec<ComprehensionClause>,
+    /// Names considered local to this scope by the syntax walk.
     pub locals: Vec<String>,
     /// Names assigned inside this scope, excluding parameters.
     pub assigned: Vec<String>,
+    /// Names declared global in this scope.
     pub globals: Vec<String>,
+    /// Names declared nonlocal in this scope.
     pub nonlocals: Vec<String>,
 }
+/// Syntax-derived facts for one parsed Python module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleFacts {
+    /// Module identity key used to own its declarations and occurrences.
     pub identity: String,
+    /// Source range of the parsed module.
     pub span: Span,
+    /// Module declarations in source order.
     pub declarations: Vec<DeclarationFact>,
+    /// Call and attribute occurrences collected from the module.
     pub occurrences: Vec<OccurrenceFact>,
+    /// Module docstring, when the source begins with one.
     pub docstring: Option<DocstringFact>,
+    /// Annotations collected from declarations and annotated expressions.
     pub annotations: Vec<AnnotationFact>,
+    /// Function, lambda, and comprehension binding-scope facts.
     pub binding_scopes: Vec<BindingScopeFact>,
 }
+/// One annotation expression attached to a declaration or assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnotationFact {
+    /// Declaration or binding whose annotation is described.
     pub owner: String,
+    /// Syntactic position at which the annotation was written.
     pub position: AnnotationPosition,
+    /// Projected annotation tree.
     pub annotation: Annotation,
+    /// Source range of the complete annotation expression.
     pub span: Span,
 }
 
@@ -402,26 +584,48 @@ pub struct RejectedSyntax {
     pub parsed: Parsed<ast::Mod>,
 }
 
+/// Failures while decoding source or projecting the Ruff parse result.
 #[derive(Debug, Error)]
 pub enum ExtractionError {
     #[error("source is not UTF-8 at {span:?}")]
-    InvalidUtf8 { span: Span, bytes: Vec<u8> },
+    /// Source bytes were not valid UTF-8 at the reported range.
+    InvalidUtf8 {
+        /// Invalid UTF-8 range in the caller-provided source.
+        span: Span,
+        /// Original source bytes retained for the decoding diagnostic.
+        bytes: Vec<u8>,
+    },
     #[error("Python parser rejected the source")]
-    RejectedSyntax { rejection: RejectedSyntax },
+    /// Ruff rejected the source under the caller-selected grammar.
+    RejectedSyntax {
+        /// Complete parse result and diagnostics retained from Ruff.
+        rejection: RejectedSyntax,
+    },
     #[error("Python source has {actual} bytes, exceeding the 32-bit source-coordinate bound")]
+    /// The UTF-8 source length cannot be represented by the span coordinate type.
     SourceLength {
+        /// Source length in bytes that could not fit the 32-bit span coordinate.
         actual: usize,
+        /// Integer-conversion failure that prevented construction of the module span.
         #[source]
         source: core::num::TryFromIntError,
     },
     #[error("Ruff returned source range {start}..{end} outside {source_length} input bytes")]
+    /// Ruff produced a byte range that does not fit inside the original source.
     InvalidRange {
+        /// Inclusive starting byte offset returned by Ruff.
         start: usize,
+        /// Exclusive ending byte offset returned by Ruff.
         end: usize,
+        /// Input source length in bytes used to validate the range.
         source_length: usize,
     },
     #[error("Ruff returned an expression after a module-mode parse")]
-    NonModuleParse { rejection: RejectedSyntax },
+    /// Ruff returned an expression although parsing was requested in module mode.
+    NonModuleParse {
+        /// Complete parse result and diagnostics retained from Ruff.
+        rejection: RejectedSyntax,
+    },
 }
 
 const MODULE_IDENTITY: &str = "__main__";
