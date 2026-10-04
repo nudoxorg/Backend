@@ -1444,7 +1444,7 @@ impl PackageGraphIndex {
     /// Returns the unique source fact for `package`, or the exact source
     /// choices when several authorities publish that coordinate.
     #[must_use]
-    pub fn dependencies<'a>(
+    fn dependencies<'a>(
         &self,
         facts: &'a [PackageDependencySourceFacts],
         package: &PackageReference,
@@ -1472,7 +1472,7 @@ impl PackageGraphIndex {
 
     /// Returns the fact for one exact package/authority key.
     #[must_use]
-    pub fn dependencies_for_source<'a>(
+    fn dependencies_for_source<'a>(
         &self,
         facts: &'a [PackageDependencySourceFacts],
         source: &PackageGraphSourceKey,
@@ -1485,7 +1485,7 @@ impl PackageGraphIndex {
 
     /// Returns the packages that depend on `package` under the counted scopes.
     #[must_use]
-    pub fn dependent_sources(
+    fn dependent_sources(
         &self,
         facts: &[PackageDependencySourceFacts],
         package: &PackageReference,
