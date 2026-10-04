@@ -304,14 +304,11 @@ impl CargoPackageAliasEvidenceV1 {
                 requested_manifest,
                 facts,
             ),
-            None => PendingObservation {
+            None => PendingObservation::unavailable(
                 profile,
                 source_observation_revision,
-                cargo_facts: None,
-                aliases: Vec::new(),
-                omitted: 0,
-                unavailable: Some(CargoPackageAliasUnavailableV1::MetadataFactsUnavailable),
-            },
+                CargoPackageAliasUnavailableV1::MetadataFactsUnavailable,
+            ),
         };
         Self::merge_profiles([pending])
     }
@@ -323,14 +320,11 @@ impl CargoPackageAliasEvidenceV1 {
         source_observation_revision: [u8; 32],
         reason: CargoPackageAliasUnavailableV1,
     ) -> Result<Self, CargoPackageAliasErrorV1> {
-        Self::merge_profiles([PendingObservation {
+        Self::merge_profiles([PendingObservation::unavailable(
             profile,
             source_observation_revision,
-            cargo_facts: None,
-            aliases: Vec::new(),
-            omitted: 0,
-            unavailable: Some(reason),
-        }])
+            reason,
+        )])
     }
 
     /// Joins the exact per-profile producer observations for one product package.
