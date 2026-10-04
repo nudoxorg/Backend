@@ -4,7 +4,7 @@ This extends the [2 October exhaustive checkpoint](../checkpoint-2026-10-02/READ
 
 ## Current continuation
 
-The [4 October 00:45 UTC continuation](CONTINUATION-0045-20261004.md) supersedes the present-tense status below. It records the integrated exact source atoms, semantic shapes, signature bindings and read-pool handoff, the remote compile failure with zero executed tests, 15 independently rerun Python harness passes, and the discovery authority/detail, native and canonical acceptance still outstanding. The [23:25 continuation](CONTINUATION-2325.md), [22:20 continuation](CONTINUATION-2220.md), [20:38 brief](CONTINUATION-2038.md), [19:27 brief](CONTINUATION-1927.md) and [17:20 brief](CONTINUATION-1720.md) preserve historical evidence. The campaign remains active.
+The [4 October 01:42 UTC continuation](CONTINUATION-0142-20261004.md) supersedes the present-tense status below. It records integrated Find focus fencing, the final canary harness and callable declaration identities with transport version 14; 18 independently rerun Python passes and two executed remote diagnostic passes; and the concrete metadata, source-progress, startup, durable-ACK, native and canonical gates still open. The [00:45 continuation](CONTINUATION-0045-20261004.md), [23:25 continuation](CONTINUATION-2325.md), [22:20 continuation](CONTINUATION-2220.md), [20:38 brief](CONTINUATION-2038.md), [19:27 brief](CONTINUATION-1927.md) and [17:20 brief](CONTINUATION-1720.md) preserve historical evidence. The campaign remains active.
 
 ## Earlier checkpoint: 13:40 UTC
 
