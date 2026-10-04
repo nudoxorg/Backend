@@ -940,6 +940,129 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
     })
 }
 
+/// Default values do not turn equivalent Python signatures into different
+/// interned function tuple shapes. Carrier identity remains owner-specific
+/// even when two functions share that exact function type.
+const SHARED_DEFAULT_SIGNATURES: &[u8] =
+    b"def left(item: int = 1) -> int: ...\ndef right(item: int = 2) -> int: ...\n";
+
+#[test]
+fn defaulted_python_functions_share_interned_signature_types_with_distinct_owner_bindings()
+-> Result<(), TestError> {
+    with_image(
+        SHARED_DEFAULT_SIGNATURES,
+        "shared-default-signatures",
+        |ir| {
+            let function = |name: &[u8]| {
+                ir.items()
+                    .find(|item| item.kind() == ItemKind::Function && item.name() == name)
+            };
+            let parameter = |owner, name: &[u8]| {
+                ir.items().find(|item| {
+                    item.kind() == ItemKind::Parameter
+                        && item.name() == name
+                        && item.parent() == Some(owner)
+                })
+            };
+            let left = function(b"left")
+                .ok_or(TestError::Falsified("left function owner absent"))?;
+            let right = function(b"right")
+                .ok_or(TestError::Falsified("right function owner absent"))?;
+            let left_parameter = parameter(left.id(), b"item")
+                .ok_or(TestError::Falsified("left defaulted parameter absent"))?;
+            let right_parameter = parameter(right.id(), b"item")
+                .ok_or(TestError::Falsified("right defaulted parameter absent"))?;
+            let left_result = parameter(left.id(), b"left")
+                .ok_or(TestError::Falsified("left result carrier absent"))?;
+            let right_result = parameter(right.id(), b"right")
+                .ok_or(TestError::Falsified("right result carrier absent"))?;
+            let left_type = left
+                .semantic_type()
+                .ok_or(TestError::Falsified("left function type absent"))?;
+            let right_type = right
+                .semantic_type()
+                .ok_or(TestError::Falsified("right function type absent"))?;
+            if left_type != right_type {
+                return Err(TestError::Falsified(
+                    "same typed defaulted signatures did not share their function type",
+                ));
+            }
+            let TypeExpr::Concrete(ConcreteType::Function {
+                parameters: left_parameters,
+                results: left_results,
+                ..
+            }) = ir
+                .ty(left_type)
+                .ok_or(TestError::Falsified("shared function type row absent"))?
+            else {
+                return Err(TestError::Falsified(
+                    "shared function type is not a concrete signature",
+                ));
+            };
+            let TypeExpr::Concrete(ConcreteType::Function {
+                parameters: right_parameters,
+                results: right_results,
+                ..
+            }) = ir
+                .ty(right_type)
+                .ok_or(TestError::Falsified("right function type row absent"))?
+            else {
+                return Err(TestError::Falsified(
+                    "right function type is not a concrete signature",
+                ));
+            };
+            if left_parameters != right_parameters || left_results != right_results {
+                return Err(TestError::Falsified(
+                    "equivalent function types did not share parameter/result tuples",
+                ));
+            }
+
+            let bindings = |owner| match ir.signature_carrier_bindings(owner) {
+                Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
+                    bindings,
+                )) => Some(bindings.collect::<Vec<_>>()),
+                _ => None,
+            };
+            if bindings(left.id())
+                != Some(vec![
+                    backend_semantic::ir::SignatureCarrierBinding {
+                        owner: left.id(),
+                        role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                        position: 0,
+                        carrier: left_parameter.id(),
+                    },
+                    backend_semantic::ir::SignatureCarrierBinding {
+                        owner: left.id(),
+                        role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                        position: 0,
+                        carrier: left_result.id(),
+                    },
+                ])
+                || bindings(right.id())
+                    != Some(vec![
+                        backend_semantic::ir::SignatureCarrierBinding {
+                            owner: right.id(),
+                            role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                            position: 0,
+                            carrier: right_parameter.id(),
+                        },
+                        backend_semantic::ir::SignatureCarrierBinding {
+                            owner: right.id(),
+                            role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                            position: 0,
+                            carrier: right_result.id(),
+                        },
+                    ])
+            {
+                return Err(TestError::Falsified(
+                    "shared function type collapsed owner-specific carrier IDs",
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
 /// A seventy-element tuple literal for the optional pyrefly authority path.
 /// Synthetic falsifiers beside this test prove the fold geometry without
 /// requiring an installed checker.
