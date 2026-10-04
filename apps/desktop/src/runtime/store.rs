@@ -43,7 +43,7 @@ use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 pub use super::reads::PoolLoad;
-use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
+use super::reads::{Delivery, Evicted, Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
 use crate::core::{
     ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason,
@@ -577,7 +577,7 @@ impl DataStore {
     pub fn pool_activity(&self) -> PoolLoad {
         self.pool
             .as_ref()
-            .map_or_else(PoolLoad::default, ReadPool::load)
+            .map_or_else(PoolLoad::default, |pool| pool.load().activity())
     }
 
     /// Legacy `(waiting, running)` view. Waiting includes both queued jobs
@@ -931,7 +931,7 @@ impl DataStore {
             return;
         };
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
-        let accepted = pool.submit(ReadJob {
+        let admitted = pool.submit(ReadJob {
             key: key.clone(),
             request,
             generation,
@@ -939,23 +939,40 @@ impl DataStore {
             cancel: CancellationToken::new(),
             affinity,
         });
-        if accepted {
-            self.stats.submitted = self.stats.submitted.saturating_add(1);
-        } else if priority == Priority::Prefetch {
-            self.prefetching.remove(&key);
-            let before = self.pages.stamp(&key);
-            let _ = self.pages.cancel(&key);
-            self.emit_moved(key, before, cx);
-        } else if self.pages.land(
-            &key,
-            generation,
-            Err(ReadFailure::Fault(ErrorValue::new(
-                FaultCode::Transport,
-                "The reader is busy with too many pages. Try this page again.",
-            ))),
-        ) == Landing::Applied
-        {
-            self.emit(StoreEvent::Resource(key), cx);
+        match admitted {
+            Ok(admitted) => {
+                self.stats.submitted = self.stats.submitted.saturating_add(1);
+                if let Some(evicted) = admitted.evicted {
+                    self.cancel_evicted(evicted, cx);
+                }
+            }
+            // A refused prefetch leaves its slot as it was: hover is a hint.
+            Err(_) if priority == Priority::Prefetch => {
+                self.prefetching.remove(&key);
+                let before = self.pages.stamp(&key);
+                let _ = self.pages.cancel(&key);
+                self.emit_moved(key, before, cx);
+            }
+            // A view waits on this read: say why it will not come.
+            Err(refused) => {
+                if self.pages.land(&key, generation, Err(refused.failure())) == Landing::Applied {
+                    self.emit(StoreEvent::Resource(key), cx);
+                }
+            }
+        }
+    }
+
+    /// A queued prefetch gave its admission to a read a view waits on. It
+    /// never runs and posts nothing, so its slot is cancelled here, at once.
+    fn cancel_evicted(&mut self, evicted: Evicted, cx: &mut Context<Self>) {
+        if self.pages.inflight(&evicted.key) != Some(evicted.generation) {
+            return;
+        }
+        self.prefetching.remove(&evicted.key);
+        let before = self.pages.stamp(&evicted.key);
+        if self.pages.cancel(&evicted.key).is_some() {
+            self.stats.cancelled = self.stats.cancelled.saturating_add(1);
+            self.emit_moved(evicted.key, before, cx);
         }
     }
 
@@ -1080,48 +1097,42 @@ impl DataStore {
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {
-            if !outcome.complete {
-                match outcome.result {
-                    Ok(value) => match self.pages.stage(&outcome.key, outcome.generation, value) {
+            // Ownership travels through admission into the slot, and drops
+            // only after this closure lands or discards the value.
+            outcome.land(|key, generation, delivery| match delivery {
+                Delivery::Partial(value) => match self.pages.stage(&key, generation, value) {
+                    Landing::Applied => {
+                        applied += 1;
+                        self.stats.landed = self.stats.landed.saturating_add(1);
+                        self.emit(StoreEvent::Resource(key), cx);
+                    }
+                    Landing::Superseded => {
+                        self.stats.superseded = self.stats.superseded.saturating_add(1)
+                    }
+                    Landing::Unchanged => {}
+                },
+                Delivery::Terminal(result) => {
+                    if self.pages.inflight(&key) == Some(generation) {
+                        self.prefetching.remove(&key);
+                    }
+                    match self.pages.land(&key, generation, result) {
                         Landing::Applied => {
                             applied += 1;
                             self.stats.landed = self.stats.landed.saturating_add(1);
-                            self.emit(StoreEvent::Resource(outcome.key), cx);
+                            save |= kept_keys(self.snapshot.route()).contains(&key);
+                            self.emit(StoreEvent::Resource(key), cx);
+                        }
+                        Landing::Unchanged => {
+                            super::trace::mark("read.same", format_args!("{key:?}"));
+                            self.stats.landed = self.stats.landed.saturating_add(1);
+                            save |= kept_keys(self.snapshot.route()).contains(&key);
                         }
                         Landing::Superseded => {
                             self.stats.superseded = self.stats.superseded.saturating_add(1)
                         }
-                        Landing::Unchanged => {}
-                    },
-                    Err(_) => self.stats.superseded = self.stats.superseded.saturating_add(1),
+                    }
                 }
-                continue;
-            }
-            if self.pages.inflight(&outcome.key) == Some(outcome.generation) {
-                self.prefetching.remove(&outcome.key);
-            }
-            match self
-                .pages
-                .land(&outcome.key, outcome.generation, outcome.result)
-            {
-                Landing::Applied => {
-                    applied += 1;
-                    super::trace::mark("read.land", format_args!("{:?}", outcome.key));
-                    self.stats.landed = self.stats.landed.saturating_add(1);
-                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
-                    self.emit(StoreEvent::Resource(outcome.key), cx);
-                }
-                Landing::Unchanged => {
-                    // The launch snapshot's value, confirmed at the new root:
-                    // nothing to draw.
-                    super::trace::mark("read.same", format_args!("{:?}", outcome.key));
-                    self.stats.landed = self.stats.landed.saturating_add(1);
-                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
-                }
-                Landing::Superseded => {
-                    self.stats.superseded = self.stats.superseded.saturating_add(1);
-                }
-            }
+            });
         }
         if save {
             self.keeper.save_at_rest(cx);
@@ -1413,10 +1424,25 @@ mod tests {
     }
 
     fn rig(cx: &mut TestAppContext, workers: usize) -> Rig {
+        rig_with_limits(cx, workers, crate::runtime::reads::ReadLimits::DEFAULT)
+    }
+
+    fn limits(reads: usize, prefetch: usize) -> crate::runtime::reads::ReadLimits {
+        crate::runtime::reads::ReadLimits::new(
+            std::num::NonZeroUsize::new(reads).expect("nonzero"),
+            prefetch,
+        )
+    }
+
+    fn rig_with_limits(
+        cx: &mut TestAppContext,
+        workers: usize,
+        limits: crate::runtime::reads::ReadLimits,
+    ) -> Rig {
         cx.executor().allow_parking();
         let gate: Gate = Arc::new((Mutex::new(BTreeSet::new()), Condvar::new()));
         let reader_gate = Arc::clone(&gate);
-        let pool = ReadPool::start(workers, move |_| FixtureReader {
+        let pool = ReadPool::start_with(workers, limits, move |_| FixtureReader {
             gate: Arc::clone(&reader_gate),
         })
         .expect("pool");
@@ -1841,6 +1867,127 @@ mod tests {
             orbit.terminal(),
             crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Unavailable(_)
         ));
+    }
+
+    fn held(rig: &Rig, cx: &mut TestAppContext) -> crate::runtime::reads::Held {
+        rig.store
+            .read_with(cx, |store, _| {
+                store.pool.as_ref().map(|pool| pool.load().held)
+            })
+            .expect("the rig has a pool")
+    }
+
+    /// Schedule: the pages a view waits on hold every admission. A further
+    /// read is refused with a typed busy fault instead of growing the pool,
+    /// and the next ask succeeds once the held reads land.
+    #[gpui::test]
+    fn a_read_refused_at_capacity_shows_a_busy_fault_and_recovers(cx: &mut TestAppContext) {
+        let rig = rig_with_limits(cx, 2, limits(2, 1));
+        let held_keys = vec![
+            PageKey::Symbol(symbol("slow-held-1")),
+            PageKey::Symbol(symbol("slow-held-2")),
+        ];
+        rig.store.update(cx, |store, cx| store.focus(held_keys, cx));
+        let refused = symbol("fast-refused");
+        rig.store.update(cx, |store, cx| {
+            store.ensure(PageKey::Symbol(refused.clone()), cx);
+        });
+        let busy = rig.store.read_with(cx, |store, _| store.symbol(&refused));
+        assert_eq!(busy.activity(), Activity::Stopped);
+        assert!(
+            matches!(busy.terminal(), ResourceTerminal::Fault(error) if error.code() == FaultCode::Transport && error.message().contains("busy")),
+            "{busy:?}"
+        );
+        assert_eq!(
+            held(&rig, cx).total(),
+            2,
+            "the refused read took no admission"
+        );
+        rig.open("slow-held-1");
+        rig.open("slow-held-2");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.update(cx, |store, cx| {
+            store.retry(PageKey::Symbol(refused.clone()), cx)
+        });
+        rig.until(cx, |store| store.symbol(&refused).is_loaded());
+    }
+
+    /// Schedule: every admission is held while a hover prefetch is still
+    /// queued, and a view asks for another page. The prefetch gives up its
+    /// admission and its slot is cancelled at once; it never runs.
+    #[gpui::test]
+    fn an_evicted_prefetch_is_cancelled_at_once_and_never_lands(cx: &mut TestAppContext) {
+        let rig = rig_with_limits(cx, 1, limits(3, 1));
+        let busy = PageKey::Symbol(symbol("slow-busy"));
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![busy.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        let hover = PageKey::Symbol(symbol("fast-hover"));
+        let waiting = PageKey::Symbol(symbol("fast-waiting"));
+        let evicting = PageKey::Symbol(symbol("fast-evicting"));
+        rig.store.update(cx, |store, cx| {
+            store.prefetch(hover.clone(), cx);
+            store.ensure(waiting.clone(), cx);
+        });
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.is_prefetching(&hover))
+        );
+        rig.take_events();
+        rig.store.update(cx, |store, cx| {
+            store.ensure(evicting.clone(), cx);
+        });
+        let (prefetching, hover_loading, evicting_loading) = rig.store.read_with(cx, |store, _| {
+            (
+                store.is_prefetching(&hover),
+                store.is_loading(&hover),
+                store.is_loading(&evicting),
+            )
+        });
+        assert!(
+            !prefetching && !hover_loading,
+            "the evicted prefetch's slot was cancelled"
+        );
+        assert!(evicting_loading, "the view's read took the admission");
+        assert!(
+            rig.take_events()
+                .contains(&StoreEvent::Resource(hover.clone()))
+        );
+        rig.open("slow-busy");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.read_with(cx, |store, _| {
+            assert!(store.symbol(&symbol("fast-evicting")).is_loaded());
+            assert!(store.symbol(&symbol("fast-waiting")).is_loaded());
+            assert!(
+                store.symbol(&symbol("fast-hover")).loaded_value().is_none(),
+                "the evicted prefetch never ran"
+            );
+        });
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default());
+    }
+
+    /// Schedule: the owner is lost while a read runs, and its late reply
+    /// arrives after the slot was revoked. It never lands, and its
+    /// admission returns once the UI discards it.
+    #[gpui::test]
+    fn a_late_generation_never_lands_and_returns_its_admission(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let late = symbol("slow-late");
+        let key = PageKey::Symbol(late.clone());
+        rig.store
+            .update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        rig.store.update(cx, |store, cx| {
+            store.owner_failed(&OwnerFault::Lost("socket closed".into()), cx)
+        });
+        assert_eq!(held(&rig, cx).total(), 1, "the revoked read still runs");
+        rig.open("slow-late");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.symbol(&late).loaded_value().is_none())
+        );
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default());
     }
 
     #[test]

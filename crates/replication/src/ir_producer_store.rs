@@ -3367,7 +3367,7 @@ mod tests {
             matches!(
                 &error,
                 SelectedTypedPlaneProductionError::ResourceLimit(detail)
-                    if detail.contains("canonical family row count exceeds the aggregate limit")
+                    if detail.contains("canonical family row count exceeds the aggregate limit 1")
             ),
             "unexpected error: {error:?}"
         );

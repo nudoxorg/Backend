@@ -599,6 +599,10 @@ impl RenderOnce for Seg {
                     .child(word(label))
                     .into_any_element(),
             };
+            // The selected radio itself holds the group's focus (a roving tab
+            // stop), so assistive technology announces it as the focused node.
+            // It must not also claim to be the focused container's active
+            // descendant: GPUI refuses that on the focused node itself.
             let mut item = div()
                 .id(ElementId::NamedChild(Arc::new(id.clone()), choice.name.clone()))
                 .role(gpui::Role::RadioButton)
@@ -781,7 +785,7 @@ impl RenderOnce for Seg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Context, FocusHandle, Modifiers, Render, TestAppContext, point};
+    use gpui::{Context, FocusHandle, Modifiers, Render, TestAppContext, VisualTestContext, point};
     use crate::theme::{Facet, set_facet};
 
     #[test]
@@ -791,12 +795,11 @@ mod tests {
         assert_unique_choice_names(&"duplicate-radio".into(), &choices);
     }
 
-    struct Fixture { selected: usize, disabled: bool, focus: Option<FocusHandle> }
+    struct Fixture { selected: usize, disabled: bool }
     impl Render for Fixture {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let id: ElementId = "fixture-radio".into();
             let measure = Measure::new(px(300.0), &cx.facet());
-            self.focus = Some(Touch::read(&id, Look::LIVE, !self.disabled, window, cx).focus);
             let owner = cx.entity().downgrade();
             seg(id, &measure).aria_label("Fixture choice").label("One").label("Two")
                 .selected(self.selected).disabled(self.disabled)
@@ -806,12 +809,27 @@ mod tests {
         }
     }
 
+    /// The label of the native node that holds focus, read from the frame's
+    /// AccessKit tree: what assistive technology is told has focus.
+    fn focused_label(cx: &mut VisualTestContext) -> Option<String> {
+        cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let json = cx.update(|window, _| window.debug_a11y_tree_json()).expect("a native tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let focused = tree["accesskit_focus"].as_str()?;
+        tree["nodes"][focused]["aria"]["label"].as_str().map(str::to_owned)
+    }
+
     // A native shell fixture; the live journey separately exercises AccessKit Click.
     #[gpui::test]
     fn pointer_radio_selection_and_arrow_reversal_keep_the_shared_focus(cx: &mut TestAppContext) {
         cx.update(|cx| { set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
-        let (fixture, cx) = cx.add_window_view(|_, _| Fixture { selected: 0, disabled: false, focus: None });
-        cx.update(|window, cx| { window.set_a11y_forced(true); window.draw(cx).clear(cx); });
+        let (fixture, cx) = cx.add_window_view(|_, _| Fixture { selected: 0, disabled: false });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), None, "nothing holds focus before the click");
         let point_ = cx.update(|window, cx| {
             let measure = Measure::new(px(300.0), &cx.facet());
             let scale = f32::from(measure.control(Control::Small)) / 24.0;
@@ -822,17 +840,20 @@ mod tests {
         cx.simulate_click(point_, Modifiers::default());
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 1);
-        let focus = fixture.read_with(cx, |fixture, _| fixture.focus.clone().unwrap());
-        assert!(cx.update(|window, _| focus.is_focused(window)));
-        let json = cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native radio tree");
-        let tree: serde_json::Value = serde_json::from_str(&json).expect("AX JSON");
-        let owner = tree["gpui_focus"].as_str().expect("native selected radio owner");
-        assert_eq!(tree["nodes"][owner]["aria"]["label"].as_str(), Some("Two"));
-        assert!(tree["active_descendant_focus"].is_null(), "native radio focus is not its own managed descendant");
+        // The group's one focus handle lives in the control's own keyed
+        // state; observe it as the handle the click focused.
+        let focus: FocusHandle = cx.update(|window, cx| window.focused(cx)).expect("the click focuses the radio group");
+        assert_eq!(focused_label(cx).as_deref(), Some("Two"), "focus is on the selected choice");
+        let json = cx.update(|window, _| window.debug_a11y_tree_json()).expect("native radio tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        assert!(tree["active_descendant_focus"].is_null(), "the focused radio is not its own managed descendant");
         cx.simulate_keystrokes("left");
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 0);
-        assert!(cx.update(|window, _| focus.is_focused(window)));
+        assert!(cx.update(|window, _| focus.is_focused(window)), "the arrow kept the same handle focused");
+        // A per-choice handle would have stayed on "Two"; the shared one
+        // moves with the selection to the choice now tracking it.
+        assert_eq!(focused_label(cx).as_deref(), Some("One"), "the shared focus followed the selection");
         fixture.update(cx, |fixture, cx| { fixture.disabled = true; cx.notify(); });
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         cx.simulate_keystrokes("right");

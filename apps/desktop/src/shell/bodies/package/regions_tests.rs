@@ -17,7 +17,6 @@ use crate::runtime::CancellationToken;
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest, SessionReader};
 use backend_client::Session;
 use backend_library::DeclarationKind;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `(file, contents)` of a crate with four modules, types with `impl` blocks,
@@ -52,8 +51,8 @@ fn a_multi_module_crate_reads_as_a_region_per_module_with_every_name_at_its_line
         .unwrap_or_default()
         .as_nanos();
     // `/tmp`, not `temp_dir()`: under nix the latter makes the socket path too long.
-    let root =
-        PathBuf::from("/tmp").join(format!("nx-w-index-regions-{}-{nonce}", std::process::id()));
+    let root = crate::host::scratch_base()
+        .join(format!("nx-w-index-regions-{}-{nonce}", std::process::id()));
     crate::host::private_dir(&root).expect("private scratch root");
     let project = root.join("multi");
     for (path, contents) in FILES {

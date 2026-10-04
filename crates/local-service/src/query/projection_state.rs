@@ -445,7 +445,7 @@ fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
 
 fn sync_parent(path: &Path) {
     if let Some(parent) = path.parent()
-        && let Ok(directory) = File::open(parent)
+        && let Ok(directory) = backend_platform::durability::open_directory(parent)
     {
         let _ = directory.sync_all();
     }

@@ -10,12 +10,13 @@ use backend_cluster_transport::{
     AcceptedClusterConnection, AdmissionPolicy, AssignmentScope, BlobHash, Capability,
     CapabilityClaims, CapabilityIssuer, ChunkRange, ClusterListener, ControlAdmissionPolicy,
     ControlChannel, ControlMessage, ControlResultReceipt, ControlRole, MAX_RANGE_CHUNKS,
-    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN,
+    MAX_REMOTE_INDEX_AUTH_BYTES, MAX_RESPONSE_BYTES, REMOTE_INDEX_ALPN, RemoteIndexCapability,
     RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
     RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
-    RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog, StoreObjectMapping,
-    TransferScope, TransportError, accept_remote_index, bind_direct, connect_control, fetch_range,
-    now_unix_ms, remote_index_now, serve_one, serve_one_measured, verify_admission,
+    RemoteIndexRefusal, RemoteIndexResponse, ResumeState, ServerState, StoreBlobCatalog,
+    StoreObjectMapping, TransferScope, TransportError, accept_remote_index, bind_direct,
+    connect_control, fetch_range, now_unix_ms, remote_index_now, serve_one, serve_one_measured,
+    verify_admission,
 };
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ArtifactPlan, ClosureManifest, FileStore, TypedObject,
@@ -257,6 +258,91 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
     assert!(String::from_utf8_lossy(&output.stdout).contains("remote-index-echo-bytes=65536"));
     endpoint.close().await;
     std::fs::remove_dir_all(directory).expect("remove remote-index test state");
+}
+
+/// A role that serves no remote-index queries still receives connections on that ALPN. Dropping
+/// one leaves the client to discover the refusal by its own timeout; `refuse` closes it with the
+/// typed code and reason instead, before any grant is read.
+#[tokio::test]
+async fn a_refused_remote_index_connection_closes_with_the_typed_code_and_reason() {
+    use iroh::endpoint::ConnectionError;
+
+    let owner = bind_direct(secret(211), "127.0.0.1:0".parse().expect("owner bind"))
+        .await
+        .expect("bind owner");
+    let client = bind_direct(secret(212), "127.0.0.1:0".parse().expect("client bind"))
+        .await
+        .expect("bind client");
+    let directory = temp_dir("remote-index-refusal");
+    let (artifact_store, _, artifact_closure) =
+        prepare_store(&directory.join("artifact-store"), b"fixture");
+    let artifact_scope = TransferScope::from_store_closure(
+        AssignmentScope::new([213; 16], [214; 16], 1, [215; 32]).expect("artifact assignment"),
+        artifact_closure,
+    )
+    .expect("artifact transfer scope");
+    let artifact_state = ServerState::new(
+        AdmissionPolicy::new(
+            owner.id(),
+            CapabilityIssuer::new(secret(216)).public_key(),
+            [client.id()],
+            artifact_scope,
+        ),
+        std::sync::Arc::new(StoreBlobCatalog::new(
+            artifact_store.artifact_sink(artifact_budget()),
+            directory.join("outboard"),
+        )),
+    );
+    let control_policy = ControlAdmissionPolicy::coordinator_ingress(owner.id(), [client.id()]);
+    let mut listener = ClusterListener::spawn(owner.clone(), control_policy, artifact_state, 2)
+        .expect("spawn shared authenticated ALPN listener");
+    let owner_address = owner
+        .bound_sockets()
+        .into_iter()
+        .next()
+        .expect("owner socket");
+
+    let refusing = tokio::spawn(async move {
+        let event = timeout(Duration::from_secs(10), listener.recv())
+            .await
+            .expect("owner accept timeout")
+            .expect("owner listener still open")
+            .expect("owner listener event");
+        let AcceptedClusterConnection::RemoteIndex(connection) = event else {
+            panic!("shared listener routed the wrong ALPN");
+        };
+        assert_eq!(connection.peer(), EndpointId::from(secret(212).public()));
+        connection.refuse(RemoteIndexRefusal::NotServed);
+        listener
+    });
+
+    let connection = client
+        .connect(
+            EndpointAddr::new(owner.id()).with_ip_addr(owner_address),
+            REMOTE_INDEX_ALPN,
+        )
+        .await
+        .expect("connect to the remote-index ALPN");
+    let closed = timeout(Duration::from_secs(10), connection.closed())
+        .await
+        .expect("the refusal reaches the client");
+    let ConnectionError::ApplicationClosed(close) = closed else {
+        panic!("expected an application close, received {closed:?}");
+    };
+    assert_eq!(
+        u64::from(close.error_code),
+        u64::from(RemoteIndexRefusal::CODE)
+    );
+    assert_eq!(&close.reason[..], RemoteIndexRefusal::NotServed.reason());
+
+    let listener = refusing.await.expect("owner task completes");
+    listener
+        .shutdown()
+        .await
+        .expect("close owner ALPN listener");
+    client.close().await;
+    owner.close().await;
+    std::fs::remove_dir_all(directory).expect("remove refusal test state");
 }
 
 #[tokio::test]

@@ -109,12 +109,12 @@ pub use remote_index::{
     MAX_REMOTE_INDEX_AUTH_BYTES, MAX_REMOTE_INDEX_BODY_BYTES, MAX_REMOTE_INDEX_BYTES,
     MAX_REMOTE_INDEX_FRAME_BYTES, MAX_REMOTE_INDEX_GRANT_LIFETIME_MS, MAX_REMOTE_INDEX_REQUESTS,
     MAX_REMOTE_INDEX_TARGET_BYTES, REMOTE_INDEX_ALPN, REMOTE_INDEX_SESSION_TIMEOUT,
-    RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
-    RemoteIndexCapabilityIssuer, RemoteIndexChannel, RemoteIndexOutcome, RemoteIndexPermission,
-    RemoteIndexPreparedResponse, RemoteIndexProductCapabilityReceipt, RemoteIndexProductScope,
-    RemoteIndexQueryOperation, RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse,
-    RemoteIndexSemanticSelection, RemoteIndexSession, RemoteIndexSessionHello,
-    RemoteIndexAuthenticatedPeer, accept_remote_index, connect_remote_index,
+    RemoteIndexAuthenticatedPeer, RemoteIndexCapability, RemoteIndexCapabilityClaims,
+    RemoteIndexCapabilityError, RemoteIndexCapabilityIssuer, RemoteIndexChannel,
+    RemoteIndexOutcome, RemoteIndexPermission, RemoteIndexPreparedResponse,
+    RemoteIndexProductCapabilityReceipt, RemoteIndexProductScope, RemoteIndexQueryOperation,
+    RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse, RemoteIndexSemanticSelection,
+    RemoteIndexSession, RemoteIndexSessionHello, accept_remote_index, connect_remote_index,
     prepare_remote_index_response, remote_index_now, remote_index_owner_address,
 };
 
@@ -2715,6 +2715,31 @@ impl fmt::Debug for RemoteIndexConnection {
     }
 }
 
+/// Why a listener closes a remote-index connection without admitting a session.
+///
+/// The reason travels to the peer as the QUIC application close code and reason, so a refused
+/// client learns what happened at once instead of waiting for its own timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteIndexRefusal {
+    /// This role serves no remote-index queries. The endpoint advertises the ALPN for every
+    /// cluster role, so a capability-bearing client may still dial a role that cannot serve it.
+    NotServed,
+}
+
+impl RemoteIndexRefusal {
+    /// Application close code. Every refusal in this crate uses the same code; the reason bytes
+    /// say which one it was.
+    pub const CODE: u32 = 1;
+
+    /// Short machine-stable reason delivered to the peer.
+    #[must_use]
+    pub const fn reason(self) -> &'static [u8] {
+        match self {
+            Self::NotServed => b"remote-index queries are not served by this role",
+        }
+    }
+}
+
 impl RemoteIndexConnection {
     /// Authenticated Iroh peer identity. Application access still requires a valid grant.
     #[must_use]
@@ -2722,12 +2747,11 @@ impl RemoteIndexConnection {
         self.connection.remote_id()
     }
 
-    /// Closes a remote-index connection when this peer role does not serve index queries.
-    pub fn reject(self) {
-        self.connection.close(
-            1_u32.into(),
-            b"remote-index protocol is not served by this peer",
-        );
+    /// Closes the connection with an explicit application code and reason instead of dropping
+    /// it. No grant is read and no session is admitted.
+    pub fn refuse(self, refusal: RemoteIndexRefusal) {
+        self.connection
+            .close(RemoteIndexRefusal::CODE.into(), refusal.reason());
     }
 
     /// Verifies the owner-signed capability and opens the bounded request channel.
@@ -3848,10 +3872,18 @@ mod tests {
         let AcceptedClusterConnection::RemoteIndex(server_connection) = accepted else {
             panic!("remote-index ALPN was dispatched to the wrong protocol");
         };
-        server_connection.reject();
-        tokio::time::timeout(Duration::from_secs(5), client_connection.closed())
+        server_connection.refuse(RemoteIndexRefusal::NotServed);
+        let closed = tokio::time::timeout(Duration::from_secs(5), client_connection.closed())
             .await
             .expect("unsupported remote-index connection is closed by the server");
+        let iroh::endpoint::ConnectionError::ApplicationClosed(close) = closed else {
+            panic!("expected an application close, received {closed:?}");
+        };
+        assert_eq!(
+            u64::from(close.error_code),
+            u64::from(RemoteIndexRefusal::CODE)
+        );
+        assert_eq!(&close.reason[..], RemoteIndexRefusal::NotServed.reason());
 
         listener
             .shutdown()
