@@ -116,7 +116,10 @@ pub struct SignatureCarrierBinding {
     pub owner: EntityId,
     /// Parameter or result section containing this slot.
     pub role: SignatureCarrierBindingRole,
-    /// Zero-based position within `role` for `owner`.
+    /// Zero-based position in the owner's admitted IR function tuple for this
+    /// role. This is not necessarily the raw source ordinal: for example,
+    /// Clang omits unnamed source parameters when it cannot retain their exact
+    /// declaration carriers.
     pub position: u32,
     /// Exact declaration row carried by this slot.
     pub carrier: EntityId,
