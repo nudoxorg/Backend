@@ -504,6 +504,15 @@ class BoundedProcess:
             self._record_failure("stdin writer remained active after the parent process exited")
             self._stop_writer.set()
             self._writer_thread.join(0.15)
+        with self._lock:
+            written = self.input_bytes_written
+            writer_detail = self.input_writer_failure_reason
+        if written < self.input_bytes:
+            writer_detail = writer_detail or "writer stopped before all input bytes were written"
+            self._record_failure(
+                f"stdin input incomplete: wrote {written} of {self.input_bytes} bytes; "
+                f"{writer_detail}"
+            )
         for thread in self._reader_threads:
             thread.join(max(0.0, drain_deadline - time.monotonic()))
         if any(thread.is_alive() for thread in self._reader_threads):
@@ -2351,13 +2360,6 @@ def process_rss_bytes(pid: int) -> int | None:
             except ValueError:
                 continue
     return None
-
-
-def kill_process_group_if_present(pid: int) -> None:
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except (AttributeError, ProcessLookupError, PermissionError):
-        pass
 
 
 class RssSampler:

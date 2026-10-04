@@ -117,8 +117,9 @@ a limit or timeout. Process wait/reap and owned-group signaling are serialized;
 the runner never signals a numeric process group after its leader has been
 reaped. If a descendant keeps a pipe open after that point, it records the
 partial failure and stops draining those pipes. The stdin writer likewise
-uses cancellable nonblocking I/O and records whether it stopped. The
-runner admits at most
+uses cancellable nonblocking I/O and records whether it stopped. Any supplied
+input not fully written fails the run even if the child exits zero. The runner
+admits at most
 4,096 CLI operations total across live and restore phases and at most eight
 search repetitions; owner lifetime is capped at one hour. Direct HTTPS reads
 check both the per-read inactivity timeout and a total request-set deadline.

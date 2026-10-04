@@ -253,7 +253,7 @@ class BoundedProcessTests(unittest.TestCase):
                 self.assertTrue(independent_marker.exists(), "collector killed an unrelated process group")
             finally:
                 if independent.poll() is None:
-                    CANARY.kill_process_group_if_present(independent.pid)
+                    independent.kill()
                     independent.wait(timeout=2)
 
     def test_forced_wait_timeout_retains_partial_receipt(self) -> None:
@@ -374,6 +374,31 @@ class BoundedProcessTests(unittest.TestCase):
             while not marker.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertTrue(marker.exists(), "cleanup signalled the detached stdin holder")
+
+    def test_child_exiting_zero_after_closing_stdin_rejects_incomplete_input(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nudox-bounded-process-closed-stdin-") as temporary:
+            root = Path(temporary)
+            process = self.make_process(
+                root,
+                "closed-stdin",
+                "import os; os.close(0); print('ignored stdin', flush=True)",
+                timeout=2.0,
+                drain_timeout=0.5,
+                input_data=b"x" * (4 * 1024 * 1024),
+            )
+            started = time.monotonic()
+            with self.assertRaises(CANARY.BoundedProcessError) as caught:
+                process.wait()
+            elapsed = time.monotonic() - started
+
+            receipt = caught.exception.receipt
+            self.assertLess(elapsed, 1.5)
+            self.assertEqual(receipt["exit_code"], 0)
+            self.assertLess(receipt["input_bytes_written"], receipt["input_bytes"])
+            self.assertTrue(receipt["input_writer_stopped"])
+            self.assertIsNotNone(receipt["input_writer_failure_reason"])
+            self.assertIn("stdin input incomplete", receipt["failure_reason"])
+            self.assertEqual(Path(receipt["stdout_path"]).read_bytes(), b"ignored stdin\n")
 
 
 class _LoopbackHttpHandler(socketserver.StreamRequestHandler):
