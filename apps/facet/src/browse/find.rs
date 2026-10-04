@@ -331,6 +331,34 @@ impl State {
 
 }
 
+/// Native focus moves after the drawn frame. The first transfer also reports
+/// the exact mounted query to its host, which uses that registration when Add
+/// covers the field immediately after arrival.
+enum QueryFocus {
+    Claim(gpui::WeakEntity<State>),
+    Return,
+}
+
+impl QueryFocus {
+    fn after_frame(
+        self,
+        query: gpui::FocusHandle,
+        restore: Rc<dyn Fn(gpui::FocusHandle, &mut Window, &mut App) -> super::library::ReturnDisposition>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.defer(cx, move |window, cx| {
+            if let Self::Claim(state) = self {
+                let Some(state) = state.upgrade() else { return; };
+                if !state.read(cx).active { return; }
+                let input = state.read(cx).input.clone();
+                input.update(cx, |input, cx| input.focus(window, cx));
+            }
+            restore(query, window, cx);
+        });
+    }
+}
+
 fn result_action_ready(state: &Entity<State>, window: &mut Window, cx: &mut App) -> bool {
     let admission = state.read(cx).result_admission(cx);
     if admission.allows_actions() { return true; }
@@ -386,19 +414,20 @@ impl RenderOnce for Find {
             if !self.active { state.pending = None; state.generation = state.generation.wrapping_add(1); }
         });
         if self.active { state.update(cx, |state, cx| {
-            // A retained/departing Find may mount for its pixels while Ask or
-            // a different route owns the keyboard. Only its first active
-            // paint transfers native focus to the query.
-            if state.initial_focus_pending {
-                state.initial_focus_pending = false;
-                state.input.clone().update(cx, |input, cx| input.focus(window, cx));
-            }
-            let query = state.input.read(cx).focus_handle(cx);
-            let restore = Rc::clone(&self.actions.return_focus);
-            // Report the actual mounted query even on its first active frame.
-            // A Reader is still rendering this element, so the host checks
-            // the exact visit only after that frame returns.
-            window.defer(cx, move |window, cx| { restore(query, window, cx); });
+            // A retained/departing Find may mount for pixels while another
+            // route owns the keyboard. Active paints transfer only after the
+            // frame, when native accessibility has finished reporting focus.
+            let transfer = if std::mem::take(&mut state.initial_focus_pending) {
+                QueryFocus::Claim(cx.weak_entity())
+            } else {
+                QueryFocus::Return
+            };
+            transfer.after_frame(
+                state.input.read(cx).focus_handle(cx),
+                Rc::clone(&self.actions.return_focus),
+                window,
+                cx,
+            );
             state.accept(&self.model, &self.actions, window, cx);
         }); }
         // A query admission keeps the last immutable reading in place. Its
