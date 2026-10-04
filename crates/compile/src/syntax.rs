@@ -1644,7 +1644,7 @@ fn push_rust_use_argument(
             let Some((specifier, exported)) = rust_value_path_parts(node, text) else {
                 return;
             };
-            imports.push(value_import(exported, line, &specifier, &exported, excerpt));
+            imports.push(value_import(&exported, line, &specifier, &exported, excerpt));
         }
         "identifier" => {
             let local = node_text(node, text);
