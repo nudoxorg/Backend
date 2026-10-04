@@ -21,7 +21,7 @@ def lanes []: nothing -> record {
             # owner). Delete an entry as soon as it is settled.
             excluded: (
                 [{filter: "binary(/compile_fail/)", category: "harness", reason: "trybuild drives the host Cargo; there is no Cargo inside the Wine prefix"}]
-                | append (open ($env.FILE_PWD | path join "emulated-windows-exclusions.nuon"))
+                | append (open ($env.FILE_PWD | path join "emulated-windows-exclusions.toml") | get exclude)
             )
         }
         arm64: {
@@ -30,7 +30,7 @@ def lanes []: nothing -> record {
             # what an aarch64 machine does, `unclassified` otherwise.
             excluded: (
                 [{filter: "binary(/compile_fail/)", category: "harness", reason: "trybuild drives the host Cargo against an aarch64 target; it checks compile errors, not the platform"}]
-                | append (open ($env.FILE_PWD | path join "emulated-arm64-exclusions.nuon"))
+                | append (open ($env.FILE_PWD | path join "emulated-arm64-exclusions.toml") | get exclude)
             )
         }
     }
@@ -98,6 +98,18 @@ def main [
     for entry in $lane.excluded { print $"   - [($entry.category)] ($entry.filter): ($entry.reason)" }
     let started = (date now)
     if $platform == "windows" { start-wine }
+    # What this run sees, so a failure before the first test is explainable
+    # from the CI log alone: the tool versions, the runner environment, and
+    # nextest's own listing of the selected tests through the runner.
+    print $"   nextest: (^cargo nextest --version | lines | first)"
+    $env | transpose name value | where {|row| $row.name =~ '^(CARGO_TARGET_DIR|CARGO_HOME|TMPDIR|WINEPREFIX|NEXTEST_|CARGO_TARGET_.*_RUNNER)' }
+        | each {|row| print $"   env ($row.name)=($row.value)" }
+    let listed = (do { ^cargo nextest list --locked --config-file $config --profile emulated --target $lane.target ...$packages -E $filter } | complete)
+    print $"   nextest list exit=($listed.exit_code), (($listed.stdout | lines | length)) listed lines"
+    if $listed.exit_code != 0 {
+        print "   nextest list stderr (last 40 lines):"
+        $listed.stderr | lines | last 40 | each {|line| print $"     ($line)" }
+    }
     # Streamed, not captured: nextest prints each failure's output in its
     # final summary, and a long run should show progress as it goes.
     let passed = (try {

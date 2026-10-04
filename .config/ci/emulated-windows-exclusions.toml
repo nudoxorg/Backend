@@ -1,0 +1,652 @@
+# Tests excluded from the emulated windows lane (.config/ci/emulated.nu), one exact
+# nextest filter each, with its category and the first error it showed.
+
+[[exclude]]
+filter = "binary_id(backend-store::durable_publisher) and test(=dropping_a_real_pending_witness_is_drained_before_shutdown)"
+category = "emulation-timing"
+reason = "timing-sensitive: fails about two runs in three under emulation (roughly 10x slower) and passes in the native Linux lane"
+
+[[exclude]]
+filter = "binary_id(backend-cluster-transport) and test(=tests::cold_resume_reverifies_covered_payload_before_trusting_it)"
+category = "unclassified"
+reason = 'fails under Wine (persist covered range: Io(Os { code: 5, kind: PermissionDenied, message: "Access denied." })); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-cluster-transport) and test(=tests::zero_byte_checkpoint_is_incomplete_until_verified_then_rejects_nonempty_mutation)"
+category = "unclassified"
+reason = 'fails under Wine (save verified empty range: Io(Os { code: 5, kind: PermissionDenied, message: "Access denied." })); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-cluster-transport::two_process) and test(=one_cluster_listener_demultiplexes_alternating_control_and_artifact_connections)"
+category = "unclassified"
+reason = 'fails under Wine (register first Bao object: Io(Os { code: 5, kind: PermissionDenied, message: "Access denied." })); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-cluster-transport::two_process) and test(=reports_two_process_cold_and_interrupted_resume_costs_for_one_and_sixteen_mib)"
+category = "unclassified"
+reason = 'fails under Wine (register measured CAS object: Io(Os { code: 5, kind: PermissionDenied, message: "Access denied." })); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-cluster-transport::two_process) and test(=two_process_bao_transfer_reopens_after_mid_batch_failure_and_enters_artifact_sink)"
+category = "unclassified"
+reason = 'fails under Wine (build durable Bao source: Io(Os { code: 5, kind: PermissionDenied, message: "Access denied." })); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-cluster-transport::two_process) and test(=zero_byte_cas_member_uses_authenticated_empty_range_and_cold_resumes)"
+category = "unclassified"
+reason = 'fails under Wine (register empty CAS object: Io(Os { code: 5, kind: PermissionDenied, message: "Access denied." })); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::chunked_coordinate_io_preserves_the_canonical_file_and_checksum)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::corrupt_entries_are_withdrawn_as_cache_misses)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::exact_entries_survive_view_changes_and_cold_reopen)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::filename_collision_cannot_authorize_a_different_input_identity)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::global_cache_evicts_the_least_recently_used_exact_entry)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::interrupted_store_cleans_temporary_file_and_keeps_inventory_unchanged)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::one_held_cache_directory_has_only_one_kernel_locked_writer)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::one_input_identity_cannot_name_conflicting_vectors_in_a_batch)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::only_finite_unit_vectors_are_persisted)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::recipe_switch_keeps_old_entries_but_new_identity_misses)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::repeated_small_batches_keep_existing_entries_when_caps_allow)"
+category = "unclassified"
+reason = "fails under Wine (open cache capability); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-compile) and test(=tests::process_configuration_rejects_ambient_or_unbounded_inputs)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=directory::windows_tests::concurrent_entries_use_independent_handles_for_large_listings)"
+category = "unclassified"
+reason = 'fails under Wine (create listing member: Os { code: 3, kind: NotFound, message: "Path not found." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=directory::windows_tests::ordinary_inherited_source_acl_is_readable_without_private_state_admission)"
+category = "unclassified"
+reason = 'fails under Wine (list source: Os { code: 87, kind: InvalidInput, message: "Invalid parameter." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=executable_identity::windows::tests::a_file_swapped_into_the_launch_path_is_never_read)"
+category = "unclassified"
+reason = """fails under Wine (the running image is still found, by what is mapped: Custom { kind: InvalidData, error: "the mapped image's name is not an NT device path" }); not yet confirmed as a Wine limit or a Windows bug"""
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=executable_identity::windows::tests::the_running_test_binary_is_opened_and_read_back_exactly)"
+category = "unclassified"
+reason = """fails under Wine (open the running image: Custom { kind: InvalidData, error: "the mapped image's name is not an NT device path" }); not yet confirmed as a Wine limit or a Windows bug"""
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::durable::tests::a_parent_that_denies_dacl_changes_fails_closed_before_journal_creation)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::file::tests::identity_survives_a_rename_and_differs_between_files)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::file::tests::replace_publishes_beyond_max_path)"
+category = "unclassified"
+reason = 'fails under Wine (replace a held file beyond MAX_PATH: Os { code: 5, kind: PermissionDenied, message: "Access denied." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::file::tests::replace_unlinks_a_destination_another_handle_holds_open)"
+category = "unclassified"
+reason = 'fails under Wine (replace over a held file: Os { code: 5, kind: PermissionDenied, message: "Access denied." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_new_name_is_refused_only_when_the_system_routes_it_to_a_device)"
+category = "unclassified"
+reason = 'fails under Wine (writing to the NUL device succeeds: Os { code: 6, kind: Uncategorized, message: "Invalid handle." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_source_root_beneath_an_ancestor_named_like_a_device_opens)"
+category = "unclassified"
+reason = 'fails under Wine (std creates a directory named aux: Os { code: 183, kind: AlreadyExists, message: "File already exists." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::source_listing_accepts_ordinary_files_named_like_dos_devices)"
+category = "unclassified"
+reason = 'fails under Wine (std creates it as an ordinary file: Os { code: 5, kind: PermissionDenied, message: "Access denied." }); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::a_crashing_leader_keeps_its_partial_output_and_leaves_no_descendant)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::a_descendant_cannot_break_away_from_the_job)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::a_leader_killed_from_outside_reports_its_status_and_takes_the_tree_with_it)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::cancellation_ends_the_leader_and_every_descendant)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::deadline_and_cancellation_bound_pending_pipe_reads)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::each_stream_enforces_its_own_ceiling_and_partial_start_releases_slots)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::exceeding_the_output_limit_ends_the_tree_even_while_the_leader_floods)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::leader_exit_retires_descendant_inherited_writers)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::native_capture_drains_both_streams_and_closes_handles)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::pending_requests_transfer_to_fixed_slots_until_iocp_completion)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::repeated_capture_returns_every_process_pipe_job_and_iocp_handle)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::successive_live_callers_do_not_throttle_a_later_completion_owner)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=windows_child_output::tests::the_deadline_ends_the_leader_and_every_descendant)"
+category = "unclassified"
+reason = "hangs under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-runtime) and test(=tests::derived_endpoints_are_short_stable_and_workspace_specific)"
+category = "unclassified"
+reason = "fails under Wine (assertion failed: first.as_os_str().len() < 80); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-runtime) and test(=tests::one_workspace_derives_one_endpoint_however_it_is_spelled)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::add_only_delta_reuses_admitted_base_without_reverifying_its_payloads)"
+category = "unclassified"
+reason = 'fails under Wine (compose checked closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::asymmetric_structured_delta_matches_independent_set_oracle)"
+category = "unclassified"
+reason = 'fails under Wine (compose checked closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::base_plus_add_remove_composes_exact_sorted_target)"
+category = "unclassified"
+reason = 'fails under Wine (compose checked closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::cold_reopened_closure_pin_holds_members_through_recovered_admission)"
+category = "unclassified"
+reason = 'fails under Wine (reopen and pin exact closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::collector_resolves_selected_roots_after_waiting_for_publication_pin)"
+category = "unclassified"
+reason = 'fails under Wine (compose checked closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::composer_gc_pin_survives_until_selection_owner_drops_receipt)"
+category = "unclassified"
+reason = 'fails under Wine (compose checked closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::descriptor_fault_has_cold_reopenable_orphan_boundary)"
+category = "unclassified"
+reason = "fails under Wine (descriptor persisted before receipt fault: Corrupt); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::id_only_composition_matches_canonical_closure_and_cold_reopens)"
+category = "unclassified"
+reason = 'fails under Wine (compose checked closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::closure_composer::tests::single_member_genesis_fits_the_public_metadata_budget_helper)"
+category = "unclassified"
+reason = 'fails under Wine (compose one member within advertised metadata budget: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::gc::tests::all_live_candidates_are_charged_and_page_bounded)"
+category = "unclassified"
+reason = 'fails under Wine (collect all-live candidates: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::gc::tests::mark_freeze_external_merges_duplicates_with_bounded_records)"
+category = "unclassified"
+reason = 'fails under Wine (freeze mark: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::alias_preflight_keeps_session_lease_after_two_cold_reap_attempts)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::an_object_a_dead_process_left_linked_twice_reads_before_any_write)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::capture_gc_pin_does_not_block_head_or_unrelated_object_io)"
+category = "unclassified"
+reason = 'fails under Wine (begin capture: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::duplicate_member_claims_are_rejected_instead_of_silently_deduplicated)"
+category = "unclassified"
+reason = 'fails under Wine (begin duplicate-member capture: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::empty_streamed_closure_has_canonical_root)"
+category = "unclassified"
+reason = 'fails under Wine (begin empty capture: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::explicit_metadata_input_budget_accepts_31_members_plus_envelope_slot)"
+category = "unclassified"
+reason = 'fails under Wine (begin exact 32-object budget: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::hard_process_exit_recovers_object_relation_and_descriptor_boundaries)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed: child missed crash point 12:); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::interrupted_seal_leaves_only_collectable_unselected_objects)"
+category = "unclassified"
+reason = 'fails under Wine (begin capture: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::legacy_artifact_session_pins_streamed_members_until_drop)"
+category = "unclassified"
+reason = 'fails under Wine (begin legacy closure session: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::one_and_two_object_streams_seal_and_reopen_cold)"
+category = "unclassified"
+reason = 'fails under Wine (begin rootless closure capture: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::readers_retry_the_short_cas_hardlink_publication_window)"
+category = "unclassified"
+reason = 'fails under Wine (begin writer closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::sealed_capture_transfers_gc_pin_into_receipt)"
+category = "unclassified"
+reason = 'fails under Wine (begin capture: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::tentative_payload_visitor_borrows_bounded_chunks_and_mints_envelope_last)"
+category = "unclassified"
+reason = 'fails under Wine (begin object closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=durable::streaming_closure::tests::zero_byte_object_finishes_without_a_payload_frame)"
+category = "unclassified"
+reason = 'fails under Wine (begin zero-byte closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=journal::publication::owner::tests::warmed_duplicate_group_reuses_owner_storage_without_heap_allocation)"
+category = "unclassified"
+reason = "fails under Wine (assertion `left == right` failed); not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::checked_workspace_publication_binds_manifest_refs_and_typed_root)"
+category = "unclassified"
+reason = "fails under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::root_only_extension_durably_writes_every_registered_relation_root)"
+category = "unclassified"
+reason = "fails under Wine; not yet confirmed as a Wine limit or a Windows bug"
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=cold_pinned_result_receipt_uses_verified_payload_not_worker_claim)"
+category = "unclassified"
+reason = 'fails under Wine (begin result stream: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=keyed_object_stream_admission_commits_and_reopens)"
+category = "unclassified"
+reason = 'fails under Wine (begin keyed-object stream: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=missing_member_before_finish_never_commits_a_closure_descriptor)"
+category = "unclassified"
+reason = 'fails under Wine (begin missing-member test session: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=out_of_order_and_incomplete_streams_never_create_a_closure_receipt)"
+category = "unclassified"
+reason = 'fails under Wine (begin malformed-stream test session: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=received_closure_keeps_its_existing_gc_pin_through_selection)"
+category = "unclassified"
+reason = 'fails under Wine (begin received closure: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=relation_object_stream_admission_commits_and_reopens)"
+category = "unclassified"
+reason = 'fails under Wine (begin relation-object stream: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-store::artifact_stream) and test(=streamed_delta_reopens_cold_and_accounts_for_one_object_edit)"
+category = "unclassified"
+reason = 'fails under Wine (begin initial closure transfer: Io("Access denied. (os error 5)")); not yet confirmed as a Wine limit or a Windows bug'
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=durable::tests::reading_private_state_while_it_is_replaced_always_yields_a_whole_generation)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::durable::tests::app_data_child_is_protected_and_existing_unprotected_child_is_rejected)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::durable::tests::cold_reopen_after_synced_temporary_before_rename_keeps_old_record)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::durable::tests::final_reparse_point_is_rejected_without_opening_its_target)"
+category = "wine-limit"
+reason = "Wine's Winsock has no AF_UNIX (WSAEAFNOSUPPORT, 10047); Windows 10 1803+ does"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::durable::tests::private_journal_directory_is_created_and_cold_reopened)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::durable::tests::private_state_survives_close_and_reopen_with_current_user_owner)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::tests::a_dead_endpoint_refuses_like_unix_and_can_be_removed)"
+category = "wine-limit"
+reason = "Wine's Winsock has no AF_UNIX (WSAEAFNOSUPPORT, 10047); Windows 10 1803+ does"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::tests::a_read_deadline_expires_instead_of_blocking)"
+category = "wine-limit"
+reason = "Wine's Winsock has no AF_UNIX (WSAEAFNOSUPPORT, 10047); Windows 10 1803+ does"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::tests::a_stream_round_trips_and_reports_both_addresses_like_unix)"
+category = "wine-limit"
+reason = "Wine's Winsock has no AF_UNIX (WSAEAFNOSUPPORT, 10047); Windows 10 1803+ does"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::tests::an_endpoint_is_classified_owned_restricted_and_still_connectable)"
+category = "wine-limit"
+reason = "Wine's Winsock has no AF_UNIX (WSAEAFNOSUPPORT, 10047); Windows 10 1803+ does"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::tests::both_ends_of_a_connection_identify_the_current_user)"
+category = "wine-limit"
+reason = "Wine's Winsock has no AF_UNIX (WSAEAFNOSUPPORT, 10047); Windows 10 1803+ does"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_delete_pending_file_is_not_admitted)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_directory_swapped_to_a_junction_after_the_checks_cannot_redirect_the_rename)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_holder_that_never_lets_go_fails_with_its_own_error_and_changes_nothing)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_name_swapped_to_a_symlink_after_the_checks_cannot_redirect_the_rename)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_one_character_destination_name_renames_files_and_directories)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_pinned_directory_and_its_ancestors_cannot_be_renamed_or_deleted_from_outside)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_reader_is_never_starved_by_a_hot_publisher)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_reader_keeps_the_generation_it_opened_when_a_publisher_unlinks_it_before_the_checks)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_reader_looks_again_before_it_believes_a_name_is_absent)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_real_enumeration_reports_the_ids_its_handles_report)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_replacement_swaps_the_name_unless_a_reader_holds_the_destination_open)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_scanner_holding_the_destination_is_waited_out_by_a_replacing_rename)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_scanner_holding_the_source_is_waited_out_by_rename_and_remove)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_short_name_alias_opens_the_entry_it_aliases)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::a_writer_reopens_the_name_after_a_pause_and_gives_up_on_a_name_that_never_settles)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::an_entry_with_a_foreign_dacl_is_rejected_by_open_and_by_listing)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::an_inheritable_allow_entry_does_not_make_a_directory_private)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::case_variants_collide_on_exclusive_creation_of_files_and_directories)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::concurrent_replacing_renames_publish_one_complete_generation_to_readers)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::entries_whose_names_creation_would_refuse_are_still_opened_renamed_and_removed)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::only_one_protected_full_control_allow_for_the_current_user_is_a_private_file)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::paths_beyond_max_path_are_created_listed_reopened_and_removed_by_handle)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::remove_dir_tree_removes_nested_trees_and_refuses_a_junction_without_following_it)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::remove_refuses_a_file_a_writer_still_holds_and_succeeds_once_it_is_released)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::removing_a_tree_with_device_like_entries_does_not_stop_half_way)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::rename_refuses_hard_linked_and_reparse_point_endpoints)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::rename_without_replace_refuses_any_case_variant_of_an_existing_name)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::replacing_a_read_only_destination_behaves_like_unix_rename)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::replacing_rename_publishes_while_a_reader_holds_the_old_file_open)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::republishing_beside_a_scanner_that_inspects_every_generation_never_fails)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::adverse_tests::two_pins_of_one_directory_coexist_and_list_beside_an_open_writer)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::cold_reopen_and_checked_listing_work)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::directory_junction_is_rejected_without_traversing_its_target)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::hard_link_and_symlink_children_are_rejected)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::rename_is_relative_to_pinned_directory)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::rename_outcome_keeps_native_commit_stage_when_parent_flush_fails)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::rename_race_cannot_redirect_to_a_symlink_target)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-runtime) and test(=tests::concurrent_initializers_publish_one_complete_authority_secret)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
+
+[[exclude]]
+filter = "binary_id(backend-runtime) and test(=tests::default_project_state_is_stable_and_isolated_under_app_data)"
+category = "wine-limit"
+reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the private-state check refuses the directory"
