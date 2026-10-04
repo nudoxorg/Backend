@@ -520,7 +520,7 @@ impl StreamingClosureBuilder {
         &mut self,
         claim: ArtifactObjectClaim,
         name: &str,
-        mut file: File,
+        file: File,
         object_id: ObjectId,
     ) -> Result<ObjectId, StoreError> {
         let expected = ArtifactObjectClaim::new(

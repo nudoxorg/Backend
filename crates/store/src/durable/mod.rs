@@ -202,12 +202,12 @@ fn io_error(error: &std::io::Error) -> StoreError {
     }
 }
 
-fn lock_error(error: std::fs::TryLockError) -> StoreError {
+fn lock_error(error: fs::TryLockError) -> StoreError {
     match error {
-        std::fs::TryLockError::WouldBlock => {
+        fs::TryLockError::WouldBlock => {
             io_error(&std::io::Error::from(std::io::ErrorKind::WouldBlock))
         }
-        std::fs::TryLockError::Error(error) => io_error(&error),
+        fs::TryLockError::Error(error) => io_error(&error),
     }
 }
 

@@ -43,6 +43,7 @@ impl StoreCas {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {
         let mut total = 0;
         let mut live = 0;

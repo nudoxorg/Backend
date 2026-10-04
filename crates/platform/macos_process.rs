@@ -216,7 +216,7 @@ fn process_identity(
     expected_pgid: u32,
 ) -> Result<Option<ProcessIdentity>, GroupRetirementError> {
     let mut info = MaybeUninit::<ProcBsdInfoWithUniqId>::zeroed();
-    let expected_size = libc::c_int::try_from(std::mem::size_of::<ProcBsdInfoWithUniqId>())
+    let expected_size = libc::c_int::try_from(size_of::<ProcBsdInfoWithUniqId>())
         .map_err(|_| GroupRetirementError::ProcessInfo)?;
     // SAFETY: `__error` returns this thread's errno cell on Darwin.
     unsafe { *libc::__error() = 0 };
@@ -265,7 +265,7 @@ fn group_snapshot(
     deadline: Instant,
 ) -> Result<Option<Vec<ProcessIdentity>>, GroupRetirementError> {
     let capacity_bytes = MAX_GROUP_MEMBERS
-        .checked_mul(std::mem::size_of::<libc::pid_t>())
+        .checked_mul(size_of::<libc::pid_t>())
         .and_then(|size| libc::c_int::try_from(size).ok())
         .ok_or(GroupRetirementError::ProcessInfo)?;
     let mut pids = vec![0 as libc::pid_t; MAX_GROUP_MEMBERS];

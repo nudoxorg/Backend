@@ -873,7 +873,7 @@ impl FileStore {
     pub fn open_closure_claim(
         &self,
         claim: ArtifactClosureClaim,
-    ) -> Result<super::nodes::DurableManifest, StoreError> {
+    ) -> Result<nodes::DurableManifest, StoreError> {
         self.open_closure(ClosureId::from_bytes(claim.0))
     }
 
@@ -902,7 +902,7 @@ impl FileStore {
     pub fn read_closure_index(
         &self,
         id: ClosureId,
-    ) -> Result<super::nodes::DurableManifest, StoreError> {
+    ) -> Result<nodes::DurableManifest, StoreError> {
         self.open_closure(id)
     }
 

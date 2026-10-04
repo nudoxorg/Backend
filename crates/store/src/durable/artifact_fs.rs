@@ -12,8 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
+#[cfg(not(unix))]
+use std::path::Path;
 
 const LOCK_FILE: &str = "ACTIVE.lock";
 const CLOSURE_TEMP_FILE: &str = "closure-descriptor.tmp";
@@ -342,7 +344,7 @@ mod imp {
         parent: &ArtifactDirectory,
     ) -> Result<SessionDirectory, StoreError> {
         loop {
-            let name = super::next_session_name();
+            let name = next_session_name();
             let parent_copy = parent.try_clone()?;
             match mkdirat(&parent.file, &name, Mode::RWXU) {
                 Ok(()) => {}
@@ -433,7 +435,7 @@ mod imp {
                 Mode::empty(),
             )
             .map(File::from)
-            .map_err(self::error)?;
+            .map_err(error)?;
             let metadata = file.metadata().map_err(|error| io_error(&error))?;
             let linked_stage = name == CLOSURE_TEMP_FILE || name.starts_with("object-");
             if !metadata.is_file()
@@ -556,7 +558,7 @@ mod imp {
                 Mode::empty(),
             )
             .map(File::from)
-            .map_err(self::error)?;
+            .map_err(error)?;
             let destination_metadata = destination.metadata().map_err(|error| io_error(&error))?;
             if !destination_metadata.is_file()
                 || destination_metadata.nlink() != 2
@@ -581,7 +583,7 @@ mod imp {
                 Mode::empty(),
             )
             .map(File::from)
-            .map_err(self::error)?;
+            .map_err(error)?;
             let destination_directory = store_dir(store, &destination_directory_name)?;
             let destination = openat(
                 &destination_directory.file,
@@ -590,7 +592,7 @@ mod imp {
                 Mode::empty(),
             )
             .map(File::from)
-            .map_err(self::error)?;
+            .map_err(error)?;
             let staged_metadata = staged.metadata().map_err(|error| io_error(&error))?;
             let destination_metadata = destination.metadata().map_err(|error| io_error(&error))?;
             if !staged_metadata.is_file()
@@ -606,7 +608,7 @@ mod imp {
             }
             drop(destination);
             drop(staged);
-            unlinkat(directory, &stage_name, AtFlags::empty()).map_err(self::error)?;
+            unlinkat(directory, &stage_name, AtFlags::empty()).map_err(error)?;
         }
         directory.sync_all().map_err(|error| io_error(&error))?;
         Ok(())
@@ -721,7 +723,7 @@ mod imp {
         ) {
             Ok(()) => {
                 objects.sync_all()?;
-                super::wait_test_link_barrier();
+                wait_test_link_barrier();
                 if take_test_fault(12) {
                     return Err(StoreError::Io(
                         "injected interruption after object link".to_owned(),
@@ -783,7 +785,7 @@ mod imp {
         };
         if created {
             closures.sync_all()?;
-            super::wait_test_link_barrier();
+            wait_test_link_barrier();
             if take_test_fault(13) {
                 return Err(StoreError::Io(
                     "injected interruption after closure link".to_owned(),

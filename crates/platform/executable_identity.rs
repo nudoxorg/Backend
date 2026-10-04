@@ -71,7 +71,7 @@ pub struct RunningExecutable {
 }
 
 impl RunningExecutable {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", all(target_os = "macos", test)))]
     fn new(file: File) -> io::Result<Self> {
         let stamp = FileStamp::capture(&file)?;
         Ok(Self { file, stamp })
@@ -702,7 +702,7 @@ mod macos {
         // bounded `sizeofcmds` region is the loader-validated command table.
         // The shared parser treats the resulting bytes as untrusted anyway.
         let commands = unsafe {
-            std::slice::from_raw_parts(base.add(std::mem::size_of::<MachHeader64>()), command_bytes)
+            std::slice::from_raw_parts(base.add(size_of::<MachHeader64>()), command_bytes)
         };
         parse_load_commands(
             header.cpu_type as u32,

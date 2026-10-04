@@ -118,7 +118,10 @@ pub enum PublicationGenerationError {
 pub enum PublicationLimitError {
     /// The requested frame-byte credit product cannot be represented by `usize`.
     #[error("publication frame-byte capacity overflows usize for {queue_capacity:?} items")]
-    FrameBytesOverflow { queue_capacity: NonZeroUsize },
+    FrameBytesOverflow {
+        /// Number of queue items whose frame-byte capacity overflowed.
+        queue_capacity: NonZeroUsize,
+    },
     /// The bounded credit or owner storage could not be allocated before startup.
     #[error("publication {resource} capacity of {capacity} could not be allocated")]
     Allocation {

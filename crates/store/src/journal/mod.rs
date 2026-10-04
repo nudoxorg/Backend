@@ -31,6 +31,7 @@ pub struct FrameSequence {
 }
 
 impl FrameSequence {
+    /// Sequence assigned to the first committed journal frame.
     pub const FIRST: Self = Self { value: 0 };
 
     pub(crate) const fn successor(self) -> Option<Self> {
@@ -79,7 +80,9 @@ impl From<u64> for JournalOffset {
 /// Readable facts carried by an unforgeable stable receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReceiptFacts {
+    /// Physical ordinal of the committed frame.
     pub sequence: FrameSequence,
+    /// First byte position after the durable frame.
     pub durable_end: JournalOffset,
 }
 

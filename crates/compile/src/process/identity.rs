@@ -219,7 +219,7 @@ impl ExecutableIdentity {
         let payload_length =
             usize::try_from(before.len()).map_err(|_| ProcessError::ExecutableLimit)?;
         let encoded_length = payload_length
-            .checked_add(std::mem::size_of::<u64>())
+            .checked_add(size_of::<u64>())
             .ok_or(ProcessError::ExecutableLimit)?;
         let mut hasher = backend_version::ObjectVersionHasher::new(
             backend_version::SchemaIdentity::new(
@@ -791,7 +791,7 @@ fn toolchain_digest_until<C: CancellationObserver + ?Sized>(
     let payload_length = u64::try_from(bytes.len()).map_err(|_| ProcessError::ExecutableLimit)?;
     let encoded_length = bytes
         .len()
-        .checked_add(std::mem::size_of::<u64>())
+        .checked_add(size_of::<u64>())
         .ok_or(ProcessError::ExecutableLimit)?;
     let mut hasher = backend_version::ObjectVersionHasher::new(
         backend_version::SchemaIdentity::new(

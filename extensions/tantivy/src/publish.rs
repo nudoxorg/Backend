@@ -300,14 +300,6 @@ impl PrivateNamespace {
         child.verify_path(&self.path.join(name))
     }
 
-    pub(crate) fn open_private_file_read_write(
-        &self,
-        name: &str,
-        create: bool,
-    ) -> io::Result<std::fs::File> {
-        self.directory.open_private_file_read_write(name, create)
-    }
-
     pub(crate) fn open_private_dir(&self, name: &str) -> io::Result<DirectoryCapability> {
         self.directory.open_private_dir(name)
     }
@@ -398,11 +390,11 @@ impl PrivateNamespace {
         }
         if let Err(error) = lease_file.try_lock() {
             let create = match error {
-                std::fs::TryLockError::WouldBlock => io::Error::new(
+                TryLockError::WouldBlock => io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "new stage lease could not be locked",
                 ),
-                std::fs::TryLockError::Error(error) => error,
+                TryLockError::Error(error) => error,
             };
             drop(lease_file);
             let cleanup = self.remove_stage_and_lease(&created, &lease_name, lease_identity);
@@ -711,10 +703,12 @@ impl PreparedStage {
         self.created.capability().sync_all()
     }
 
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
+    #[cfg(test)]
     pub(crate) const fn disposition(&self) -> StageDisposition {
         self.disposition
     }

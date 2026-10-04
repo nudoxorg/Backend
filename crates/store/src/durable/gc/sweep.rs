@@ -117,11 +117,11 @@ impl Candidate {
         }
     }
 
-    pub(super) const fn mark_key(self) -> super::state::MarkKey {
+    pub(super) const fn mark_key(self) -> state::MarkKey {
         match self {
-            Self::Pack { id, .. } => super::state::MarkKey::Pack(id),
-            Self::Closure(id) => super::state::MarkKey::Closure(id),
-            Self::Object(id) => super::state::MarkKey::Object(id),
+            Self::Pack { id, .. } => state::MarkKey::Pack(id),
+            Self::Closure(id) => state::MarkKey::Closure(id),
+            Self::Object(id) => state::MarkKey::Object(id),
         }
     }
 
@@ -244,7 +244,7 @@ pub(super) fn build_candidate_index(
     paths: &GcPaths,
     kind: SweepKind,
     source: &Path,
-    limits: super::state::GcLimits,
+    limits: GcLimits,
 ) -> Result<Hash, StoreError> {
     let build = paths.candidate_build(kind);
     let temporary = paths.candidate_temp(kind);
@@ -265,7 +265,7 @@ fn build_candidate_index_inner(
     paths: &GcPaths,
     kind: SweepKind,
     source: &Path,
-    limits: super::state::GcLimits,
+    limits: GcLimits,
     build: &Path,
     temporary: &Path,
 ) -> Result<Hash, StoreError> {
@@ -361,7 +361,7 @@ fn build_candidate_index_inner(
 pub(super) fn validate_candidate_index(
     path: &Path,
     kind: SweepKind,
-    limits: super::state::GcLimits,
+    limits: GcLimits,
 ) -> Result<u64, StoreError> {
     let mut file = File::open(path).map_err(|error| io_error(&error))?;
     let length = file.metadata().map_err(|error| io_error(&error))?.len();
@@ -544,10 +544,10 @@ impl FileStore {
         limits: GcLimits,
     ) -> Result<GcReport, StoreError>
     where
-        F: FnOnce(&mut super::roots::GcRootResolver<'_>) -> Result<(), StoreError>,
+        F: FnOnce(&mut GcRootResolver<'_>) -> Result<(), StoreError>,
     {
         let _gc_exclusive = self.acquire_gc_exclusive()?;
-        let mut resolver = super::roots::GcRootResolver::new(self);
+        let mut resolver = GcRootResolver::new(self);
         resolve(&mut resolver)?;
         let mut roots = resolver.into_roots();
         let _guard = self.lock.lock().map_err(|_| StoreError::Corrupt)?;

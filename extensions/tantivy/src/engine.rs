@@ -27,7 +27,7 @@ use tantivy::{
     DocAddress, DocId, DocSet, Index, IndexReader, ReloadPolicy, TERMINATED, TantivyDocument, Term,
     query::{
         AllQuery, BooleanQuery, EnableScoring, FuzzyTermQuery, Occur, Query as TantivyQuery,
-        Scorer, TermQuery,
+        TermQuery,
     },
     schema::{BytesOptions, FAST, Field, INDEXED, IndexRecordOption, STRING, Schema},
 };
@@ -55,7 +55,6 @@ const FIELD_FOLDED_TOKEN: &str = "field_folded_token";
 const MAX_RANK_MATERIAL_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_RANK_SCRATCH_BYTES: usize = 1024 * 1024 * 1024;
 const DEFAULT_RETAINED_RANK_BYTES: usize = 64 * 1024 * 1024;
-const RANK_SCRATCH_BYTES_PER_MATCH: usize = 320;
 const MAX_POSTING_COVER_SCRATCH_BYTES: usize = 256 * 1024 * 1024;
 // Conservative per-token charge for borrowed term references and tokenizer scratch.
 const POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN: usize = 96;
@@ -262,12 +261,6 @@ impl DocumentTable {
             .map(|index| &self.live[index])
     }
 
-    fn iter(&self) -> impl Iterator<Item = (usize, &LiveDocument)> {
-        self.live
-            .iter()
-            .map(|entry| (entry.ordinal as usize, &entry.document))
-    }
-
     fn identity_index(&self) -> Vec<IdentityOrdinal> {
         let mut identities = self
             .live
@@ -403,7 +396,7 @@ pub enum TantivySourceError {
     /// Tantivy rejected index construction or query execution.
     Backend(tantivy::TantivyError),
     /// The durable projection directory could not be read or committed.
-    Io(std::io::Error),
+    Io(io::Error),
     /// Tantivy returned a document outside the verified projection mapping.
     Corrupt(&'static str),
     /// A complete projection does not fit the configured durable cache budget.
@@ -520,8 +513,8 @@ impl From<tantivy::TantivyError> for TantivySourceError {
     }
 }
 
-impl From<std::io::Error> for TantivySourceError {
-    fn from(error: std::io::Error) -> Self {
+impl From<io::Error> for TantivySourceError {
+    fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
 }
@@ -605,7 +598,7 @@ impl TantivySource {
             .try_into()?;
         let mut documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
-        let binding_work = bind_document_addresses(
+        let _binding_work = bind_document_addresses(
             &reader,
             &mut documents,
             limits,
@@ -638,7 +631,7 @@ impl TantivySource {
             rank_docs_visited: AtomicU64::new(0),
             rank_peak_scratch_bytes: AtomicU64::new(0),
             #[cfg(test)]
-            last_binding_work: binding_work,
+            last_binding_work: _binding_work,
         })
     }
 
@@ -1220,7 +1213,7 @@ impl TantivySource {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        let binding_work =
+        let _binding_work =
             bind_document_addresses(&reader, &mut documents, limits, state, fields, false)?;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -1246,7 +1239,7 @@ impl TantivySource {
             rank_docs_visited: AtomicU64::new(0),
             rank_peak_scratch_bytes: AtomicU64::new(0),
             #[cfg(test)]
-            last_binding_work: binding_work,
+            last_binding_work: _binding_work,
         })
     }
 
@@ -1470,7 +1463,7 @@ impl TantivySource {
             if !is_present {
                 removed_documents = removed_documents.checked_add(1).ok_or(Error::SizeLimit)?;
                 estimated_bytes = estimated_bytes
-                    .checked_add(std::mem::size_of::<EntityId>())
+                    .checked_add(size_of::<EntityId>())
                     .ok_or(Error::SizeLimit)?;
                 if estimated_bytes > budget.max_bytes {
                     return Ok(None);
@@ -1658,7 +1651,7 @@ impl TantivySource {
                 return Err(error.into());
             }
         };
-        let binding_work = match bind_resident_document_addresses(
+        let _binding_work = match bind_resident_document_addresses(
             &self.reader,
             &mut documents,
             self.limits,
@@ -1675,7 +1668,7 @@ impl TantivySource {
         };
         #[cfg(test)]
         {
-            self.last_binding_work = binding_work;
+            self.last_binding_work = _binding_work;
         }
         self.identity_ordinals
             .retain(|identity| removed_ordinals.binary_search(&identity.ordinal).is_err());
@@ -1748,7 +1741,7 @@ impl TantivySource {
             .documents
             .live
             .len()
-            .min(self.rank_budget.max_retained_bytes / std::mem::size_of::<RankedHit>());
+            .min(self.rank_budget.max_retained_bytes / size_of::<RankedHit>());
         let mut hits = Vec::new();
         hits.try_reserve_exact(max_hits.min(64))
             .map_err(|_| Error::SizeLimit)?;
@@ -1759,7 +1752,7 @@ impl TantivySource {
                     required_bytes: hits
                         .len()
                         .saturating_add(1)
-                        .saturating_mul(std::mem::size_of::<RankedHit>()),
+                        .saturating_mul(size_of::<RankedHit>()),
                 });
             }
             if hits.len() == hits.capacity() {
@@ -1817,11 +1810,11 @@ impl TantivySource {
         let clause_bytes = query
             .terms
             .len()
-            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .checked_mul(size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
         let result_bound_bytes = candidates
             .len()
-            .checked_mul(std::mem::size_of::<(EntityId, Relevance)>())
+            .checked_mul(size_of::<(EntityId, Relevance)>())
             .ok_or(Error::SizeLimit)?;
         preflight_query_scratch(
             query,
@@ -1835,7 +1828,7 @@ impl TantivySource {
             .map_err(|_| Error::SizeLimit)?;
         let result_capacity_bytes = relevance
             .capacity()
-            .checked_mul(std::mem::size_of::<(EntityId, Relevance)>())
+            .checked_mul(size_of::<(EntityId, Relevance)>())
             .ok_or(Error::SizeLimit)?;
         let mut scratch = Vec::new();
         let mut best = Vec::new();
@@ -1844,7 +1837,7 @@ impl TantivySource {
         let base_scratch_bytes = query_scratch_bytes(query, result_capacity_bytes)?;
         let actual_clause_bytes = best
             .capacity()
-            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .checked_mul(size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
         let base_scratch_bytes = base_scratch_bytes
             .checked_add(actual_clause_bytes.saturating_sub(clause_bytes))
@@ -1963,11 +1956,11 @@ impl TantivySource {
         let clause_bytes = query
             .terms
             .len()
-            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .checked_mul(size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
         let actual_clause_bytes = best
             .capacity()
-            .checked_mul(std::mem::size_of::<Option<Relevance>>())
+            .checked_mul(size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
         let actual_base_scratch_bytes = base_scratch_bytes
             .checked_add(actual_clause_bytes.saturating_sub(clause_bytes))
@@ -2529,11 +2522,11 @@ fn hex_fingerprint(fingerprint: [u8; 32]) -> String {
     encoded
 }
 
-fn write_binding_stamp(directory: &Path, fingerprint: [u8; 32]) -> Result<(), std::io::Error> {
+fn write_binding_stamp(directory: &Path, fingerprint: [u8; 32]) -> Result<(), io::Error> {
     let stamp = directory.join(BINDING_FILE);
     let staging = directory.join(format!(".{BINDING_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
-    std::io::Write::write_all(&mut file, &fingerprint)?;
+    io::Write::write_all(&mut file, &fingerprint)?;
     file.sync_all()?;
     backend_platform::durable::replace_file(&staging, &stamp)?;
     sync_directory(directory)
@@ -2543,7 +2536,7 @@ fn read_binding_stamp(directory: &Path) -> Result<[u8; 32], TantivySourceError> 
     let path = directory.join(BINDING_FILE);
     let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(TantivySource::corrupt(
                 "durable projection has no binding stamp",
             ));
@@ -2596,7 +2589,7 @@ fn write_ordinal_map(
     debug_assert_eq!(bytes.len(), total_bytes);
     let staging = directory.join(format!(".{ORDINAL_MAP_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
-    std::io::Write::write_all(&mut file, &bytes)?;
+    io::Write::write_all(&mut file, &bytes)?;
     file.sync_all()?;
     backend_platform::durable::replace_file(&staging, &directory.join(ORDINAL_MAP_FILE))?;
     sync_directory(directory)?;
@@ -2641,7 +2634,7 @@ fn read_ordinal_map(
     let path = directory.join(ORDINAL_MAP_FILE);
     let bytes = match read_bounded_regular_file(&path, MAX_ORDINAL_MAP_BYTES) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(TantivySource::corrupt(
                 "durable projection has no ordinal map",
             ));
@@ -2830,7 +2823,7 @@ fn write_projection_manifest(
     }
     let staging = directory.join(format!(".{INTEGRITY_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
-    std::io::Write::write_all(&mut file, &bytes)?;
+    io::Write::write_all(&mut file, &bytes)?;
     file.sync_all()?;
     backend_platform::durable::replace_file(&staging, &directory.join(INTEGRITY_FILE))?;
     sync_directory(directory)?;
@@ -2844,7 +2837,7 @@ fn verify_projection_manifest(
 ) -> Result<(), TantivySourceError> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(TantivySourceError::Corrupt(
                 "durable projection directory is missing",
             ));
@@ -2859,7 +2852,7 @@ fn verify_projection_manifest(
     let manifest_path = directory.join(INTEGRITY_FILE);
     let bytes = match read_bounded_regular_file(&manifest_path, MAX_PROJECTION_MANIFEST_BYTES) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(TantivySourceError::Corrupt(
                 "durable projection has no integrity manifest",
             ));
@@ -2999,7 +2992,7 @@ fn projection_file_fingerprints(
             ));
         }
         let path = entry.path();
-        let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
+        let file = match backend_platform::durability::open_regular_file_nofollow(&path) {
             Ok(file) => file,
             Err(error) if is_nofollow_rejection(&error) => {
                 return Err(TantivySource::corrupt(
@@ -3045,30 +3038,30 @@ fn projection_file_fingerprints(
     Ok(files)
 }
 
-fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, std::io::Error> {
-    let mut file =
+fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, io::Error> {
+    let file =
         backend_platform::durability::open_regular_file_nofollow(path).map_err(|error| {
             if is_nofollow_rejection(&error) {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                io::Error::new(io::ErrorKind::InvalidData, error)
             } else {
                 error
             }
         })?;
     let initial_length = file.metadata()?.len();
     if initial_length > maximum {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
             "durable projection metadata exceeds its read bound",
         ));
     }
     let capacity = usize::try_from(initial_length)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "file too large"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "file too large"))?;
     let mut bytes = Vec::with_capacity(capacity);
     file.take(maximum.saturating_add(1))
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > maximum || bytes.len() as u64 != initial_length {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
             "durable projection metadata changed or exceeds its read bound",
         ));
     }
@@ -3088,7 +3081,7 @@ fn is_volatile_projection_file(name: &str) -> bool {
         || name == format!(".{ORDINAL_MAP_FILE}.tmp")
 }
 
-fn is_nofollow_rejection(error: &std::io::Error) -> bool {
+fn is_nofollow_rejection(error: &io::Error) -> bool {
     let loop_error = {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
@@ -3119,7 +3112,7 @@ fn is_nofollow_rejection(error: &std::io::Error) -> bool {
             false
         }
     };
-    error.kind() == std::io::ErrorKind::InvalidData || loop_error
+    error.kind() == io::ErrorKind::InvalidData || loop_error
 }
 
 fn is_projection_file_name(name: &str) -> bool {
@@ -3143,15 +3136,15 @@ fn is_projection_file_name(name: &str) -> bool {
     })
 }
 
-fn path_exists(path: &Path) -> Result<bool, std::io::Error> {
+fn path_exists(path: &Path) -> Result<bool, io::Error> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
 }
 
-fn path_is_real_directory(path: &Path) -> Result<bool, std::io::Error> {
+fn path_is_real_directory(path: &Path) -> Result<bool, io::Error> {
     fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_dir())
 }
 
@@ -3174,10 +3167,10 @@ fn is_definitively_corrupt_root(error: &TantivySourceError) -> bool {
     }
 }
 
-fn remove_projection_path(path: &Path) -> Result<(), std::io::Error> {
+fn remove_projection_path(path: &Path) -> Result<(), io::Error> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
     if metadata.file_type().is_dir() {
@@ -3190,14 +3183,14 @@ fn remove_projection_path(path: &Path) -> Result<(), std::io::Error> {
 fn remove_incomplete_stages(
     namespace: &PrivateNamespace,
     fence: &NamespaceFence,
-) -> Result<(), std::io::Error> {
+) -> Result<(), io::Error> {
     let entries = namespace.entries(MAX_DURABLE_ROOT_SCAN_ENTRIES, fence)?;
     let names = entries
         .into_iter()
         .map(|entry| {
             entry.name.into_string().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
                     "invalid cache filename",
                 )
             })
@@ -3225,14 +3218,14 @@ fn remove_incomplete_stages(
     fence.verify_for(namespace)
 }
 
-fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), io::Error> {
     fs::create_dir(destination)?;
     let mut count = 0_usize;
     for entry in fs::read_dir(source)? {
         count = count.saturating_add(1);
         if count > MAX_PROJECTION_FILES.saturating_add(8) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable Tantivy source exceeds its copy entry bound",
             ));
         }
@@ -3241,18 +3234,18 @@ fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), std::io
         let destination_path = destination.join(entry.file_name());
         let metadata = fs::symlink_metadata(&source_path)?;
         if !metadata.file_type().is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable Tantivy projection contains a directory, link, or special entry",
             ));
         }
         let name = entry.file_name();
         let name = name.into_string().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid filename")
+            io::Error::new(io::ErrorKind::InvalidData, "invalid filename")
         })?;
         if !is_projection_file_name(&name) && !is_volatile_projection_file(&name) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable Tantivy projection contains an unrecognized file",
             ));
         }
@@ -3276,8 +3269,8 @@ fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), std::io
             let source_file =
                 backend_platform::durability::open_regular_file_nofollow(&source_path)?;
             if source_file.metadata()?.len() != metadata.len() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
                     "durable Tantivy segment changed while opening for copy-on-write",
                 ));
             }
@@ -3324,37 +3317,37 @@ fn copy_projection_file_nofollow(
     source: &Path,
     destination: &Path,
     expected_length: u64,
-) -> Result<(), std::io::Error> {
-    let mut source_file = backend_platform::durability::open_regular_file_nofollow(source)?;
+) -> Result<(), io::Error> {
+    let source_file = backend_platform::durability::open_regular_file_nofollow(source)?;
     if source_file.metadata()?.len() != expected_length {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
             "durable Tantivy file changed while opening for copy",
         ));
     }
     let mut destination_file =
         backend_platform::durability::open_or_truncate_regular_file_nofollow(destination)?;
-    let copied = std::io::copy(
+    let copied = io::copy(
         &mut source_file.take(expected_length.saturating_add(1)),
         &mut destination_file,
     )?;
     if copied != expected_length {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
             "durable Tantivy file changed while being copied",
         ));
     }
     destination_file.sync_all()
 }
 
-fn touch_durable_root(path: &Path) -> Result<(), std::io::Error> {
+fn touch_durable_root(path: &Path) -> Result<(), io::Error> {
     let stamp = path.join(".last-used");
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&stamp)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::io::Write::write_all(&mut file, &now.to_le_bytes())?;
+    io::Write::write_all(&mut file, &now.to_le_bytes())?;
     file.sync_all()
 }
 
@@ -3385,19 +3378,19 @@ fn prune_durable_roots(
     for entry in fs::read_dir(root)? {
         entries_seen = entries_seen.saturating_add(1);
         if entries_seen > MAX_DURABLE_ROOT_SCAN_ENTRIES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable root directory exceeds its entry bound",
             )
             .into());
         }
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid durable root name")
+            io::Error::new(io::ErrorKind::InvalidData, "invalid durable root name")
         })?;
         if !name.bytes().all(|byte| byte.is_ascii_hexdigit()) || name.len() != 64 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable root directory contains an unrecognized entry",
             )
             .into());
@@ -3429,12 +3422,12 @@ fn prune_durable_roots(
                 selected: false,
                 retained: false,
             }),
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(fs::TryLockError::WouldBlock) => {
                 pinned_bytes = pinned_bytes
                     .checked_add(bytes)
-                    .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+                    .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
             }
-            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+            Err(fs::TryLockError::Error(error)) => return Err(error.into()),
         }
     }
     candidates.sort_by(|left, right| {
@@ -3451,7 +3444,7 @@ fn prune_durable_roots(
             retained_roots = retained_roots.saturating_add(1);
             retained_bytes = retained_bytes
                 .checked_add(candidate.bytes)
-                .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+                .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
             continue;
         }
         if retained_roots < MAX_RETAINED_DURABLE_ROOTS
@@ -3463,19 +3456,19 @@ fn prune_durable_roots(
             retained_roots = retained_roots.saturating_add(1);
             retained_bytes = retained_bytes
                 .checked_add(candidate.bytes)
-                .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+                .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
         }
     }
     for candidate in candidates.iter().filter(|candidate| !candidate.retained) {
         match remove_unpinned_projection_root(&candidate.path) {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 // A reader may have pinned the root after classification. Keep
                 // it; reader leases are outside the root-count limit but remain
                 // inside the total byte quota.
                 retained_bytes = retained_bytes
                     .checked_add(candidate.bytes)
-                    .ok_or_else(|| std::io::Error::other("durable cache size overflow"))?;
+                    .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -3490,7 +3483,7 @@ fn prune_durable_roots(
     Ok(())
 }
 
-fn open_root_lease(root: &Path) -> Result<File, std::io::Error> {
+fn open_root_lease(root: &Path) -> Result<File, io::Error> {
     backend_platform::durability::open_or_create_regular_file_nofollow(
         &root.join(DURABLE_ROOT_LEASE),
     )
@@ -3499,11 +3492,11 @@ fn open_root_lease(root: &Path) -> Result<File, std::io::Error> {
 fn durable_root_last_used(
     root: &Path,
     fallback: std::time::SystemTime,
-) -> Result<u128, std::io::Error> {
+) -> Result<u128, io::Error> {
     let path = root.join(".last-used");
     let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(fallback
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -3512,8 +3505,8 @@ fn durable_root_last_used(
         Err(error) => return Err(error),
     };
     if file.metadata()?.len() != 16 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
             "durable root last-used stamp has an invalid size",
         ));
     }
@@ -3522,10 +3515,10 @@ fn durable_root_last_used(
     Ok(u128::from_le_bytes(bytes))
 }
 
-fn remove_unpinned_projection_root(path: &Path) -> Result<(), std::io::Error> {
+fn remove_unpinned_projection_root(path: &Path) -> Result<(), io::Error> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
     if !metadata.file_type().is_dir() {
@@ -3534,50 +3527,50 @@ fn remove_unpinned_projection_root(path: &Path) -> Result<(), std::io::Error> {
     let lease = open_root_lease(path)?;
     match lease.try_lock() {
         Ok(()) => remove_projection_path(path),
-        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
+        Err(fs::TryLockError::WouldBlock) => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
             "selected Tantivy root is held by an active reader",
         )),
-        Err(std::fs::TryLockError::Error(error)) => Err(error),
+        Err(fs::TryLockError::Error(error)) => Err(error),
     }
 }
 
-fn durable_root_size(root: &Path) -> Result<u64, std::io::Error> {
+fn durable_root_size(root: &Path) -> Result<u64, io::Error> {
     let mut total = 0_u64;
     let mut count = 0_usize;
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid filename")
+            io::Error::new(io::ErrorKind::InvalidData, "invalid filename")
         })?;
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable root contains a directory, symlink, or special file",
             ));
         }
         if !is_volatile_projection_file(&name) && !is_projection_file_name(&name) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable root contains an unrecognized file",
             ));
         }
         count = count.saturating_add(1);
         if count > MAX_PROJECTION_FILES.saturating_add(8) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "durable root contains too many files",
             ));
         }
         total = total
             .checked_add(metadata.len())
-            .ok_or_else(|| std::io::Error::other("durable root size overflow"))?;
+            .ok_or_else(|| io::Error::other("durable root size overflow"))?;
     }
     Ok(total)
 }
 
-fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
+fn sync_directory(path: &Path) -> Result<(), io::Error> {
     backend_platform::durability::open_directory_nofollow(path)?.sync_all()
 }
 
@@ -4053,7 +4046,7 @@ impl LexicalSource for TantivySource {
         }
         let heap_bytes = request
             .limit
-            .checked_mul(std::mem::size_of::<RankedHit>())
+            .checked_mul(size_of::<RankedHit>())
             .ok_or(Error::SizeLimit)?;
         preflight_query_scratch(
             &request.query,
@@ -4064,7 +4057,7 @@ impl LexicalSource for TantivySource {
         let heap_bytes = page
             .hits
             .capacity()
-            .checked_mul(std::mem::size_of::<RankedHit>())
+            .checked_mul(size_of::<RankedHit>())
             .ok_or(Error::SizeLimit)?;
         preflight_query_scratch(
             &request.query,
@@ -4187,7 +4180,7 @@ fn posting_count(fields: &[(String, String)]) -> Result<u32, Error> {
 }
 
 fn revision_document_bytes(fields: &[(String, String)]) -> Result<usize, Error> {
-    let mut bytes = std::mem::size_of::<EntityId>();
+    let mut bytes = size_of::<EntityId>();
     for (field, text) in fields {
         let qualified_prefix = field
             .len()
@@ -4211,7 +4204,7 @@ fn revision_document_bytes(fields: &[(String, String)]) -> Result<usize, Error> 
                 .ok_or(Error::SizeLimit)?;
             let posting_bytes = term_bytes
                 .checked_add(
-                    std::mem::size_of::<EntityId>()
+                    size_of::<EntityId>()
                         .checked_mul(4)
                         .ok_or(Error::SizeLimit)?,
                 )
@@ -4422,7 +4415,7 @@ fn query_scratch_bytes(query: &Query, extra_bytes: usize) -> Result<usize, Tanti
     let clause_bytes = query
         .terms
         .len()
-        .checked_mul(std::mem::size_of::<Option<Relevance>>())
+        .checked_mul(size_of::<Option<Relevance>>())
         .ok_or(Error::SizeLimit)?;
     let field_prefix_bytes = match &query.fields {
         FieldSelection::All => 0,
@@ -4740,7 +4733,7 @@ fn source_posting_edge_counts(
         })?;
     let allocated_bytes = all_terms
         .capacity()
-        .checked_mul(std::mem::size_of::<&str>())
+        .checked_mul(size_of::<&str>())
         .ok_or(Error::SizeLimit)?;
     if allocated_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
         return Err(TantivySourceError::PostingCoverBudgetExceeded {

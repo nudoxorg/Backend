@@ -23,6 +23,7 @@ use crate::journal::{
 };
 
 #[derive(Debug)]
+/// Exclusively owned journal file with validated replay state.
 pub struct FileJournal {
     file: File,
     state: WorkflowState,
@@ -89,10 +90,20 @@ impl GroupReceipt {
 }
 
 impl FileJournal {
+    /// Creates a new journal and syncs its initialized header.
+    ///
+    /// # Errors
+    /// Returns an error if the path already exists or ownership, writing, or
+    /// syncing the journal cannot be established.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, JournalError> {
         Self::create_using(path.as_ref(), persist_header, sync_parent_directory)
     }
 
+    /// Opens an existing journal, validates its header, and recovers its state.
+    ///
+    /// # Errors
+    /// Returns an error if the journal cannot be exclusively opened or its
+    /// committed contents cannot be recovered.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, JournalError> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -114,11 +125,18 @@ impl FileJournal {
         })
     }
 
+    /// Appends one valid event and returns its durable frame receipt.
+    ///
+    /// # Errors
+    /// Returns [`CommitError::Reduction`] if the event is invalid before any
+    /// write; other commit errors report poisoning, receipt bounds, or an
+    /// uncertain physical append outcome.
     pub fn append(&mut self, event: WorkflowEvent) -> Result<StableReceipt, CommitError> {
         self.append_using(event, persist_frame)
     }
 
     /// Appends a prevalidated group through one physical write and one file sync.
+    #[cfg(test)]
     pub(crate) fn append_group(
         &mut self,
         events: &[WorkflowEvent],
@@ -243,6 +261,11 @@ impl FileJournal {
         })
     }
 
+    /// Replays the journal and replaces this owner's in-memory workflow state.
+    ///
+    /// # Errors
+    /// Returns an error if the journal is poisoned or a committed frame cannot
+    /// be read, validated, decoded, or reduced.
     pub fn replay(&mut self) -> Result<Recovery, JournalError> {
         if self.poisoned {
             return Err(JournalError::Poisoned);

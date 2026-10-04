@@ -11,24 +11,38 @@ use crate::journal::{FrameSequence, JournalOffset};
 /// Physical file operation that failed while opening or recovering a journal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JournalIoStep {
+    /// Opening an existing journal file.
     Open,
+    /// Creating a new journal file.
     Create,
+    /// Inspecting the journal's physical length.
     Inspect,
+    /// Reading the journal header.
     ReadHeader,
+    /// Writing the initial journal header.
     WriteHeader,
+    /// Reading a journal frame during recovery or replay.
     ReadFrame,
+    /// Truncating an incomplete tail during recovery.
     RepairTail,
+    /// Opening the parent directory needed for durability.
     OpenParentDirectory,
+    /// Syncing the parent directory after journal creation.
     SyncParentDirectory,
+    /// Syncing the journal header.
     SyncHeader,
+    /// Syncing a repaired journal tail.
     SyncTailRepair,
 }
 
 /// Physical operation whose failure makes an append outcome uncertain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitIoStep {
+    /// Positioning the file before appending a frame.
     Position,
+    /// Writing the encoded frame.
     WriteFrame,
+    /// Syncing the appended frame.
     SyncFrame,
 }
 
@@ -37,19 +51,41 @@ pub enum CommitIoStep {
 pub enum HeaderError {
     #[error("journal header is truncated: required {required:?}, observed {actual:?}")]
     Truncated {
+        /// Minimum header length required by this format.
         required: JournalOffset,
+        /// Header length present in the file.
         actual: JournalOffset,
     },
     #[error("journal magic is unknown: {observed:?}")]
-    Magic { observed: [u8; 8] },
+    Magic {
+        /// Eight-byte magic value read from the file.
+        observed: [u8; 8],
+    },
     #[error("journal physical version {observed} is unsupported")]
-    PhysicalVersion { observed: u16 },
+    PhysicalVersion {
+        /// Physical format version found in the header.
+        observed: u16,
+    },
     #[error("journal declares header width {observed}, expected {expected}")]
-    HeaderWidth { expected: u16, observed: u16 },
+    HeaderWidth {
+        /// Header width required by this implementation.
+        expected: u16,
+        /// Header width recorded in the file.
+        observed: u16,
+    },
     #[error("journal declares workflow-record width {observed}, expected {expected}")]
-    RecordWidth { expected: u16, observed: u16 },
+    RecordWidth {
+        /// Workflow-record width required by this implementation.
+        expected: u16,
+        /// Workflow-record width recorded in the file.
+        observed: u16,
+    },
     #[error("journal reserved field is nonzero: {observed}")]
-    Reserved { observed: u16 },
+    Reserved {
+        /// Unexpected value in the reserved header field.
+        observed: u16,
+    },
+    /// The header checksum does not match its contents.
     #[error("journal header checksum is invalid")]
     Checksum,
 }
@@ -59,30 +95,44 @@ pub enum HeaderError {
 pub enum JournalError {
     #[error("journal I/O failed during {step:?}")]
     Io {
+        /// Physical journal operation that failed.
         step: JournalIoStep,
+        /// Original operating-system error.
         #[source]
         source: io::Error,
     },
+    /// The journal's exclusive file ownership could not be established.
     #[error("journal already has or cannot establish an exclusive physical owner")]
     ExclusiveOwnership(#[source] TryLockError),
+    /// The journal header is invalid.
     #[error(transparent)]
     Header(#[from] HeaderError),
     #[error("journal frame checksum is invalid at {offset:?} for {sequence:?}")]
     FrameChecksum {
+        /// Frame whose checksum failed validation.
         sequence: FrameSequence,
+        /// Byte offset of the invalid frame.
         offset: JournalOffset,
     },
     #[error("journal sequence expected {expected:?}, observed {observed:?}")]
     Sequence {
+        /// Next sequence required by the journal.
         expected: FrameSequence,
+        /// Sequence stored in the encountered frame.
         observed: FrameSequence,
     },
     #[error("journal offset cannot represent {sequence:?}")]
-    OffsetOverflow { sequence: FrameSequence },
+    OffsetOverflow {
+        /// Sequence whose frame offset could not be represented.
+        sequence: FrameSequence,
+    },
+    /// A frame did not decode as a workflow record.
     #[error("workflow record decode failed")]
     Decode(#[source] WorkflowRecordError),
+    /// A decoded event could not be reduced into workflow state.
     #[error("workflow replay reduction failed")]
     Reduction(#[source] ReductionError),
+    /// A prior uncertain append poisoned this in-memory journal owner.
     #[error("poisoned journal must be reopened before replay")]
     Poisoned,
 }
@@ -96,17 +146,26 @@ impl JournalError {
 /// Append failure. Only [`Self::Reduction`] proves that no write was attempted.
 #[derive(Debug, Error)]
 pub enum CommitError {
+    /// The event was rejected before any bytes were written.
     #[error("workflow reduction rejected the event")]
     Reduction(#[source] ReductionError),
+    /// A prior uncertain append requires reopening the journal.
     #[error("journal is poisoned; reopen it before reconciling")]
     Poisoned,
     #[error("journal receipt cannot represent {sequence:?}")]
-    ReceiptOverflow { sequence: FrameSequence },
+    ReceiptOverflow {
+        /// Sequence whose receipt could not be represented.
+        sequence: FrameSequence,
+    },
     #[error("journal append outcome is unknown for {sequence:?} during {step:?}")]
     OutcomeUnknown {
+        /// Event whose append may have reached durable storage.
         attempted: WorkflowRecord,
+        /// Frame sequence assigned to the attempted append.
         sequence: FrameSequence,
+        /// Physical operation during which the outcome became uncertain.
         step: CommitIoStep,
+        /// Original operating-system failure.
         #[source]
         source: io::Error,
     },

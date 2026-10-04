@@ -35,69 +35,106 @@ const POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// partially configured std Command.
 #[derive(Clone, Debug)]
 pub struct CaptureCommand {
+    /// Executable path or platform command name to launch.
     pub program: OsString,
+    /// Arguments passed after the executable name.
     pub args: Vec<OsString>,
+    /// Optional working directory for the child.
     pub cwd: Option<PathBuf>,
+    /// Whether the child starts with the caller's environment or an empty one.
     pub environment: CaptureEnvironment,
+    /// Environment updates applied after `environment`; `None` removes a key.
     pub overrides: Vec<(OsString, Option<OsString>)>,
 }
 
+/// Baseline environment inherited by a captured child.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureEnvironment {
+    /// Start from the current process environment.
     Inherit,
+    /// Start without inherited variables.
     Clear,
 }
 
 /// One absolute clock and independent retained-byte limits.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureLimits {
+    /// Absolute deadline shared by child execution, output reads, and waiting.
     pub deadline: Instant,
+    /// Maximum stdout bytes retained before capture fails.
     pub stdout_bytes: usize,
+    /// Maximum stderr bytes retained before capture fails.
     pub stderr_bytes: usize,
 }
 
 /// A complete child transaction; no reader thread or child remains live.
 #[derive(Debug)]
 pub struct CapturedOutput {
+    /// Terminal status returned after the child was reaped.
     pub status: ExitStatus,
+    /// Captured stdout bytes, within the configured bound.
     pub stdout: Vec<u8>,
+    /// Captured stderr bytes, within the configured bound.
     pub stderr: Vec<u8>,
 }
 
+/// Output stream named by a typed capture failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputStream {
+    /// The child's standard output stream.
     Stdout,
+    /// The child's standard error stream.
     Stderr,
 }
 
 /// Exact bounded-child failure. Cleanup retains the original primary cause.
 #[derive(Debug)]
 pub enum CaptureError {
+    /// This target has no bounded capture backend.
     Unsupported,
     /// Process-wide capture ownership slots are all occupied. No child spawned.
     Capacity {
+        /// Maximum number of concurrent process-wide capture owners.
         maximum: usize,
     },
+    /// The child could not be started.
     Spawn(io::Error),
+    /// The requested output pipe was absent after spawn.
     MissingPipe(OutputStream),
+    /// A requested pipe could not be configured for bounded reading.
     Configure {
+        /// Pipe whose configuration failed.
         stream: OutputStream,
+        /// Original operating-system error.
         source: io::Error,
     },
+    /// Reading a requested pipe failed.
     Read {
+        /// Pipe whose read failed.
         stream: OutputStream,
+        /// Original operating-system error.
         source: io::Error,
     },
+    /// Waiting for the child failed.
     Wait(io::Error),
+    /// A captured stream exceeded its independent byte limit.
     OutputLimit {
+        /// Stream that exceeded its configured limit.
         stream: OutputStream,
+        /// Bytes observed when the limit was detected.
         observed: usize,
+        /// Configured maximum for that stream.
         maximum: usize,
     },
+    /// The shared absolute deadline expired.
     Deadline,
+    /// The caller requested cancellation.
     Cancelled,
+    /// Cleanup failed after a primary capture error occurred.
     Cleanup {
+        /// Capture failure that initiated cleanup.
         primary: Box<Self>,
+        /// Original cleanup error.
         source: io::Error,
     },
 }

@@ -2153,21 +2153,6 @@ impl EmbeddingExecutable {
             && self.batch_response_fits(batch.len()))
     }
 
-    fn batch_request_fits(&self, batch: &[(EmbeddingInputIdentity, &str)]) -> bool {
-        if batch.is_empty() || batch.len() > MAX_EMBEDDING_BATCH_ITEMS {
-            return false;
-        }
-        let Some(request_bytes) = batch
-            .iter()
-            .try_fold(REQUEST_HEADER_BYTES, |total, (_, text)| {
-                self.next_batch_request_extent(total, text)
-            })
-        else {
-            return false;
-        };
-        request_bytes <= self.process_limits.input_bytes() && self.batch_response_fits(batch.len())
-    }
-
     fn next_batch_request_extent(&self, current: usize, text: &str) -> Option<usize> {
         if text.len() > self.maximum_text_bytes || u32::try_from(text.len()).is_err() {
             return None;
@@ -2250,21 +2235,6 @@ impl EmbeddingExecutable {
         }
         check_request_deadline(cancelled, deadline)?;
         Ok(output)
-    }
-
-    fn run_batch_v2(
-        &self,
-        batch: &[(EmbeddingInputIdentity, &str)],
-        purpose: EmbeddingPurpose,
-        cancelled: Option<&AtomicBool>,
-    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
-        if !self.active {
-            return Err(EmbeddingExecutableError::Revoked);
-        }
-        let deadline = self.request_deadline()?;
-        check_request_deadline(cancelled, deadline)?;
-        let _permit = self.inference_gate.acquire(cancelled, deadline)?;
-        self.run_batch_v2_admitted(batch, purpose, cancelled, deadline)
     }
 
     fn run_batch_v2_admitted(
@@ -2371,21 +2341,6 @@ impl EmbeddingExecutable {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             EmbeddingInferenceCache::default();
-    }
-
-    fn run_persistent_batch_v2(
-        &self,
-        batch: &[(EmbeddingInputIdentity, &str)],
-        purpose: EmbeddingPurpose,
-        cancelled: Option<&AtomicBool>,
-    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
-        if !self.active {
-            return Err(EmbeddingExecutableError::Revoked);
-        }
-        let deadline = self.request_deadline()?;
-        check_request_deadline(cancelled, deadline)?;
-        let _permit = self.inference_gate.acquire(cancelled, deadline)?;
-        self.run_persistent_batch_v2_admitted(batch, purpose, cancelled, deadline)
     }
 
     fn run_persistent_batch_v2_admitted(

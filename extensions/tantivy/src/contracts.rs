@@ -97,6 +97,7 @@ impl Relevance {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn rank_parts(self) -> (u32, u32, u16, u16) {
         (
             self.matched_bytes,
@@ -104,22 +105,6 @@ impl Relevance {
             self.field_weight,
             self.matched_clauses,
         )
-    }
-
-    pub(crate) fn from_rank_parts(
-        matched_bytes: u32,
-        term_bytes: u32,
-        field_weight: u16,
-        matched_clauses: u16,
-    ) -> Result<Self, Error> {
-        let matched_bytes = usize::try_from(matched_bytes).map_err(|_| Error::SizeLimit)?;
-        let term_bytes = usize::try_from(term_bytes).map_err(|_| Error::SizeLimit)?;
-        let mut relevance = Self::new(matched_bytes, term_bytes, field_weight, 1)?;
-        relevance.matched_clauses = matched_clauses;
-        if matched_clauses == 0 {
-            return Err(Error::MalformedInput);
-        }
-        Ok(relevance)
     }
 
     pub(crate) fn combine(self, other: Self) -> Result<Self, Error> {

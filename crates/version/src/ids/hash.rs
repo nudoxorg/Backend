@@ -232,7 +232,7 @@ impl ObjectVersionHasher {
     /// Returns [`RuntimeIdentityError::Oversized`] if `payload_len` cannot be
     /// represented by the canonical identity framing.
     pub fn new(
-        schema: crate::workspace::SchemaIdentity,
+        schema: SchemaIdentity,
         payload_len: usize,
     ) -> Result<Self, RuntimeIdentityError> {
         let length = u64::try_from(payload_len).map_err(|_| RuntimeIdentityError::Oversized)?;
@@ -314,7 +314,7 @@ impl ObjectVersionHasher {
 
 fn runtime_digest(
     class: u8,
-    schema: crate::workspace::SchemaIdentity,
+    schema: SchemaIdentity,
     bytes: &[u8],
 ) -> Result<[u8; ID_BYTES], RuntimeIdentityError> {
     let _ = u64::try_from(bytes.len()).map_err(|_| RuntimeIdentityError::Oversized)?;
@@ -333,7 +333,7 @@ fn runtime_digest(
 /// Returns [`RuntimeIdentityError::Oversized`] if the byte length cannot be
 /// represented in the canonical identity frame.
 pub fn object_version_digest(
-    schema: crate::workspace::SchemaIdentity,
+    schema: SchemaIdentity,
     bytes: &[u8],
 ) -> Result<[u8; ID_BYTES], RuntimeIdentityError> {
     let mut hasher = ObjectVersionHasher::new(schema, bytes.len())?;
@@ -347,7 +347,7 @@ pub fn object_version_digest(
 /// Returns [`RuntimeIdentityError::Oversized`] if the byte length cannot be
 /// represented in the canonical identity frame.
 pub fn state_root_digest(
-    schema: crate::workspace::SchemaIdentity,
+    schema: SchemaIdentity,
     bytes: &[u8],
 ) -> Result<[u8; ID_BYTES], RuntimeIdentityError> {
     let _ = u64::try_from(bytes.len()).map_err(|_| RuntimeIdentityError::Oversized)?;
@@ -360,7 +360,7 @@ pub fn state_root_digest(
 /// Returns [`RuntimeIdentityError`] for a wrong-length claim, oversized input,
 /// or a digest mismatch.
 pub fn admit_object_version_bytes(
-    schema: crate::workspace::SchemaIdentity,
+    schema: SchemaIdentity,
     bytes: &[u8],
     claimed: &[u8],
 ) -> Result<[u8; ID_BYTES], RuntimeIdentityError> {
@@ -380,7 +380,7 @@ pub fn admit_object_version_bytes(
 /// Returns [`RuntimeIdentityError`] for a wrong-length claim, oversized input,
 /// or a digest mismatch.
 pub fn admit_state_root_bytes(
-    schema: crate::workspace::SchemaIdentity,
+    schema: SchemaIdentity,
     bytes: &[u8],
     claimed: &[u8],
 ) -> Result<[u8; ID_BYTES], RuntimeIdentityError> {

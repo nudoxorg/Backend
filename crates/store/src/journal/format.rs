@@ -37,7 +37,9 @@ pub(crate) struct FrameRecord {
     checksum: [u8; CHECKSUM_BYTES],
 }
 
+/// Encoded byte width of the fixed journal header.
 pub const JOURNAL_HEADER_BYTES: usize = size_of::<HeaderRecord>();
+/// Encoded byte width of one journal frame, including its checksum.
 pub const JOURNAL_FRAME_BYTES: usize = size_of::<FrameRecord>();
 const HEADER_PAYLOAD_BYTES: usize = JOURNAL_HEADER_BYTES - CHECKSUM_BYTES;
 const FRAME_PAYLOAD_BYTES: usize = JOURNAL_FRAME_BYTES - CHECKSUM_BYTES;
