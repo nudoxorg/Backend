@@ -117,7 +117,6 @@ repaint its lines, so they are not traced in the replayed frame.
 |---|---|---|
 | `src/elements/list.rs` `ListState::remeasure_with_uniform_item_height` | new: re-hint every item at a new uniform height, keeping the logical scroll anchor and focus handles | a Library row's height follows the text size; offscreen estimates must follow a reflow |
 | `src/elements/list.rs` `StateInner::uniform_item_height`; `apply_uniform_item_height`, `remeasure_items_with_scroll_anchor`, `List::prepaint` | the declared uniform height is remembered, and the width-change invalidation in `prepaint` (which the first layout also takes) re-hints unmeasured items with it instead of `None` | upstream reset every hint to `None` there, so `with_uniform_item_height` was erased before its first use: unmeasured rows counted as zero height, the scrollbar covered only the measured rows, and a wheel scroll stopped at their end (`uniform_hints_survive_the_first_layout_and_a_width_change`) |
-| `src/elements/list.rs` `ListState::splice_focusable` | newly inserted unmeasured items inherit an already-declared uniform height hint, while existing measured items and focus handles remain intact | offscreen inserted rows otherwise contribute zero to the scroll range until painted (`offscreen_splice_keeps_measured_rows_and_extends_the_hinted_scroll_range`); callers without a declared hint remain unchanged |
 
 ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
 
