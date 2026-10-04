@@ -331,12 +331,10 @@ fn upsert_skips_put_when_retrieved_coordinate_key_matches() {
     let address = listener.local_addr().expect("address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("connection");
-        let mut request = Vec::new();
-        let mut byte = [0_u8; 1];
-        while !request.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).expect("request byte");
-            request.push(byte[0]);
-        }
+        // Consume the whole request, body included. A server that closes with
+        // unread request bytes makes Windows reset the connection, which
+        // discards the response the client has not read yet.
+        drop(read_http(&mut stream));
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -378,15 +376,11 @@ fn upsert_puts_missing_points_after_empty_retrieve() {
     let server = thread::spawn(move || {
         for (index, body) in [retrieve_body, put_body].into_iter().enumerate() {
             let (mut stream, _) = listener.accept().expect("connection");
-            let mut request = Vec::new();
-            let mut byte = [0_u8; 1];
-            while !request.ends_with(b"\r\n\r\n") {
-                stream.read_exact(&mut byte).expect("request byte");
-                request.push(byte[0]);
-            }
-            let text = String::from_utf8(request).expect("HTTP request");
+            // Consume the whole request, body included; see the retrieve-only
+            // fixture above.
+            let (header, _body) = read_http(&mut stream);
             if index == 1 {
-                assert!(text.starts_with("PUT "));
+                assert!(header.starts_with("PUT "));
             }
             write!(
                 stream,

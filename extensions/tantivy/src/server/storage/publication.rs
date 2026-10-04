@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use crate::publish::{PreparedStage, PrivateNamespace};
 use backend_semantic::index_core::{
     EntityDocumentId, LexicalSegment, LexicalSegmentId, MAX_LEXICAL_ROWS,
 };
@@ -21,56 +22,57 @@ use super::{
 };
 
 const INDEX_DIR: &str = "tantivy";
-const RECIPE_DIR: &str = "ntvx-v3";
+const RECIPE_DIR: &str = "ntvx-v4";
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
 const RECIPE: &[u8] = b"ntvx-segment-v4/fast-ordinal";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn ensure_recipe_root(root: &Path) -> io::Result<()> {
-    fs::create_dir_all(root.join(RECIPE_DIR))
+    let _namespace = PrivateNamespace::open_child(root, RECIPE_DIR)?;
+    Ok(())
 }
 
-pub(crate) fn sync_recipe_root(root: &Path) -> io::Result<()> {
-    sync_directory(&root.join(RECIPE_DIR))
+pub(crate) fn open_recipe_namespace(root: &Path) -> io::Result<PrivateNamespace> {
+    PrivateNamespace::open_child(root, RECIPE_DIR)
 }
 
 pub(crate) fn segment_path(root: &Path, id: LexicalSegmentId) -> PathBuf {
     root.join(RECIPE_DIR).join(hex_id(id))
 }
 
+pub(crate) fn segment_name(id: LexicalSegmentId) -> String {
+    hex_id(id)
+}
+
 #[allow(
     clippy::needless_continue,
     reason = "collision retry must continue with a fresh cross-process name"
 )]
-pub(crate) fn new_temp_dir(
-    root: &Path,
+pub(crate) fn new_temp_stage(
+    namespace: &PrivateNamespace,
     id: LexicalSegmentId,
-) -> Result<PathBuf, TantivySegmentStoreError> {
+) -> Result<PreparedStage, TantivySegmentStoreError> {
     for _ in 0..32 {
         let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let path = root.join(RECIPE_DIR).join(format!(
-            ".{}.tmp-{}-{}",
-            hex_id(id),
-            std::process::id(),
-            number
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
+        let name = format!(".{}.tmp-{}-{}", hex_id(id), std::process::id(), number);
+        match namespace.create_stage(&name) {
+            Ok(stage) => return Ok(stage),
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(source) => return Err(io_error(StorePhase::CreateTemporary, &path, source)),
+            Err(source) => {
+                return Err(io_error(
+                    StorePhase::CreateTemporary,
+                    &namespace.path().join(&name),
+                    source,
+                ));
+            }
         }
     }
     Err(TantivySegmentStoreError::TemporaryNameExhausted)
 }
 
-pub(crate) fn quarantine_path(root: &Path, id: LexicalSegmentId) -> PathBuf {
+pub(crate) fn quarantine_name(id: LexicalSegmentId) -> String {
     let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    root.join(RECIPE_DIR).join(format!(
-        ".{}.corrupt-{}-{}",
-        hex_id(id),
-        std::process::id(),
-        number
-    ))
+    format!(".{}.corrupt-{}-{}", hex_id(id), std::process::id(), number)
 }
 
 #[allow(

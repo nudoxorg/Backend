@@ -4084,6 +4084,8 @@ mod compiler_input_witness_tests {
         #[cfg(not(unix))]
         {
             fs::create_dir(&path).expect("create compiler input witness fixture");
+            crate::test_support::make_private(&path)
+                .expect("make the compiler input witness fixture private");
         }
         path
     }

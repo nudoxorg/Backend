@@ -28,8 +28,10 @@ use backend_version::schema::SchemaId;
 use backend_version::{ContentId, GenerationId, ObjectDomain};
 use thiserror::Error;
 
-const FIRST_BYTES: [u8; 4] = *b"one!";
-const SECOND_BYTES: [u8; 4] = *b"two!";
+// A `static`, not a `const`: the borrow-identity assertion below compares addresses, and a
+// `const` is a fresh value at every use, so its address is unspecified between uses.
+static FIRST_BYTES: [u8; 4] = *b"one!";
+static SECOND_BYTES: [u8; 4] = *b"two!";
 
 #[derive(Debug, Error)]
 enum JourneyError {
