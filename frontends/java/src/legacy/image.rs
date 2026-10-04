@@ -1159,7 +1159,10 @@ pub enum ImageError {
     },
     /// A record-component entry points at a non-field declaration.
     #[error("record component declaration {index} is not a field or enum constant")]
-    RecordComponentKind { index: usize },
+    RecordComponentKind {
+        /// Zero-based index into the image's record-component plane.
+        index: usize,
+    },
     /// Extension entry reserved bytes are non-zero.
     #[error("extension entry reserved bytes are non-zero")]
     ExtensionReserved,

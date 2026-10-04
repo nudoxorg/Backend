@@ -15,6 +15,7 @@ mod image;
 pub mod jar;
 pub mod purl;
 pub mod repo;
+/// Deterministic discovery of Java source roots in repositories and artifacts.
 pub mod sourcepath;
 
 pub use self::bound::{BoundHeaderError, BoundImageError, JavaAuthorityImage};

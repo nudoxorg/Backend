@@ -432,6 +432,7 @@ fn is_version_component(name: &str) -> bool {
     name.starts_with(|first: char| first.is_ascii_digit()) || name.contains('.')
 }
 
+/// Finds deterministic Java source roots beneath the supplied filesystem roots.
 pub fn discover_source_roots(roots: &[&Path]) -> io::Result<Vec<PathBuf>> {
     let mut discovered = Vec::new();
     for root in roots {
@@ -445,6 +446,10 @@ pub fn discover_source_roots(roots: &[&Path]) -> io::Result<Vec<PathBuf>> {
     Ok(discovered)
 }
 
+/// Finds source roots in Maven sibling artifacts under one repository root.
+///
+/// The package must be nested as `group/artifact/version`; paths outside the
+/// canonical repository root are rejected.
 pub fn discover_maven_sibling_roots(
     package_root: &Path,
     repository_root: &Path,

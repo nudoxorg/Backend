@@ -37,7 +37,9 @@ pub struct JarEntry<'jar> {
 /// Bytes returned by extraction: either archive-borrowed or caller-buffered.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EntryData<'bytes, 'output> {
+    /// Uncompressed data borrowed directly from a stored archive entry.
     Borrowed(&'bytes [u8]),
+    /// Uncompressed data written into the caller's output buffer.
     Buffered(&'output [u8]),
 }
 impl<'bytes, 'output> AsRef<[u8]> for EntryData<'bytes, 'output> {
@@ -59,44 +61,88 @@ impl<'bytes, 'output> std::ops::Deref for EntryData<'bytes, 'output> {
 #[derive(Debug, Error)]
 pub enum JarError {
     #[error("EOCD missing near offset {offset}, raw value {raw:#x}")]
-    EocdMissing { offset: usize, raw: u32 },
+    /// No end-of-central-directory signature was found in the permitted tail window.
+    EocdMissing {
+        /// First byte offset searched in the archive tail.
+        offset: usize,
+        /// Little-endian value at the search-window start, when available.
+        raw: u32,
+    },
     #[error("central directory truncated at offset {offset}, raw value {raw:#x}")]
-    CentralDirectoryTruncated { offset: usize, raw: u32 },
+    /// A central-directory record extends beyond the archive bytes.
+    CentralDirectoryTruncated {
+        /// Byte offset where the truncated record was expected.
+        offset: usize,
+        /// Diagnostic value supplied by the truncation helper, currently zero.
+        raw: u32,
+    },
     #[error("unknown compression method {method} at offset {offset}")]
-    UnknownCompression { offset: usize, method: u16 },
+    /// The entry uses a compression method outside the supported ZIP subset.
+    UnknownCompression {
+        /// Byte offset of the entry's central-directory record.
+        offset: usize,
+        /// ZIP method identifier from the central-directory row.
+        method: u16,
+    },
     #[error("local header mismatch at offset {offset}: expected {expected}, actual {actual}")]
     LocalHeaderMismatch {
+        /// Byte offset of the entry's local header.
         offset: usize,
+        /// Expected signature or name length, depending on the failed check.
         expected: u64,
+        /// Signature or name length found in the local header.
         actual: u64,
     },
     #[error("size mismatch at offset {offset}: expected {expected}, actual {actual}")]
     SizeMismatch {
+        /// Offset associated with the check: the EOCD size field or an entry's directory record.
         offset: usize,
+        /// Size advertised by the relevant ZIP record or expected uncompressed byte count.
         expected: u64,
+        /// Size observed or computed by the corresponding validation step.
         actual: u64,
     },
     #[error("size overflow at offset {offset}, raw value {raw}")]
-    SizeOverflow { offset: usize, raw: u64 },
+    /// A declared entry size cannot be represented or safely accumulated.
+    SizeOverflow {
+        /// Record or cursor offset where checked conversion or arithmetic failed.
+        offset: usize,
+        /// Value that could not be represented, or `u64::MAX` for checked-arithmetic overflow.
+        raw: u64,
+    },
     #[error("CRC mismatch at offset {offset}: expected {expected:#x}, actual {actual:#x}")]
     CrcMismatch {
+        /// Byte offset of the entry's central-directory record.
         offset: usize,
+        /// CRC-32 advertised in the archive directory.
         expected: u32,
+        /// CRC-32 computed from the extracted bytes.
         actual: u32,
     },
     #[error("entry at offset {offset} is too large: {size}")]
-    EntryTooLarge { offset: usize, size: u64 },
+    /// The entry's declared uncompressed size exceeds the per-entry limit.
+    EntryTooLarge {
+        /// Byte offset of the entry's central-directory record.
+        offset: usize,
+        /// Declared uncompressed size in bytes.
+        size: u64,
+    },
     #[error("deflate failed at offset {offset}: {source}")]
     Deflate {
+        /// Byte offset of the entry's central-directory record.
         offset: usize,
+        /// Decoder failure returned by the bounded deflate operation.
         source: flate2::DecompressError,
     },
     #[error(
         "output buffer is not large enough at offset {offset}: expected {expected}, actual {actual}"
     )]
     OutputTooSmall {
+        /// Entry offset associated with the rejected output request.
         offset: usize,
+        /// Declared number of uncompressed bytes required by this entry.
         expected: u64,
+        /// Current length of the caller-provided output buffer, in bytes.
         actual: usize,
     },
 }

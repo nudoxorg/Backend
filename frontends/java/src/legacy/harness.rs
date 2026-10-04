@@ -102,27 +102,39 @@ pub struct HarnessRequest<'request> {
     pub release: crate::legacy::JavaRelease,
 }
 
+/// Why the requested Java release could not produce an authority image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnavailableCause {
+    /// The doclet rejected the compilation inputs or source set.
     Compilation,
+    /// The selected compiler ran but did not complete the doclet transaction.
     Compiler,
+    /// Required JDK tools were missing, unreadable, or could not be started.
     Toolchain,
 }
 
+/// Failure retained while trying one Java release profile.
 #[derive(Debug)]
 pub struct ReleaseFailure {
+    /// Release profile used for this attempt.
     pub release: crate::legacy::JavaRelease,
+    /// Closed category used to decide whether release fallback may continue.
     pub cause: UnavailableCause,
+    /// Detailed failure from the corresponding doclet attempt.
     pub error: HarnessError,
 }
 
+/// Result of selecting the first Java release that can produce an image.
 #[derive(Debug)]
 pub enum HarnessOutcome {
     Available {
+        /// Release profile that successfully produced `output`.
         release: crate::legacy::JavaRelease,
+        /// Earlier compilation failures before this release succeeded.
         prior_failures: Vec<ReleaseFailure>,
     },
     Unavailable {
+        /// Attempts retained when no candidate release produced an image.
         attempts: Vec<ReleaseFailure>,
     },
 }
@@ -226,6 +238,11 @@ impl Harness {
         })
     }
 
+    /// Tries the requested release followed by distinct fallback releases.
+    ///
+    /// Compilation failures permit trying the next release; toolchain or
+    /// compiler failures stop the search. On success, `output` contains the
+    /// selected release's image and the outcome retains earlier failures.
     pub fn image_with_releases(
         &self,
         toolchain: &JdkToolchain<'_>,
@@ -766,6 +783,7 @@ pub enum HarnessError {
 
 impl HarnessError {
     #[must_use]
+    /// Classifies failures that permit the caller to report an unavailable release.
     pub fn unavailable_cause(&self) -> Option<UnavailableCause> {
         match self {
             Self::Command {

@@ -60,23 +60,50 @@ impl Central {
 /// Closed network failure categories; the underlying ureq error is intentionally translated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkKind {
+    /// Connection, DNS, or other transport-level failure.
     Transport,
+    /// `ureq` reported a TLS-layer error while making the request.
     Blocked,
+    /// HTTP parsing or protocol handling failed before a usable response.
     Protocol,
 }
 /// Typed Central fetch failure.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum FetchError {
     #[error("Maven artifact not found: {url}")]
-    NotFound { url: String },
+    /// Central returned HTTP 404 for the requested artifact.
+    NotFound {
+        /// Complete URL requested for the missing artifact.
+        url: String,
+    },
     #[error("Maven artifact forbidden: {url}")]
-    Forbidden { url: String },
+    /// Central returned HTTP 403 for the requested artifact.
+    Forbidden {
+        /// Complete URL requested for the forbidden artifact.
+        url: String,
+    },
     #[error("unexpected Maven status {status} for {url}")]
-    UnexpectedStatus { status: u16, url: String },
+    /// Central returned a status outside the accepted 2xx, 403, and 404 cases.
+    UnexpectedStatus {
+        /// HTTP response status code returned by Central.
+        status: u16,
+        /// Complete URL requested for the artifact.
+        url: String,
+    },
     #[error("Maven network failure for {url}: {kind:?}")]
-    Network { url: String, kind: NetworkKind },
+    /// No artifact result could be obtained through the classified network path.
+    Network {
+        /// Complete URL whose request failed.
+        url: String,
+        /// Closed transport, blocking, or protocol category.
+        kind: NetworkKind,
+    },
     #[error("Maven response exceeds 512 MiB: {url}")]
-    TooLarge { url: String },
+    /// The successful response body exceeded the adapter's hard size bound.
+    TooLarge {
+        /// Complete URL whose response exceeded the limit.
+        url: String,
+    },
 }
 
 fn fetch_with(agent: &ureq::Agent, url: &str, output: &mut Vec<u8>) -> Result<(), FetchError> {
