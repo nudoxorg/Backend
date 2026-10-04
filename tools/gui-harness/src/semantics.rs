@@ -1545,6 +1545,21 @@ mod tests {
         })
     }
 
+    fn json_object_at_path_mut<'a>(
+        value: &'a mut serde_json::Value,
+        path: &[&str],
+    ) -> Result<&'a mut serde_json::Map<String, serde_json::Value>, String> {
+        let mut current = value;
+        for segment in path {
+            current = current
+                .get_mut(*segment)
+                .ok_or_else(|| format!("JSON path segment {segment:?} is missing"))?;
+        }
+        current
+            .as_object_mut()
+            .ok_or_else(|| format!("JSON value at path {path:?} is not an object"))
+    }
+
     fn validate_native(tree: &serde_json::Value) -> Result<NativeAccessibilityFrame, String> {
         NativeAccessibilityFrame::new(
             "native",
@@ -1557,20 +1572,18 @@ mod tests {
     }
 
     #[test]
-    fn native_tree_integrity_accepts_named_controls_and_scrolled_focus_bounds() {
+    fn native_tree_integrity_accepts_named_controls_and_scrolled_focus_bounds() -> Result<(), String>
+    {
         let evidence = validate_native(&valid_native_tree())
             .expect("complete native tree with focus outside the viewport");
         assert_eq!(evidence.focused_label(), Some("Open settings".to_owned()));
         assert!(evidence.has_label("Open settings"));
 
         let mut content_named = valid_native_tree();
-        content_named["nodes"]["button"]
-            .as_object_mut()
-            .unwrap()
-            .remove("labelled_by");
-        let evidence = validate_native(&content_named)
-            .expect("content name combines every styled text run");
+        json_object_at_path_mut(&mut content_named, &["nodes", "button"])?.remove("labelled_by");
+        let evidence = validate_native(&content_named)?;
         assert_eq!(evidence.focused_label(), Some("Open settings".to_owned()));
+        Ok(())
     }
 
     #[test]
@@ -1649,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tree_integrity_rejects_reused_ids_and_unlabelled_controls() {
+    fn native_tree_integrity_rejects_reused_ids_and_unlabelled_controls() -> Result<(), String> {
         let mut tree = valid_native_tree();
         tree["nodes"]["button-label-open"]["accesskit_id"] = serde_json::json!("2");
         assert!(
@@ -1659,36 +1672,28 @@ mod tests {
         );
 
         let mut tree = valid_native_tree();
-        tree["nodes"]["button"]
-            .as_object_mut()
-            .unwrap()
-            .remove("labelled_by");
+        json_object_at_path_mut(&mut tree, &["nodes", "button"])?.remove("labelled_by");
         tree["nodes"]["button"]["children"] = serde_json::json!([]);
-        tree["nodes"]
-            .as_object_mut()
-            .unwrap()
-            .remove("button-label-open");
-        tree["nodes"]
-            .as_object_mut()
-            .unwrap()
-            .remove("button-label-settings");
+        let nodes = json_object_at_path_mut(&mut tree, &["nodes"])?;
+        nodes.remove("button-label-open");
+        nodes.remove("button-label-settings");
         tree["frame"]["node_count"] = serde_json::json!(2);
         assert!(
             validate_native(&tree)
                 .expect_err("unlabelled control rejected")
                 .contains("no accessible name")
         );
+        Ok(())
     }
 
     #[test]
-    fn disabled_native_controls_keep_names_without_requiring_activation_actions() {
+    fn disabled_native_controls_keep_names_without_requiring_activation_actions()
+    -> Result<(), String> {
         let mut tree = valid_native_tree();
         tree["nodes"]["button"]["aria"]["disabled"] = serde_json::json!(true);
-        tree["nodes"]["button"]["aria"]
-            .as_object_mut()
-            .unwrap()
-            .remove("on_action");
-        validate_native(&tree).expect("disabled control remains named and may omit actions");
+        json_object_at_path_mut(&mut tree, &["nodes", "button", "aria"])?.remove("on_action");
+        validate_native(&tree)?;
+        Ok(())
     }
 
     #[test]
