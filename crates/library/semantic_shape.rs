@@ -585,6 +585,28 @@ pub struct SemanticTypeElement {
     pub ty: SemanticTypeFact,
 }
 
+/// Exact declaration identities bound to one callable's ordered IR carriers.
+///
+/// `Unavailable` means the selected image did not provide an admitted owner to
+/// carrier relation (including legacy image schemas). `Captured` is a complete
+/// relation for this callable; its arrays contain stable family-and-variant
+/// identities resolved from the same selected image and follow the
+/// corresponding admitted IR tuple order. Empty arrays therefore mean the
+/// selected image proved that the callable has no carriers in that role, and
+/// are distinct from `Unavailable`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticCallableCarrierBindings {
+    /// No complete owner-to-carrier relation is available in this image.
+    Unavailable,
+    /// Complete role-local carrier identities in compiler IR tuple order.
+    Captured {
+        /// Declaration identities for the callable's ordered parameters.
+        parameters: Box<[SemanticDeclarationIdentity]>,
+        /// Declaration identities for the callable's ordered results.
+        results: Box<[SemanticDeclarationIdentity]>,
+    },
+}
+
 /// One ordered structural object member.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticPropertyKey {
@@ -634,6 +656,8 @@ pub struct SemanticCallableShape {
     pub parameters: Box<[SemanticTypeElement]>,
     /// Results in compiler order.
     pub results: Box<[SemanticTypeElement]>,
+    /// Owner-specific declaration identities for the admitted IR carriers.
+    pub carrier_bindings: SemanticCallableCarrierBindings,
     /// Optional ABI spelling.
     pub abi: Option<SourceAtomText>,
     /// Compiler variadic-form discriminant.
@@ -1050,6 +1074,30 @@ impl SemanticShapeWalker {
         callable: &SemanticCallableShape,
         depth: usize,
     ) -> Result<(), SemanticShapeError> {
+        if let SemanticCallableCarrierBindings::Captured {
+            parameters,
+            results,
+        } = &callable.carrier_bindings
+        {
+            if parameters.len() != callable.parameters.len()
+                || results.len() != callable.results.len()
+            {
+                return Err(SemanticShapeError::InvalidShape);
+            }
+            let bindings = parameters
+                .len()
+                .checked_add(results.len())
+                .ok_or(SemanticShapeError::OutputBound)?;
+            if bindings > MAX_SEMANTIC_SHAPE_NODES.saturating_sub(self.nodes) {
+                return Err(SemanticShapeError::OutputBound);
+            }
+            for _ in parameters.iter().chain(results.iter()) {
+                // Stable identities serialize as two fixed 16-byte arrays.
+                // 192 bytes conservatively covers their JSON arrays, field
+                // names, delimiters, and the corresponding wire node.
+                self.node(192)?;
+            }
+        }
         for element in callable.parameters.iter().chain(callable.results.iter()) {
             self.node(48)?;
             if let Some(label) = &element.label {
@@ -1495,6 +1543,101 @@ mod tests {
         assert_eq!(
             wrong_source.admit_against(&request),
             Err(SemanticShapeError::InvalidOrigin)
+        );
+    }
+
+    #[test]
+    fn callable_bindings_preserve_unavailable_empty_and_complete_states() {
+        let identity = SemanticDeclarationIdentity {
+            family: [21; 16],
+            variant: [22; 16],
+        };
+        let mut walker = SemanticShapeWalker::default();
+        let captured_empty = SemanticCallableShape {
+            parameters: Box::new([]),
+            results: Box::new([]),
+            carrier_bindings: SemanticCallableCarrierBindings::Captured {
+                parameters: Box::new([]),
+                results: Box::new([]),
+            },
+            abi: None,
+            variadic: FunctionVariadicForm::None,
+            unsafe_: false,
+        };
+        walker
+            .callable(&captured_empty, 0)
+            .expect("captured empty is a complete no-carrier relation");
+        assert_eq!(walker.nodes, 0);
+
+        let unavailable = SemanticCallableShape {
+            carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
+            ..captured_empty.clone()
+        };
+        walker
+            .callable(&unavailable, 0)
+            .expect("unavailable remains a valid explicit state");
+        assert_eq!(walker.nodes, 0);
+
+        let mismatched = SemanticCallableShape {
+            carrier_bindings: SemanticCallableCarrierBindings::Captured {
+                parameters: vec![identity].into_boxed_slice(),
+                results: Box::new([]),
+            },
+            ..captured_empty
+        };
+        assert_eq!(
+            walker.callable(&mismatched, 0),
+            Err(SemanticShapeError::InvalidShape),
+            "captured identity arrays must align exactly with IR tuple cells"
+        );
+    }
+
+    #[test]
+    fn callable_binding_identities_share_the_shape_node_and_byte_budgets() {
+        let identity = SemanticDeclarationIdentity {
+            family: [31; 16],
+            variant: [32; 16],
+        };
+        let element = || SemanticTypeElement {
+            label: None,
+            kind: TupleElementKind::Required,
+            ty: SemanticTypeFact::Unavailable(SemanticTypeUnavailable::MissingImageFact),
+        };
+        let base = SemanticCallableShape {
+            parameters: vec![element()].into_boxed_slice(),
+            results: vec![element()].into_boxed_slice(),
+            carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
+            abi: None,
+            variadic: FunctionVariadicForm::None,
+            unsafe_: false,
+        };
+        let mut without_bindings = SemanticShapeWalker::default();
+        without_bindings
+            .callable(&base, 0)
+            .expect("unavailable relation still admits structural callable facts");
+
+        let complete = SemanticCallableShape {
+            carrier_bindings: SemanticCallableCarrierBindings::Captured {
+                parameters: vec![identity].into_boxed_slice(),
+                results: vec![identity].into_boxed_slice(),
+            },
+            ..base
+        };
+        let mut with_bindings = SemanticShapeWalker::default();
+        with_bindings
+            .callable(&complete, 0)
+            .expect("complete carrier identities share callable admission budgets");
+        assert_eq!(with_bindings.nodes - without_bindings.nodes, 2);
+        assert_eq!(with_bindings.bytes - without_bindings.bytes, 384);
+
+        let mut at_limit = SemanticShapeWalker {
+            nodes: MAX_SEMANTIC_SHAPE_NODES,
+            ..SemanticShapeWalker::default()
+        };
+        assert_eq!(
+            at_limit.callable(&complete, 0),
+            Err(SemanticShapeError::OutputBound),
+            "binding nodes are rejected before the callable's tuple walk"
         );
     }
 

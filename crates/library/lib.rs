@@ -49,7 +49,6 @@ mod wire;
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
 pub use arrangement::QueryWork;
-pub use source_atom::SourceAtomText;
 pub use backend_advisory::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
     AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,
@@ -195,15 +194,16 @@ pub use rich_graph::{
 };
 pub use semantic_shape::{
     MAX_SEMANTIC_SHAPE_BATCH, MAX_SEMANTIC_SHAPE_BYTES, MAX_SEMANTIC_SHAPE_DEPTH,
-    MAX_SEMANTIC_SHAPE_NODES, SemanticArrayShape, SemanticCallableShape, SemanticDeclarationShape,
-    SemanticLiteral, SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary,
-    SemanticShapeBatch, SemanticShapeBudget, SemanticShapeEntry, SemanticShapeError,
-    SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
-    SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection,
-    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
-    SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
-    semantic_shape_source_preimage,
+    MAX_SEMANTIC_SHAPE_NODES, SemanticArrayShape, SemanticCallableCarrierBindings,
+    SemanticCallableShape, SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember,
+    SemanticPropertyKey, SemanticShapeAdmissionSummary, SemanticShapeBatch, SemanticShapeBudget,
+    SemanticShapeEntry, SemanticShapeError, SemanticShapeFact, SemanticShapeImageOrigin,
+    SemanticShapeLanguageFact, SemanticShapeLanguageFacts, SemanticShapeMember,
+    SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
+    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
+    SemanticTypeUnavailable, semantic_shape_source_key, semantic_shape_source_preimage,
 };
+pub use source_atom::SourceAtomText;
 pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
     ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,

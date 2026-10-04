@@ -7,13 +7,13 @@
 use super::super::view_build;
 use super::super::{
     BuiltinModel, BuiltinModelError, BuiltinSemanticRelation, CommandFailure, CommandReply,
-    SemanticArrayShape, SemanticCallableShape, SemanticDeclarationShape, SemanticLiteral,
-    SemanticObjectMember, SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry,
-    SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
-    SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection,
-    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
-    SemanticTypeFact, SemanticTypeUnavailable, SymbolAddress, activate_semantic_publication,
-    read_package_sources,
+    SemanticArrayShape, SemanticCallableCarrierBindings, SemanticCallableShape,
+    SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember, SemanticPropertyKey,
+    SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact, SemanticShapeImageOrigin,
+    SemanticShapeLanguageFact, SemanticShapeLanguageFacts, SemanticShapeMember,
+    SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
+    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
+    SemanticTypeUnavailable, SymbolAddress, activate_semantic_publication, read_package_sources,
 };
 use super::semantic_query::for_package_publications;
 use backend_engine::application::LocalCompilerClient;
@@ -767,6 +767,7 @@ fn project_callable(
     Ok(SemanticDeclarationShape::Callable(SemanticCallableShape {
         parameters,
         results,
+        carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
         abi,
         variadic,
         unsafe_,
@@ -800,6 +801,7 @@ fn project_type_list_callable(
     Ok(SemanticDeclarationShape::Callable(SemanticCallableShape {
         parameters,
         results,
+        carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
         abi: None,
         variadic: if signature.variadic {
             FunctionVariadicForm::TypedLast
@@ -1004,6 +1006,7 @@ fn project_type_expr(
                     SemanticTypeExpr::Function(Box::new(SemanticCallableShape {
                         parameters,
                         results,
+                        carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
                         abi,
                         variadic,
                         unsafe_,

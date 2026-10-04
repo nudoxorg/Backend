@@ -2,12 +2,12 @@ use super::{WireCertificate, WireSchema};
 use crate::canonical::{SymbolSchema, decode_id, encode_id};
 use crate::semantic_shape::semantic_shape_source_key;
 use crate::{
-    SemanticArrayShape, SemanticCallableShape, SemanticDeclarationIdentity,
-    SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember, SemanticPropertyKey,
-    SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact, SemanticShapeImageOrigin,
-    SemanticShapeLanguageFact, SemanticShapeLanguageFacts, SemanticShapeMember,
-    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
-    SemanticTypeFact, SemanticTypeUnavailable, SymbolAddress,
+    SemanticArrayShape, SemanticCallableCarrierBindings, SemanticCallableShape,
+    SemanticDeclarationIdentity, SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember,
+    SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact,
+    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
+    SemanticShapeMember, SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement,
+    SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable, SymbolAddress,
 };
 use backend_semantic::ir::{
     BuiltinType, CSharpNullability, CSharpReferenceKind, ChannelDirection, Confidence,
@@ -237,9 +237,25 @@ enum SemanticDeclarationShapeWire {
 struct SemanticCallableShapeWire {
     parameters: Vec<SemanticTypeElementWire>,
     results: Vec<SemanticTypeElementWire>,
+    carrier_bindings: SemanticCallableCarrierBindingsWire,
     abi: Option<crate::SourceAtomText>,
     variadic: VariadicFormWire,
     unsafe_: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "capture",
+    content = "bindings",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum SemanticCallableCarrierBindingsWire {
+    Unavailable,
+    Captured {
+        parameters: Vec<SemanticDeclarationIdentity>,
+        results: Vec<SemanticDeclarationIdentity>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -649,6 +665,33 @@ fn shape_wire_callable(
     depth: usize,
     nodes: &mut usize,
 ) -> Result<(), String> {
+    match &callable.carrier_bindings {
+        SemanticCallableCarrierBindingsWire::Unavailable => {}
+        SemanticCallableCarrierBindingsWire::Captured {
+            parameters,
+            results,
+        } => {
+            if parameters.len() != callable.parameters.len()
+                || results.len() != callable.results.len()
+            {
+                return Err(
+                    "semantic-shape callable carrier identities do not align with IR tuple cells"
+                        .to_owned(),
+                );
+            }
+            let bindings = parameters
+                .len()
+                .checked_add(results.len())
+                .ok_or_else(|| "semantic-shape callable carrier count overflowed".to_owned())?;
+            let total = nodes
+                .checked_add(bindings)
+                .ok_or_else(|| "semantic-shape wire node count overflowed".to_owned())?;
+            if total > crate::MAX_SEMANTIC_SHAPE_NODES {
+                return Err("semantic-shape wire graph exceeds its fixed node bound".to_owned());
+            }
+            *nodes = total;
+        }
+    }
     for element in callable.parameters.iter().chain(callable.results.iter()) {
         shape_wire_element(element, depth, nodes)?;
     }
@@ -943,6 +986,7 @@ fn callable_to_wire(callable: &SemanticCallableShape) -> SemanticCallableShapeWi
     SemanticCallableShapeWire {
         parameters: callable.parameters.iter().map(element_to_wire).collect(),
         results: callable.results.iter().map(element_to_wire).collect(),
+        carrier_bindings: carrier_bindings_to_wire(&callable.carrier_bindings),
         abi: callable.abi.clone(),
         variadic: callable.variadic.into(),
         unsafe_: callable.unsafe_,
@@ -953,6 +997,20 @@ fn callable_from_wire(
     callable: &SemanticCallableShapeWire,
     certificate: &WireCertificate,
 ) -> Result<SemanticCallableShape, String> {
+    let carrier_bindings = carrier_bindings_from_wire(&callable.carrier_bindings);
+    if let SemanticCallableCarrierBindings::Captured {
+        parameters,
+        results,
+    } = &carrier_bindings
+    {
+        if parameters.len() != callable.parameters.len() || results.len() != callable.results.len()
+        {
+            return Err(
+                "semantic-shape callable carrier identities do not align with IR tuple cells"
+                    .to_owned(),
+            );
+        }
+    }
     Ok(SemanticCallableShape {
         parameters: callable
             .parameters
@@ -966,10 +1024,45 @@ fn callable_from_wire(
             .map(|element| element_from_wire(element, certificate))
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice(),
+        carrier_bindings,
         abi: callable.abi.clone(),
         variadic: callable.variadic.0,
         unsafe_: callable.unsafe_,
     })
+}
+
+fn carrier_bindings_to_wire(
+    bindings: &SemanticCallableCarrierBindings,
+) -> SemanticCallableCarrierBindingsWire {
+    match bindings {
+        SemanticCallableCarrierBindings::Unavailable => {
+            SemanticCallableCarrierBindingsWire::Unavailable
+        }
+        SemanticCallableCarrierBindings::Captured {
+            parameters,
+            results,
+        } => SemanticCallableCarrierBindingsWire::Captured {
+            parameters: parameters.to_vec(),
+            results: results.to_vec(),
+        },
+    }
+}
+
+fn carrier_bindings_from_wire(
+    bindings: &SemanticCallableCarrierBindingsWire,
+) -> SemanticCallableCarrierBindings {
+    match bindings {
+        SemanticCallableCarrierBindingsWire::Unavailable => {
+            SemanticCallableCarrierBindings::Unavailable
+        }
+        SemanticCallableCarrierBindingsWire::Captured {
+            parameters,
+            results,
+        } => SemanticCallableCarrierBindings::Captured {
+            parameters: parameters.clone().into_boxed_slice(),
+            results: results.clone().into_boxed_slice(),
+        },
+    }
 }
 
 fn element_to_wire(element: &SemanticTypeElement) -> SemanticTypeElementWire {
@@ -1578,6 +1671,159 @@ mod admission_tests {
                 fact,
             }],
         }
+    }
+
+    fn callable_wire_batch(callable: SemanticCallableShapeWire) -> SemanticShapeBatchWire {
+        batch(SemanticShapeFactWire::Available {
+            shape: SemanticDeclarationShapeWire::Callable(callable),
+            language: SemanticShapeLanguageFactsWire::CommonOnly {
+                profile: crate::SemanticLanguageProfile::new(LanguageProfile::Rust(
+                    RustEdition::Rust2021,
+                )),
+            },
+        })
+    }
+
+    fn unavailable_wire_element() -> SemanticTypeElementWire {
+        SemanticTypeElementWire {
+            label: None,
+            kind: TupleElementKind::Required.into(),
+            ty: SemanticTypeFactWire::Unavailable(SemanticTypeUnavailable::MissingImageFact),
+        }
+    }
+
+    #[test]
+    fn callable_carrier_bindings_round_trip_all_capture_states() {
+        let identity = SemanticDeclarationIdentity {
+            family: [41; 16],
+            variant: [42; 16],
+        };
+        let captured = SemanticCallableShape {
+            parameters: vec![SemanticTypeElement {
+                label: None,
+                kind: TupleElementKind::Required,
+                ty: SemanticTypeFact::Unavailable(SemanticTypeUnavailable::MissingImageFact),
+            }]
+            .into_boxed_slice(),
+            results: Box::new([]),
+            carrier_bindings: SemanticCallableCarrierBindings::Captured {
+                parameters: vec![identity].into_boxed_slice(),
+                results: Box::new([]),
+            },
+            abi: None,
+            variadic: FunctionVariadicForm::None,
+            unsafe_: false,
+        };
+        let captured_wire = callable_to_wire(&captured);
+        let encoded = serde_json::to_value(&captured_wire).expect("serialize carrier bindings");
+        assert_eq!(
+            encoded["carrier_bindings"]["capture"], "captured",
+            "wire names the completeness state explicitly"
+        );
+        let decoded: SemanticCallableShapeWire =
+            serde_json::from_value(encoded.clone()).expect("decode captured identities");
+        assert_eq!(
+            callable_from_wire(&decoded, &WireCertificate::new())
+                .expect("admit captured identities"),
+            captured
+        );
+
+        let captured_empty = SemanticCallableShape {
+            parameters: Box::new([]),
+            results: Box::new([]),
+            carrier_bindings: SemanticCallableCarrierBindings::Captured {
+                parameters: Box::new([]),
+                results: Box::new([]),
+            },
+            abi: None,
+            variadic: FunctionVariadicForm::None,
+            unsafe_: false,
+        };
+        let empty_wire = callable_to_wire(&captured_empty);
+        assert_eq!(
+            serde_json::to_value(&empty_wire).expect("serialize captured empty relation")["carrier_bindings"]
+                ["capture"],
+            "captured"
+        );
+        assert_eq!(
+            callable_from_wire(&empty_wire, &WireCertificate::new())
+                .expect("admit captured empty relation"),
+            captured_empty
+        );
+
+        let unavailable = SemanticCallableShape {
+            carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
+            ..captured_empty
+        };
+        let unavailable_wire = callable_to_wire(&unavailable);
+        assert_eq!(
+            serde_json::to_value(&unavailable_wire).expect("serialize unavailable relation")["carrier_bindings"]
+                ["capture"],
+            "unavailable"
+        );
+        assert_eq!(
+            callable_from_wire(&unavailable_wire, &WireCertificate::new())
+                .expect("admit unavailable relation"),
+            unavailable
+        );
+
+        let malformed = serde_json::from_value::<SemanticCallableShapeWire>(serde_json::json!({
+            "parameters": [],
+            "results": [],
+            "carrier_bindings": {"capture": "future_state", "bindings": {}},
+            "abi": null,
+            "variadic": 0,
+            "unsafe_": false
+        }));
+        assert!(malformed.is_err(), "capture states are a closed wire enum");
+    }
+
+    #[test]
+    fn callable_carrier_wire_preflight_checks_alignment_and_shared_node_budget() {
+        let identity = SemanticDeclarationIdentity {
+            family: [51; 16],
+            variant: [52; 16],
+        };
+        let misaligned = SemanticCallableShapeWire {
+            parameters: vec![unavailable_wire_element()],
+            results: Vec::new(),
+            carrier_bindings: SemanticCallableCarrierBindingsWire::Captured {
+                parameters: Vec::new(),
+                results: Vec::new(),
+            },
+            abi: None,
+            variadic: FunctionVariadicForm::None.into(),
+            unsafe_: false,
+        };
+        let error = admit_shape_wire_tree(&callable_wire_batch(misaligned.clone()))
+            .expect_err("captured identities must align with tuple cells");
+        assert!(error.contains("align"));
+        assert!(callable_from_wire(&misaligned, &WireCertificate::new()).is_err());
+
+        let mut at_node_limit = SemanticCallableShapeWire {
+            parameters: vec![unavailable_wire_element()],
+            results: Vec::new(),
+            carrier_bindings: SemanticCallableCarrierBindingsWire::Captured {
+                parameters: vec![identity],
+                results: Vec::new(),
+            },
+            abi: None,
+            variadic: FunctionVariadicForm::None.into(),
+            unsafe_: false,
+        };
+        let mut nodes = crate::MAX_SEMANTIC_SHAPE_NODES - 3;
+        assert!(shape_wire_callable(&at_node_limit, 0, &mut nodes).is_ok());
+        at_node_limit.carrier_bindings = SemanticCallableCarrierBindingsWire::Captured {
+            parameters: vec![identity, identity],
+            results: Vec::new(),
+        };
+        at_node_limit.parameters = vec![unavailable_wire_element(); 2];
+        let mut nodes = crate::MAX_SEMANTIC_SHAPE_NODES - 5;
+        assert!(
+            shape_wire_callable(&at_node_limit, 0, &mut nodes)
+                .expect_err("binding identities consume the shared hard node bound")
+                .contains("node")
+        );
     }
 
     #[test]

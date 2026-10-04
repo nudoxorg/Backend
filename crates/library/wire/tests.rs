@@ -1069,6 +1069,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
                 }]
                 .into_boxed_slice(),
                 results: Box::new([]),
+                carrier_bindings: crate::SemanticCallableCarrierBindings::Unavailable,
                 abi: None,
                 variadic: backend_semantic::ir::FunctionVariadicForm::None,
                 unsafe_: false,
