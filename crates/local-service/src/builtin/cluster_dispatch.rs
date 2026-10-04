@@ -166,6 +166,140 @@ impl ProbeFailureClass {
     }
 }
 
+/// One bounded, typed reason a trusted-worker probe did not yield a candidate.
+/// The enum is the sole reason vocabulary used by both the error path and summary counters.
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeFailureReason {
+    TrustChangedDuringProbe,
+    ConnectTimeout,
+    ConnectRejected,
+    ConnectHandshakeFrameRejected,
+    AuthenticatedPeerMismatch,
+    AuthenticatedScopeMismatch,
+    ProbeRequestInvalid,
+    ProbeProtocolRejected,
+    ChallengeSendRejected,
+    HaveReplyRejected,
+    HaveReplyInvalid,
+    ProbeFinishRejected,
+    WorkerUnsupported,
+    WorkerLeaseExpired,
+    CostEvidenceUnavailable,
+    CostEvidenceInvalid,
+    PeerIncarnationRejected,
+    ProbeDeadlineElapsed,
+    LocalClosureInspectionRejected,
+    LocalProbeStorageUnavailable,
+    LocalPreflightRejected,
+    OtherProbeRejected,
+}
+
+impl ProbeFailureReason {
+    const ALL: [Self; 22] = [
+        Self::TrustChangedDuringProbe,
+        Self::ConnectTimeout,
+        Self::ConnectRejected,
+        Self::ConnectHandshakeFrameRejected,
+        Self::AuthenticatedPeerMismatch,
+        Self::AuthenticatedScopeMismatch,
+        Self::ProbeRequestInvalid,
+        Self::ProbeProtocolRejected,
+        Self::ChallengeSendRejected,
+        Self::HaveReplyRejected,
+        Self::HaveReplyInvalid,
+        Self::ProbeFinishRejected,
+        Self::WorkerUnsupported,
+        Self::WorkerLeaseExpired,
+        Self::CostEvidenceUnavailable,
+        Self::CostEvidenceInvalid,
+        Self::PeerIncarnationRejected,
+        Self::ProbeDeadlineElapsed,
+        Self::LocalClosureInspectionRejected,
+        Self::LocalProbeStorageUnavailable,
+        Self::LocalPreflightRejected,
+        Self::OtherProbeRejected,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::TrustChangedDuringProbe => "trust_changed_during_probe",
+            Self::ConnectTimeout => "owner_connect_timeout",
+            Self::ConnectRejected => "owner_connect_rejected",
+            Self::ConnectHandshakeFrameRejected => "owner_connect_handshake_frame_rejected",
+            Self::AuthenticatedPeerMismatch => "authenticated_peer_mismatch",
+            Self::AuthenticatedScopeMismatch => "authenticated_probe_scope_mismatch",
+            Self::ProbeRequestInvalid => "probe_request_invalid",
+            Self::ProbeProtocolRejected => "probe_protocol_rejected",
+            Self::ChallengeSendRejected => "challenge_send_rejected",
+            Self::HaveReplyRejected => "have_reply_rejected",
+            Self::HaveReplyInvalid => "have_reply_invalid",
+            Self::ProbeFinishRejected => "probe_finish_rejected",
+            Self::WorkerUnsupported => "worker_unsupported_probe",
+            Self::WorkerLeaseExpired => "worker_capacity_lease_expired",
+            Self::CostEvidenceUnavailable => "remote_cost_evidence_unavailable",
+            Self::CostEvidenceInvalid => "remote_cost_evidence_invalid",
+            Self::PeerIncarnationRejected => "worker_incarnation_rejected",
+            Self::ProbeDeadlineElapsed => "probe_deadline_elapsed",
+            Self::LocalClosureInspectionRejected => "local_closure_inspection_rejected",
+            Self::LocalProbeStorageUnavailable => "local_probe_storage_unavailable",
+            Self::LocalPreflightRejected => "local_remote_preflight_rejected",
+            Self::OtherProbeRejected => "probe_rejected_other",
+        }
+    }
+
+    const fn diagnostic_class(self) -> ProbeFailureClass {
+        match self {
+            Self::ConnectTimeout | Self::WorkerLeaseExpired | Self::ProbeDeadlineElapsed => {
+                ProbeFailureClass::Timeout
+            }
+            Self::TrustChangedDuringProbe | Self::WorkerUnsupported => ProbeFailureClass::Refusal,
+            Self::CostEvidenceUnavailable
+            | Self::CostEvidenceInvalid
+            | Self::LocalClosureInspectionRejected
+            | Self::LocalProbeStorageUnavailable => ProbeFailureClass::OtherTransport,
+            Self::ConnectRejected => ProbeFailureClass::OtherTransport,
+            Self::ConnectHandshakeFrameRejected
+            | Self::AuthenticatedPeerMismatch
+            | Self::AuthenticatedScopeMismatch
+            | Self::ProbeRequestInvalid
+            | Self::ProbeProtocolRejected
+            | Self::ChallengeSendRejected
+            | Self::HaveReplyRejected
+            | Self::HaveReplyInvalid
+            | Self::ProbeFinishRejected
+            | Self::PeerIncarnationRejected
+            | Self::LocalPreflightRejected
+            | Self::OtherProbeRejected => ProbeFailureClass::Protocol,
+        }
+    }
+}
+
+fn probe_channel_failure_reason(
+    peer_matches: bool,
+    scope_matches: bool,
+) -> Option<ProbeFailureReason> {
+    if !peer_matches {
+        Some(ProbeFailureReason::AuthenticatedPeerMismatch)
+    } else if !scope_matches {
+        Some(ProbeFailureReason::AuthenticatedScopeMismatch)
+    } else {
+        None
+    }
+}
+
+fn probe_connect_failure(error: TransportError) -> ClusterDispatchError {
+    let reason = if matches!(&error, TransportError::Frame(_)) {
+        ProbeFailureReason::ConnectHandshakeFrameRejected
+    } else {
+        ProbeFailureReason::ConnectRejected
+    };
+    ClusterDispatchError::ProbeConnectFailure(
+        reason,
+        ProbeFailureDiagnostic::from_connect_error(error),
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProbeFailureDiagnostic {
     class: ProbeFailureClass,
@@ -245,12 +379,13 @@ fn bounded_probe_failure_detail(detail: &str) -> Option<String> {
 struct ProbeFailureSummary {
     failures: usize,
     by_class: [usize; 6],
+    by_reason: [usize; ProbeFailureReason::ALL.len()],
     first: Option<ProbeFailureDiagnostic>,
     truncated: bool,
 }
 
 impl ProbeFailureSummary {
-    fn record(&mut self, diagnostic: ProbeFailureDiagnostic) {
+    fn record(&mut self, reason: ProbeFailureReason, diagnostic: ProbeFailureDiagnostic) {
         if self.failures >= MAX_PROBE_FAILURE_DIAGNOSTICS {
             self.truncated = true;
             return;
@@ -261,16 +396,56 @@ impl ProbeFailureSummary {
             .min(MAX_PROBE_FAILURE_DIAGNOSTICS);
         let count = &mut self.by_class[diagnostic.class.index()];
         *count = count.saturating_add(1).min(MAX_PROBE_FAILURE_DIAGNOSTICS);
+        let count = &mut self.by_reason[reason as usize];
+        *count = count.saturating_add(1).min(MAX_PROBE_FAILURE_DIAGNOSTICS);
         if self.first.is_none() {
             self.first = Some(diagnostic);
         }
     }
 
+    fn record_outcome<T>(&mut self, outcome: &Result<Option<T>, ClusterDispatchError>) {
+        match outcome {
+            Ok(Some(_)) => {}
+            Ok(None) => self.record(
+                ProbeFailureReason::OtherProbeRejected,
+                ProbeFailureDiagnostic::new(ProbeFailureClass::Protocol, None),
+            ),
+            Err(ClusterDispatchError::ProbeConnectFailure(reason, diagnostic)) => {
+                self.record(*reason, diagnostic.clone());
+            }
+            Err(ClusterDispatchError::ProbeRejected(reason)) => self.record(
+                *reason,
+                ProbeFailureDiagnostic::new(reason.diagnostic_class(), None),
+            ),
+            Err(ClusterDispatchError::Transport(_)) => self.record(
+                ProbeFailureReason::OtherProbeRejected,
+                ProbeFailureDiagnostic::new(ProbeFailureClass::OtherTransport, None),
+            ),
+            Err(ClusterDispatchError::DeadlineExpired) => self.record_timeout(),
+            Err(ClusterDispatchError::InputRejected) => self.record(
+                ProbeFailureReason::LocalClosureInspectionRejected,
+                ProbeFailureDiagnostic::new(ProbeFailureClass::OtherTransport, None),
+            ),
+            Err(ClusterDispatchError::Store(_)) => self.record(
+                ProbeFailureReason::LocalProbeStorageUnavailable,
+                ProbeFailureDiagnostic::new(ProbeFailureClass::OtherTransport, None),
+            ),
+            Err(ClusterDispatchError::ResultRejected(_)) => self.record(
+                ProbeFailureReason::LocalPreflightRejected,
+                ProbeFailureDiagnostic::new(ProbeFailureClass::Protocol, None),
+            ),
+            Err(_) => {}
+        }
+    }
+
     fn record_timeout(&mut self) {
-        self.record(ProbeFailureDiagnostic::new(
-            ProbeFailureClass::Timeout,
-            Some("probe deadline elapsed"),
-        ));
+        self.record(
+            ProbeFailureReason::ProbeDeadlineElapsed,
+            ProbeFailureDiagnostic::new(
+                ProbeFailureClass::Timeout,
+                Some("probe deadline elapsed"),
+            ),
+        );
     }
 
     fn render(&self, exact_grants: usize, candidates: usize) -> String {
@@ -287,6 +462,13 @@ impl ProbeFailureSummary {
                 class.label(),
                 self.by_class[class.index()].min(MAX_PROBE_FAILURE_DIAGNOSTICS),
             );
+        }
+        for reason in ProbeFailureReason::ALL {
+            let count = self.by_reason[reason as usize];
+            if count > 0 {
+                use std::fmt::Write as _;
+                let _ = write!(output, " reason_{}={count}", reason.label());
+            }
         }
         if let Some(first) = &self.first {
             use std::fmt::Write as _;
@@ -330,10 +512,10 @@ pub(crate) enum ClusterDispatchError {
     EndpointIdentityMismatch,
     /// The owner was not configured for direct compiler-cluster execution.
     NotConfigured,
-    /// A peer answered the wrong exact work scope or failed live probe admission.
-    ProbeRejected,
-    /// Opening the direct probe connection failed with a bounded log-only diagnostic.
-    ProbeConnectFailure(ProbeFailureDiagnostic),
+    /// A peer or local probe stage failed a typed exact-admission predicate.
+    ProbeRejected(ProbeFailureReason),
+    /// Opening the direct probe connection failed with a typed reason and bounded log-only detail.
+    ProbeConnectFailure(ProbeFailureReason, ProbeFailureDiagnostic),
     /// No currently trusted and reachable compiler can admit this exact work.
     NoEligibleWorker,
     /// The exact scheduler assignment was cancelled, stale, or exceeded its fence.
@@ -376,12 +558,15 @@ impl fmt::Display for ClusterDispatchError {
                 formatter.write_str("bound compiler endpoint differs from its persisted identity")
             }
             Self::NotConfigured => formatter.write_str("owner compiler cluster is not configured"),
-            Self::ProbeRejected => {
-                formatter.write_str("compiler peer probe failed exact admission")
-            }
-            Self::ProbeConnectFailure(diagnostic) => write!(
+            Self::ProbeRejected(reason) => write!(
                 formatter,
-                "compiler probe connection failed ({})",
+                "compiler peer probe failed exact admission ({})",
+                reason.label(),
+            ),
+            Self::ProbeConnectFailure(reason, diagnostic) => write!(
+                formatter,
+                "compiler probe connection failed: {} ({})",
+                reason.label(),
                 diagnostic.class.label(),
             ),
             Self::NoEligibleWorker => {
@@ -3328,25 +3513,14 @@ impl OwnerCompilerClusterRuntime {
         let mut candidates = Vec::new();
         let mut first_failure = None;
         for outcome in outcomes {
+            failure_summary.record_outcome(&outcome);
             match outcome {
                 Ok(Some(candidate)) => candidates.push(candidate),
-                Ok(None) => {}
-                Err(ClusterDispatchError::ProbeConnectFailure(diagnostic)) => {
-                    failure_summary.record(diagnostic);
-                }
-                Err(ClusterDispatchError::ProbeRejected) => {
-                    failure_summary.record(ProbeFailureDiagnostic::new(
-                        ProbeFailureClass::Protocol,
-                        Some("probe admission rejected"),
-                    ))
-                }
-                Err(ClusterDispatchError::Transport(_)) => {
-                    failure_summary.record(ProbeFailureDiagnostic::new(
-                        ProbeFailureClass::OtherTransport,
-                        Some("probe transport operation failed"),
-                    ))
-                }
-                Err(ClusterDispatchError::DeadlineExpired) => failure_summary.record_timeout(),
+                Ok(None)
+                | Err(ClusterDispatchError::ProbeConnectFailure(_, _))
+                | Err(ClusterDispatchError::ProbeRejected(_))
+                | Err(ClusterDispatchError::Transport(_))
+                | Err(ClusterDispatchError::DeadlineExpired) => {}
                 Err(error) => {
                     first_failure.get_or_insert(error);
                 }
@@ -3713,12 +3887,14 @@ impl OwnerCompilerClusterRuntime {
             manifest.target_platform(),
         );
         let current_policy = self.trusted_workers()?;
-        if !current_policy
-            .grants()
-            .iter()
-            .any(|current| current == grant && current.authorizes(worker_id, &current_grant_scope))
-        {
-            return Ok(None);
+        if !current_policy.contains_exact_authorizing_grant(
+            grant,
+            worker_id,
+            &current_grant_scope,
+        ) {
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::TrustChangedDuringProbe,
+            ));
         }
         let peer = CompilerPeerId::new(*worker_id.as_bytes())
             .map_err(|_| ClusterDispatchError::NoEligibleWorker)?;
@@ -3733,7 +3909,9 @@ impl OwnerCompilerClusterRuntime {
         let mut nonce = [0_u8; 16];
         fill_os_random(&mut nonce).map_err(ClusterDispatchError::Runtime)?;
         if nonce == [0; 16] {
-            return Err(ClusterDispatchError::ProbeRejected);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::ProbeRequestInvalid,
+            ));
         }
         let scope = AssignmentScope::new(
             namespace_id,
@@ -3741,7 +3919,9 @@ impl OwnerCompilerClusterRuntime {
             token.attempt().get(),
             token.fence().as_bytes(),
         )
-        .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
+        .map_err(|_| {
+            ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeRequestInvalid)
+        })?;
         let identity = backend_engine::cluster_transport::CompilerProbeIdentity {
             package_lineage: manifest.package_lineage(),
             target: *manifest.package_target().target().as_ref(),
@@ -3776,7 +3956,9 @@ impl OwnerCompilerClusterRuntime {
         };
         session
             .validate(probe_started_at)
-            .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
+            .map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeRequestInvalid)
+            })?;
 
         let worker_address = EndpointAddr::new(worker_id).with_ip_addr(grant.address());
         let mut channel = tokio::time::timeout(
@@ -3785,25 +3967,29 @@ impl OwnerCompilerClusterRuntime {
         )
         .await
         .map_err(|_| {
-            ClusterDispatchError::ProbeConnectFailure(ProbeFailureDiagnostic::new(
-                ProbeFailureClass::Timeout,
-                Some("direct probe connection timed out"),
-            ))
+            ClusterDispatchError::ProbeConnectFailure(
+                ProbeFailureReason::ConnectTimeout,
+                ProbeFailureDiagnostic::new(
+                    ProbeFailureClass::Timeout,
+                    Some("direct probe connection timed out"),
+                ),
+            )
         })?
-        .map_err(|error| {
-            ClusterDispatchError::ProbeConnectFailure(ProbeFailureDiagnostic::from_connect_error(
-                error,
-            ))
-        })?;
-        if channel.peer() != worker_id || channel.scope() != Some(scope) {
-            return Err(ClusterDispatchError::ProbeRejected);
+        .map_err(probe_connect_failure)?;
+        if let Some(reason) = probe_channel_failure_reason(
+            channel.peer() == worker_id,
+            channel.scope() == Some(scope),
+        ) {
+            return Err(ClusterDispatchError::ProbeRejected(reason));
         }
 
         let page_count = inventory
             .object_count
             .div_ceil(MAX_PROBE_OBJECTS_PER_PAGE as u32);
         if page_count == 0 || page_count > MAX_PROBE_PAGES {
-            return Err(ClusterDispatchError::ProbeRejected);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::ProbeRequestInvalid,
+            ));
         }
         let mut cursor = None;
         let mut have_objects = 0_u32;
@@ -3860,60 +4046,92 @@ impl OwnerCompilerClusterRuntime {
                 });
             }
             if objects.is_empty() {
-                return Err(ClusterDispatchError::ProbeRejected);
+                return Err(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::LocalClosureInspectionRejected,
+                ));
             }
             let page = CompilerProbePage::new(session.clone(), inventory, page_index, objects)
-                .map_err(|error| ClusterDispatchError::Transport(error.to_string()))?;
+                .map_err(|_| {
+                    ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeProtocolRejected)
+                })?;
             tokio::time::timeout(
                 remaining_duration(probe_expires_at)?,
                 channel.send_challenge_page(&page),
             )
             .await
             .map_err(|_| ClusterDispatchError::DeadlineExpired)?
-            .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+            .map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::ChallengeSendRejected)
+            })?;
             let reply = tokio::time::timeout(
                 remaining_duration(probe_expires_at)?,
                 channel.receive_have_page(&page),
             )
             .await
             .map_err(|_| ClusterDispatchError::DeadlineExpired)?
-            .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+            .map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyRejected)
+            })?;
             let now = current_unix_ms()?;
             let missing = reply
                 .missing_objects(&page, now)
-                .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+                .map_err(|_| {
+                    ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+                })?;
             let page_missing_bytes = missing.iter().try_fold(0_u64, |sum, object| {
                 sum.checked_add(u64::from(object.payload_bytes))
             });
             have_objects = have_objects
                 .checked_add(reply.have_count)
-                .ok_or(ClusterDispatchError::ProbeRejected)?;
+                .ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?;
             have_payload_bytes = have_payload_bytes
                 .checked_add(reply.have_payload_bytes)
-                .ok_or(ClusterDispatchError::ProbeRejected)?;
+                .ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?;
             missing_objects = missing_objects
                 .checked_add(
                     u32::try_from(missing.len())
-                        .map_err(|_| ClusterDispatchError::ProbeRejected)?,
+                        .map_err(|_| {
+                            ClusterDispatchError::ProbeRejected(
+                                ProbeFailureReason::HaveReplyInvalid,
+                            )
+                        })?,
                 )
-                .ok_or(ClusterDispatchError::ProbeRejected)?;
+                .ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?;
             missing_payload_bytes = missing_payload_bytes
-                .checked_add(page_missing_bytes.ok_or(ClusterDispatchError::ProbeRejected)?)
-                .ok_or(ClusterDispatchError::ProbeRejected)?;
+                .checked_add(page_missing_bytes.ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?)
+                .ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?;
             let request_bytes = u64::try_from(page.objects.len())
                 .ok()
                 .and_then(|count| count.checked_mul(36))
-                .ok_or(ClusterDispatchError::ProbeRejected)?;
+                .ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?;
             let response_bytes = u64::try_from(reply.have_bitmap.len())
-                .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+                .map_err(|_| {
+                    ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+                })?;
             minimum_probe_control_bytes = minimum_probe_control_bytes
                 .checked_add(request_bytes)
                 .and_then(|sum| sum.checked_add(response_bytes))
-                .ok_or(ClusterDispatchError::ProbeRejected)?;
+                .ok_or(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ))?;
             transcript.update(
                 &page
                     .request_digest()
-                    .map_err(|_| ClusterDispatchError::ProbeRejected)?,
+                    .map_err(|_| {
+                        ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+                    })?,
             );
             transcript.update(&reply.page_digest);
             transcript.update(&reply.have_bitmap);
@@ -3923,10 +4141,14 @@ impl OwnerCompilerClusterRuntime {
                 &reply
                     .snapshot
                     .digest()
-                    .map_err(|_| ClusterDispatchError::ProbeRejected)?,
+                    .map_err(|_| {
+                        ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+                    })?,
             );
             if snapshot.is_some_and(|existing| existing != reply.snapshot) {
-                return Err(ClusterDispatchError::ProbeRejected);
+                return Err(ClusterDispatchError::ProbeRejected(
+                    ProbeFailureReason::HaveReplyInvalid,
+                ));
             }
             snapshot = Some(reply.snapshot);
             cursor = index_page.next();
@@ -3934,24 +4156,36 @@ impl OwnerCompilerClusterRuntime {
         tokio::time::timeout(remaining_duration(probe_expires_at)?, channel.finish())
             .await
             .map_err(|_| ClusterDispatchError::DeadlineExpired)?
-            .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+            .map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeFinishRejected)
+            })?;
         if cursor.is_some()
             || have_objects.checked_add(missing_objects) != Some(inventory.object_count)
             || have_payload_bytes.checked_add(missing_payload_bytes)
                 != Some(inventory.payload_bytes)
         {
-            return Err(ClusterDispatchError::ProbeRejected);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::HaveReplyInvalid,
+            ));
         }
-        let snapshot = snapshot.ok_or(ClusterDispatchError::ProbeRejected)?;
+        let snapshot = snapshot.ok_or(ClusterDispatchError::ProbeRejected(
+            ProbeFailureReason::HaveReplyInvalid,
+        ))?;
         let ProbeCapability::Supported { capability_digest } = snapshot.capability else {
-            return Ok(None);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::WorkerUnsupported,
+            ));
         };
         let worker_lease_expires_at = probe_started_at
             .checked_add(u64::from(snapshot.capacity_lease_ms))
-            .ok_or(ClusterDispatchError::DeadlineExpired)?;
+            .ok_or(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::WorkerLeaseExpired,
+            ))?;
         let expires_at = probe_expires_at.min(worker_lease_expires_at);
         if expires_at <= current_unix_ms()? {
-            return Ok(None);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::WorkerLeaseExpired,
+            ));
         }
         let binding = CompilerRemoteProbeBinding::new(
             namespace_id,
@@ -3962,7 +4196,9 @@ impl OwnerCompilerClusterRuntime {
             probe_started_at,
             expires_at,
         )
-        .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+        .map_err(|_| {
+            ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeRequestInvalid)
+        })?;
         let measurements = OwnerRemoteCompilerProbeMeasurements {
             work: request.work,
             request,
@@ -3985,7 +4221,9 @@ impl OwnerCompilerClusterRuntime {
             expires_at,
         };
         let Some(estimate) = self.cost_model.estimate(&measurements) else {
-            return Ok(None);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::CostEvidenceUnavailable,
+            ));
         };
         let cost = estimate.cost;
         if cost.observed_at != probe_started_at
@@ -3994,7 +4232,9 @@ impl OwnerCompilerClusterRuntime {
             || cost.confidence_per_mille > 1_000
             || cost.completion.checked_total().is_none()
         {
-            return Ok(None);
+            return Err(ClusterDispatchError::ProbeRejected(
+                ProbeFailureReason::CostEvidenceInvalid,
+            ));
         }
         let have = RemoteHaveClaim {
             input_manifest: request.work.input_identity().manifest,
@@ -4054,7 +4294,9 @@ impl OwnerCompilerClusterRuntime {
         })?;
         let restart = scheduler
             .observe_peer_incarnation(peer, snapshot.worker_incarnation, probe_started_at)
-            .map_err(|_| ClusterDispatchError::ProbeRejected)?;
+            .map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::PeerIncarnationRejected)
+            })?;
         for invalidated in restart.invalidated {
             let Ok(invalidated_peer) = assignment_peer_id(invalidated) else {
                 continue;
@@ -6279,6 +6521,53 @@ mod route_cost_tests {
     }
 
     #[test]
+    fn probe_connect_frame_rejection_is_not_an_authenticated_peer_mismatch() {
+        let failure = probe_connect_failure(TransportError::Frame("private frame bytes".into()));
+        let ClusterDispatchError::ProbeConnectFailure(reason, diagnostic) = failure else {
+            panic!("frame connection failure must keep its typed reason");
+        };
+
+        assert_eq!(reason, ProbeFailureReason::ConnectHandshakeFrameRejected);
+        assert_ne!(reason, ProbeFailureReason::AuthenticatedPeerMismatch);
+        assert_eq!(diagnostic.class, ProbeFailureClass::Protocol);
+        assert_eq!(diagnostic.detail, None);
+    }
+
+    #[test]
+    fn probe_channel_peer_and_scope_mismatches_have_distinct_reasons() {
+        assert_eq!(
+            probe_channel_failure_reason(false, true),
+            Some(ProbeFailureReason::AuthenticatedPeerMismatch),
+        );
+        assert_eq!(
+            probe_channel_failure_reason(true, false),
+            Some(ProbeFailureReason::AuthenticatedScopeMismatch),
+        );
+        assert_eq!(
+            probe_channel_failure_reason(false, false),
+            Some(ProbeFailureReason::AuthenticatedPeerMismatch),
+        );
+        assert_eq!(probe_channel_failure_reason(true, true), None);
+    }
+
+    #[test]
+    fn replaced_grant_during_probe_keeps_its_typed_summary_counter() {
+        let outcome = Err::<Option<()>, _>(ClusterDispatchError::ProbeRejected(
+            ProbeFailureReason::TrustChangedDuringProbe,
+        ));
+        let mut summary = ProbeFailureSummary::default();
+        summary.record_outcome(&outcome);
+
+        let rendered = summary.render(1, 0);
+        assert!(rendered.contains("reason_trust_changed_during_probe=1"));
+        assert!(!rendered.contains("reason_probe_rejected_other="));
+        assert_eq!(
+            summary.by_reason[ProbeFailureReason::TrustChangedDuringProbe as usize],
+            1,
+        );
+    }
+
+    #[test]
     fn probe_failure_details_and_summary_are_bounded_and_log_safe() {
         let detail = format!("\"line\n\\{}", "é".repeat(200));
         let diagnostic = ProbeFailureDiagnostic::new(ProbeFailureClass::Iroh, Some(&detail));
@@ -6292,10 +6581,10 @@ mod route_cost_tests {
         );
 
         let mut summary = ProbeFailureSummary::default();
-        summary.record(ProbeFailureDiagnostic::new(
-            ProbeFailureClass::Iroh,
-            Some("first failure"),
-        ));
+        summary.record(
+            ProbeFailureReason::ConnectRejected,
+            ProbeFailureDiagnostic::new(ProbeFailureClass::Iroh, Some("first failure")),
+        );
         for _ in 1..=MAX_PROBE_FAILURE_DIAGNOSTICS {
             summary.record_timeout();
         }
@@ -6304,6 +6593,8 @@ mod route_cost_tests {
         assert_eq!(summary.failures, MAX_PROBE_FAILURE_DIAGNOSTICS);
         assert!(rendered.contains("iroh=1"));
         assert!(rendered.contains("timeout=64"));
+        assert!(rendered.contains("reason_owner_connect_rejected=1"));
+        assert!(rendered.contains("reason_probe_deadline_elapsed=64"));
         assert!(rendered.contains("first_detail=\"first failure\""));
         assert!(!rendered.contains("private"));
     }
