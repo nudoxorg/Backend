@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, Weak};
 
 mod archive;
 
@@ -217,8 +217,37 @@ pub(crate) struct CargoCache {
 }
 
 impl CargoCache {
+    /// The exact cache selected for this host, without reading the environment
+    /// again. Explicit invalid selections never fall through to a default.
+    /// A default Cargo home is a capability only when it already exists.
+    pub(crate) fn from_snapshot(
+        snapshot: &backend_local_service::ClosedLocalHostEnvironmentSnapshot,
+        unpacked: PathBuf,
+    ) -> Option<Self> {
+        use backend_local_service::LocalHostVariable as Variable;
+        let source_root = snapshot.path(Variable::NudoxCargoRoot);
+        if source_root.is_some_and(|path| !path.is_absolute() || !path.is_dir()) {
+            return None;
+        }
+        let home = match snapshot.path(Variable::NudoxCargoHome) {
+            Some(home) => home.to_path_buf(),
+            None => snapshot.path(Variable::Home)
+                .filter(|home| home.is_absolute())
+                .map(|home| home.join(".cargo"))?,
+        };
+        if !home.is_absolute() || !home.is_dir() {
+            return None;
+        }
+        Some(Self {
+            home: stable_path(home),
+            source_root: source_root.map(|path| stable_path(path.to_path_buf())),
+            unpacked,
+        })
+    }
+
     /// Cargo's home (`NUDOX_CARGO_HOME`, then `CARGO_HOME`, then `~/.cargo`)
     /// and optional explicit package source root, unpacking into `unpacked`.
+    #[cfg(any(test, feature = "visual-harness"))]
     pub(crate) fn from_env(unpacked: PathBuf) -> Option<Self> {
         let explicit_home = std::env::var_os("NUDOX_CARGO_HOME")
             .filter(|value| !value.is_empty())
@@ -891,6 +920,7 @@ fn is_crates_io_index(path: &Path) -> bool {
         .is_some_and(|name| name.to_string_lossy().starts_with("index.crates.io-"))
 }
 
+#[cfg(any(test, feature = "visual-harness"))]
 fn absolute(path: PathBuf) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
@@ -899,6 +929,7 @@ fn stable_path(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+#[cfg(any(test, feature = "visual-harness"))]
 fn infer_cargo_home(source_root: &Path) -> Option<PathBuf> {
     let root = if source_root
         .file_name()
@@ -959,6 +990,70 @@ pub(crate) struct Composition {
     pub(crate) refusals: Option<PathBuf>,
 }
 
+/// One installed host generation, whether or not it has a Cargo authority.
+/// Registry consumers receive only the actual optional capability below;
+/// owner configuration and paths do not depend on a Cargo cache existing.
+#[derive(Clone)]
+pub(crate) struct ServingComposition {
+    pub(crate) endpoint: PathBuf,
+    pub(crate) data: Option<PathBuf>,
+    pub(crate) generation: CompositionGeneration,
+    registry: Option<Composition>,
+    owner_context: Option<OwnerContext>,
+}
+
+#[derive(Clone)]
+pub(crate) struct OwnerContext {
+    configuration: super::lease::OwnerConfiguration,
+    lifetime: Weak<()>,
+    gate: crate::runtime::owner::OwnerGate,
+}
+
+impl OwnerContext {
+    pub(crate) fn new(
+        configuration: super::lease::OwnerConfiguration,
+        lifetime: Weak<()>,
+        gate: crate::runtime::owner::OwnerGate,
+    ) -> Self {
+        Self { configuration, lifetime, gate }
+    }
+}
+
+impl ServingComposition {
+    pub(crate) fn owner_configuration(&self) -> Option<super::lease::OwnerConfiguration> {
+        self.configuration_in(&COMPOSED)
+    }
+
+    fn configuration_in(
+        &self,
+        slot: &RwLock<Option<Self>>,
+    ) -> Option<super::lease::OwnerConfiguration> {
+        let current = slot.read().unwrap_or_else(PoisonError::into_inner);
+        if current.as_ref().is_none_or(|current| current.generation != self.generation) {
+            return None;
+        }
+        let context = self.owner_context.as_ref()?;
+        let _held = context.lifetime.upgrade()?;
+        context.gate.embedded_ready().then(|| context.configuration.clone())
+    }
+}
+
+/// Dropping an old host cannot withdraw a newer composition, even when both
+/// owners used the same endpoint and source authority.
+pub(crate) struct CompositionLease<'a> {
+    slot: &'a RwLock<Option<ServingComposition>>,
+    generation: CompositionGeneration,
+}
+
+impl Drop for CompositionLease<'_> {
+    fn drop(&mut self) {
+        let mut current = self.slot.write().unwrap_or_else(PoisonError::into_inner);
+        if current.as_ref().is_some_and(|current| current.generation == self.generation) {
+            *current = None;
+        }
+    }
+}
+
 impl fmt::Debug for Composition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -968,34 +1063,86 @@ impl fmt::Debug for Composition {
     }
 }
 
-static COMPOSED: RwLock<Option<Composition>> = RwLock::new(None);
+static COMPOSED: RwLock<Option<ServingComposition>> = RwLock::new(None);
 static NEXT_COMPOSITION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Composes the cargo cache for the owner at `endpoint` whose workspace is
 /// `data` (archives unpack into `data/registry-sources`).
+#[cfg(feature = "visual-harness")]
 pub(crate) fn publish(endpoint: &Path, data: &Path) {
-    let Some(source) = CargoCache::from_env(data.join("registry-sources")) else {
-        return;
-    };
-    let authority: Arc<str> = source.authority_key().to_string().into();
-    let refusals = Some(data.join("registry-sources").join("refusals.json"));
-    install(Composition {
+    let source = CargoCache::from_env(data.join("registry-sources"));
+    install_into(&COMPOSED, compose(endpoint, data, source, None));
+}
+
+pub(crate) fn publish_serving(
+    endpoint: &Path,
+    data: &Path,
+    source: Option<CargoCache>,
+    owner_context: Option<OwnerContext>,
+) -> CompositionLease<'static> {
+    lease_into(&COMPOSED, compose(endpoint, data, source, owner_context))
+}
+
+fn compose(
+    endpoint: &Path,
+    data: &Path,
+    source: Option<CargoCache>,
+    owner_context: Option<OwnerContext>,
+) -> ServingComposition {
+    let registry = source.map(|source| Composition {
         endpoint: endpoint.to_path_buf(),
+        authority: source.authority_key().to_string().into(),
         source: Arc::new(source),
-        authority,
         generation: CompositionGeneration::default(),
-        refusals,
+        refusals: Some(data.join("registry-sources").join("refusals.json")),
     });
+    ServingComposition {
+        endpoint: endpoint.to_path_buf(),
+        data: Some(data.to_path_buf()),
+        generation: CompositionGeneration::default(),
+        registry,
+        owner_context,
+    }
 }
 
 /// Installs a composition (tests compose their own).
-pub(crate) fn install(mut composition: Composition) {
+#[cfg(test)]
+pub(crate) fn install(composition: Composition) {
+    let endpoint = composition.endpoint.clone();
+    install_into(&COMPOSED, ServingComposition {
+        endpoint,
+        data: None,
+        generation: CompositionGeneration::default(),
+        registry: Some(composition),
+        owner_context: None,
+    });
+}
+
+fn install_into(
+    slot: &RwLock<Option<ServingComposition>>,
+    mut composition: ServingComposition,
+) -> CompositionGeneration {
     composition.generation = CompositionGeneration::next();
-    *COMPOSED.write().unwrap_or_else(PoisonError::into_inner) = Some(composition);
+    let generation = composition.generation;
+    if let Some(registry) = composition.registry.as_mut() {
+        registry.generation = generation;
+    }
+    *slot.write().unwrap_or_else(PoisonError::into_inner) = Some(composition);
+    generation
+}
+
+fn lease_into(slot: &RwLock<Option<ServingComposition>>, composition: ServingComposition) -> CompositionLease<'_> {
+    CompositionLease { slot, generation: install_into(slot, composition) }
 }
 
 /// The composition, when an owner has started in this process.
 pub(crate) fn composed() -> Option<Composition> {
+    serving_composed()?.registry
+}
+
+/// The one serving snapshot for owner paths and configuration, including
+/// owners whose closed host selection has no Cargo registry authority.
+pub(crate) fn serving_composed() -> Option<ServingComposition> {
     COMPOSED
         .read()
         .unwrap_or_else(PoisonError::into_inner)
@@ -1004,5 +1151,7 @@ pub(crate) fn composed() -> Option<Composition> {
 
 #[cfg(test)]
 mod owner_tests;
+#[cfg(test)]
+mod configuration_tests;
 #[cfg(test)]
 mod tests;

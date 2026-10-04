@@ -8,7 +8,8 @@ use super::{
     read_indexed_sources,
 };
 use backend_engine::application::{
-    LocalHostEnvironment, LocalHostVariable, ProcessHostEnvironment,
+    ClosedLocalHostEnvironmentSnapshot, LocalHostEnvironment, LocalHostVariable,
+    ProcessHostEnvironment,
 };
 use backend_engine::{legacy_product_source_file_key, product_source_file_key};
 use std::ffi::OsString;
@@ -19,19 +20,30 @@ use std::path::PathBuf;
 /// process's own. The compiler root is the workspace's, as there.
 pub(super) struct EmbeddedCompilerEnvironment {
     pub(super) data_root: PathBuf,
-    pub(super) supplied: Vec<(LocalHostVariable, PathBuf)>,
+    pub(super) compiler_environment: Option<ClosedLocalHostEnvironmentSnapshot>,
 }
 
 impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+        self.value_with(variable, |variable| ProcessHostEnvironment.value(variable))
+    }
+}
+
+impl EmbeddedCompilerEnvironment {
+    fn value_with(
+        &self,
+        variable: LocalHostVariable,
+        ambient: impl FnOnce(LocalHostVariable) -> Option<OsString>,
+    ) -> Option<OsString> {
         if variable == LocalHostVariable::NudoxDataRoot {
             return Some(self.data_root.clone().into_os_string());
         }
-        self.supplied
-            .iter()
-            .find(|(supplied, _)| *supplied == variable)
-            .map(|(_, path)| path.clone().into_os_string())
-            .or_else(|| ProcessHostEnvironment.value(variable))
+        match &self.compiler_environment {
+            Some(snapshot) => snapshot
+                .path(variable)
+                .map(|path| path.as_os_str().to_os_string()),
+            None => ambient(variable),
+        }
     }
 }
 
@@ -224,28 +236,56 @@ mod tests {
     }
 
     #[test]
-    fn a_supplied_compiler_path_stands_in_for_the_process_variable_and_the_rest_fall_through() {
+    fn closed_environment_seals_missing_roles_and_keeps_the_workspace_data_root() {
+        use backend_engine::application::ClosedLocalHostEnvironmentSnapshot;
+
+        let cargo = std::env::temp_dir().join("tc").join("bin").join("cargo");
         let environment = EmbeddedCompilerEnvironment {
             data_root: PathBuf::from("/workspace/compiler"),
-            supplied: vec![(
-                LocalHostVariable::NudoxCargo,
-                PathBuf::from("/tc/bin/cargo"),
-            )],
+            compiler_environment: Some(
+                ClosedLocalHostEnvironmentSnapshot::from_paths([(
+                    LocalHostVariable::NudoxCargo,
+                    cargo.clone(),
+                )])
+                .expect("valid closed compiler environment"),
+            ),
         };
 
         assert_eq!(
             environment.value(LocalHostVariable::NudoxCargo),
-            Some(OsString::from("/tc/bin/cargo")),
+            Some(cargo.into_os_string()),
         );
         assert_eq!(
             environment.value(LocalHostVariable::NudoxDataRoot),
             Some(OsString::from("/workspace/compiler")),
             "the compiler root stays the workspace's"
         );
+        let mut consulted_ambient = false;
         assert_eq!(
-            environment.value(LocalHostVariable::Home),
-            std::env::var_os("HOME"),
-            "an unsupplied variable is the process's"
+            environment.value_with(LocalHostVariable::Home, |_| {
+                consulted_ambient = true;
+                Some(OsString::from("/hostile/ambient/home"))
+            }),
+            None,
+            "an omitted role in a supplied snapshot is absent"
+        );
+        assert!(
+            !consulted_ambient,
+            "closed mode must not consult ambient values"
+        );
+    }
+
+    #[test]
+    fn absent_snapshot_retains_the_standalone_ambient_mode() {
+        let environment = EmbeddedCompilerEnvironment {
+            data_root: PathBuf::from("/workspace/compiler"),
+            compiler_environment: None,
+        };
+        assert_eq!(
+            environment.value_with(LocalHostVariable::Home, |_| {
+                Some(OsString::from("/ambient/operator/home"))
+            }),
+            Some(OsString::from("/ambient/operator/home")),
         );
     }
 }

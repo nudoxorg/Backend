@@ -9,12 +9,14 @@
 //! endpoint rather than by reporting a failure the reader cannot act on.
 
 use backend_local_service::{
-    EmbeddedLocalService, ProcessConfig, ProcessError, RegistryUserPolicy,
+    ClosedLocalHostEnvironmentSnapshot, EmbeddedLocalService, LocaldRuntimePolicy, ProcessConfig,
+    ProcessError, RegistryUserPolicy,
 };
 use backend_platform::NativePath;
 use backend_runtime::{RuntimeError, WorkspacePaths};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How many times an attach is retried after the workspace lock is contended.
@@ -43,6 +45,25 @@ pub enum HostMode {
 pub struct DesktopHost {
     paths: WorkspacePaths,
     embedded: Option<EmbeddedLocalService>,
+    configuration: Option<OwnerConfiguration>,
+    registry: Option<super::registry::CargoCache>,
+    lifetime: Option<Arc<()>>,
+    composition: Option<super::registry::CompositionLease<'static>>,
+}
+
+/// The exact non-secret configuration of an owner this desktop composed.
+#[derive(Clone)]
+pub(crate) struct OwnerConfiguration {
+    pub(crate) compiler_environment: ClosedLocalHostEnvironmentSnapshot,
+    pub(crate) runtime_policy: LocaldRuntimePolicy,
+}
+
+impl Drop for DesktopHost {
+    fn drop(&mut self) {
+        // Withdraw before the embedded service's potentially blocking teardown.
+        drop(self.composition.take());
+        drop(self.lifetime.take());
+    }
 }
 
 impl DesktopHost {
@@ -71,9 +92,16 @@ impl DesktopHost {
         let live = Self::endpoint_is_live(&paths);
         crate::runtime::trace::span("boot.probe_live", probing, live);
         if live {
+            let registry = super::toolchain::captured_by_the_process().ok().and_then(|snapshot| {
+                super::registry::CargoCache::from_snapshot(&snapshot, paths.data().join("registry-sources"))
+            });
             return Ok(Self {
                 paths,
                 embedded: None,
+                configuration: None,
+                registry,
+                lifetime: None,
+                composition: None,
             });
         }
         let mut config =
@@ -81,7 +109,21 @@ impl DesktopHost {
         config.apply_registry_user_policy(registry_user_policy(&paths));
         // The owner finds its compilers through explicit paths only; this host is
         // the operator that supplies what the process's own variables imply.
-        config.compiler_environment = super::toolchain::supplied_by_the_process();
+        let compiler_environment = match config.compiler_environment.take() {
+            Some(snapshot) => snapshot,
+            None => super::toolchain::prepared_by_the_process()
+                .map_err(|error| HostError::Runtime(RuntimeError::Io(error)))?,
+        };
+        config.compiler_environment = Some(compiler_environment.clone());
+        let configuration = OwnerConfiguration {
+            compiler_environment,
+            runtime_policy: config.runtime_policy().map_err(|error| {
+                HostError::Service(ProcessError::Profile(error.to_string()))
+            })?,
+        };
+        let registry = super::registry::CargoCache::from_snapshot(
+            &configuration.compiler_environment, paths.data().join("registry-sources"),
+        );
         let embedding = std::time::Instant::now();
         // The workspace is this application's own, and its index can be made again:
         // one an earlier build wrote is set aside, not refused.
@@ -95,9 +137,13 @@ impl DesktopHost {
                 Ok(Self {
                     paths,
                     embedded: Some(embedded),
+                    configuration: Some(configuration),
+                    registry,
+                    lifetime: Some(Arc::new(())),
+                    composition: None,
                 })
             }
-            Err(refusal) => Self::attach_to_contended_owner(paths, refusal),
+            Err(refusal) => Self::attach_to_contended_owner(paths, registry, refusal),
         }
     }
 
@@ -144,6 +190,7 @@ impl DesktopHost {
     /// attach to it; the refusal itself is only reported if it never binds.
     fn attach_to_contended_owner(
         paths: WorkspacePaths,
+        registry: Option<super::registry::CargoCache>,
         refusal: ProcessError,
     ) -> Result<Self, HostError> {
         for _ in 0..ATTACH_ATTEMPTS {
@@ -152,6 +199,10 @@ impl DesktopHost {
                 return Ok(Self {
                     paths,
                     embedded: None,
+                    configuration: None,
+                    registry,
+                    lifetime: None,
+                    composition: None,
                 });
             }
         }
@@ -198,6 +249,23 @@ impl DesktopHost {
         } else {
             HostMode::Attached
         }
+    }
+
+    /// Install only after this host's authenticated revision has succeeded.
+    /// The gate still starts; the source is installed before its Ready wake.
+    pub(crate) fn publish_registry(&mut self, gate: &crate::runtime::owner::OwnerGate) {
+        let context = self.configuration.clone().zip(self.lifetime.as_ref()).map(
+            |(configuration, lifetime)| {
+                super::registry::OwnerContext::new(
+                    configuration,
+                    Arc::downgrade(lifetime),
+                    gate.clone(),
+                )
+            },
+        );
+        self.composition = Some(super::registry::publish_serving(
+            self.endpoint(), self.data(), self.registry.clone(), context,
+        ));
     }
 }
 

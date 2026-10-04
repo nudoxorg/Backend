@@ -8,6 +8,7 @@
 mod authority;
 mod error;
 mod paths;
+mod snapshot;
 
 use std::{
     ffi::OsString,
@@ -36,6 +37,10 @@ use crate::application::{
 
 pub use error::LocalCompilerHostError;
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
+pub use snapshot::{
+    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError,
+    MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
+};
 
 const PLATFORM_PATH_CAPACITY: usize = 12;
 const NATIVE_WORK_ATTEMPTS: u64 = 64;
@@ -113,6 +118,62 @@ pub enum LocalHostVariable {
     NudoxGenericRoot,
 }
 
+impl LocalHostVariable {
+    /// Every process-host variable understood by compiler admission.
+    ///
+    /// The order is the stable order used by closed host-environment snapshots. Keep this list
+    /// exhaustive when adding a new variant. Renaming an existing variable's process spelling or
+    /// changing its role meaning requires a snapshot protocol version change.
+    pub const ALL: [Self; 29] = [
+        Self::NudoxDataRoot,
+        Self::Home,
+        Self::XdgDataHome,
+        Self::LocalAppData,
+        Self::NudoxRustc,
+        Self::NudoxRustSysroot,
+        Self::NudoxCargo,
+        Self::NudoxCargoHome,
+        Self::NudoxClang,
+        Self::LibclangPath,
+        Self::NudoxPython,
+        Self::NudoxTypeScriptCompiler,
+        Self::NudoxGo,
+        Self::NudoxJavaCompiler,
+        Self::NudoxDotnet,
+        Self::NudoxTypeScriptNode,
+        Self::NudoxTypeScriptModuleRoot,
+        Self::NudoxTypeScriptReportProgram,
+        Self::NudoxPyrefly,
+        Self::NudoxGoOracle,
+        Self::NudoxJdk,
+        Self::NudoxRoslynHelper,
+        Self::NudoxCargoRoot,
+        Self::NudoxNpmRoot,
+        Self::NudoxPypiRoot,
+        Self::NudoxGoRoot,
+        Self::NudoxMavenRoot,
+        Self::NudoxNugetRoot,
+        Self::NudoxGenericRoot,
+    ];
+
+    /// Number of closed snapshot roles after excluding the workspace-owned data root.
+    pub const CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT: usize = Self::ALL.len() - 1;
+
+    /// Returns the closed snapshot roles, excluding the workspace-owned data root.
+    #[must_use]
+    pub fn closed_environment_snapshot_roles() -> impl Iterator<Item = Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|variable| *variable != Self::NudoxDataRoot)
+    }
+
+    /// Returns the exact process variable name associated with this role.
+    #[must_use]
+    pub const fn environment_name(self) -> &'static str {
+        variable_name(self)
+    }
+}
+
 /// Typed read access to process-host values.
 ///
 /// Test and embedded hosts can provide a static implementation; production uses
@@ -128,7 +189,7 @@ pub struct ProcessHostEnvironment;
 
 impl LocalHostEnvironment for ProcessHostEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
-        std::env::var_os(variable_name(variable))
+        std::env::var_os(variable.environment_name())
     }
 }
 

@@ -36,7 +36,9 @@ use crate::runtime_policy::{
 use crate::service::{LocaldService, OwnerService};
 use backend_engine::UnixEndpointPath;
 use backend_engine::advisory::AdvisorySource;
-use backend_engine::application::LocalHostVariable;
+use backend_engine::application::{
+    ClosedLocalHostEnvironmentSnapshot, MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
+};
 use backend_engine::registry::{
     AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, RegistryEcosystem, RegistryEndpoint,
     RegistrySource, RegistrySourceSet,
@@ -66,6 +68,10 @@ pub const PROFILE_ENV: &str = "BACKEND_LOCALD_PROFILE";
 pub const WORKER_ENDPOINT_ENV: &str = "BACKEND_LOCALD_WORKER_ENDPOINT";
 /// Environment variable naming the owner-only authority verifier credential.
 pub const AUTHORITY_SECRET_ENV: &str = "BACKEND_LOCALD_AUTHORITY_SECRET_FILE";
+/// Complete compiler-host environment captured by an embedding desktop owner.
+pub const COMPILER_ENVIRONMENT_ENV: &str = "BACKEND_LOCALD_COMPILER_ENVIRONMENT";
+/// Maximum encoded bytes accepted for a closed compiler-host environment.
+pub const MAX_COMPILER_ENVIRONMENT_BYTES: usize = MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES;
 /// Environment variable naming the optional registry endpoint.
 pub const REGISTRY_ENDPOINT_ENV: &str = "BACKEND_REGISTRY_ENDPOINT";
 /// Environment variable naming the registry ecosystem.
@@ -159,11 +165,11 @@ pub struct ProcessConfig {
     /// Aggregate admission policy for resident dependency facts and their index.
     /// These bound counts and copied key payloads, not total process RSS.
     pub package_graph_limits: backend_library::PackageGraphIndexLimits,
-    /// Compiler paths an embedding host supplies itself. Each one stands in
-    /// for the process variable of the same name; every other variable is
-    /// still read from the process. [`Self::parse`] leaves it empty, so a
-    /// standalone locald is configured by its environment alone.
-    pub compiler_environment: Vec<(LocalHostVariable, PathBuf)>,
+    /// Optional compiler-host environment snapshot. `None` retains the ordinary
+    /// standalone process-environment mode; `Some` is closed, so every omitted
+    /// role is absent. The workspace-owned data root is always supplied by the
+    /// embedded owner and is not part of this snapshot.
+    pub compiler_environment: Option<ClosedLocalHostEnvironmentSnapshot>,
 }
 
 /// Source-only catalog discovery configuration. Zero-configuration locald
@@ -1009,19 +1015,35 @@ impl ProcessConfig {
 
     /// Parses bounded process arguments and environment fallbacks.
     /// An inherited [`RUNTIME_POLICY_ENV`] value is validated and merged after
-    /// ordinary configuration, so it can narrow but never reopen locald paths.
+    /// ordinary configuration, so it can narrow but never reopen locald paths. An inherited
+    /// [`COMPILER_ENVIRONMENT_ENV`] value, when present, closes every compiler-host role not
+    /// included in its snapshot.
     ///
     /// # Errors
     ///
     /// Returns an error for malformed, missing, or unsupported arguments.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, ProcessError> {
         let runtime_policy_value = std::env::var_os(RUNTIME_POLICY_ENV);
-        Self::parse_with_runtime_policy(args, runtime_policy_value.as_deref())
+        let compiler_environment_value = std::env::var_os(COMPILER_ENVIRONMENT_ENV);
+        Self::parse_with_environment_values(
+            args,
+            runtime_policy_value.as_deref(),
+            compiler_environment_value.as_deref(),
+        )
     }
 
+    #[cfg(test)]
     fn parse_with_runtime_policy(
         args: impl IntoIterator<Item = String>,
         runtime_policy_value: Option<&OsStr>,
+    ) -> Result<Self, ProcessError> {
+        Self::parse_with_environment_values(args, runtime_policy_value, None)
+    }
+
+    fn parse_with_environment_values(
+        args: impl IntoIterator<Item = String>,
+        runtime_policy_value: Option<&OsStr>,
+        compiler_environment_value: Option<&OsStr>,
     ) -> Result<Self, ProcessError> {
         let ParsedOptions {
             endpoint,
@@ -1066,6 +1088,7 @@ impl ProcessConfig {
         if help {
             return Err(ProcessError::Help);
         }
+        let compiler_environment = parse_compiler_environment(compiler_environment_value)?;
         let paths = WorkspacePaths::discover(
             None,
             workspace
@@ -1175,7 +1198,7 @@ impl ProcessConfig {
             forge,
             discovery,
             package_graph_limits: package_graph_limits_from_environment()?,
-            compiler_environment: Vec::new(),
+            compiler_environment,
         };
         apply_runtime_policy_environment_value(&mut config, runtime_policy_value)?;
         Ok(config)
@@ -1204,6 +1227,27 @@ fn apply_runtime_policy_environment_value(
     })?;
     config.apply_runtime_policy(policy);
     Ok(())
+}
+
+fn parse_compiler_environment(
+    value: Option<&OsStr>,
+) -> Result<Option<ClosedLocalHostEnvironmentSnapshot>, ProcessError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.as_encoded_bytes().len() > MAX_COMPILER_ENVIRONMENT_BYTES {
+        return Err(ProcessError::Usage(format!(
+            "{COMPILER_ENVIRONMENT_ENV} exceeds its size limit"
+        )));
+    }
+    let value = value.to_str().ok_or_else(|| {
+        ProcessError::Usage(format!(
+            "{COMPILER_ENVIRONMENT_ENV} must contain UTF-8 data"
+        ))
+    })?;
+    ClosedLocalHostEnvironmentSnapshot::parse(value)
+        .map(Some)
+        .map_err(|_| ProcessError::Usage(format!("{COMPILER_ENVIRONMENT_ENV} is invalid")))
 }
 
 struct ParsedOptions {
@@ -1632,6 +1676,80 @@ mod tests {
             registry_cache_max_age_millis,
         )
         .expect("bounded runtime policy fixture")
+    }
+
+    fn parse_config_with_compiler_environment_value(
+        value: Option<&OsStr>,
+    ) -> Result<ProcessConfig, ProcessError> {
+        ProcessConfig::parse_with_environment_values(
+            [
+                "--endpoint".to_owned(),
+                "/tmp/backend-locald-closed-environment.sock".to_owned(),
+                "--workspace".to_owned(),
+                "/tmp/backend-locald-closed-environment".to_owned(),
+            ],
+            None,
+            value,
+        )
+    }
+
+    fn empty_compiler_environment_snapshot() -> ClosedLocalHostEnvironmentSnapshot {
+        ClosedLocalHostEnvironmentSnapshot::from_paths(std::iter::empty::<(
+            backend_engine::application::LocalHostVariable,
+            PathBuf,
+        )>())
+        .expect("empty snapshot")
+    }
+
+    #[test]
+    fn cold_parse_distinguishes_absent_from_an_empty_closed_snapshot() {
+        let absent = parse_config_with_compiler_environment_value(None)
+            .expect("absent snapshot keeps operator mode");
+        assert_eq!(absent.compiler_environment, None);
+
+        let empty = empty_compiler_environment_snapshot()
+            .encode()
+            .expect("canonical empty snapshot");
+        let closed = parse_config_with_compiler_environment_value(Some(OsStr::new(&empty)))
+            .expect("parse empty closed snapshot");
+        assert_eq!(closed.compiler_environment, Some(empty_compiler_environment_snapshot()));
+        assert_eq!(
+            closed.compiler_environment.as_ref().and_then(|snapshot| {
+                snapshot.path(backend_engine::application::LocalHostVariable::Home)
+            }),
+            None,
+            "an explicitly present empty snapshot seals all compiler-host roles absent"
+        );
+    }
+
+    #[test]
+    fn malformed_or_oversized_compiler_environment_is_a_value_free_usage_error() {
+        let secret_like_input = "{\"version\":1,\"token\":\"private-path-secret\"}";
+        let error =
+            parse_config_with_compiler_environment_value(Some(OsStr::new(secret_like_input)))
+                .expect_err("unknown snapshot fields must fail closed");
+        assert!(matches!(error, ProcessError::Usage(_)));
+        assert!(!error.to_string().contains(secret_like_input));
+        assert!(!error.to_string().contains("private-path-secret"));
+
+        let oversized = "x".repeat(MAX_COMPILER_ENVIRONMENT_BYTES + 1);
+        let error = parse_config_with_compiler_environment_value(Some(OsStr::new(&oversized)))
+            .expect_err("snapshot byte bound is enforced before parsing");
+        assert!(matches!(error, ProcessError::Usage(_)));
+        assert!(!error.to_string().contains(&oversized));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_compiler_environment_is_rejected_without_echoing_native_bytes() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let value = OsString::from_vec(b"/private/compiler-token-\xff".to_vec());
+        let error = parse_config_with_compiler_environment_value(Some(&value))
+            .expect_err("the JSON environment protocol is UTF-8");
+        assert!(matches!(error, ProcessError::Usage(_)));
+        assert!(!error.to_string().contains("compiler-token"));
     }
 
     #[test]

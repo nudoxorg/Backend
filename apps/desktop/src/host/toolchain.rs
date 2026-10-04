@@ -14,10 +14,10 @@
 //! Cargo is the one beside the selected `rustc`, Cargo's home is where Cargo
 //! keeps it (`CARGO_HOME`, else `~/.cargo`), Go's module cache where Go keeps
 //! it (`GOMODCACHE`, else `GOPATH/pkg/mod`, else `~/go/pkg/mod`). A path is
-//! supplied only when the process has not set that variable itself and the path
-//! exists as the owner requires (an absolute file or directory): the owner
-//! refuses to start on a configured path it cannot use, and a derived one must
-//! never turn a working configuration into a refusal.
+//! supplied only when the process has not set that variable itself. Derived
+//! tools and caches must exist as the owner requires, except that the default
+//! Cargo home can be safely created under the existing home. Configured paths
+//! stay exact, including invalid ones the owner must honestly refuse.
 //!
 //! A person who opens the app from the Finder gives it no `NUDOX_*` variable
 //! and a `PATH` of `/usr/bin:/bin:/usr/sbin:/sbin`. For them the desktop looks
@@ -29,8 +29,10 @@
 //! [`report`]ed, so the window can say it in words instead of every Rust
 //! package being refused as unavailable.
 
-use backend_local_service::LocalHostVariable;
+use backend_local_service::{ClosedLocalHostEnvironmentSnapshot, LocalHostVariable};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{PoisonError, RwLock};
 
@@ -196,6 +198,7 @@ fn version_of(rustc: &Path) -> Option<String> {
 }
 
 /// The paths to supply, given the process's variables.
+#[cfg(test)]
 pub(crate) fn supplied(
     variable: &dyn Fn(&str) -> Option<OsString>,
 ) -> Vec<(LocalHostVariable, PathBuf)> {
@@ -262,10 +265,67 @@ pub(crate) fn supplied_among(
     supplied
 }
 
-/// The paths to supply given this process's own environment, a person's
-/// Rust looked for where people install it; what was found is [`report`]ed.
-pub(crate) fn supplied_by_the_process() -> Vec<(LocalHostVariable, PathBuf)> {
-    let variable = |name: &str| std::env::var_os(name);
+/// Derivation does not create directories. Explicit paths are kept verbatim so
+/// the owner, including its normal invalid-path refusal, remains the authority.
+struct CompilerSelection {
+    paths: Vec<(LocalHostVariable, PathBuf)>,
+    inferred_cargo_home: Option<PathBuf>,
+}
+
+impl CompilerSelection {
+    fn derive(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Self {
+        let mut paths = supplied_among(variable, system);
+        let rust = find_rust(variable, system);
+        let mut inferred_cargo_home = None;
+        if let Rust::Found { rustc, .. } = rust {
+            // Cargo's own explicit home is also operator configuration. Never
+            // silently replace or create it, even if it is empty or invalid.
+            if variable("NUDOX_CARGO_HOME").is_none() {
+                let configured = variable("CARGO_HOME");
+                let cargo_home = configured.clone().map(PathBuf::from).or_else(|| {
+                    home_variable(variable).map(PathBuf::from)
+                        .filter(|home| home.is_absolute()).map(|home| home.join(".cargo"))
+                });
+                if let Some(cargo_home) = cargo_home {
+                    paths.retain(|(key, _)| *key != LocalHostVariable::NudoxCargoHome);
+                    paths.push((LocalHostVariable::NudoxCargoHome, cargo_home.clone()));
+                    let cargo = variable("NUDOX_CARGO").map(PathBuf::from)
+                        .unwrap_or_else(|| rustc.with_file_name(executable("cargo")));
+                    let selected_rustc = variable("NUDOX_RUSTC").map(PathBuf::from)
+                        .unwrap_or(rustc);
+                    if configured.is_none() && selected_rustc.is_absolute() && selected_rustc.is_file()
+                        && cargo.is_absolute() && cargo.is_file()
+                    {
+                        inferred_cargo_home = Some(cargo_home);
+                    }
+                }
+            }
+        }
+        // Supplied and process paths now form one frozen selection. In
+        // particular, present empty NUDOX_* values cannot be overwritten by a
+        // discovered default and thereby hide a configuration error.
+        for (key, path) in closed_paths(variable) {
+            paths.retain(|(known, _)| *known != key);
+            paths.push((key, path));
+        }
+        Self { paths, inferred_cargo_home }
+    }
+
+    /// Only a default cache below the existing home may be created. Existing
+    /// user caches, configured paths, ancestors and permissions stay untouched.
+    fn realize(&self) -> io::Result<()> {
+        let Some(path) = &self.inferred_cargo_home else { return Ok(()); };
+        if path.is_dir() { return Ok(()); }
+        backend_platform::durable::ensure_private_child_directory(path)
+            .map_err(|error| io::Error::new(error.kind(), format!("prepare Cargo home at {}: {error}", path.display())))
+    }
+}
+
+/// Freeze operator variables once, realize only inferred state, and hand the
+/// owner the same typed paths that a later MCP client configuration exports.
+pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    let captured = process_variables();
+    let variable = |name: &str| captured.get(name).cloned();
     let system = SYSTEM_BINS.iter().map(|(dir, place)| (PathBuf::from(dir), *place)).collect::<Vec<_>>();
     let found = match find_rust(&variable, &system) {
         Rust::Found { rustc, place, .. } => {
@@ -275,7 +335,55 @@ pub(crate) fn supplied_by_the_process() -> Vec<(LocalHostVariable, PathBuf)> {
         missing @ Rust::Missing { .. } => missing,
     };
     *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(found);
-    supplied_among(&variable, &system)
+    let selected = CompilerSelection::derive(&variable, &system);
+    let snapshot = closed_snapshot(selected.paths.clone())?;
+    selected.realize()?;
+    Ok(snapshot)
+}
+
+/// Attaching does not discover tools or create caches. The local registry
+/// source may use this client's existing Cargo cache, without claiming that
+/// these are the attached owner's compiler or policy settings.
+pub(crate) fn captured_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    if let Some(encoded) = std::env::var_os(backend_local_service::COMPILER_ENVIRONMENT_ENV) {
+        let encoded = encoded.to_str().ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidInput, "closed compiler environment must be UTF-8",
+        ))?;
+        return ClosedLocalHostEnvironmentSnapshot::parse(encoded)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));
+    }
+    let captured = process_variables();
+    closed_snapshot(closed_paths(&|name| captured.get(name).cloned()))
+}
+
+fn process_variables() -> BTreeMap<&'static str, OsString> {
+    LocalHostVariable::closed_environment_snapshot_roles()
+        .map(LocalHostVariable::environment_name)
+        .chain(["USERPROFILE", "PATH", "CARGO_HOME", "GOMODCACHE", "GOPATH"])
+        .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
+        .collect()
+}
+
+fn closed_paths(variable: &dyn Fn(&str) -> Option<OsString>) -> Vec<(LocalHostVariable, PathBuf)> {
+    let mut paths = LocalHostVariable::closed_environment_snapshot_roles()
+        .filter_map(|key| variable(key.environment_name()).map(|value| (key, PathBuf::from(value))))
+        .collect::<Vec<_>>();
+    if variable("NUDOX_CARGO_HOME").is_none()
+        && let Some(value) = variable("CARGO_HOME")
+    {
+        paths.push((LocalHostVariable::NudoxCargoHome, PathBuf::from(value)));
+    }
+    if variable("HOME").is_none()
+        && let Some(home) = home_variable(variable)
+    {
+        paths.push((LocalHostVariable::Home, PathBuf::from(home)));
+    }
+    paths
+}
+
+fn closed_snapshot(paths: Vec<(LocalHostVariable, PathBuf)>) -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    ClosedLocalHostEnvironmentSnapshot::from_paths(paths)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
 
 #[cfg(test)]
@@ -320,6 +428,90 @@ mod tests {
             .map(|(name, value)| ((*name).to_owned(), value.as_os_str().to_owned()))
             .collect::<BTreeMap<_, _>>();
         move |name| pairs.get(name).cloned()
+    }
+
+    #[test]
+    fn fresh_homebrew_selection_realizes_only_its_inferred_cargo_home() {
+        let machine = machine("fresh-homebrew");
+        std::fs::remove_dir_all(&machine.cargo_home).expect("fresh Cargo user");
+        let home = machine.root.join("home");
+        let environment = env(&[("HOME", &home)]);
+        let system = [(machine.rustc.parent().expect("bin").to_path_buf(), Place::Homebrew)];
+        let selected = CompilerSelection::derive(&environment, &system);
+        assert!(selected.paths.contains(&(LocalHostVariable::NudoxCargoHome, machine.cargo_home.clone())));
+        assert!(!machine.cargo_home.exists(), "derivation cannot create the cache");
+        selected.realize().expect("realize inferred cache");
+        assert!(machine.cargo_home.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&machine.cargo_home).expect("created cache").permissions().mode() & 0o777, 0o700);
+            std::fs::set_permissions(&machine.cargo_home, std::fs::Permissions::from_mode(0o755)).expect("existing user cache permissions");
+        }
+        let marker = machine.cargo_home.join("user-cache");
+        std::fs::write(&marker, "retain user cache").expect("existing cache content");
+        selected.realize().expect("repeat realization");
+        assert_eq!(std::fs::read_to_string(marker).expect("retained marker"), "retain user cache");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&machine.cargo_home).expect("existing cache").permissions().mode() & 0o777, 0o755, "existing cache permissions stay unchanged");
+        }
+        std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
+    }
+
+    #[test]
+    fn explicit_invalid_cache_and_compiler_paths_are_never_realized_or_replaced() {
+        let machine = machine("explicit-refusal");
+        std::fs::remove_dir_all(&machine.cargo_home).expect("fresh Cargo user");
+        let home = machine.root.join("home");
+        let system = [(machine.rustc.parent().expect("bin").to_path_buf(), Place::Homebrew)];
+        let missing = machine.root.join("configured-but-missing");
+        for (name, path) in [("CARGO_HOME", missing.as_path()), ("NUDOX_CARGO_HOME", Path::new("")), ("NUDOX_CARGO_HOME", Path::new("relative/cache"))] {
+            let selected = CompilerSelection::derive(&env(&[("HOME", &home), (name, path)]), &system);
+            assert!(selected.paths.contains(&(LocalHostVariable::NudoxCargoHome, path.to_path_buf())), "owner sees the exact invalid {name}");
+            if !path.is_absolute() {
+                assert!(closed_snapshot(selected.paths.clone()).is_err(), "invalid {name} is refused before closed handoff");
+            }
+            selected.realize().expect("configured paths are not created");
+            assert!(!machine.cargo_home.exists());
+            assert!(!missing.exists());
+        }
+        let selected = CompilerSelection::derive(&env(&[("HOME", &home), ("NUDOX_RUSTC", Path::new(""))]), &system);
+        assert!(selected.paths.contains(&(LocalHostVariable::NudoxRustc, PathBuf::new())));
+        selected.realize().expect("invalid explicit compiler cannot create a fallback cache");
+        assert!(!machine.cargo_home.exists());
+        std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
+    }
+
+    #[test]
+    fn inferred_cache_file_blocker_is_retained_and_refused() {
+        let machine = machine("cache-blocker");
+        std::fs::remove_dir_all(&machine.cargo_home).expect("fresh Cargo user");
+        std::fs::write(&machine.cargo_home, "owned blocker").expect("cache path is a file");
+        let home = machine.root.join("home");
+        let system = [(machine.rustc.parent().expect("bin").to_path_buf(), Place::Homebrew)];
+        let selected = CompilerSelection::derive(&env(&[("HOME", &home)]), &system);
+        let error = selected.realize().expect_err("never replace a file with a directory");
+        assert!(error.to_string().contains("prepare Cargo home at"));
+        assert_eq!(std::fs::read_to_string(&machine.cargo_home).expect("retained blocker"), "owned blocker");
+        std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
+    }
+
+    #[test]
+    fn frozen_selection_keeps_typed_helpers_and_excludes_unrelated_environment() {
+        let oracle = std::env::temp_dir().join("app/Contents/Resources/go-oracle");
+        let roslyn = std::env::temp_dir().join("app/Contents/Resources/roslyn/helper.dll");
+        let secret = Path::new("/never-export-authority-secret");
+        let selected = CompilerSelection::derive(&env(&[("NUDOX_GO_ORACLE", oracle.as_path()), ("NUDOX_ROSLYN_HELPER", roslyn.as_path()), ("BACKEND_LOCALD_AUTHORITY_SECRET_FILE", secret)]), &[]);
+        assert!(selected.paths.contains(&(LocalHostVariable::NudoxGoOracle, oracle.to_path_buf())));
+        assert!(selected.paths.contains(&(LocalHostVariable::NudoxRoslynHelper, roslyn.to_path_buf())));
+        assert!(!selected.paths.iter().any(|(_, path)| path == secret));
+        let closed = closed_snapshot(selected.paths).expect("closed helper selection");
+        assert_eq!(closed.path(LocalHostVariable::Home), None);
+        assert_eq!(closed.path(LocalHostVariable::NudoxPython), None);
+        assert!(!LocalHostVariable::closed_environment_snapshot_roles()
+            .any(|key| key == LocalHostVariable::NudoxDataRoot));
     }
 
     #[test]

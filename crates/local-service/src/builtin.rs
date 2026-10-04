@@ -1448,7 +1448,7 @@ pub(crate) fn compose_owner(
     let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
             data_root: compiler_root,
-            supplied: config.compiler_environment.clone(),
+            compiler_environment: config.compiler_environment.clone(),
         },
         backend_engine::application::LocalHostDiscovery::ExplicitOnly,
     )

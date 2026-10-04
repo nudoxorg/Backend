@@ -389,6 +389,15 @@ impl OwnerGate {
         .then_some(inner.attachment)
     }
 
+    /// Configuration export belongs to this process's live embedded owner.
+    /// Read mode, readiness and closure together so replacement cannot combine
+    /// an old embedded mode with a new attached owner's readiness.
+    pub(crate) fn embedded_ready(&self) -> bool {
+        let inner = self.lock();
+        !inner.closed && !inner.observation_suspended
+            && matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Embedded, .. })
+    }
+
     pub(crate) fn observation_scope(
         &self,
         expected: Epoch,

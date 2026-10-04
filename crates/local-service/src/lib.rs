@@ -35,7 +35,10 @@ use backend_engine::{
 use std::fmt;
 use std::path::Path;
 
-pub use backend_engine::application::LocalHostVariable;
+pub use backend_engine::application::{
+    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalHostVariable,
+    MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
+};
 pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};
 pub use listener::{
     DEFAULT_IDLE_TIMEOUT, FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown,
@@ -44,10 +47,11 @@ pub use listener::{
 pub use process::{
     ADVISORY_GHSA_ENV, ADVISORY_MAX_AGE_ENV, ADVISORY_OFFLINE_ENV, ADVISORY_OSV_ENV,
     ADVISORY_OSV_SCOPE_ENV, ADVISORY_POLICY_ENV, ADVISORY_RUSTSEC_ENV, AUTHORITY_SECRET_ENV,
-    AdvisoryConfig, AdvisorySourceConfig, ENDPOINT_ENV, FORGE_AUTH_ENV, FORGE_AUTH_FILE_ENV,
-    FORGE_AUTH_SCOPES_ENV, FORGE_OFFLINE_ENV, ForgeAuthentication, ForgeConfig, PROFILE_ENV,
-    ProcessConfig, ProcessError, REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV,
-    REGISTRY_AUTH_SCOPES_ENV, REGISTRY_DISCOVERY_MAX_PAGES_ENV, REGISTRY_DISCOVERY_OFFLINE_ENV,
+    AdvisoryConfig, AdvisorySourceConfig, COMPILER_ENVIRONMENT_ENV, ENDPOINT_ENV, FORGE_AUTH_ENV,
+    FORGE_AUTH_FILE_ENV, FORGE_AUTH_SCOPES_ENV, FORGE_OFFLINE_ENV, ForgeAuthentication,
+    ForgeConfig, MAX_COMPILER_ENVIRONMENT_BYTES, PROFILE_ENV, ProcessConfig, ProcessError,
+    REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV, REGISTRY_AUTH_SCOPES_ENV,
+    REGISTRY_DISCOVERY_MAX_PAGES_ENV, REGISTRY_DISCOVERY_OFFLINE_ENV,
     REGISTRY_DISCOVERY_SOURCES_ENV, REGISTRY_ECOSYSTEM_ENV, REGISTRY_ENDPOINT_ENV,
     REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, REGISTRY_SOURCES_ENV, RegistryConfig,
     RegistryDiscoveryConfig, RegistryUserPolicy, WORKER_ENDPOINT_ENV, WORKSPACE_ENV, main_entry,

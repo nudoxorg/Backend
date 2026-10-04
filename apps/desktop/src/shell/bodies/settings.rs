@@ -917,7 +917,8 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .ghost()
         .on_click(|_, cx| cx.refresh_windows());
     leaves.push(setting("Discovery", recheck.into_any_element(), ctx));
-    let (project, data, endpoint) = owner_paths(snapshot);
+    let composition = crate::host::registry::serving_composed();
+    let (project, data, endpoint) = owner_paths_for(snapshot, composition.as_ref());
     let (Some(project), Some(data), Some(endpoint)) = (project, data, endpoint) else {
         let detail = ctx.say("Add a project and start or reconnect to the local service before configuring an MCP client. Use Settings › Connections to test the desktop's local service link.");
         leaves.push(Leaf::new(quiet(detail, &measure, palette)));
@@ -933,8 +934,14 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         leaves.push(Leaf::new(quiet(detail, &measure, palette)));
         return leaves;
     };
-    let Some(config) = mcp_config(&project, &data, &endpoint, binary, locald) else {
-        let detail = ctx.say("The MCP setup paths could not be represented in the client configuration. Check the project and workspace paths in Settings › Diagnostics.");
+    let Some(composition) = composition else { return leaves; };
+    let Some(configuration) = composition.owner_configuration() else {
+        let detail = ctx.say("This desktop cannot export the current owner's compiler paths and policy. Start an embedded service from this desktop to create a setup that also works when Nudox is closed. An attached service needs its own explicit compiler and policy configuration.");
+        leaves.push(Leaf::new(quiet(detail, &measure, palette)));
+        return leaves;
+    };
+    let Some(config) = mcp_config(&project, &data, &endpoint, binary, locald, &configuration) else {
+        let detail = ctx.say("The MCP setup paths could not be represented in the client configuration. Check the compiler, project and workspace paths in Settings › Diagnostics.");
         leaves.push(Leaf::new(quiet(detail, &measure, palette)));
         return leaves;
     };
@@ -948,7 +955,13 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .disabled(!ctx.active)
         .ghost()
         .on_click(move |_, cx| {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(config.clone()))
+            // A mounted settings body may outlive its owner. Recheck this
+            // exact composition before exporting its frozen configuration.
+            if composition.owner_configuration().is_some() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(config.clone()));
+            } else {
+                cx.refresh_windows();
+            }
         });
     leaves.push(setting("Client setup", copy.into_any_element(), ctx));
     leaves
@@ -1155,22 +1168,22 @@ fn connection_explanation(status: ConnectionStatus) -> &'static str {
 }
 
 fn owner_paths(snapshot: &AppSnapshot) -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+    owner_paths_for(snapshot, crate::host::registry::serving_composed().as_ref())
+}
+
+fn owner_paths_for(
+    snapshot: &AppSnapshot,
+    composition: Option<&crate::host::registry::ServingComposition>,
+) -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
     let project = snapshot
         .workspace()
         .active
         .as_ref()
         .or(snapshot.workspace().host.as_ref())
         .map(|project| PathBuf::from(project.as_str()));
-    let composition = crate::host::registry::composed();
     let endpoint = composition
-        .as_ref()
         .map(|composition| composition.endpoint.clone());
-    let data = composition
-        .as_ref()
-        .and_then(|composition| composition.refusals.as_ref())
-        .and_then(|refusals| refusals.parent())
-        .and_then(Path::parent)
-        .map(Path::to_path_buf);
+    let data = composition.and_then(|composition| composition.data.clone());
     (project, data, endpoint)
 }
 
@@ -1208,19 +1221,28 @@ fn mcp_config(
     endpoint: &Path,
     binary: &Path,
     locald: &Path,
+    configuration: &crate::host::lease::OwnerConfiguration,
 ) -> Option<String> {
     let project = project.to_str()?;
     let data = data.to_str()?;
     let endpoint = endpoint.to_str()?;
     let binary = binary.to_str()?;
     let locald = locald.to_str()?;
+    let mut environment = serde_json::Map::new();
+    environment.insert("BACKEND_LOCALD_BIN".to_owned(), serde_json::Value::String(locald.to_owned()));
+    environment.insert(
+        backend_local_service::COMPILER_ENVIRONMENT_ENV.to_owned(),
+        serde_json::Value::String(configuration.compiler_environment.encode().ok()?),
+    );
+    environment.insert(
+        backend_local_service::RUNTIME_POLICY_ENV.to_owned(),
+        serde_json::Value::String(configuration.runtime_policy.encode().ok()?),
+    );
     let config = serde_json::json!({
         "mcpServers": {
             "nudox": {
                 "command": binary,
-                "env": {
-                    "BACKEND_LOCALD_BIN": locald
-                },
+                "env": environment,
                 "args": [
                     "--project", project,
                     "--workspace", data,
@@ -1702,12 +1724,14 @@ mod tests {
 
     #[test]
     fn mcp_setup_config_pins_the_service_and_workspace_paths() {
+        let configuration = owner_configuration(Vec::new(), Some(86_400_000));
         let config = mcp_config(
             Path::new("/project"),
             Path::new("/workspace/data"),
             Path::new("/workspace/locald.sock"),
             Path::new("/app/Contents/MacOS/backend-mcp"),
             Path::new("/app/Contents/MacOS/backend-locald"),
+            &configuration,
         )
         .expect("absolute UTF-8 setup paths");
         let config: serde_json::Value =
@@ -1729,6 +1753,95 @@ mod tests {
                 "/workspace/locald.sock"
             ])
         );
+    }
+
+    #[test]
+    fn cold_mcp_setup_exports_the_exact_typed_compiler_and_helper_selection() {
+        use backend_local_service::LocalHostVariable as Variable;
+        let selected = [
+            (Variable::NudoxRustc, PathBuf::from("/opt/homebrew/bin/rustc")),
+            (Variable::NudoxCargo, PathBuf::from("/opt/homebrew/bin/cargo")),
+            (Variable::NudoxCargoHome, PathBuf::from("/Users/investor/.cargo")),
+            (Variable::NudoxGoOracle, PathBuf::from("/Nudox.app/Contents/Resources/go-oracle")),
+            (Variable::NudoxRoslynHelper, PathBuf::from("/Nudox.app/Contents/Resources/helper.dll")),
+        ].map(|(variable, path)| {
+            let path = if path.is_absolute() { path } else {
+                std::env::temp_dir().join(path.file_name().expect("fixture executable or cache name"))
+            };
+            (variable, path)
+        });
+        let configuration = owner_configuration(selected.to_vec(), Some(0));
+        let config = mcp_config(Path::new("/project"), Path::new("/data"), Path::new("/owner.sock"), Path::new("/Nudox.app/Contents/MacOS/backend-mcp"), Path::new("/Nudox.app/Contents/MacOS/backend-locald"), &configuration).expect("selected setup");
+        let config: serde_json::Value = serde_json::from_str(&config).expect("MCP client config");
+        let environment = config["mcpServers"]["nudox"]["env"].as_object().expect("closed environment");
+        assert_eq!(environment.len(), 3, "the closed selection, exact companion and effective policy are exported");
+        let closed = backend_local_service::ClosedLocalHostEnvironmentSnapshot::parse(
+            environment[backend_local_service::COMPILER_ENVIRONMENT_ENV].as_str().expect("closed selection string"),
+        ).expect("shared closed environment grammar");
+        assert_eq!(closed, configuration.compiler_environment);
+        for (variable, path) in &selected {
+            assert_eq!(closed.path(*variable), Some(path.as_path()));
+            assert!(!environment.contains_key(variable.environment_name()), "no ambient per-role export");
+        }
+        for variable in Variable::closed_environment_snapshot_roles() {
+            if !selected.iter().any(|(known, _)| *known == variable) {
+                assert_eq!(closed.path(variable), None, "absence is part of the selected authority");
+            }
+        }
+        assert!(!environment.contains_key("PATH"));
+        assert!(!environment.contains_key("BACKEND_LOCALD_AUTHORITY_SECRET_FILE"));
+        assert!(!environment.contains_key("NUDOX_DATA_ROOT"));
+        let policy = backend_local_service::LocaldRuntimePolicy::parse(environment[backend_local_service::RUNTIME_POLICY_ENV].as_str().expect("policy string")).expect("shared policy grammar");
+        assert_eq!(policy, configuration.runtime_policy);
+        assert!(!policy.registry_network_allowed());
+        assert!(!policy.discovery_network_allowed());
+        assert!(!policy.advisory_network_allowed());
+        assert!(!policy.advisory_refresh_enabled());
+        assert_eq!(policy.registry_cache_max_age_millis(), Some(0));
+        assert!(backend_local_service::ClosedLocalHostEnvironmentSnapshot::from_paths([
+            (Variable::NudoxDataRoot, PathBuf::from("/unrelated")),
+        ]).is_err(), "workspace authority cannot be included in the compiler selection");
+    }
+
+    fn owner_configuration(
+        compiler_environment: Vec<(backend_local_service::LocalHostVariable, PathBuf)>,
+        cache_age: Option<u64>,
+    ) -> crate::host::lease::OwnerConfiguration {
+        let age = cache_age.map_or_else(|| "null".to_owned(), |age| age.to_string());
+        let policy = format!("{{\"version\":1,\"registry_network_allowed\":false,\"discovery_network_allowed\":false,\"advisory_network_allowed\":false,\"advisory_refresh_enabled\":false,\"registry_cache_max_age_millis\":{age}}}");
+        crate::host::lease::OwnerConfiguration {
+            compiler_environment: backend_local_service::ClosedLocalHostEnvironmentSnapshot::from_paths(compiler_environment)
+                .expect("closed compiler fixture"),
+            runtime_policy: backend_local_service::LocaldRuntimePolicy::parse(&policy).expect("bounded canonical policy fixture"),
+        }
+    }
+
+    #[test]
+    fn mcp_export_preserves_the_exact_optional_cache_horizon() {
+        for age in [None, Some(0), Some(86_400_000), Some(90 * 86_400_000)] {
+            let configuration = owner_configuration(Vec::new(), age);
+            let config = mcp_config(Path::new("/project"), Path::new("/data"), Path::new("/owner.sock"), Path::new("/mcp"), Path::new("/locald"), &configuration).expect("known owner configuration");
+            let config: serde_json::Value = serde_json::from_str(&config).expect("MCP setup");
+            let encoded = config["mcpServers"]["nudox"]["env"][backend_local_service::RUNTIME_POLICY_ENV].as_str().expect("policy string");
+            let policy = backend_local_service::LocaldRuntimePolicy::parse(encoded).expect("exact shared codec");
+            assert_eq!(policy.registry_cache_max_age_millis(), age);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mcp_compiler_snapshot_preserves_native_path_bytes() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(b"/tools/python-\xff".to_vec()));
+        let configuration = owner_configuration(vec![(backend_local_service::LocalHostVariable::NudoxPython, path.clone())], None);
+        let config = mcp_config(Path::new("/project"), Path::new("/data"), Path::new("/owner.sock"), Path::new("/mcp"), Path::new("/locald"), &configuration)
+            .expect("native compiler path uses the shared wire, not lossy client text");
+        let config: serde_json::Value = serde_json::from_str(&config).expect("MCP setup");
+        let encoded = config["mcpServers"]["nudox"]["env"][backend_local_service::COMPILER_ENVIRONMENT_ENV].as_str().expect("closed snapshot");
+        let snapshot = backend_local_service::ClosedLocalHostEnvironmentSnapshot::parse(encoded).expect("native path snapshot");
+        assert_eq!(snapshot.path(backend_local_service::LocalHostVariable::NudoxPython), Some(path.as_path()));
+        assert!(mcp_config(&path, Path::new("/data"), Path::new("/owner.sock"), Path::new("/mcp"), Path::new("/locald"), &configuration).is_none(),
+            "the MCP client's ordinary project argument still requires exact UTF-8");
     }
 
     #[test]

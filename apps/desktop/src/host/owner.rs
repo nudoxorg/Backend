@@ -175,7 +175,7 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
     let started = Instant::now();
     let mut last = "the local service did not become ready".to_owned();
     for attempt in 0..ATTEMPTS {
-        match attempt_once(paths) {
+        match attempt_once(paths, gate) {
             Ok(opened) => return Ok(opened),
             Err(message) => {
                 if attempt == 0 {
@@ -197,9 +197,9 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
     Err(last)
 }
 
-fn attempt_once(paths: &WorkspacePaths) -> Result<(DesktopHost, VersionedRoot), String> {
+fn attempt_once(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, VersionedRoot), String> {
     let starting = Instant::now();
-    let host = DesktopHost::start_with_paths(paths.clone()).map_err(|error| describe(&error))?;
+    let mut host = DesktopHost::start_with_paths(paths.clone()).map_err(|error| describe(&error))?;
     crate::runtime::trace::span(
         "boot.owner_start",
         starting,
@@ -208,7 +208,6 @@ fn attempt_once(paths: &WorkspacePaths) -> Result<(DesktopHost, VersionedRoot), 
     if let Some(moved) = host.state_set_aside() {
         super::aside::record(moved);
     }
-    super::registry::publish(host.endpoint(), host.data());
     // One round trip for the root, where a full hydration of the view used
     // to be (406-581 ms on the fixture index, LEDGER §2.1-2).
     let asking = Instant::now();
@@ -216,6 +215,7 @@ fn attempt_once(paths: &WorkspacePaths) -> Result<(DesktopHost, VersionedRoot), 
         .and_then(|mut session| session.revision())
         .map_err(|error| format!("read the owner's revision: {error}"))?;
     crate::runtime::trace::span("boot.revision", asking, "Session::revision");
+    host.publish_registry(gate);
     Ok((host, VersionedRoot::from_revision(1, revision.cursor(), 0)))
 }
 

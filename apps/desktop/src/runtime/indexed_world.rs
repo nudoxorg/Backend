@@ -1122,7 +1122,10 @@ mod tests {
             "--profile", "builtin",
         ].map(ToOwned::to_owned);
         let mut config = ProcessConfig::parse(arguments).expect("owner arguments");
-        config.compiler_environment = crate::host::toolchain::supplied_by_the_process();
+        if config.compiler_environment.is_none() {
+            config.compiler_environment = Some(crate::host::toolchain::prepared_by_the_process()
+                .expect("closed fixture toolchain"));
+        }
         let owner = EmbeddedLocalService::start(config).expect("private owner");
 
         let mut exhausted = Session::connect(&endpoint).expect("first connection");

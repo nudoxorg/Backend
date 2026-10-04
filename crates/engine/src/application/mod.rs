@@ -66,9 +66,10 @@ pub use self::embedding_provision::{
     inspect_embedding_runtime, install_embedding_runtime, remove_embedding_runtime,
 };
 pub use self::host::{
-    LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory, LocalHostDiscovery,
-    LocalHostEnvironment, LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
-    ProcessHostEnvironment, WorkspaceCompilerEnvironment,
+    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
+    LocalCompilerHostError, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
+    LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
+    MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, ProcessHostEnvironment, WorkspaceCompilerEnvironment,
 };
 pub use self::package_authority::{
     CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration,

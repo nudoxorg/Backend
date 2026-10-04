@@ -135,11 +135,21 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         config.authority_secret.as_deref(),
         Some(authority_secret.as_path())
     );
-    config.compiler_environment = vec![
+    let mut compiler_environment = vec![
         (LocalHostVariable::NudoxRustc, executable_in_path("rustc")?),
         (LocalHostVariable::NudoxCargo, executable_in_path("cargo")?),
         (LocalHostVariable::NudoxCargoHome, cargo_home()?),
     ];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if home.is_absolute() {
+            compiler_environment.push((LocalHostVariable::Home, home));
+        }
+    }
+    config.compiler_environment = Some(
+        backend_local_service::ClosedLocalHostEnvironmentSnapshot::from_paths(
+            compiler_environment,
+        )?,
+    );
 
     let owner = with_phase_context(
         "start initial embedded owner",
