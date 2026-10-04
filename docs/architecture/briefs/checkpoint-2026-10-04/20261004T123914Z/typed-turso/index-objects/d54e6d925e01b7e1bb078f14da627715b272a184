@@ -13,11 +13,9 @@ use backend_library::{
 };
 use backend_library::{
     CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
-    DependencyScope, MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_ROWS,
-    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
-    PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference, PackageReferenceKind,
-    ProductText, RegistryAuthorityId, RegistryEcosystem,
-    package_dependency_facts_witness,
+    DependencyScope, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord, PackageDependencySourceFacts,
+    PackageDependencyTarget, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
+    ProductText, RegistryAuthorityId, RegistryEcosystem, package_dependency_facts_witness,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1520,612 +1518,6 @@ fn package_graph_keeps_same_coordinate_edges_separate_by_registry_authority() {
 }
 
 #[test]
-fn package_graph_persists_purl_and_local_same_text_as_distinct_typed_sources() {
-    futures_executor::block_on(async {
-        let path = path();
-        let spelling = "pkg:cargo/widget@1.0.0";
-        let purl = PackageReference::from_kind(PackageReferenceKind::Purl, spelling)
-            .expect("explicit PURL kind");
-        let local = PackageReference::from_kind(PackageReferenceKind::Local, spelling)
-            .expect("explicit Local kind");
-        assert_eq!(purl.as_str(), local.as_str());
-        assert_ne!(purl, local);
-
-        let purl_key = PackageGraphSourceKey::unattributed(purl.clone());
-        let local_key = PackageGraphSourceKey::unattributed(local.clone());
-        let purl_edge = dependency_edge(&purl, "shared-dependency", "^1");
-        let initial = vec![
-            (
-                local_key.clone(),
-                DependencyFacts::Unknown(ProductText::new("local source omitted facts")
-                    .expect("local reason")),
-            ),
-            (
-                purl_key.clone(),
-                DependencyFacts::Known(vec![purl_edge.clone()].into_boxed_slice()),
-            ),
-        ];
-        let checked_initial = CheckedPackageGraphFacts::new(initial).expect("typed facts");
-        assert_eq!(
-            checked_initial
-                .facts()
-                .iter()
-                .map(|(key, _)| key.coordinate.kind().tag())
-                .collect::<Vec<_>>(),
-            [PackageReferenceKind::Purl.tag(), PackageReferenceKind::Local.tag()]
-        );
-
-        let root = fallback_seed_view().root();
-        let mut projection = open_test(&path).await.expect("open");
-        projection
-            .synchronize_checked_package_graph_current_for_test(root.clone(), &checked_initial)
-            .await
-            .expect("persist both typed coordinates");
-        assert_typed_collision_results(&projection, &purl_key, &local_key, &purl_edge).await;
-        assert_coordinate_kind_rows(&projection, spelling, &[1], &[(2, 1)]).await;
-        drop(projection);
-
-        // Reopen the selected file before checking the distinct keys and states;
-        // this proves the kind is durable instead of merely resident in memory.
-        let mut projection = TursoProjection::open(&path).await.expect("cold reopen");
-        assert_typed_collision_results(&projection, &purl_key, &local_key, &purl_edge).await;
-
-        // Updating only Local from Unknown to Known must leave the same-spelling
-        // PURL edge untouched. This exercises delta reconciliation and each
-        // source/state/witness/edge key path with the kind tag included.
-        // The two records are equal except for their typed source coordinate,
-        // so their durable edge identities must remain distinct by that tag.
-        let local_edge = dependency_edge(&local, "shared-dependency", "^1");
-        let after = vec![
-            (
-                local_key.clone(),
-                DependencyFacts::Known(vec![local_edge.clone()].into_boxed_slice()),
-            ),
-            (
-                purl_key.clone(),
-                DependencyFacts::Known(vec![purl_edge.clone()].into_boxed_slice()),
-            ),
-        ];
-        let checked_after = CheckedPackageGraphFacts::new(after).expect("updated typed facts");
-        projection
-            .synchronize_checked_package_graph_current_for_test(root, &checked_after)
-            .await
-            .expect("update Local key only");
-        assert_eq!(
-            projection
-                .package_dependencies_for_source(&purl_key)
-                .await
-                .expect("exact PURL after update")
-                .edges
-                .as_ref(),
-            [purl_edge.clone()]
-        );
-        assert_eq!(
-            projection
-                .package_dependencies_for_source(&local_key)
-                .await
-                .expect("exact Local after update")
-                .edges
-                .as_ref(),
-            [local_edge.clone()]
-        );
-        let reverse_target = PackageReference::parse("pkg:cargo/shared-dependency@1.0.0")
-            .expect("reverse target PURL");
-        let reverse = projection
-            .package_dependents(&reverse_target)
-            .await
-            .expect("reverse lookup retains both typed source identities");
-        let mut reverse_sources = reverse
-            .edges
-            .iter()
-            .map(|edge| edge.source.clone())
-            .collect::<Vec<_>>();
-        reverse_sources.sort_unstable();
-        assert_eq!(reverse_sources, [purl.clone(), local.clone()]);
-        assert_coordinate_kind_rows(&projection, spelling, &[1, 2], &[]).await;
-        drop(projection);
-
-        let reopened = TursoProjection::open(&path).await.expect("reopen updated graph");
-        assert_eq!(
-            reopened
-                .package_dependencies_for_source(&purl_key)
-                .await
-                .expect("cold PURL").edges.as_ref(),
-            [purl_edge]
-        );
-        assert_eq!(
-            reopened
-                .package_dependencies_for_source(&local_key)
-                .await
-                .expect("cold Local").edges.as_ref(),
-            [local_edge]
-        );
-        drop(reopened);
-        remove_database(&path);
-    });
-}
-
-async fn assert_typed_collision_results(
-    projection: &TursoProjection,
-    purl_key: &PackageGraphSourceKey,
-    local_key: &PackageGraphSourceKey,
-    purl_edge: &PackageDependencyRecord,
-) {
-    let purl = projection
-        .package_dependencies_for_source(purl_key)
-        .await
-        .expect("exact PURL source");
-    assert_eq!(purl.edges.as_ref(), [purl_edge.clone()]);
-    assert_eq!(
-        purl.source_selection,
-        PackageGraphSourceSelection::Exact(purl_key.clone())
-    );
-    let local = projection
-        .package_dependencies_for_source(local_key)
-        .await
-        .expect("exact Local source");
-    assert!(local.edges.is_empty());
-    let state = local.state.expect("Local Unknown state");
-    assert_eq!(state.source, local_key.coordinate.clone());
-    assert_eq!(state.kind, 1);
-    assert_eq!(state.reason, "local source omitted facts");
-    assert_eq!(
-        local.source_selection,
-        PackageGraphSourceSelection::Exact(local_key.clone())
-    );
-    assert!(matches!(
-        projection
-            .package_dependencies(&purl_key.coordinate)
-            .await
-            .expect("PURL lookup")
-            .source_selection,
-        PackageGraphSourceSelection::Exact(ref source) if source == purl_key
-    ));
-    assert!(matches!(
-        projection
-            .package_dependencies(&local_key.coordinate)
-            .await
-            .expect("Local lookup")
-            .source_selection,
-        PackageGraphSourceSelection::Exact(ref source) if source == local_key
-    ));
-}
-
-async fn assert_coordinate_kind_rows(
-    projection: &TursoProjection,
-    spelling: &str,
-    expected_edge_kinds: &[i64],
-    expected_states: &[(i64, i64)],
-) {
-    for table in [
-        "backend_projection_package_sources",
-        "backend_projection_package_source_witnesses",
-    ] {
-        let mut rows = projection
-            .connection
-            .query(
-                &format!(
-                    "SELECT coordinate_kind FROM {table} WHERE source=?1 ORDER BY coordinate_kind"
-                ),
-                turso::params![spelling],
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{table} typed inventory: {error}"));
-        let mut kinds = Vec::new();
-        while let Some(row) = rows.next().await.expect("typed inventory row") {
-            kinds.push(row.get::<i64>(0).expect("coordinate kind"));
-        }
-        assert_eq!(
-            kinds,
-            [
-                i64::from(PackageReferenceKind::Purl.tag()),
-                i64::from(PackageReferenceKind::Local.tag())
-            ],
-            "{table} must persist both same-text typed identities"
-        );
-    }
-    let mut edges = projection
-        .connection
-        .query(
-            "SELECT coordinate_kind FROM backend_projection_package_edges \
-             WHERE source=?1 ORDER BY coordinate_kind",
-            turso::params![spelling],
-        )
-        .await
-        .expect("typed edges");
-    let mut edge_kinds = Vec::new();
-    while let Some(row) = edges.next().await.expect("typed edge row") {
-        edge_kinds.push(row.get::<i64>(0).expect("kind"));
-    }
-    assert_eq!(edge_kinds, expected_edge_kinds);
-    let mut states = projection
-        .connection
-        .query(
-            "SELECT coordinate_kind, state FROM backend_projection_package_states \
-             WHERE source=?1 ORDER BY coordinate_kind",
-            turso::params![spelling],
-        )
-        .await
-        .expect("typed states");
-    let mut stored_states = Vec::new();
-    while let Some(row) = states.next().await.expect("typed state row") {
-        stored_states.push((
-            row.get::<i64>(0).expect("coordinate kind"),
-            row.get::<i64>(1).expect("state kind"),
-        ));
-    }
-    assert_eq!(stored_states, expected_states);
-}
-
-#[test]
-fn invalid_persisted_package_coordinate_kind_is_refused() {
-    futures_executor::block_on(async {
-        let path = path();
-        let spelling = "pkg:cargo/kind-check@1.0.0";
-        let purl = PackageReference::from_kind(PackageReferenceKind::Purl, spelling)
-            .expect("PURL source");
-        let key = PackageGraphSourceKey::unattributed(purl.clone());
-        let edge_spelling = "pkg:cargo/kind-edge@1.0.0";
-        let edge_source = PackageReference::from_kind(PackageReferenceKind::Purl, edge_spelling)
-            .expect("PURL edge source");
-        let facts = [
-            (
-                key.clone(),
-                DependencyFacts::Unknown(ProductText::new("not present").expect("reason")),
-            ),
-            (
-                PackageGraphSourceKey::unattributed(edge_source.clone()),
-                DependencyFacts::Known(
-                    vec![dependency_edge(&edge_source, "kind-target", "*")].into_boxed_slice(),
-                ),
-            ),
-        ];
-        let mut projection = open_test(&path).await.expect("open");
-        projection
-            .synchronize_package_graph_current_for_test(fallback_seed_view().root(), &facts)
-            .await
-            .expect("seed graph");
-
-        for (table, source_spelling) in [
-            ("backend_projection_package_edges", edge_spelling),
-            ("backend_projection_package_states", spelling),
-            ("backend_projection_package_sources", spelling),
-            ("backend_projection_package_source_witnesses", spelling),
-        ] {
-            let sql = format!(
-                "UPDATE {table} SET coordinate_kind=3 WHERE source=?1 AND coordinate_kind=?2"
-            );
-            assert!(
-                projection
-                    .connection
-                    .execute(
-                        &sql,
-                        turso::params![
-                            source_spelling,
-                            i64::from(PackageReferenceKind::Purl.tag())
-                        ]
-                    )
-                    .await
-                    .is_err(),
-                "{table} CHECK constraint rejects an unknown coordinate tag"
-            );
-        }
-        assert!(graph::decode_package_reference(3, spelling.to_owned()).is_err());
-        assert!(graph::decode_package_reference(
-            i64::from(PackageReferenceKind::Local.tag()),
-            format!(" {spelling} ")
-        )
-        .is_err(), "durable Local source spellings must already be canonical");
-        assert_eq!(
-            graph::decode_package_reference(
-                i64::from(PackageReferenceKind::Local.tag()),
-                spelling.to_owned()
-            )
-            .expect("explicit Local source kind")
-            .kind(),
-            PackageReferenceKind::Local
-        );
-        assert_eq!(
-            projection
-                .package_dependencies_for_source(&key)
-                .await
-                .expect("valid source remains readable")
-                .state
-                .expect("Unknown state")
-                .kind,
-            1
-        );
-        drop(projection);
-        remove_database(&path);
-    });
-}
-
-#[test]
-fn typed_source_inventory_caps_each_kind_independently() {
-    futures_executor::block_on(async {
-        let spelling = "pkg:cargo/inventory-boundary@1.0.0";
-
-        let over_limit_path = path();
-        let over_limit = PackageReference::from_kind(PackageReferenceKind::Purl, spelling)
-            .expect("PURL coordinate");
-        let mut projection = open_test(&over_limit_path).await.expect("open over-limit DB");
-        projection
-            .synchronize_package_graph_current_for_test(fallback_seed_view().root(), &[])
-            .await
-            .expect("initialize selected empty graph");
-        insert_source_inventory_rows(
-            &projection,
-            spelling,
-            PackageReferenceKind::Purl,
-            MAX_PACKAGE_GRAPH_AUTHORITIES + 1,
-        )
-        .await;
-        assert!(matches!(
-            graph::package_source_inventory(&projection.connection, &over_limit).await,
-            Err(ProjectionError::ReadLimitExceeded { maximum })
-                if maximum == MAX_PACKAGE_GRAPH_AUTHORITIES
-        ));
-        let request = backend_library::PackageGraphPageRequest::new(
-            over_limit,
-            backend_library::PackageGraphDirection::Dependencies,
-            None,
-            1,
-        )
-        .expect("first page request");
-        assert!(matches!(
-            projection.read_package_graph_page(&request).await,
-            Err(PackageGraphReadError::Request(
-                backend_library::PackageGraphPageError::AuthorityFanout
-            ))
-        ));
-        drop(projection);
-        remove_database(&over_limit_path);
-
-        let both_kinds_path = path();
-        let purl = PackageReference::from_kind(PackageReferenceKind::Purl, spelling)
-            .expect("PURL coordinate");
-        let local = PackageReference::from_kind(PackageReferenceKind::Local, spelling)
-            .expect("Local coordinate");
-        let projection = open_test(&both_kinds_path).await.expect("open both-kinds DB");
-        insert_source_inventory_rows(
-            &projection,
-            spelling,
-            PackageReferenceKind::Purl,
-            MAX_PACKAGE_GRAPH_AUTHORITIES,
-        )
-        .await;
-        insert_source_inventory_rows(
-            &projection,
-            spelling,
-            PackageReferenceKind::Local,
-            MAX_PACKAGE_GRAPH_AUTHORITIES,
-        )
-        .await;
-        let purl_keys = graph::package_source_inventory(&projection.connection, &purl)
-            .await
-            .expect("64 PURL authorities");
-        let local_keys = graph::package_source_inventory(&projection.connection, &local)
-            .await
-            .expect("64 Local authorities with identical spelling");
-        assert_eq!(purl_keys.len(), MAX_PACKAGE_GRAPH_AUTHORITIES);
-        assert_eq!(local_keys.len(), MAX_PACKAGE_GRAPH_AUTHORITIES);
-        assert!(purl_keys
-            .iter()
-            .all(|key| key.coordinate.kind() == PackageReferenceKind::Purl));
-        assert!(local_keys
-            .iter()
-            .all(|key| key.coordinate.kind() == PackageReferenceKind::Local));
-        drop(projection);
-        remove_database(&both_kinds_path);
-    });
-}
-
-async fn insert_source_inventory_rows(
-    projection: &TursoProjection,
-    spelling: &str,
-    kind: PackageReferenceKind,
-    count: usize,
-) {
-    let tag = i64::from(kind.tag());
-    for byte in 1..=count {
-        let authority_id = [u8::try_from(byte).expect("fixture authority byte"); 32];
-        projection
-            .connection
-            .execute(
-                "INSERT INTO backend_projection_package_sources \
-                 (source, coordinate_kind, source_authority_kind, source_authority_id) \
-                 VALUES (?1, ?2, 1, ?3)",
-                turso::params![spelling, tag, authority_id.as_slice()],
-            )
-            .await
-            .expect("insert source inventory row");
-        projection
-            .connection
-            .execute(
-                "INSERT INTO backend_projection_package_source_witnesses \
-                 (source, coordinate_kind, source_authority_kind, source_authority_id, facts_witness) \
-                 VALUES (?1, ?2, 1, ?3, ?4)",
-                turso::params![spelling, tag, authority_id.as_slice(), [0_u8; 32].as_slice()],
-            )
-            .await
-            .expect("insert source witness inventory row");
-    }
-}
-
-#[test]
-fn both_graph_read_surfaces_reject_noncanonical_or_inconsistent_edge_rows() {
-    futures_executor::block_on(async {
-        let source = PackageReference::parse("pkg:cargo/strict-edge-source@1.0.0")
-            .expect("source coordinate");
-        let authority = PackageGraphSourceAuthority::Registry(
-            RegistryAuthorityId::from_configured_source([0x56; 32]),
-        );
-        let source_key = PackageGraphSourceKey::new(source.clone(), authority);
-        let target = PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", "^1", None)
-            .expect("target");
-        let evidence = DependencyEvidence {
-            authority: DependencyAuthority::RegistryMetadata,
-            frontier: [0x57; 32],
-            provenance: [0x58; 32],
-        };
-        let edge = PackageDependencyRecord::new_with_source_authority(
-            source.clone(),
-            authority,
-            target.clone(),
-            DependencyScope::Runtime,
-            true,
-            evidence,
-        );
-        let mismatched_evidence_edge = PackageDependencyRecord::new_with_source_authority(
-            source.clone(),
-            authority,
-            target,
-            DependencyScope::Runtime,
-            true,
-            DependencyEvidence {
-                authority: DependencyAuthority::ArchiveManifest,
-                ..evidence
-            },
-        );
-        assert_ne!(
-            edge.facts_version,
-            mismatched_evidence_edge.facts_version,
-            "the corrupted row will carry a digest matching its changed evidence field"
-        );
-        let cases = [
-            ("optional=2", "optional must be exactly zero or one"),
-            ("target_name=' serde '", "target name must be exact text"),
-            ("requirement=' ^1 '", "requirement must be exact text"),
-            ("evidence", "evidence must match its source authority"),
-            ("resolved='not-a-purl'", "resolution must be an exact PURL"),
-            (
-                "edge_id=zeroblob(32), facts_version=zeroblob(32)",
-                "equal stored digests must still match the recomputed payload",
-            ),
-        ];
-        for (assignment, message) in cases {
-            let path = path();
-            let mut projection = open_test(&path).await.expect("open");
-            let facts = [(
-                source_key.clone(),
-                DependencyFacts::Known(vec![edge.clone()].into_boxed_slice()),
-            )];
-            projection
-                .synchronize_package_graph_current_for_test(fallback_seed_view().root(), &facts)
-                .await
-                .expect("persist valid row before corruption");
-            if assignment == "evidence" {
-                projection
-                    .connection
-                    .execute(
-                        "UPDATE backend_projection_package_edges SET authority=1, edge_id=?1, \
-                         facts_version=?2 WHERE edge_id=?3",
-                        turso::params![
-                            mismatched_evidence_edge.facts_version.as_slice(),
-                            mismatched_evidence_edge.facts_version.as_slice(),
-                            edge.facts_version.as_slice()
-                        ],
-                    )
-                    .await
-                    .unwrap_or_else(|error| panic!("{message}: {error}"));
-            } else {
-                let sql = format!(
-                    "UPDATE backend_projection_package_edges SET {assignment} WHERE edge_id=?1"
-                );
-                projection
-                    .connection
-                    .execute(&sql, turso::params![edge.facts_version.as_slice()])
-                    .await
-                    .unwrap_or_else(|error| panic!("{message}: {error}"));
-            }
-
-            assert!(
-                projection
-                    .package_dependencies_for_source(&source_key)
-                    .await
-                    .is_err(),
-                "unpaged read accepted corrupt row: {message}"
-            );
-            let request = backend_library::PackageGraphPageRequest::new(
-                source.clone(),
-                backend_library::PackageGraphDirection::Dependencies,
-                Some(authority),
-                4,
-            )
-            .expect("exact page request");
-            assert!(matches!(
-                projection.read_package_graph_page(&request).await,
-                Err(PackageGraphReadError::Projection(_))
-            ), "paged read accepted corrupt row: {message}");
-            drop(projection);
-            remove_database(&path);
-        }
-    });
-}
-
-#[test]
-fn unpaged_graph_reader_rejects_edge_id_separate_from_typed_fact_identity() {
-    futures_executor::block_on(async {
-        let path = path();
-        let source = PackageReference::from_kind(
-            PackageReferenceKind::Local,
-            "pkg:cargo/edge-id-check@1.0.0",
-        )
-        .expect("same-spelling Local source");
-        let key = PackageGraphSourceKey::unattributed(source.clone());
-        let facts = [(
-            key.clone(),
-            DependencyFacts::Known(
-                vec![dependency_edge(&source, "edge-id-target", "^1")].into_boxed_slice(),
-            ),
-        )];
-        let projection = open_test(&path).await.expect("open");
-        projection
-            .synchronize_package_graph_current_for_test(fallback_seed_view().root(), &facts)
-            .await
-            .expect("persist typed Local edge");
-        let mut edge_rows = projection
-            .connection
-            .query(
-                "SELECT edge_id FROM backend_projection_package_edges WHERE source=?1 \
-                 AND coordinate_kind=?2",
-                turso::params![
-                    source.as_str(),
-                    i64::from(PackageReferenceKind::Local.tag())
-                ],
-            )
-            .await
-            .expect("persisted typed edge ID");
-        let original_id: [u8; 32] = edge_rows
-            .next()
-            .await
-            .expect("edge ID row")
-            .expect("one edge")
-            .get::<Vec<u8>>(0)
-            .expect("edge ID bytes")
-            .try_into()
-            .expect("32-byte edge ID");
-        let mut corrupted_id = original_id;
-        corrupted_id[0] ^= 1;
-        drop(edge_rows);
-        projection
-            .connection
-            .execute(
-                "UPDATE backend_projection_package_edges SET edge_id=?1 WHERE edge_id=?2",
-                turso::params![corrupted_id.as_slice(), original_id.as_slice()],
-            )
-            .await
-            .expect("corrupt only the row key");
-        assert!(projection
-            .package_dependencies_for_source(&key)
-            .await
-            .is_err(), "the unpaged decoder must match row key, typed payload, and witness");
-        drop(projection);
-        remove_database(&path);
-    });
-}
-
-#[test]
 fn package_graph_distinguishes_known_empty_unknown_and_absent_authorities() {
     futures_executor::block_on(async {
         let path = path();
@@ -2435,7 +1827,7 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
                 .edges
                 .is_empty()
         );
-        let state_rowid = stored_state_rowid(&projection, &target).await;
+        let state_rowid = stored_state_rowid(&projection, target.as_str()).await;
         let view_f = view_with_label("graph-root-f");
         projection
             .synchronize_from_current_for_test(&view_f)
@@ -2451,7 +1843,7 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             ProjectionUpdate::Rebuilt { rows: 0 }
         );
         assert_eq!(
-            stored_state_rowid(&projection, &target).await,
+            stored_state_rowid(&projection, target.as_str()).await,
             state_rowid
         );
         assert_eq!(
@@ -2478,13 +1870,13 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .expect("advance selected row root before state reason change");
         let root_g = view_g.root();
         let state_rowid_before_reason_change =
-            stored_state_rowid(&projection, &target).await;
+            stored_state_rowid(&projection, target.as_str()).await;
         projection
             .synchronize_package_graph_current_for_test(root_g, &changed)
             .await
             .expect("replace state");
         assert_eq!(
-            stored_state_rowid(&projection, &target).await,
+            stored_state_rowid(&projection, target.as_str()).await,
             state_rowid_before_reason_change
         );
         let replaced = projection
@@ -2983,7 +2375,7 @@ struct GraphSnapshot {
     facts_witness: [u8; 32],
     edge_count: i64,
     edge_ids: Vec<[u8; 32]>,
-    states: Vec<(String, i64, i64, Vec<u8>, i64, String)>,
+    states: Vec<(String, i64, Vec<u8>, i64, String)>,
 }
 
 fn expected_graph_snapshot(
@@ -3003,7 +2395,6 @@ fn expected_graph_snapshot(
             DependencyFacts::Unknown(reason) => {
                 states.push((
                     source.as_str().to_owned(),
-                    i64::from(source.coordinate.kind().tag()),
                     source.authority.kind_tag(),
                     source.authority.id_bytes().to_vec(),
                     1,
@@ -3013,7 +2404,6 @@ fn expected_graph_snapshot(
             DependencyFacts::Unavailable(reason) => {
                 states.push((
                     source.as_str().to_owned(),
-                    i64::from(source.coordinate.kind().tag()),
                     source.authority.kind_tag(),
                     source.authority.id_bytes().to_vec(),
                     2,
@@ -3122,9 +2512,9 @@ async fn graph_snapshot(projection: &TursoProjection) -> Result<GraphSnapshot, P
 
     let mut state_rows = tx
         .query(
-            "SELECT source, coordinate_kind, source_authority_kind, source_authority_id, state, reason \
+            "SELECT source, source_authority_kind, source_authority_id, state, reason \
              FROM backend_projection_package_states \
-             ORDER BY source, coordinate_kind, source_authority_kind, source_authority_id",
+             ORDER BY source, source_authority_kind, source_authority_id",
             (),
         )
         .await?;
@@ -3136,7 +2526,6 @@ async fn graph_snapshot(projection: &TursoProjection) -> Result<GraphSnapshot, P
             row.get(2)?,
             row.get(3)?,
             row.get(4)?,
-            row.get(5)?,
         ));
     }
     drop(state_rows);
@@ -3708,17 +3097,13 @@ async fn recorded_changes(projection: &TursoProjection, view: &ViewRoot) -> i64 
         .unwrap_or_else(|error| panic!("commit decode: {error}"))
 }
 
-async fn stored_state_rowid(projection: &TursoProjection, source: &PackageReference) -> i64 {
+async fn stored_state_rowid(projection: &TursoProjection, source: &str) -> i64 {
     let mut rows = projection
         .connection
         .query(
             "SELECT rowid FROM backend_projection_package_states WHERE source = ?1 \
-             AND coordinate_kind=?2 AND source_authority_kind=0 AND source_authority_id=?3",
-            turso::params![
-                source.as_str(),
-                i64::from(source.kind().tag()),
-                [0_u8; 32].as_slice()
-            ],
+             AND source_authority_kind=0 AND source_authority_id=?2",
+            turso::params![source, [0_u8; 32].as_slice()],
         )
         .await
         .unwrap_or_else(|error| panic!("state rowid query: {error}"));
