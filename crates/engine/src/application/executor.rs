@@ -58,6 +58,11 @@ impl<Job> BoundedLaneQueue<Job> {
         })
     }
 
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.senders.len()
+    }
+
     pub(crate) fn try_send(
         &self,
         identity: LaneIdentity,
