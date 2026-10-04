@@ -6208,6 +6208,7 @@ mod tests {
             DiscoveryCursor::new(next_cursor.as_bytes().to_vec()).expect("next cursor");
         DiscoveryBatch {
             source,
+            expected_base_sequence: 0,
             previous_cursor,
             next_cursor: next_cursor.clone(),
             source_high_watermark: next_cursor,

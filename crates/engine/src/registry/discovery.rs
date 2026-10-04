@@ -2405,6 +2405,7 @@ mod tests {
         let coordinate = PackageCoordinate::parse("pkg:nuget/Widget@1.0.0").expect("coordinate");
         let batch = DiscoveryBatch {
             source,
+            expected_base_sequence: 0,
             previous_cursor: cursor("2026-09-01T00:00:00Z"),
             next_cursor: cursor("2026-09-02T00:00:00Z"),
             source_high_watermark: cursor("2026-09-02T00:00:00Z"),
