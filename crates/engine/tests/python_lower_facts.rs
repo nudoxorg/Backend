@@ -22,8 +22,11 @@ use backend_frontend_python::legacy::{
     CheckerReport, Inference, InferenceSite, InferredType, Span, extract,
 };
 use backend_semantic::ir::{
-    ConcreteType, DecodedTypeFact, EntityKind, FragmentView, Ir, ItemKind, PrimitiveShape,
-    SemanticTypeTag, SignatureCarrierRole, SignatureCarrierRoleObservation, TypeExpr, TypeReason,
+    ConcreteType, DecodedTypeFact, EntityId, EntityKind, FragmentView, Ir, ItemKind,
+    PrimitiveShape, SemanticCoreReader, SemanticImageView, SemanticReader, SemanticTypeTag,
+    SignatureCarrierBinding, SignatureCarrierBindingRole, SignatureCarrierBindingsObservation,
+    SignatureCarrierRole, SignatureCarrierRoleObservation, TypeExpr, TypeReason,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
@@ -839,6 +842,179 @@ fn nested_typevar_argument_keeps_its_leaf_spelling() -> Result<(), TestError> {
 /// minting a second fact that would collide byte-for-byte in family and
 /// variant. Pre-fix this source died `DuplicateDeclarationIdentity`.
 const SAME_NAME_RESULT: &[u8] = b"def value(value: int) -> int: ...\n";
+
+/// Exercises owner-local Python signature rows after the portable image has
+/// been encoded and reopened. The aliases intentionally resolve to the same
+/// nominal target, while their input and result carrier declarations remain
+/// distinct entities.
+const REOPENED_SIGNATURE_CARRIERS: &[u8] = concat!(
+    "from typing import Callable\n",
+    "class Plain:\n    pass\n",
+    "type Left = Plain\n",
+    "type Right = Plain\n",
+    "type Handler = Callable[[int], str]\n",
+    "class Brewer:\n",
+    "    def brew(self, count: Left) -> Right: ...\n",
+    "    def quiet(self): ...\n",
+    "def value(value: int) -> int: ...\n",
+    "def echo(item: Left) -> Right: ...\n",
+);
+
+#[test]
+fn reopened_python_signatures_keep_exact_owner_carrier_bindings() -> Result<(), TestError> {
+    with_image(
+        REOPENED_SIGNATURE_CARRIERS,
+        "reopened-signature-carriers",
+        |ir| {
+            let byte_len = full_semantic_image_len(ir)
+                .map_err(|_| TestError::Falsified("full semantic image length failed"))?;
+            let mut bytes = vec![0_u8; byte_len];
+            encode_full_semantic_image(ir, &mut bytes)
+                .map_err(|_| TestError::Falsified("full semantic image encoding failed"))?;
+            let image = SemanticImageView::reopen(&bytes)
+                .map_err(|_| TestError::Falsified("full semantic image reopen failed"))?;
+
+            let entity = |name: &[u8], kind: ItemKind, parent: Option<EntityId>| {
+                image.canonical_entities().find(|candidate| {
+                    image.atom(candidate.name) == Some(name)
+                        && candidate.kind == kind
+                        && candidate.parent == parent
+                })
+            };
+            let bindings = |owner| match SemanticReader::signature_carrier_bindings(&image, owner) {
+                Some(SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                    Some(bindings.collect::<Vec<_>>())
+                }
+                Some(SignatureCarrierBindingsObservation::Unavailable) | None => None,
+            };
+
+            let brewer = entity(b"Brewer", ItemKind::Class, None)
+                .ok_or(TestError::Falsified("Brewer class absent after reopen"))?;
+            let brew = entity(b"brew", ItemKind::Function, Some(brewer.id))
+                .ok_or(TestError::Falsified("brew method absent after reopen"))?;
+            let count = entity(b"count", ItemKind::Parameter, Some(brew.id)).ok_or(
+                TestError::Falsified("brew input carrier absent after reopen"),
+            )?;
+            let brew_result = entity(b"brew", ItemKind::Parameter, Some(brew.id)).ok_or(
+                TestError::Falsified("brew result carrier absent after reopen"),
+            )?;
+            if entity(b"self", ItemKind::Parameter, Some(brew.id)).is_some()
+                || bindings(brew.id)
+                    != Some(vec![
+                        SignatureCarrierBinding {
+                            owner: brew.id,
+                            role: SignatureCarrierBindingRole::Parameter,
+                            position: 0,
+                            carrier: count.id,
+                        },
+                        SignatureCarrierBinding {
+                            owner: brew.id,
+                            role: SignatureCarrierBindingRole::Result,
+                            position: 0,
+                            carrier: brew_result.id,
+                        },
+                    ])
+            {
+                return Err(TestError::Falsified(
+                    "Python method receiver entered the owner-local carrier slots",
+                ));
+            }
+            if count.semantic_type != brew_result.semantic_type {
+                return Err(TestError::Falsified(
+                    "same-target aliases lost their equal carrier type after reopen",
+                ));
+            }
+
+            let quiet = entity(b"quiet", ItemKind::Function, Some(brewer.id))
+                .ok_or(TestError::Falsified("quiet method absent after reopen"))?;
+            if bindings(quiet.id) != Some(Vec::new()) {
+                return Err(TestError::Falsified(
+                    "no-parameter/no-result method lost captured-empty truth",
+                ));
+            }
+
+            let value = entity(b"value", ItemKind::Function, None)
+                .ok_or(TestError::Falsified("value function absent after reopen"))?;
+            let value_carrier = entity(b"value", ItemKind::Parameter, Some(value.id))
+                .ok_or(TestError::Falsified("value carrier absent after reopen"))?;
+            if bindings(value.id)
+                != Some(vec![
+                    SignatureCarrierBinding {
+                        owner: value.id,
+                        role: SignatureCarrierBindingRole::Parameter,
+                        position: 0,
+                        carrier: value_carrier.id,
+                    },
+                    SignatureCarrierBinding {
+                        owner: value.id,
+                        role: SignatureCarrierBindingRole::Result,
+                        position: 0,
+                        carrier: value_carrier.id,
+                    },
+                ])
+                || SemanticReader::signature_carrier_role(&image, value_carrier.id)
+                    != Some(SignatureCarrierRoleObservation::Captured(
+                        SignatureCarrierRole::Both,
+                    ))
+            {
+                return Err(TestError::Falsified(
+                    "shared Python input/result carrier lost its exact Both-role binding",
+                ));
+            }
+
+            let echo = entity(b"echo", ItemKind::Function, None)
+                .ok_or(TestError::Falsified("echo function absent after reopen"))?;
+            let echo_input = entity(b"item", ItemKind::Parameter, Some(echo.id)).ok_or(
+                TestError::Falsified("echo input carrier absent after reopen"),
+            )?;
+            let echo_result = entity(b"echo", ItemKind::Parameter, Some(echo.id)).ok_or(
+                TestError::Falsified("echo result carrier absent after reopen"),
+            )?;
+            if echo_input.id == echo_result.id
+                || echo_input.semantic_type != echo_result.semantic_type
+                || bindings(echo.id)
+                    != Some(vec![
+                        SignatureCarrierBinding {
+                            owner: echo.id,
+                            role: SignatureCarrierBindingRole::Parameter,
+                            position: 0,
+                            carrier: echo_input.id,
+                        },
+                        SignatureCarrierBinding {
+                            owner: echo.id,
+                            role: SignatureCarrierBindingRole::Result,
+                            position: 0,
+                            carrier: echo_result.id,
+                        },
+                    ])
+            {
+                return Err(TestError::Falsified(
+                    "equal alias-resolved types collapsed distinct Python carrier identities",
+                ));
+            }
+
+            let handler = entity(b"Handler", ItemKind::Alias, None).ok_or(TestError::Falsified(
+                "Handler callable alias absent after reopen",
+            ))?;
+            let handler_type = handler
+                .semantic_type
+                .and_then(|type_id| image.ty(type_id))
+                .ok_or(TestError::Falsified(
+                    "Handler alias type absent after reopen",
+                ))?;
+            if !matches!(
+                handler_type,
+                TypeExpr::Concrete(ConcreteType::Function { .. })
+            ) || SemanticReader::signature_carrier_bindings(&image, handler.id).is_some()
+            {
+                return Err(TestError::Falsified(
+                    "ownerless callable alias was treated as a Function signature owner",
+                ));
+            }
+            Ok(())
+        },
+    )
+}
 
 #[test]
 fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), TestError> {
