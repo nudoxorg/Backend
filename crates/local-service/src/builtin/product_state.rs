@@ -13,16 +13,16 @@ use super::forge_gateway::{
 };
 use crate::discovery::{DISCOVERY_FRESHNESS_MILLIS, DiscoveryStore};
 use backend_engine::{
-    ForgeFact, ForgeSearchRecord, PackageDependencySourceFacts, ProductTreeNodeId as TreeNodeId,
-    RowId, SurfaceCommand, SurfaceReply, ViewRoot,
+    ForgeFact, ForgeSearchRecord, ProductTreeNodeId as TreeNodeId, RowId, SurfaceCommand,
+    SurfaceReply, ViewRoot,
 };
 use backend_library::{
     AdvisoryPackageDto, CommandMutation, DeclarationRecord, DependencyFacts, DependentSources,
     ForgeDiscoveryCandidate, ForgeManifestRecord, ForgeRepositoryMetadataRecord, Fragment,
-    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
+    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, IndexedCheckedPackageGraph,
     PackageCoordinate as ProductPackageCoordinate, PackageDependencyLookup,
-    PackageDependencyRecord, PackageGraphIndex, PackageGraphSourceAuthority, PackageGraphSourceKey,
-    PackageReference, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
+    PackageDependencyRecord, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
+    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
     RegistryDiscoveryMetadata, RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem,
     RegistryEvidenceFacet, RegistryFactAvailability, RegistryMetadata, RegistryNativeMetadata,
@@ -139,8 +139,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         catalog_index: &CatalogLookupIndex,
-        dependency_facts: &[PackageDependencySourceFacts],
-        dependency_index: &PackageGraphIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
         workspace: Option<&Path>,
     ) -> Result<SurfaceReply, String> {
         self.execute_with_discovery(
@@ -148,8 +147,7 @@ impl ProductState {
             view,
             catalog,
             catalog_index,
-            dependency_facts,
-            dependency_index,
+            dependency_graph,
             workspace,
             None,
         )
@@ -161,8 +159,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         catalog_index: &CatalogLookupIndex,
-        dependency_facts: &[PackageDependencySourceFacts],
-        dependency_index: &PackageGraphIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
         workspace: Option<&Path>,
         discovery: Option<&DiscoveryStore>,
     ) -> Result<SurfaceReply, String> {
@@ -171,8 +168,7 @@ impl ProductState {
             view,
             catalog,
             catalog_index,
-            dependency_facts,
-            dependency_index,
+            dependency_graph,
             workspace,
             discovery,
             &[],
@@ -185,8 +181,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         catalog_index: &CatalogLookupIndex,
-        dependency_facts: &[PackageDependencySourceFacts],
-        dependency_index: &PackageGraphIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
         workspace: Option<&Path>,
         discovery: Option<&DiscoveryStore>,
         forge_records: &[ForgeSearchRecord],
@@ -196,8 +191,7 @@ impl ProductState {
             view,
             catalog,
             catalog_index,
-            dependency_facts,
-            dependency_index,
+            dependency_graph,
             workspace,
             discovery,
             CatalogLookupIndex::snapshot_for_catalog(catalog),
@@ -211,8 +205,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         catalog_index: &CatalogLookupIndex,
-        dependency_facts: &[PackageDependencySourceFacts],
-        dependency_index: &PackageGraphIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
         workspace: Option<&Path>,
         discovery: Option<&DiscoveryStore>,
         selected_catalog_snapshot: [u8; 32],
@@ -226,8 +219,7 @@ impl ProductState {
                     view,
                     catalog,
                     catalog_index,
-                    dependency_facts,
-                    dependency_index,
+                    dependency_graph,
                     workspace,
                     discovery,
                     selected_catalog_snapshot,
@@ -251,8 +243,7 @@ impl ProductState {
                     view,
                     catalog,
                     catalog_index,
-                    dependency_facts,
-                    dependency_index,
+                    dependency_graph,
                     workspace,
                     discovery,
                     selected_catalog_snapshot,
@@ -274,8 +265,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         catalog_index: &CatalogLookupIndex,
-        dependency_facts: &[PackageDependencySourceFacts],
-        dependency_index: &PackageGraphIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
         workspace: Option<&Path>,
         discovery: Option<&DiscoveryStore>,
         selected_catalog_snapshot: [u8; 32],
@@ -419,11 +409,7 @@ impl ProductState {
                 );
             }
             SurfaceCommand::Dependencies { package } => (
-                SurfaceReply::Dependencies(dependencies(
-                    dependency_facts,
-                    dependency_index,
-                    &package,
-                )?),
+                SurfaceReply::Dependencies(dependencies(dependency_graph, &package)?),
                 false,
             ),
             SurfaceCommand::PackageGraphPage { .. } => {
@@ -452,8 +438,7 @@ impl ProductState {
                 SurfaceReply::Dependents(dependents(
                     catalog,
                     catalog_index,
-                    dependency_facts,
-                    dependency_index,
+                    dependency_graph,
                     &package,
                 )?),
                 false,
@@ -3294,11 +3279,10 @@ fn current_epoch_millis() -> u64 {
         })
 }
 fn dependencies(
-    facts: &[PackageDependencySourceFacts],
-    index: &PackageGraphIndex,
+    graph: &IndexedCheckedPackageGraph,
     package: &PackageReference,
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, String> {
-    match index.dependencies(facts, package) {
+    match graph.dependencies(package) {
         PackageDependencyLookup::Exact { source, facts } => {
             if source.authority == PackageGraphSourceAuthority::Unattributed {
                 return Ok(DependencyFacts::Unavailable(
@@ -3327,7 +3311,7 @@ fn dependencies(
         }
         PackageDependencyLookup::Missing => {}
     }
-    if let Some(value) = local_manifest_dependencies(facts, index, package)? {
+    if let Some(value) = local_manifest_dependencies(graph, package)? {
         return Ok(value);
     }
     Ok(DependencyFacts::Unavailable(
@@ -3345,8 +3329,7 @@ fn dependencies(
 /// that coordinate and reuses the resident rows. A path the index has not
 /// seen yet is read through the same parser.
 fn local_manifest_dependencies(
-    facts: &[PackageDependencySourceFacts],
-    index: &PackageGraphIndex,
+    graph: &IndexedCheckedPackageGraph,
     package: &PackageReference,
 ) -> Result<Option<DependencyFacts<Box<[PackageDependencyRecord]>>>, String> {
     let PackageReference::Local(label) = package else {
@@ -3357,8 +3340,7 @@ fn local_manifest_dependencies(
         return Ok(None);
     }
     if let Some(manifest) = super::local_manifest::read_local_manifest(root)?
-        && let Some(value) = index.dependencies_for_source(
-            facts,
+        && let Some(value) = graph.dependencies_for_source(
             &super::local_manifest::dependency_source_key(root, manifest.record.coordinate.clone()),
         )
     {
@@ -3370,17 +3352,16 @@ fn local_manifest_dependencies(
 fn dependents(
     catalog: &[RegistryPackageRecord],
     catalog_index: &CatalogLookupIndex,
-    facts: &[PackageDependencySourceFacts],
-    index: &PackageGraphIndex,
+    graph: &IndexedCheckedPackageGraph,
     package: &PackageReference,
 ) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
-    if facts.is_empty() {
+    if graph.facts().is_empty() {
         return Ok(RegistryMetadata::NotRecorded(
             ProductText::new("the configured feed does not record dependency metadata")
                 .map_err(|error| error.to_string())?,
         ));
     }
-    let (sources, mut gap) = match index.dependent_sources(facts, package) {
+    let (sources, mut gap) = match graph.dependent_sources(package) {
         DependentSources::NotPurl => {
             return Ok(RegistryMetadata::NotRecorded(
                 ProductText::new("reverse dependency lookup requires a pinned package URL")
@@ -3537,13 +3518,20 @@ mod tests {
     };
     use backend_engine::{
         AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,
-        DependencyScope, PackageDependencyRecord, PackageDependencyTarget, PackageReference,
-        RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryMetadata,
-        RegistryPackageRecord, RegistryReleaseStanding,
+        DependencyScope, PackageDependencyRecord, PackageDependencySourceFacts,
+        PackageDependencyTarget, PackageReference, RegistryDownloadCount, RegistryEcosystem,
+        RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding,
     };
-    use backend_library::RegistryNativeMetadata;
+    use backend_library::{PackageGraphIndexLimits, RegistryNativeMetadata};
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    const PACKAGE_GRAPH_TEST_LIMITS: PackageGraphIndexLimits = PackageGraphIndexLimits {
+        max_sources: 16,
+        max_total_rows: 128,
+        max_reverse_edges: 128,
+        max_index_key_bytes: 64 * 1024,
+    };
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -3569,6 +3557,11 @@ mod tests {
             Vec::new(),
         )
         .expect("empty view")
+    }
+
+    fn indexed_graph(facts: Vec<PackageDependencySourceFacts>) -> IndexedCheckedPackageGraph {
+        IndexedCheckedPackageGraph::new(facts, PACKAGE_GRAPH_TEST_LIMITS)
+            .expect("fixture graph fits explicit test limits")
     }
 
     fn create(name: &str) -> SurfaceCommand {
@@ -3902,9 +3895,12 @@ mod tests {
             dependency_edge("pkg:cargo/optional-src@1.0.0", DependencyScope::Optional, 5),
         ];
         let catalog_index = CatalogLookupIndex::from_catalog(&catalog);
-        let index = PackageGraphIndex::from_facts(&facts);
-        let result =
-            dependents(&catalog, &catalog_index, &facts, &index, &target).expect("dependents");
+        let graph = indexed_graph(facts.to_vec());
+        assert_eq!(
+            graph.dependent_sources(&target),
+            backend_library::linear_dependent_sources(graph.facts(), &target)
+        );
+        let result = dependents(&catalog, &catalog_index, &graph, &target).expect("dependents");
         let RegistryMetadata::Recorded(rows) = result else {
             panic!("expected recorded dependents");
         };
@@ -3956,9 +3952,12 @@ mod tests {
             ),
         ];
         let catalog_index = CatalogLookupIndex::from_catalog(&catalog);
-        let index = PackageGraphIndex::from_facts(&facts);
-        let result =
-            dependents(&catalog, &catalog_index, &facts, &index, &target).expect("dependents");
+        let graph = indexed_graph(facts.to_vec());
+        assert_eq!(
+            graph.dependent_sources(&target),
+            backend_library::linear_dependent_sources(graph.facts(), &target)
+        );
+        let result = dependents(&catalog, &catalog_index, &graph, &target).expect("dependents");
         let RegistryMetadata::Partial { value, reason } = result else {
             panic!("the unresolved source must make this partial")
         };
@@ -5544,8 +5543,7 @@ mod tests {
                 &view(),
                 &[],
                 &CatalogLookupIndex::from_catalog(&[]),
-                &[],
-                &PackageGraphIndex::from_facts(&[]),
+                &indexed_graph(Vec::new()),
                 None,
             )
             .expect("create project");
@@ -5571,8 +5569,7 @@ mod tests {
                 &view(),
                 &[],
                 &CatalogLookupIndex::from_catalog(&[]),
-                &[],
-                &PackageGraphIndex::from_facts(&[]),
+                &indexed_graph(Vec::new()),
                 None,
             )
             .expect("create project");
@@ -5615,8 +5612,7 @@ mod tests {
                     &view(),
                     &[],
                     &CatalogLookupIndex::from_catalog(&[]),
-                    &[],
-                    &PackageGraphIndex::from_facts(&[]),
+                    &indexed_graph(Vec::new()),
                     None,
                 )
                 .is_err()
@@ -5642,8 +5638,8 @@ serde = \"1\"
         )
         .expect("manifest");
         let package = PackageReference::parse(root.to_str().expect("utf8 path")).expect("local");
-        let empty = PackageGraphIndex::from_facts(&[]);
-        let parsed = dependencies(&[], &empty, &package).expect("parsed");
+        let empty = indexed_graph(Vec::new());
+        let parsed = dependencies(&empty, &package).expect("parsed");
         let DependencyFacts::Known(rows) = &parsed else {
             panic!("parsed dependencies should be known");
         };
@@ -5674,8 +5670,8 @@ serde = \"1\"
             local_source,
             DependencyFacts::Known(vec![resident].into_boxed_slice()),
         )];
-        let index = PackageGraphIndex::from_facts(&facts);
-        let reused = dependencies(&facts, &index, &package).expect("reused");
+        let graph = indexed_graph(facts.to_vec());
+        let reused = dependencies(&graph, &package).expect("reused");
         let DependencyFacts::Known(rows) = &reused else {
             panic!("indexed dependencies should be known");
         };
@@ -5697,19 +5693,19 @@ serde = \"1\"
             PackageGraphSourceKey::unattributed(coordinate.clone()),
             DependencyFacts::Known(vec![unattributed].into_boxed_slice()),
         )];
-        let unbound_index = PackageGraphIndex::from_facts(&unbound_facts);
+        let unbound_graph = indexed_graph(unbound_facts.to_vec());
         assert!(matches!(
-            dependencies(&unbound_facts, &unbound_index, &coordinate).expect("unbound"),
+            dependencies(&unbound_graph, &coordinate).expect("unbound"),
             DependencyFacts::Unavailable(_)
         ));
 
         let missing = PackageReference::parse("pkg:cargo/absent@1.0.0").expect("purl");
-        let unavailable = dependencies(&[], &empty, &missing).expect("missing");
+        let unavailable = dependencies(&empty, &missing).expect("missing");
         assert!(matches!(unavailable, DependencyFacts::Unavailable(_)));
         let file = root.join("not-a-directory");
         fs::write(&file, "x").expect("file");
         let file_ref = PackageReference::parse(file.to_str().expect("utf8 path")).expect("file");
-        let file_deps = dependencies(&[], &empty, &file_ref).expect("file deps");
+        let file_deps = dependencies(&empty, &file_ref).expect("file deps");
         assert!(matches!(file_deps, DependencyFacts::Unavailable(_)));
 
         let mut body = String::from(
@@ -5729,19 +5725,19 @@ edition = \"2021\"
         let mut parsed_ns = Vec::with_capacity(9);
         let mut reused_ns = Vec::with_capacity(9);
         for _ in 0..2 {
-            let _ = dependencies(&[], &empty, &package).expect("warmup parse");
-            let _ = dependencies(&facts, &index, &package).expect("warmup reuse");
+            let _ = dependencies(&empty, &package).expect("warmup parse");
+            let _ = dependencies(&graph, &package).expect("warmup reuse");
         }
         for _ in 0..9 {
             let started = std::time::Instant::now();
-            let parsed = dependencies(&[], &empty, &package).expect("wide parse");
+            let parsed = dependencies(&empty, &package).expect("wide parse");
             parsed_ns.push(started.elapsed().as_nanos());
             let DependencyFacts::Known(rows) = parsed else {
                 panic!("wide parse should be known");
             };
             assert_eq!(rows.len(), 1_024);
             let started = std::time::Instant::now();
-            let reused = dependencies(&facts, &index, &package).expect("wide reuse");
+            let reused = dependencies(&graph, &package).expect("wide reuse");
             reused_ns.push(started.elapsed().as_nanos());
             let DependencyFacts::Known(rows) = reused else {
                 panic!("wide reuse should be known");

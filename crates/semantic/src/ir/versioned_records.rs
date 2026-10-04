@@ -339,6 +339,34 @@ pub enum CanonicalPlaneStreamError<SinkError> {
     Sink(SinkError),
 }
 
+/// Error from encoding and visiting canonical typed rows for a caller-owned sink.
+#[derive(Debug, Error)]
+pub enum CanonicalPlaneRowStreamError<SinkError> {
+    /// A canonical reader, grammar, allocation, or row invariant failed.
+    #[error(transparent)]
+    Encoding(#[from] SemanticPlaneRecordError),
+    /// The row sink failed while accepting one borrowed row.
+    #[error("canonical semantic-plane row sink failed")]
+    Sink(SinkError),
+}
+
+/// Receives one grammar-checked typed row from the canonical family encoder.
+///
+/// The row payload is borrowed from one reusable encoder scratch buffer and is
+/// valid only until this method returns. A sink that persists the bytes must
+/// complete that write before returning or make its own explicit copy.
+pub trait CanonicalSemanticPlaneRowSink {
+    /// Sink-specific persistence or indexing failure.
+    type Error;
+
+    /// Accepts one admitted row in strictly increasing stable-key order.
+    fn write_row(
+        &mut self,
+        family: SemanticIrPlane,
+        row: CanonicalSemanticPlaneRecordView<'_>,
+    ) -> Result<(), Self::Error>;
+}
+
 impl CanonicalSemanticPlaneSegmentPayload {
     /// Exact IR plane whose rows are encoded in the payload.
     #[must_use]
@@ -413,6 +441,9 @@ pub struct CanonicalPlaneEncodingMetrics {
     segment_count: u64,
     output_bytes: u64,
     row_encode_calls: u64,
+    plan_build_calls: u64,
+    key_collection_calls: u64,
+    key_sort_rows: u64,
     anchor_hash_rows: u64,
     anchor_key_hash_bytes: u64,
     peak_row_scratch_capacity_bytes: u64,
@@ -442,6 +473,21 @@ impl CanonicalPlaneEncodingMetrics {
     #[must_use]
     pub const fn row_encode_calls(self) -> u64 {
         self.row_encode_calls
+    }
+    /// Number of complete family-plan builder calls.
+    #[must_use]
+    pub const fn plan_build_calls(self) -> u64 {
+        self.plan_build_calls
+    }
+    /// Number of complete family stable-key collection calls.
+    #[must_use]
+    pub const fn key_collection_calls(self) -> u64 {
+        self.key_collection_calls
+    }
+    /// Number of full-family key/handle entries passed through the sort.
+    #[must_use]
+    pub const fn key_sort_rows(self) -> u64 {
+        self.key_sort_rows
     }
     /// Stable 32-byte row-key input bytes traversed by the opt-in ramp rule.
     #[must_use]
@@ -480,6 +526,83 @@ impl CanonicalPlaneEncodingMetrics {
     }
     /// Allocated capacity of the full-family O(rows) key/handle/length index.
     /// This capacity is not bounded by the maximum output-segment size.
+    #[must_use]
+    pub const fn row_index_capacity_bytes(self) -> u64 {
+        self.row_index_capacity_bytes
+    }
+}
+
+/// Measured work and retained scratch for producing one complete row family.
+///
+/// The plan/key counters report calls to the encoder hooks, not the number of
+/// underlying `SemanticReader` records those hooks traverse. Production still
+/// builds the full family plan, collects all stable keys, sorts all key/handle
+/// entries, and encodes every row unless a separate caller has proved a
+/// complete changed-key frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CanonicalPlaneRowEncodingMetrics {
+    row_count: u64,
+    row_encode_calls: u64,
+    plan_build_calls: u64,
+    key_collection_calls: u64,
+    key_sort_rows: u64,
+    peak_row_scratch_capacity_bytes: u64,
+    peak_jumbo_rope_scratch_bytes: u64,
+    peak_tracked_row_scratch_upper_bound_bytes: u64,
+    row_index_capacity_bytes: u64,
+}
+
+impl CanonicalPlaneRowEncodingMetrics {
+    /// Number of typed rows admitted and delivered to the sink.
+    #[must_use]
+    pub const fn row_count(self) -> u64 {
+        self.row_count
+    }
+
+    /// Number of canonical row encoder calls.
+    #[must_use]
+    pub const fn row_encode_calls(self) -> u64 {
+        self.row_encode_calls
+    }
+
+    /// Number of complete family-plan builder calls.
+    #[must_use]
+    pub const fn plan_build_calls(self) -> u64 {
+        self.plan_build_calls
+    }
+
+    /// Number of complete family stable-key collection calls.
+    #[must_use]
+    pub const fn key_collection_calls(self) -> u64 {
+        self.key_collection_calls
+    }
+
+    /// Number of full-family key/handle entries passed through the sort.
+    #[must_use]
+    pub const fn key_sort_rows(self) -> u64 {
+        self.key_sort_rows
+    }
+
+    /// Largest reusable row scratch capacity observed during emission.
+    #[must_use]
+    pub const fn peak_row_scratch_capacity_bytes(self) -> u64 {
+        self.peak_row_scratch_capacity_bytes
+    }
+
+    /// Largest live scratch reported by a jumbo value writer during this pass.
+    #[must_use]
+    pub const fn peak_jumbo_rope_scratch_bytes(self) -> u64 {
+        self.peak_jumbo_rope_scratch_bytes
+    }
+
+    /// Largest observed sum of the key index, row scratch, and jumbo-writer
+    /// scratch. Encoder plans and sink-owned storage are excluded.
+    #[must_use]
+    pub const fn peak_tracked_row_scratch_upper_bound_bytes(self) -> u64 {
+        self.peak_tracked_row_scratch_upper_bound_bytes
+    }
+
+    /// Allocated capacity of the full-family O(rows) key/handle index.
     #[must_use]
     pub const fn row_index_capacity_bytes(self) -> u64 {
         self.row_index_capacity_bytes
@@ -970,23 +1093,124 @@ where
     )
 }
 
-fn stream_canonical_plane_family_inner<Reader, Encoder, Sink>(
+/// Encodes and grammar-checks one complete typed row family, lending each row
+/// to `sink` before reusing the row scratch buffer.
+///
+/// `maximum_inline_row_bytes` must be the exact family policy threshold used
+/// for canonical jumbo placement. `maximum_row_payload_bytes` bounds the row
+/// payload accepted by the sink after canonical encoding; it does not cap the
+/// transient scratch growth of an encoder. Row, plan, reference, and jumbo
+/// limits bound producer work. This API checks each row's local grammar but
+/// does not verify the complete seven-family closure, create SPIR framing, or
+/// mint a generation identity. It still builds the full family plan, collects
+/// and sorts all stable keys, and encodes every row; it does not authorize
+/// sparse semantic reuse.
+pub fn stream_canonical_plane_family_rows_with_limits<Reader, Encoder, Sink>(
     reader: &Reader,
     encoder: &Encoder,
-    input: SemanticInputWitness,
-    maximum_bytes: usize,
-    boundary_policy: Option<CanonicalPlaneSegmentBoundaryPolicy>,
-    maximum_rows: Option<u64>,
-    maximum_plan_rows: Option<u64>,
-    maximum_references: Option<u64>,
+    maximum_inline_row_bytes: usize,
+    maximum_row_payload_bytes: usize,
+    maximum_rows: u64,
+    maximum_plan_rows: u64,
+    maximum_references: u64,
     jumbo_limits: crate::ir::JumboRopeLimits,
-    mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    jumbo_sink: &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>,
     sink: &mut Sink,
-) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+) -> Result<CanonicalPlaneRowEncodingMetrics, CanonicalPlaneRowStreamError<Sink::Error>>
 where
     Reader: SemanticReader + ?Sized,
     Encoder: CanonicalPlaneRowEncoder + ?Sized,
-    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+    Sink: CanonicalSemanticPlaneRowSink + ?Sized,
+{
+    let mut adapter = PublicCanonicalPlaneRowSink { sink };
+    encode_and_visit_canonical_plane_rows(
+        reader,
+        encoder,
+        Some(maximum_rows),
+        Some(maximum_plan_rows),
+        Some(maximum_references),
+        maximum_inline_row_bytes,
+        Some(maximum_row_payload_bytes),
+        jumbo_limits,
+        Some(jumbo_sink),
+        &mut adapter,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct CanonicalPlaneRowScratchObservation {
+    row_index_capacity_bytes: u64,
+    row_scratch_capacity_bytes: usize,
+    jumbo_rope_scratch_bytes: u64,
+}
+
+trait CanonicalPlaneEncodedRowVisitor {
+    type Error: From<SemanticPlaneRecordError>;
+
+    /// Runs after stable-key ordering is fixed but before this row is encoded.
+    /// Segment sinks use this hook to flush a preceding range before a jumbo
+    /// encoder can write objects for the next row.
+    fn before_row(
+        &mut self,
+        key: [u8; 32],
+        row_index_capacity_bytes: u64,
+    ) -> Result<(), Self::Error>;
+
+    /// Receives a grammar-admitted row borrowed from reusable row scratch.
+    fn write_row(
+        &mut self,
+        family: SemanticIrPlane,
+        row: CanonicalSemanticPlaneRecordView<'_>,
+        scratch: CanonicalPlaneRowScratchObservation,
+    ) -> Result<(), Self::Error>;
+}
+
+struct PublicCanonicalPlaneRowSink<'sink, Sink: ?Sized> {
+    sink: &'sink mut Sink,
+}
+
+impl<Sink> CanonicalPlaneEncodedRowVisitor for PublicCanonicalPlaneRowSink<'_, Sink>
+where
+    Sink: CanonicalSemanticPlaneRowSink + ?Sized,
+{
+    type Error = CanonicalPlaneRowStreamError<Sink::Error>;
+
+    fn before_row(
+        &mut self,
+        _key: [u8; 32],
+        _row_index_capacity_bytes: u64,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn write_row(
+        &mut self,
+        family: SemanticIrPlane,
+        row: CanonicalSemanticPlaneRecordView<'_>,
+        _scratch: CanonicalPlaneRowScratchObservation,
+    ) -> Result<(), Self::Error> {
+        self.sink
+            .write_row(family, row)
+            .map_err(CanonicalPlaneRowStreamError::Sink)
+    }
+}
+
+fn encode_and_visit_canonical_plane_rows<Reader, Encoder, Visitor>(
+    reader: &Reader,
+    encoder: &Encoder,
+    maximum_rows: Option<u64>,
+    maximum_plan_rows: Option<u64>,
+    maximum_references: Option<u64>,
+    maximum_inline_row_bytes: usize,
+    maximum_row_payload_bytes: Option<usize>,
+    jumbo_limits: crate::ir::JumboRopeLimits,
+    mut jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    visitor: &mut Visitor,
+) -> Result<CanonicalPlaneRowEncodingMetrics, Visitor::Error>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Visitor: CanonicalPlaneEncodedRowVisitor + ?Sized,
 {
     if !matches!(encoder.kind(), SemanticPlaneKind::Ir(_)) {
         return Err(SemanticPlaneRecordError::IrKindRequired.into());
@@ -994,13 +1218,26 @@ where
     let SemanticPlaneKind::Ir(family) = encoder.kind() else {
         return Err(SemanticPlaneRecordError::IrKindRequired.into());
     };
-    if maximum_bytes == 0 || maximum_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES {
-        return Err(SemanticPlaneRecordError::InvalidByteCeiling {
-            observed: maximum_bytes,
+    if maximum_inline_row_bytes == 0
+        || maximum_inline_row_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES
+    {
+        return Err(SemanticPlaneRecordError::InvalidInlineRowCeiling {
+            observed: maximum_inline_row_bytes,
             maximum: crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
         }
         .into());
     }
+    if let Some(maximum_row_payload_bytes) = maximum_row_payload_bytes
+        && (maximum_row_payload_bytes == 0
+            || maximum_row_payload_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES)
+    {
+        return Err(SemanticPlaneRecordError::InvalidRowPayloadCeiling {
+            observed: maximum_row_payload_bytes,
+            maximum: crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+        }
+        .into());
+    }
+
     let plan = encoder.build_plan_with_limits(
         reader,
         maximum_plan_rows.unwrap_or(u64::MAX),
@@ -1026,190 +1263,345 @@ where
         >())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+    let key_sort_rows =
+        u64::try_from(keys.rows.len()).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
+
     let mut row_scratch = Vec::new();
-    let mut segment_bytes = Vec::new();
-    let mut current_prefix = None;
-    let mut first_key = [0; 32];
-    let mut last_key = [0; 32];
-    let mut segment_rows = 0_u32;
     let mut row_count = 0_u64;
-    let mut segment_count = 0_u64;
-    let mut output_bytes = 0_u64;
     let mut peak_row_scratch = 0_usize;
-    let mut peak_segment_scratch = 0_usize;
     let mut peak_jumbo_rope_scratch = 0_u64;
-    let mut peak_tracked_scratch_upper_bound = 0_u64;
-    let mut anchor_hash_rows = 0_u64;
-    let mut anchor_key_hash_bytes = 0_u64;
+    let mut peak_tracked_row_scratch_upper_bound = 0_u64;
     for row in &keys.rows {
-        let prefix = prefix_value(&row.key, INITIAL_PREFIX_BITS);
-        let anchor_cut = if let Some(policy) = boundary_policy {
-            if segment_rows > 0 && policy.hashes_candidate(segment_bytes.len()) {
-                anchor_hash_rows = anchor_hash_rows
-                    .checked_add(1)
-                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
-                anchor_key_hash_bytes = anchor_key_hash_bytes
-                    .checked_add(32)
-                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
-            }
-            segment_rows > 0 && policy.cuts_before(family, segment_bytes.len(), &row.key)
-        } else {
-            false
-        };
-        let legacy_prefix_cut =
-            boundary_policy.is_none() && segment_rows > 0 && current_prefix != Some(prefix);
-        if legacy_prefix_cut || anchor_cut {
-            emit_stream_segment(
-                encoder.kind(),
-                input,
-                first_key,
-                last_key,
-                segment_rows,
-                &mut segment_bytes,
-                sink,
-            )?;
-            account_segment(&segment_bytes, &mut segment_count, &mut output_bytes)?;
-            segment_bytes.clear();
-            segment_rows = 0;
-        }
-        current_prefix = Some(prefix);
+        visitor.before_row(row.key, key_capacity)?;
         row_scratch.clear();
         let mut row_jumbo_scratch = 0_u64;
         let row_sink = jumbo_sink.as_mut().map(|sink| {
             &mut **sink as &mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>
         });
-        let inline_row_limit = if boundary_policy.is_some() {
-            maximum_bytes
-        } else {
-            crate::ir::MAX_SEMANTIC_SEGMENT_BYTES
-        };
         let tag = encoder.encode_row_with_jumbo_measured_for_segment_limit(
             reader,
             &plan,
             row.handle,
             row_sink,
-            inline_row_limit,
+            maximum_inline_row_bytes,
             jumbo_limits,
             &mut row_jumbo_scratch,
             &mut row_scratch,
         )?;
-        peak_jumbo_rope_scratch = peak_jumbo_rope_scratch.max(row_jumbo_scratch);
-        peak_tracked_scratch_upper_bound =
-            peak_tracked_scratch_upper_bound.max(tracked_family_scratch_bytes(
-                key_capacity,
-                row_scratch.capacity(),
-                segment_bytes.capacity(),
-                row_jumbo_scratch,
-            )?);
-        let row_length =
-            u32::try_from(row_scratch.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+        u32::try_from(row_scratch.len()).map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
         validate_record_with_row_limit(
             encoder.kind(),
             row.key,
             tag,
             &row_scratch,
-            inline_row_limit,
+            maximum_inline_row_bytes,
         )?;
-        let framed_row_length = RECORD_HEADER_BYTES
-            .checked_add(row_scratch.len())
-            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-        let projected = if segment_rows == 0 {
-            HEADER_BYTES.checked_add(framed_row_length)
-        } else {
-            segment_bytes.len().checked_add(framed_row_length)
-        }
-        .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-        if projected > maximum_bytes {
-            if segment_rows == 0 {
-                return Err(SemanticPlaneRecordError::OversizedRow {
-                    observed: HEADER_BYTES.saturating_add(framed_row_length),
-                    maximum: maximum_bytes,
-                }
-                .into());
+        if let Some(maximum_row_payload_bytes) = maximum_row_payload_bytes
+            && row_scratch.len() > maximum_row_payload_bytes
+        {
+            return Err(SemanticPlaneRecordError::RowPayloadExceedsCeiling {
+                observed: row_scratch.len(),
+                maximum: maximum_row_payload_bytes,
             }
-            emit_stream_segment(
-                encoder.kind(),
-                input,
-                first_key,
-                last_key,
-                segment_rows,
-                &mut segment_bytes,
-                sink,
-            )?;
-            account_segment(&segment_bytes, &mut segment_count, &mut output_bytes)?;
-            segment_bytes.clear();
-            segment_rows = 0;
-            let projected = HEADER_BYTES
-                .checked_add(framed_row_length)
-                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
-            if projected > maximum_bytes {
-                return Err(SemanticPlaneRecordError::OversizedRow {
-                    observed: projected,
-                    maximum: maximum_bytes,
-                }
-                .into());
-            }
+            .into());
         }
-        if segment_rows == 0 {
-            first_key = row.key;
-            begin_segment(encoder.kind(), &mut segment_bytes)?;
-        }
-        segment_bytes
-            .try_reserve_exact(framed_row_length)
-            .map_err(SemanticPlaneRecordError::Allocation)?;
-        segment_bytes.extend_from_slice(&row.key);
-        segment_bytes.push(tag);
-        segment_bytes.extend_from_slice(&row_length.to_be_bytes());
-        segment_bytes.extend_from_slice(&row_scratch);
-        peak_tracked_scratch_upper_bound =
-            peak_tracked_scratch_upper_bound.max(tracked_family_scratch_bytes(
+        peak_tracked_row_scratch_upper_bound =
+            peak_tracked_row_scratch_upper_bound.max(tracked_family_scratch_bytes(
                 key_capacity,
                 row_scratch.capacity(),
-                segment_bytes.capacity(),
                 0,
+                row_jumbo_scratch,
             )?);
-        last_key = row.key;
-        segment_rows = segment_rows
-            .checked_add(1)
-            .ok_or(SemanticPlaneRecordError::RowCount {
-                expected: u32::MAX,
-                observed: u32::MAX,
-            })?;
+        let scratch = CanonicalPlaneRowScratchObservation {
+            row_index_capacity_bytes: key_capacity,
+            row_scratch_capacity_bytes: row_scratch.capacity(),
+            jumbo_rope_scratch_bytes: row_jumbo_scratch,
+        };
+        visitor.write_row(
+            family,
+            CanonicalSemanticPlaneRecordView {
+                key: row.key,
+                tag,
+                payload: &row_scratch,
+            },
+            scratch,
+        )?;
+        peak_row_scratch = peak_row_scratch.max(row_scratch.capacity());
+        peak_jumbo_rope_scratch = peak_jumbo_rope_scratch.max(row_jumbo_scratch);
         row_count = row_count
             .checked_add(1)
             .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
-        peak_row_scratch = peak_row_scratch.max(row_scratch.capacity());
-        peak_segment_scratch = peak_segment_scratch.max(segment_bytes.capacity());
     }
-    if segment_rows > 0 {
-        emit_stream_segment(
-            encoder.kind(),
-            input,
-            first_key,
-            last_key,
-            segment_rows,
-            &mut segment_bytes,
-            sink,
-        )?;
-        account_segment(&segment_bytes, &mut segment_count, &mut output_bytes)?;
-    }
-    let row_scratch_capacity =
-        u64::try_from(peak_row_scratch).map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
-    let segment_scratch_capacity = u64::try_from(peak_segment_scratch)
-        .map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?;
-    Ok(CanonicalPlaneEncodingMetrics {
+
+    Ok(CanonicalPlaneRowEncodingMetrics {
         row_count,
-        segment_count,
-        output_bytes,
         row_encode_calls: row_count,
-        anchor_hash_rows,
-        peak_row_scratch_capacity_bytes: row_scratch_capacity,
-        peak_segment_scratch_capacity_bytes: segment_scratch_capacity,
+        plan_build_calls: 1,
+        key_collection_calls: 1,
+        key_sort_rows,
+        peak_row_scratch_capacity_bytes: u64::try_from(peak_row_scratch)
+            .map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?,
         peak_jumbo_rope_scratch_bytes: peak_jumbo_rope_scratch,
-        peak_tracked_scratch_upper_bound_bytes: peak_tracked_scratch_upper_bound,
+        peak_tracked_row_scratch_upper_bound_bytes: peak_tracked_row_scratch_upper_bound,
         row_index_capacity_bytes: key_capacity,
-        anchor_key_hash_bytes,
     })
+}
+
+fn stream_canonical_plane_family_inner<Reader, Encoder, Sink>(
+    reader: &Reader,
+    encoder: &Encoder,
+    input: SemanticInputWitness,
+    maximum_bytes: usize,
+    boundary_policy: Option<CanonicalPlaneSegmentBoundaryPolicy>,
+    maximum_rows: Option<u64>,
+    maximum_plan_rows: Option<u64>,
+    maximum_references: Option<u64>,
+    jumbo_limits: crate::ir::JumboRopeLimits,
+    jumbo_sink: Option<&mut dyn JumboRopeObjectSink<Error = SemanticPlaneRecordError>>,
+    sink: &mut Sink,
+) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>>
+where
+    Reader: SemanticReader + ?Sized,
+    Encoder: CanonicalPlaneRowEncoder + ?Sized,
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    let kind = encoder.kind();
+    let SemanticPlaneKind::Ir(family) = kind else {
+        return Err(SemanticPlaneRecordError::IrKindRequired.into());
+    };
+    if maximum_bytes == 0 || maximum_bytes > crate::ir::MAX_SEMANTIC_SEGMENT_BYTES {
+        return Err(SemanticPlaneRecordError::InvalidByteCeiling {
+            observed: maximum_bytes,
+            maximum: crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
+        }
+        .into());
+    }
+
+    let maximum_inline_row_bytes = boundary_policy
+        .map(CanonicalPlaneSegmentBoundaryPolicy::maximum_bytes)
+        .unwrap_or(crate::ir::MAX_SEMANTIC_SEGMENT_BYTES);
+    let mut assembler = CanonicalPlaneSegmentAssembler {
+        kind,
+        family,
+        input,
+        maximum_bytes,
+        boundary_policy,
+        sink,
+        segment_bytes: Vec::new(),
+        current_prefix: None,
+        first_key: [0; 32],
+        last_key: [0; 32],
+        segment_rows: 0,
+        segment_count: 0,
+        output_bytes: 0,
+        peak_segment_scratch: 0,
+        peak_tracked_scratch_upper_bound: 0,
+        anchor_hash_rows: 0,
+        anchor_key_hash_bytes: 0,
+    };
+    let row_metrics = encode_and_visit_canonical_plane_rows(
+        reader,
+        encoder,
+        maximum_rows,
+        maximum_plan_rows,
+        maximum_references,
+        maximum_inline_row_bytes,
+        None,
+        jumbo_limits,
+        jumbo_sink,
+        &mut assembler,
+    )?;
+    assembler.finish(row_metrics)
+}
+
+struct CanonicalPlaneSegmentAssembler<'sink, Sink: ?Sized> {
+    kind: SemanticPlaneKind,
+    family: SemanticIrPlane,
+    input: SemanticInputWitness,
+    maximum_bytes: usize,
+    boundary_policy: Option<CanonicalPlaneSegmentBoundaryPolicy>,
+    sink: &'sink mut Sink,
+    segment_bytes: Vec<u8>,
+    current_prefix: Option<u8>,
+    first_key: [u8; 32],
+    last_key: [u8; 32],
+    segment_rows: u32,
+    segment_count: u64,
+    output_bytes: u64,
+    peak_segment_scratch: usize,
+    peak_tracked_scratch_upper_bound: u64,
+    anchor_hash_rows: u64,
+    anchor_key_hash_bytes: u64,
+}
+
+impl<Sink> CanonicalPlaneSegmentAssembler<'_, Sink>
+where
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    fn emit_current(&mut self) -> Result<(), CanonicalPlaneStreamError<Sink::Error>> {
+        if self.segment_rows == 0 {
+            return Ok(());
+        }
+        emit_stream_segment(
+            self.kind,
+            self.input,
+            self.first_key,
+            self.last_key,
+            self.segment_rows,
+            &mut self.segment_bytes,
+            self.sink,
+        )?;
+        account_segment(
+            &self.segment_bytes,
+            &mut self.segment_count,
+            &mut self.output_bytes,
+        )?;
+        self.segment_bytes.clear();
+        self.segment_rows = 0;
+        Ok(())
+    }
+
+    fn finish(
+        mut self,
+        row_metrics: CanonicalPlaneRowEncodingMetrics,
+    ) -> Result<CanonicalPlaneEncodingMetrics, CanonicalPlaneStreamError<Sink::Error>> {
+        self.emit_current()?;
+        Ok(CanonicalPlaneEncodingMetrics {
+            row_count: row_metrics.row_count,
+            segment_count: self.segment_count,
+            output_bytes: self.output_bytes,
+            row_encode_calls: row_metrics.row_encode_calls,
+            plan_build_calls: row_metrics.plan_build_calls,
+            key_collection_calls: row_metrics.key_collection_calls,
+            key_sort_rows: row_metrics.key_sort_rows,
+            anchor_hash_rows: self.anchor_hash_rows,
+            peak_row_scratch_capacity_bytes: row_metrics.peak_row_scratch_capacity_bytes,
+            peak_segment_scratch_capacity_bytes: u64::try_from(self.peak_segment_scratch)
+                .map_err(|_| SemanticPlaneRecordError::MetricsOverflow)?,
+            peak_jumbo_rope_scratch_bytes: row_metrics.peak_jumbo_rope_scratch_bytes,
+            peak_tracked_scratch_upper_bound_bytes: self
+                .peak_tracked_scratch_upper_bound
+                .max(row_metrics.peak_tracked_row_scratch_upper_bound_bytes),
+            row_index_capacity_bytes: row_metrics.row_index_capacity_bytes,
+            anchor_key_hash_bytes: self.anchor_key_hash_bytes,
+        })
+    }
+}
+
+impl<Sink> CanonicalPlaneEncodedRowVisitor for CanonicalPlaneSegmentAssembler<'_, Sink>
+where
+    Sink: CanonicalSemanticPlaneSegmentSink + ?Sized,
+{
+    type Error = CanonicalPlaneStreamError<Sink::Error>;
+
+    fn before_row(
+        &mut self,
+        key: [u8; 32],
+        _row_index_capacity_bytes: u64,
+    ) -> Result<(), Self::Error> {
+        let prefix = prefix_value(&key, INITIAL_PREFIX_BITS);
+        let anchor_cut = if let Some(policy) = self.boundary_policy {
+            if self.segment_rows > 0 && policy.hashes_candidate(self.segment_bytes.len()) {
+                self.anchor_hash_rows = self
+                    .anchor_hash_rows
+                    .checked_add(1)
+                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+                self.anchor_key_hash_bytes = self
+                    .anchor_key_hash_bytes
+                    .checked_add(32)
+                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+            }
+            self.segment_rows > 0 && policy.cuts_before(self.family, self.segment_bytes.len(), &key)
+        } else {
+            false
+        };
+        let legacy_prefix_cut = self.boundary_policy.is_none()
+            && self.segment_rows > 0
+            && self.current_prefix != Some(prefix);
+        if legacy_prefix_cut || anchor_cut {
+            self.emit_current()?;
+        }
+        self.current_prefix = Some(prefix);
+        Ok(())
+    }
+
+    fn write_row(
+        &mut self,
+        _family: SemanticIrPlane,
+        row: CanonicalSemanticPlaneRecordView<'_>,
+        scratch: CanonicalPlaneRowScratchObservation,
+    ) -> Result<(), Self::Error> {
+        self.peak_tracked_scratch_upper_bound =
+            self.peak_tracked_scratch_upper_bound
+                .max(tracked_family_scratch_bytes(
+                    scratch.row_index_capacity_bytes,
+                    scratch.row_scratch_capacity_bytes,
+                    self.segment_bytes.capacity(),
+                    scratch.jumbo_rope_scratch_bytes,
+                )?);
+
+        let row_length = u32::try_from(row.payload().len())
+            .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?;
+        let framed_row_length = RECORD_HEADER_BYTES
+            .checked_add(row.payload().len())
+            .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        let projected = if self.segment_rows == 0 {
+            HEADER_BYTES.checked_add(framed_row_length)
+        } else {
+            self.segment_bytes.len().checked_add(framed_row_length)
+        }
+        .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+        if projected > self.maximum_bytes {
+            if self.segment_rows == 0 {
+                return Err(SemanticPlaneRecordError::OversizedRow {
+                    observed: HEADER_BYTES.saturating_add(framed_row_length),
+                    maximum: self.maximum_bytes,
+                }
+                .into());
+            }
+            self.emit_current()?;
+            let projected = HEADER_BYTES
+                .checked_add(framed_row_length)
+                .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
+            if projected > self.maximum_bytes {
+                return Err(SemanticPlaneRecordError::OversizedRow {
+                    observed: projected,
+                    maximum: self.maximum_bytes,
+                }
+                .into());
+            }
+        }
+        if self.segment_rows == 0 {
+            self.first_key = row.key();
+            begin_segment(self.kind, &mut self.segment_bytes)?;
+        }
+        self.segment_bytes
+            .try_reserve_exact(framed_row_length)
+            .map_err(SemanticPlaneRecordError::Allocation)?;
+        self.segment_bytes.extend_from_slice(&row.key());
+        self.segment_bytes.push(row.tag());
+        self.segment_bytes
+            .extend_from_slice(&row_length.to_be_bytes());
+        self.segment_bytes.extend_from_slice(row.payload());
+        self.peak_tracked_scratch_upper_bound =
+            self.peak_tracked_scratch_upper_bound
+                .max(tracked_family_scratch_bytes(
+                    scratch.row_index_capacity_bytes,
+                    scratch.row_scratch_capacity_bytes,
+                    self.segment_bytes.capacity(),
+                    0,
+                )?);
+        self.last_key = row.key();
+        self.segment_rows =
+            self.segment_rows
+                .checked_add(1)
+                .ok_or(SemanticPlaneRecordError::RowCount {
+                    expected: u32::MAX,
+                    observed: u32::MAX,
+                })?;
+        self.peak_segment_scratch = self.peak_segment_scratch.max(self.segment_bytes.capacity());
+        Ok(())
+    }
 }
 
 fn tracked_family_scratch_bytes(
@@ -1810,6 +2202,15 @@ pub enum SemanticPlaneRecordError {
     /// The requested bounded segment size is outside the supported limit.
     #[error("canonical segment ceiling {observed} is invalid; maximum is {maximum}")]
     InvalidByteCeiling { observed: usize, maximum: usize },
+    /// The row payload output ceiling is outside the supported wire bound.
+    #[error("canonical row payload ceiling {observed} is invalid; maximum is {maximum}")]
+    InvalidRowPayloadCeiling { observed: usize, maximum: usize },
+    /// One encoded typed-row payload exceeded the row sink's admission bound.
+    #[error("canonical row payload has {observed} bytes; sink ceiling is {maximum}")]
+    RowPayloadExceedsCeiling { observed: usize, maximum: usize },
+    /// The canonical inline threshold for a row family is outside the wire bound.
+    #[error("canonical inline-row ceiling {observed} is invalid; maximum is {maximum}")]
+    InvalidInlineRowCeiling { observed: usize, maximum: usize },
     /// Stable-key policy byte range is invalid or exceeds the closed u32 wire form.
     #[error("canonical segment boundary range {minimum}..={target}..={maximum} is invalid")]
     InvalidSegmentBoundaryRange {
@@ -2300,6 +2701,83 @@ mod tests {
         builder.finish().expect("jumbo documentation IR is valid")
     }
 
+    fn small_then_jumbo_docs_image(text: &str) -> (Ir, [u8; 32], [u8; 32]) {
+        let versions = [
+            EntityVersion {
+                family: DeclarationFamilyId::from_raw([0x71; 16]),
+                variant: VariantFingerprint::from_raw([0x72; 16]),
+                core_payload: CorePayloadHash::from_raw([0x73; 16]),
+            },
+            EntityVersion {
+                family: DeclarationFamilyId::from_raw([0x81; 16]),
+                variant: VariantFingerprint::from_raw([0x82; 16]),
+                core_payload: CorePayloadHash::from_raw([0x83; 16]),
+            },
+        ];
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Documentation);
+        let keys = [
+            declaration_plane_key(kind, versions[0].identity()),
+            declaration_plane_key(kind, versions[1].identity()),
+        ];
+        let large_is_first = keys[0] > keys[1];
+        let docs = if large_is_first {
+            [[DocInput::Text(text)], [DocInput::Text("small")]]
+        } else {
+            [[DocInput::Text("small")], [DocInput::Text(text)]]
+        };
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [
+            TreeItemInput {
+                name: b"small_first",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &docs[0],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"jumbo_second",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &docs[1],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("two-documentation fixture is valid");
+        let small_key = keys[0].min(keys[1]);
+        let jumbo_key = keys[0].max(keys[1]);
+        (
+            builder.finish().expect("two-documentation IR is valid"),
+            small_key,
+            jumbo_key,
+        )
+    }
+
     fn jumbo_source_image(path: &[u8]) -> Ir {
         let mut builder = IrBuilder::new();
         let file = builder
@@ -2511,6 +2989,44 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct InvalidDocumentationRow;
+
+    impl CanonicalPlaneRowEncoder for InvalidDocumentationRow {
+        type Handle = ();
+        type Plan = ();
+
+        fn kind(&self) -> SemanticPlaneKind {
+            SemanticPlaneKind::Ir(SemanticIrPlane::Documentation)
+        }
+
+        fn build_plan<Reader: SemanticReader + ?Sized>(
+            &self,
+            _reader: &Reader,
+        ) -> Result<Self::Plan, SemanticPlaneRecordError> {
+            Ok(())
+        }
+
+        fn collect_keys<Reader: SemanticReader + ?Sized>(
+            &self,
+            _reader: &Reader,
+            _plan: &Self::Plan,
+            sink: &mut CanonicalSemanticPlaneKeySink<Self::Handle>,
+        ) -> Result<(), SemanticPlaneRecordError> {
+            sink.push([0x31; 32], ())
+        }
+
+        fn encode_row<Reader: SemanticReader + ?Sized>(
+            &self,
+            _reader: &Reader,
+            _plan: &Self::Plan,
+            _handle: Self::Handle,
+            _payload: &mut Vec<u8>,
+        ) -> Result<u8, SemanticPlaneRecordError> {
+            Ok(u8::MAX)
+        }
+    }
+
     #[derive(Default)]
     struct SegmentDigestSink {
         ids: Vec<SemanticSegmentId>,
@@ -2535,6 +3051,371 @@ mod tests {
             self.maximum_payload_bytes = self.maximum_payload_bytes.max(segment.bytes().len());
             Ok(())
         }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct SegmentSinkFailure;
+
+    #[derive(Default)]
+    struct FailingFirstSegment {
+        calls: usize,
+    }
+
+    impl CanonicalSemanticPlaneSegmentSink for FailingFirstSegment {
+        type Error = SegmentSinkFailure;
+
+        fn write_segment(
+            &mut self,
+            _segment: CanonicalSemanticPlaneSegmentRef<'_>,
+        ) -> Result<(), Self::Error> {
+            self.calls += 1;
+            Err(SegmentSinkFailure)
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturedTypedRows {
+        rows: Vec<(SemanticIrPlane, [u8; 32], u8, Vec<u8>)>,
+    }
+
+    impl CanonicalSemanticPlaneRowSink for CapturedTypedRows {
+        type Error = SemanticPlaneRecordError;
+
+        fn write_row(
+            &mut self,
+            family: SemanticIrPlane,
+            row: CanonicalSemanticPlaneRecordView<'_>,
+        ) -> Result<(), Self::Error> {
+            let mut payload = Vec::new();
+            payload
+                .try_reserve_exact(row.payload().len())
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            payload.extend_from_slice(row.payload());
+            self.rows
+                .try_reserve(1)
+                .map_err(SemanticPlaneRecordError::Allocation)?;
+            self.rows.push((family, row.key(), row.tag(), payload));
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct RowSinkFailure;
+
+    #[derive(Default)]
+    struct FailingTypedRows {
+        calls: usize,
+    }
+
+    impl CanonicalSemanticPlaneRowSink for FailingTypedRows {
+        type Error = RowSinkFailure;
+
+        fn write_row(
+            &mut self,
+            _family: SemanticIrPlane,
+            _row: CanonicalSemanticPlaneRecordView<'_>,
+        ) -> Result<(), Self::Error> {
+            self.calls += 1;
+            Err(RowSinkFailure)
+        }
+    }
+
+    #[test]
+    fn borrowed_row_stream_matches_strict_spir_decode_and_reports_full_family_work() {
+        let reader = image(64, None);
+        let input = witness();
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(300, 768, 1024)
+            .expect("family boundary policy is valid");
+        let mut row_objects = InMemoryJumboObjects::default();
+        let mut captured_rows = CapturedTypedRows::default();
+        let row_metrics = stream_canonical_plane_family_rows_with_limits(
+            &reader,
+            &DocumentationRows,
+            policy.maximum_bytes(),
+            policy.maximum_bytes(),
+            128,
+            1024,
+            4096,
+            crate::ir::JumboRopeLimits::default(),
+            &mut row_objects,
+            &mut captured_rows,
+        )
+        .expect("bounded row visitor admits the complete documentation family");
+        assert_eq!(row_metrics.row_count(), 64);
+        assert_eq!(row_metrics.row_encode_calls(), 64);
+        assert_eq!(row_metrics.plan_build_calls(), 1);
+        assert_eq!(row_metrics.key_collection_calls(), 1);
+        assert_eq!(row_metrics.key_sort_rows(), 64);
+        assert!(row_metrics.row_index_capacity_bytes() > 0);
+        assert!(row_metrics.peak_row_scratch_capacity_bytes() > 0);
+
+        let mut segment_objects = InMemoryJumboObjects::default();
+        let mut segments = OwnedPlaneSegments::default();
+        let segment_metrics = stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
+            &reader,
+            &DocumentationRows,
+            input,
+            policy,
+            &mut segment_objects,
+            &mut segments,
+        )
+        .expect("the production SPIR sink uses the shared row emitter");
+        assert_eq!(segment_metrics.plan_build_calls(), 1);
+        assert_eq!(segment_metrics.key_collection_calls(), 1);
+        assert_eq!(segment_metrics.key_sort_rows(), 64);
+        assert_eq!(segment_metrics.row_encode_calls(), 64);
+        assert!(
+            segments
+                .segments
+                .iter()
+                .all(|segment| segment.bytes().len() <= policy.maximum_bytes())
+        );
+
+        let mut decoded_rows = Vec::new();
+        for segment in &segments.segments {
+            let descriptor = segment.metadata().expect("SPIR segment claim");
+            let admitted_id = descriptor
+                .admit(segment.kind(), segment.bytes())
+                .expect("streaming identity verifier admits the exact bytes");
+            assert_eq!(
+                Some(admitted_id),
+                descriptor.admitted_id(),
+                "the persisted claim and independent streaming identity agree"
+            );
+            let decoded = decode_semantic_plane_segment_with_row_limit(
+                segment.kind(),
+                &descriptor,
+                segment.bytes(),
+                policy.maximum_bytes(),
+            )
+            .expect("independent SPIR decoder admits the emitted segment");
+            let mut exact_wire = Vec::new();
+            exact_wire.extend_from_slice(b"SPIR");
+            exact_wire.extend_from_slice(&2_u16.to_be_bytes());
+            exact_wire.push(5);
+            exact_wire.extend_from_slice(&decoded.row_count().to_be_bytes());
+            for row in decoded.records() {
+                let row_payload_length =
+                    u32::try_from(row.payload().len()).expect("decoded row length fits u32");
+                exact_wire.extend_from_slice(&row.key());
+                exact_wire.push(row.tag());
+                exact_wire.extend_from_slice(&row_payload_length.to_be_bytes());
+                exact_wire.extend_from_slice(row.payload());
+                decoded_rows.push((
+                    SemanticIrPlane::Documentation,
+                    row.key(),
+                    row.tag(),
+                    row.payload().to_vec(),
+                ));
+            }
+            assert_eq!(
+                exact_wire.as_slice(),
+                segment.bytes(),
+                "canonical decoded rows reconstruct every emitted SPIR byte"
+            );
+
+            let mut changed = segment.bytes().to_vec();
+            let final_byte = changed.last_mut().expect("SPIR segment is nonempty");
+            *final_byte ^= 1;
+            assert!(
+                descriptor.admit(segment.kind(), &changed).is_err(),
+                "one changed byte cannot retain the segment's admitted identity"
+            );
+        }
+        assert_eq!(captured_rows.rows, decoded_rows);
+    }
+
+    #[test]
+    fn borrowed_row_stream_keeps_policy_bound_jumbo_descriptors_and_scratch_metrics() {
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("family boundary policy is valid");
+        let inline_text_limit =
+            policy.maximum_bytes() - (HEADER_BYTES + RECORD_HEADER_BYTES + 32 + 1 + 4 + 1 + 4);
+        let reader = jumbo_docs_image(&"d".repeat(inline_text_limit + 1));
+
+        let mut row_objects = InMemoryJumboObjects::default();
+        let mut captured_rows = CapturedTypedRows::default();
+        let row_metrics = stream_canonical_plane_family_rows_with_limits(
+            &reader,
+            &DocumentationRows,
+            policy.maximum_bytes(),
+            policy.maximum_bytes(),
+            8,
+            32,
+            64,
+            crate::ir::JumboRopeLimits::default(),
+            &mut row_objects,
+            &mut captured_rows,
+        )
+        .expect("row visitor externalizes the over-threshold documentation value");
+        assert_eq!(row_metrics.row_count(), 1);
+        let captured_row = captured_rows.rows.first().expect("captured jumbo row");
+        assert_eq!(captured_row.2, declarations::DOCS_JUMBO_TAG);
+        assert!(row_metrics.peak_jumbo_rope_scratch_bytes() > 0);
+
+        let mut segment_objects = InMemoryJumboObjects::default();
+        let mut segments = OwnedPlaneSegments::default();
+        let segment_metrics = stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
+            &reader,
+            &DocumentationRows,
+            witness(),
+            policy,
+            &mut segment_objects,
+            &mut segments,
+        )
+        .expect("SPIR and row sinks use the same policy-aware jumbo writer");
+        assert!(segment_metrics.peak_jumbo_rope_scratch_bytes() > 0);
+        assert_eq!(segments.segments.len(), 1);
+        let segment = segments.segments.first().expect("one jumbo segment");
+        let descriptor = segment.metadata().expect("jumbo SPIR descriptor");
+        let decoded = decode_semantic_plane_segment_with_row_limit(
+            segment.kind(),
+            &descriptor,
+            segment.bytes(),
+            policy.maximum_bytes(),
+        )
+        .expect("strict SPIR decoder admits the policy-bound jumbo row");
+        let decoded_row = decoded.records().next().expect("one documentation row");
+        assert_eq!(captured_row.1, decoded_row.key());
+        assert_eq!(captured_row.2, decoded_row.tag());
+        assert_eq!(captured_row.3.as_slice(), decoded_row.payload());
+    }
+
+    #[test]
+    fn borrowed_row_stream_preserves_budget_grammar_and_sink_failures() {
+        let reader = image(2, None);
+        let mut jumbo_objects = InMemoryJumboObjects::default();
+        let mut captured = CapturedTypedRows::default();
+        let boundary = crate::ir::MAX_SEMANTIC_SEGMENT_BYTES;
+
+        assert!(matches!(
+            stream_canonical_plane_family_rows_with_limits(
+                &reader,
+                &DocumentationRows,
+                boundary,
+                1,
+                0,
+                1024,
+                4096,
+                crate::ir::JumboRopeLimits::default(),
+                &mut jumbo_objects,
+                &mut captured,
+            ),
+            Err(CanonicalPlaneRowStreamError::Encoding(
+                SemanticPlaneRecordError::RowBudgetExceeded { maximum: 0 }
+            ))
+        ));
+        assert!(captured.rows.is_empty());
+
+        assert!(matches!(
+            stream_canonical_plane_family_rows_with_limits(
+                &reader,
+                &DocumentationRows,
+                boundary,
+                1,
+                16,
+                1024,
+                4096,
+                crate::ir::JumboRopeLimits::default(),
+                &mut jumbo_objects,
+                &mut captured,
+            ),
+            Err(CanonicalPlaneRowStreamError::Encoding(
+                SemanticPlaneRecordError::RowPayloadExceedsCeiling { maximum: 1, .. }
+            ))
+        ));
+        assert!(captured.rows.is_empty());
+
+        let mut invalid_rows = CapturedTypedRows::default();
+        assert!(matches!(
+            stream_canonical_plane_family_rows_with_limits(
+                &reader,
+                &InvalidDocumentationRow,
+                boundary,
+                boundary,
+                16,
+                1024,
+                4096,
+                crate::ir::JumboRopeLimits::default(),
+                &mut jumbo_objects,
+                &mut invalid_rows,
+            ),
+            Err(CanonicalPlaneRowStreamError::Encoding(
+                SemanticPlaneRecordError::RowGrammar
+            ))
+        ));
+        assert!(invalid_rows.rows.is_empty());
+
+        let mut failing = FailingTypedRows::default();
+        assert!(matches!(
+            stream_canonical_plane_family_rows_with_limits(
+                &reader,
+                &DocumentationRows,
+                boundary,
+                boundary,
+                16,
+                1024,
+                4096,
+                crate::ir::JumboRopeLimits::default(),
+                &mut jumbo_objects,
+                &mut failing,
+            ),
+            Err(CanonicalPlaneRowStreamError::Sink(RowSinkFailure))
+        ));
+        assert_eq!(failing.calls, 1);
+
+        let mut collision_rows = CapturedTypedRows::default();
+        assert!(matches!(
+            stream_canonical_plane_family_rows_with_limits(
+                &reader,
+                &CollidingKeys,
+                boundary,
+                boundary,
+                16,
+                1024,
+                4096,
+                crate::ir::JumboRopeLimits::default(),
+                &mut jumbo_objects,
+                &mut collision_rows,
+            ),
+            Err(CanonicalPlaneRowStreamError::Encoding(
+                SemanticPlaneRecordError::StableKeyCollision
+            ))
+        ));
+        assert!(collision_rows.rows.is_empty());
+    }
+
+    #[test]
+    fn segment_sink_failure_at_key_cut_precedes_the_next_rows_jumbo_writes() {
+        let text = String::from("j").repeat(32 * 1024);
+        let (reader, small_key, jumbo_key) = small_then_jumbo_docs_image(&text);
+        assert!(small_key < jumbo_key);
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+            HEADER_BYTES as u32,
+            HEADER_BYTES as u32,
+            4096,
+        )
+        .expect("boundary immediately after the first row is valid");
+        let mut objects = InMemoryJumboObjects::default();
+        let mut sink = FailingFirstSegment::default();
+        assert!(matches!(
+            stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits(
+                &reader,
+                &DocumentationRows,
+                witness(),
+                policy,
+                2,
+                8,
+                32,
+                crate::ir::JumboRopeLimits::default(),
+                &mut objects,
+                &mut sink,
+            ),
+            Err(CanonicalPlaneStreamError::Sink(SegmentSinkFailure))
+        ));
+        assert_eq!(sink.calls, 1);
+        assert!(objects.leaf_order.is_empty());
+        assert!(objects.interiors.is_empty());
     }
 
     #[test]
@@ -3253,6 +4134,34 @@ mod tests {
             )
             .expect("family boundary proof decodes under the committed row threshold");
 
+            let mut row_objects = InMemoryJumboObjects::default();
+            let mut row_sink = CapturedTypedRows::default();
+            let row_metrics = stream_canonical_plane_family_rows_with_limits(
+                &ir,
+                &SourceProvenanceRows,
+                policy.maximum_bytes(),
+                policy.maximum_bytes(),
+                4,
+                16,
+                64,
+                crate::ir::JumboRopeLimits::default(),
+                &mut row_objects,
+                &mut row_sink,
+            )
+            .expect("source-provenance row stream honors the family spill threshold");
+            assert_eq!(row_metrics.row_count(), 1);
+            assert_eq!(
+                row_metrics.peak_jumbo_rope_scratch_bytes() > 0,
+                expected_tag == source_provenance::DECLARATION_SOURCE_JUMBO_TAG
+            );
+            let captured_row = row_sink.rows.first().expect("one borrowed source row");
+            let decoded_row = view.records().next().expect("one decoded source row");
+            assert_eq!(captured_row.0, SemanticIrPlane::SourceProvenance);
+            assert_eq!(captured_row.1, decoded_row.key());
+            assert_eq!(captured_row.2, expected_tag);
+            assert_eq!(captured_row.2, decoded_row.tag());
+            assert_eq!(captured_row.3.as_slice(), decoded_row.payload());
+
             if expected_tag == source_provenance::DECLARATION_SOURCE_JUMBO_TAG {
                 assert!(matches!(
                     decode_semantic_plane_segment(kind, descriptor, payload),
@@ -3262,6 +4171,26 @@ mod tests {
                     verify_jumbo_plane_family_closures(kind, &descriptors, &payloads, &mut objects,),
                     Err(SemanticPlaneRecordError::RowGrammar)
                 ));
+                let row_view = CanonicalSemanticPlaneRecordView {
+                    key: captured_row.1,
+                    tag: captured_row.2,
+                    payload: &captured_row.3,
+                };
+                let row_descriptor = source_provenance::jumbo_descriptor_for_record_with_row_limit(
+                    row_view,
+                    policy.maximum_bytes(),
+                )
+                .expect("row visitor jumbo descriptor is canonical under the policy")
+                .expect("over-threshold path has a jumbo descriptor");
+                assert_eq!(row_descriptor.byte_length(), path.len() as u64);
+                let verified = row_descriptor
+                    .admit_stored_closure(&mut row_objects)
+                    .expect("row sink wrote an independently verifiable source closure");
+                let mut row_path = Vec::new();
+                verified
+                    .write_value_to(&mut row_objects, &mut row_path)
+                    .expect("row sink source closure reconstructs");
+                assert_eq!(row_path, path);
             }
             let closure = verify_captured_jumbo_family_with_policy(
                 SemanticIrPlane::SourceProvenance,

@@ -1,11 +1,12 @@
 use super::super::product_state::CatalogLookupIndex;
-use super::super::registry::{RegistryAddError, StagedProject};
+use super::super::registry::{
+    CatalogDependencyRevision, CatalogProjection, RegistryAddError, StagedProject,
+};
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ForgeGateway, ProductSourceRecord,
-    RegistryGateway, WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication,
-    ingest, projection, publish_builtin_view,
+    BuiltinIntent, BuiltinModel, BuiltinModelError, BuiltinSemanticChange, BuiltinSemanticRelation,
+    BuiltinSourceChange, BuiltinWorkspaceRelation, Command, CommandReply, ForgeGateway,
+    ProductDaemon, ProductSourceRecord, RegistryGateway, WireCertificate, WireClaim,
+    WorkspaceModel, activate_semantic_publication, ingest, projection, publish_builtin_view,
 };
 use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
@@ -54,7 +55,6 @@ fn new_index_owner_epoch() -> [u8; 16] {
     epoch
 }
 
-type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 type AdmittedReply = (CommandReply, Option<WireCertificate>);
 type RegistryAcquisitionReceiver = std::sync::mpsc::Receiver<RegistryAcquisitionMessage>;
 
@@ -178,6 +178,7 @@ pub(in crate::builtin) struct CommandAdapter {
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
+    graph_limits: backend_library::PackageGraphIndexLimits,
     browse: super::super::browse::BrowseCache,
     browse_lane: BrowseLane,
     /// The index job whose compile runs off the owner loop, if one does.
@@ -316,16 +317,103 @@ pub(in crate::builtin) enum Executed {
 }
 
 struct ResidentDependencies {
-    stamp: [u8; 32],
+    catalog: ResidentCatalog,
+    graph: ResidentPackageGraph,
+}
+
+/// Row overlays may change without invalidating dependency facts. Keep the
+/// checked graph and its lookup index resident under the narrower input key.
+struct ResidentPackageGraph {
     local_witness: [u8; 32],
-    catalog: Vec<backend_engine::RegistryPackageRecord>,
-    selected_catalog_snapshot: [u8; 32],
-    catalog_index: Arc<super::super::product_state::CatalogLookupIndex>,
-    registry_facts: Vec<backend_engine::PackageDependencySourceFacts>,
-    graph_facts: backend_library::CheckedPackageGraphFacts,
-    index: backend_library::PackageGraphIndex,
-    synced_root: Option<[u8; 32]>,
-    synced_facts_witness: Option<[u8; 32]>,
+    registry_revision: Option<CatalogDependencyRevision>,
+    indexed: backend_library::IndexedCheckedPackageGraph,
+    synced: Option<GraphProjectionStamp>,
+}
+
+/// One successfully projected root/fact pair; a partial pair is unrepresentable.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct GraphProjectionStamp {
+    root: backend_library::ViewStateRoot,
+    facts_witness: [u8; 32],
+}
+
+impl ResidentDependencies {
+    /// Admit changed graph inputs once. Selecting an overlay with the same
+    /// graph inputs must not invoke its fact builder or rebuild its index.
+    fn select(
+        resident: &mut Option<Self>,
+        local_witness: [u8; 32],
+        catalog: ResidentCatalog,
+        build_facts: impl FnOnce(
+            &ResidentCatalog,
+        ) -> Result<backend_library::IndexedCheckedPackageGraph, BuiltinModelError>,
+    ) -> Result<(), BuiltinModelError> {
+        let registry_revision = catalog.dependency_revision();
+        if let Some(cached) = resident.as_mut()
+            && cached.graph.local_witness == local_witness
+            && cached.graph.registry_revision == registry_revision
+        {
+            cached.catalog = catalog;
+            return Ok(());
+        }
+        let indexed = build_facts(&catalog)?;
+        let synced = resident.as_ref().and_then(|cached| cached.graph.synced);
+        *resident = Some(Self {
+            catalog,
+            graph: ResidentPackageGraph {
+                local_witness,
+                registry_revision,
+                indexed,
+                synced,
+            },
+        });
+        Ok(())
+    }
+}
+
+/// Registry rows, facts and their source revision remain one immutable owner
+/// snapshot. An unconfigured registry has no fabricated source revision.
+#[derive(Clone)]
+enum ResidentCatalog {
+    Registry(Arc<CatalogProjection>),
+    Unconfigured(Arc<CatalogLookupIndex>),
+}
+
+impl ResidentCatalog {
+    fn dependency_revision(&self) -> Option<CatalogDependencyRevision> {
+        match self {
+            Self::Registry(snapshot) => Some(snapshot.dependency_revision),
+            Self::Unconfigured(_) => None,
+        }
+    }
+
+    fn records(&self) -> &[backend_engine::RegistryPackageRecord] {
+        match self {
+            Self::Registry(snapshot) => &snapshot.records,
+            Self::Unconfigured(_) => &[],
+        }
+    }
+
+    fn index(&self) -> &CatalogLookupIndex {
+        match self {
+            Self::Registry(snapshot) => &snapshot.index,
+            Self::Unconfigured(index) => index,
+        }
+    }
+
+    fn rows_snapshot(&self) -> [u8; 32] {
+        match self {
+            Self::Registry(snapshot) => snapshot.selected_rows_snapshot,
+            Self::Unconfigured(_) => CatalogLookupIndex::snapshot_for_catalog(&[]),
+        }
+    }
+
+    fn dependency_facts(&self) -> &[backend_engine::PackageDependencySourceFacts] {
+        match self {
+            Self::Registry(snapshot) => snapshot.dependency_facts(),
+            Self::Unconfigured(_) => &[],
+        }
+    }
 }
 
 impl CommandAdapter {
@@ -335,6 +423,7 @@ impl CommandAdapter {
         forge: ForgeGateway,
         discovery: Option<crate::discovery::DiscoveryGateway>,
         product_state: super::super::ProductState,
+        graph_limits: backend_library::PackageGraphIndexLimits,
         compiler: LocalCompilerClient,
         search_snapshots: super::super::query::SearchSnapshotOwner,
         remote_semantic: super::super::query::RemoteSemantic,
@@ -377,6 +466,7 @@ impl CommandAdapter {
             owner_cluster,
             pending_stored_acks,
             dependencies: None,
+            graph_limits,
             browse: super::super::browse::BrowseCache::default(),
             browse_lane,
             indexing: None,
@@ -3012,6 +3102,14 @@ impl CommandAdapter {
                     },
                 ),
             surface => {
+                // Capture the SQL base before asking any source owner for its
+                // current catalog or local manifest snapshot. A content digest
+                // computed from cached facts cannot substitute for this CAS.
+                let graph_base =
+                    super::super::sql_projection::GraphBase::capture(&self.sql_projection, daemon)
+                        .map_err(|error| {
+                            BuiltinModelError(format!("capture package graph revision: {error}"))
+                        })?;
                 if let Some(discovery) = self.discovery.as_mut() {
                     discovery.apply_pending();
                 }
@@ -3022,125 +3120,69 @@ impl CommandAdapter {
                     .refresh(roots.iter().map(std::path::PathBuf::as_path))
                     .map_err(BuiltinModelError)?;
                 let local_witness = self.manifests.witness();
-                let stamp = match self.registry.as_mut() {
-                    Some(registry) => registry.publication_stamp().map_err(BuiltinModelError)?,
-                    None => [0; 32],
+                let observed_catalog = self
+                    .registry
+                    .as_mut()
+                    .map(RegistryGateway::catalog_projection)
+                    .transpose()
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                let view = graph_base.view();
+                let root = *view.root().as_bytes();
+                let catalog = match observed_catalog.as_ref() {
+                    Some(snapshot) => ResidentCatalog::Registry(Arc::clone(snapshot)),
+                    None => self
+                        .dependencies
+                        .as_ref()
+                        .map(|cached| cached.catalog.clone())
+                        .filter(|catalog| catalog.dependency_revision().is_none())
+                        .unwrap_or_else(|| {
+                            ResidentCatalog::Unconfigured(Arc::new(
+                                CatalogLookupIndex::from_catalog(&[]),
+                            ))
+                        }),
                 };
-                let root = *daemon.engine().daemon().library().view().root().as_bytes();
-                let stamp_changed = self
-                    .dependencies
-                    .as_ref()
-                    .is_none_or(|cached| cached.stamp != stamp);
-                let local_changed = self
-                    .dependencies
-                    .as_ref()
-                    .is_none_or(|cached| cached.local_witness != local_witness);
-                if stamp_changed || local_changed {
-                    let (
-                        catalog,
-                        catalog_index,
-                        selected_catalog_snapshot,
-                        registry_facts,
-                        synced_root,
-                        synced_facts_witness,
-                    ) = if stamp_changed {
-                        let (catalog, catalog_index, selected_catalog_snapshot) =
-                            if let Some(gateway) = self.registry.as_mut() {
-                                let projection =
-                                    gateway.catalog_projection().map_err(BuiltinModelError)?;
-                                (
-                                    projection.records.clone(),
-                                    Arc::clone(&projection.index),
-                                    projection.selected_rows_snapshot,
-                                )
-                            } else {
-                                let catalog = Vec::new();
-                                let index = Arc::new(
-                                    super::super::product_state::CatalogLookupIndex::from_catalog(
-                                        &catalog,
-                                    ),
-                                );
-                                let selected_catalog_snapshot =
-                                    CatalogLookupIndex::snapshot_for_catalog(&catalog);
-                                (catalog, index, selected_catalog_snapshot)
-                            };
-                        let registry_facts = self
-                            .registry
-                            .as_mut()
-                            .map_or_else(Vec::new, RegistryGateway::dependency_facts);
-                        let synced_root = self
-                            .dependencies
-                            .as_ref()
-                            .and_then(|cached| cached.synced_root);
-                        let synced_facts_witness = self
-                            .dependencies
-                            .as_ref()
-                            .and_then(|cached| cached.synced_facts_witness);
-                        (
-                            catalog,
-                            catalog_index,
-                            selected_catalog_snapshot,
-                            registry_facts,
-                            synced_root,
-                            synced_facts_witness,
-                        )
-                    } else {
-                        let cached = self.dependencies.take().ok_or_else(|| {
-                            BuiltinModelError(
-                                "dependency index disappeared during a local refresh".to_owned(),
-                            )
-                        })?;
-                        (
-                            cached.catalog,
-                            cached.catalog_index,
-                            cached.selected_catalog_snapshot,
-                            cached.registry_facts,
-                            cached.synced_root,
-                            cached.synced_facts_witness,
-                        )
-                    };
-                    let mut facts = registry_facts.clone();
-                    facts.extend(self.manifests.facts().cloned());
-                    let graph_facts = backend_library::CheckedPackageGraphFacts::new(facts)
-                        .map_err(|error| {
+                let manifests = &self.manifests;
+                let graph_limits = self.graph_limits;
+                ResidentDependencies::select(
+                    &mut self.dependencies,
+                    local_witness,
+                    catalog,
+                    |catalog| {
+                        let mut facts = catalog.dependency_facts().to_vec();
+                        facts.extend(manifests.facts().cloned());
+                        backend_library::IndexedCheckedPackageGraph::new(facts, graph_limits).map_err(|error| {
                             BuiltinModelError(format!("check package dependency facts: {error}"))
-                        })?;
-                    let index =
-                        backend_library::PackageGraphIndex::from_checked_facts(&graph_facts);
-                    self.dependencies = Some(ResidentDependencies {
-                        stamp,
-                        local_witness,
-                        catalog,
-                        selected_catalog_snapshot,
-                        catalog_index,
-                        registry_facts,
-                        graph_facts,
-                        index,
-                        synced_root,
-                        synced_facts_witness,
-                    });
-                }
+                        })
+                    },
+                )?;
                 let workspace = self
                     .registry
                     .as_ref()
                     .map(|gateway| gateway.workspace_root().to_path_buf());
-                let mut cached = self.dependencies.take().ok_or_else(|| {
+                let cached = self.dependencies.as_mut().ok_or_else(|| {
                     BuiltinModelError("dependency index disappeared after refresh".to_owned())
                 })?;
-                if cached.synced_root != Some(root)
-                    || cached.synced_facts_witness != Some(cached.graph_facts.witness())
-                {
-                    futures_executor::block_on(
-                        self.sql_projection.synchronize_checked_package_graph(
-                            daemon.engine().daemon().library().view().root(),
-                            &cached.graph_facts,
-                        ),
-                    )
-                    .map_err(|error| {
-                        BuiltinModelError(format!("align package graph projection: {error}"))
-                    })?;
-                    cached.synced_root = Some(root);
-                    cached.synced_facts_witness = Some(cached.graph_facts.witness());
+                let target = GraphProjectionStamp {
+                    root: view.root(),
+                    facts_witness: cached.graph.indexed.witness(),
+                };
+                if cached.graph.synced != Some(target) {
+                    if let (Some(registry), Some(snapshot)) =
+                        (self.registry.as_mut(), observed_catalog.as_ref())
+                        && !registry
+                            .validate_resident_projection(snapshot)
+                            .map_err(|error| BuiltinModelError(error.to_string()))?
+                    {
+                        return Err(BuiltinModelError(
+                            "registry source changed before package graph publication".to_owned(),
+                        ));
+                    }
+                    graph_base
+                        .synchronize(&mut self.sql_projection, cached.graph.indexed.checked_facts())
+                        .map_err(|error| {
+                            BuiltinModelError(format!("align package graph projection: {error}"))
+                        })?;
+                    cached.graph.synced = Some(target);
                 }
                 let discovery_store = self.discovery.as_ref().map(|gateway| gateway.store());
                 let forge_records = if matches!(
@@ -3155,7 +3197,7 @@ impl CommandAdapter {
                 let reply = match &surface {
                     backend_engine::SurfaceCommand::PackageGraphPage { request } => request
                         .clone()
-                        .bind_catalog_snapshot(cached.selected_catalog_snapshot)
+                        .bind_catalog_snapshot(cached.catalog.rows_snapshot())
                         .map_err(|error| error.to_string())
                         .and_then(|request| {
                             let page = futures_executor::block_on(
@@ -3165,8 +3207,7 @@ impl CommandAdapter {
                             page.admit_against_checked_facts(
                                 &request,
                                 root,
-                                &cached.graph_facts,
-                                &cached.index,
+                                &cached.graph.indexed,
                             )
                             .map_err(|error| error.to_string())?;
                             Ok(backend_engine::SurfaceReply::PackageGraphPage(page))
@@ -3175,18 +3216,16 @@ impl CommandAdapter {
                         .product_state
                         .execute_with_discovery_and_forge_snapshot(
                             surface.clone(),
-                            daemon.engine().daemon().library().view(),
-                            &cached.catalog,
-                            &cached.catalog_index,
-                            cached.graph_facts.facts(),
-                            &cached.index,
+                            view,
+                            cached.catalog.records(),
+                            cached.catalog.index(),
+                            &cached.graph.indexed,
                             workspace.as_deref(),
                             discovery_store,
-                            cached.selected_catalog_snapshot,
+                            cached.catalog.rows_snapshot(),
                             &forge_records,
                         ),
                 };
-                self.dependencies = Some(cached);
                 reply.map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
@@ -3399,16 +3438,14 @@ fn semantic_readiness(
 
 fn project_view_deltas(
     projection: &mut backend_extension_turso::TursoProjection,
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    daemon: &ProductDaemon,
     deltas: &[backend_engine::CommittedViewDelta],
 ) -> Result<(), BuiltinModelError> {
     if deltas.is_empty() {
         return Ok(());
     }
     if let Err(incremental_error) = futures_executor::block_on(projection.apply_all(deltas)) {
-        futures_executor::block_on(
-            projection.synchronize(daemon.engine().daemon().library().view()),
-        )
+        super::super::sql_projection::synchronize_current(projection, daemon)
         .map_err(|rebuild_error| {
             BuiltinModelError(format!(
                 "Turso projection delta failed ({incremental_error}); rebuild failed: {rebuild_error}"
@@ -3478,7 +3515,7 @@ fn selected_semantic_removals(intent: &BuiltinIntent) -> Vec<ProductSemanticPubl
 }
 
 pub(in crate::builtin) fn commit_builtin_intent(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    daemon: &mut ProductDaemon,
     request_id: u64,
     intent: &BuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
@@ -3562,7 +3599,8 @@ fn map_semantic_authority_error(
 mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, IndexJob, IndexJobWork,
-        MAX_WAITING_COMMANDS, ProductDaemon, admitted_project_source_root, classify_add_target,
+        GraphProjectionStamp, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog,
+        ResidentDependencies, admitted_project_source_root, classify_add_target,
     };
     use crate::builtin::{
         BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinProfile,
@@ -3586,6 +3624,115 @@ mod tests {
     use std::time::Duration;
 
     use super::{Command, WireCertificate, WireClaim};
+
+    fn checked_resident_graph(reason: &'static str) -> backend_library::IndexedCheckedPackageGraph {
+        backend_library::IndexedCheckedPackageGraph::new(vec![(
+            backend_library::PackageGraphSourceKey::new(
+                backend_library::PackageReference::parse("pkg:cargo/resident-fixture@1.0.0")
+                    .expect("source coordinate"),
+                backend_library::PackageGraphSourceAuthority::Registry(
+                    backend_library::RegistryAuthorityId::from_configured_source([7; 32]),
+                ),
+            ),
+            backend_library::DependencyFacts::Unknown(backend_library::ProductText::from_static(
+                reason,
+            )),
+        )], crate::process::default_package_graph_limits())
+        .expect("checked source facts")
+    }
+
+    fn unconfigured_catalog() -> ResidentCatalog {
+        ResidentCatalog::Unconfigured(Arc::new(super::CatalogLookupIndex::from_catalog(&[])))
+    }
+
+    #[test]
+    fn unchanged_graph_inputs_skip_fact_builder_and_retain_selected_snapshot() {
+        let mut resident = None;
+        ResidentDependencies::select(&mut resident, [1; 32], unconfigured_catalog(), |_| {
+            Ok(checked_resident_graph("original dependency evidence"))
+        })
+        .expect("initial graph");
+        let cached = resident.as_mut().expect("resident graph");
+        let original = cached.graph.indexed.checked_facts().clone();
+        let stamp = GraphProjectionStamp {
+            root: backend_library::view_state_root(&[]),
+            facts_witness: original.witness(),
+        };
+        cached.graph.synced = Some(stamp);
+        let overlay = unconfigured_catalog();
+        let ResidentCatalog::Unconfigured(expected_overlay) = &overlay else {
+            panic!("unconfigured overlay");
+        };
+        let expected_overlay = Arc::clone(expected_overlay);
+
+        ResidentDependencies::select(&mut resident, [1; 32], overlay, |_| {
+            panic!("unchanged graph inputs must never rebuild facts");
+        })
+        .expect("select overlay without graph work");
+        let cached = resident.as_ref().expect("retained graph");
+        assert!(std::ptr::eq(
+            cached.graph.indexed.facts(),
+            original.facts()
+        ));
+        assert!(cached.graph.synced == Some(stamp));
+        let ResidentCatalog::Unconfigured(actual_overlay) = &cached.catalog else {
+            panic!("unconfigured overlay");
+        };
+        assert!(Arc::ptr_eq(actual_overlay, &expected_overlay));
+        assert!(matches!(
+            cached.graph.indexed.dependencies(&original.facts()[0].0.coordinate),
+            backend_library::PackageDependencyLookup::Exact {
+                facts: backend_library::DependencyFacts::Unknown(reason),
+                ..
+            } if reason.as_str() == "original dependency evidence"
+        ));
+    }
+
+    #[test]
+    fn changed_graph_inputs_rebuild_once_and_failed_rebuild_preserves_resident() {
+        let mut resident = None;
+        ResidentDependencies::select(&mut resident, [1; 32], unconfigured_catalog(), |_| {
+            Ok(checked_resident_graph("original dependency evidence"))
+        })
+        .expect("initial graph");
+        let original = resident.as_ref().expect("resident graph").graph.indexed.checked_facts().clone();
+        let mut builds = 0;
+        ResidentDependencies::select(&mut resident, [2; 32], unconfigured_catalog(), |_| {
+            builds += 1;
+            Ok(checked_resident_graph("updated dependency evidence"))
+        })
+        .expect("changed graph");
+        assert_eq!(builds, 1);
+        let cached = resident.as_mut().expect("changed graph residence");
+        let changed = cached.graph.indexed.checked_facts().clone();
+        assert_ne!(changed.witness(), original.witness());
+        assert!(!std::ptr::eq(changed.facts(), original.facts()));
+        let stamp = GraphProjectionStamp {
+            root: backend_library::view_state_root(&[]),
+            facts_witness: changed.witness(),
+        };
+        cached.graph.synced = Some(stamp);
+        let ResidentCatalog::Unconfigured(catalog_before_failure) = &cached.catalog else {
+            panic!("unconfigured catalog");
+        };
+        let catalog_before_failure = Arc::clone(catalog_before_failure);
+
+        let failed = ResidentDependencies::select(
+            &mut resident,
+            [3; 32],
+            unconfigured_catalog(),
+            |_| Err(crate::builtin::BuiltinModelError("rebuild refused".to_owned())),
+        );
+        assert!(failed.is_err());
+        let cached = resident.as_ref().expect("prior successful residence retained");
+        assert_eq!(cached.graph.local_witness, [2; 32]);
+        assert!(std::ptr::eq(cached.graph.indexed.facts(), changed.facts()));
+        assert!(cached.graph.synced == Some(stamp));
+        let ResidentCatalog::Unconfigured(catalog_after_failure) = &cached.catalog else {
+            panic!("unconfigured catalog");
+        };
+        assert!(Arc::ptr_eq(catalog_after_failure, &catalog_before_failure));
+    }
 
     struct TempTree(PathBuf);
 
@@ -3714,14 +3861,9 @@ mod tests {
             )
             .expect("publish seeded product view");
             let projection_path = workspace.join(backend_extension_turso::FILE_NAME);
-            let mut sql_projection = futures_executor::block_on(
-                backend_extension_turso::TursoProjection::open_or_rebuild(&projection_path),
-            )
-            .expect("open projection");
-            futures_executor::block_on(
-                sql_projection.synchronize(daemon.engine().daemon().library().view()),
-            )
-            .expect("synchronize projection");
+            let sql_projection =
+                super::super::super::sql_projection::open_current(&projection_path, &daemon)
+                    .expect("open projection");
             authority
                 .mark_projections_current()
                 .expect("mark semantic projections current");
@@ -3743,6 +3885,7 @@ mod tests {
                 forge,
                 None,
                 product_state,
+                crate::process::default_package_graph_limits(),
                 compiler,
                 super::super::super::query::SearchSnapshotOwner::default(),
                 remote,
@@ -3865,6 +4008,32 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// Creates a directory symlink. Windows needs Developer Mode or the
+    /// symbolic-link privilege; a refusal fails the test loudly rather than
+    /// skipping the case.
+    fn symlink_dir(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(original, link)
+        }
+    }
+
+    /// Creates a file symlink; see [`symlink_dir`] for the Windows requirement.
+    fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link)
+        }
+    }
+
     #[test]
     fn a_directory_is_indexed_in_place() {
         let tree = TempTree::new();
@@ -3882,7 +4051,7 @@ mod tests {
         let project = tree.0.join("project");
         let link = tree.0.join("link");
         fs::create_dir(&project).expect("project dir");
-        std::os::unix::fs::symlink(&project, &link).expect("directory symlink");
+        symlink_dir(&project, &link).expect("directory symlink");
         assert!(matches!(
             classify_add_target(&label(&link)),
             Ok(AddTarget::LocalDirectory)
@@ -3910,7 +4079,7 @@ mod tests {
         let file = tree.0.join("lib.rs");
         let link = tree.0.join("link.rs");
         fs::write(&file, "fn main() {}\n").expect("file");
-        std::os::unix::fs::symlink(&file, &link).expect("file symlink");
+        symlink_file(&file, &link).expect("file symlink");
         let error = classify_add_target(&label(&link)).expect_err("symlink add");
         assert_eq!(error.0, ADD_TARGET_REQUIRED);
     }

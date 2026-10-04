@@ -8,9 +8,6 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-#[cfg(unix)]
-use std::{fs::File, io::Read};
-
 static NEXT_COMPILATION_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 static COMPILATION_ATTEMPT_EPOCH: OnceLock<Result<[u8; 16], ()>> = OnceLock::new();
 
@@ -35,7 +32,7 @@ impl CompilationAttemptId {
         let attempt_nonce = *COMPILATION_ATTEMPT_EPOCH
             .get_or_init(|| {
                 let mut nonce = [0; 16];
-                fill_entropy(&mut nonce).map_err(|_| ())?;
+                crate::platform::fill_entropy(&mut nonce).map_err(|_| ())?;
                 Ok(nonce)
             })
             .as_ref()
@@ -90,22 +87,4 @@ mod tests {
         let forked_child = CompilationAttemptId::from_epoch_process_and_counter([0x31; 16], 12, 1);
         assert_ne!(prior_process, forked_child);
     }
-}
-
-#[cfg(unix)]
-fn fill_entropy(bytes: &mut [u8]) -> std::io::Result<()> {
-    File::open("/dev/urandom")?.read_exact(bytes)
-}
-
-#[cfg(windows)]
-fn fill_entropy(bytes: &mut [u8]) -> std::io::Result<()> {
-    backend_platform::win32::random::fill(bytes)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn fill_entropy(_bytes: &mut [u8]) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "secure random source unavailable",
-    ))
 }
