@@ -478,60 +478,114 @@ fn table_edition(contents: &str, table: &str) -> Result<EditionKey, RustPurlErro
 #[derive(Debug, thiserror::Error)]
 pub enum RustPurlError<'url> {
     #[error("Rust package location toolchain configuration failed: {0}")]
+    /// The configured Cargo/rustc toolchain could not be admitted.
     Toolchain(#[source] LoadError),
     #[error("wrong Cargo PURL scheme: {purl}")]
-    WrongScheme { purl: &'url str },
+    /// The input PURL uses a scheme other than `pkg:cargo`.
+    WrongScheme {
+        /// Original PURL text supplied by the caller.
+        purl: &'url str,
+    },
     #[error("Cargo PURL has no version: {purl}")]
-    MissingVersion { purl: &'url str },
+    /// The package coordinate does not carry a version component.
+    MissingVersion {
+        /// Original PURL text supplied by the caller.
+        purl: &'url str,
+    },
     #[error("Cargo PURL has an empty name: {purl}")]
-    EmptyName { purl: &'url str },
+    /// The package coordinate has an empty crate name.
+    EmptyName {
+        /// Original PURL text supplied by the caller.
+        purl: &'url str,
+    },
     #[error("malformed Cargo version {version} in {purl}")]
-    MalformedVersion { purl: &'url str, version: &'url str },
+    /// The version component is not a valid Cargo package version.
+    MalformedVersion {
+        /// Original PURL text supplied by the caller.
+        purl: &'url str,
+        /// Exact malformed version substring borrowed from `purl`.
+        version: &'url str,
+    },
     #[error("workspace root error at {path}: {source}")]
     WorkspaceRoot {
+        /// Workspace root whose Cargo project model was requested.
         path: PathBuf,
         #[source]
+        /// Failure while loading or validating that workspace root.
         source: RustAuthorityError,
     },
     #[error("package {requested_name}@{requested_version} observed versions {observed_versions:?}")]
     VersionMismatch {
+        /// Crate name encoded by the PURL.
         requested_name: &'url str,
+        /// Version encoded by the PURL.
         requested_version: &'url str,
+        /// Versions with the requested name observed in Cargo's package metadata.
         observed_versions: Vec<String>,
     },
     #[error("offline registry package was not found under {searched_root}")]
-    RegistryAbsent { searched_root: PathBuf },
+    /// The requested package was not present in the selected local registry.
+    RegistryAbsent {
+        /// Cargo registry root searched for the package source.
+        searched_root: PathBuf,
+    },
     #[error("invalid package manifest path: {path}")]
-    InvalidManifestPath { path: PathBuf },
+    /// The discovered package manifest could not be used as a project path.
+    InvalidManifestPath {
+        /// Manifest path rejected by the project-model loader.
+        path: PathBuf,
+    },
     #[error("package project error at {path}: {source}")]
     Project {
+        /// Manifest or project path whose package could not be loaded.
         path: PathBuf,
         #[source]
+        /// Cargo project-model error for the package.
         source: RustAuthorityError,
     },
     #[error("PURL location cancelled")]
+    /// The caller's cancellation control stopped package lookup.
     Cancelled,
     #[error("cargo metadata failed to start: {0}")]
+    /// The configured `cargo metadata` process could not be started.
     MetadataIo(#[source] std::io::Error),
     #[error("cargo metadata output exceeded bound: {bytes} bytes")]
-    MetadataTooLarge { bytes: usize },
+    /// The metadata output exceeded the bounded capture size.
+    MetadataTooLarge {
+        /// Number of metadata bytes observed before rejecting the output.
+        bytes: usize,
+    },
     #[error("cargo metadata failed with status {status:?}: {stderr:?}")]
     MetadataFailed {
+        /// Process exit code, or `None` when it terminated without a numeric code.
         status: Option<i32>,
+        /// Captured stderr bytes emitted by Cargo.
         stderr: Vec<u8>,
     },
     #[error("cargo metadata JSON is invalid: {0}")]
+    /// Cargo exited successfully but its output was not valid metadata JSON.
     MetadataJson(#[source] serde_json::Error),
     #[error("cargo metadata omitted packages")]
+    /// The decoded metadata object contained no package collection.
     MissingPackages,
     #[error("cargo metadata package omitted {field}")]
-    MissingPackageField { field: &'static str },
+    /// A package object omitted a field required for package identity.
+    MissingPackageField {
+        /// Name of the required metadata field.
+        field: &'static str,
+    },
     #[error("package declares unsupported Rust edition {spelling}")]
-    UnknownEdition { spelling: String },
+    /// A manifest uses an edition spelling outside the supported vocabulary.
+    UnknownEdition {
+        /// Exact edition spelling read from the manifest.
+        spelling: String,
+    },
     #[error("cannot read package manifest at {path}: {source}")]
     ManifestIo {
+        /// Manifest path whose bytes could not be read.
         path: PathBuf,
         #[source]
+        /// Filesystem failure returned while reading the manifest.
         source: std::io::Error,
     },
 }

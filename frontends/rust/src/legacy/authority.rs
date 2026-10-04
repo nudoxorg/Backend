@@ -9,7 +9,7 @@ use std::{
     io::{self, Read},
     ops::Deref,
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -654,10 +654,10 @@ pub trait RustWorkspaceReadFrontierObserver {
     /// observers that do not implement this callback reject it by default.
     fn observe_authority_filesystem_attempt(
         &mut self,
-        requested_path: &str,
-        operation: RustWorkspaceFilesystemOperation,
-        outcome: RustWorkspaceFilesystemOutcome,
-        resolved_path: Option<&str>,
+        _requested_path: &str,
+        _operation: RustWorkspaceFilesystemOperation,
+        _outcome: RustWorkspaceFilesystemOutcome,
+        _resolved_path: Option<&str>,
     ) -> bool {
         false
     }
@@ -693,11 +693,19 @@ pub enum RustWorkspaceFilesystemOutcome {
     /// own typed result below.
     Succeeded,
     /// Metadata was read, including whether the path identifies a regular file.
-    Metadata { length: u64, is_regular_file: bool },
+    Metadata {
+        /// Metadata length reported by the operating system, in bytes.
+        length: u64,
+        /// Whether the inspected path resolves to a regular file.
+        is_regular_file: bool,
+    },
     /// The bounded read succeeded with this exact byte count.
-    Read { bytes_read: u64 },
+    Read {
+        /// Number of bytes returned by the successful read operation.
+        bytes_read: u64,
+    },
     /// The operation failed with the operating system error category.
-    Failed(std::io::ErrorKind),
+    Failed(io::ErrorKind),
 }
 
 /// Required read classes that remain outside the current Rust frontend observers.
@@ -1028,21 +1036,21 @@ struct RustWorkspaceFeatureKey {
 fn resolve_package_source_path(
     root: &Path,
     requested_path: &Path,
-) -> Result<(PathBuf, bool), std::io::Error> {
+) -> Result<(PathBuf, bool), io::Error> {
     let relative = requested_path
         .strip_prefix(root)
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let mut resolved = root.to_path_buf();
     let mut exists = true;
     for component in relative.components() {
         let std::path::Component::Normal(component) = component else {
-            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
         };
         resolved.push(component);
         if exists {
             match fs::symlink_metadata(&resolved) {
                 Ok(_) => resolved = fs::canonicalize(&resolved)?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => exists = false,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => exists = false,
                 Err(error) => return Err(error),
             }
         }
@@ -1058,9 +1066,9 @@ fn resolve_package_source_path(
 fn resolve_absolute_source_path(
     root: &Path,
     requested_path: &Path,
-) -> Result<(PathBuf, bool, Option<PathBuf>), std::io::Error> {
+) -> Result<(PathBuf, bool, Option<PathBuf>), io::Error> {
     if !requested_path.is_absolute() {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
     }
     let mut resolved = PathBuf::new();
     let mut exists = true;
@@ -1072,14 +1080,14 @@ fn resolve_absolute_source_path(
             std::path::Component::RootDir => resolved.push(component.as_os_str()),
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+                return Err(io::Error::from(io::ErrorKind::InvalidInput));
             }
             std::path::Component::Normal(component) => {
                 resolved.push(component);
                 if exists {
                     match fs::symlink_metadata(&resolved) {
                         Ok(_) => resolved = fs::canonicalize(&resolved)?,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
                             exists = false;
                         }
                         Err(error) => return Err(error),
@@ -1962,7 +1970,6 @@ impl RustWorkspace {
         // VFS presence alone does not establish active Cargo ownership. The
         // retained DefMap index was built from this exact loaded graph before
         // the workspace was shared, after any selected source overlays.
-        let semantics = Semantics::new(&self.database);
         let owner = self.source_owner_entry(file_id, &source_path, control)?;
         let source_scope = owner.scope;
         let owner = owner.krate;
@@ -2098,7 +2105,7 @@ impl RustWorkspace {
                                 None,
                             );
                         }
-                        return Err(if source.kind() == std::io::ErrorKind::NotFound {
+                        return Err(if source.kind() == io::ErrorKind::NotFound {
                             RustAuthorityError::DocumentationInputMissing {
                                 path: requested.clone(),
                             }
@@ -2151,7 +2158,7 @@ impl RustWorkspace {
                 if !metadata.is_file() {
                     return Err(RustAuthorityError::DocumentationInputRead {
                         path: canonical,
-                        source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+                        source: io::Error::from(io::ErrorKind::InvalidInput),
                     });
                 }
                 if metadata.len() > maximum_file_bytes {
@@ -2265,7 +2272,7 @@ impl RustWorkspace {
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert((selected_root, text));
                     }
-                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    std::collections::hash_map::Entry::Occupied(entry) => {
                         if entry.get().0 != selected_root || entry.get().1 != text {
                             return Err(RustAuthorityError::SessionSourceRootAmbiguous);
                         }
@@ -2312,7 +2319,7 @@ impl RustWorkspace {
                 self.vfs.file_id(&vfs_path).ok_or_else(|| {
                     RustAuthorityError::DocumentationInputRead {
                         path: path.clone(),
-                        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                        source: io::Error::from(io::ErrorKind::NotFound),
                     }
                 })?
             };
@@ -3825,9 +3832,9 @@ impl RustAnalysisControl<'_> {
 /// Non-escaping rust-analyzer view whose lifetimes prove all semantic values remain borrowed.
 pub struct RustAuthority<'analysis> {
     /// HIR database holding project-model, source-map, resolution, and inference state.
-    pub database: &'analysis ra_ap_ide_db::RootDatabase,
+    pub database: &'analysis RootDatabase,
     /// Source-to-HIR resolver scoped to `database`.
-    pub semantics: Semantics<'analysis, ra_ap_ide_db::RootDatabase>,
+    pub semantics: Semantics<'analysis, RootDatabase>,
     /// Parsed root module bound to `source_file`.
     pub root: ast::SourceFile,
     /// Exact caller-owned original source bytes.
@@ -4574,7 +4581,7 @@ pub struct ByteSpan {
 
 impl ByteSpan {
     /// Converts rust-analyzer's compact text range without widening or changing coordinate units.
-    fn from_text_range(range: ra_ap_syntax::TextRange) -> Option<Self> {
+    fn from_text_range(range: TextRange) -> Option<Self> {
         let start = u32::from(range.start());
         let end = u32::from(range.end());
         (start <= end).then_some(Self { start, end })
@@ -4720,7 +4727,7 @@ impl RustDefinition {
     #[must_use]
     pub fn semantic_type<'analysis>(
         &self,
-        database: &'analysis ra_ap_ide_db::RootDatabase,
+        database: &'analysis RootDatabase,
     ) -> Option<ra_ap_hir::Type<'analysis>> {
         match self {
             Self::Field(definition) => Some(definition.ty(database)),
@@ -4747,7 +4754,7 @@ impl RustDefinition {
     #[must_use]
     pub fn generic_params<'analysis>(
         &self,
-        database: &'analysis ra_ap_ide_db::RootDatabase,
+        database: &'analysis RootDatabase,
     ) -> Vec<ra_ap_hir::GenericParam> {
         let generic = match self {
             Self::Field(_) | Self::Variant(_) | Self::Macro(_) | Self::Module(_) => {
@@ -4888,7 +4895,7 @@ pub enum RustAuthorityError {
         path: PathBuf,
         /// Original filesystem failure.
         #[source]
-        source: std::io::Error,
+        source: io::Error,
     },
     /// The caller-selected crate root source could not be canonicalized.
     #[error("cannot open Rust crate root {path}: {source}")]
@@ -4897,7 +4904,7 @@ pub enum RustAuthorityError {
         path: PathBuf,
         /// Original filesystem failure.
         #[source]
-        source: std::io::Error,
+        source: io::Error,
     },
     /// The root is not a Cargo package manifest location.
     #[error("Rust project is missing Cargo manifest {path}")]
@@ -4940,7 +4947,7 @@ pub enum RustAuthorityError {
         path: PathBuf,
         /// Original filesystem failure.
         #[source]
-        source: std::io::Error,
+        source: io::Error,
     },
     /// One Rustdoc include exceeds the selected source byte budget.
     #[error(
@@ -5043,7 +5050,7 @@ pub enum RustAuthorityError {
         path: PathBuf,
         /// Original filesystem failure.
         #[source]
-        source: std::io::Error,
+        source: io::Error,
     },
     /// The loader did not admit the requested crate root into its VFS.
     #[error("rust-analyzer did not load source path {path}")]
