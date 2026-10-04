@@ -2188,6 +2188,10 @@ impl DiscoverySearchIndex {
         {
             let mut lineage_changes = Vec::with_capacity(changes.len());
             for change in changes {
+                let metadata = &store
+                    .fact(change.source, change.coordinate.as_str())
+                    .ok_or_else(|| "search change has no selected discovery fact".to_owned())?
+                    .metadata;
                 let source = DiscoverySearchSource::Registry(change.source);
                 let coordinate_text = change.coordinate.as_str().to_owned();
                 let key = DiscoverySearchKey {
@@ -2202,9 +2206,9 @@ impl DiscoverySearchIndex {
                 lineage_changes.push((
                     identity,
                     lineage_key,
-                    lineage_release_document(key, &change.metadata, None, &[]),
+                    lineage_release_document(key, metadata, None, &[]),
                 ));
-                replace_discovery_document(&mut self.inner, change)?;
+                replace_discovery_document(&mut self.inner, change, metadata)?;
             }
             self.inner.commit()?;
             self.lineages.apply_batch(lineage_changes)?;
@@ -3222,6 +3226,7 @@ fn add_discovery_document(
 fn replace_discovery_document(
     index: &mut TextSearchIndex<DiscoverySearchKey>,
     document: DiscoverySearchDocument,
+    metadata: &DiscoveryMetadata,
 ) -> Result<(), String> {
     let source = DiscoverySearchSource::Registry(document.source);
     let coordinate_text = document.coordinate.as_str().to_owned();
@@ -3235,7 +3240,7 @@ fn replace_discovery_document(
     let identity = discovery_sort_key(&source, &coordinate_text);
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), &lineage);
     let group_key = lineage_sort_key(&lineage_key);
-    let mut search_text = discovery_search_text(&document.metadata);
+    let mut search_text = discovery_search_text(metadata);
     search_text.lineage_group = Some(&group_key);
     index.replace_document_with_search_text(
         identity.clone(),
@@ -4584,9 +4589,10 @@ pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
         key.lineage.len(),
         key.lineage,
     );
-    key.coordinate_suffix.as_ref().map_or_else(|| base.clone(), |suffix| {
-        format!("{base}\u{1f}{}:{suffix}", suffix.len())
-    })
+    key.coordinate_suffix.as_ref().map_or_else(
+        || base.clone(),
+        |suffix| format!("{base}\u{1f}{}:{suffix}", suffix.len()),
+    )
 }
 
 impl<K: Clone> TextSearchIndex<K> {
@@ -5600,7 +5606,8 @@ mod tests {
     use super::*;
     use backend_engine::registry::{
         DiscoveryAdvisory, DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact,
-        DiscoveryObservedAt, DiscoveryStanding, RegistryEcosystem, RegistryEndpoint,
+        DiscoveryObservedAt, DiscoveryStanding, DiscoveryTimestamp, RegistryEcosystem,
+        RegistryEndpoint,
     };
     use std::collections::BTreeSet;
 
@@ -6202,13 +6209,24 @@ mod tests {
         observed_at: u64,
         facts: &[(&str, DiscoveryStanding, &str, u8)],
     ) -> DiscoveryBatch {
+        discovery_batch_at_sequence(source, 0, previous_cursor, next_cursor, observed_at, facts)
+    }
+
+    fn discovery_batch_at_sequence(
+        source: DiscoverySourceIdentity,
+        expected_base_sequence: u64,
+        previous_cursor: &str,
+        next_cursor: &str,
+        observed_at: u64,
+        facts: &[(&str, DiscoveryStanding, &str, u8)],
+    ) -> DiscoveryBatch {
         let previous_cursor =
             DiscoveryCursor::new(previous_cursor.as_bytes().to_vec()).expect("previous cursor");
         let next_cursor =
             DiscoveryCursor::new(next_cursor.as_bytes().to_vec()).expect("next cursor");
         DiscoveryBatch {
             source,
-            expected_base_sequence: 0,
+            expected_base_sequence,
             previous_cursor,
             next_cursor: next_cursor.clone(),
             source_high_watermark: next_cursor,
@@ -6222,8 +6240,29 @@ mod tests {
                     coordinate: ProductPackageCoordinate::parse(*coordinate).expect("coordinate"),
                     standing: *standing,
                     observed_at: DiscoveryObservedAt::from_unix_millis(observed_at),
-                    source_event: DiscoverySourceEvent::Snapshot,
-                    source_event_time: Some((*event_time).to_owned()),
+                    source_event: match source.ecosystem() {
+                        RegistryEcosystem::Npm => {
+                            let sequence = u64::from(*proof).max(1);
+                            DiscoverySourceEvent::NpmChange {
+                                sequence,
+                                revision: Some(format!("test-revision-{proof}")),
+                                change_proof: [*proof; 32],
+                            }
+                        }
+                        RegistryEcosystem::Nuget => DiscoverySourceEvent::NugetCatalog {
+                            timestamp: DiscoveryTimestamp::parse_nuget_catalog_timestamp(
+                                event_time,
+                            )
+                            .expect("NuGet fixture event timestamp"),
+                            commit_id: format!("fixture-commit-{proof}"),
+                        },
+                        _ => DiscoverySourceEvent::Unordered,
+                    },
+                    source_event_time: match source.ecosystem() {
+                        RegistryEcosystem::Npm => Some(format!("{:020}", u64::from(*proof).max(1))),
+                        RegistryEcosystem::Nuget => Some((*event_time).to_owned()),
+                        _ => None,
+                    },
                     proof: [*proof; 32],
                     metadata: DiscoveryMetadata::default(),
                 })
@@ -6492,9 +6531,7 @@ mod tests {
         let mut build_checks = Vec::with_capacity(query_labels.len());
         for label in query_labels {
             let query = label["query"].as_str().expect("query text");
-            let expected_coordinates = label["expected"]
-                .as_array()
-                .expect("expected coordinates");
+            let expected_coordinates = label["expected"].as_array().expect("expected coordinates");
             let expected: BTreeSet<String> = expected_coordinates
                 .iter()
                 .map(|value| value.as_str().expect("coordinate").to_owned())
@@ -6509,11 +6546,8 @@ mod tests {
                 .take(page_sizes.first().copied().unwrap_or_default())
                 .collect::<BTreeSet<_>>()
                 .len();
-            let first_page_count_bound_consistent = completed_chain_count_is_consistent(
-                count,
-                first_page_unique_count,
-                observed.len(),
-            );
+            let first_page_count_bound_consistent =
+                completed_chain_count_is_consistent(count, first_page_unique_count, observed.len());
             build_checks.push(serde_json::json!({
                 "query": query,
                 "exact_membership": observed_set == expected,
@@ -6612,9 +6646,7 @@ mod tests {
                     chain_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
                 );
             first_chain_ns_by_query.push(first_chain_ns);
-            let expected_coordinates = label["expected"]
-                .as_array()
-                .expect("expected coordinates");
+            let expected_coordinates = label["expected"].as_array().expect("expected coordinates");
             let expected: BTreeSet<String> = expected_coordinates
                 .iter()
                 .map(|value| value.as_str().expect("coordinate").to_owned())
@@ -7026,7 +7058,7 @@ mod tests {
                     description: DiscoveryFacet::Known("typed serialization library".to_owned()),
                     advisories: DiscoveryFacet::Known(vec![DiscoveryAdvisory {
                         id: "GHSA-1234-abcd".to_owned(),
-                        aliases: vec!["CVE-2026-4242".to_owned()],
+                        aliases: DiscoveryFacet::Known(vec!["CVE-2026-4242".to_owned()]),
                         summary: DiscoveryFacet::Known("unsafe parser".to_owned()),
                         severity: DiscoveryFacet::Known("high".to_owned()),
                         fixed_in: DiscoveryFacet::Known(vec!["3.0.0".to_owned()]),
@@ -7800,8 +7832,9 @@ mod tests {
             .expect("commit first case-sensitive Go module");
         let mut warm = DiscoverySearchIndex::open(&store).expect("initial warm projection");
         store
-            .commit(discovery_batch(
+            .commit(discovery_batch_at_sequence(
                 source,
+                1,
                 "go-window-1",
                 "go-window-2",
                 200,
@@ -7935,8 +7968,9 @@ mod tests {
 
         let yanked_coordinate = "pkg:cargo/order-demo@1.0.320";
         store
-            .commit(discovery_batch(
+            .commit(discovery_batch_at_sequence(
                 source,
+                1,
                 "order-window-1",
                 "order-window-2",
                 200,
@@ -8878,7 +8912,7 @@ mod tests {
             DiscoveryFacet::Known("Python client for HTTP services".to_owned());
         pypi_metadata.advisories = DiscoveryFacet::Known(vec![DiscoveryAdvisory {
             id: "GHSA-abcd-1234".to_owned(),
-            aliases: vec!["CVE-2026-12345".to_owned()],
+            aliases: DiscoveryFacet::Known(vec!["CVE-2026-12345".to_owned()]),
             summary: DiscoveryFacet::Known("Remote request exposure".to_owned()),
             severity: DiscoveryFacet::Known("high".to_owned()),
             fixed_in: DiscoveryFacet::Unknown,
@@ -9207,8 +9241,9 @@ mod tests {
         );
         let initial_revision = store.search_revision();
 
-        let mut standing_refresh = discovery_batch(
+        let mut standing_refresh = discovery_batch_at_sequence(
             source,
+            1,
             "2026-09-01T00:00:00Z",
             "2026-09-02T00:00:00Z",
             200,
@@ -9250,8 +9285,9 @@ mod tests {
             SearchStandingEvidence::Yanked
         );
 
-        let mut structural_update = discovery_batch(
+        let mut structural_update = discovery_batch_at_sequence(
             source,
+            2,
             "2026-09-02T00:00:00Z",
             "2026-09-03T00:00:00Z",
             300,

@@ -8,23 +8,27 @@
 //! paginated recent-updates view and is therefore always marked windowed.
 
 use backend_library::CargoPublishTime;
+use serde::Serialize;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
+    io::{self, Write},
 };
 
 use super::{PackageCoordinate, RegistryEndpoint};
 
 pub use backend_library::{
-    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
-    DiscoveryAdvisorySummary, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCargoDependencySummary,
-    DiscoveryCargoSparseSummary, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
+    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata,
+    DISCOVERY_BATCH_ENVELOPE_VERSION, DiscoveryAdvisory, DiscoveryAdvisorySummary, DiscoveryBatch,
+    DiscoveryBatchDraft, DiscoveryCargoDependencySummary, DiscoveryCargoSparseSummary,
+    DiscoveryCompleteness, DiscoveryCursor, DiscoveryDescriptionText, DiscoveryError,
     DiscoveryFacet, DiscoveryFact, DiscoveryFactCore, DiscoveryFactMetadataSummary,
-    DiscoveryMetadata, DiscoveryMetadataFacetState, DiscoveryMetadataPage,
-    DiscoveryMetadataPageCursor, DiscoveryMetadataRow, DiscoveryMetadataSection,
-    DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoverySelectedHead, DiscoverySourceEvent,
-    DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
-    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
+    DiscoveryMetadata, DiscoveryMetadataDelivery, DiscoveryMetadataFacetState,
+    DiscoveryMetadataPage, DiscoveryMetadataPageCursor, DiscoveryMetadataRow,
+    DiscoveryMetadataSection, DiscoveryObservedAt, DiscoveryPackageRetraction,
+    DiscoverySelectedHead, DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
+    DiscoveryTimestamp, MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES,
+    MAX_DISCOVERY_COORDINATE_BYTES, MAX_DISCOVERY_CURSOR_BYTES, MAX_DISCOVERY_DESCRIPTION_BYTES,
     MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES,
     MAX_DISCOVERY_METADATA_PAGE_ROWS, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
@@ -126,6 +130,51 @@ pub struct NpmPackument {
     pub revision: Option<String>,
     pub releases: Vec<DiscoveryReleaseObservation>,
     pub is_truncated: bool,
+}
+
+struct HashingWriter {
+    hasher: blake3::Hasher,
+    bytes: usize,
+    exceeded: bool,
+}
+
+impl Write for HashingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(bytes) = self.bytes.checked_add(buffer.len()) else {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "source proof bound",
+            ));
+        };
+        if bytes > MAX_DISCOVERY_BATCH_ENCODED_BYTES {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "source proof bound",
+            ));
+        }
+        self.bytes = bytes;
+        self.hasher.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn hash_typed_json<T: Serialize>(value: &T) -> Result<[u8; 32], DiscoveryError> {
+    let mut writer = HashingWriter {
+        hasher: blake3::Hasher::new(),
+        bytes: 0,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(*writer.hasher.finalize().as_bytes()),
+        Err(_) if writer.exceeded => Err(DiscoveryError::Bounds),
+        Err(_) => Err(DiscoveryError::Protocol),
+    }
 }
 
 /// Parsed PEP 691 project catalog. PyPI's project list is a mutable snapshot,
@@ -249,8 +298,7 @@ pub fn parse_npm_changes_page(
             return Err(DiscoveryError::InvalidIdentity);
         }
         let source_event_time = format!("{sequence:020}");
-        let proof = *blake3::hash(&serde_json::to_vec(row).map_err(|_| DiscoveryError::Protocol)?)
-            .as_bytes();
+        let proof = hash_typed_json(row)?;
         let document = row.get("doc").and_then(serde_json::Value::as_object);
         let revision_value = row
             .get("changes")
@@ -258,7 +306,7 @@ pub fn parse_npm_changes_page(
             .and_then(|changes| changes.first())
             .and_then(serde_json::Value::as_object)
             .and_then(|change| change.get("rev"));
-        let revision = match revision_value {
+        let row_revision = match revision_value {
             None => None,
             Some(serde_json::Value::String(value)) if !value.is_empty() => {
                 if value.len() > MAX_DISCOVERY_REVISION_BYTES
@@ -271,15 +319,45 @@ pub fn parse_npm_changes_page(
             Some(serde_json::Value::String(_)) => return Err(DiscoveryError::Protocol),
             Some(_) => return Err(DiscoveryError::Protocol),
         };
-        let (releases, is_truncated) = if deleted {
-            (Vec::new(), false)
+        let document_revision = if deleted {
+            None
         } else if let Some(document) = document {
-            let document_revision = document.get("_rev").and_then(serde_json::Value::as_str);
-            if let Some(row_revision) = revision.as_deref()
-                && document_revision != Some(row_revision)
+            match document.get("_rev") {
+                None => None,
+                Some(serde_json::Value::String(value)) if !value.is_empty() => {
+                    if value.len() > MAX_DISCOVERY_REVISION_BYTES
+                        || value.bytes().any(|byte| byte.is_ascii_control())
+                    {
+                        return Err(DiscoveryError::Bounds);
+                    }
+                    Some(value.clone())
+                }
+                Some(serde_json::Value::String(_)) | Some(serde_json::Value::Null) => {
+                    return Err(DiscoveryError::Protocol);
+                }
+                Some(_) => return Err(DiscoveryError::Protocol),
+            }
+        } else {
+            None
+        };
+        let revision = if document.is_some() && !deleted {
+            if row_revision
+                .as_deref()
+                .is_some_and(|revision| document_revision.as_deref() != Some(revision))
             {
                 return Err(DiscoveryError::Protocol);
             }
+            if row_revision.is_some() {
+                row_revision
+            } else {
+                document_revision
+            }
+        } else {
+            row_revision
+        };
+        let (releases, is_truncated) = if deleted {
+            (Vec::new(), false)
+        } else if let Some(document) = document {
             let doc_name = document
                 .get("name")
                 .and_then(serde_json::Value::as_str)
@@ -412,9 +490,7 @@ fn parse_npm_packument_object(
             source_metadata.advisories = DiscoveryFacet::Absent;
             source_metadata.downloads = DiscoveryFacet::Absent;
             source_metadata.admit()?;
-            let proof =
-                *blake3::hash(&serde_json::to_vec(metadata).map_err(|_| DiscoveryError::Protocol)?)
-                    .as_bytes();
+            let proof = hash_typed_json(metadata)?;
             Ok(DiscoveryReleaseObservation {
                 coordinate,
                 standing: DiscoveryStanding::Published,
@@ -633,9 +709,7 @@ pub fn parse_pypi_project_metadata(
             .map_or(DiscoveryFacet::Unknown, DiscoveryFacet::Known);
         metadata.downloads = DiscoveryFacet::Absent;
         metadata.admit()?;
-        let proof =
-            *blake3::hash(&serde_json::to_vec(files).map_err(|_| DiscoveryError::Protocol)?)
-                .as_bytes();
+        let proof = hash_typed_json(files)?;
         observations.push(DiscoveryReleaseObservation {
             coordinate,
             standing: if is_yanked {
@@ -796,9 +870,7 @@ pub fn parse_maven_search_page(
         metadata.yanked = DiscoveryFacet::Unknown;
         metadata.advisories = DiscoveryFacet::Absent;
         metadata.downloads = DiscoveryFacet::Absent;
-        let proof =
-            *blake3::hash(&serde_json::to_vec(document).map_err(|_| DiscoveryError::Protocol)?)
-                .as_bytes();
+        let proof = hash_typed_json(document)?;
         releases.push(DiscoveryReleaseObservation {
             coordinate,
             standing: DiscoveryStanding::Published,
@@ -1550,12 +1622,7 @@ pub fn parse_crates_recent_page(
         let updated_at = required_text(row, "updated_at")?.to_owned();
         let coordinate = PackageCoordinate::parse(format!("pkg:cargo/{name}@{version}"))
             .map_err(|_| DiscoveryError::InvalidIdentity)?;
-        let proof = *blake3::hash(
-            serde_json::to_vec(row)
-                .map_err(|_| DiscoveryError::Protocol)?
-                .as_slice(),
-        )
-        .as_bytes();
+        let proof = hash_typed_json(row)?;
         let mut metadata = DiscoveryMetadata::default();
         metadata.aliases = DiscoveryFacet::Absent;
         metadata.description = optional_text_facet(row, "description");
@@ -1941,7 +2008,7 @@ fn nuget_cursor(timestamp: &str, commit_id: &str) -> Result<DiscoveryCursor, Dis
     {
         return Err(DiscoveryError::Protocol);
     }
-    DiscoveryTimestamp::parse_rfc3339(timestamp)?;
+    DiscoveryTimestamp::parse_nuget_catalog_timestamp(timestamp)?;
     DiscoveryCursor::new(format!("{timestamp}{NUGET_CURSOR_SEPARATOR}{commit_id}").into_bytes())
 }
 
@@ -1964,7 +2031,7 @@ fn parse_nuget_cursor(cursor: &DiscoveryCursor) -> Result<Option<NugetCursor>, D
         return Err(DiscoveryError::Protocol);
     }
     Ok(Some(NugetCursor {
-        timestamp: DiscoveryTimestamp::parse_rfc3339(timestamp)?,
+        timestamp: DiscoveryTimestamp::parse_nuget_catalog_timestamp(timestamp)?,
         commit_id: commit_id.to_owned(),
     }))
 }
@@ -2350,6 +2417,58 @@ mod tests {
     }
 
     #[test]
+    fn npm_changes_preserve_and_validate_document_only_revisions() {
+        let high = npm_cursor(3).expect("captured update sequence");
+        let parse = |body: &str| {
+            parse_npm_changes_page(body.as_bytes(), &DiscoveryCursor::default(), &high, 10)
+        };
+        let doc_only = parse(
+            r#"{"results":[{"seq":1,"id":"pkg","doc":{"name":"pkg","_rev":"4-abcd","versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+        )
+        .expect("valid document-only revision");
+        assert_eq!(doc_only.packages[0].revision.as_deref(), Some("4-abcd"));
+
+        let matching = parse(
+            r#"{"results":[{"seq":1,"id":"pkg","changes":[{"rev":"4-abcd"}],"doc":{"name":"pkg","_rev":"4-abcd","versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+        );
+        assert!(
+            matching.is_ok(),
+            "matching row and document revisions agree"
+        );
+
+        for (body, expected) in [
+            (
+                r#"{"results":[{"seq":1,"id":"pkg","changes":[{"rev":"4-abcd"}],"doc":{"name":"pkg","versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+                DiscoveryError::Protocol,
+            ),
+            (
+                r#"{"results":[{"seq":1,"id":"pkg","changes":[{"rev":"4-abcd"}],"doc":{"name":"pkg","_rev":"5-other","versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+                DiscoveryError::Protocol,
+            ),
+            (
+                r#"{"results":[{"seq":1,"id":"pkg","doc":{"name":"pkg","_rev":"","versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+                DiscoveryError::Protocol,
+            ),
+            (
+                r#"{"results":[{"seq":1,"id":"pkg","doc":{"name":"pkg","_rev":"bad\u0001rev","versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+                DiscoveryError::Bounds,
+            ),
+            (
+                r#"{"results":[{"seq":1,"id":"pkg","doc":{"name":"pkg","_rev":7,"versions":{"1.0.0":{}}}}],"last_seq":1}"#,
+                DiscoveryError::Protocol,
+            ),
+        ] {
+            assert_eq!(parse(body), Err(expected), "unexpected acceptance: {body}");
+        }
+
+        let oversized_revision = "x".repeat(MAX_DISCOVERY_REVISION_BYTES + 1);
+        let oversized = format!(
+            r#"{{"results":[{{"seq":1,"id":"pkg","doc":{{"name":"pkg","_rev":"{oversized_revision}","versions":{{"1.0.0":{{}}}}}}}}],"last_seq":1}}"#
+        );
+        assert_eq!(parse(&oversized), Err(DiscoveryError::Bounds));
+    }
+
+    #[test]
     fn pep691_and_pypi_json_preserve_yanks_and_fixed_version_advisory_scope() {
         let projects = parse_pypi_project_list(
             br#"{"meta":{},"projects":[{"name":"Django"},{"name":"my_pkg"}]}"#,
@@ -2471,6 +2590,7 @@ mod tests {
                 .expect("source endpoint");
         let source = discovery_source_identity(&endpoint);
         let coordinate = PackageCoordinate::parse("pkg:nuget/Widget@1.0.0").expect("coordinate");
+        let timestamp_text = "2026-09-02T00:00:00Z";
         let batch = DiscoveryBatch {
             source,
             expected_base_sequence: 0,
@@ -2485,8 +2605,12 @@ mod tests {
                 coordinate,
                 standing: DiscoveryStanding::Published,
                 observed_at: DiscoveryObservedAt::from_unix_millis(10),
-                source_event: DiscoverySourceEvent::Snapshot,
-                source_event_time: None,
+                source_event: DiscoverySourceEvent::NugetCatalog {
+                    timestamp: DiscoveryTimestamp::parse_nuget_catalog_timestamp(timestamp_text)
+                        .expect("catalog timestamp"),
+                    commit_id: "fixture-commit".to_owned(),
+                },
+                source_event_time: Some(timestamp_text.to_owned()),
                 proof: [1; 32],
                 metadata: DiscoveryMetadata::default(),
             }],

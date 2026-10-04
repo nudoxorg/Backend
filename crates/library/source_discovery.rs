@@ -4,8 +4,14 @@
 //! engine and local service. This module owns only the typed fact and batch
 //! contract that the durable discovery authority accepts.
 
-use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
-use serde::{Deserialize, Serialize, de::Error as _};
+use crate::SourceAtomText;
+use backend_semantic::vocabulary::{
+    MAX_PACKAGE_URL_BYTES, PackageUrl as PackageCoordinate, RegistryEcosystem,
+};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, Error as _, Visitor},
+};
 use std::{fmt, io};
 
 /// Upper bound for an opaque source cursor persisted by a local discovery
@@ -16,8 +22,15 @@ pub const MAX_DISCOVERY_CURSOR_BYTES: usize = 4096;
 pub const MAX_DISCOVERY_PAGE_ITEMS: usize = 4096;
 /// Bound for a source-only package-name snapshot (not a release fact page).
 pub const MAX_DISCOVERY_PROJECTS: usize = 2_000_000;
-/// Maximum canonical JSON batch body admitted before durable transaction work.
+/// Maximum serialized transaction payload admitted before durable writes.
 pub const MAX_DISCOVERY_BATCH_ENCODED_BYTES: usize = 32 * 1024 * 1024;
+/// Version for the exact borrowed JSON transaction envelope counted by batch
+/// admission and consumed by the legacy local journal.
+pub const DISCOVERY_BATCH_ENVELOPE_VERSION: u16 = 2;
+/// Maximum admitted spelling for one registry package coordinate key.
+pub const MAX_DISCOVERY_COORDINATE_BYTES: usize = MAX_PACKAGE_URL_BYTES;
+/// Maximum exact prose description retained from one source fact.
+pub const MAX_DISCOVERY_DESCRIPTION_BYTES: usize = 16 * 1024;
 /// Maximum retained spelling of one source event timestamp or key.
 pub const MAX_DISCOVERY_EVENT_TEXT_BYTES: usize = 512;
 /// Maximum retained size of one npm source revision.
@@ -153,8 +166,15 @@ impl<'de> Deserialize<'de> for DiscoveryTimestamp {
 }
 
 impl DiscoveryTimestamp {
-    /// Parses a bounded RFC 3339 timestamp and normalizes it to UTC.
-    pub fn parse_rfc3339(value: &str) -> Result<Self, DiscoveryError> {
+    /// Parses NuGet's bounded timestamp profile and normalizes it to UTC.
+    ///
+    /// The profile is an ASCII four-digit year from `0001` through `9999`, a
+    /// calendar-valid date, hours `00..23`, minutes and seconds `00..59`, an
+    /// optional one-to-nine digit fractional second, and either `Z`/`z` or a
+    /// signed `HH:MM` offset. Year zero, leap seconds, more than nine
+    /// fractional digits, and trailing suffixes are rejected. Normalized
+    /// values may precede the Unix epoch.
+    pub fn parse_nuget_catalog_timestamp(value: &str) -> Result<Self, DiscoveryError> {
         let bytes = value.as_bytes();
         if value.len() < 20 || value.len() > 40 || !value.is_ascii() {
             return Err(DiscoveryError::Bounds);
@@ -355,6 +375,88 @@ impl<T> Default for DiscoveryFacet<T> {
     fn default() -> Self {
         Self::Unknown
     }
+}
+
+/// Exact source description text, with the source domain's larger description
+/// bound instead of the shared 4 KiB atom bound.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct DiscoveryDescriptionText(Box<str>);
+
+impl DiscoveryDescriptionText {
+    /// Retains exact UTF-8 text without trimming or normalizing it.
+    pub fn new(value: &str) -> Result<Self, DiscoveryError> {
+        if value.len() > MAX_DISCOVERY_DESCRIPTION_BYTES || value.contains('\0') {
+            return Err(DiscoveryError::Bounds);
+        }
+        Ok(Self(value.into()))
+    }
+
+    /// Admits owned exact text without retaining excess string capacity.
+    pub fn try_from_string(value: String) -> Result<Self, DiscoveryError> {
+        if value.len() > MAX_DISCOVERY_DESCRIPTION_BYTES || value.contains('\0') {
+            return Err(DiscoveryError::Bounds);
+        }
+        Ok(Self(value.into_boxed_str()))
+    }
+
+    /// Returns the exact admitted source spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for DiscoveryDescriptionText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DescriptionVisitor;
+
+        impl<'de> Visitor<'de> for DescriptionVisitor {
+            type Value = DiscoveryDescriptionText;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("bounded exact source description text")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                DiscoveryDescriptionText::new(value).map_err(E::custom)
+            }
+
+            fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(value)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                DiscoveryDescriptionText::try_from_string(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(DescriptionVisitor)
+    }
+}
+
+/// Inline metadata or a reference to the exact row in a version's immutable
+/// detail payload. `Referenced(summary)` is resolved through that version's
+/// typed detail section, not through the current selected head.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "delivery", content = "value", rename_all = "snake_case")]
+pub enum DiscoveryMetadataDelivery<T, Summary> {
+    /// Bounded value carried inline in the core summary.
+    Inline(T),
+    /// Exact summary of a retained immutable detail row.
+    Referenced(Summary),
 }
 
 /// Bounded advisory evidence reported alongside a package release.
@@ -646,12 +748,10 @@ impl RegistryFactVersionId {
             metadata: &'a DiscoveryMetadata,
         }
 
-        if fact.coordinate.as_str().len() > MAX_DISCOVERY_BATCH_ENCODED_BYTES {
+        if fact.coordinate.as_str().len() > MAX_DISCOVERY_COORDINATE_BYTES {
             return Err(DiscoveryError::Bounds);
         }
-        if fact.coordinate.package_type().registry() != Some(fact.source.ecosystem())
-            || fact.coordinate.qualifiers().is_some()
-            || fact.coordinate.subpath().is_some()
+        if !source_coordinate_admitted(fact.source, &fact.coordinate)
             || !event_admitted(
                 fact.source.ecosystem(),
                 &fact.source_event,
@@ -722,15 +822,73 @@ pub struct DiscoveryCargoSparseSummary {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryFactMetadataSummary {
     pub aliases: DiscoveryFacet<u32>,
-    pub description: DiscoveryFacet<String>,
+    pub description: DiscoveryFacet<DiscoveryMetadataDelivery<DiscoveryDescriptionText, u32>>,
     pub keywords: DiscoveryFacet<u32>,
-    pub license: DiscoveryFacet<String>,
-    pub published_at: DiscoveryFacet<String>,
-    pub deprecation: DiscoveryFacet<String>,
+    pub license: DiscoveryFacet<DiscoveryMetadataDelivery<SourceAtomText, u32>>,
+    pub published_at: DiscoveryFacet<DiscoveryMetadataDelivery<SourceAtomText, u32>>,
+    pub deprecation: DiscoveryFacet<DiscoveryMetadataDelivery<SourceAtomText, u32>>,
     pub yanked: DiscoveryFacet<bool>,
     pub advisories: DiscoveryFacet<u32>,
     pub downloads: DiscoveryFacet<u64>,
     pub cargo_sparse: DiscoveryFacet<DiscoveryCargoSparseSummary>,
+}
+
+impl DiscoveryFactMetadataSummary {
+    /// Builds a reference-only scalar summary and bounded collection counts
+    /// from one already bounded source metadata value. Large prose is never
+    /// copied into the summary; its exact Text-row byte length is retained for
+    /// aggregate response budgeting and later detail retrieval.
+    pub fn from_metadata(metadata: &DiscoveryMetadata) -> Result<Self, DiscoveryError> {
+        metadata.admit()?;
+        let cargo_sparse = match &metadata.cargo_sparse {
+            DiscoveryFacet::Known(sparse) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"backend.registry.discovery.cargo-sparse.typed-json-v1\0");
+                let mut writer = HashingWriter {
+                    hasher: &mut hasher,
+                    bytes: 0,
+                    exceeded: false,
+                };
+                match serde_json::to_writer(&mut writer, sparse) {
+                    Ok(()) => {}
+                    Err(_) if writer.exceeded => return Err(DiscoveryError::Bounds),
+                    Err(_) => return Err(DiscoveryError::Protocol),
+                }
+                let detail_encoded_bytes =
+                    u32::try_from(writer.bytes).map_err(|_| DiscoveryError::Bounds)?;
+                drop(writer);
+                let detail_digest = *hasher.finalize().as_bytes();
+                DiscoveryFacet::Known(DiscoveryCargoSparseSummary {
+                    checksum: sparse.checksum.clone(),
+                    schema_version: sparse.schema_version,
+                    rust_version: sparse.rust_version.clone(),
+                    links: sparse.links.clone(),
+                    features: collection_count(&sparse.features)?,
+                    features2: collection_count(&sparse.features2)?,
+                    dependencies: collection_count(&sparse.dependencies)?,
+                    detail_encoded_bytes,
+                    detail_digest,
+                })
+            }
+            DiscoveryFacet::Absent => DiscoveryFacet::Absent,
+            DiscoveryFacet::Unknown => DiscoveryFacet::Unknown,
+        };
+        Ok(Self {
+            aliases: collection_count(&metadata.aliases)?,
+            description: text_reference::<DiscoveryDescriptionText>(
+                &metadata.description,
+                MAX_DISCOVERY_DESCRIPTION_BYTES,
+            )?,
+            keywords: collection_count(&metadata.keywords)?,
+            license: text_reference::<SourceAtomText>(&metadata.license, 1024)?,
+            published_at: text_reference::<SourceAtomText>(&metadata.published_at, 128)?,
+            deprecation: text_reference::<SourceAtomText>(&metadata.deprecation, 4096)?,
+            yanked: metadata.yanked.clone(),
+            advisories: collection_count(&metadata.advisories)?,
+            downloads: metadata.downloads.clone(),
+            cargo_sparse,
+        })
+    }
 }
 
 /// Immutable fact content and bounded summary fields for one retained
@@ -768,7 +926,23 @@ impl DiscoveryFactCore {
         {
             return Err(RegistryFactReadError::Bounds);
         }
-        Ok(())
+        self.encoded_len_bounded().map(|_| ())
+    }
+
+    /// Counts this exact reply envelope without retaining an encoded copy.
+    pub fn encoded_len_bounded(&self) -> Result<usize, RegistryFactReadError> {
+        let mut writer = CountingWriter {
+            bytes: 0,
+            exceeded: false,
+        };
+        match serde_json::to_writer(&mut writer, self) {
+            Ok(()) if writer.bytes <= MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES as usize => {
+                Ok(writer.bytes)
+            }
+            Ok(()) => Err(RegistryFactReadError::Bounds),
+            Err(_) if writer.exceeded => Err(RegistryFactReadError::Bounds),
+            Err(_) => Err(RegistryFactReadError::Corrupt),
+        }
     }
 }
 
@@ -805,14 +979,32 @@ pub enum DiscoveryMetadataSection {
     Aliases,
     Keywords,
     Advisories,
-    AdvisoryAliases { advisory_index: u32 },
-    AdvisoryFixedIn { advisory_index: u32 },
+    AdvisoryAliases {
+        advisory_index: u32,
+    },
+    AdvisoryFixedIn {
+        advisory_index: u32,
+    },
+    /// One source prose value; `Known("")` is retained as one empty row.
+    Description,
+    /// One source license value; `Known("")` is retained as one empty row.
+    License,
+    /// One exact source release-time spelling; empty `Known` is retained.
+    PublishedAt,
+    /// One source deprecation reason; `Known("")` is retained as one empty row.
+    Deprecation,
     CargoFeatures,
-    CargoFeatureMembers { feature_index: u32 },
+    CargoFeatureMembers {
+        feature_index: u32,
+    },
     CargoFeatures2,
-    CargoFeatures2Members { feature_index: u32 },
+    CargoFeatures2Members {
+        feature_index: u32,
+    },
     CargoDependencies,
-    CargoDependencyFeatures { dependency_index: u32 },
+    CargoDependencyFeatures {
+        dependency_index: u32,
+    },
 }
 
 /// Source facet state associated with a metadata page. `Known` with an empty
@@ -893,6 +1085,7 @@ impl DiscoveryMetadataPageCursor {
     ) -> Result<Self, RegistryFactReadError> {
         if next_index == 0
             || next_index > metadata_section_max_rows(section)
+            || !metadata_section_is_cursorable(section)
             || !metadata_section_indices_valid(section)
             || !registry_fact_version_valid(&version)
         {
@@ -916,6 +1109,7 @@ impl DiscoveryMetadataPageCursor {
     ) -> Result<(), RegistryFactReadError> {
         if self.next_index == 0
             || self.next_index > metadata_section_max_rows(section)
+            || !metadata_section_is_cursorable(section)
             || !metadata_section_indices_valid(section)
             || &self.version != version
             || self.section != section
@@ -945,12 +1139,18 @@ impl DiscoveryMetadataPageCursor {
     }
 }
 
-/// One bounded page of a pageable metadata collection. `start_index` is zero
-/// for the first page and equals the supplied cursor offset for later pages.
+/// One bounded page of a pageable metadata collection or source scalar.
+/// `start_index` is zero for the first page and equals the supplied cursor
+/// offset for later collection pages. Scalar sections are single-row pages.
 /// The authority read is
 /// `read_metadata_page(version: &RegistryFactVersionId, section: DiscoveryMetadataSection, cursor: Option<&DiscoveryMetadataPageCursor>, max_rows: u8, max_encoded_bytes: u32) -> Result<DiscoveryMetadataPage, RegistryFactReadError>`;
 /// limits above [`MAX_DISCOVERY_METADATA_PAGE_ROWS`] or
-/// [`MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES`] are rejected.
+/// [`MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES`] are rejected. Before it
+/// returns a page, the authority must cross-check its exact facet state/count
+/// against the immutable fact core and its verified row directory; nested
+/// sections must also prove the indexed parent header exists and that the
+/// child count matches that header. This stored-data check is stronger than
+/// the DTO's schema-only `admit` method.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryMetadataPage {
     pub version: RegistryFactVersionId,
@@ -995,6 +1195,15 @@ impl DiscoveryMetadataPage {
         {
             return Err(RegistryFactReadError::InvalidCursor);
         }
+        if metadata_section_is_scalar(self.section)
+            && self.facet_state == DiscoveryMetadataFacetState::Known
+            && (self.start_index != 0
+                || self.total_rows != 1
+                || self.rows.len() != 1
+                || self.next_cursor.is_some())
+        {
+            return Err(RegistryFactReadError::InvalidCursor);
+        }
         let page_end = self
             .start_index
             .checked_add(u32::try_from(self.rows.len()).map_err(|_| RegistryFactReadError::Bounds)?)
@@ -1030,6 +1239,10 @@ impl DiscoveryMetadataPage {
 
 fn metadata_section_max_rows(section: DiscoveryMetadataSection) -> u32 {
     match section {
+        DiscoveryMetadataSection::Description
+        | DiscoveryMetadataSection::License
+        | DiscoveryMetadataSection::PublishedAt
+        | DiscoveryMetadataSection::Deprecation => 1,
         DiscoveryMetadataSection::Aliases => 64,
         DiscoveryMetadataSection::Keywords => 128,
         DiscoveryMetadataSection::Advisories | DiscoveryMetadataSection::AdvisoryFixedIn { .. } => {
@@ -1045,6 +1258,20 @@ fn metadata_section_max_rows(section: DiscoveryMetadataSection) -> u32 {
     }
 }
 
+fn metadata_section_is_scalar(section: DiscoveryMetadataSection) -> bool {
+    matches!(
+        section,
+        DiscoveryMetadataSection::Description
+            | DiscoveryMetadataSection::License
+            | DiscoveryMetadataSection::PublishedAt
+            | DiscoveryMetadataSection::Deprecation
+    )
+}
+
+fn metadata_section_is_cursorable(section: DiscoveryMetadataSection) -> bool {
+    !metadata_section_is_scalar(section)
+}
+
 fn metadata_section_indices_valid(section: DiscoveryMetadataSection) -> bool {
     match section {
         DiscoveryMetadataSection::AdvisoryAliases { advisory_index }
@@ -1057,6 +1284,10 @@ fn metadata_section_indices_valid(section: DiscoveryMetadataSection) -> bool {
         DiscoveryMetadataSection::Aliases
         | DiscoveryMetadataSection::Keywords
         | DiscoveryMetadataSection::Advisories
+        | DiscoveryMetadataSection::Description
+        | DiscoveryMetadataSection::License
+        | DiscoveryMetadataSection::PublishedAt
+        | DiscoveryMetadataSection::Deprecation
         | DiscoveryMetadataSection::CargoFeatures
         | DiscoveryMetadataSection::CargoFeatures2
         | DiscoveryMetadataSection::CargoDependencies => true,
@@ -1064,10 +1295,17 @@ fn metadata_section_indices_valid(section: DiscoveryMetadataSection) -> bool {
 }
 
 fn registry_fact_version_valid(version: &RegistryFactVersionId) -> bool {
-    version.coordinate.as_str().len() <= 1024
-        && version.coordinate.package_type().registry() == Some(version.source.ecosystem())
-        && version.coordinate.qualifiers().is_none()
-        && version.coordinate.subpath().is_none()
+    source_coordinate_admitted(version.source, &version.coordinate)
+}
+
+fn source_coordinate_admitted(
+    source: DiscoverySourceIdentity,
+    coordinate: &PackageCoordinate,
+) -> bool {
+    coordinate.as_str().len() <= MAX_DISCOVERY_COORDINATE_BYTES
+        && coordinate.package_type().registry() == Some(source.ecosystem())
+        && coordinate.qualifiers().is_none()
+        && coordinate.subpath().is_none()
 }
 
 fn metadata_rows_match_section(
@@ -1080,8 +1318,8 @@ fn metadata_rows_match_section(
                 && advisory.id.len() <= 256
                 && !advisory.id.bytes().any(|byte| byte.is_ascii_control())
                 && facet_count_valid(&advisory.aliases, 32)
-                && facet_text_valid(&advisory.summary, 4096)
-                && facet_text_valid(&advisory.severity, 128)
+                && source_text_facet_valid(&advisory.summary, 4096)
+                && source_text_facet_valid(&advisory.severity, 128)
                 && facet_count_valid(&advisory.fixed_in, 128)
         }
         (
@@ -1107,6 +1345,18 @@ fn metadata_rows_match_section(
         (DiscoveryMetadataSection::Aliases, DiscoveryMetadataRow::Text(value)) => {
             text_row_valid(value, 1024)
         }
+        (DiscoveryMetadataSection::Description, DiscoveryMetadataRow::Text(value)) => {
+            source_text_row_valid(value, 16 * 1024)
+        }
+        (DiscoveryMetadataSection::License, DiscoveryMetadataRow::Text(value)) => {
+            source_text_row_valid(value, 1024)
+        }
+        (DiscoveryMetadataSection::PublishedAt, DiscoveryMetadataRow::Text(value)) => {
+            source_text_row_valid(value, 128)
+        }
+        (DiscoveryMetadataSection::Deprecation, DiscoveryMetadataRow::Text(value)) => {
+            source_text_row_valid(value, 4096)
+        }
         (
             DiscoveryMetadataSection::Keywords
             | DiscoveryMetadataSection::AdvisoryAliases { .. }
@@ -1127,6 +1377,10 @@ fn text_row_valid(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty() && value.len() <= maximum_bytes && !value.contains('\0')
 }
 
+fn source_text_row_valid(value: &str, maximum_bytes: usize) -> bool {
+    value.len() <= maximum_bytes && !value.contains('\0')
+}
+
 fn facet_count_valid(value: &DiscoveryFacet<u32>, maximum: u32) -> bool {
     !matches!(value, DiscoveryFacet::Known(count) if *count > maximum)
 }
@@ -1135,13 +1389,114 @@ fn facet_text_valid(value: &DiscoveryFacet<String>, maximum_bytes: usize) -> boo
     !matches!(value, DiscoveryFacet::Known(text) if text.is_empty() || text.len() > maximum_bytes || text.contains('\0'))
 }
 
+fn source_text_facet_valid(value: &DiscoveryFacet<String>, maximum_bytes: usize) -> bool {
+    !matches!(value, DiscoveryFacet::Known(text) if text.len() > maximum_bytes || text.contains('\0'))
+}
+
+trait ExactDiscoverySourceText {
+    fn as_str(&self) -> &str;
+}
+
+impl ExactDiscoverySourceText for DiscoveryDescriptionText {
+    fn as_str(&self) -> &str {
+        DiscoveryDescriptionText::as_str(self)
+    }
+}
+
+impl ExactDiscoverySourceText for SourceAtomText {
+    fn as_str(&self) -> &str {
+        SourceAtomText::as_str(self)
+    }
+}
+
+fn collection_count<T>(
+    value: &DiscoveryFacet<Vec<T>>,
+) -> Result<DiscoveryFacet<u32>, DiscoveryError> {
+    match value {
+        DiscoveryFacet::Known(values) => u32::try_from(values.len())
+            .map(DiscoveryFacet::Known)
+            .map_err(|_| DiscoveryError::Bounds),
+        DiscoveryFacet::Absent => Ok(DiscoveryFacet::Absent),
+        DiscoveryFacet::Unknown => Ok(DiscoveryFacet::Unknown),
+    }
+}
+
+fn text_reference<T>(
+    value: &DiscoveryFacet<String>,
+    maximum_bytes: usize,
+) -> Result<DiscoveryFacet<DiscoveryMetadataDelivery<T, u32>>, DiscoveryError> {
+    match value {
+        DiscoveryFacet::Known(text) => {
+            if text.len() > maximum_bytes || text.contains('\0') {
+                return Err(DiscoveryError::Bounds);
+            }
+            let encoded_bytes = exact_text_row_encoded_bytes(text).ok_or(DiscoveryError::Bounds)?;
+            Ok(DiscoveryFacet::Known(
+                DiscoveryMetadataDelivery::Referenced(encoded_bytes),
+            ))
+        }
+        DiscoveryFacet::Absent => Ok(DiscoveryFacet::Absent),
+        DiscoveryFacet::Unknown => Ok(DiscoveryFacet::Unknown),
+    }
+}
+
+fn exact_text_row_encoded_bytes(value: &str) -> Option<u32> {
+    #[derive(Serialize)]
+    struct TextRow<'a> {
+        kind: &'static str,
+        value: &'a str,
+    }
+
+    let mut writer = CountingWriter {
+        bytes: 0,
+        exceeded: false,
+    };
+    serde_json::to_writer(
+        &mut writer,
+        &TextRow {
+            kind: "text",
+            value,
+        },
+    )
+    .ok()?;
+    u32::try_from(writer.bytes).ok()
+}
+
+fn max_text_row_encoded_bytes(maximum_text_bytes: usize) -> Option<u32> {
+    let empty_row = usize::try_from(exact_text_row_encoded_bytes("")?).ok()?;
+    let escaped_content = maximum_text_bytes.checked_mul(6)?;
+    u32::try_from(empty_row.checked_add(escaped_content)?).ok()
+}
+
+fn source_text_delivery_valid<T: ExactDiscoverySourceText>(
+    value: &DiscoveryFacet<DiscoveryMetadataDelivery<T, u32>>,
+    maximum_bytes: usize,
+) -> bool {
+    let Some(maximum_row_bytes) = max_text_row_encoded_bytes(maximum_bytes) else {
+        return false;
+    };
+    match value {
+        DiscoveryFacet::Known(DiscoveryMetadataDelivery::Inline(text)) => {
+            text.as_str().len() <= maximum_bytes
+                && !text.as_str().contains('\0')
+                && exact_text_row_encoded_bytes(text.as_str())
+                    .is_some_and(|bytes| bytes <= maximum_row_bytes)
+        }
+        DiscoveryFacet::Known(DiscoveryMetadataDelivery::Referenced(bytes)) => {
+            exact_text_row_encoded_bytes("")
+                .is_some_and(|minimum| *bytes >= minimum && *bytes <= maximum_row_bytes)
+        }
+        DiscoveryFacet::Absent | DiscoveryFacet::Unknown => true,
+    }
+}
+
 fn metadata_summary_valid(metadata: &DiscoveryFactMetadataSummary) -> bool {
     facet_count_valid(&metadata.aliases, 64)
-        && facet_text_valid(&metadata.description, 16 * 1024)
+        && source_text_delivery_valid(&metadata.description, MAX_DISCOVERY_DESCRIPTION_BYTES)
         && facet_count_valid(&metadata.keywords, 128)
-        && facet_text_valid(&metadata.license, 1024)
-        && facet_text_valid(&metadata.published_at, 128)
-        && facet_text_valid(&metadata.deprecation, 4096)
+        && source_text_delivery_valid(&metadata.license, 1024)
+        && source_text_delivery_valid(&metadata.published_at, 128)
+        && source_text_delivery_valid(&metadata.deprecation, 4096)
         && facet_count_valid(&metadata.advisories, 128)
         && match &metadata.cargo_sparse {
             DiscoveryFacet::Known(sparse) => {
@@ -1272,27 +1627,7 @@ impl DiscoveryBatchDraft {
             &self.facts,
             &self.package_retractions,
         )?;
-        let mut writer = CountingWriter {
-            bytes: 0,
-            exceeded: false,
-        };
-        match serde_json::to_writer(&mut writer, self) {
-            Ok(()) => {
-                // The final CAS sequence field can add at most twenty decimal
-                // digits plus fixed JSON syntax.
-                if writer
-                    .bytes
-                    .checked_add(32)
-                    .is_none_or(|bytes| bytes > MAX_DISCOVERY_BATCH_ENCODED_BYTES)
-                {
-                    Err(DiscoveryError::Bounds)
-                } else {
-                    Ok(())
-                }
-            }
-            Err(_) if writer.exceeded => Err(DiscoveryError::Bounds),
-            Err(_) => Err(DiscoveryError::Protocol),
-        }
+        draft_transaction_encoded_len_bounded(self, u64::MAX).map(|_| ())
     }
 
     /// Attaches the local sequence captured before network work and performs
@@ -1321,6 +1656,13 @@ impl DiscoveryBatchDraft {
 impl DiscoveryBatch {
     /// Checks bounds and source/cursor invariants before durable commit.
     pub fn admit(&self) -> Result<(), DiscoveryError> {
+        self.admitted_transaction_encoded_len().map(|_| ())
+    }
+
+    /// Validates this exact batch and returns the encoded size of its complete
+    /// version-2 transaction envelope, including all JSON framing and escaping.
+    /// Durable writers use this before transaction assembly or retained clones.
+    pub fn admitted_transaction_encoded_len(&self) -> Result<usize, DiscoveryError> {
         validate_batch_parts(
             self.source,
             &self.previous_cursor,
@@ -1331,8 +1673,27 @@ impl DiscoveryBatch {
             &self.facts,
             &self.package_retractions,
         )?;
-        self.encoded_len_bounded()?;
-        Ok(())
+        self.transaction_encoded_len_bounded(DISCOVERY_BATCH_ENVELOPE_VERSION)
+    }
+
+    /// Counts the complete JSON transaction envelope without retaining an
+    /// encoded copy.
+    pub fn transaction_encoded_len_bounded(&self, version: u16) -> Result<usize, DiscoveryError> {
+        count_transaction_envelope(&DiscoveryTransactionEnvelopeRef {
+            version,
+            batch: DiscoveryBatchRef {
+                source: self.source,
+                expected_base_sequence: self.expected_base_sequence,
+                previous_cursor: &self.previous_cursor,
+                next_cursor: &self.next_cursor,
+                source_high_watermark: &self.source_high_watermark,
+                caught_up: self.caught_up,
+                observed_at: self.observed_at,
+                completeness: self.completeness,
+                facts: &self.facts,
+                package_retractions: &self.package_retractions,
+            },
+        })
     }
 
     /// Counts the canonical typed batch encoding without retaining an encoded
@@ -1350,6 +1711,61 @@ impl DiscoveryBatch {
     }
 }
 
+#[derive(Serialize)]
+struct DiscoveryBatchRef<'a> {
+    source: DiscoverySourceIdentity,
+    expected_base_sequence: u64,
+    previous_cursor: &'a DiscoveryCursor,
+    next_cursor: &'a DiscoveryCursor,
+    source_high_watermark: &'a DiscoveryCursor,
+    caught_up: bool,
+    observed_at: DiscoveryObservedAt,
+    completeness: DiscoveryCompleteness,
+    facts: &'a [DiscoveryFact],
+    package_retractions: &'a [DiscoveryPackageRetraction],
+}
+
+#[derive(Serialize)]
+struct DiscoveryTransactionEnvelopeRef<'a> {
+    version: u16,
+    batch: DiscoveryBatchRef<'a>,
+}
+
+fn draft_transaction_encoded_len_bounded(
+    draft: &DiscoveryBatchDraft,
+    expected_base_sequence: u64,
+) -> Result<usize, DiscoveryError> {
+    count_transaction_envelope(&DiscoveryTransactionEnvelopeRef {
+        version: DISCOVERY_BATCH_ENVELOPE_VERSION,
+        batch: DiscoveryBatchRef {
+            source: draft.source,
+            expected_base_sequence,
+            previous_cursor: &draft.previous_cursor,
+            next_cursor: &draft.next_cursor,
+            source_high_watermark: &draft.source_high_watermark,
+            caught_up: draft.caught_up,
+            observed_at: draft.observed_at,
+            completeness: draft.completeness,
+            facts: &draft.facts,
+            package_retractions: &draft.package_retractions,
+        },
+    })
+}
+
+fn count_transaction_envelope(
+    envelope: &DiscoveryTransactionEnvelopeRef<'_>,
+) -> Result<usize, DiscoveryError> {
+    let mut writer = CountingWriter {
+        bytes: 0,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut writer, envelope) {
+        Ok(()) => Ok(writer.bytes),
+        Err(_) if writer.exceeded => Err(DiscoveryError::Bounds),
+        Err(_) => Err(DiscoveryError::Protocol),
+    }
+}
+
 fn validate_batch_parts(
     source: DiscoverySourceIdentity,
     previous_cursor: &DiscoveryCursor,
@@ -1363,13 +1779,16 @@ fn validate_batch_parts(
     previous_cursor.admit()?;
     next_cursor.admit()?;
     source_high_watermark.admit()?;
+    if facts
+        .iter()
+        .any(|fact| fact.coordinate.as_str().len() > MAX_DISCOVERY_COORDINATE_BYTES)
+    {
+        return Err(DiscoveryError::Bounds);
+    }
     if facts.len().saturating_add(package_retractions.len()) > MAX_DISCOVERY_PAGE_ITEMS
         || facts.iter().any(|fact| fact.source != source)
         || facts.iter().any(|fact| {
-            PackageCoordinate::parse(fact.coordinate.as_str().to_owned()).is_err()
-                || fact.coordinate.package_type().registry() != Some(source.ecosystem())
-                || fact.coordinate.qualifiers().is_some()
-                || fact.coordinate.subpath().is_some()
+            !source_coordinate_admitted(source, &fact.coordinate)
                 || fact.metadata.admit().is_err()
                 || !event_admitted(
                     source.ecosystem(),
@@ -1455,7 +1874,8 @@ fn event_admitted(
                 && !commit_id.is_empty()
                 && !commit_id.bytes().any(|byte| byte.is_ascii_control())
                 && source_spelling.is_some_and(|spelling| {
-                    DiscoveryTimestamp::parse_rfc3339(spelling).ok() == Some(*timestamp)
+                    DiscoveryTimestamp::parse_nuget_catalog_timestamp(spelling).ok()
+                        == Some(*timestamp)
                 })
         }
         (
@@ -1553,12 +1973,140 @@ mod source_discovery_tests {
     }
 
     #[test]
+    fn description_text_retains_exact_bounded_values_and_rejects_nul() {
+        for value in ["", " ", " padded ", "λ雪"] {
+            let text = DiscoveryDescriptionText::new(value).expect("exact bounded text");
+            assert_eq!(text.as_str(), value);
+            let encoded = serde_json::to_vec(&text).expect("encode exact text");
+            assert_eq!(
+                serde_json::from_slice::<DiscoveryDescriptionText>(&encoded)
+                    .expect("decode exact text"),
+                text
+            );
+        }
+        assert!(DiscoveryDescriptionText::new("contains\0nul").is_err());
+        assert!(
+            DiscoveryDescriptionText::new(&"x".repeat(MAX_DISCOVERY_DESCRIPTION_BYTES + 1))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn version_and_batch_admission_share_the_semantic_coordinate_bound() {
+        let source = DiscoverySourceIdentity::from_parts(RegistryEcosystem::Cargo, [7; 32]);
+        let prefix = "pkg:cargo/";
+        let suffix = "@1.0.0";
+        let name = "x".repeat(MAX_DISCOVERY_COORDINATE_BYTES - prefix.len() - suffix.len());
+        let coordinate = PackageCoordinate::parse(format!("{prefix}{name}{suffix}"))
+            .expect("semantic maximum-length coordinate");
+        assert_eq!(coordinate.as_str().len(), MAX_DISCOVERY_COORDINATE_BYTES);
+        let mut value = fact();
+        value.source = source;
+        value.coordinate = coordinate;
+        let version = RegistryFactVersionId::from_fact(&value)
+            .expect("constructor accepts the shared coordinate bound");
+        version.admit().expect("constructed key remains admissible");
+        let draft = DiscoveryBatchDraft {
+            source,
+            previous_cursor: DiscoveryCursor::default(),
+            next_cursor: DiscoveryCursor::default(),
+            source_high_watermark: DiscoveryCursor::default(),
+            caught_up: false,
+            observed_at: value.observed_at,
+            completeness: DiscoveryCompleteness::Windowed,
+            facts: vec![value],
+            package_retractions: Vec::new(),
+        };
+        draft.admit().expect("batch shares the same key bound");
+    }
+
+    #[test]
+    fn batch_limit_counts_the_exact_versioned_transaction_envelope() {
+        const FACTS: usize = 2047;
+        let mut batch = DiscoveryBatch {
+            source: fact().source,
+            expected_base_sequence: 0,
+            previous_cursor: DiscoveryCursor::default(),
+            next_cursor: DiscoveryCursor::default(),
+            source_high_watermark: DiscoveryCursor::default(),
+            caught_up: false,
+            observed_at: DiscoveryObservedAt::from_unix_millis(10),
+            completeness: DiscoveryCompleteness::Windowed,
+            facts: (0..FACTS).map(|_| fact()).collect(),
+            package_retractions: Vec::new(),
+        };
+        for value in &mut batch.facts {
+            value.metadata.description = DiscoveryFacet::Known(String::new());
+        }
+        let base = batch
+            .transaction_encoded_len_bounded(DISCOVERY_BATCH_ENVELOPE_VERSION)
+            .expect("small transaction envelope");
+        let per_fact_text_bytes = (MAX_DISCOVERY_BATCH_ENCODED_BYTES - base) / batch.facts.len();
+        assert!(per_fact_text_bytes < MAX_DISCOVERY_DESCRIPTION_BYTES);
+        for value in &mut batch.facts {
+            value.metadata.description = DiscoveryFacet::Known("a".repeat(per_fact_text_bytes));
+        }
+        let first_size = batch
+            .admitted_transaction_encoded_len()
+            .expect("under-limit batch");
+        let remaining = MAX_DISCOVERY_BATCH_ENCODED_BYTES - first_size;
+        assert!(remaining < FACTS);
+        for value in batch.facts.iter_mut().take(remaining) {
+            let DiscoveryFacet::Known(description) = &mut value.metadata.description else {
+                panic!("description fixture should be known");
+            };
+            description.push('a');
+        }
+        assert_eq!(
+            batch.admitted_transaction_encoded_len(),
+            Ok(MAX_DISCOVERY_BATCH_ENCODED_BYTES),
+            "the exact outer transaction payload boundary is admitted"
+        );
+        let DiscoveryFacet::Known(description) = &mut batch.facts[0].metadata.description else {
+            panic!("description fixture should be known");
+        };
+        description.push('a');
+        assert_eq!(
+            batch.admitted_transaction_encoded_len(),
+            Err(DiscoveryError::Bounds),
+            "one byte above the payload boundary is rejected"
+        );
+    }
+
+    #[test]
     fn event_ordering_timestamps_are_normalized_and_deserialization_is_validated() {
-        let utc = DiscoveryTimestamp::parse_rfc3339("2026-10-01T12:30:00.100000000Z")
-            .expect("UTC timestamp");
-        let offset = DiscoveryTimestamp::parse_rfc3339("2026-10-01T13:30:00.1+01:00")
-            .expect("offset timestamp");
+        let utc =
+            DiscoveryTimestamp::parse_nuget_catalog_timestamp("2026-10-01T12:30:00.100000000Z")
+                .expect("UTC timestamp");
+        let offset =
+            DiscoveryTimestamp::parse_nuget_catalog_timestamp("2026-10-01T13:30:00.1+01:00")
+                .expect("offset timestamp");
         assert_eq!(utc, offset);
+        assert!(
+            DiscoveryTimestamp::parse_nuget_catalog_timestamp("0001-01-01T00:00:00Z")
+                .expect("pre-epoch profile value")
+                .unix_seconds
+                < 0
+        );
+        assert_eq!(
+            DiscoveryTimestamp::parse_nuget_catalog_timestamp(
+                "2024-02-29T23:59:59.123456789-02:30"
+            ),
+            DiscoveryTimestamp::parse_nuget_catalog_timestamp("2024-03-01T02:29:59.123456789Z")
+        );
+        for invalid in [
+            "0000-01-01T00:00:00Z",
+            "2024-02-29T23:59:60Z",
+            "2024-02-29T23:59:59.1234567890Z",
+            "2023-02-29T00:00:00Z",
+            "2024-01-01T00:00:00+24:00",
+            "2024-01-01T00:00:00Zsuffix",
+        ] {
+            assert!(
+                DiscoveryTimestamp::parse_nuget_catalog_timestamp(invalid).is_err(),
+                "accepted timestamp outside the NuGet profile: {invalid}"
+            );
+        }
         assert!(
             serde_json::from_str::<DiscoveryTimestamp>(
                 r#"{"unix_seconds":0,"nanoseconds":1000000000}"#
@@ -1673,6 +2221,146 @@ mod source_discovery_tests {
             assert_eq!(
                 page.admit(MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES),
                 Ok(())
+            );
+        }
+    }
+
+    #[test]
+    fn source_scalar_and_advisory_empty_facets_survive_summary_and_detail_admission() {
+        let mut source_fact = fact();
+        source_fact.metadata.description = DiscoveryFacet::Known(String::new());
+        source_fact.metadata.license = DiscoveryFacet::Known(String::new());
+        source_fact.metadata.published_at = DiscoveryFacet::Known(String::new());
+        source_fact.metadata.deprecation = DiscoveryFacet::Known(String::new());
+        source_fact.metadata.advisories = DiscoveryFacet::Known(vec![DiscoveryAdvisory {
+            id: "GHSA-test".to_owned(),
+            aliases: DiscoveryFacet::Unknown,
+            summary: DiscoveryFacet::Known(String::new()),
+            severity: DiscoveryFacet::Known(String::new()),
+            fixed_in: DiscoveryFacet::Unknown,
+        }]);
+        source_fact
+            .metadata
+            .admit()
+            .expect("empty prose and advisory text are exact source values");
+        let version = RegistryFactVersionId::from_fact(&source_fact).expect("version");
+        let empty_row_bytes = exact_text_row_encoded_bytes("").expect("encoded empty row");
+        let summary = DiscoveryFactMetadataSummary::from_metadata(&source_fact.metadata)
+            .expect("reference-only source summary");
+        assert_eq!(
+            summary.description,
+            DiscoveryFacet::Known(DiscoveryMetadataDelivery::Referenced(empty_row_bytes))
+        );
+        assert_eq!(
+            summary.license,
+            DiscoveryFacet::Known(DiscoveryMetadataDelivery::Referenced(empty_row_bytes))
+        );
+        assert_eq!(
+            summary.published_at,
+            DiscoveryFacet::Known(DiscoveryMetadataDelivery::Referenced(empty_row_bytes))
+        );
+        assert_eq!(
+            summary.deprecation,
+            DiscoveryFacet::Known(DiscoveryMetadataDelivery::Referenced(empty_row_bytes))
+        );
+        let core = DiscoveryFactCore {
+            version: version.clone(),
+            standing: source_fact.standing,
+            source_event: source_fact.source_event.clone(),
+            source_event_time: source_fact.source_event_time.clone(),
+            proof: source_fact.proof,
+            metadata: summary,
+            payload_encoded_bytes: 1,
+        };
+        core.admit().expect("bounded reference-only core");
+
+        source_fact.metadata.description = DiscoveryFacet::Unknown;
+        source_fact.metadata.license = DiscoveryFacet::Absent;
+        source_fact.metadata.published_at = DiscoveryFacet::Unknown;
+        source_fact.metadata.deprecation = DiscoveryFacet::Absent;
+        let absent_unknown = DiscoveryFactMetadataSummary::from_metadata(&source_fact.metadata)
+            .expect("non-known source summary");
+        assert_eq!(absent_unknown.description, DiscoveryFacet::Unknown);
+        assert_eq!(absent_unknown.license, DiscoveryFacet::Absent);
+        assert_eq!(absent_unknown.published_at, DiscoveryFacet::Unknown);
+        assert_eq!(absent_unknown.deprecation, DiscoveryFacet::Absent);
+
+        for section in [
+            DiscoveryMetadataSection::Description,
+            DiscoveryMetadataSection::License,
+            DiscoveryMetadataSection::PublishedAt,
+            DiscoveryMetadataSection::Deprecation,
+        ] {
+            let page = DiscoveryMetadataPage {
+                version: version.clone(),
+                section,
+                start_index: 0,
+                facet_state: DiscoveryMetadataFacetState::Known,
+                total_rows: 1,
+                rows: vec![DiscoveryMetadataRow::Text(String::new())],
+                next_cursor: None,
+            };
+            page.admit(MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES)
+                .expect("empty source scalar remains readable");
+        }
+
+        let advisory_page = DiscoveryMetadataPage {
+            version,
+            section: DiscoveryMetadataSection::Advisories,
+            start_index: 0,
+            facet_state: DiscoveryMetadataFacetState::Known,
+            total_rows: 1,
+            rows: vec![DiscoveryMetadataRow::Advisory(DiscoveryAdvisorySummary {
+                id: "GHSA-test".to_owned(),
+                aliases: DiscoveryFacet::Unknown,
+                summary: DiscoveryFacet::Known(String::new()),
+                severity: DiscoveryFacet::Known(String::new()),
+                fixed_in: DiscoveryFacet::Unknown,
+            })],
+            next_cursor: None,
+        };
+        advisory_page
+            .admit(MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES)
+            .expect("empty advisory prose remains readable");
+    }
+
+    #[test]
+    fn reference_only_collection_counts_preserve_unknown_absent_and_known_zero() {
+        for (facet, expected) in [
+            (DiscoveryFacet::Unknown, DiscoveryFacet::Unknown),
+            (DiscoveryFacet::Absent, DiscoveryFacet::Absent),
+            (
+                DiscoveryFacet::Known(Vec::<String>::new()),
+                DiscoveryFacet::Known(0),
+            ),
+        ] {
+            let mut metadata = DiscoveryMetadata::default();
+            metadata.aliases = facet.clone();
+            metadata.keywords = facet.clone();
+            metadata.advisories = match facet {
+                DiscoveryFacet::Known(_) => DiscoveryFacet::Known(Vec::new()),
+                DiscoveryFacet::Absent => DiscoveryFacet::Absent,
+                DiscoveryFacet::Unknown => DiscoveryFacet::Unknown,
+            };
+            let summary = DiscoveryFactMetadataSummary::from_metadata(&metadata)
+                .expect("bounded count summary");
+            assert_eq!(summary.aliases, expected);
+            assert_eq!(summary.keywords, expected);
+            assert_eq!(summary.advisories, expected);
+        }
+    }
+
+    #[test]
+    fn referenced_text_row_byte_count_matches_the_public_page_row_encoding() {
+        for value in ["", "plain", "quote\"slash\\", "control\u{1}char", "λ雪"] {
+            let row = DiscoveryMetadataRow::Text(value.to_owned());
+            assert_eq!(
+                exact_text_row_encoded_bytes(value),
+                Some(
+                    u32::try_from(serde_json::to_vec(&row).expect("row JSON").len())
+                        .expect("bounded row length")
+                ),
+                "row byte count differs for {value:?}"
             );
         }
     }
