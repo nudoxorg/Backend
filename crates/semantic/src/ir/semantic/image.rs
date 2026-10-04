@@ -5,11 +5,10 @@ use super::super::signature_carrier::{
     PackedSignatureCarrierBindings, PackedSignatureCarrierRoles,
 };
 use super::columns::{
-    EntityColumns, GraphColumns, IrIndices, ItemColumns, LanguageExtensionColumnView,
-    LanguageExtensions, LanguageExtensionsView, LinkOccurrenceColumns, PackedLinkOccurrences,
-    PackedLinks, SourceColumns, SourceColumnsView, SparseColumnView, StorageColumns, VcsColumns,
+    EntityColumns, GraphColumns, IrIndices, ItemColumns, LanguageExtensions,
+    LanguageExtensionsView, PackedLinkOccurrences, PackedLinks, SourceColumns, SourceColumnsView,
+    StorageColumns, VcsColumns,
 };
-use super::error::BuildError;
 use super::ids::{
     AtomListId, DocId, EntityListId, ExternalId, FreePredicateListId, ItemKind, LinkId,
     LinkOccurrenceId, ObjectMemberListId, TemplatePartListId, TupleElementListId, TypeListId,
@@ -17,28 +16,20 @@ use super::ids::{
 };
 use super::language_facts::SemanticImageAuthority;
 use super::packed_types::{
-    ComputedType, ConcreteType, FreePredicate, ObjectMember, PackedTypes, TemplatePart,
-    TupleElement, TypeParameter, TypeParameterBound,
+    FreePredicate, ObjectMember, PackedTypes, TemplatePart, TupleElement, TypeParameter,
+    TypeParameterBound,
 };
 use super::relations::{
-    Confidence, DocFragment, EntityVersion, ExternalTarget, Link, LinkKind, LinkOccurrence,
-    LinkTarget, SourceSpan,
+    DocFragment, EntityVersion, ExternalTarget, Link, LinkOccurrence, SourceSpan,
 };
-use super::type_model::{TypeColumns, TypeExpr, TypeState, TypedTypeId, UnknownType, Visibility};
+use super::type_model::{
+    ComputedTypeId, TypeExpr, TypeState, TypedTypeId, Visibility, reopened_computed_type,
+};
 use crate::ir::{
-    AnnotationKind, AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityFactFault,
-    AuthorityFactPlane, CapacityError, ChannelDirection, DeclarationFamilyId, DeclarationIdentity,
-    DeclarationKey, DenseId, EntityAuthorityColumns, EntityAuthorityFacts, EntityId,
-    ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
-    ImageProvenanceClaim, Interner, ListId, ListInterner, ListTable, ListTableView,
-    OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
-    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SourceIdentity, StableRef, TextId,
-    Type, TypeId, VariantFingerprint,
+    AtomId, AtomTable, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityColumns,
+    EntityId, ImageProvenance, ListTable, OccurrenceAuthorityColumns, TextId, TypeId,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
-    columnar::{RawColumn, Slab, SlabPlan},
-    interner::{HashIndex, hash},
 };
-use core::fmt;
 
 /// Immutable condensed semantic IR.
 pub struct Ir {
@@ -84,7 +75,7 @@ impl Ir {
     #[must_use]
     pub fn signature_carrier_role(
         &self,
-        entity: crate::ir::EntityId,
+        entity: EntityId,
     ) -> Option<SignatureCarrierRoleObservation> {
         if entity.index() >= self.items.len() {
             return None;
@@ -113,10 +104,10 @@ impl Ir {
     #[must_use]
     pub fn signature_carrier_bindings(
         &self,
-        owner: crate::ir::EntityId,
+        owner: EntityId,
     ) -> Option<SignatureCarrierBindingsObservation<SignatureCarrierBindings<'_>>> {
         let kind = self.items.kinds.get(owner.index())?;
-        if *kind != super::ids::ItemKind::Function {
+        if *kind != ItemKind::Function {
             return None;
         }
         let Some(bindings) = self.signature_carrier_bindings.as_ref() else {
@@ -235,26 +226,44 @@ impl Ir {
         }
     }
 
+    /// Resolves an atom coordinate to its exact byte spelling.
+    ///
+    /// The bytes may not be UTF-8; out-of-range coordinates return `None`.
     #[must_use]
     pub fn atom(&self, id: AtomId) -> Option<&[u8]> {
         self.atoms.get(id)
     }
+    /// Resolves a text coordinate to validated UTF-8 content.
     #[must_use]
     pub fn text(&self, id: TextId) -> Option<&str> {
         self.atoms.text(id)
     }
+    /// Resolves one type coordinate to its concrete, computed, or unknown node.
     #[must_use]
     pub fn ty(&self, id: TypeId) -> Option<TypeExpr> {
         self.types.get(id)
     }
+    /// Returns a computed-state ID when this image stores a computed node at `id`.
+    ///
+    /// The returned ID preserves the original type coordinate. A dangling ID or
+    /// a concrete/unknown node returns `None`.
+    #[must_use]
+    pub fn computed_type_id(&self, id: TypeId) -> Option<ComputedTypeId> {
+        matches!(self.ty(id)?, TypeExpr::Computed(_)).then(|| reopened_computed_type(id))
+    }
+    /// Resolves a type coordinate only when its stored node matches `State`.
+    ///
+    /// Returns `None` for a dangling coordinate or a different node state.
     #[must_use]
     pub fn typed_type<State: TypeState>(&self, id: TypedTypeId<State>) -> Option<State::Node> {
         State::project(self.ty(id.erase())?)
     }
+    /// Resolves an ordered list of type coordinates.
     #[must_use]
     pub fn types(&self, id: TypeListId) -> Option<&[TypeId]> {
         self.type_lists.get(id)
     }
+    /// Resolves an ordered list of atom coordinates.
     #[must_use]
     pub fn atom_list(&self, id: AtomListId) -> Option<&[AtomId]> {
         self.atom_lists.get(id)
@@ -269,22 +278,27 @@ impl Ir {
     pub(crate) fn documentation(&self, id: DocId) -> Option<&[DocFragment]> {
         self.docs.get(id)
     }
+    /// Resolves an ordered list of tuple or callable cells.
     #[must_use]
     pub fn tuple_elements(&self, id: TupleElementListId) -> Option<&[TupleElement]> {
         self.tuple_elements.get(id)
     }
+    /// Resolves an ordered list of object members.
     #[must_use]
     pub fn object_members(&self, id: ObjectMemberListId) -> Option<&[ObjectMember]> {
         self.object_members.get(id)
     }
+    /// Resolves the ordered literal and type pieces of a template literal.
     #[must_use]
     pub fn template_parts(&self, id: TemplatePartListId) -> Option<&[TemplatePart]> {
         self.template_parts.get(id)
     }
+    /// Resolves named generic parameter records in declaration order.
     #[must_use]
     pub fn type_parameters(&self, id: TypeParameterListId) -> Option<&[TypeParameter]> {
         self.type_parameters.get(id)
     }
+    /// Resolves the ordered bounds attached to a generic parameter.
     #[must_use]
     pub fn type_parameter_bounds(
         &self,
@@ -292,14 +306,17 @@ impl Ir {
     ) -> Option<&[TypeParameterBound]> {
         self.type_parameter_bounds.get(id)
     }
+    /// Resolves Rust free predicates whose subjects are concrete type IDs.
     #[must_use]
     pub fn free_predicates(&self, id: FreePredicateListId) -> Option<&[FreePredicate]> {
         self.free_predicates.get(id)
     }
+    /// Resolves a cross-fragment target coordinate.
     #[must_use]
     pub fn external(&self, id: ExternalId) -> Option<&ExternalTarget> {
         self.externals.get(id.index())
     }
+    /// Returns the version row aligned with an entity, if the ID is in range.
     #[must_use]
     pub fn version(&self, id: EntityId) -> Option<EntityVersion> {
         self.items.versions.get(id.index()).copied()
@@ -411,6 +428,7 @@ impl Ir {
             ids: &self.indices.name[start..end],
         }
     }
+    /// Returns a borrowed view for an in-range entity coordinate.
     #[must_use]
     pub fn item(&self, id: EntityId) -> Option<ItemView<'_>> {
         (id.index() < self.items.len()).then_some(ItemView { ir: self, id })
@@ -444,6 +462,7 @@ impl Ir {
             ),
         )
     }
+    /// Iterates every entity row in builder order.
     #[must_use]
     pub fn items(&self) -> impl ExactSizeIterator<Item = ItemView<'_>> {
         (0..self.items.len()).map(|raw| ItemView {
@@ -451,6 +470,7 @@ impl Ir {
             id: EntityId::new(raw as u32),
         })
     }
+    /// Resolves one canonical relation coordinate.
     #[must_use]
     pub fn link(&self, id: LinkId) -> Option<Link> {
         self.links.get(id)
@@ -503,10 +523,12 @@ impl Ir {
     pub(crate) fn canonical_link_ids(&self) -> &[LinkId] {
         &self.indices.canonical_links
     }
+    /// Iterates canonical relations whose source is this entity.
     #[must_use]
     pub fn links_from(&self, entity: EntityId) -> LinkIter<'_> {
         self.adjacent(entity, false)
     }
+    /// Iterates canonical local-target relations ending at one entity.
     #[must_use]
     pub fn links_to(&self, entity: EntityId) -> LinkIter<'_> {
         self.adjacent(entity, true)
@@ -535,40 +557,49 @@ pub struct ItemView<'ir> {
 }
 
 impl<'ir> ItemView<'ir> {
+    /// Returns this view's entity coordinate in the owning IR.
     #[must_use]
     pub const fn id(self) -> EntityId {
         self.id
     }
+    /// Returns this declaration's cross-language kind.
     #[must_use]
     pub fn kind(self) -> ItemKind {
         self.ir.items.kinds[self.id.index()]
     }
+    /// Returns visibility, preserving `Unknown` when unavailable.
     #[must_use]
     pub fn visibility(self) -> Visibility {
         self.ir.items.visibility[self.id.index()]
     }
+    /// Returns the parent entity coordinate when one was captured.
     #[must_use]
     pub fn parent(self) -> Option<EntityId> {
         self.ir.items.parents[self.id.index()].get()
     }
+    /// Returns the semantic type coordinate when one was captured.
     #[must_use]
     pub fn semantic_type(self) -> Option<TypeId> {
         self.ir.items.semantic_types[self.id.index()].get()
     }
+    /// Returns the half-open source range when one was captured.
     #[must_use]
     pub fn source(self) -> Option<SourceSpan> {
         self.ir.sources.get(self.id.index())
     }
+    /// Returns this exact declaration version, including family and variant.
     #[must_use]
     pub fn version(self) -> EntityVersion {
         self.ir.items.versions[self.id.index()]
     }
+    /// Resolves the declaration's exact name bytes for the lifetime of the IR.
     #[must_use]
     pub fn name(self) -> &'ir [u8] {
         self.ir
             .atom(self.ir.items.names[self.id.index()])
             .unwrap_or(&[])
     }
+    /// Resolves the declaration's child entity coordinates in member order.
     #[must_use]
     pub fn members(self) -> &'ir [EntityId] {
         self.ir
@@ -576,6 +607,7 @@ impl<'ir> ItemView<'ir> {
             .get(self.ir.items.members[self.id.index()])
             .unwrap_or(&[])
     }
+    /// Resolves the declaration's ordered documentation fragments.
     #[must_use]
     pub fn docs(self) -> &'ir [DocFragment] {
         self.ir
@@ -583,6 +615,7 @@ impl<'ir> ItemView<'ir> {
             .get(self.ir.items.docs[self.id.index()])
             .unwrap_or(&[])
     }
+    /// Resolves the declaration's ordered attribute atom coordinates.
     #[must_use]
     pub fn attributes(self) -> &'ir [AtomId] {
         self.ir
@@ -590,6 +623,7 @@ impl<'ir> ItemView<'ir> {
             .get(self.ir.items.attributes[self.id.index()])
             .unwrap_or(&[])
     }
+    /// Iterates canonical graph relations leaving this declaration.
     #[must_use]
     pub fn links_from(self) -> LinkIter<'ir> {
         self.ir.links_from(self.id)
@@ -600,6 +634,7 @@ impl<'ir> ItemView<'ir> {
     pub fn link_occurrences_from(self) -> LinkOccurrenceIter<'ir> {
         self.ir.link_occurrences_from(self.id)
     }
+    /// Iterates canonical graph relations targeting this declaration.
     #[must_use]
     pub fn links_to(self) -> LinkIter<'ir> {
         self.ir.links_to(self.id)
@@ -679,3 +714,43 @@ impl<'ir> Iterator for ItemIdIter<'ir> {
 }
 impl ExactSizeIterator for ItemIdIter<'_> {}
 impl core::iter::FusedIterator for ItemIdIter<'_> {}
+
+#[cfg(test)]
+mod computed_type_id_tests {
+    use crate::ir::{
+        BuiltinType, ComputedType, ConcreteType, IrBuilder, TypeId, UnknownReason, UnknownType,
+    };
+
+    use super::Ir;
+
+    #[test]
+    fn computed_type_id_checks_node_state_and_typed_reads_recheck_the_image() {
+        let mut builder = IrBuilder::new();
+        let computed = builder
+            .intern_computed(ComputedType::This)
+            .expect("computed type interns");
+        let concrete = builder
+            .intern_concrete(ConcreteType::Builtin(BuiltinType::Unit))
+            .expect("concrete type interns");
+        let unknown = builder
+            .intern_unknown(UnknownType::new(UnknownReason::Unannotated))
+            .expect("unknown type interns");
+        let image = builder.finish().expect("type-only image validates");
+
+        assert_eq!(image.computed_type_id(computed.erase()), Some(computed));
+        assert_eq!(image.typed_type(computed), Some(ComputedType::This));
+        assert!(image.computed_type_id(concrete.erase()).is_none());
+        assert!(image.computed_type_id(unknown.erase()).is_none());
+        assert!(image.computed_type_id(TypeId::new(99)).is_none());
+
+        let mut other_builder = IrBuilder::new();
+        let other_concrete = other_builder
+            .intern_concrete(ConcreteType::Builtin(BuiltinType::Unit))
+            .expect("other concrete type interns");
+        assert_eq!(other_concrete.erase(), computed.erase());
+        let other_image = other_builder
+            .finish()
+            .expect("other type-only image validates");
+        assert!(other_image.typed_type(computed).is_none());
+    }
+}

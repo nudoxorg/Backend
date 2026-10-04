@@ -1,20 +1,18 @@
 use super::ids::{
-    AtomListId, EntityListId, ExternalId, FreePredicateListId, ObjectMemberListId,
-    TemplatePartListId, TupleElementListId, TypeListId, TypeParameterBoundListId,
-    TypeParameterListId,
+    AtomListId, ExternalId, ObjectMemberListId, TemplatePartListId, TupleElementListId,
+    TypeListId, TypeParameterBoundListId,
 };
 use super::type_model::{
-    BuiltinType, ComputedState, ConcreteState, CxxReferenceCategory, GuardedType, Mutability,
-    NativeCharacterRole, TypeColumns, TypeExpr, TypeHeader, TypePairPayload, TypeQuadPayload,
-    TypeState, TypeTag, TypeTriplePayload, TypedTypeId, UnknownReason, UnknownState, UnknownType,
+    BuiltinType, CxxReferenceCategory, Mutability, NativeCharacterRole, TypeColumns, TypeExpr,
+    TypeHeader, TypePairPayload, TypeQuadPayload, TypeTag, TypeTriplePayload, UnknownReason,
+    UnknownType,
 };
 use crate::ir::{
-    AnnotationKind, AtomId, CapacityError, ChannelDirection, CvQualifiers, DenseId, EntityId,
-    TypeId, VariantFingerprint,
+    AnnotationKind, AtomId, CapacityError, ChannelDirection, DenseId, EntityId, TypeId,
     interner::{HashIndex, hash},
 };
 use alloc::vec::Vec;
-use core::{fmt, hash::Hash, num::NonZeroU16};
+use core::{hash::Hash, num::NonZeroU16};
 
 #[derive(Default)]
 pub(super) struct PackedTypes {
@@ -994,10 +992,12 @@ impl TypeExpr {
         }
     }
 
+    /// Whether this value is an unevaluated type-level expression.
     #[must_use]
     pub const fn is_computed(self) -> bool {
         matches!(self, Self::Computed(_))
     }
+    /// Returns the concrete node only for the concrete state.
     #[must_use]
     pub const fn concrete(self) -> Option<ConcreteType> {
         match self {
@@ -1005,6 +1005,7 @@ impl TypeExpr {
             Self::Computed(_) | Self::Unknown(_) => None,
         }
     }
+    /// Returns the unevaluated node only for the computed state.
     #[must_use]
     pub const fn computed(self) -> Option<ComputedType> {
         match self {
@@ -1017,17 +1018,28 @@ impl TypeExpr {
 /// A type whose shape is already known and can be rendered without evaluation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ConcreteType {
+    /// Language-independent scalar, string, object, or special builtin.
     Builtin(BuiltinType),
+    /// Literal value retained with its source spelling where needed.
     Literal(LiteralType),
+    /// Local declaration entity used as a nominal type.
     Nominal(EntityId),
+    /// Cross-fragment declaration target used as a nominal type.
     External(ExternalId),
+    /// Generic parameter identified by its source name atom.
     Parameter(AtomId),
+    /// Generic constructor and its ordered argument list.
     Applied {
+        /// Type node being applied, usually a nominal constructor.
         constructor: TypeId,
+        /// Type arguments in source order.
         arguments: TypeListId,
     },
+    /// Ordered tuple cells, retaining labels and optional/rest roles.
     Tuple(TupleElementListId),
+    /// Structural object members in source order.
     Object(ObjectMemberListId),
+    /// Callable signature with separate ordered parameter and result lanes.
     Function {
         /// Parameter rows retain names, optionality, and rest position. This is
         /// equally useful for docs rendering and exact TypeScript signatures.
@@ -1037,73 +1049,102 @@ pub enum ConcreteType {
         /// result labels and modifiers with the type rather than recovering
         /// them from a language extension.
         results: TupleElementListId,
+        /// Optional native calling-convention spelling.
         abi: Option<AtomId>,
+        /// Closed variadic-tail form for the parameter lane.
         variadic: VariadicForm,
+        /// Whether calling this function requires an unsafe context.
         unsafe_: bool,
     },
+    /// Language reference with explicit mutability and optional lifetime.
     Reference {
+        /// Referenced type coordinate.
         target: TypeId,
+        /// Whether access through the reference permits mutation.
         mutability: Mutability,
+        /// Optional source lifetime name, interned as an atom.
         lifetime: Option<AtomId>,
     },
     /// A C++ reference category. The target may itself be [`Self::CQualified`]
     /// so direct cv qualification stays attached to the referent instead of
     /// becoming Rust mutability.
     CxxReference {
+        /// Referent type; direct native qualifiers may wrap this node.
         target: TypeId,
+        /// Lvalue (`&`) or rvalue (`&&`) category.
         category: CxxReferenceCategory,
     },
     /// A C/C++ raw pointer. Direct qualifier placement is represented only
     /// by the enclosing [`Self::CQualified`] node.
     CPointer {
+        /// Pointee type coordinate.
         target: TypeId,
     },
     /// A C++ member pointer. The owning class and member type are distinct
     /// operands and cannot be reconstructed from a display spelling.
     CxxMemberPointer {
+        /// Record or class type that owns the pointed-to member.
         owner: TypeId,
+        /// Member's type, separate from its declaring class.
         member: TypeId,
     },
     /// One direct C-family cv/restrict wrapper. Empty qualifier sets never
     /// construct this variant.
     CQualified {
+        /// Type directly wrapped by these qualifiers.
         target: TypeId,
+        /// Exact cv/restrict bits; an empty set is invalid.
         qualifiers: crate::ir::CvQualifiers,
     },
     /// An Objective-C block pointer, whose callable/signature target is
     /// structurally distinct from a C pointer. A C declarator dialect owns
     /// its exact `^` placement.
     CBlockPointer {
+        /// Callable or signature type reached by the block pointer.
         target: TypeId,
     },
     /// A source-level character role plus its exact measured code-unit or
     /// scalar width. This is deliberately not `BuiltinType`: `char`,
     /// `wchar_t`, and Java/C# `char` have incompatible semantics.
     NativeCharacter {
+        /// Source-language character or code-unit role.
         role: NativeCharacterRole,
+        /// Measured width in bits, excluding zero as invalid.
         width: NonZeroU16,
     },
+    /// Pointer with language-neutral mutability semantics.
     Pointer {
+        /// Pointee type coordinate.
         target: TypeId,
+        /// Whether writes through the pointer are permitted.
         mutability: Mutability,
     },
+    /// Unsized sequence view over one element type.
     Slice(TypeId),
+    /// Sequence whose shape carries target-independent extent facts.
     Array {
+        /// Type of each array element.
         element: TypeId,
+        /// Sequence, rectangular, fixed-value, expression, or incomplete extent.
         shape: ArrayShape,
     },
+    /// Type that admits absence or null in addition to its target value.
     Optional(TypeId),
+    /// Ordered alternatives that can each satisfy the value type.
     Union(TypeListId),
+    /// Ordered constituent types that must all be satisfied.
     Intersection(TypeListId),
     /// Rust's static-dispatch existential bound set (`impl Trait`).
     ImplTrait(TypeListId),
     /// Rust's dynamic-dispatch trait-object bound set (`dyn Trait`).
     DynTrait(TypeListId),
-    /// Java/C# wildcard with one of its three legal bound states.
+    /// Java wildcard with one of its three legal bound states.
     Wildcard(WildcardBound),
     /// A closed source-level annotation that preserves its inner type.
     Annotated {
+        /// Closed semantic annotation kind.
         kind: AnnotationKind,
+        /// Type whose source-level annotation is retained.
         target: TypeId,
     },
     /// A written inference request (`_`, `auto`, `var`), with an optional
@@ -1113,19 +1154,27 @@ pub enum ConcreteType {
     /// are atoms rather than fabricated type nodes, so `<Self as Trait>::Assoc`
     /// and `Outer<T>.Inner` retain their actual path grammar.
     QualifiedPath {
+        /// Base type for the qualified path.
         self_type: TypeId,
+        /// Optional trait type that introduces associated path segments.
         trait_type: Option<TypeId>,
+        /// Parsed segment list when authoritative component boundaries exist.
         segments: QualifiedSegments,
+        /// Exact source spelling retained independently of parsed segments.
         spelling: AtomId,
     },
     /// Go's structural map, never an application of a fabricated `map` base.
     Map {
+        /// Key type accepted by this mapping.
         key: TypeId,
+        /// Value type associated with each key.
         value: TypeId,
     },
     /// Go's directional channel, never an application of a fabricated `chan` base.
     Channel {
+        /// Direction in which values may move through the channel.
         direction: ChannelDirection,
+        /// Type transmitted through the channel.
         element: TypeId,
     },
 }
@@ -1173,19 +1222,33 @@ impl ConcreteType {
 /// it may never guess an extent from a surface spelling shared by languages.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ArrayShape {
+    /// Sequence extent without a fixed scalar length.
     Sequence,
-    Rectangular { rank: NonZeroU16 },
-    FixedValue { length: u64 },
+    /// Rectangular multidimensional extent with this many dimensions.
+    Rectangular {
+        /// Number of dimensions in the rectangular array.
+        rank: NonZeroU16,
+    },
+    /// Exact compile-time element count.
+    FixedValue {
+        /// Number of elements in the fixed extent.
+        length: u64,
+    },
+    /// Source expression whose evaluated extent is not stored as an integer.
     ConstExpression(AtomId),
+    /// Array declaration has an omitted or otherwise incomplete extent.
     Incomplete,
 }
 
-/// Legal Java/C# wildcard states. A bound is inseparable from `extends` or
+/// Legal Java wildcard states. A bound is inseparable from `extends` or
 /// `super`; `?` cannot accidentally carry a hidden target.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WildcardBound {
+    /// Java `?` without an upper or lower bound.
     Unbounded,
+    /// Java `? extends T` upper bound.
     Extends(TypeId),
+    /// Java `? super T` lower bound.
     Super(TypeId),
 }
 
@@ -1194,7 +1257,9 @@ pub enum WildcardBound {
 /// component; only a captured nonempty atom list permits structural traversal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum QualifiedSegments {
+    /// Parsed path components in source order.
     Captured(AtomListId),
+    /// Only a whole-path spelling is known; component boundaries are absent.
     Unavailable,
 }
 
@@ -1202,49 +1267,83 @@ pub enum QualifiedSegments {
 /// separators, and frontend-specific precision without parsing through `f64`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LiteralType {
+    /// Exact string literal bytes, including source distinctions when retained.
     String(AtomId),
+    /// Exact numeric spelling, without conversion through a floating-point value.
     Number(AtomId),
+    /// Exact arbitrary-precision integer spelling.
     BigInt(AtomId),
+    /// Boolean literal value.
     Boolean(bool),
+    /// Null literal type.
     Null,
+    /// Undefined literal type.
     Undefined,
 }
 
 /// A type-level operation that has not been evaluated into a concrete shape.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ComputedType {
+    /// Key set derived from another type.
     KeyOf(TypeId),
+    /// Type of an entity, path, or external declaration.
     TypeOf(TypeQuery),
+    /// Type-level lookup of a key in an object type.
     IndexedAccess {
+        /// Type whose property is queried.
         object: TypeId,
+        /// Type expression supplying the requested key.
         index: TypeId,
     },
+    /// Branching type expression selected by an assignability test.
     Conditional {
+        /// Type expression evaluated by the condition.
         check: TypeId,
+        /// Target type that `check` is compared against.
         extends: TypeId,
+        /// Result type when the condition succeeds.
         then_type: TypeId,
+        /// Result type when the condition fails.
         else_type: TypeId,
+        /// Whether the condition distributes across a union check type.
         distributive: bool,
     },
+    /// TypeScript mapped object transformation over a parameter constraint.
     Mapped {
+        /// Name atom for the mapped type's key parameter.
         parameter: AtomId,
+        /// Set of keys iterated by the mapping.
         constraint: TypeId,
+        /// Optional key-remapping expression (`as ...`).
         name_as: Option<TypeId>,
+        /// Value expression assigned to each mapped key.
         value: TypeId,
+        /// Whether readonly is preserved, added, or removed.
         readonly: MappedModifier,
+        /// Whether optionality is preserved, added, or removed.
         optional: MappedModifier,
     },
+    /// Type-level variable whose type is inferred from a pattern.
     Infer {
+        /// Inferred parameter name.
         parameter: AtomId,
+        /// Optional constraint placed on the inferred variable.
         constraint: Option<TypeId>,
     },
+    /// Template literal assembled from ordered literal and placeholder parts.
     TemplateLiteral(TemplatePartListId),
+    /// Type-level import expression naming a module and optional qualifier.
     Import {
+        /// Module specifier bytes.
         specifier: AtomId,
+        /// Ordered path components after the module specifier.
         qualifier: AtomListId,
+        /// Generic arguments applied to the imported type, if present.
         arguments: TypeListId,
     },
+    /// Type-level result selected from an asynchronous or promise-like type.
     Awaited(TypeId),
+    /// Receiver type bound by the current generic or member context.
     This,
 }
 
@@ -1270,8 +1369,11 @@ impl ComputedType {
 /// Operand of TypeScript's `typeof` type query.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeQuery {
+    /// TypeScript `typeof` query for a local entity.
     Entity(EntityId),
+    /// `typeof` query for an ordered qualified name path.
     Path(AtomListId),
+    /// `typeof` query for an external target.
     External(ExternalId),
 }
 
@@ -1279,24 +1381,34 @@ pub enum TypeQuery {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MappedModifier {
+    /// Keep the input type's modifier state unchanged.
     Preserve,
+    /// Add the mapped modifier to the output property.
     Add,
+    /// Remove the mapped modifier from the output property.
     Remove,
 }
 
 /// A tuple element retains TypeScript labels, optionality, and rest position.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TupleElement {
+    /// Optional source label for a named parameter or tuple slot.
     pub label: Option<AtomId>,
+    /// Type of this ordered tuple cell.
     pub ty: TypeId,
+    /// Required, optional, or rest role in its owning tuple.
     pub kind: TupleElementKind,
 }
 
+/// Call-site role of one tuple element in a function signature.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TupleElementKind {
+    /// A required cell that has no optional or rest marker.
     Required,
+    /// A cell that may be omitted by the caller.
     Optional,
+    /// Final parameter cell that accepts remaining arguments.
     Rest,
 }
 
@@ -1309,7 +1421,9 @@ pub type VariadicForm = crate::ir::FunctionVariadicForm;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CallableElementRole {
+    /// Element belongs to the callable's parameter lane.
     Parameter,
+    /// Element belongs to the callable's result lane.
     Result,
 }
 
@@ -1317,40 +1431,62 @@ pub enum CallableElementRole {
 /// rendered spelling or with a statically named property.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PropertyKey {
+    /// Identifier-like property name stored as source bytes.
     Named(AtomId),
+    /// Private identifier kept distinct from a public key with the same spelling.
     Private(AtomId),
+    /// Numeric property spelling kept without normalization.
     Numeric(AtomId),
+    /// Computed property key represented by its type expression.
     Computed(TypeId),
 }
 
 /// Structural object member, including TypeScript index/call/construct lanes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ObjectMember {
+    /// Data property with an explicit key and property modifiers.
     Property {
+        /// Declared or computed member key.
         key: PropertyKey,
+        /// Property value type.
         ty: TypeId,
+        /// Whether the property may be omitted.
         optional: bool,
+        /// Whether the property may be reassigned.
         readonly: bool,
     },
+    /// Method property with a callable signature and optionality.
     Method {
+        /// Declared or computed method key.
         key: PropertyKey,
+        /// Type node carrying this method's function signature.
         signature: TypeId,
+        /// Whether the method may be omitted.
         optional: bool,
     },
+    /// Index signature from a key domain to its value type.
     Index {
+        /// Source name bound to the index parameter.
         parameter: AtomId,
+        /// Allowed key type.
         key: TypeId,
+        /// Value type returned for a matching key.
         value: TypeId,
+        /// Whether values reached through the index signature are immutable.
         readonly: bool,
     },
+    /// Call signature that makes the object callable.
     Call(TypeId),
+    /// Constructor signature that makes the object constructible.
     Construct(TypeId),
 }
 
 /// One template-literal type segment.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TemplatePart {
+    /// Literal byte run from the template.
     Bytes(AtomId),
+    /// Interpolated type expression.
     Placeholder(TypeId),
 }
 
@@ -1385,9 +1521,15 @@ pub struct FreePredicate {
 pub enum TypeParameterKind {
     /// An ordinary type parameter, optionally carrying TypeScript's `const`
     /// inference modifier. This is distinct from a Rust const-value parameter.
-    Type { inference: TypeParameterInference },
+    Type {
+        /// Ordinary or const-inference mode for a type parameter.
+        inference: TypeParameterInference,
+    },
     /// A Rust-style const value parameter and its declared value type.
-    ConstValue { value_type: TypeId },
+    ConstValue {
+        /// Declared type of the const parameter's value.
+        value_type: TypeId,
+    },
     /// A Rust lifetime parameter. Its ordered lifetime/type bounds remain in
     /// the shared bound list rather than a parallel Rust-only side table.
     Lifetime,
@@ -1396,7 +1538,9 @@ pub enum TypeParameterKind {
 /// The inference mode of a type parameter.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeParameterInference {
+    /// Infer the parameter as a regular type parameter.
     Ordinary,
+    /// Prefer literal-preserving inference for the parameter.
     Const,
 }
 
@@ -1404,11 +1548,20 @@ pub enum TypeParameterInference {
 /// exclusive and therefore cannot be represented by independent booleans.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeParameterPrimaryRequirement {
+    /// No mutually exclusive primary constraint was captured.
     None,
-    Reference { nullable: bool },
+    /// Reference-type constraint, optionally allowing nullable references.
+    Reference {
+        /// Whether the source constraint permits nullable reference arguments.
+        nullable: bool,
+    },
+    /// Non-nullable value-type constraint.
     Value,
+    /// Unmanaged value-type constraint.
     Unmanaged,
+    /// Constraint excluding nullable values and references.
     NotNull,
+    /// C# `default` primary constraint.
     Default,
 }
 
@@ -1420,12 +1573,16 @@ pub enum TypeParameterPrimaryRequirement {
 /// constraint or lossy boolean collection.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeParameterRequirements {
+    /// Mutually exclusive primary C# constraint.
     pub primary: TypeParameterPrimaryRequirement,
+    /// Whether a public parameterless constructor is required.
     pub constructor: bool,
+    /// Whether the parameter admits byref-like types.
     pub allows_ref_like: bool,
 }
 
 impl TypeParameterRequirements {
+    /// Returns the requirement set with every optional fact absent.
     #[must_use]
     pub const fn none() -> Self {
         Self {
@@ -1435,6 +1592,7 @@ impl TypeParameterRequirements {
         }
     }
 
+    /// Whether `new()` and `allows_ref_like` are compatible with the primary constraint.
     #[must_use]
     pub const fn is_valid(self) -> bool {
         !(self.constructor
@@ -1455,20 +1613,30 @@ impl TypeParameterRequirements {
 /// Generic declaration retained separately from a parameter reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeParameter {
+    /// Source name identifying references to this generic parameter.
     pub name: AtomId,
     /// Source-ordered type and lifetime bounds.
     pub bounds: TypeParameterBoundListId,
+    /// Optional default type for this parameter.
     pub default: Option<TypeId>,
+    /// Variance declared by the language or producer.
     pub variance: Variance,
+    /// Type, const-value, or lifetime declaration role.
     pub kind: TypeParameterKind,
+    /// Closed primary and orthogonal special constraints.
     pub requirements: TypeParameterRequirements,
 }
 
+/// Subtyping relation declared for a generic type parameter.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Variance {
+    /// Neither covariant nor contravariant.
     Invariant,
+    /// Outputs may be substituted with a subtype.
     Covariant,
+    /// Inputs may be substituted with a supertype.
     Contravariant,
+    /// Both covariance and contravariance substitutions are permitted.
     Bivariant,
 }

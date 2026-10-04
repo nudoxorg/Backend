@@ -63,29 +63,48 @@ pub struct DecodedTypeParameter<'payload> {
     pub semantics: DecodedTypeParameterSemantics,
 }
 
+/// Exact or legacy semantic fields carried by one decoded type parameter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecodedTypeParameterSemantics {
     Exact {
+        /// Exact range of bounds for schema versions that encode bound lanes.
         bounds: ExtensionTypeParameterBoundRange,
+        /// Variance recorded by the parameter row.
         variance: Variance,
+        /// Type, const-value, or lifetime parameter kind.
         kind: DecodedTypeParameterKind,
+        /// Language-specific generic requirements.
         requirements: TypeParameterRequirements,
     },
     Legacy {
+        /// Optional single legacy constraint type coordinate.
         constraint: Option<u32>,
     },
 }
 
+/// Type, const-value, or lifetime kind decoded from a parameter row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecodedTypeParameterKind {
-    Type { inference: TypeParameterInference },
-    ConstValue { value_type: u32 },
+    /// Type parameter with its encoded inference behavior.
+    Type {
+        /// Inference behavior preserved by the payload.
+        inference: TypeParameterInference,
+    },
+    /// Const-value parameter with its value type coordinate.
+    ConstValue {
+        /// Type-fact coordinate describing the constant's value type.
+        value_type: u32,
+    },
+    /// Lifetime parameter without a type-fact payload.
     Lifetime,
 }
 
+/// One decoded generic bound, preserving type coordinates or lifetime bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecodedTypeParameterBound<'payload> {
+    /// Type-fact coordinate named by a trait or constraint bound.
     Type(u32),
+    /// Borrowed lifetime spelling from the encoded payload.
     Lifetime(&'payload [u8]),
 }
 
@@ -99,6 +118,7 @@ pub struct DecodedTypeParameterBoundList<'payload> {
 }
 
 impl<'payload> DecodedTypeParameterBoundList<'payload> {
+    /// Decodes one bound within this exact range.
     pub fn get(
         &self,
         position: u32,
@@ -140,6 +160,7 @@ impl Deref for DecodedTypeParameterBoundList<'_> {
     }
 }
 
+/// Allocation-free cursor that yields each bound in an exact range once.
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedTypeParameterBoundCursor<'payload> {
     bytes: &'payload [u8],
@@ -267,7 +288,10 @@ pub enum ReopenedTypeParameterList<'payload> {
     Exact(DecodedTypeParameterList<'payload>),
     /// Legacy schema records name only an element start.  No list membership
     /// is implied or fabricated.
-    LegacyStartOnly { start: u32 },
+    LegacyStartOnly {
+        /// Zero-based start ordinal with no retained end boundary.
+        start: u32,
+    },
 }
 
 /// A once-validated reopened pooled-lane section.
@@ -503,14 +527,17 @@ impl<'payload> ReopenedExtensionPools<'payload> {
         self.reference_list(lane, ordinal)
     }
 
+    /// Opens one list from the atom-reference lane by zero-based ordinal.
     pub fn atom_list(&self, ordinal: u32) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
         self.list(ExtensionPoolListLane::Atoms, ordinal)
     }
 
+    /// Opens one list from the type-reference lane by zero-based ordinal.
     pub fn type_list(&self, ordinal: u32) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
         self.list(ExtensionPoolListLane::Types, ordinal)
     }
 
+    /// Opens one list from the entity-reference lane by zero-based ordinal.
     pub fn entity_list(
         &self,
         ordinal: u32,
@@ -696,7 +723,7 @@ pub(crate) fn reopen_validated_extension_pools(
             .ok()
             .and_then(|count| count.checked_mul(8))
             .ok_or(ExtensionPoolFault::StructuralOverflow { at: cursor })?;
-        cursor = advance(cursor, bytes)?;
+        advance(cursor, bytes)?;
         (free_predicates, (start, count))
     } else {
         ((0, 0), (0, 0))

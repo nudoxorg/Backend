@@ -4,7 +4,7 @@ use super::builder::{
     validate_type_list, validate_type_parameters,
 };
 use super::error::{BuildError, LanguageExtensionViolation, SemanticSpace};
-use super::ids::{AtomListId, DocId, EntityListId, ItemKind, LinkId, LinkOccurrenceId, TypeListId};
+use super::ids::{AtomListId, DocId, EntityListId, ItemKind, LinkId, LinkOccurrenceId};
 use super::language_facts::LanguageExtensionInput;
 use super::language_facts::{
     CSharpExtension, CSharpFacts, ClangExtension, ClangFacts, GoExtension, GoFacts, JavaExtension,
@@ -12,7 +12,7 @@ use super::language_facts::{
     TypeScriptExtension, TypeScriptFacts,
 };
 use super::packed_types::{
-    FreePredicate, ObjectMember, TemplatePart, TupleElement, TypeInterner, TypeParameter,
+    FreePredicate, ObjectMember, TemplatePart, TupleElement, TypeParameter,
     TypeParameterBound,
 };
 use super::relations::{
@@ -22,17 +22,9 @@ use super::relations::{
 use super::type_model::TypeColumns;
 use super::type_model::Visibility;
 use crate::ir::{
-    AnnotationKind, AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityFactFault,
-    AuthorityFactPlane, CapacityError, ChannelDirection, DeclarationFamilyId, DeclarationIdentity,
-    DeclarationKey, DenseId, EntityAuthorityColumns, EntityAuthorityFacts, EntityId,
-    ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
-    ImageProvenanceClaim, Interner, ListId, ListInterner, ListTable, ListTableView,
-    OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
-    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SourceIdentity, StableRef, TextId,
-    Type, TypeId, VariantFingerprint,
-    authority::{AuthorityColumns, OccurrenceAuthorityColumn},
+    AtomId, AtomInterner, AtomTableView, CapacityError, DenseId, EntityAuthorityColumns,
+    EntityId, ImageProvenance, Interner, ListTableView, OccurrenceAuthorityColumns, Type, TypeId,
     columnar::{RawColumn, Slab, SlabPlan},
-    interner::{HashIndex, hash},
 };
 use crate::vocabulary::Language;
 use core::{fmt, hash::Hash, marker::PhantomData};
@@ -497,12 +489,19 @@ impl LanguageExtensions {
 pub struct LanguageExtensionsView<'ir> {
     /// The profile authority that selected every nonempty plane.
     pub authority: SemanticImageAuthority,
+    /// Sparse TypeScript fact IDs and their deduplicated typed pool.
     pub typescript: LanguageExtensionColumnView<'ir, TypeScriptFacts, TypeScriptExtension>,
+    /// Sparse C# fact IDs and their deduplicated typed pool.
     pub csharp: LanguageExtensionColumnView<'ir, CSharpFacts, CSharpExtension>,
+    /// Sparse Go fact IDs and their deduplicated typed pool.
     pub go: LanguageExtensionColumnView<'ir, GoFacts, GoExtension>,
+    /// Sparse Rust fact IDs and their deduplicated typed pool.
     pub rust: LanguageExtensionColumnView<'ir, RustFacts, RustExtension>,
+    /// Sparse Python fact IDs and their deduplicated typed pool.
     pub python: LanguageExtensionColumnView<'ir, PythonFacts, PythonExtension>,
+    /// Sparse Java fact IDs and their deduplicated typed pool.
     pub java: LanguageExtensionColumnView<'ir, JavaFacts, JavaExtension>,
+    /// Sparse Clang fact IDs and their deduplicated typed pool.
     pub clang: LanguageExtensionColumnView<'ir, ClangFacts, ClangExtension>,
 }
 /// Present-value counts measured before a borrowed frontend stream is lowered.
@@ -847,13 +846,21 @@ impl IrIndices {
 /// [`EntityId`] as its direct array coordinate.
 #[derive(Clone, Copy, Debug)]
 pub struct EntityColumns<'ir> {
+    /// Interned name atom for each entity row.
     pub names: &'ir [AtomId],
+    /// Declaration kind for each entity row.
     pub kinds: &'ir [ItemKind],
+    /// Language-independent visibility for each entity row.
     pub visibility: &'ir [Visibility],
+    /// Parent entity coordinate, or the `u32::MAX` absence sentinel.
     pub parents: &'ir [OptionalId<crate::ir::Entity>],
+    /// Semantic type coordinate, or the `u32::MAX` absence sentinel.
     pub semantic_types: &'ir [OptionalId<Type>],
+    /// Interned member-list coordinate for each declaration.
     pub members: &'ir [EntityListId],
+    /// Interned documentation-list coordinate for each declaration.
     pub docs: &'ir [DocId],
+    /// Interned attribute-list coordinate for each declaration.
     pub attributes: &'ir [AtomListId],
 }
 
@@ -883,13 +890,21 @@ impl SourceColumnsView<'_> {
 pub struct GraphColumns<'ir> {
     /// Canonical relation rows, unique by `(from, target, kind)`.
     pub from: &'ir [EntityId],
+    /// Target coordinate paired by row with `from`.
     pub targets: &'ir [LinkTarget],
+    /// Relation kind paired by row with `from` and `targets`.
     pub kinds: &'ir [LinkKind],
+    /// Strongest confidence retained for each canonical relation.
     pub confidence: &'ir [Confidence],
+    /// Optional representative source range; occurrences hold every site.
     pub sources: SparseColumnView<'ir, SourceSpan>,
+    /// Link IDs grouped by source entity for forward traversal.
     pub outgoing: &'ir [LinkId],
+    /// CSR boundaries for `outgoing`, with one row per entity plus a terminal boundary.
     pub outgoing_offsets: &'ir [u32],
+    /// Link IDs grouped by local target entity for reverse traversal.
     pub incoming: &'ir [LinkId],
+    /// CSR boundaries for `incoming`, with one row per entity plus a terminal boundary.
     pub incoming_offsets: &'ir [u32],
     /// Every observed source occurrence, including repeated sites for one
     /// canonical relation. Its CSR index is keyed by the relation's `from`.
@@ -899,10 +914,15 @@ pub struct GraphColumns<'ir> {
 /// Typed dense columns for authority-observed graph source sites.
 #[derive(Clone, Copy, Debug)]
 pub struct LinkOccurrenceColumns<'ir> {
+    /// Canonical relation ID observed at each occurrence row.
     pub links: &'ir [LinkId],
+    /// Confidence attached to each individual source occurrence.
     pub confidence: &'ir [Confidence],
+    /// Optional source range for each occurrence row.
     pub sources: SparseColumnView<'ir, SourceSpan>,
+    /// Occurrence IDs grouped by the canonical relation's source entity.
     pub outgoing: &'ir [LinkOccurrenceId],
+    /// CSR boundaries for occurrence rows, one per entity plus a terminal boundary.
     pub outgoing_offsets: &'ir [u32],
 }
 
@@ -1106,9 +1126,11 @@ impl PackedLinks {
 /// Precomputed stable-order columns consumed directly by IR-VCS and storage.
 #[derive(Clone, Copy, Debug)]
 pub struct VcsColumns<'ir> {
+    /// Family, variant, and core-payload rows aligned with entity IDs.
     pub versions: &'ir [EntityVersion],
     /// Canonical exact local instance order, by `(family, variant)`.
     pub declaration_instances: &'ir [EntityId],
+    /// Link IDs in stable source-instance, target, and relation-kind order.
     pub stable_links: &'ir [LinkId],
 }
 
@@ -1119,33 +1141,55 @@ pub struct VcsColumns<'ir> {
 /// or scatter/gather these exact slices without serializing semantic rows.
 #[derive(Clone, Copy, Debug)]
 pub struct StorageColumns<'ir> {
+    /// Language authority captured when this image was built.
     pub authority: SemanticImageAuthority,
     /// Image-level source, recipe, and scope authority when compiled.
     pub provenance: ImageProvenance,
+    /// Canonically interned byte strings and their ranges.
     pub atoms: AtomTableView<'ir>,
+    /// Dense type headers and arity-specific operand lanes.
     pub types: TypeColumns<'ir>,
+    /// External declaration targets referenced by type and graph rows.
     pub externals: &'ir [ExternalTarget],
+    /// Interned ordered lists of type coordinates.
     pub type_lists: ListTableView<'ir, TypeId>,
+    /// Interned ordered lists of entity coordinates.
     pub entity_lists: ListTableView<'ir, EntityId>,
+    /// Interned ordered lists of atom coordinates.
     pub atom_lists: ListTableView<'ir, AtomId>,
+    /// Interned ordered documentation fragments.
     pub docs: ListTableView<'ir, DocFragment>,
+    /// Interned ordered tuple elements.
     pub tuple_elements: ListTableView<'ir, TupleElement>,
+    /// Interned ordered object members.
     pub object_members: ListTableView<'ir, ObjectMember>,
+    /// Interned ordered template-literal parts.
     pub template_parts: ListTableView<'ir, TemplatePart>,
+    /// Interned type-parameter bound rows.
     pub type_parameter_bounds: ListTableView<'ir, TypeParameterBound>,
+    /// Interned type-parameter records.
     pub type_parameters: ListTableView<'ir, TypeParameter>,
+    /// Interned free predicates whose subject is not a declared parameter.
     pub free_predicates: ListTableView<'ir, FreePredicate>,
+    /// Hot declaration columns, all aligned by entity coordinate.
     pub entities: EntityColumns<'ir>,
     /// Cold authority facts aligned exactly with `entities`.
     pub entity_authority: EntityAuthorityColumns<'ir>,
     /// Cold source availability aligned exactly with graph occurrences.
     pub occurrence_authority: OccurrenceAuthorityColumns<'ir>,
+    /// Source file and byte-range columns aligned with entity rows.
     pub sources: SourceColumnsView<'ir>,
+    /// Sparse language-owned fact pools selected by `authority`.
     pub language_extensions: LanguageExtensionsView<'ir>,
+    /// Canonical graph rows and forward/reverse adjacency indices.
     pub graph: GraphColumns<'ir>,
+    /// Stable declaration and link orders for versioned comparison.
     pub vcs: VcsColumns<'ir>,
+    /// Entity IDs grouped by declaration kind and stable instance identity.
     pub kind_entities: &'ir [EntityId],
+    /// Start and terminal boundaries for declaration-kind partitions in `kind_entities`.
     pub kind_offsets: &'ir [u32; 16],
+    /// Entity IDs sorted by raw name bytes and stable instance identity.
     pub name_entities: &'ir [EntityId],
 }
 

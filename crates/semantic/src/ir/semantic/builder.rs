@@ -5,23 +5,23 @@ use super::columns::{
     IrIndices, ItemColumns, LanguageExtensionCounts, LanguageExtensions, PackedLinkOccurrences,
     PackedLinks, SourceColumns,
 };
-use super::error::{BuildError, EntityRange, LanguageExtensionViolation, SemanticSpace};
+use super::error::{BuildError, EntityRange, SemanticSpace};
 use super::ids::{
     AtomListId, DocId, EntityListId, External, ExternalId, FreePredicateListId, ItemKind, LinkId,
-    LinkOccurrenceId, LinkOccurrenceSpace, LinkSpace, ObjectMemberListId, TemplatePartListId,
+    LinkOccurrenceId, ObjectMemberListId, TemplatePartListId,
     TreeEntityId, TupleElementListId, TypeListId, TypeParameterBoundListId, TypeParameterListId,
 };
 use super::image::Ir;
 use super::language_facts::{LanguageExtensionInput, SemanticImageAuthority};
 use super::packed_types::{
     ArrayShape, CallableElementRole, ComputedType, ConcreteType, FreePredicate, LiteralType,
-    ObjectMember, PackedTypes, PropertyKey, QualifiedSegments, TemplatePart, TupleElement,
+    ObjectMember, PropertyKey, QualifiedSegments, TemplatePart, TupleElement,
     TupleElementKind, TypeInterner, TypeParameter, TypeParameterBound, TypeParameterKind,
     TypeQuery, VariadicForm, WildcardBound,
 };
 use super::relations::{
-    Confidence, DeclarationLinkTarget, DocFragment, DocInput, EntityVersion, ExternalTarget,
-    ForeignExternalTarget, ForeignTargetOrigin, Item, Link, LinkKey, LinkKind, LinkOccurrence,
+    DeclarationLinkTarget, DocFragment, DocInput, EntityVersion, ExternalTarget,
+    ForeignTargetOrigin, Item, Link, LinkKey, LinkOccurrence,
     LinkTarget, SourceSpan, canonical_relation_evidence_precedes,
 };
 use super::tree::{BorrowedTree, FrontendTree, TreeItemInput, TreeLinkInput, TreeLinkTarget};
@@ -30,23 +30,19 @@ use super::type_model::{
     UnknownTypeId, Visibility,
 };
 use crate::ir::{
-    AnnotationKind, AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityFactFault,
-    AuthorityFactPlane, CapacityError, CapacitySpace, ChannelDirection, DeclarationFamilyId,
-    DeclarationIdentity, DeclarationKey, DenseId, EntityAuthorityColumns, EntityAuthorityFacts,
-    EntityId, ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
-    ImageProvenanceClaim, Interner, ListId, ListInterner, ListTable, ListTableView,
-    OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
-    PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SignatureCarrierBindingRole,
-    SignatureCarrierOwnerInput, SignatureCarrierRole, SourceIdentity, StableRef, TextId, Type,
-    TypeId, VariantFingerprint,
+    AtomId, AtomInterner, CapacityError, CapacitySpace, DeclarationIdentity, DeclarationKey,
+    DenseId, EntityAuthorityFacts, EntityId, ImageProvenance, Interner, ListInterner,
+    OccurrenceAuthorityFacts, PackageLineage, SemanticScopeClaim, SemanticScopeFacts,
+    SignatureCarrierBindingRole, SignatureCarrierOwnerInput, SignatureCarrierRole, SourceIdentity,
+    TextId, TypeId,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
-    columnar::{RawColumn, Slab, SlabPlan},
+    columnar::SlabPlan,
     interner::{HashIndex, hash},
 };
-use crate::vocabulary::{CompileRecipeFact, Language, LanguageProfile, PackageUrl};
+use crate::vocabulary::{CompileRecipeFact, LanguageProfile, PackageUrl};
 use alloc::{vec, vec::Vec};
 use backend_version::{ContentId, SemanticScopeDomain};
-use core::{fmt, hash::Hash, num::NonZeroU16};
+use core::hash::Hash;
 
 pub(super) fn validate_type_parameters(
     builder: &IrBuilder,
@@ -167,6 +163,7 @@ pub struct IrBuilder {
 }
 
 impl IrBuilder {
+    /// Creates an empty builder with shared-language authority and no provenance header.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -616,9 +613,13 @@ impl IrBuilder {
         };
         Ok(())
     }
+    /// Interns arbitrary bytes and returns their canonical atom coordinate.
+    ///
+    /// Atoms are not required to be UTF-8; use [`Self::intern_text`] for text.
     pub fn intern_atom(&mut self, bytes: &[u8]) -> Result<AtomId, BuildError> {
         self.atoms.intern(bytes).map_err(Into::into)
     }
+    /// Interns UTF-8 text in the shared atom arena's text namespace.
     pub fn intern_text(&mut self, text: &str) -> Result<TextId, BuildError> {
         self.atoms.intern_text(text).map_err(Into::into)
     }
@@ -626,6 +627,10 @@ impl IrBuilder {
     pub fn reserve_types(&mut self, additional: usize) {
         self.types.reserve(additional);
     }
+    /// Hash-conses a concrete, computed, or unknown type node in this builder.
+    ///
+    /// Any IDs embedded in `ty` are interpreted in this builder's pools and
+    /// are checked when the completed image is validated.
     pub fn intern_type(&mut self, ty: TypeExpr) -> Result<TypeId, BuildError> {
         if let TypeExpr::Unknown(UnknownType {
             spelling: Some(spelling),
@@ -648,48 +653,60 @@ impl IrBuilder {
         self.intern_type(State::inject(ty.node))
             .map(TypedTypeId::proven)
     }
+    /// Interns a renderable concrete type and returns an ID carrying that proof.
     pub fn intern_concrete(&mut self, ty: ConcreteType) -> Result<ConcreteTypeId, BuildError> {
         self.intern_guarded(GuardedType::concrete(ty))
     }
+    /// Interns a type-level expression and returns an ID carrying that proof.
     pub fn intern_computed(&mut self, ty: ComputedType) -> Result<ComputedTypeId, BuildError> {
         self.intern_guarded(GuardedType::computed(ty))
     }
+    /// Interns an explicit unknown node and returns an ID carrying that proof.
     pub fn intern_unknown(&mut self, ty: UnknownType) -> Result<UnknownTypeId, BuildError> {
         self.intern_guarded(GuardedType::unknown(ty))
     }
+    /// Interns an ordered sequence of type coordinates without sorting it.
     pub fn intern_types(&mut self, types: &[TypeId]) -> Result<TypeListId, BuildError> {
         self.type_lists.intern(types).map_err(Into::into)
     }
+    /// Interns one stable-fragment, foreign, or legacy fragment-entity target.
     pub fn intern_external(&mut self, target: ExternalTarget) -> Result<ExternalId, BuildError> {
         self.externals.intern(target).map_err(Into::into)
     }
+    /// Interns an ordered documentation sequence, preserving every fragment.
     pub fn intern_docs(&mut self, docs: &[DocFragment]) -> Result<DocId, BuildError> {
         self.docs.intern(docs).map_err(Into::into)
     }
+    /// Interns an ordered list of entity coordinates in this builder's entity space.
     pub fn intern_members(&mut self, members: &[EntityId]) -> Result<EntityListId, BuildError> {
         self.entity_lists.intern(members).map_err(Into::into)
     }
+    /// Interns an ordered list of attribute atom coordinates.
     pub fn intern_attributes(&mut self, attributes: &[AtomId]) -> Result<AtomListId, BuildError> {
         self.atom_lists.intern(attributes).map_err(Into::into)
     }
+    /// Interns ordered tuple or callable elements, including labels and roles.
     pub fn intern_tuple_elements(
         &mut self,
         elements: &[TupleElement],
     ) -> Result<TupleElementListId, BuildError> {
         self.tuple_elements.intern(elements).map_err(Into::into)
     }
+    /// Interns object members in their supplied semantic order.
     pub fn intern_object_members(
         &mut self,
         members: &[ObjectMember],
     ) -> Result<ObjectMemberListId, BuildError> {
         self.object_members.intern(members).map_err(Into::into)
     }
+    /// Interns the ordered literal and type pieces of a template literal.
     pub fn intern_template_parts(
         &mut self,
         parts: &[TemplatePart],
     ) -> Result<TemplatePartListId, BuildError> {
         self.template_parts.intern(parts).map_err(Into::into)
     }
+    /// Interns bounds for one or more generic parameters in source order.
     pub fn intern_type_parameter_bounds(
         &mut self,
         bounds: &[TypeParameterBound],
@@ -698,18 +715,23 @@ impl IrBuilder {
             .intern(bounds)
             .map_err(Into::into)
     }
+    /// Interns named generic parameter records in declaration order.
     pub fn intern_type_parameters(
         &mut self,
         parameters: &[TypeParameter],
     ) -> Result<TypeParameterListId, BuildError> {
         self.type_parameters.intern(parameters).map_err(Into::into)
     }
+    /// Interns predicates whose subject is represented by a concrete type ID.
     pub fn intern_free_predicates(
         &mut self,
         predicates: &[FreePredicate],
     ) -> Result<FreePredicateListId, BuildError> {
         self.free_predicates.intern(predicates).map_err(Into::into)
     }
+    /// Adds one declaration and its version, authority, source, and language facts.
+    ///
+    /// The returned entity coordinate is stable for the lifetime of this image.
     pub fn add_item(
         &mut self,
         version: EntityVersion,
@@ -726,7 +748,7 @@ impl IrBuilder {
             });
         }
         let id = EntityId::try_from_index(self.items.len()).map_err(|_| CapacityError {
-            space: crate::ir::CapacitySpace::Value,
+            space: CapacitySpace::Value,
             actual: self.items.len(),
         })?;
         self.items.reserve_one();
@@ -737,6 +759,10 @@ impl IrBuilder {
         self.extensions.push(extension)?;
         Ok(id)
     }
+    /// Adds or joins one canonical directed relation.
+    ///
+    /// Relations with the same `(from, target, kind)` share an ID; confidence
+    /// and the compatibility source representative are joined deterministically.
     pub fn add_link(&mut self, link: Link) -> Result<LinkId, BuildError> {
         let key = LinkKey {
             from: link.from,
@@ -766,7 +792,7 @@ impl IrBuilder {
             return Ok(id);
         }
         let id = LinkId::try_from_index(self.links.len()).map_err(|_| CapacityError {
-            space: crate::ir::CapacitySpace::Value,
+            space: CapacitySpace::Value,
             actual: self.links.len(),
         })?;
         self.links.reserve_one(usize::from(link.source.is_some()));
@@ -785,7 +811,7 @@ impl IrBuilder {
     ) -> Result<LinkOccurrenceId, BuildError> {
         let id = LinkOccurrenceId::try_from_index(self.link_occurrences.len()).map_err(|_| {
             CapacityError {
-                space: crate::ir::CapacitySpace::Value,
+                space: CapacitySpace::Value,
                 actual: self.link_occurrences.len(),
             }
         })?;
@@ -812,11 +838,11 @@ impl IrBuilder {
         versions: &'source [EntityVersion],
     ) -> Result<TreeBuilder<'builder, 'source>, BuildError> {
         let start = EntityId::try_from_index(self.items.len()).map_err(|_| CapacityError {
-            space: crate::ir::CapacitySpace::Value,
+            space: CapacitySpace::Value,
             actual: self.items.len(),
         })?;
         let len = u32::try_from(versions.len()).map_err(|_| CapacityError {
-            space: crate::ir::CapacitySpace::Value,
+            space: CapacitySpace::Value,
             actual: versions.len(),
         })?;
         Ok(TreeBuilder {
@@ -846,11 +872,11 @@ impl IrBuilder {
         }
         self.reserve_frontend_tree(tree);
         let start = EntityId::try_from_index(self.items.len()).map_err(|_| CapacityError {
-            space: crate::ir::CapacitySpace::Value,
+            space: CapacitySpace::Value,
             actual: self.items.len(),
         })?;
         let count = u32::try_from(item_count).map_err(|_| CapacityError {
-            space: crate::ir::CapacitySpace::Value,
+            space: CapacitySpace::Value,
             actual: item_count,
         })?;
         let range = EntityRange { start, len: count };
@@ -1419,89 +1445,109 @@ pub struct TreeBuilder<'builder, 'source> {
 }
 
 impl TreeBuilder<'_, '_> {
+    /// Returns the exclusive final entity range reserved for this tree.
     #[must_use]
     pub const fn entities(&self) -> EntityRange {
         self.range
     }
+    /// Interns raw name or path bytes in the parent builder's atom arena.
     pub fn intern_atom(&mut self, bytes: &[u8]) -> Result<AtomId, BuildError> {
         self.builder.intern_atom(bytes)
     }
+    /// Interns UTF-8 text in the parent builder's text namespace.
     pub fn intern_text(&mut self, text: &str) -> Result<TextId, BuildError> {
         self.builder.intern_text(text)
     }
+    /// Reserves capacity for the anticipated number of type nodes.
     pub fn reserve_types(&mut self, additional: usize) {
         self.builder.reserve_types(additional);
     }
+    /// Hash-conses one type using the parent builder's shared type arena.
+    ///
+    /// Embedded IDs are interpreted in that builder's pools and checked when
+    /// the completed image is validated.
     pub fn intern_type(&mut self, ty: TypeExpr) -> Result<TypeId, BuildError> {
         self.builder.intern_type(ty)
     }
+    /// Interns a state-guarded node while preserving its type-state proof.
     pub fn intern_guarded<State: TypeState>(
         &mut self,
         ty: GuardedType<State>,
     ) -> Result<TypedTypeId<State>, BuildError> {
         self.builder.intern_guarded(ty)
     }
+    /// Interns a renderable concrete type in the shared type arena.
     pub fn intern_concrete(&mut self, ty: ConcreteType) -> Result<ConcreteTypeId, BuildError> {
         self.builder.intern_concrete(ty)
     }
+    /// Interns a type-level expression in the shared type arena.
     pub fn intern_computed(&mut self, ty: ComputedType) -> Result<ComputedTypeId, BuildError> {
         self.builder.intern_computed(ty)
     }
+    /// Interns an explicit unknown type in the shared type arena.
     pub fn intern_unknown(&mut self, ty: UnknownType) -> Result<UnknownTypeId, BuildError> {
         self.builder.intern_unknown(ty)
     }
+    /// Interns an ordered sequence of type coordinates.
     pub fn intern_types(&mut self, types: &[TypeId]) -> Result<TypeListId, BuildError> {
         self.builder.intern_types(types)
     }
+    /// Interns tuple or callable cells in their supplied order.
     pub fn intern_tuple_elements(
         &mut self,
         elements: &[TupleElement],
     ) -> Result<TupleElementListId, BuildError> {
         self.builder.intern_tuple_elements(elements)
     }
+    /// Interns object members in their supplied semantic order.
     pub fn intern_object_members(
         &mut self,
         members: &[ObjectMember],
     ) -> Result<ObjectMemberListId, BuildError> {
         self.builder.intern_object_members(members)
     }
+    /// Interns literal and type pieces of one template literal.
     pub fn intern_template_parts(
         &mut self,
         parts: &[TemplatePart],
     ) -> Result<TemplatePartListId, BuildError> {
         self.builder.intern_template_parts(parts)
     }
+    /// Interns generic bound rows in declaration order.
     pub fn intern_type_parameter_bounds(
         &mut self,
         bounds: &[TypeParameterBound],
     ) -> Result<TypeParameterBoundListId, BuildError> {
         self.builder.intern_type_parameter_bounds(bounds)
     }
+    /// Interns generic parameter records in declaration order.
     pub fn intern_type_parameters(
         &mut self,
         parameters: &[TypeParameter],
     ) -> Result<TypeParameterListId, BuildError> {
         self.builder.intern_type_parameters(parameters)
     }
+    /// Interns free predicates whose subject is a type coordinate.
     pub fn intern_free_predicates(
         &mut self,
         predicates: &[FreePredicate],
     ) -> Result<FreePredicateListId, BuildError> {
         self.builder.intern_free_predicates(predicates)
     }
-    /// Interns an entity list while the reserved tree range keeps local
-    /// entity identities branded to this one transaction.
+    /// Interns an ordered member list in the builder's global entity-ID space.
+    /// Use [`EntityRange::get`] to map tree-local IDs before interning them.
     pub fn intern_members(&mut self, members: &[EntityId]) -> Result<EntityListId, BuildError> {
         self.builder.intern_members(members)
     }
-    /// Interns an atom list while the reserved tree range owns its semantic
-    /// extension projection.
+    /// Interns ordered source-attribute atom coordinates in the shared pool.
     pub fn intern_attributes(&mut self, attributes: &[AtomId]) -> Result<AtomListId, BuildError> {
         self.builder.intern_attributes(attributes)
     }
+    /// Interns one external declaration or fragment target.
     pub fn intern_external(&mut self, target: ExternalTarget) -> Result<ExternalId, BuildError> {
         self.builder.intern_external(target)
     }
+    /// Commits the tree's declaration and occurrence slices against its reserved range.
     pub fn commit(
         self,
         items: &[TreeItemInput<'_>],

@@ -1,5 +1,5 @@
 use super::packed_types::{ComputedType, ConcreteType};
-use crate::ir::{AtomId, DenseId, TypeId};
+use crate::ir::{AtomId, TypeId};
 use core::{fmt, hash::Hash, marker::PhantomData};
 
 /// Visibility independent of any one language's spelling.
@@ -8,9 +8,13 @@ use core::{fmt, hash::Hash, marker::PhantomData};
 pub enum Visibility {
     /// The admitting authority did not provide a visibility fact.
     Unknown,
+    /// Visible only inside the declaring scope.
     Private,
+    /// Visible within an authority-defined set of scopes.
     Restricted,
+    /// Visible within the package or module boundary.
     Package,
+    /// Visible without a narrower scope restriction.
     Public,
 }
 
@@ -18,7 +22,9 @@ pub enum Visibility {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Mutability {
+    /// Mutation through this reference or binding is disallowed.
     Immutable,
+    /// Mutation through this reference or binding is permitted.
     Mutable,
 }
 
@@ -27,7 +33,9 @@ pub enum Mutability {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CxxReferenceCategory {
+    /// C++ lvalue reference (`T&`).
     Lvalue,
+    /// C++ rvalue reference (`T&&`).
     Rvalue,
 }
 
@@ -35,38 +43,64 @@ pub enum CxxReferenceCategory {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BuiltinType {
+    /// No value, unit, or empty tuple type.
     Unit,
+    /// A computation that cannot produce a value.
     Never,
+    /// Boolean truth value.
     Bool,
     /// Historical under-specified character role retained only for fragment
     /// compatibility. Fresh producers use [`NativeCharacterRole`].
     LegacyChar,
+    /// Signed integer with an 8-bit representation.
     I8,
+    /// Signed integer with a 16-bit representation.
     I16,
+    /// Signed integer with a 32-bit representation.
     I32,
+    /// Signed integer with a 64-bit representation.
     I64,
+    /// Signed integer with a 128-bit representation.
     I128,
+    /// Unsigned integer with an 8-bit representation.
     U8,
+    /// Unsigned integer with a 16-bit representation.
     U16,
+    /// Unsigned integer with a 32-bit representation.
     U32,
+    /// Unsigned integer with a 64-bit representation.
     U64,
+    /// Unsigned integer with a 128-bit representation.
     U128,
+    /// Floating-point value with a 16-bit representation.
     F16,
+    /// Floating-point value with a 32-bit representation.
     F32,
+    /// Floating-point value with a 64-bit representation.
     F64,
+    /// Language string value.
     String,
+    /// Opaque byte sequence.
     Bytes,
+    /// The language's builtin `object` type.
     Object,
     /// TypeScript's intentionally unchecked top type.
     Any,
     /// TypeScript's checked top type (distinct from an unresolved IR node).
     Unknown,
+    /// A source-level void result distinct from unit where the language preserves it.
     Void,
+    /// TypeScript's general numeric primitive.
     Number,
+    /// TypeScript's arbitrary-width integer primitive.
     BigInt,
+    /// TypeScript's symbol primitive.
     Symbol,
+    /// TypeScript's unique-symbol type-level identity.
     UniqueSymbol,
+    /// TypeScript's null value type.
     Null,
+    /// TypeScript's undefined value type.
     Undefined,
     /// Python's singleton none type; the suffix avoids colliding with `Option`-style names.
     None_ = 30,
@@ -125,13 +159,21 @@ pub enum NativeCharacterRole {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum UnknownReason {
+    /// The producer supplied no annotation or inferred type.
     Unannotated,
+    /// The source language permits dynamic values at this position.
     DynamicallyTyped,
+    /// A local name could not be resolved to a declaration.
     UnresolvedLocalName,
+    /// A referenced declaration outside the image could not be resolved.
     UnresolvedExternal,
+    /// Projection stopped at a configured recursion or depth boundary.
     TruncatedAtDepthLimit,
+    /// The producer or resolver had no fact for an otherwise supported case.
     OracleGap,
+    /// The source type has no representation in this semantic model.
     NoIrRepresentation,
+    /// The producer reported an error while determining the type.
     Error,
 }
 
@@ -142,11 +184,14 @@ pub enum UnknownReason {
 /// channel.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct UnknownType {
+    /// Closed explanation for why the semantic type is not more precise.
     pub reason: UnknownReason,
+    /// Optional source spelling retained as an interned byte string.
     pub spelling: Option<AtomId>,
 }
 
 impl UnknownType {
+    /// Creates an unknown node with no retained source spelling.
     #[must_use]
     pub const fn new(reason: UnknownReason) -> Self {
         Self {
@@ -155,6 +200,7 @@ impl UnknownType {
         }
     }
 
+    /// Retains the producer's spelling as an atom coordinate.
     #[must_use]
     pub const fn with_spelling(self, spelling: AtomId) -> Self {
         Self {
@@ -173,8 +219,11 @@ impl UnknownType {
 /// resolved concrete result.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeExpr {
+    /// Fully specified structural type node that can be rendered directly.
     Concrete(ConcreteType),
+    /// Type-level expression whose result may depend on evaluation or context.
     Computed(ComputedType),
+    /// Explicitly unavailable type fact with a closed reason.
     Unknown(UnknownType),
 }
 
@@ -351,49 +400,91 @@ pub type UnknownTypeId = TypedTypeId<UnknownState>;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeTag {
+    /// Language-independent primitive or special scalar.
     Builtin,
+    /// A type-level string, number, boolean, or other literal value.
     Literal,
+    /// A local nominal declaration coordinate.
     Nominal,
+    /// A cross-fragment or unresolved declaration target.
     External,
+    /// A function or type-parameter coordinate.
     Parameter,
+    /// A generic application with a base and ordered arguments.
     Applied,
+    /// An ordered tuple type.
     Tuple,
+    /// An object type with named or computed members.
     Object,
+    /// A function type with ordered parameters and results.
     Function,
+    /// A language reference with independent mutability.
     Reference,
+    /// A raw or language-specific pointer type.
     Pointer,
+    /// A sequence view whose extent is supplied by its source.
     Slice,
+    /// Sequence type carrying a source extent shape.
     Array,
+    /// An optional or nullable wrapper around a type.
     Optional,
+    /// A type admitting any of its ordered alternatives.
     Union,
+    /// A type constrained to satisfy all of its ordered constituents.
     Intersection,
+    /// A type-level key enumeration derived from another type.
     KeyOf,
+    /// A type-level lookup for the type of a value or declaration.
     TypeOf,
+    /// A type-level indexed lookup into an object or sequence type.
     IndexedAccess,
+    /// A type-level conditional expression over a checked type relation.
     Conditional,
+    /// A type-level object transformation over selected keys.
     Mapped,
+    /// A type-level variable inferred from a pattern match.
     Infer,
+    /// A string type assembled from ordered literal and type parts.
     TemplateLiteral,
+    /// A module or namespace import type expression.
     Import,
+    /// The awaited result type of an asynchronous type.
     Awaited,
+    /// The receiver type of the current declaration or context.
     This,
+    /// An explicit unknown-type node.
     Unknown,
+    /// An opaque implementation type bounded by traits or interfaces.
     ImplTrait,
+    /// A dynamically dispatched trait-object type.
     DynTrait,
+    /// A wildcard type with an optional upper or lower bound.
     Wildcard,
+    /// A type augmented with annotations or modifiers.
     Annotated,
+    /// A written inference request such as `_`, `auto`, or `var`.
     Inferred,
+    /// A qualified type path with a base and named path segments.
     QualifiedPath,
+    /// A key/value mapping type.
     Map,
+    /// A directional channel with an element type.
     Channel,
+    /// A C++ lvalue or rvalue reference category.
     CxxReference,
+    /// A C-family pointer node with native pointer semantics.
     CPointer,
+    /// A pointer to a member owned by a C++ class or record.
     CxxMemberPointer,
+    /// A direct C-family cv-qualifier wrapper.
     CQualified,
+    /// A pointer to a C-family block/function object.
     CBlockPointer,
+    /// A native character scalar or code unit with measured width.
     NativeCharacter,
 }
 
+/// Eight-byte directory entry describing one interned type node.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeHeader {
