@@ -1,0 +1,7 @@
+# Recovery checkpoint
+
+Exact unfinished integration working source and real merge/index recovery. Previous verified recovery checkpoint is 1076ab25. Latest real d8 library gate compiled and ran 259 passed, 2 failed, 1 ignored; source verification passed and client was not run because library failed. Root diagnosed two inconsistent test fixtures (Java annotations under Rust request; absent deferred-root commitment), added a valid Java positive control, preserved strict rejection checks, and pushed atomic repair f85fb905. That repair has not rerun. Three latest source worktrees are separately preserved and not composed or runtime accepted. Old Run19 native exploration has 47 captures; fresh GUI/animation/cold-start acceptance remains pending. Original c440 recorder permissions are confirmed; corrected af83 recorder identity remains separately pending. Same-engine live snapshot worktree is still clean and no running DB snapshot or deployment was made.
+
+This preserves frozen working source, not an accepted integration or release. No real worktree index, HEAD, branch, or merge state was changed. The default canonical branch was not moved.
+
+`merge-index-stages.nul` and `index-objects/` preserve staged-only content. To reconstruct the index, use a separate checkout and temporary GIT_INDEX_FILE; feed the NUL records to git update-index -z --index-info after git read-tree --empty. Do not overwrite the existing integration index.

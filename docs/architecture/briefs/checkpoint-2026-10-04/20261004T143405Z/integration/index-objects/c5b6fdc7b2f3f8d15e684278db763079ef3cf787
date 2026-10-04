@@ -1,0 +1,31 @@
+[package]
+name = "backend-extension-turso"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-library = { path = "../../crates/library" }
+backend-semantic = { path = "../../crates/semantic" }
+backend-store = { path = "../../crates/store" }
+backend-version = { path = "../../crates/version" }
+blake3.workspace = true
+turso = { workspace = true }
+
+[dev-dependencies]
+futures-executor.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "package_graph"
+path = "benches/package_graph.rs"
+harness = false
+
+[[bench]]
+name = "row_move"
+path = "benches/row_move.rs"
+harness = false

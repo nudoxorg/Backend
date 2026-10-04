@@ -36,6 +36,7 @@ const PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS: u64 = 60_000;
 /// Bound process-local freshness evidence so long-lived owners do not retain
 /// an observation for every package version they have ever fetched.
 const MAX_FRESH_PACKAGE_FACT_OBSERVATIONS: usize = 4_096;
+const MAX_CATALOG_PROJECTION_ATTEMPTS: usize = 2;
 const MAX_OSV_ZIP_MEMBERS: usize = 1_001_024;
 const MAX_OSV_ZIP_COMPRESSED_BYTES: usize = 4 * 1024 * 1024 * 1024;
 const MAX_OSV_ZIP_EXPANDED_BYTES: usize = 64 * 1024 * 1024 * 1024;
@@ -61,19 +62,95 @@ pub(super) struct RegistryGateway {
 
 /// Resident catalog rows, name index, and registry dependency facts.
 ///
-/// Rebuilt when a source facts root, mutable-fact freshness state, or advisory
-/// feed generation changes. Surface commands borrow this projection instead
-/// of re-admitting every published package.
+/// Rebuilt when a source catalog generation/facts root, mutable-fact freshness
+/// state, or advisory feed generation changes. Surface commands borrow this
+/// projection instead of re-admitting every published package.
 pub(super) struct CatalogProjection {
     pub(super) records: Vec<backend_engine::RegistryPackageRecord>,
     pub(super) index: Arc<super::product_state::CatalogLookupIndex>,
+    /// Opaque identity of the source selection and mutable overlays from
+    /// which this resident catalog and dependency snapshot was projected.
+    pub(super) source_revision: CatalogSourceRevision,
+    /// Opaque identity of only the immutable registry facts used by the
+    /// dependency graph. Freshness and advisory row overlays do not change it.
+    pub(super) dependency_revision: CatalogDependencyRevision,
     /// Digest of the currently selected row overlays. This can change when
     /// freshness or mutable facts change while the reusable Tantivy index does
     /// not.
     pub(super) selected_rows_snapshot: [u8; 32],
     /// Authority generation that produced the current advisory row overlays.
     pub(super) advisory_generation: [u8; 32],
-    pub(super) dependency_facts: Vec<backend_engine::PackageDependencySourceFacts>,
+    dependency_facts: Arc<[backend_engine::PackageDependencySourceFacts]>,
+}
+
+impl CatalogProjection {
+    /// Borrows registry dependency facts selected by this projection.
+    pub(super) fn dependency_facts(&self) -> &[backend_engine::PackageDependencySourceFacts] {
+        &self.dependency_facts
+    }
+}
+
+/// Opaque revision for one coherent source-backed projection. Its bytes stay
+/// private: it is not itself a content witness or a cross-host proof that the
+/// revision is newest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CatalogSourceRevision([u8; 32]);
+
+impl CatalogSourceRevision {
+    fn from_key(key: &CatalogProjectionKey) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.registry.catalog-source-revision.v1\0");
+        hasher.update(&(key.sources.len() as u64).to_be_bytes());
+        for source in &key.sources {
+            hasher.update(&source.source);
+            hasher.update(&source.catalog_generation.to_be_bytes());
+            hasher.update(&source.facts_frontier);
+            hasher.update(&source.observation_state);
+        }
+        hasher.update(&key.advisory_generation);
+        Self(*hasher.finalize().as_bytes())
+    }
+}
+
+/// Opaque revision for the immutable registry dependency facts alone.
+/// Freshness and advisory changes rebuild catalog rows, but leave this
+/// dependency selection reusable. It is a local reuse key, not a proof that a
+/// source revision is newest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CatalogDependencyRevision([u8; 32]);
+
+impl CatalogDependencyRevision {
+    fn from_key(key: &CatalogProjectionKey) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.registry.catalog-dependency-revision.v1\0");
+        hasher.update(&(key.sources.len() as u64).to_be_bytes());
+        for source in &key.sources {
+            hasher.update(&source.source);
+            hasher.update(&source.catalog_generation.to_be_bytes());
+            hasher.update(&source.facts_frontier);
+        }
+        Self(*hasher.finalize().as_bytes())
+    }
+}
+
+/// Failure while obtaining a stable local catalog projection.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum CatalogProjectionError {
+    /// A configured source or overlay could not be observed.
+    Source(String),
+    /// Source state changed during both bounded projection attempts.
+    ChangedDuringProjection,
+}
+
+impl fmt::Display for CatalogProjectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source(message) => formatter.write_str(message),
+            Self::ChangedDuringProjection => {
+                formatter.write_str("registry sources changed during catalog projection")
+            }
+        }
+    }
 }
 
 /// Exact registry row identity paired with its current advisory authority DTO.
@@ -95,6 +172,7 @@ struct VersionedAdvisoryOverlay {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CatalogSourceProjectionKey {
     source: [u8; 32],
+    catalog_generation: u64,
     facts_frontier: [u8; 32],
     observation_state: [u8; 32],
 }
@@ -103,6 +181,30 @@ struct CatalogSourceProjectionKey {
 struct CatalogProjectionKey {
     sources: Vec<CatalogSourceProjectionKey>,
     advisory_generation: [u8; 32],
+}
+
+/// Chooses whether one projection must re-materialize dependency facts or can
+/// retain the immutable slice selected by the previous resident projection.
+struct CatalogDependencyFactsPlan {
+    revision: CatalogDependencyRevision,
+    reusable_facts: Option<Arc<[backend_engine::PackageDependencySourceFacts]>>,
+}
+
+impl CatalogDependencyFactsPlan {
+    fn new(key: &CatalogProjectionKey, previous: Option<&CatalogProjection>) -> Self {
+        let revision = CatalogDependencyRevision::from_key(key);
+        let reusable_facts = previous
+            .filter(|projection| projection.dependency_revision == revision)
+            .map(|projection| Arc::clone(&projection.dependency_facts));
+        Self {
+            revision,
+            reusable_facts,
+        }
+    }
+
+    fn collects_facts(&self) -> bool {
+        self.reusable_facts.is_none()
+    }
 }
 
 /// Completeness of one mutable package fact group, kept separate from the
@@ -541,14 +643,18 @@ impl RegistryGateway {
     fn project_catalog_records(
         &mut self,
         generation: [u8; 32],
+        dependency_plan: &CatalogDependencyFactsPlan,
     ) -> Result<
         (
             Vec<backend_engine::RegistryPackageRecord>,
             VersionedAdvisoryOverlay,
+            Arc<[backend_engine::PackageDependencySourceFacts]>,
         ),
         String,
     > {
         let mut records = Vec::new();
+        let mut dependency_facts = Vec::new();
+        let collect_dependency_facts = dependency_plan.collects_facts();
         let mut seen = BTreeSet::new();
         let mut advisory_overlay = VersionedAdvisoryOverlay {
             generation,
@@ -588,6 +694,44 @@ impl RegistryGateway {
                     .get(&advisory_key)
                     .cloned()
                     .ok_or_else(|| "advisory overlay omitted a published release".to_owned())?;
+                if collect_dependency_facts {
+                    let registry_authority = backend_library::PackageGraphSourceAuthority::Registry(
+                        backend_library::RegistryAuthorityId::from_configured_source(
+                            source.id().as_bytes(),
+                        ),
+                    );
+                    let graph_coordinate = backend_engine::PackageReference::parse(
+                        published.coordinate.as_str().to_owned(),
+                    )
+                    .map_err(|error| {
+                        format!("admit published registry graph coordinate: {error}")
+                    })?;
+                    let source_authority = registry_authority;
+                    let source_dependency_facts = match &published.dependency_facts {
+                        backend_library::DependencyFacts::Known(rows) => {
+                            backend_library::DependencyFacts::Known(
+                                rows.iter()
+                                    .cloned()
+                                    .map(|row| row.with_source_authority(source_authority))
+                                    .collect::<Vec<_>>()
+                                    .into_boxed_slice(),
+                            )
+                        }
+                        backend_library::DependencyFacts::Unknown(reason) => {
+                            backend_library::DependencyFacts::Unknown(reason.clone())
+                        }
+                        backend_library::DependencyFacts::Unavailable(reason) => {
+                            backend_library::DependencyFacts::Unavailable(reason.clone())
+                        }
+                    };
+                    dependency_facts.push((
+                        backend_library::PackageGraphSourceKey::new(
+                            graph_coordinate,
+                            registry_authority,
+                        ),
+                        source_dependency_facts,
+                    ));
+                }
                 let admitted = admit_registry_coordinate(&published.coordinate)
                     .map_err(|_| backend_engine::ProductAdmissionError::PackageReference)
                     .map_err(|error| error.to_string())?;
@@ -688,7 +832,14 @@ impl RegistryGateway {
                     .cmp(&right.authority.map(|authority| authority.source))
             })
         });
-        Ok((records, advisory_overlay))
+        let dependency_facts = match &dependency_plan.reusable_facts {
+            Some(facts) => Arc::clone(facts),
+            None => {
+                dependency_facts.sort_by(|left, right| left.0.cmp(&right.0));
+                Arc::from(dependency_facts.into_boxed_slice())
+            }
+        };
+        Ok((records, advisory_overlay, dependency_facts))
     }
 
     /// Identity of the opened catalog generations.
@@ -698,71 +849,9 @@ impl RegistryGateway {
     /// Callers keep a resident dependency index until it changes. Opening a
     /// resident source reads its generation.
     pub(super) fn publication_stamp(&mut self) -> Result<[u8; 32], String> {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend.registry.publication-stamp.v1\0");
-        for source in self.sources.sources().cloned().collect::<Vec<_>>() {
-            let service = self
-                .service_for(&source)
-                .map_err(|error| format!("open registry source: {error}"))?;
-            service
-                .refresh_external()
-                .map_err(|error| format!("refresh registry source: {error}"))?;
-            hasher.update(&source.id().as_bytes());
-            hasher.update(&service.catalog_generation().to_le_bytes());
-        }
-        hasher.update(&self.observation_freshness_state());
-        hasher.update(&self.advisory_overlay_generation()?);
-        Ok(*hasher.finalize().as_bytes())
-    }
-
-    /// Returns dependency facts from the same immutable publication records as
-    /// the catalog. Unknown and unavailable metadata stay typed all the way to
-    /// the product surface; an empty known set is the only representation of
-    /// a package that has no declared edges.
-    pub(super) fn dependency_facts(&mut self) -> Vec<backend_engine::PackageDependencySourceFacts> {
-        let mut facts = Vec::new();
-        let mut seen = BTreeSet::new();
-        for ((registry_id, _), slot) in &self.slots {
-            let Some(service) = slot.service.as_ref() else {
-                continue;
-            };
-            for published in service.published_packages() {
-                if !seen.insert((*registry_id, published.coordinate.clone())) {
-                    continue;
-                }
-                if let Ok(source) = backend_engine::PackageReference::parse(
-                    published.coordinate.as_str().to_owned(),
-                ) {
-                    let source_authority = backend_library::PackageGraphSourceAuthority::Registry(
-                        backend_library::RegistryAuthorityId::from_configured_source(
-                            registry_id.as_bytes(),
-                        ),
-                    );
-                    let dependency_facts = match &published.dependency_facts {
-                        backend_library::DependencyFacts::Known(rows) => {
-                            backend_library::DependencyFacts::Known(
-                                rows.iter()
-                                    .cloned()
-                                    .map(|row| row.with_source_authority(source_authority))
-                                    .collect::<Vec<_>>()
-                                    .into_boxed_slice(),
-                            )
-                        }
-                        backend_library::DependencyFacts::Unknown(reason) => {
-                            backend_library::DependencyFacts::Unknown(reason.clone())
-                        }
-                        backend_library::DependencyFacts::Unavailable(reason) => {
-                            backend_library::DependencyFacts::Unavailable(reason.clone())
-                        }
-                    };
-                    facts.push((
-                        backend_library::PackageGraphSourceKey::new(source, source_authority),
-                        dependency_facts,
-                    ));
-                }
-            }
-        }
-        facts
+        self.catalog_projection_snapshot()
+            .map(|projection| projection.source_revision.0)
+            .map_err(|error| error.to_string())
     }
 
     /// Composes the source set without opening a network connection or source
@@ -816,40 +905,123 @@ impl RegistryGateway {
     }
 
     /// Returns the resident catalog projection, rebuilding it when a source
-    /// facts root or mutable-fact freshness state changes.
+    /// catalog generation/facts root or mutable-fact freshness state changes.
     pub(super) fn catalog_projection(&mut self) -> Result<Arc<CatalogProjection>, String> {
-        let key = self.projection_key()?;
-        if let Some((cached_key, projection)) = &self.projection
-            && cached_key == &key
-        {
-            return Ok(Arc::clone(projection));
+        self.catalog_projection_snapshot()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Returns one resident catalog, index, and dependency snapshot with an
+    /// opaque source revision. Source-backed reads are sampled on both sides
+    /// of materialization; an unstable source is refused after two attempts.
+    pub(super) fn catalog_projection_snapshot(
+        &mut self,
+    ) -> Result<Arc<CatalogProjection>, CatalogProjectionError> {
+        self.catalog_projection_with_hook(|_| {})
+    }
+
+    fn catalog_projection_with_hook(
+        &mut self,
+        mut after_selection: impl FnMut(&mut Self),
+    ) -> Result<Arc<CatalogProjection>, CatalogProjectionError> {
+        for attempt in 0..MAX_CATALOG_PROJECTION_ATTEMPTS {
+            let before = self
+                .projection_key()
+                .map_err(CatalogProjectionError::Source)?;
+            if let Some((cached_key, projection)) = &self.projection
+                && cached_key == &before
+            {
+                let projection = Arc::clone(projection);
+                after_selection(self);
+                let after = self
+                    .projection_key()
+                    .map_err(CatalogProjectionError::Source)?;
+                if before == after {
+                    return Ok(projection);
+                }
+                if attempt + 1 == MAX_CATALOG_PROJECTION_ATTEMPTS {
+                    return Err(CatalogProjectionError::ChangedDuringProjection);
+                }
+                continue;
+            }
+            // Release-fact freshness changes the row overlay without changing
+            // searchable terms. Advisory generations and publication
+            // generations are part of the search revision because they can
+            // add or remove indexed package and advisory terms.
+            let reusable_index = self
+                .projection
+                .as_ref()
+                .filter(|(cached_key, _)| same_catalog_search_revision(cached_key, &before))
+                .map(|(_, projection)| Arc::clone(&projection.index));
+            let dependency_plan = CatalogDependencyFactsPlan::new(
+                &before,
+                self.projection
+                    .as_ref()
+                    .map(|(_, projection)| projection.as_ref()),
+            );
+            let (records, advisory_overlay, dependency_facts) = self
+                .project_catalog_records(before.advisory_generation, &dependency_plan)
+                .map_err(CatalogProjectionError::Source)?;
+            let index = reusable_index.unwrap_or_else(|| {
+                Arc::new(super::product_state::CatalogLookupIndex::from_catalog(
+                    &records,
+                ))
+            });
+            let selected_rows_snapshot =
+                super::product_state::CatalogLookupIndex::snapshot_for_catalog(&records);
+
+            // Focused owner tests inject actual local commits after selecting
+            // either a cached or newly materialized projection. In production
+            // this is a no-op; the second source-key sample observes commits
+            // made by another owner/process during projection selection.
+            after_selection(self);
+            let after = self
+                .projection_key()
+                .map_err(CatalogProjectionError::Source)?;
+            if before != after {
+                if attempt + 1 < MAX_CATALOG_PROJECTION_ATTEMPTS {
+                    continue;
+                }
+                return Err(CatalogProjectionError::ChangedDuringProjection);
+            }
+
+            let projection = Arc::new(CatalogProjection {
+                records,
+                index,
+                source_revision: CatalogSourceRevision::from_key(&after),
+                dependency_revision: dependency_plan.revision,
+                selected_rows_snapshot,
+                advisory_generation: advisory_overlay.generation,
+                dependency_facts,
+            });
+            self.projection = Some((after, Arc::clone(&projection)));
+            return Ok(projection);
         }
-        // Release-fact freshness changes the row overlay without changing
-        // searchable terms. Advisory generations are part of the search
-        // revision because they can add or remove indexed advisory terms.
-        let reusable_index = self
-            .projection
-            .as_ref()
-            .filter(|(cached_key, _)| same_catalog_search_revision(cached_key, &key))
-            .map(|(_, projection)| Arc::clone(&projection.index));
-        let (records, advisory_overlay) = self.project_catalog_records(key.advisory_generation)?;
-        let dependency_facts = self.dependency_facts();
-        let index = reusable_index.unwrap_or_else(|| {
-            Arc::new(super::product_state::CatalogLookupIndex::from_catalog(
-                &records,
-            ))
-        });
-        let projection = Arc::new(CatalogProjection {
-            selected_rows_snapshot: super::product_state::CatalogLookupIndex::snapshot_for_catalog(
-                &records,
-            ),
-            advisory_generation: advisory_overlay.generation,
-            records,
-            index,
-            dependency_facts,
-        });
-        self.projection = Some((key, Arc::clone(&projection)));
-        Ok(projection)
+        Err(CatalogProjectionError::ChangedDuringProjection)
+    }
+
+    /// Revalidates that this exact resident projection is still selected by
+    /// the local owner. It does not make an absolute latest-across-hosts claim.
+    pub(super) fn validate_resident_projection(
+        &mut self,
+        projection: &Arc<CatalogProjection>,
+    ) -> Result<bool, CatalogProjectionError> {
+        let before = self
+            .projection_key()
+            .map_err(CatalogProjectionError::Source)?;
+        let current = self
+            .projection_key()
+            .map_err(CatalogProjectionError::Source)?;
+        if before != current {
+            return Err(CatalogProjectionError::ChangedDuringProjection);
+        }
+        let Some((resident_key, resident_projection)) = self.projection.as_ref() else {
+            return Ok(false);
+        };
+        let selected = current == *resident_key
+            && projection.source_revision == CatalogSourceRevision::from_key(&current)
+            && Arc::ptr_eq(projection, resident_projection);
+        Ok(selected)
     }
 
     fn projection_key(&mut self) -> Result<CatalogProjectionKey, String> {
@@ -865,10 +1037,12 @@ impl RegistryGateway {
                 .map_err(|error| format!("refresh registry source: {error}"))?;
             source_keys.push(CatalogSourceProjectionKey {
                 source: service.source_id(),
+                catalog_generation: service.catalog_generation(),
                 facts_frontier: service.facts_frontier(),
                 observation_state,
             });
         }
+        source_keys.sort_unstable_by_key(|source| source.source);
         Ok(CatalogProjectionKey {
             sources: source_keys,
             advisory_generation: self.advisory_overlay_generation()?,
@@ -1349,7 +1523,9 @@ fn same_catalog_search_revision(left: &CatalogProjectionKey, right: &CatalogProj
             .iter()
             .zip(&right.sources)
             .all(|(left, right)| {
-                left.source == right.source && left.facts_frontier == right.facts_frontier
+                left.source == right.source
+                    && left.catalog_generation == right.catalog_generation
+                    && left.facts_frontier == right.facts_frontier
             })
 }
 
@@ -2125,44 +2301,45 @@ fn read_rustsec_tree(
         #[cfg(unix)]
         mtime_nsec: i64,
         #[cfg(windows)]
-        volume: Option<u32>,
-        #[cfg(windows)]
-        index: Option<u64>,
+        identity: backend_platform::FileIdentity,
         #[cfg(windows)]
         last_write: u64,
     }
 
     impl FileStamp {
-        fn capture(metadata: &std::fs::Metadata) -> Self {
+        /// Captures the size, times, and object identity of the file `file`
+        /// holds open. The identity comes from the handle, never from a name.
+        fn capture(file: &std::fs::File) -> Result<Self, String> {
+            let metadata = file.metadata().map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
-                Self {
+                Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
                     device: metadata.dev(),
                     inode: metadata.ino(),
                     mtime: metadata.mtime(),
                     mtime_nsec: metadata.mtime_nsec(),
-                }
+                })
             }
             #[cfg(windows)]
             {
                 use std::os::windows::fs::MetadataExt;
-                Self {
+                Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
-                    volume: metadata.volume_serial_number(),
-                    index: metadata.file_index(),
+                    identity: backend_platform::FileIdentity::of_file(file)
+                        .map_err(|error| error.to_string())?,
                     last_write: metadata.last_write_time(),
-                }
+                })
             }
             #[cfg(not(any(unix, windows)))]
             {
-                Self {
+                Ok(Self {
                     len: metadata.len(),
                     modified: metadata.modified().ok(),
-                }
+                })
             }
         }
     }
@@ -2205,19 +2382,15 @@ fn read_rustsec_tree(
         if !before.is_file() || before.len() > u64::try_from(maximum).unwrap_or(u64::MAX) {
             return Err("RustSec authority tree exceeds bound".to_owned());
         }
-        let stamp = FileStamp::capture(&before);
+        let stamp = FileStamp::capture(&file)?;
         let mut reader = file.take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1));
         let mut bytes = Vec::with_capacity(usize::try_from(before.len()).unwrap_or(maximum));
         reader
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
-        let after = reader
-            .get_ref()
-            .metadata()
-            .map_err(|error| error.to_string())?;
         if bytes.len() > maximum
             || u64::try_from(bytes.len()).unwrap_or(u64::MAX) != before.len()
-            || FileStamp::capture(&after) != stamp
+            || FileStamp::capture(reader.get_ref())? != stamp
         {
             return Err("RustSec authority file changed during admission".to_owned());
         }
@@ -2351,9 +2524,7 @@ fn read_rustsec_tree(
             .directory
             .open_file_read(&snapshot.name)
             .map_err(|error| error.to_string())?;
-        if FileStamp::capture(&file.metadata().map_err(|error| error.to_string())?)
-            != snapshot.stamp
-        {
+        if FileStamp::capture(&file)? != snapshot.stamp {
             return Err("RustSec authority file changed during snapshot admission".to_owned());
         }
         let mut hasher = blake3::Hasher::new();
@@ -2376,12 +2547,8 @@ fn read_rustsec_tree(
                 .ok_or_else(|| "RustSec authority tree exceeds bound".to_owned())?;
             hasher.update(&buffer[..read]);
         }
-        let after = reader
-            .get_ref()
-            .metadata()
-            .map_err(|error| error.to_string())?;
         if total_bytes != snapshot.stamp.len
-            || FileStamp::capture(&after) != snapshot.stamp
+            || FileStamp::capture(reader.get_ref())? != snapshot.stamp
             || *hasher.finalize().as_bytes() != snapshot.digest
         {
             return Err("RustSec authority file changed during snapshot admission".to_owned());
@@ -3252,7 +3419,11 @@ mod tests {
                 std::process::id()
             ));
             match fs::create_dir(&path) {
-                Ok(()) => return path,
+                Ok(()) => {
+                    crate::test_support::make_private(&path)
+                        .expect("make the registry fixture directory private");
+                    return path;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("create isolated registry fixture directory: {error}"),
             }
@@ -3545,6 +3716,61 @@ mod tests {
         })
     }
 
+    fn local_registry_server_pages(
+        listener: TcpListener,
+        pages: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut feed_index = 0;
+            let mut archive_index = 0;
+            for _ in 0..pages.len() * 2 {
+                let (mut stream, _) = listener.accept().expect("local registry request");
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).expect("read registry request");
+                let request = String::from_utf8_lossy(&request[..read]);
+                let body = if request.starts_with("GET /feed?") {
+                    let body = &pages[feed_index].0;
+                    feed_index += 1;
+                    body
+                } else if request.starts_with("GET /archive ") {
+                    let body = &pages[archive_index].1;
+                    archive_index += 1;
+                    body
+                } else {
+                    panic!(
+                        "unexpected registry request: {}",
+                        request.lines().next().unwrap_or("")
+                    );
+                };
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .expect("write registry response headers");
+                stream
+                    .write_all(body)
+                    .expect("write registry response body");
+            }
+        })
+    }
+
+    fn single_package_feed(name: &str, version: &str, archive: &[u8], next: &str) -> Vec<u8> {
+        let digest = backend_engine::capability::CapabilityArtifactId::from_value(archive);
+        let digest = digest
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!(
+            r#"{{"schema":1,"next":"{}","items":[{{"name":"{name}","version":"{version}","blake3":"{digest}","provenance":"{}","archive":"/archive"}}]}}"#,
+            next,
+            "09".repeat(32),
+        )
+        .into_bytes()
+    }
+
     #[test]
     fn bounded_offline_cache_reuse_survives_a_cold_gateway_reopen() {
         let root = scratch();
@@ -3681,6 +3907,26 @@ mod tests {
             .next()
             .expect("published release");
         let clean_projection = gateway.catalog_projection().expect("clean projection");
+        gateway.observation_generation = gateway.observation_generation.saturating_add(1);
+        let freshness_projection = gateway
+            .catalog_projection_snapshot()
+            .expect("projection after freshness overlay change");
+        assert_ne!(
+            clean_projection.source_revision,
+            freshness_projection.source_revision
+        );
+        assert_eq!(
+            clean_projection.dependency_revision,
+            freshness_projection.dependency_revision
+        );
+        assert!(Arc::ptr_eq(
+            &clean_projection.dependency_facts,
+            &freshness_projection.dependency_facts
+        ));
+        assert!(Arc::ptr_eq(
+            &clean_projection.index,
+            &freshness_projection.index
+        ));
         let clean_stamp = gateway
             .publication_stamp()
             .expect("initial published catalog stamp");
@@ -3713,6 +3959,18 @@ mod tests {
             clean_projection.advisory_generation,
             refreshed_projection.advisory_generation
         );
+        assert_ne!(
+            freshness_projection.source_revision,
+            refreshed_projection.source_revision
+        );
+        assert_eq!(
+            freshness_projection.dependency_revision,
+            refreshed_projection.dependency_revision
+        );
+        assert!(Arc::ptr_eq(
+            &freshness_projection.dependency_facts,
+            &refreshed_projection.dependency_facts
+        ));
         assert_ne!(
             clean_projection.index.search_identity(),
             refreshed_projection.index.search_identity()
@@ -3988,6 +4246,7 @@ mod tests {
         let old_key = CatalogProjectionKey {
             sources: vec![CatalogSourceProjectionKey {
                 source: [1; 32],
+                catalog_generation: 4,
                 facts_frontier: [2; 32],
                 observation_state: [3; 32],
             }],
@@ -4008,6 +4267,13 @@ mod tests {
             }],
             ..old_key.clone()
         };
+        let catalog_advanced = CatalogProjectionKey {
+            sources: vec![CatalogSourceProjectionKey {
+                catalog_generation: 5,
+                ..old_key.sources[0]
+            }],
+            ..old_key.clone()
+        };
         let source_replaced = CatalogProjectionKey {
             sources: vec![CatalogSourceProjectionKey {
                 source: [8; 32],
@@ -4022,6 +4288,7 @@ mod tests {
         };
         assert!(same_catalog_search_revision(&old_key, &freshness_advanced));
         assert!(!same_catalog_search_revision(&old_key, &source_advanced));
+        assert!(!same_catalog_search_revision(&old_key, &catalog_advanced));
         assert!(!same_catalog_search_revision(&old_key, &source_replaced));
         assert!(!same_catalog_search_revision(&old_key, &advisory_advanced));
 
@@ -4047,6 +4314,234 @@ mod tests {
             super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
         );
         assert_ne!(rebuilt.search_identity(), Some(identity));
+    }
+
+    #[test]
+    fn opaque_source_revision_binds_identity_frontiers_and_mutable_overlays() {
+        let key = CatalogProjectionKey {
+            sources: vec![CatalogSourceProjectionKey {
+                source: [1; 32],
+                catalog_generation: 4,
+                facts_frontier: [2; 32],
+                observation_state: [3; 32],
+            }],
+            advisory_generation: [5; 32],
+        };
+        let changed = [
+            CatalogProjectionKey {
+                sources: vec![CatalogSourceProjectionKey {
+                    source: [9; 32],
+                    ..key.sources[0]
+                }],
+                ..key.clone()
+            },
+            CatalogProjectionKey {
+                sources: vec![CatalogSourceProjectionKey {
+                    catalog_generation: 9,
+                    ..key.sources[0]
+                }],
+                ..key.clone()
+            },
+            CatalogProjectionKey {
+                sources: vec![CatalogSourceProjectionKey {
+                    facts_frontier: [9; 32],
+                    ..key.sources[0]
+                }],
+                ..key.clone()
+            },
+            CatalogProjectionKey {
+                sources: vec![CatalogSourceProjectionKey {
+                    observation_state: [9; 32],
+                    ..key.sources[0]
+                }],
+                ..key.clone()
+            },
+            CatalogProjectionKey {
+                advisory_generation: [9; 32],
+                ..key.clone()
+            },
+        ];
+        let revision = CatalogSourceRevision::from_key(&key);
+        for changed_key in &changed {
+            assert_ne!(revision, CatalogSourceRevision::from_key(changed_key));
+        }
+        let dependency_revision = CatalogDependencyRevision::from_key(&key);
+        assert_eq!(
+            dependency_revision,
+            CatalogDependencyRevision::from_key(&CatalogProjectionKey {
+                sources: vec![CatalogSourceProjectionKey {
+                    observation_state: [9; 32],
+                    ..key.sources[0]
+                }],
+                ..key.clone()
+            })
+        );
+        assert_eq!(
+            dependency_revision,
+            CatalogDependencyRevision::from_key(&CatalogProjectionKey {
+                advisory_generation: [9; 32],
+                ..key.clone()
+            })
+        );
+        for changed_key in &changed[..3] {
+            assert_ne!(
+                dependency_revision,
+                CatalogDependencyRevision::from_key(changed_key)
+            );
+        }
+    }
+
+    #[test]
+    fn projection_retries_after_external_catalog_change_and_keeps_rows_and_dependencies_together() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local registry listener");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let config = registry_config(endpoint);
+        let first_archive = b"first external registry publication".to_vec();
+        let second_archive = b"second external registry publication".to_vec();
+        let server = local_registry_server_pages(
+            listener,
+            vec![
+                (
+                    single_package_feed("alpha", "1.0.0", &first_archive, &"07".repeat(32)),
+                    first_archive.clone(),
+                ),
+                (
+                    single_package_feed("beta", "1.0.0", &second_archive, &"08".repeat(32)),
+                    second_archive.clone(),
+                ),
+            ],
+        );
+        let mut reader = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open projection reader")
+            .expect("configured reader");
+        let mut publisher = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open concurrent publisher")
+            .expect("configured publisher");
+        let previous = reader
+            .catalog_projection_snapshot()
+            .expect("initial empty projection");
+        assert!(previous.records.is_empty());
+
+        let first_coordinate =
+            PackageCoordinate::parse("pkg:cargo/alpha@1.0.0").expect("first coordinate");
+        let second_coordinate =
+            PackageCoordinate::parse("pkg:cargo/beta@1.0.0").expect("second coordinate");
+        let mut selections = 0;
+        let unstable = reader.catalog_projection_with_hook(|_| {
+            let (coordinate, expected_archive) = match selections {
+                0 => (&first_coordinate, &first_archive),
+                1 => (&second_coordinate, &second_archive),
+                _ => panic!("only two bounded selection attempts"),
+            };
+            selections += 1;
+            let bytes = publisher
+                .acquire(coordinate)
+                .expect("concurrent source publication");
+            assert_eq!(&bytes, expected_archive);
+        });
+        server.join().expect("local registry server");
+
+        assert!(matches!(
+            unstable,
+            Err(CatalogProjectionError::ChangedDuringProjection)
+        ));
+        assert_eq!(selections, MAX_CATALOG_PROJECTION_ATTEMPTS);
+        assert!(
+            reader
+                .projection
+                .as_ref()
+                .is_some_and(|(_, resident)| Arc::ptr_eq(resident, &previous))
+        );
+
+        let projection = reader
+            .catalog_projection_snapshot()
+            .expect("stable projection after external commits");
+        assert_eq!(projection.records.len(), 2);
+        assert_eq!(projection.dependency_facts.len(), 2);
+        assert_ne!(previous.dependency_revision, projection.dependency_revision);
+        assert!(!Arc::ptr_eq(
+            &previous.dependency_facts,
+            &projection.dependency_facts
+        ));
+        for (facts, record) in projection.dependency_facts.iter().zip(&projection.records) {
+            assert_eq!(&facts.0.coordinate, &record.coordinate);
+        }
+        let source_id = config
+            .sources
+            .sources()
+            .next()
+            .expect("configured registry source")
+            .id();
+        assert_eq!(
+            projection.dependency_facts[0].0.authority,
+            backend_library::PackageGraphSourceAuthority::Registry(
+                backend_library::RegistryAuthorityId::from_configured_source(source_id.as_bytes(),)
+            )
+        );
+        assert_ne!(previous.source_revision, projection.source_revision);
+        assert!(
+            reader
+                .validate_resident_projection(&projection)
+                .expect("stable local source validation")
+        );
+        drop(reader);
+        drop(publisher);
+        fs::remove_dir_all(root).expect("remove workspace fixture");
+    }
+
+    #[test]
+    fn unstable_projection_refuses_replacement_and_validation_rejects_old_resident() {
+        let root = scratch();
+        let config = registry_config("http://127.0.0.1:9".to_owned());
+        let mut gateway = RegistryGateway::open(&config, &root, &advisory_config(None))
+            .expect("open gateway")
+            .expect("configured source");
+        let previous = gateway
+            .catalog_projection_snapshot()
+            .expect("initial resident projection");
+        assert!(
+            gateway
+                .validate_resident_projection(&previous)
+                .expect("initial source validation")
+        );
+        // Keep the old resident around but make its key stale so materializing
+        // the next projection exercises both bounded retry attempts.
+        gateway.observation_generation = gateway.observation_generation.saturating_add(1);
+
+        let mut materializations = 0;
+        let result = gateway.catalog_projection_with_hook(|gateway| {
+            materializations += 1;
+            gateway.observation_generation = gateway.observation_generation.saturating_add(1);
+        });
+        assert!(matches!(
+            result,
+            Err(CatalogProjectionError::ChangedDuringProjection)
+        ));
+        assert_eq!(materializations, MAX_CATALOG_PROJECTION_ATTEMPTS);
+        assert!(
+            gateway
+                .projection
+                .as_ref()
+                .is_some_and(|(_, resident)| Arc::ptr_eq(resident, &previous))
+        );
+        assert!(
+            !gateway
+                .validate_resident_projection(&previous)
+                .expect("stable but advanced source validation")
+        );
+        assert!(
+            gateway
+                .projection
+                .as_ref()
+                .is_some_and(|(_, resident)| Arc::ptr_eq(resident, &previous))
+        );
+        drop(gateway);
+        fs::remove_dir_all(root).expect("remove workspace fixture");
     }
 
     #[test]
@@ -4278,8 +4773,11 @@ mod tests {
             scratch().join("cold-product-state.json"),
         )
         .expect("cold product state");
-        let dependency_facts: [backend_engine::PackageDependencySourceFacts; 0] = [];
-        let dependency_index = backend_library::PackageGraphIndex::from_facts(&dependency_facts);
+        let dependency_graph = backend_library::IndexedCheckedPackageGraph::new(
+            Vec::new(),
+            crate::process::default_package_graph_limits(),
+        )
+        .expect("admitted empty dependency graph");
         let view = empty_product_view();
 
         let package_reply = state
@@ -4290,8 +4788,7 @@ mod tests {
                 &view,
                 &catalog,
                 &catalog_index,
-                &dependency_facts,
-                &dependency_index,
+                &dependency_graph,
                 None,
             )
             .expect("package query");
@@ -4320,8 +4817,7 @@ mod tests {
                 &view,
                 &catalog,
                 &catalog_index,
-                &dependency_facts,
-                &dependency_index,
+                &dependency_graph,
                 None,
             )
             .expect("versions query");
@@ -4345,8 +4841,7 @@ mod tests {
                 &view,
                 &catalog,
                 &catalog_index,
-                &dependency_facts,
-                &dependency_index,
+                &dependency_graph,
                 None,
             )
             .expect("profile query");

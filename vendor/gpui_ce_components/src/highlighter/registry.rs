@@ -599,7 +599,11 @@ mod tests {
         );
 
         assert!(registry.language("foo").is_some());
+        // NUDOX: the built-in JSON language has its own feature.
+        #[cfg(feature = "tree-sitter-json")]
         assert!(registry.language("json").is_some());
+        #[cfg(not(feature = "tree-sitter-json"))]
+        assert!(registry.language("json").is_none());
         assert!(registry.language("text").is_some());
         assert!(registry.language("unknown").is_none());
 

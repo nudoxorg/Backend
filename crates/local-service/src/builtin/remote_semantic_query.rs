@@ -1353,9 +1353,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("scratch directory");
-        #[cfg(unix)]
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-            .expect("private scratch directory");
+        crate::test_support::make_private(&path).expect("private scratch directory");
         path
     }
 

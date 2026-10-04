@@ -1644,6 +1644,10 @@ mod tests {
                 phase_sender
                     .send("grant rejected by owner")
                     .expect("report expired-grant admission");
+                // Ending this runtime drops the endpoint driver. Close it first so the
+                // rejection's connection close is flushed to the client instead of racing
+                // the runtime's teardown.
+                owner.close().await;
                 assert!(
                     rejected.to_string().contains("capability rejected")
                         || rejected.to_string().contains("admission denied"),

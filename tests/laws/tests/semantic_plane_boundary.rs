@@ -314,14 +314,15 @@ fn tree_sitter_is_confined_to_structural_frontends_and_syntax_compile() {
                 }
                 continue;
             }
+            // Compared by path component: on Windows the separator is a
+            // backslash, and a textual `crates/compile/` prefix never matches.
             let relative = path
                 .strip_prefix(&root)
-                .expect("source path is within workspace")
-                .to_string_lossy()
-                .into_owned();
-            if relative.starts_with("crates/compile/") || relative.starts_with("frontends/") {
+                .expect("source path is within workspace");
+            if relative.starts_with("crates/compile") || relative.starts_with("frontends") {
                 continue;
             }
+            let relative = relative.display();
             let is_rust = path.extension().and_then(|extension| extension.to_str()) == Some("rs");
             let is_manifest =
                 path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml");

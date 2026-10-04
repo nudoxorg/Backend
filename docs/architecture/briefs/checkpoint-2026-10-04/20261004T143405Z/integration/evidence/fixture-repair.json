@@ -1,0 +1,39 @@
+{
+  "commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6",
+  "branch": "codex/semantic-fixture-repair-20261004T141414Z",
+  "base": "d8ce9ce61e040cb0e8f60a243aef92204d48e035",
+  "paths": [
+    "crates/library/semantic_shape.rs",
+    "crates/library/wire/tests.rs"
+  ],
+  "source_sha256": {
+    "crates/library/semantic_shape.rs": "e0e98c9e977d78e6cc950eb455f3f2d215f6ba1cf890eb7ea83f0dd615b736f4",
+    "crates/library/wire/tests.rs": "c966f542d3bbb16717d757b836ed59ac009d283cf8e65fe50aaaa30c76f35708"
+  },
+  "repair_patch_sha256": "3f8f51675a29a8964d71a46451167d7ff73acdbb782e89742f2068cf563c8d43",
+  "artifact_dir": "/private/tmp/nudox-semantic-fixture-repair-20261004T141414Z",
+  "main_index_and_merge_preserved": true,
+  "validation": "Source review and diff checks only; follow-up Rust runtime gate pending",
+  "previous_runtime": {
+    "candidate": "d8ce9ce61e040cb0e8f60a243aef92204d48e035",
+    "passed": 259,
+    "failed": 2,
+    "ignored": 1,
+    "source_verification_exit": 0,
+    "client": "NOT_RUN_LIBRARY_FAILED"
+  },
+  "push_status": "PUSHED_AND_INDEPENDENTLY_VERIFIED",
+  "source_parse_checks": [
+    {
+      "path": "crates/library/semantic_shape.rs",
+      "parse_exit": 0,
+      "source_sha256": "e0e98c9e977d78e6cc950eb455f3f2d215f6ba1cf890eb7ea83f0dd615b736f4"
+    },
+    {
+      "path": "crates/library/wire/tests.rs",
+      "parse_exit": 0,
+      "source_sha256": "c966f542d3bbb16717d757b836ed59ac009d283cf8e65fe50aaaa30c76f35708"
+    }
+  ]
+}

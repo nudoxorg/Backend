@@ -1,0 +1,237 @@
+{
+  "created_utc": "2026-10-04T13:53:04.346922+00:00",
+  "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T135304Z",
+  "main": {
+    "label": "integration",
+    "branch": "codex/checkpoint-integration-20261004T135304Z",
+    "commit": "1076ab25c6b115125bc9dd53d9bfab24b98a53ca",
+    "tree": "92fe27676b4d007aefbca50af5220f57eb8c3caa",
+    "source_tree": "12b73bc94397c673a65978530f1c94734cdab63b",
+    "changed_paths": 278,
+    "preserved_index_blobs": 66,
+    "original_state_unchanged": true,
+    "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/integration"
+  },
+  "slices": [
+    {
+      "label": "typed-library",
+      "branch": "codex/checkpoint-typed-library-20261004T131743Z",
+      "commit": "7f1e37663718632ef4f3af07fba0a98e90aa7277",
+      "tree": "c85cd433120258505eca0625676da950b51d436a",
+      "source_tree": "fce0769975e3ff4e4bc80b25fd4272d2883337b8",
+      "changed_paths": 4,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/typed-library"
+    },
+    {
+      "label": "typed-turso",
+      "branch": "codex/checkpoint-typed-turso-20261004T131743Z",
+      "commit": "7723a7313ac5edb113551a4e83a28461b23db1bd",
+      "tree": "77cb7c43d843f7c942f9c01ebbab08221ecc3130",
+      "source_tree": "7c594d2640b150d72a48b78845d5e8ab77256375",
+      "changed_paths": 4,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/typed-turso"
+    },
+    {
+      "label": "flat-graph",
+      "branch": "codex/checkpoint-flat-graph-20261004T131743Z",
+      "commit": "bd52b9ad29696e1a1f9f36947152119b4f19410b",
+      "tree": "5057b71706c17d325081669836525a3647e3c722",
+      "source_tree": "c6dfc17d9a04bc4fb2adde896e51eee6b50327d5",
+      "changed_paths": 4,
+      "preserved_index_blobs": 2,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/flat-graph"
+    },
+    {
+      "label": "flat-typed",
+      "branch": "codex/checkpoint-flat-typed-20261004T131743Z",
+      "commit": "c59268b40ce29aff9fa068d0e2c2b4444636d18b",
+      "tree": "3aa7e8d31b59baa99f1eb988549452a05886bd0b",
+      "source_tree": "827fd39d13fee2433ccfde53dba140b1f7f32738",
+      "changed_paths": 6,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/flat-typed"
+    },
+    {
+      "label": "shelf-layout",
+      "branch": "codex/checkpoint-shelf-layout-20261004T131743Z",
+      "commit": "a4cda15f208291c5b098f80619022cbff1674d09",
+      "tree": "a4ab910e10e265aa4d22ff391d421e098f7e7cf2",
+      "source_tree": "2b8b8de2e5cd56dfda9786fb453b80c68bc4e668",
+      "changed_paths": 8,
+      "preserved_index_blobs": 8,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/shelf-layout"
+    },
+    {
+      "label": "stage-lease",
+      "branch": "codex/checkpoint-stage-lease-20261004T131743Z",
+      "commit": "48c5736fe36dd9ec9e5be86b19c570576d9819c0",
+      "tree": "ae03f0e8f2cb6bcc26aee4cb94ff153a549e02e0",
+      "source_tree": "6e589fc3d27fc3fe228624aaeaf3a84e449c542b",
+      "changed_paths": 6,
+      "preserved_index_blobs": 6,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/stage-lease"
+    },
+    {
+      "label": "cache-gate",
+      "branch": "codex/checkpoint-cache-gate-20261004T131743Z",
+      "commit": "e73ea1c27b76c04d1641d4f86a918b93c3be051c",
+      "tree": "a3a98a8b7b72d561b5b41240988503578f6b71bd",
+      "source_tree": "38e8f0ccc496631533a9b261f6d15bf160d713f6",
+      "changed_paths": 2,
+      "preserved_index_blobs": 2,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T131743Z/cache-gate"
+    },
+    {
+      "label": "borrowed-source-witness",
+      "branch": "codex/checkpoint-borrowed-source-witness-20261004T135304Z",
+      "commit": "586b030e7eb41be1fc4cf05555673e5cf243394b",
+      "tree": "99e5d13d57d1b30079662fae4bb71d2e33c5bda7",
+      "source_tree": "e0e08866b37f6162c2ce47469f14551d46a9a892",
+      "changed_paths": 4,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/borrowed-source-witness"
+    },
+    {
+      "label": "shelf-layout",
+      "branch": "codex/checkpoint-shelf-layout-20261004T135304Z",
+      "commit": "6f4aa2b10f8fca59cf1196308900a08feee08f3a",
+      "tree": "b91534ff71d7db850ee36538e31166ff754e94b0",
+      "source_tree": "06c68b7ae57505fe8c0d73ceb2e77733cc550e89",
+      "changed_paths": 8,
+      "preserved_index_blobs": 8,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/shelf-layout"
+    }
+  ],
+  "new_slices": [
+    {
+      "label": "borrowed-source-witness",
+      "branch": "codex/checkpoint-borrowed-source-witness-20261004T135304Z",
+      "commit": "586b030e7eb41be1fc4cf05555673e5cf243394b",
+      "tree": "99e5d13d57d1b30079662fae4bb71d2e33c5bda7",
+      "source_tree": "e0e08866b37f6162c2ce47469f14551d46a9a892",
+      "changed_paths": 4,
+      "preserved_index_blobs": 4,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/borrowed-source-witness"
+    },
+    {
+      "label": "shelf-layout",
+      "branch": "codex/checkpoint-shelf-layout-20261004T135304Z",
+      "commit": "6f4aa2b10f8fca59cf1196308900a08feee08f3a",
+      "tree": "b91534ff71d7db850ee36538e31166ff754e94b0",
+      "source_tree": "06c68b7ae57505fe8c0d73ceb2e77733cc550e89",
+      "changed_paths": 8,
+      "preserved_index_blobs": 8,
+      "original_state_unchanged": true,
+      "artifact_dir": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/shelf-layout"
+    }
+  ],
+  "additional_atomic_commit": {
+    "commit": "d8ce9ce61e040cb0e8f60a243aef92204d48e035",
+    "tree": "9e35a5d2937560e14292979d2259b7778c713c70",
+    "branch": "codex/wire-fixture-repair-20261004T130704Z",
+    "base": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+    "changed_path": "crates/library/wire/tests.rs",
+    "source_sha256": "696c93bb4b5d264d73561c20bdcad2f1311470a2b43e7dffd4c1997b9750a31e",
+    "repair_patch_sha256": "8b391661e2f0aa3de14bfd86c78728759c9e286e5e09b18a8e1db7ac423805b0",
+    "acceptance": "SOURCE FIX; follow-up Rust execution pending",
+    "artifact_dir": "/private/tmp/nudox-wire-fixture-repair-20261004T130704Z",
+    "main_index_and_merge_preserved": true
+  },
+  "cache_atomic_commit": {
+    "commit": "e264d0361f54aba3681778224a7d8b8f7836f5c5",
+    "tree": "38e8f0ccc496631533a9b261f6d15bf160d713f6",
+    "base": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+    "branch": "codex/cache-gate-atomic-20261004T132430Z",
+    "paths": [
+      ".config/scripts/cargo-rustc-cache.sh",
+      "tests/cargo-shared-cache.sh"
+    ],
+    "source_sha256": {
+      ".config/scripts/cargo-rustc-cache.sh": "63f4bc4c79f37fccb3cd57b2f9391a433f229e9bc2d7c37b06de5d54b94ff6b0",
+      "tests/cargo-shared-cache.sh": "6be3581ba813e417b20529c01e16b2b558020386c17c33574dd93e1798766e9c"
+    },
+    "root_source_review": "complete for wrapper, changed harness and owning harness",
+    "validation": {
+      "artifact_dir": "/private/tmp/nudox-root-cache-admission-20261004T132218Z",
+      "source_sha256": {
+        ".config/scripts/cargo-rustc-cache.sh": "63f4bc4c79f37fccb3cd57b2f9391a433f229e9bc2d7c37b06de5d54b94ff6b0",
+        "tests/cargo-shared-cache.sh": "6be3581ba813e417b20529c01e16b2b558020386c17c33574dd93e1798766e9c"
+      },
+      "results": [
+        {
+          "command": [
+            "sh",
+            "-n",
+            ".config/scripts/cargo-rustc-cache.sh"
+          ],
+          "exit": 0,
+          "started_utc": "2026-10-04T13:22:18.295508+00:00",
+          "completed_utc": "2026-10-04T13:22:18.360301+00:00",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "command": [
+            "sh",
+            "-n",
+            "tests/cargo-shared-cache.sh"
+          ],
+          "exit": 0,
+          "started_utc": "2026-10-04T13:22:18.360475+00:00",
+          "completed_utc": "2026-10-04T13:22:18.370779+00:00",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit": 0,
+          "started_utc": "2026-10-04T13:22:18.370974+00:00",
+          "completed_utc": "2026-10-04T13:22:18.468025+00:00",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "command": [
+            "sh",
+            "tests/cargo-shared-cache.sh"
+          ],
+          "exit": 0,
+          "started_utc": "2026-10-04T13:22:18.468194+00:00",
+          "completed_utc": "2026-10-04T13:22:46.879853+00:00",
+          "log_sha256": "b589dfa308b8e77f5ee5b0cb0abf2dd09796a046e73b09cc966b2da7c71a7a3a"
+        }
+      ],
+      "successful": true,
+      "scope": "Shell protocol/dispatch harness only; no real Cargo or GUI execution"
+    },
+    "worktree_state_preserved": true,
+    "artifact_dir": "/private/tmp/nudox-cache-gate-atomic-20261004T132430Z",
+    "runtime_override": {
+      "local_path": "/private/tmp/nudox-cache-gate-atomic-20261004T132430Z/rustc-cache-wrapper.sh",
+      "sha256": "3db7a569285fc426dead9aa77e958d9173bdb4ecfd66078fdc0aa9d199108100",
+      "source_sha256": "63f4bc4c79f37fccb3cd57b2f9391a433f229e9bc2d7c37b06de5d54b94ff6b0",
+      "sccache_path": "/nix/store/508in5sysamxr8076xsfjx4fjxli1f3x-sccache-0.16.0/bin/sccache",
+      "sccache_sha256": "06085ce600d07001ab162307d7df787d83d3ffec17ceec6eace9f218db81c972"
+    },
+    "acceptance": "shell dispatch/cache isolation harness pass; real compiler/cache performance unrun",
+    "push_status": "PUSHED_AND_INDEPENDENTLY_VERIFIED"
+  },
+  "push_status": "PUSHED_AND_INDEPENDENTLY_VERIFIED",
+  "canonical_before": "76587b45c7abc378dfd5decfed51063cd2559aa6",
+  "canonical_unchanged_by_us": true,
+  "push_verification": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/push-verification.json",
+  "canonical_unchanged": true
+}

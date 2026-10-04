@@ -1112,7 +1112,11 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
 
     let source_key = crate::semantic_shape_source_key(&origin);
     let batch_key = crate::semantic_shape_batch_key(&batch).expect("shape batch commitment");
-    let certificate = certificate(&root)
+    let valid_certificate = certificate(&root)
+        .with_claim(WireClaim::RootCommitment {
+            schema: WireSchema::ViewRelation,
+            id: encode_id(batch.basis.as_bytes()),
+        })
         .with_claim(WireClaim::KeyCommitment {
             schema: WireSchema::Symbol,
             id: encode_id(symbol.as_bytes()),
@@ -1128,7 +1132,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
         });
     let command = CommandDto::new(44, Command::SemanticShapes(request));
     let reply = ReplyDto::new(44, CommandReply::SemanticShapes(batch.clone()))
-        .with_certificate(certificate);
+        .with_certificate(valid_certificate);
     let encoded = serde_json::to_vec(&reply).expect("encode complete reply DTO");
     let decoded = crate::decode_reply_body(&encoded).expect("decode complete reply DTO");
     admit_reply(&command, &decoded).expect("admit exact request and reply");
@@ -1160,6 +1164,10 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let wrong_language_key =
         crate::semantic_shape_batch_key(&wrong_language).expect("changed language payload key");
     let wrong_language_certificate = certificate(&root)
+        .with_claim(WireClaim::RootCommitment {
+            schema: WireSchema::ViewRelation,
+            id: encode_id(wrong_language.basis.as_bytes()),
+        })
         .with_claim(WireClaim::KeyCommitment {
             schema: WireSchema::Symbol,
             id: encode_id(symbol.as_bytes()),

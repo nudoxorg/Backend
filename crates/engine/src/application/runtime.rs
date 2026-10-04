@@ -4055,6 +4055,7 @@ mod input_witness_store_tests {
 #[cfg(test)]
 mod portable_recipe_tests {
     use super::*;
+    use crate::test_support::host_path;
     use backend_semantic::vocabulary::{PythonVersion, RustEdition};
 
     fn rust_recipe(
@@ -4064,10 +4065,10 @@ mod portable_recipe_tests {
         let authority = LocalRuntimePackageAuthority {
             rust: Some(LocalRuntimeRustAuthority {
                 toolchain: RustToolchain {
-                    tool: PathBuf::from("/test/bin/rustc"),
-                    sysroot: PathBuf::from("/test/lib/rustlib"),
-                    cargo: Some(PathBuf::from("/test/bin/cargo")),
-                    cargo_home: Some(PathBuf::from("/test/cargo-home")),
+                    tool: host_path("/test/bin/rustc").to_path_buf(),
+                    sysroot: host_path("/test/lib/rustlib").to_path_buf(),
+                    cargo: Some(host_path("/test/bin/cargo").to_path_buf()),
+                    cargo_home: Some(host_path("/test/cargo-home").to_path_buf()),
                     rustup_home: None,
                     rustup_toolchain: None,
                 },
@@ -4081,7 +4082,7 @@ mod portable_recipe_tests {
         };
         let runtime = LocalRuntimeToolchain::resolved(
             NativeTool::Rustc,
-            PathBuf::from("/test/bin/rustc"),
+            host_path("/test/bin/rustc").to_path_buf(),
             b"rustc 1.0.0 test",
         )
         .expect("resolved Rust compiler fixture");
@@ -4152,26 +4153,26 @@ mod portable_recipe_tests {
     #[test]
     fn python_recipe_uses_ordered_options_and_ignores_host_executable_path() {
         let first = python_recipe(
-            Path::new("/host-a/bin/python"),
-            Path::new("/host-a/bin/pyrefly"),
+            host_path("/host-a/bin/python"),
+            host_path("/host-a/bin/pyrefly"),
             b"pyrefly 0.1.0",
             vec!["check".to_owned(), "--strict".to_owned()],
         );
         let relocated = python_recipe(
-            Path::new("/host-b/sdk/python"),
-            Path::new("/host-b/sdk/pyrefly"),
+            host_path("/host-b/sdk/python"),
+            host_path("/host-b/sdk/pyrefly"),
             b"pyrefly 0.1.0",
             vec!["check".to_owned(), "--strict".to_owned()],
         );
         let reordered = python_recipe(
-            Path::new("/host-b/sdk/python"),
-            Path::new("/host-b/sdk/pyrefly"),
+            host_path("/host-b/sdk/python"),
+            host_path("/host-b/sdk/pyrefly"),
             b"pyrefly 0.1.0",
             vec!["--strict".to_owned(), "check".to_owned()],
         );
         let changed = python_recipe(
-            Path::new("/host-b/sdk/python"),
-            Path::new("/host-b/sdk/pyrefly"),
+            host_path("/host-b/sdk/python"),
+            host_path("/host-b/sdk/pyrefly"),
             b"pyrefly 0.1.0",
             vec![
                 "check".to_owned(),
@@ -4180,8 +4181,8 @@ mod portable_recipe_tests {
             ],
         );
         let changed_pyrefly = python_recipe(
-            Path::new("/host-b/sdk/python"),
-            Path::new("/host-b/sdk/pyrefly"),
+            host_path("/host-b/sdk/python"),
+            host_path("/host-b/sdk/pyrefly"),
             b"pyrefly 0.2.0",
             vec!["check".to_owned(), "--strict".to_owned()],
         );
