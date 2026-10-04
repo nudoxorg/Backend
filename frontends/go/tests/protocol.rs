@@ -224,15 +224,14 @@ mod bounded_child {
     }
 
     #[test]
-    fn output_limit_reports_exact_operands_and_reaps_child() {
+    fn output_limit_reports_exact_operands_and_reaps_child() -> Result<(), String> {
         let error = with_script(
             "printf '%0100d' 0",
             GoOracle {
                 output_limit: 8,
                 timeout: std::time::Duration::from_secs(2),
             },
-        )
-        .unwrap();
+        )?;
         assert!(matches!(
             error,
             OracleError::OutputLimit {
@@ -242,10 +241,11 @@ mod bounded_child {
                 limit: 8
             }
         ));
+        Ok(())
     }
 
     #[test]
-    fn deadline_kills_process_group_and_returns_promptly() {
+    fn deadline_kills_process_group_and_returns_promptly() -> Result<(), String> {
         let started = std::time::Instant::now();
         let error = with_script(
             "(printf x; sleep 10) & sleep 10",
@@ -253,8 +253,7 @@ mod bounded_child {
                 output_limit: 4096,
                 timeout: std::time::Duration::from_secs(1),
             },
-        )
-        .unwrap();
+        )?;
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
         assert!(matches!(
             error,
@@ -263,14 +262,13 @@ mod bounded_child {
                 milliseconds: 1000
             }
         ));
+        Ok(())
     }
 
     #[test]
-    fn missing_oracle_is_typed_unavailable_without_fallback() {
-        let _guard = super::ENVIRONMENT
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap();
+    fn missing_oracle_is_typed_unavailable_without_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = super::ENVIRONMENT.get_or_init(|| Mutex::new(())).lock()?;
         // SAFETY: the process-global test environment is serialized by the mutex.
         unsafe { std::env::set_var("NUDOX_GO_ORACLE_BIN", "/no/such/nudox-go-oracle") };
         let error = GoOracle::default()
@@ -285,14 +283,12 @@ mod bounded_child {
                 ..
             }
         ));
+        Ok(())
     }
 
     #[test]
-    fn unset_compiler_is_a_typed_unavailable_terminal() {
-        let _guard = super::ENVIRONMENT
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap();
+    fn unset_compiler_is_a_typed_unavailable_terminal() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = super::ENVIRONMENT.get_or_init(|| Mutex::new(())).lock()?;
         let saved = std::env::var_os("COMPILER_GO_COMPILER");
         // SAFETY: the process-global test environment is serialized by the mutex.
         unsafe { std::env::remove_var("COMPILER_GO_COMPILER") };
@@ -309,15 +305,16 @@ mod bounded_child {
                 ..
             }
         ));
+        Ok(())
     }
 }
 
 #[test]
-fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), OracleError> {
+fn end_to_end_fixture_preserves_package_and_tagged_declarations()
+-> Result<(), Box<dyn std::error::Error>> {
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
+        .lock()?;
     let _compiler = explicit_go_toolchain()?;
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let output = adapter().run(&fixture)?;
@@ -395,12 +392,11 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
 /// one row each, with the closed kind, the NAME-TOKEN extent, and a
 /// resolvable target identity. Requires an explicit Go toolchain.
 #[test]
-fn widened_references_record_every_named_object_use() -> Result<(), OracleError> {
+fn widened_references_record_every_named_object_use() -> Result<(), Box<dyn std::error::Error>> {
     use backend_frontend_go::legacy::oracle::{DeclKind, Reference};
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
+        .lock()?;
     let _compiler = explicit_go_toolchain()?;
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/refs");
     let source =
@@ -569,9 +565,17 @@ fn widened_references_record_every_named_object_use() -> Result<(), OracleError>
         typed_rows >= 8,
         "the image must carry the widened typed rows, found {typed_rows}"
     );
-    let lang_index = (0..image.declaration_count())
-        .find(|&index| image.declaration(index).map_err(image_fault).unwrap().name == b"Lang")
-        .expect("Lang declaration row");
+    let mut lang_index = None;
+    for index in 0..image.declaration_count() {
+        if image.declaration(index).map_err(image_fault)?.name == b"Lang" {
+            lang_index = Some(index);
+            break;
+        }
+    }
+    let lang_index = lang_index.ok_or_else(|| OracleError::Decode {
+        message: "Lang declaration row missing".to_owned(),
+        transcript: String::new(),
+    })?;
     let lang_row = image.declaration(lang_index).map_err(image_fault)?;
     assert!(lang_row.bound, "Lang declares in the bound source");
     let lang_name = lang_row.name_span.ok_or_else(|| OracleError::Decode {
@@ -710,13 +714,12 @@ fn json_signature_facts(output: &backend_frontend_go::legacy::oracle::Output) ->
 /// the satisfaction edges, and the package doc comment. Skipped when no Go
 /// toolchain is available.
 #[test]
-fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
+fn authority_image_round_trips_the_full_output() -> Result<(), Box<dyn std::error::Error>> {
     use backend_frontend_go::legacy::oracle::TypeKind;
     use backend_frontend_go::legacy::{DeclarationKind, MethodSetRow, SignatureParameterRow};
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
+        .lock()?;
     let _compiler = explicit_go_toolchain()?;
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let source = fixture.join("demo.go");
@@ -793,9 +796,21 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
 
     // A method call is owned by its receiver declaration, while its resolved
     // span remains attached to the method row for containment.
-    let inner_index = (0..image.declaration_count())
-        .find(|&index| image.declaration(index).unwrap().name == b"Inner")
-        .expect("Inner declaration") as u32;
+    let mut inner_index = None;
+    for index in 0..image.declaration_count() {
+        if image.declaration(index).map_err(image_fault)?.name == b"Inner" {
+            inner_index = Some(index);
+            break;
+        }
+    }
+    let inner_index = u32::try_from(inner_index.ok_or_else(|| OracleError::Decode {
+        message: "Inner declaration missing".to_owned(),
+        transcript: String::new(),
+    })?)
+    .map_err(|_| OracleError::Decode {
+        message: "Inner declaration index exceeds u32".to_owned(),
+        transcript: String::new(),
+    })?;
     let references = image
         .references()
         .collect::<Result<Vec<_>, _>>()
@@ -922,11 +937,11 @@ fn image_fault(cause: backend_frontend_go::legacy::ImageError) -> OracleError {
 /// re-derivable because embedded foreign-package references carry no body.
 /// Skipped when no Go toolchain is available.
 #[test]
-fn authority_image_carries_parameter_names_and_embedded_method_sets() -> Result<(), OracleError> {
+fn authority_image_carries_parameter_names_and_embedded_method_sets()
+-> Result<(), Box<dyn std::error::Error>> {
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
+        .lock()?;
     let _compiler = explicit_go_toolchain()?;
     let root = std::env::temp_dir().join(format!("nudox-go-image-v5-{}", std::process::id()));
     fs::create_dir_all(root.join("api")).expect("temp module directory");
@@ -1458,12 +1473,14 @@ mod reference_order {
         value.to_le_bytes()
     }
 
-    fn atom(bytes: &[u8], needle: &[u8]) -> [u32; 2] {
+    fn atom(bytes: &[u8], needle: &[u8]) -> Result<[u32; 2], String> {
         let start = bytes
             .windows(needle.len())
             .position(|window| window == needle)
-            .unwrap();
-        [start as u32, needle.len() as u32]
+            .ok_or_else(|| format!("fixture atom {:?} is missing", needle))?;
+        let start = u32::try_from(start).map_err(|error| error.to_string())?;
+        let length = u32::try_from(needle.len()).map_err(|error| error.to_string())?;
+        Ok([start, length])
     }
 
     fn declaration(name: [u32; 2], package: [u32; 2], file: [u32; 2], span: (u32, u32)) -> Vec<u8> {
@@ -1510,12 +1527,12 @@ mod reference_order {
         row
     }
 
-    fn build(order: &[(usize, usize, u32)]) -> Vec<u8> {
-        let first = atom(ATOM_BYTES, b"first.go");
-        let second = atom(ATOM_BYTES, b"second.go");
-        let target = atom(ATOM_BYTES, b"one");
-        let package = atom(ATOM_BYTES, b"example.com/demo");
-        let package_name = atom(ATOM_BYTES, b"demo");
+    fn build(order: &[(usize, usize, u32)]) -> Result<Vec<u8>, String> {
+        let first = atom(ATOM_BYTES, b"first.go")?;
+        let second = atom(ATOM_BYTES, b"second.go")?;
+        let target = atom(ATOM_BYTES, b"one")?;
+        let package = atom(ATOM_BYTES, b"example.com/demo")?;
+        let package_name = atom(ATOM_BYTES, b"demo")?;
         let body = 2 * 56 + 3 * 48 + 28 + ATOM_BYTES.len();
         let mut image = vec![0; HEADER + body];
         image[..4].copy_from_slice(b"NGAI");
@@ -1529,8 +1546,8 @@ mod reference_order {
         image[120..124].copy_from_slice(&1_u32.to_le_bytes());
 
         let declarations = [
-            declaration(atom(ATOM_BYTES, b"two"), package, first, (0, 100)),
-            declaration(atom(ATOM_BYTES, b"three"), package, second, (0, 100)),
+            declaration(atom(ATOM_BYTES, b"two")?, package, first, (0, 100)),
+            declaration(atom(ATOM_BYTES, b"three")?, package, second, (0, 100)),
         ];
         image[DECLS..DECLS + 112].copy_from_slice(&declarations.concat());
         let rows = order
@@ -1556,7 +1573,7 @@ mod reference_order {
         image[PACKAGES..PACKAGES + 28].copy_from_slice(&package_row);
         image[ATOMS..].copy_from_slice(ATOM_BYTES);
         reseal(&mut image);
-        image
+        Ok(image)
     }
 
     fn reseal(image: &mut [u8]) {
@@ -1569,26 +1586,30 @@ mod reference_order {
     }
 
     #[test]
-    fn ascending_cross_file_order_opens_with_offset_reset() {
-        let image = build(&[(0, 0, 10), (0, 0, 20), (1, 1, 5)]);
-        GoImage::open(&image).expect("canonical cross-file references must open");
+    fn ascending_cross_file_order_opens_with_offset_reset() -> Result<(), String> {
+        let image = build(&[(0, 0, 10), (0, 0, 20), (1, 1, 5)])?;
+        GoImage::open(&image)
+            .map_err(|error| format!("canonical cross-file references must open: {error}"))?;
+        Ok(())
     }
 
     #[test]
-    fn swapping_files_rejects_reference_index_two() {
-        let image = build(&[(0, 0, 10), (1, 1, 5), (0, 0, 20)]);
+    fn swapping_files_rejects_reference_index_two() -> Result<(), String> {
+        let image = build(&[(0, 0, 10), (1, 1, 5), (0, 0, 20)])?;
         assert!(matches!(
             GoImage::open(&image),
             Err(ImageError::ReferenceSort { index: 2 })
         ));
+        Ok(())
     }
 
     #[test]
-    fn swapping_starts_within_one_file_rejects_reference_index_one() {
-        let image = build(&[(0, 0, 20), (0, 0, 10), (1, 1, 5)]);
+    fn swapping_starts_within_one_file_rejects_reference_index_one() -> Result<(), String> {
+        let image = build(&[(0, 0, 20), (0, 0, 10), (1, 1, 5)])?;
         assert!(matches!(
             GoImage::open(&image),
             Err(ImageError::ReferenceSort { index: 1 })
         ));
+        Ok(())
     }
 }
