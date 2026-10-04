@@ -1113,6 +1113,10 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let source_key = crate::semantic_shape_source_key(&origin);
     let batch_key = crate::semantic_shape_batch_key(&batch).expect("shape batch commitment");
     let valid_certificate = certificate(&root)
+        .with_claim(WireClaim::RootCommitment {
+            schema: WireSchema::ViewRelation,
+            id: encode_id(batch.basis.as_bytes()),
+        })
         .with_claim(WireClaim::KeyCommitment {
             schema: WireSchema::Symbol,
             id: encode_id(symbol.as_bytes()),
@@ -1160,6 +1164,10 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let wrong_language_key =
         crate::semantic_shape_batch_key(&wrong_language).expect("changed language payload key");
     let wrong_language_certificate = certificate(&root)
+        .with_claim(WireClaim::RootCommitment {
+            schema: WireSchema::ViewRelation,
+            id: encode_id(wrong_language.basis.as_bytes()),
+        })
         .with_claim(WireClaim::KeyCommitment {
             schema: WireSchema::Symbol,
             id: encode_id(symbol.as_bytes()),

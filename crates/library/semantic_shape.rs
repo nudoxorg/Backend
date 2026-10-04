@@ -1451,9 +1451,15 @@ mod tests {
     }
 
     fn request(names: &[&str]) -> SemanticShapeRequest {
+        request_in_profile(names, LanguageProfile::Rust(RustEdition::Rust2021))
+    }
+
+    fn request_in_profile(names: &[&str], profile: LanguageProfile) -> SemanticShapeRequest {
+        let mut selected = source();
+        selected.profile = crate::SemanticLanguageProfile::new(profile);
         SemanticShapeRequest::new(
             crate::view_state_root(&[]),
-            source(),
+            selected,
             names
                 .iter()
                 .map(|name| SymbolAddress::selected(crate::symbol_key(name)))
@@ -1466,6 +1472,7 @@ mod tests {
 
     fn entry(request: &SemanticShapeRequest, index: usize) -> SemanticShapeEntry {
         let source = request.source().clone();
+        let profile = source.profile.profile().expect("fixture language profile");
         SemanticShapeEntry {
             symbol: request.symbols()[index],
             identity: Some(SemanticDeclarationIdentity {
@@ -1487,7 +1494,7 @@ mod tests {
                                 ),
                                 byte_len: 11,
                             },
-                        profile: LanguageProfile::Rust(RustEdition::Rust2021),
+                        profile,
                     },
                 ),
             }),
@@ -1496,7 +1503,7 @@ mod tests {
                     SemanticTypeExpr::Builtin(backend_semantic::ir::BuiltinType::Never),
                 )),
                 language: SemanticShapeLanguageFacts::CommonOnly {
-                    profile: LanguageProfile::Rust(RustEdition::Rust2021),
+                    profile,
                 },
             },
         }
@@ -1841,14 +1848,15 @@ mod tests {
 
     #[test]
     fn response_walk_counts_language_annotation_nodes() {
-        let request = request(&["shape::annotations"]);
+        let profile = LanguageProfile::Java(JavaRelease::Java17);
+        let request = request_in_profile(&["shape::annotations"], profile);
         let mut entry = entry(&request, 0);
         entry.fact = SemanticShapeFact::Available {
             shape: SemanticDeclarationShape::Typed(SemanticTypeFact::Unavailable(
                 SemanticTypeUnavailable::MissingImageFact,
             )),
             language: SemanticShapeLanguageFacts::Partial {
-                profile: LanguageProfile::Java(JavaRelease::Java17),
+                profile,
                 facts: SemanticShapeLanguageFact::Java {
                     throws: Vec::<SemanticTypeFact>::new().into_boxed_slice(),
                     annotations: vec![
@@ -1863,6 +1871,19 @@ mod tests {
             basis: request.basis(),
             entries: vec![entry].into_boxed_slice(),
         };
+        let mut within_budget = batch.clone();
+        let SemanticShapeFact::Available {
+            language: SemanticShapeLanguageFacts::Partial {
+                facts: SemanticShapeLanguageFact::Java { annotations, .. },
+                ..
+            },
+            ..
+        } = &mut within_budget.entries[0].fact else {
+            panic!("fixture has Java language facts");
+        };
+        *annotations = vec![SourceAtomText::new("A").expect("exact annotation text")]
+            .into_boxed_slice();
+        assert_eq!(within_budget.admit_against(&request), Ok(()));
         assert_eq!(
             batch.admit_against(&request),
             Err(SemanticShapeError::OutputBound)
