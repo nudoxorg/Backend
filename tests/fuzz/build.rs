@@ -65,14 +65,11 @@ fn main() {
     for name in &names {
         let ident = name.replace('-', "_");
         let oracle = display(&targets_dir.join(name).join("oracle.rs"));
-        if oracle.contains('"') || oracle.contains('\\') {
-            fail(&format!(
-                "oracle path {oracle} cannot be emitted as a Rust string"
-            ));
-        }
+        // `{:?}` emits a valid Rust string literal: it escapes the backslashes of a
+        // Windows path and any quote a Unix path could contain.
         emit(
             &mut source,
-            format_args!("#[path = \"{oracle}\"]\nmod {ident};\n"),
+            format_args!("#[path = {oracle:?}]\nmod {ident};\n"),
         );
         emit(
             &mut source,

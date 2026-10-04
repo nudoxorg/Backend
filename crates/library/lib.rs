@@ -11,7 +11,8 @@
 /// Shared filesystem source-selection policy used by local and package
 /// discovery adapters.
 pub use backend_discovery::{
-    DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError, DiscoveryPolicy, EntryKind,
+    DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError as FilesystemDiscoveryError,
+    DiscoveryPolicy, EntryKind,
     HARD_IGNORED_DIRECTORIES, is_hard_ignored_directory, is_hard_ignored_path,
 };
 
@@ -31,6 +32,11 @@ mod forge_identity;
 mod graph_query;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
+/// Spelling of absolute fixture paths in the host's native form, for tests.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[allow(clippy::expect_used)]
+pub mod native_test_paths;
 mod package_graph;
 mod package_graph_page;
 mod progress;
@@ -149,12 +155,12 @@ pub use graph_query::{
 };
 pub use package_graph::{
     CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
-    DependencyScope, DependentSources, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyLookup,
-    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
-    PackageGraphIndex, PackageGraphSourceAuthority, PackageGraphSourceKey, RegistryAuthorityId,
-    admit_dependency_rows, collapse_dependency_rows, dependency_optional, discover_source_entries,
-    discover_source_files, linear_dependent_sources, package_dependency_facts_witness,
-    source_selection_policy,
+    DependencyScope, DependentSources, IndexedCheckedPackageGraph, MAX_PACKAGE_GRAPH_ROWS,
+    PackageDependencyLookup, PackageDependencyRecord, PackageDependencySourceFacts,
+    PackageDependencyTarget, PackageGraphAdmissionError, PackageGraphIndexLimits,
+    PackageGraphSourceAuthority, PackageGraphSourceKey, RegistryAuthorityId, admit_dependency_rows,
+    collapse_dependency_rows, dependency_optional, discover_source_entries, discover_source_files,
+    linear_dependent_sources, package_dependency_facts_witness, source_selection_policy,
 };
 pub use package_graph_page::{
     MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_PAGE_ROWS, PACKAGE_GRAPH_PAGE_SCHEMA,

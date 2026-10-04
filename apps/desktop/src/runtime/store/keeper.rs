@@ -233,7 +233,10 @@ mod tests {
         file.write(root, &[SeedEntry::Orbit(Arc::new(model.clone()))]).expect("previous usable snapshot");
         let prior = std::fs::read(file.path()).expect("prior bytes");
         let mut pages = PageStore::default();
-        let generation = pages.begin(&PageKey::Orbit, root).expect("fresh read");
+        let generation = pages
+            .begin(&PageKey::Orbit, root)
+            .expect("page generation admission")
+            .expect("fresh read");
         pages.land(&PageKey::Orbit, generation, Ok(PageValue::Orbit(model)));
         let mut snapshot = AppSnapshot::empty(root);
         let mut session = snapshot.session().clone(); session.route = crate::navigation::Route::World;
@@ -260,19 +263,52 @@ mod tests {
             ..SnapshotKeeper::default()
         };
         let mut pages = PageStore::default();
-        let first = pages.begin(&key, root).expect("first read");
-        assert_eq!(pages.land(&key, first, Ok(PageValue::Package(crate::shell::tests::dossier()))), crate::model::pages::Landing::Applied);
+        let first = pages
+            .begin(&key, root)
+            .expect("page generation admission")
+            .expect("first read");
+        assert_eq!(
+            pages.land(
+                &key,
+                first,
+                Ok(PageValue::Package(crate::shell::tests::dossier()))
+            ),
+            crate::model::pages::Landing::Applied
+        );
         assert!(keeper.to_save(&pages, &snapshot, true).is_some());
         assert!(keeper.to_save(&pages, &snapshot, false).is_none(), "gate loss is immediate even before slot revocation");
         assert!(pages.revoke_owner_read(&key));
         assert!(pages.package(&package).loaded_value().is_some(), "revocation retains predecessor bytes");
         assert!(keeper.to_save(&pages, &snapshot, true).is_none());
-        let next = pages.begin(&key, root).expect("same-root renewal");
+        let next = pages
+            .begin(&key, root)
+            .expect("page generation admission")
+            .expect("same-root renewal");
         let _ = pages.cancel(&key);
-        assert_eq!(pages.land(&key, next, Ok(PageValue::Package(crate::shell::tests::dossier()))), crate::model::pages::Landing::Superseded);
-        assert!(keeper.to_save(&pages, &snapshot, true).is_none(), "cancellation cannot save the predecessor as current");
-        let next = pages.begin(&key, root).expect("fresh renewal");
-        assert_eq!(pages.land(&key, next, Ok(PageValue::Package(crate::shell::tests::dossier()))), crate::model::pages::Landing::Applied);
+        assert_eq!(
+            pages.land(
+                &key,
+                next,
+                Ok(PageValue::Package(crate::shell::tests::dossier()))
+            ),
+            crate::model::pages::Landing::Superseded
+        );
+        assert!(
+            keeper.to_save(&pages, &snapshot, true).is_none(),
+            "cancellation cannot save the predecessor as current"
+        );
+        let next = pages
+            .begin(&key, root)
+            .expect("page generation admission")
+            .expect("fresh renewal");
+        assert_eq!(
+            pages.land(
+                &key,
+                next,
+                Ok(PageValue::Package(crate::shell::tests::dossier()))
+            ),
+            crate::model::pages::Landing::Applied
+        );
         assert!(keeper.to_save(&pages, &snapshot, true).is_some());
     }
 
@@ -314,7 +350,10 @@ mod tests {
             "matching root does not verify the saved original release tree"
         );
         assert!(
-            pages.begin(&key, root).is_some(),
+            pages
+                .begin(&key, root)
+                .expect("page generation admission")
+                .is_some(),
             "a real worker read is still required"
         );
         let _ = std::fs::remove_dir_all(dir);
@@ -357,14 +396,23 @@ mod tests {
         let mut keeper = SnapshotKeeper::default();
         keeper.settle(&mut pages, root);
         assert!(pages.is_seeded(&PageKey::Symbol(symbol.clone())));
-        assert!(pages.begin(&PageKey::Symbol(symbol.clone()), root).is_some(), "docs require a fresh owner read too");
+        assert!(
+            pages
+                .begin(&PageKey::Symbol(symbol.clone()), root)
+                .expect("page generation admission")
+                .is_some(),
+            "docs require a fresh owner read too"
+        );
         let source_key = PageKey::Source(symbol);
         assert!(
             pages.is_seeded(&source_key),
             "the index root cannot confirm a mutable local file"
         );
         assert!(
-            pages.begin(&source_key, root).is_some(),
+            pages
+                .begin(&source_key, root)
+                .expect("page generation admission")
+                .is_some(),
             "restart renews the source observation on a worker"
         );
     }
@@ -388,7 +436,10 @@ mod tests {
         };
         let mut pages = PageStore::default();
         let key = PageKey::Orbit;
-        let first = pages.begin(&key, root).expect("first read");
+        let first = pages
+            .begin(&key, root)
+            .expect("page generation admission")
+            .expect("first read");
         assert_eq!(
             pages.stage(&key, first, PageValue::Orbit(model.clone())),
             crate::model::pages::Landing::Applied
@@ -402,7 +453,10 @@ mod tests {
             keeper.to_save(&pages, &snapshot, true).is_none(),
             "cancellation must not erase partial provenance"
         );
-        let second = pages.begin(&key, root).expect("second read");
+        let second = pages
+            .begin(&key, root)
+            .expect("page generation admission")
+            .expect("second read");
         assert_eq!(
             pages.land(&key, second, Ok(PageValue::Orbit(model))),
             crate::model::pages::Landing::Applied
