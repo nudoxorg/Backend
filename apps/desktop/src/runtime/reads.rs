@@ -70,6 +70,25 @@ const LANDING_BUDGET: usize = 8;
 /// could make the exact release ambiguous.
 const MAX_REGISTRY_ROOTS_PER_ORBIT: usize = 2_048;
 
+/// Work held by the read pool, including results not yet delivered to the UI.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PoolLoad {
+    /// Jobs no worker has taken yet.
+    pub queued: usize,
+    /// Jobs a worker is running, including their terminal handoff.
+    pub running: usize,
+    /// Published outcomes the UI has not landed yet.
+    pub undelivered: usize,
+}
+
+impl PoolLoad {
+    /// Whether no read remains queued, running, or waiting to land.
+    #[must_use]
+    pub const fn is_idle(self) -> bool {
+        self.queued == 0 && self.running == 0 && self.undelivered == 0
+    }
+}
+
 /// What one job reads.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadRequest {
@@ -388,15 +407,41 @@ impl Shared {
         if !outcome.complete && results.iter().any(|queued| same(queued) && queued.complete) {
             return;
         }
-        let old = results
-            .iter()
-            .position(|queued| same(queued) && !queued.complete)
-            .and_then(|at| results.remove(at));
-        results.push_back(outcome);
+        let old = Self::enqueue(&mut results, outcome);
         drop(results);
         // Large replaced models are destroyed outside the scheduler lock.
         drop(old);
         self.wake.wake();
+    }
+
+    /// Transfer one worker's terminal into the outbox atomically with the
+    /// load snapshot. There is never a gap where neither owns the read.
+    fn finish(&self, worker: usize, outcome: ReadOutcome) {
+        debug_assert!(outcome.complete);
+        let mut queue = self.queue();
+        let mut results = self.results.lock().unwrap_or_else(PoisonError::into_inner);
+        let old = Self::enqueue(&mut results, outcome);
+        if let Some(slot) = queue.running.get_mut(worker) {
+            *slot = None;
+        }
+        drop(results);
+        drop(queue);
+        // Replaced models and the wake run outside both scheduler locks.
+        drop(old);
+        self.wake.wake();
+    }
+
+    fn enqueue(results: &mut VecDeque<ReadOutcome>, outcome: ReadOutcome) -> Option<ReadOutcome> {
+        let old = results
+            .iter()
+            .position(|queued| {
+                queued.key == outcome.key
+                    && queued.generation == outcome.generation
+                    && !queued.complete
+            })
+            .and_then(|at| results.remove(at));
+        results.push_back(outcome);
+        old
     }
 }
 
@@ -411,7 +456,7 @@ impl std::fmt::Debug for ReadPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReadPool")
             .field("workers", &self.workers.len())
-            .field("queued", &self.queued())
+            .field("load", &self.load())
             .finish_non_exhaustive()
     }
 }
@@ -581,13 +626,32 @@ impl ReadPool {
     /// Returns the number of queued (not yet running) jobs.
     #[must_use]
     pub fn queued(&self) -> usize {
-        self.shared.queue().jobs.len()
+        self.load().queued
     }
 
     /// Returns the number of jobs currently running.
     #[must_use]
     pub fn running(&self) -> usize {
-        self.shared.queue().running.iter().flatten().count()
+        self.load().running
+    }
+
+    /// Snapshot all three lifecycle stages under the same lock order used
+    /// by terminal handoff. A running read cannot disappear before its
+    /// undelivered result is counted. This is readiness, not admission usage:
+    /// a delivered outcome retained by a consumer is no longer pool work.
+    #[must_use]
+    pub fn load(&self) -> PoolLoad {
+        let queue = self.shared.queue();
+        let results = self
+            .shared
+            .results
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        PoolLoad {
+            queued: queue.jobs.len(),
+            running: queue.running.iter().flatten().count(),
+            undelivered: results.len(),
+        }
     }
 
     fn close_and_join(&mut self) {
@@ -707,21 +771,18 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
         } else {
             result
         };
-        {
-            let mut queue = shared.queue();
-            if let Some(slot) = queue.running.get_mut(worker) {
-                *slot = None;
-            }
-        }
-        shared.publish(ReadOutcome {
-            key: job.key,
-            generation: job.generation,
+        shared.finish(
             worker,
-            priority: job.priority,
-            complete: true,
-            result,
-            _residency: permit,
-        });
+            ReadOutcome {
+                key: job.key,
+                generation: job.generation,
+                worker,
+                priority: job.priority,
+                complete: true,
+                result,
+                _residency: permit,
+            },
+        );
     }
 }
 

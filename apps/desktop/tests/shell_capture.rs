@@ -351,9 +351,9 @@ fn land(store: &Entity<DataStore>, cx: &mut App) {
         store.update(cx, |store, cx| {
             store.drain(cx);
         });
-        let (queued, running) = store.read(cx).pool_load();
+        let idle_pool = store.read(cx).pool_activity().is_idle();
         let loading = store.read(cx).focused().iter().any(|key| store.read(cx).is_loading(key));
-        if queued == 0 && running == 0 && !loading {
+        if idle_pool && !loading {
             return;
         }
         assert!(Instant::now() < deadline, "reads never landed");

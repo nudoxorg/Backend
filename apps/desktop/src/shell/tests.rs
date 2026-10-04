@@ -652,13 +652,16 @@ impl Rig {
             self.cx.run_until_parked();
             let frames = self.cx.update(|window, cx| window.simulate_next_frame(cx));
             self.draw();
-            let (queued, running) = self.graph.store.read_with(self.cx, |store, _| store.pool_load());
+            let pool = self
+                .graph
+                .store
+                .read_with(self.cx, |store, _| store.pool_activity());
             let (graph_ready, graph_work) = self.shell.read_with(self.cx, |shell, cx| {
                 (shell.graph_ready(cx), shell.graph_work_status(cx))
             });
             let root_work = self.graph.root.read_with(self.cx, |root, _| root.has_pending_work());
             let asking = settle_counts_as_asking(frames, root_work, graph_ready, graph_work);
-            let reading = queued > 0 || running > 0 || graph_work.is_some();
+            let reading = !pool.is_idle() || graph_work.is_some();
             if !asking && !reading {
                 self.draw();
                 return;

@@ -448,11 +448,12 @@ pub fn render_text(store: &DataStore) -> String {
     let pool = store.pool_activity();
     let _ = writeln!(
         out,
-        "data plane · root {} · focused {} · pool {} queued / {} running · {} landed, {} superseded, {} cancelled",
+        "data plane · root {} · focused {} · pool {} queued / {} running / {} undelivered · {} landed, {} superseded, {} cancelled",
         store.snapshot().key(),
         store.focused().len(),
         pool.queued,
         pool.running,
+        pool.undelivered,
         stats.landed,
         stats.superseded,
         stats.cancelled

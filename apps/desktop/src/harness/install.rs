@@ -199,7 +199,7 @@ fn await_reads(store: &gpui::Entity<DataStore>, cx: &mut App) {
     let started = std::time::Instant::now();
     loop {
         store.update(cx, |store, cx| store.drain(cx));
-        if store.read(cx).pool_load() == (0, 0) || started.elapsed() > INSTALL_DEADLINE {
+        if store.read(cx).pool_activity().is_idle() || started.elapsed() > INSTALL_DEADLINE {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -232,7 +232,8 @@ fn quiet(cx: &mut App) -> bool {
         .any(|project| project.phase == crate::model::ProjectPhase::Indexing);
     // The packages a project builds with are indexed one by one after it.
     let adding = crate::runtime::acquire::working(cx);
-    let reads_landed = store.read(cx).pool_load() == (0, 0) && !root.read(cx).has_pending_work_besides_indexing();
+    let reads_landed = store.read(cx).pool_activity().is_idle()
+        && !root.read(cx).has_pending_work_besides_indexing();
     match wait {
         Wait::Owner => ui_idle && reads_landed,
         Wait::Settled => ui_idle && !indexing && !adding && reads_landed,

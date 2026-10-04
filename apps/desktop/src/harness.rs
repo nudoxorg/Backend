@@ -1502,7 +1502,7 @@ fn quiet(cx: &mut App) -> bool {
     store.update(cx, |store, cx| {
         store.drain(cx);
     });
-    let idle_pool = store.read(cx).pool_load() == (0, 0);
+    let idle_pool = store.read(cx).pool_activity().is_idle();
     let engine_idle = if production.is_some() {
         !root.read(cx).has_pending_work_besides_indexing()
     } else {

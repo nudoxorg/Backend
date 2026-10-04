@@ -42,6 +42,7 @@ pub(crate) use self::owner_link::{OwnerAttachment, OwnerRetryAttachment};
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
+pub use super::reads::PoolLoad;
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
 use crate::core::{
@@ -57,24 +58,6 @@ use crate::navigation::Route;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// What the read pool is doing: jobs waiting for a worker, and jobs a worker
-/// is running.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PoolLoad {
-    /// Jobs no worker has taken yet.
-    pub queued: usize,
-    /// Jobs a worker is running.
-    pub running: usize,
-}
-
-impl PoolLoad {
-    /// Whether nothing is queued or running.
-    #[must_use]
-    pub const fn is_idle(self) -> bool {
-        self.queued == 0 && self.running == 0
-    }
-}
 
 /// One snapshot branch, as named by a change event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -594,20 +577,21 @@ impl DataStore {
     pub fn pool_activity(&self) -> PoolLoad {
         self.pool
             .as_ref()
-            .map_or_else(PoolLoad::default, |pool| PoolLoad {
-                queued: pool.queued(),
-                running: pool.running(),
-            })
+            .map_or_else(PoolLoad::default, ReadPool::load)
     }
 
-    /// The read pool's `(queued, running)` counts, as a tuple: the callers in
-    /// `harness.rs`, `shell/tests.rs`, the folio capture and `tests/` still
-    /// destructure one. They move to [`Self::pool_activity`] (MIGRATE.md, R-Open3),
-    /// then this goes.
+    /// Legacy `(waiting, running)` view. Waiting includes both queued jobs
+    /// and published outcomes not yet landed, so `(0, 0)` has the same idle
+    /// meaning as [`PoolLoad::is_idle`]. Prefer [`Self::pool_activity`] when
+    /// the individual lifecycle stages matter.
     #[must_use]
     pub fn pool_load(&self) -> (usize, usize) {
-        let PoolLoad { queued, running } = self.pool_activity();
-        (queued, running)
+        let PoolLoad {
+            queued,
+            running,
+            undelivered,
+        } = self.pool_activity();
+        (queued + undelivered, running)
     }
 
     fn emit(&mut self, event: StoreEvent, cx: &mut Context<Self>) {
@@ -1454,7 +1438,9 @@ mod tests {
         // The store focuses its first route (Orbit) at install; let those
         // reads settle so each test starts from an idle store.
         rig.until(cx, |store| {
-            store.health().is_loaded() && store.orbit().activity() == Activity::Stopped
+            store.health().is_loaded()
+                && store.orbit().activity() == Activity::Stopped
+                && store.pool_activity().is_idle()
         });
         rig.take_events();
         rig.base = rig.store.read_with(cx, |store, _| store.stats());
@@ -1485,6 +1471,151 @@ mod tests {
 
     fn symbol(name: &str) -> SymbolRef {
         SymbolRef::new(name).expect("symbol")
+    }
+
+    /// Finish real worker reads while the foreground executor is withheld.
+    /// All 24 terminals are in the outbox, with no worker or queued job left.
+    fn finish_burst_without_landing(rig: &Rig, cx: &mut TestAppContext) -> Vec<PageKey> {
+        let keys = (0..24)
+            .map(|index| PageKey::Symbol(symbol(&format!("fast-burst-{index}"))))
+            .collect::<Vec<_>>();
+        rig.store
+            .update(cx, |store, cx| store.focus(keys.clone(), cx));
+        crate::runtime::wait::until("24 reads completed before any UI landing", || {
+            rig.store.read_with(cx, |store, _| {
+                store.pool_activity()
+                    == PoolLoad {
+                        queued: 0,
+                        running: 0,
+                        undelivered: 24,
+                    }
+            })
+        });
+        assert_eq!(
+            rig.store.read_with(cx, |store, _| store.stats().landed),
+            rig.base.landed
+        );
+        rig.take_events();
+        keys
+    }
+
+    /// The native capture callers share this idle API: a finished backlog
+    /// must keep them waiting after the first and second bounded landing.
+    #[gpui::test]
+    fn capture_readiness_waits_for_all_completed_read_landing_turns(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        let keys = finish_burst_without_landing(&rig, cx);
+        assert!(
+            !rig.store
+                .read_with(cx, |store, _| store.pool_activity().is_idle())
+        );
+        assert_eq!(
+            rig.store.read_with(cx, |store, _| store.pool_load()),
+            (24, 0)
+        );
+        for remaining in [16, 8, 0] {
+            assert_eq!(
+                rig.store.update(cx, DataStore::drain),
+                8,
+                "one bounded landing turn"
+            );
+            let load = rig.store.read_with(cx, |store, _| store.pool_activity());
+            assert_eq!(
+                load,
+                PoolLoad {
+                    queued: 0,
+                    running: 0,
+                    undelivered: remaining
+                }
+            );
+            assert_eq!(
+                load.is_idle(),
+                remaining == 0,
+                "capture readiness at {load:?}"
+            );
+            assert_eq!(
+                rig.store.read_with(cx, |store, _| store.pool_load()),
+                (remaining, 0)
+            );
+        }
+        assert_eq!(
+            rig.store
+                .read_with(cx, |store, _| store.stats().landed - rig.base.landed),
+            24
+        );
+        assert!(rig.store.read_with(cx, |store, _| {
+            keys.iter().all(
+                |key| matches!(key, PageKey::Symbol(symbol) if store.symbol(symbol).is_loaded()),
+            )
+        }));
+    }
+
+    #[gpui::test]
+    fn a_completed_read_burst_lands_one_bounded_batch_per_executor_poll(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        finish_burst_without_landing(&rig, cx);
+        let landed =
+            |cx: &mut TestAppContext| rig.store.read_with(cx, |store, _| store.stats().landed);
+        let mut before = landed(cx);
+        let mut turns = 0;
+        while cx.executor().tick() {
+            let now = landed(cx);
+            assert!(
+                now - before <= 8,
+                "one executor poll landed {} outcomes",
+                now - before
+            );
+            turns += usize::from(now > before);
+            before = now;
+        }
+        assert_eq!(landed(cx) - rig.base.landed, 24);
+        assert_eq!(turns, 3, "24 completed reads require three bounded turns");
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.pool_activity().is_idle())
+        );
+    }
+
+    #[gpui::test]
+    fn foreground_work_interleaves_all_completed_read_landing_turns(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        finish_burst_without_landing(&rig, cx);
+        let log = Rc::new(RefCell::new(String::new()));
+        let landings = Rc::clone(&log);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&rig.store, move |_, event: &StoreEvent, _| {
+                if matches!(event, StoreEvent::Resource(_)) {
+                    landings.borrow_mut().push('L');
+                }
+            })
+        });
+        let probe = Rc::clone(&log);
+        let foreground = cx.update(|cx| {
+            cx.spawn(async move |_| {
+                for _ in 0..24 {
+                    probe.borrow_mut().push('P');
+                    super::super::wake::yield_turn().await;
+                }
+            })
+        });
+        cx.run_until_parked();
+        drop(foreground);
+        let log = log.borrow().clone();
+        assert_eq!(log.matches('L').count(), 24, "{log}");
+        let first = log.find('L').expect("first landing");
+        let last = log.rfind('L').expect("last landing");
+        assert!(
+            log[first..last].contains('P'),
+            "foreground work waited for the backlog: {log}"
+        );
+        assert!(
+            log.split('P').all(|turn| turn.len() <= 8),
+            "foreground work did not interleave all landing turns: {log}"
+        );
+        assert!(
+            rig.store
+                .read_with(cx, |store, _| store.pool_activity().is_idle())
+        );
     }
 
     #[gpui::test]
@@ -1713,20 +1844,20 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_is_idle_only_when_nothing_is_queued_and_nothing_is_running() {
+    fn a_pool_is_idle_only_when_no_read_is_queued_running_or_undelivered() {
         assert!(PoolLoad::default().is_idle(), "no jobs is idle");
         assert!(
             !PoolLoad {
                 queued: 1,
-                running: 0
+                ..PoolLoad::default()
             }
             .is_idle(),
             "a queued job is work"
         );
         assert!(
             !PoolLoad {
-                queued: 0,
-                running: 1
+                running: 1,
+                ..PoolLoad::default()
             }
             .is_idle(),
             "a running job is work"
@@ -1734,10 +1865,19 @@ mod tests {
         assert!(
             !PoolLoad {
                 queued: 2,
-                running: 3
+                running: 3,
+                undelivered: 4
             }
             .is_idle(),
             "both is work"
+        );
+        assert!(
+            !PoolLoad {
+                undelivered: 1,
+                ..PoolLoad::default()
+            }
+            .is_idle(),
+            "a finished result still needs landing"
         );
     }
 }
