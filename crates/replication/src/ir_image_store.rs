@@ -189,6 +189,9 @@ impl HistoryImageScratch {
 
 impl Drop for HistoryImageScratch {
     fn drop(&mut self) {
+        // Windows does not allow unlinking the scratch while its owner file
+        // handle remains open. Release the lease before best-effort cleanup.
+        drop(self.file.take());
         if self.path.as_os_str().is_empty() {
             return;
         }
