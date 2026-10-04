@@ -9,6 +9,7 @@ revision and refuses unresolved non-system Mach-O dependencies.
 from __future__ import annotations
 
 import argparse
+import datetime
 import functools
 import hashlib
 import json
@@ -116,6 +117,154 @@ def require_sha(value: Any, label: str) -> str:
     return value
 
 
+def validate_direct_cargo_provenance(
+    provenance: dict[str, Any], source: dict[str, str], target: str, runner: dict[str, Any]
+) -> dict[str, str]:
+    expected_source = {
+        "git_revision": source["git_revision"],
+        "git_tree": source["git_tree"],
+        "cargo_lock_sha256": source["cargo_lock_sha256"],
+        "working_tree": "clean",
+    }
+    source_fingerprint = hashlib.sha256(
+        json.dumps(expected_source, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    features = {
+        "features": [],
+        "all_features": False,
+        "no_default_features": False,
+        "targets": [target],
+    }
+    expected_command = [
+        "$CARGO",
+        "build",
+        "--locked",
+        "--manifest-path",
+        "$SOURCE_ROOT/Cargo.toml",
+        "--target-dir",
+        "$SOURCE_ROOT/.local/target",
+        "--target",
+        target,
+        "--profile",
+        "release",
+        "-p",
+        "backend-desktop",
+        "-p",
+        "backend-mcp",
+        "-p",
+        "backend-locald",
+        "--message-format=json-render-diagnostics",
+    ]
+    if (
+        provenance.get("schema") != 3
+        or provenance.get("kind") != "direct-cargo"
+        or provenance.get("git_head") != source["git_revision"]
+        or provenance.get("git_tree") != source["git_tree"]
+        or provenance.get("git_head_after") != source["git_revision"]
+        or provenance.get("git_tree_after") != source["git_tree"]
+        or provenance.get("source_fingerprint_sha256") != source_fingerprint
+        or provenance.get("source_fingerprint_sha256_after") != source_fingerprint
+        or provenance.get("source_unchanged") is not True
+        or provenance.get("cargo_lock_sha256") != source["cargo_lock_sha256"]
+        or provenance.get("cargo_exit_status") != 0
+        or provenance.get("features") != features
+        or provenance.get("target") != target
+        or provenance.get("profile") != "release"
+        or provenance.get("locked") is not True
+        or provenance.get("runner_sha256") != runner.get("sha256")
+        or provenance.get("runner_sha256_after") != runner.get("sha256")
+        or provenance.get("runner_asset_sha256") != runner.get("referenced_asset_sha256")
+        or provenance.get("runner_asset_sha256_after") != runner.get("referenced_asset_sha256")
+        or provenance.get("environment_snapshot_sha256") != runner.get("environment_sha256")
+        or provenance.get("environment_variables") != runner.get("environment_variables")
+        or provenance.get("effective_environment_sha256") != runner.get("effective_environment_sha256")
+        or provenance.get("effective_environment_variables") != runner.get("effective_environment_variables")
+        or provenance.get("command") != expected_command
+    ):
+        fail("schema-3 direct Cargo provenance does not bind the exact source, runner, environment, and command")
+    run_id = provenance.get("run_id")
+    if not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+        fail("schema-3 direct Cargo provenance is missing its invocation identity")
+    child_pid = provenance.get("cargo_child_pid")
+    if not isinstance(child_pid, int) or isinstance(child_pid, bool) or child_pid <= 0:
+        fail("schema-3 direct Cargo provenance has no valid Cargo child PID")
+    output_log = provenance.get("cargo_output_log")
+    if (
+        not isinstance(output_log, dict)
+        or output_log.get("path") != f"direct-{run_id}.cargo.log"
+        or not isinstance(output_log.get("size_bytes"), int)
+        or isinstance(output_log.get("size_bytes"), bool)
+        or output_log["size_bytes"] <= 0
+    ):
+        fail("schema-3 direct Cargo provenance has an invalid raw output log identity")
+    require_sha(output_log.get("sha256"), "direct Cargo raw output log")
+    require_sha(provenance.get("command_sha256"), "direct Cargo argv digest")
+    started = provenance.get("started_at_utc")
+    finished = provenance.get("finished_at_utc")
+    try:
+        started_at = datetime.datetime.fromisoformat(started)
+        finished_at = datetime.datetime.fromisoformat(finished)
+    except (TypeError, ValueError):
+        fail("schema-3 direct Cargo provenance has invalid start/end timestamps")
+    if (
+        started_at.tzinfo is None
+        or finished_at.tzinfo is None
+        or finished_at < started_at
+        or not isinstance(provenance.get("elapsed_ns"), int)
+        or isinstance(provenance.get("elapsed_ns"), bool)
+        or provenance["elapsed_ns"] <= 0
+    ):
+        fail("schema-3 direct Cargo provenance has invalid execution timing")
+    toolchain = provenance.get("toolchain")
+    if not isinstance(toolchain, dict) or set(toolchain) not in (
+        {"cargo", "rustc", "rustdoc"},
+        {"cargo", "rustc", "rustdoc", "rustc_wrapper"},
+    ):
+        fail("schema-3 provenance must identify direct Cargo, rustc, rustdoc, and selected wrapper tools")
+    if provenance.get("toolchain_unchanged") is not True or provenance.get("toolchain_after") != toolchain:
+        fail("schema-3 Cargo/Rust tool versions and executable hashes changed during the build")
+    assets = runner.get("referenced_asset_sha256")
+    if not isinstance(assets, dict):
+        fail("direct Cargo runner is missing its pinned tool assets")
+    if assets.get("runner.tool.CARGO") != assets.get("runner.exec"):
+        fail("direct Cargo runner executable differs from its explicit CARGO tool pin")
+    tool_assets = {
+        "cargo": "runner.exec",
+        "rustc": "runner.tool.RUSTC",
+        "rustdoc": "runner.tool.RUSTDOC",
+        "rustc_wrapper": "runner.tool.RUSTC_WRAPPER",
+    }
+    for name, tool in toolchain.items():
+        if not isinstance(tool, dict) or not isinstance(tool.get("version"), str) or not tool["version"].strip():
+            fail(f"schema-3 direct Cargo provenance is missing the {name} version")
+        digest = require_sha(tool.get("sha256"), f"direct Cargo tool {name}")
+        if assets.get(tool_assets[name]) != digest:
+            fail(f"direct Cargo {name} digest differs from the pinned runner asset")
+    wrapper_digest = provenance.get("rustc_wrapper_sha256")
+    if "rustc_wrapper" in toolchain:
+        require_sha(wrapper_digest, "selected rustc wrapper")
+        if wrapper_digest != toolchain["rustc_wrapper"]["sha256"]:
+            fail("direct Cargo selected wrapper digest differs from its toolchain snapshot")
+    elif wrapper_digest is not None or "runner.tool.RUSTC_WRAPPER" in assets:
+        fail("direct Cargo receipt has inconsistent selected-wrapper evidence")
+    outputs = provenance.get("outputs")
+    if not isinstance(outputs, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("path"), str)
+        or not isinstance(item.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+        or not isinstance(item.get("size_bytes"), int)
+        or isinstance(item.get("size_bytes"), bool)
+        or item["size_bytes"] <= 0
+        for item in outputs
+    ):
+        fail("schema-3 direct Cargo output manifest is malformed")
+    expected_paths = {f"{target}/release/{name}" for name in EXECUTABLES}
+    if len(outputs) != len(expected_paths) or {item["path"] for item in outputs} != expected_paths:
+        fail("direct Cargo provenance must list exactly the three admitted executable outputs")
+    return {item["path"]: item["sha256"] for item in outputs}
+
+
 def validate_source(source: Path, expected_revision: str, expected_tree: str) -> dict[str, str]:
     head = run(["git", "-C", str(source), "rev-parse", "HEAD"])
     tree = run(["git", "-C", str(source), "rev-parse", "HEAD^{tree}"])
@@ -170,15 +319,22 @@ def validate_app_build(
         fail("application receipt Cargo runner differs from its content pin")
     if runner_before["sha256"] != expected_runner_sha256:
         fail("application receipt Cargo runner differs from the package operator's explicit pin")
+    execution_kind = runner_before.get("execution_kind", "wrapper")
+    if execution_kind not in {"wrapper", "direct-cargo"}:
+        fail("application receipt has an unsupported Cargo runner execution kind")
     runner_assets = runner_before.get("referenced_asset_sha256")
-    if not isinstance(runner_assets, dict) or not {
+    required_assets = {
         "runner",
         "runner.interpreter",
         "runner.environment.0",
         "runner.tool.RUSTC",
-        "runner.tool.RUSTC_WRAPPER",
         "runner.exec",
-    }.issubset(runner_assets):
+    }
+    if execution_kind == "wrapper":
+        required_assets.add("runner.tool.RUSTC_WRAPPER")
+    else:
+        required_assets.update({"runner.tool.CARGO", "runner.tool.RUSTDOC"})
+    if not isinstance(runner_assets, dict) or not required_assets.issubset(runner_assets):
         fail("application receipt is missing hashes for pinned runner and toolchain references")
     for role, digest in runner_assets.items():
         if not isinstance(role, str) or not role or role in {"path", "paths"}:
@@ -186,6 +342,33 @@ def validate_app_build(
         require_sha(digest, f"Cargo runner asset {role}")
     if runner_assets.get("runner") != runner_before["sha256"]:
         fail("Cargo runner asset manifest does not match its top-level content pin")
+    if execution_kind == "direct-cargo":
+        snapshot_names = runner_before.get("environment_variables")
+        effective_names = runner_before.get("effective_environment_variables")
+        if (
+            not isinstance(runner_before.get("environment_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", runner_before["environment_sha256"]) is None
+            or runner_assets.get("runner.environment.snapshot") != runner_before["environment_sha256"]
+            or not isinstance(snapshot_names, list)
+            or not snapshot_names
+            or any(not isinstance(name, str) for name in snapshot_names)
+            or snapshot_names != sorted(set(snapshot_names))
+            or not isinstance(runner_before.get("effective_environment_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", runner_before["effective_environment_sha256"]) is None
+            or not isinstance(effective_names, list)
+            or any(not isinstance(name, str) for name in effective_names)
+            or effective_names != sorted(set(effective_names))
+            or not {"CARGO_BUILD_JOBS", "CARGO_HOME", "CARGO_TARGET_DIR", "HOME", "PATH", "PWD", "RUSTC", "RUSTDOC", "TMPDIR"}.issubset(
+                effective_names
+            )
+            or any(
+                name in {"CARGO_ENCODED_RUSTFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WORKSPACE_WRAPPER"}
+                or name.startswith(("CARGO_PROFILE_", "CARGO_NET_", "CARGO_REGISTRY_", "CARGO_REGISTRIES_"))
+                or re.search(r"(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|AUTH)", name, re.I)
+                for name in effective_names
+            )
+        ):
+            fail("direct Cargo receipt is missing its literal environment snapshot identity")
     invocation_prefix = runner_before.get("invocation_prefix")
     if (
         not isinstance(invocation_prefix, list)
@@ -222,42 +405,48 @@ def validate_app_build(
         "-p",
         "backend-locald",
     ]
+    if execution_kind == "direct-cargo":
+        expected_command.append("--message-format=json-render-diagnostics")
     if command != expected_command:
-        fail("application receipt must record one locked release build through the pinned shebang runner")
+        fail("application receipt must record the exact locked release build through the pinned runner")
     provenance = receipt.get("cargo_provenance")
     if not isinstance(provenance, dict):
-        fail("application receipt is missing the pinned Cargo wrapper provenance")
+        fail("application receipt is missing its Cargo invocation provenance")
     require_sha(provenance.get("record_sha256"), "Cargo provenance record")
-    if (
-        provenance.get("schema") != 2
-        or provenance.get("git_head") != source["git_revision"]
-        or not isinstance(provenance.get("source_dirty_sha256"), str)
-        or re.fullmatch(r"[0-9a-f]{64}", provenance["source_dirty_sha256"]) is None
-        or provenance.get("source_unchanged") is not True
-        or provenance.get("cargo_lock_sha256") != source["cargo_lock_sha256"]
-        or provenance.get("cargo_exit_status") != 0
-        or provenance.get("features")
-        != {
+    if execution_kind == "wrapper":
+        expected_features = {
             "features": [],
             "all_features": False,
             "no_default_features": False,
             "targets": [target],
         }
-        or provenance.get("toolchain_capture_complete") is not True
-        or provenance.get("toolchain_unchanged") is not True
-    ):
-        fail("Cargo provenance does not bind a successful unchanged locked build to this source/target")
+        if (
+            provenance.get("schema") != 2
+            or provenance.get("git_head") != source["git_revision"]
+            or not isinstance(provenance.get("source_dirty_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", provenance["source_dirty_sha256"]) is None
+            or provenance.get("source_unchanged") is not True
+            or provenance.get("cargo_lock_sha256") != source["cargo_lock_sha256"]
+            or provenance.get("cargo_exit_status") != 0
+            or provenance.get("features") != expected_features
+            or provenance.get("toolchain_capture_complete") is not True
+            or provenance.get("toolchain_unchanged") is not True
+        ):
+            fail("schema-2 wrapper provenance does not bind a successful unchanged build to this source/target")
+    else:
+        validate_direct_cargo_provenance(provenance, source, target, runner_before)
     versions = provenance.get("toolchain")
-    if not isinstance(versions, dict) or any(
-        not isinstance(versions.get(name), str) or not versions[name].strip()
-        for name in ("cargo", "rustc", "rustdoc")
-    ):
-        fail("Cargo provenance must identify Cargo, rustc, and rustdoc versions")
-    wrapper_hashes = provenance.get("wrapper_sha256")
-    if not isinstance(wrapper_hashes, dict) or set(wrapper_hashes) != {"runtime", "source", "rustc"}:
-        fail("Cargo provenance must identify the pinned Cargo wrapper files")
-    for name, digest in wrapper_hashes.items():
-        require_sha(digest, f"Cargo wrapper {name}")
+    if execution_kind == "wrapper":
+        if not isinstance(versions, dict) or any(
+            not isinstance(versions.get(name), str) or not versions[name].strip()
+            for name in ("cargo", "rustc", "rustdoc")
+        ):
+            fail("schema-2 Cargo provenance must identify Cargo, rustc, and rustdoc versions")
+        wrapper_hashes = provenance.get("wrapper_sha256")
+        if not isinstance(wrapper_hashes, dict) or set(wrapper_hashes) != {"runtime", "source", "rustc"}:
+            fail("schema-2 Cargo provenance must identify the pinned Cargo wrapper files")
+        for name, digest in wrapper_hashes.items():
+            require_sha(digest, f"Cargo wrapper {name}")
     outputs = provenance.get("outputs")
     if not isinstance(outputs, list) or any(
         not isinstance(item, dict)
@@ -267,6 +456,14 @@ def validate_app_build(
         for item in outputs
     ):
         fail("Cargo provenance output manifest is malformed")
+    if len({item["path"] for item in outputs}) != len(outputs):
+        fail("Cargo provenance output manifest contains duplicate paths")
+    provenance_outputs = {item["path"]: item["sha256"] for item in outputs}
+    expected_output_names = {f"{target}/release/{name}" for name in EXECUTABLES}
+    if not expected_output_names.issubset(provenance_outputs):
+        fail("Cargo provenance is missing one or more exact application executable outputs")
+    if execution_kind == "direct-cargo" and set(provenance_outputs) != expected_output_names:
+        fail("direct Cargo provenance must contain exactly the three admitted executable outputs")
     listed = receipt.get("executables")
     if not isinstance(listed, dict) or set(listed) != set(EXECUTABLES):
         fail(f"application build receipt must hash exactly {', '.join(EXECUTABLES)}")
@@ -276,7 +473,6 @@ def validate_app_build(
     } != set(EXECUTABLES):
         fail("application artifact directory must contain exactly the three receipt-bound regular files")
     paths: dict[str, Path] = {}
-    provenance_outputs = {item["path"]: item["sha256"] for item in outputs}
     for name in EXECUTABLES:
         path = artifact_dir / name
         if not path.is_file() or not os.access(path, os.X_OK):
@@ -284,7 +480,7 @@ def validate_app_build(
         if sha256(path) != require_sha(listed[name], f"application receipt {name}"):
             fail(f"application build receipt hash mismatch for {name}")
         target_output = f"{target}/release/{name}"
-        if target_output in provenance_outputs and sha256(path) != provenance_outputs[target_output]:
+        if sha256(path) != provenance_outputs[target_output]:
             fail(f"Cargo provenance output hash mismatch for {name}")
         paths[name] = path
     return receipt, paths
