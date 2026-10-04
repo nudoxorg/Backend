@@ -1,0 +1,22 @@
+{
+  "kind": "PARTIAL_FLAT_GRAPH_EXPERIMENT_RECOVERY",
+  "created_utc": "20261004T101619Z",
+  "branch": "codex/checkpoint-flat-graph-20261004T101619Z",
+  "parent": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "source_worktree": "/private/tmp/nudox-flat-package-graph-20261004",
+  "working_source_tree": "cc81d97ba3f7e43145500b6ef65c8f75ece17683",
+  "changed_sources_sha256": {
+    "crates/library/package_graph.rs": "fdea53950617b708b1da0ef2178843a91cf7a715becfb2f93b6146bf6e533725",
+    "crates/library/package_graph/index/flat.rs": "ec619395e94ab4e09f6b681be9f56586b6c648d335628c8782b0151a3367b810"
+  },
+  "original_index_sha256": "fd41094041c7c222280da05557d16cdaad5cb706878af5866ffacb872dd975c6",
+  "acceptance": "UNCOMPILED AND UNTESTED; partial experiment only",
+  "unfinished": [
+    "comparative benchmark module",
+    "page fanout-boundary test",
+    "collision/witness note",
+    "Root source review",
+    "compiler and correctness gates",
+    "actual performance measurement"
+  ]
+}
