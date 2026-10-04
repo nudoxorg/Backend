@@ -4044,12 +4044,17 @@ mod tests {
     #[test]
     fn signatures_lower_parameter_and_result_carriers_with_reference_kinds() -> Result<(), TestError>
     {
-        let source =
-            b"class Widget { int brew(string count) { return 0; } int brew() { return 1; } }";
+        let source = concat!(
+            "class Widget { int brew(string count) { return 0; } ",
+            "long brew() { return 1; } void tick() { } }",
+        )
+        .as_bytes();
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.Widget", source);
         let int_row = fix.named(b"System.Int32");
+        let long_row = fix.named(b"System.Int64");
         let string_row = fix.named(b"System.String");
+        let void_row = fix.named(b"System.Void");
         let count = fix.atom(b"count");
         let first = fix
             .method(widget, b"brew", Some(int_row), source)
@@ -4059,15 +4064,17 @@ mod tests {
                 ref_kind: REF_REF,
             });
         fix.declarations.push(first);
-        let second = fix.method(widget, b"brew", Some(int_row), source);
+        let second = fix.method(widget, b"brew", Some(long_row), source);
         fix.declarations.push(second);
+        let tick = fix.method(widget, b"tick", Some(void_row), source);
+        fix.declarations.push(tick);
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 class, 1 param carrier, 2 result carrier, 3 first brew,
-        // 4 result carrier, 5 second brew. Both overloads keep distinct
-        // constructor cells, so neither folds into the other's identity.
+        // Facts: 0 class, 1 param carrier, 2 int result, 3 first brew,
+        // 4 long result, 5 second brew, 6 void tick. Both overloads keep
+        // distinct constructor cells, so neither folds into the other's identity.
         let entities = entity_rows(&view);
-        if entities.len() != 6
+        if entities.len() != 7
             || entities[1].1 != EntityKind::Parameter
             || entities[2].1 != EntityKind::Parameter
             || entities[3].1 != EntityKind::Function
@@ -4076,7 +4083,7 @@ mod tests {
             return Err(TestError::Missing("overload fact set"));
         }
         // Every parameter and result type is primitive, so each carrier's
-        // own record rides on the fact; the lane holds the six records in
+        // own record rides on the fact; the lane holds the seven records in
         // fact order with no anonymous rows.
         let param = row(&view, 1)?;
         if param.record.payload0 != u32::from(PrimitiveShape::Str) {
@@ -4107,6 +4114,14 @@ mod tests {
                 item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
             })
             .ok_or(TestError::Missing("owned C# method"))?;
+        let result = owned
+            .items()
+            .find(|item| {
+                item.name() == b"System.Int32"
+                    && item.kind() == backend_semantic::ir::ItemKind::Parameter
+                    && item.parent() == Some(brew.id())
+            })
+            .ok_or(TestError::Missing("owned C# int result carrier"))?;
         let bindings = match owned.signature_carrier_bindings(brew.id()) {
             Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
                 bindings.collect::<Vec<_>>()
@@ -4114,23 +4129,36 @@ mod tests {
             _ => return Err(TestError::Missing("owned C# signature bindings")),
         };
         if bindings
-            .iter()
-            .map(|binding| (binding.owner, binding.role, binding.position))
-            .collect::<Vec<_>>()
             != vec![
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
-                    0,
-                ),
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
-                    0,
-                ),
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: count.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: result.id(),
+                },
             ]
         {
-            return Err(TestError::Missing("C# executable binding slots"));
+            return Err(TestError::Missing("C# executable carrier IDs and slots"));
+        }
+        let tick = owned
+            .items()
+            .find(|item| {
+                item.name() == b"tick" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned C# void method"))?;
+        let Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(mut tick)) =
+            owned.signature_carrier_bindings(tick.id())
+        else {
+            return Err(TestError::Missing("C# void method's captured empty signature"));
+        };
+        if tick.len() != 0 || tick.next().is_some() {
+            return Err(TestError::Missing("C# void method has no carrier slots"));
         }
         if owned.signature_carrier_role(count.id())
             != Some(
