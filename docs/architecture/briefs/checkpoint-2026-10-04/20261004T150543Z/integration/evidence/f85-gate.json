@@ -1,0 +1,22 @@
+{
+  "status": "TERMINAL_ROOT_SSH",
+  "source_commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "attempt_id": "validation-f85fb905-attempt01",
+  "artifact_dir": "/private/tmp/nudox-canonical-reconcile-20261004/root-cargo-admission-20261004T145239Z",
+  "ssh_pid": 95214,
+  "root_supervisor_pid": 95179,
+  "started_utc": "2026-10-04T14:52:46.663080+00:00",
+  "capacity_admission": "/private/tmp/nudox-canonical-reconcile-20261004/root-cargo-admission-20261004T145239Z/admission.json",
+  "command": [
+    "ssh",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=12",
+    "h16001mac",
+    "/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3.14",
+    "-"
+  ],
+  "ssh_exit": 101,
+  "completed_utc": "2026-10-04T14:58:40.402796+00:00"
+}

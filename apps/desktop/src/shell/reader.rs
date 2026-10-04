@@ -892,7 +892,7 @@ impl Reader {
         self.find_focus_return.is_some()
     }
 
-    pub(crate) fn begin_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) {
+    fn begin_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) {
         self.find_focus_return = None;
         let Some(focused) = focused else { return; };
         let Some(place) = self.places.last() else { return; };
@@ -914,16 +914,16 @@ impl Reader {
         });
     }
 
-    /// Bind the return to the input generation after Add's dismissing key.
+    /// Bind the return to the input generation after a cover's dismissing key.
     /// A later key or pointer must never lose a race to the deferred callback.
-    pub(crate) fn arm_find_focus_return_after_add(&mut self, focused: Option<&FocusHandle>, input: Option<u64>) -> bool {
+    pub(crate) fn arm_find_focus_return_after_cover(&mut self, focused: Option<&FocusHandle>, input: Option<u64>) -> bool {
         let (Some(focused), Some(input), Some(pending)) = (focused, input, self.find_focus_return.as_mut()) else { return false; };
         if pending.focused != *focused { return false; }
         pending.after_cover_input = Some(input);
         true
     }
 
-    /// An Add cover may return focus only if its captured handle was the
+    /// A cover may return focus only if its captured handle was the
     /// current Find component's mounted query, not a Shelf or old-page stop.
     pub(crate) fn begin_mounted_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) -> bool {
         let Some(focused) = focused else { return false; };
@@ -947,7 +947,7 @@ impl Reader {
     ) -> facet::browse::library::ReturnDisposition {
         use facet::browse::library::ReturnDisposition;
         // This callback comes from the active, mounted native query after its
-        // frame. It is the only source of the handle accepted at Add opening.
+        // frame. It is the only source of the handle accepted at cover opening.
         if let Some(place) = self.places.last().filter(|place|
             place.key == source_place && &place.route == source_route
                 && matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_))))

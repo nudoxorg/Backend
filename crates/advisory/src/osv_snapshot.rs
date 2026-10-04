@@ -963,6 +963,9 @@ impl OsvSnapshotBuilder {
             index_hasher.update(&record);
         }
         index.sync_all()?;
+        // Windows refuses to rename a directory that still holds an open file
+        // handle, so every staged file is closed before the publish below.
+        drop(index);
         let package_index_digest = *index_hasher.finalize().as_bytes();
         let generation = generation_id(self.scope, source_digest);
         let manifest = OsvSnapshotManifest {
@@ -980,13 +983,12 @@ impl OsvSnapshotBuilder {
         serde_json::to_writer(&mut manifest_file, &manifest)?;
         manifest_file.write_all(b"\n")?;
         manifest_file.sync_all()?;
-        let staged_lease_file = lease_directory.create_file_exclusive(OSV_GENERATION_LOCK)?;
-        staged_lease_file.sync_all()?;
-        FileExt::lock_exclusive(&staged_lease_file)?;
-        let mut generation_lease = Some(Arc::new(FileLease(Mutex::new(LeaseState {
-            file: staged_lease_file,
-            mode: LeaseMode::Exclusive,
-        }))));
+        drop(manifest_file);
+        // The generation lease file is created empty inside the stage; the
+        // lease itself is taken on the published directory, below.
+        lease_directory
+            .create_file_exclusive(OSV_GENERATION_LOCK)?
+            .sync_all()?;
         package_directory.sync_all()?;
         lease_directory.sync_all()?;
         staging_directory.sync_all()?;
@@ -1005,15 +1007,14 @@ impl OsvSnapshotBuilder {
         self.lease_directory.take();
         self.staging_directory.take();
         let staging_name = std::mem::take(&mut self.staging_name);
-        let published_with_staged_lease =
+        let publication =
             match root_directory.rename_with_outcome(&staging_name, &generation, false) {
-                Ok(()) => true,
+                Ok(()) => GenerationPublication::Created,
                 Err(DirectoryRenameError::NotCommitted(error))
                     if error.kind() == io::ErrorKind::AlreadyExists =>
                 {
-                    generation_lease.take();
                     root_directory.remove_dir_all(&staging_name, MAX_OSV_STORAGE_ENTRIES)?;
-                    false
+                    GenerationPublication::AlreadyPublished
                 }
                 Err(DirectoryRenameError::NotCommitted(error)) => {
                     let _ = root_directory.remove_dir_all(&staging_name, MAX_OSV_STORAGE_ENTRIES);
@@ -1040,37 +1041,54 @@ impl OsvSnapshotBuilder {
             pending_root_lease: None,
             index_records: None,
         };
-        if published_with_staged_lease {
-            reference.attach_root_with_lease(
-                &self.root,
-                root_directory.clone(),
-                root_directory.open_private_dir(&generation)?,
-                generation_lease
-                    .take()
-                    .ok_or(OsvSnapshotError::Invalid("generation lease missing"))?,
-            )?;
-        } else {
-            let generation_directory = root_directory.open_private_dir(&generation)?;
-            let lease_directory = generation_directory.open_private_dir(OSV_LEASE_DIRECTORY)?;
-            let existing_lease = Arc::new(
-                FileLease::open(
-                    &lease_directory,
-                    OSV_GENERATION_LOCK,
-                    false,
-                    LeaseMode::Shared,
-                    true,
-                )?
-                .ok_or(OsvSnapshotError::Invalid("generation lease unavailable"))?,
-            );
-            reference.attach_root_with_lease(
-                &self.root,
-                root_directory.clone(),
-                generation_directory,
-                existing_lease,
-            )?;
-        }
+        // The lease is taken on the published directory. This builder still
+        // holds the root writer lease, which excludes collection and every
+        // other publisher, so nothing can observe or remove the generation
+        // between the rename and the lock below.
+        let generation_directory = root_directory.open_private_dir(&generation)?;
+        let lease_directory = generation_directory.open_private_dir(OSV_LEASE_DIRECTORY)?;
+        let lease = Arc::new(
+            FileLease::open(
+                &lease_directory,
+                OSV_GENERATION_LOCK,
+                false,
+                publication.lease_mode(),
+                publication.waits_for_lease(),
+            )?
+            .ok_or(OsvSnapshotError::Invalid("generation lease unavailable"))?,
+        );
+        reference.attach_root_with_lease(
+            &self.root,
+            root_directory.clone(),
+            generation_directory,
+            lease,
+        )?;
         reference.pending_root_lease = self.root_lease.take();
         Ok(reference)
+    }
+}
+
+/// How a staged generation reached its final name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenerationPublication {
+    /// This builder's rename created the generation; nobody else can hold a
+    /// lease on it yet, so it is leased exclusively until selection commits.
+    Created,
+    /// Another publisher already created a byte-identical generation. This
+    /// builder's stage was discarded and it joins the existing one as a reader.
+    AlreadyPublished,
+}
+
+impl GenerationPublication {
+    const fn lease_mode(self) -> LeaseMode {
+        match self {
+            Self::Created => LeaseMode::Exclusive,
+            Self::AlreadyPublished => LeaseMode::Shared,
+        }
+    }
+
+    const fn waits_for_lease(self) -> bool {
+        matches!(self, Self::AlreadyPublished)
     }
 }
 
@@ -1363,6 +1381,11 @@ fn prune_unreferenced_generations_locked(
             std::process::id(),
             DELETE_NONCE.fetch_add(1, Ordering::Relaxed)
         );
+        // No reader holds the generation (the exclusive probe succeeded) and
+        // none can attach while this collector holds the exclusive root lease,
+        // so the probe is released before the rename. Windows refuses to rename
+        // a directory that still has an open file handle inside it.
+        drop(lease);
         drop(leases);
         drop(generation);
         match root.rename_with_outcome(name, &tombstone, false) {
@@ -1374,7 +1397,6 @@ fn prune_unreferenced_generations_locked(
                 return Err(OsvSnapshotError::CommittedButNotDurable(error));
             }
         }
-        drop(lease);
         root.remove_dir_all(&tombstone, MAX_OSV_STORAGE_ENTRIES)?;
     }
     root.sync_all()?;

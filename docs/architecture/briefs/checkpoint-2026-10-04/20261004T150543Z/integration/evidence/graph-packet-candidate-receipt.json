@@ -1,0 +1,34 @@
+{
+  "created_utc": "2026-10-04T14:40:59.592430+00:00",
+  "commit": "d5a19a02268e45b9b0543240e50946708ba628cd",
+  "tree": "e6623f06263037a5beff115746c8baa2464cee51",
+  "base": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "branch": "codex/borrowed-typed-graph-candidate-20261004T144100Z",
+  "paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/surface.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "source_sha256": {
+    "crates/library/lib.rs": "b3a72b5c40848707a56d549d3e1a10268086a1e0d71318acbbff637a291e2c22",
+    "crates/library/package_graph.rs": "26f20123dad72e26045fa2bbc5b8ee597c37b95f8ab9f06813c84251e3f45c2b",
+    "extensions/turso/src/graph.rs": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+    "extensions/turso/src/package_graph_read.rs": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e",
+    "crates/library/tests/package_graph_source_witness_allocation.rs": "b8e0925c10d2be15e329991b593fdbb143a3ba90d761ad99fb0a1c5ca6948fa7",
+    "crates/library/package_graph_page.rs": "68246c25e5aac8cdfc7a29ca1d5dc0a93d2a1c6ddf4039f79b68c0fa9b31819c",
+    "crates/library/surface.rs": "2b5bfffdb0f0cb141be40b03b23ec2399c330709e2801a6f46e4040ec59f707c",
+    "extensions/turso/src/schema.rs": "919ab00251f1aafd97833b7f501b6c10b5e6ef73e26ee4270c9016cba4cfcb82",
+    "extensions/turso/src/tests.rs": "4ca3129a9890048bc101fc6ebc5cb4dac923eb8c94c745cdcde175b0224ed2a7"
+  },
+  "typed_baseline": "d21562d4bfd5e7648b0aeb6bdd8bab6fc8d5555d",
+  "borrowed_patch_sha256": "4199032656e9380b158c95e20de8fa73db7c5793375ce0d4384767412ca60fe7",
+  "main_index_and_merge_preserved": true,
+  "validation": "Root source review complete; Rust/storage/allocation gates UNRUN",
+  "artifact_dir": "/private/tmp/nudox-borrowed-typed-candidate-20261004T144100Z"
+}

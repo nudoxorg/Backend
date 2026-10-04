@@ -1109,7 +1109,7 @@ mod publication_tests {
                 first.capability().expect("complete source"),
             )
             .expect("prepared external delta");
-        let (second, _) = first.as_ref().clone().commit(prepared).expect("committed external delta");
+        let (second, _) = prepared.commit(&first).expect("committed external delta");
         let second = Arc::new(second);
         let published = Cursor::for_view_root_at(&second, 1);
         assert_eq!(
@@ -1118,6 +1118,10 @@ mod publication_tests {
         );
         assert!(gate.lock().epoch > initial_wake);
         assert_eq!(gate.attached_ready_epoch(), Some(attachment));
+        assert!(
+            gate.serves_attachment(Some(attachment)),
+            "publication advances the observation epoch, not its read attachment"
+        );
         let (kept, kept_cursor) = gate.publication(attachment).expect("latest shared root");
         assert!(Arc::ptr_eq(&kept, &second));
         assert_eq!(kept_cursor, published);

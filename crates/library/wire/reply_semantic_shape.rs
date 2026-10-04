@@ -507,7 +507,9 @@ pub fn semantic_shape_batch_key(
 ) -> Result<ObjectKey<crate::SemanticShapeBatchSchema>, String> {
     let wire = semantic_shape_batch_to_wire(batch)?;
     let preimage = admit_shape_wire_tree(&wire)?;
-    Ok(ObjectKey::from_value(&preimage))
+    Ok(ObjectKey::<crate::SemanticShapeBatchSchema>::from_value(
+        preimage.as_slice(),
+    ))
 }
 
 pub(crate) fn semantic_shape_batch_from_wire(
@@ -515,7 +517,7 @@ pub(crate) fn semantic_shape_batch_from_wire(
     certificate: &WireCertificate,
 ) -> Result<SemanticShapeBatch, String> {
     let preimage = admit_shape_wire_tree(&value)?;
-    let batch_key = ObjectKey::<crate::SemanticShapeBatchSchema>::from_value(&preimage);
+    let batch_key = ObjectKey::<crate::SemanticShapeBatchSchema>::from_value(preimage.as_slice());
     certificate.key_commitment(
         crate::WireSchema::SemanticShapeBatch,
         &encode_id(batch_key.as_bytes()),
@@ -866,7 +868,7 @@ fn origin_from_wire(
         image: origin
             .image
             .as_ref()
-            .map(|image| {
+            .map(|image| -> Result<SemanticShapeImageOrigin, String> {
                 let bytes = decode_id(&image.image_identity).map_err(|error| error.to_string())?;
                 let profile = image.profile.profile().map_err(|error| error.to_string())?;
                 let identity =

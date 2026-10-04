@@ -18,6 +18,7 @@ mod engine;
 mod identity;
 mod incremental;
 mod provider;
+mod publish;
 pub mod server;
 
 pub use admission::{

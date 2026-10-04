@@ -1,0 +1,42 @@
+ROOT_AUTHORIZED_SERIAL_F85_LIBRARY_CLIENT_ATTEMPT01
+{"read_only_memory_command": ["/usr/sbin/sysctl", "-n", "hw.memsize"], "exit": 0, "stdout": "103079215104\n", "stderr": ""}
+{"read_only_memory_command": ["/usr/bin/vm_stat"], "exit": 0, "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                  2073638.\nPages active:                                1747460.\nPages inactive:                              2151763.\nPages speculative:                             34648.\nPages throttled:                                   0.\nPages wired down:                             226478.\nPages purgeable:                               21594.\n\"Translation faults\":                     8943345146.\nPages copy-on-write:                      2234022670.\nPages zero filled:                        2612115695.\nPages reactivated:                            199697.\nPages purged:                                3394567.\nFile-backed pages:                           2355188.\nAnonymous pages:                             1578683.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                   155781726.\nPageouts:                                       4828.\nSwapins:                                           0.\nSwapouts:                                          0.\n", "stderr": ""}
+{"read_only_memory_command": ["/usr/bin/memory_pressure", "-Q"], "exit": 0, "stdout": "The system has 103079215104 (6291456 pages with a page size of 16384).\nSystem-wide memory free percentage: 96%\n", "stderr": ""}
+STAGE_RESULT
+stage=library
+package=backend-library
+attempt_id=validation-f85fb905-attempt01
+source_commit=f85fb905ddc499bcfe701812ab68e971f7aad097
+source_tree=23d57113d614edc95ee60de3f7a394f4baba3ad6
+lock_sha256=5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f
+source_manifest_sha256=9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3
+base_manifest_sha256=95044e43b223b43e7b659c75c5f4548333fedd9e6a08537055bcd2fc5fb89d7c
+delta_sha256=714efe5242e2b9351bc10dbee2a0aab77d56d3fb96940129a10d8e107aa1ebb9
+started_utc=2026-10-04T14:52:48Z
+cargo_completed_utc=2026-10-04T14:58:38Z
+completed_utc=2026-10-04T14:58:40Z
+cargo_exit=101
+source_verification_after_exit=0
+python_path=/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3.14
+python_realpath=/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3.14
+python_version=3.14.6
+python_sha256=4f3c8b2a70cc7967e1ce900871443300357d017c1c67dfcca74bfe3e9bb6c8ad
+rustc_wrapper_path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-f85fb905ddc499bcfe701812ab68e971f7aad097/rustc-cache-wrapper.sh
+rustc_wrapper_sha256_expected=3db7a569285fc426dead9aa77e958d9173bdb4ecfd66078fdc0aa9d199108100
+rustc_wrapper_sha256_after=3db7a569285fc426dead9aa77e958d9173bdb4ecfd66078fdc0aa9d199108100
+rustc_wrapper_verification_after_exit=0
+python_runtime_receipt_path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-f85fb905ddc499bcfe701812ab68e971f7aad097/attempts/validation-f85fb905-attempt01-library/python-runtime.txt
+python_runtime_receipt_sha256=7bed431875dafb1046f5ffff87d05d213ce5601c23d7c4e5b8b417d82156266a
+source_verifier_path=/Users/rmccrar6/.local/share/nudox/source-releases/f85fb905ddc499bcfe701812ab68e971f7aad097/receipt/verify_source_manifest.py
+source_verifier_sha256_after=6a9e18216c4ee972215a1a2c378da382d830d0357dd26771bab513f77da3fe16
+source_manifest_path=/Users/rmccrar6/.local/share/nudox/source-releases/f85fb905ddc499bcfe701812ab68e971f7aad097/receipt/source-verification.json
+source_manifest_sha256_after=9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3
+base_manifest_path=/Users/rmccrar6/.local/share/nudox/source-releases/f85fb905ddc499bcfe701812ab68e971f7aad097/receipt/base-source-verification.json
+base_manifest_sha256_after=95044e43b223b43e7b659c75c5f4548333fedd9e6a08537055bcd2fc5fb89d7c
+source_verification_log_sha256=5b584443b00d2223473761174604c174cb538f1ebf394392749d539a9329fbcf
+cargo_log_path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-f85fb905ddc499bcfe701812ab68e971f7aad097/attempts/validation-f85fb905-attempt01-library/cargo.log
+command=cargo test --locked --offline -j1 -p backend-library --lib -- --test-threads=2
+owner_record_sha256=b24a4c2e07499e16a9c2cea0412f34c03f43c7f79f36f07d6daa7a740182c12d
+log_sha256=f8eee50172388b1725ef33c91620ebb492196bb11321dacb6d7187c59a57d2a1
+gate_status=failed_or_source_changed
+stage_exit=101

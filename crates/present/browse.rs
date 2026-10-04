@@ -367,7 +367,10 @@ fn health(tree: &ProjectTree) -> String {
     let line = match tree.health.coverage {
         AdvisoryCoverage::Complete => format!("advisories checked for {} of {of}", count(tree.health.checked as usize)),
         AdvisoryCoverage::Partial => format!("advisories from a partial source, not a full check of {of}"),
-        AdvisoryCoverage::Unknown => "advisories not checked: no source is configured".to_owned(),
+        AdvisoryCoverage::Unknown => format!(
+            "advisory coverage unknown: {} of {of} checked",
+            count(tree.health.checked as usize)
+        ),
         AdvisoryCoverage::Unavailable => "advisories unavailable: a source could not be reached".to_owned(),
     };
     if tree.health.freshness == FreshnessState::Stale {

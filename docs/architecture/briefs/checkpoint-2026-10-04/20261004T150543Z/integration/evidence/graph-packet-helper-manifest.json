@@ -1,0 +1,175 @@
+{
+  "acceptance_limits": [
+    "No full source-tree materialization or APFS clone was executed.",
+    "No Rust compiler, Cargo, Nix, runtime, deployment, or remote validation was executed.",
+    "The positive overlay operates on a disposable fixture containing only the nine changed target paths; it is not a whole-tree verification."
+  ],
+  "archive_members": [
+    {
+      "bytes": 16883,
+      "mode": "0o644",
+      "path": "source/crates/library/lib.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 146474,
+      "mode": "0o644",
+      "path": "source/crates/library/package_graph.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 75577,
+      "mode": "0o644",
+      "path": "source/crates/library/package_graph_page.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 170220,
+      "mode": "0o644",
+      "path": "source/crates/library/surface.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 2219,
+      "mode": "0o644",
+      "path": "source/crates/library/tests/package_graph_source_witness_allocation.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 57236,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/graph.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 66774,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/package_graph_read.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 5818,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/schema.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 142958,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/tests.rs",
+      "type": "regular"
+    }
+  ],
+  "candidate": {
+    "base_commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+    "base_tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6",
+    "borrowed_patch_sha256": "4199032656e9380b158c95e20de8fa73db7c5793375ce0d4384767412ca60fe7",
+    "commit": "d5a19a02268e45b9b0543240e50946708ba628cd",
+    "receipt_sha256": "1ca832f4944ff5b0b6c5f634a40429dfb906681a45bd7fdeb875e7654452fc1b",
+    "receipt_source": "/private/tmp/nudox-latest-borrowed-typed-candidate.json",
+    "tree": "e6623f06263037a5beff115746c8baa2464cee51"
+  },
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/surface.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "counts": {
+    "base_parent_entries": 5125,
+    "base_total_entries": 9233,
+    "candidate_parent_entries": 5126,
+    "candidate_total_entries": 9234,
+    "gitlink_entries": 4108,
+    "new_regular_file": 1,
+    "replaced_regular_files": 8
+  },
+  "format": "borrowed-typed-candidate-local-packet-preparation-v2",
+  "helper_files": [
+    {
+      "bytes": 15271,
+      "mode": "0o644",
+      "path": "build_candidate_packet.py",
+      "sha256": "4fdf3b4778f26ff401a82b749555a64df69478f8b8a9585cf0ff7c2529d14ed3"
+    },
+    {
+      "bytes": 25387,
+      "mode": "0o644",
+      "path": "prepare_candidate.py",
+      "sha256": "24e2e6fe353683427b9471f83a892b56aebf4535daf58f1df03316c24019f850"
+    },
+    {
+      "bytes": 19554,
+      "mode": "0o644",
+      "path": "verify_source_manifest.py",
+      "sha256": "1bd2f39681d0b88e6992c9d299fdd18bc31d7aef00e92cbf3446317be23538dc"
+    }
+  ],
+  "local_python_protocol_tests": {
+    "cases": 8,
+    "coverage": [
+      "positive exact nine-member 0644 packet and synthetic overlay",
+      "unknown new path",
+      "third source change",
+      "Cargo.lock mismatch",
+      "gitlink mismatch",
+      "archive path traversal",
+      "unknown archive path",
+      "duplicate archive member",
+      "archive symlink rejected"
+    ],
+    "result": "PASS"
+  },
+  "packet_files": [
+    {
+      "bytes": 2625539,
+      "mode": "0o600",
+      "path": "base-source-verification.json",
+      "sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3"
+    },
+    {
+      "bytes": 30253,
+      "mode": "0o600",
+      "path": "borrowed-source.patch",
+      "sha256": "4199032656e9380b158c95e20de8fa73db7c5793375ce0d4384767412ca60fe7"
+    },
+    {
+      "bytes": 2066,
+      "mode": "0o600",
+      "path": "candidate-receipt.json",
+      "sha256": "1ca832f4944ff5b0b6c5f634a40429dfb906681a45bd7fdeb875e7654452fc1b"
+    },
+    {
+      "bytes": 5661,
+      "mode": "0o600",
+      "path": "package-receipt.json",
+      "sha256": "b373ccdeb6af56528bf4ba801fea1d38ba83cbe4a41ee7cfd1fba9f91d98698d"
+    },
+    {
+      "bytes": 120808,
+      "mode": "0o600",
+      "path": "source-delta.tar.gz",
+      "sha256": "9124448420a3dfb36880af3001ac8c235277e78d3ce24b2f50e3af1b64e1eeab"
+    },
+    {
+      "bytes": 2626229,
+      "mode": "0o600",
+      "path": "source-verification.json",
+      "sha256": "4b0a3b3adcc556fffdd0eaa899537fc515c320c63bb185603adb50d68ec96b71"
+    }
+  ],
+  "scope": "LOCAL ONLY. No transfer, remote mutation, source-worktree edit, release layout/staging, Cargo/build/Nix/native action. Rust acceptance remains unverified.",
+  "test_files": [
+    {
+      "bytes": 8733,
+      "mode": "0o644",
+      "path": "test_candidate_packet.py",
+      "sha256": "6ee5db527656321d174936e9cb14b8cb380ca1516ba0c2e9a44388f2fd7925b1"
+    }
+  ]
+}

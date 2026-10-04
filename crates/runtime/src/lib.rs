@@ -1295,9 +1295,14 @@ mod tests {
         )
         .expect("discover divergent spelling");
         assert_eq!(discovered.endpoint(), canonical);
-        assert_eq!(
-            discovered.data(),
-            data.canonicalize().expect("canonical data")
+        // The canonical identity of an existing directory, spelled the way every
+        // surface displays it. `canonicalize` yields the verbatim form on Windows.
+        let canonical_data =
+            normalize_verbatim_prefix(&data.canonicalize().expect("canonical data"));
+        assert_eq!(discovered.data(), canonical_data);
+        assert!(
+            !discovered.data().to_string_lossy().starts_with(r"\\?\"),
+            "a verbatim marker must not leak into the discovered workspace path"
         );
 
         fs::remove_dir_all(root).expect("remove runtime fixture");
@@ -1432,6 +1437,28 @@ mod tests {
         ))
     }
 
+    /// Creates `path` as a directory only its owner can use.
+    ///
+    /// Private state is admitted only beneath a private parent, so a fixture
+    /// that will hold it must be private itself: mode 0700 on Unix, and the
+    /// protected current-user ACL on Windows, where a plain `create_dir`
+    /// inherits the (shared) temporary directory's ACL.
+    fn create_private_fixture(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(path)
+                .expect("private fixture directory");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .expect("fixture remains private under umask");
+        }
+        #[cfg(windows)]
+        backend_platform::durable::ensure_private_child_directory(path)
+            .expect("private fixture directory");
+    }
+
     #[test]
     fn git_root_unifies_nested_language_packages() {
         let root = test_directory("git-root");
@@ -1458,21 +1485,7 @@ mod tests {
     #[test]
     fn concurrent_initializers_publish_one_complete_authority_secret() {
         let fixture = test_directory("concurrent-secret");
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt as _;
-            builder.mode(0o700);
-        }
-        builder
-            .create(&fixture)
-            .expect("private concurrency fixture");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
-                .expect("fixture remains private under umask");
-        }
+        create_private_fixture(&fixture);
         let root = fixture.join("state");
         backend_platform::durable::ensure_private_directory(&root)
             .expect("create private secret parent");
