@@ -8,15 +8,16 @@
 
 use crate::process::RegistryDiscoveryConfig;
 use backend_engine::registry::{
-    DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
-    DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
-    DiscoveryReleaseObservation, DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
-    DiscoveryTimestamp, MAX_DISCOVERY_PAGE_ITEMS, NugetCatalogEvent, RegistryEcosystem,
-    RegistryEndpoint, crates_sparse_index_path, discovery_source_identity, parse_conan_recipe_tree,
-    parse_conan_recipe_versions, parse_crates_recent_page, parse_crates_sparse_package,
-    parse_go_module_index_page, parse_maven_search_page, parse_npm_changes_page,
-    parse_npm_packument_document, parse_nuget_catalog_index, parse_nuget_catalog_leaf,
-    parse_nuget_catalog_page, parse_pypi_project_list, parse_pypi_project_metadata,
+    DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
+    DiscoveryFacet, DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt,
+    DiscoveryPackageRetraction, DiscoveryReleaseObservation, DiscoverySourceEvent,
+    DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp, MAX_DISCOVERY_PAGE_ITEMS,
+    NugetCatalogEvent, RegistryEcosystem, RegistryEndpoint, crates_sparse_index_path,
+    discovery_source_identity, parse_conan_recipe_tree, parse_conan_recipe_versions,
+    parse_crates_recent_page, parse_crates_sparse_package, parse_go_module_index_page,
+    parse_maven_search_page, parse_npm_changes_page, parse_npm_packument_document,
+    parse_nuget_catalog_index, parse_nuget_catalog_leaf, parse_nuget_catalog_page,
+    parse_pypi_project_list, parse_pypi_project_metadata,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -88,6 +89,12 @@ pub(crate) enum DiscoveryCommit {
     AlreadyCommitted,
 }
 
+#[derive(Clone, Debug)]
+struct DiscoveryProgressToken {
+    sequence: u64,
+    cursor: DiscoveryCursor,
+}
+
 #[derive(Clone, Debug, Default)]
 struct SourceProgress {
     sequence: u64,
@@ -141,7 +148,7 @@ pub(crate) struct DiscoveryGateway {
 enum DiscoveryWorkerMessage {
     Batch {
         batch: DiscoveryBatch,
-        acknowledgement: SyncSender<Option<u64>>,
+        acknowledgement: SyncSender<Option<(bool, DiscoveryProgressToken)>>,
     },
     Failed {
         source: DiscoverySourceIdentity,
@@ -173,8 +180,7 @@ impl DiscoveryGateway {
                 let worker_sender = sender.clone();
                 let worker_cancelled = Arc::clone(&cancelled);
                 let max_pages = config.max_pages;
-                let cursor = store.cursor(source);
-                let expected_base_sequence = store.sequence(source).unwrap_or(0);
+                let progress = store.progress_token(source);
                 let source_id = source.id();
                 let worker = thread::Builder::new()
                     .name(format!(
@@ -184,8 +190,7 @@ impl DiscoveryGateway {
                     .spawn(move || {
                         discovery_worker(
                             endpoint,
-                            cursor,
-                            expected_base_sequence,
+                            progress,
                             max_pages,
                             worker_sender,
                             worker_cancelled,
@@ -227,7 +232,7 @@ impl DiscoveryGateway {
                     let source = batch.source;
                     let committed = self.store.commit(batch).is_ok();
                     self.store.mark_failed(source, !committed);
-                    let latest = committed.then(|| self.store.sequence(source)).flatten();
+                    let latest = Some((committed, self.store.progress_token(source)));
                     let _ = acknowledgement.send(latest);
                 }
                 Ok(DiscoveryWorkerMessage::Failed { source }) => {
@@ -265,13 +270,13 @@ impl Drop for DiscoveryGateway {
 
 fn discovery_worker(
     endpoint: RegistryEndpoint,
-    mut cursor: DiscoveryCursor,
-    mut expected_base_sequence: u64,
+    mut progress: DiscoveryProgressToken,
     max_pages: usize,
     sender: SyncSender<DiscoveryWorkerMessage>,
     cancelled: Arc<AtomicBool>,
 ) {
     let source = discovery_source_identity(&endpoint);
+    let mut cursor = progress.cursor.clone();
     let mut retry_delay = DISCOVERY_REFRESH_INTERVAL;
     let mut sparse_cache = BTreeMap::new();
     while !cancelled.load(Ordering::Acquire) {
@@ -284,9 +289,19 @@ fn discovery_worker(
             &cancelled,
             &mut sparse_cache,
         ) {
-            Ok(mut batch) => {
-                batch.expected_base_sequence = expected_base_sequence;
-                let next_cursor = batch.next_cursor.clone();
+            Ok(draft) => {
+                let batch = match draft.admit_for_sequence(progress.sequence) {
+                    Ok(batch) => batch,
+                    Err(_) => {
+                        let _ = send_worker_message(
+                            &sender,
+                            DiscoveryWorkerMessage::Failed { source },
+                            &cancelled,
+                        );
+                        wait_for_retry(retry_delay, &cancelled);
+                        continue;
+                    }
+                };
                 let (acknowledgement, response) = mpsc::sync_channel(1);
                 if !send_worker_message(
                     &sender,
@@ -303,10 +318,16 @@ fn discovery_worker(
                         return;
                     }
                     match response.try_recv() {
-                        Ok(Some(sequence)) => {
-                            cursor = next_cursor;
-                            expected_base_sequence = sequence;
-                            retry_delay = DISCOVERY_REFRESH_INTERVAL;
+                        Ok(Some((committed, latest))) => {
+                            progress = latest;
+                            cursor = progress.cursor.clone();
+                            if committed {
+                                retry_delay = DISCOVERY_REFRESH_INTERVAL;
+                            } else {
+                                retry_delay = retry_delay
+                                    .saturating_mul(2)
+                                    .min(Duration::from_secs(15 * 60));
+                            }
                             break;
                         }
                         Ok(None) | Err(TryRecvError::Disconnected) => break,
@@ -372,7 +393,7 @@ fn build_source_batch(
     deadline: Instant,
     cancelled: &AtomicBool,
     sparse_cache: &mut BTreeMap<String, CachedSparsePackage>,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     match endpoint.ecosystem() {
         RegistryEcosystem::Cargo => {
             refresh_crates(endpoint, previous, deadline, cancelled, sparse_cache)
@@ -400,7 +421,7 @@ fn refresh_crates(
     deadline: Instant,
     cancelled: &AtomicBool,
     sparse_cache: &mut BTreeMap<String, CachedSparsePackage>,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let page_number = if previous.is_empty() {
         1
@@ -551,9 +572,8 @@ fn refresh_crates(
             facts.extend(package_facts);
         }
     }
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor: parsed.next_cursor.clone(),
         source_high_watermark: parsed.next_cursor,
@@ -573,7 +593,7 @@ fn refresh_npm(
     max_pages: usize,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let since = parse_npm_cursor(&previous)?;
     let root_bytes = fetch_metadata(endpoint.as_str(), 1024 * 1024, deadline, cancelled)?;
@@ -679,9 +699,8 @@ fn refresh_npm(
         }
     }
     let caught_up = page.pending == 0 && page.next_cursor == source_high_watermark;
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: page.previous_cursor,
         next_cursor: page.next_cursor,
         source_high_watermark,
@@ -701,7 +720,7 @@ fn refresh_pypi(
     max_pages: usize,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let previous_project = parse_pypi_cursor(&previous)?;
     let list_url = format!("{}/simple/", endpoint.as_str().trim_end_matches('/'));
@@ -747,9 +766,9 @@ fn refresh_pypi(
             parse_pypi_project_metadata(&bytes, &project.name, PYPI_VERSIONS_PER_PROJECT)
                 .map_err(DiscoveryStoreError::from)?;
         metadata_truncated |= metadata.is_truncated;
-        facts.extend(metadata.releases.into_iter().map(|mut release| {
-            // PEP 691 project serials do not establish release order. Keep
-            // the release's own source timestamp separately when present.
+        facts.extend(metadata.releases.into_iter().map(|release| {
+            // PEP 691 project serials do not establish release order. Upload
+            // time remains only in the exact release metadata facet.
             discovery_fact(
                 source,
                 release,
@@ -789,9 +808,8 @@ fn refresh_pypi(
     } else {
         DiscoveryCompleteness::Windowed
     };
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor,
         source_high_watermark,
@@ -811,7 +829,7 @@ fn refresh_maven(
     _max_pages: usize,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let rows = MAVEN_SEARCH_PAGE_SIZE.min(MAX_DISCOVERY_PAGE_ITEMS);
     // Maven Central's timestamp-sorted offset view is mutable: inserting or
@@ -842,9 +860,8 @@ fn refresh_maven(
         })
         .collect::<Vec<_>>();
     let next_cursor = next_maven_window_cursor(&previous)?;
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor: next_cursor.clone(),
         // The opaque monotone cursor identifies this local bounded observation
@@ -866,7 +883,7 @@ fn refresh_go_modules(
     max_pages: usize,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let since =
         std::str::from_utf8(previous.as_bytes()).map_err(|_| DiscoveryStoreError::Corrupt)?;
@@ -896,9 +913,8 @@ fn refresh_go_modules(
         })
         .collect::<Vec<_>>();
     let caught_up = facts.len() < limit;
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: page.previous_cursor,
         next_cursor: page.next_cursor,
         source_high_watermark: page.source_high_watermark,
@@ -918,7 +934,7 @@ fn refresh_conan_center(
     max_pages: usize,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let (previous_generation, previous_sha, previous_offset) = parse_conan_cursor(&previous)?;
     let tree_url = format!(
@@ -1004,9 +1020,8 @@ fn refresh_conan_center(
     let next_cursor = conan_cursor(generation, &tree.tree_sha, next_offset)?;
     let source_high_watermark = conan_cursor(generation, &tree.tree_sha, tree.recipes.len())?;
     let caught_up = next_offset >= tree.recipes.len() && !tree.truncated;
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor,
         source_high_watermark,
@@ -1182,7 +1197,7 @@ fn refresh_nuget(
     max_pages: usize,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+) -> Result<DiscoveryBatchDraft, DiscoveryStoreError> {
     let source = discovery_source_identity(endpoint);
     let index = fetch_metadata(endpoint.as_str(), 16 * 1024 * 1024, deadline, cancelled)?;
     let plan = parse_nuget_catalog_index(&index, endpoint.as_str(), &previous, max_pages)
@@ -1237,9 +1252,8 @@ fn refresh_nuget(
             metadata: event.metadata,
         })
         .collect();
-    let batch = DiscoveryBatch {
+    let batch = DiscoveryBatchDraft {
         source,
-        expected_base_sequence: 0,
         previous_cursor: plan.previous_cursor,
         next_cursor: plan.next_cursor,
         source_high_watermark: plan.source_high_watermark,
@@ -1603,6 +1617,13 @@ impl DiscoveryStore {
         self.sources.get(&source).map(|state| state.sequence)
     }
 
+    fn progress_token(&self, source: DiscoverySourceIdentity) -> DiscoveryProgressToken {
+        DiscoveryProgressToken {
+            sequence: self.sequence(source).unwrap_or(0),
+            cursor: self.cursor(source),
+        }
+    }
+
     /// Completeness last committed for this source, if it has been observed.
     pub(crate) fn completeness(
         &self,
@@ -1951,7 +1972,10 @@ fn is_newer(
             && previous.metadata == incoming.metadata
     };
     match (&previous.source_event, &incoming.source_event) {
-        (DiscoverySourceEvent::Unordered, DiscoverySourceEvent::Unordered) => Ok(true),
+        (
+            DiscoverySourceEvent::Unordered | DiscoverySourceEvent::Snapshot,
+            DiscoverySourceEvent::Unordered | DiscoverySourceEvent::Snapshot,
+        ) => Ok(true),
         (
             DiscoverySourceEvent::NugetCatalog {
                 timestamp: old_timestamp,
