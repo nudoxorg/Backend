@@ -475,6 +475,10 @@ let
                     cat > "$out/bin/nudox-gui-service-test" <<'EOF'
           #!/bin/sh
           set -eu
+          # locald refuses a state directory others can read ("private state
+          # directory is not ... owner-only"); the service makes the
+          # workspace with this process's umask.
+          umask 077
           PATH="${guiServiceToolPath}:''${PATH:-}"
           export PATH
           bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
