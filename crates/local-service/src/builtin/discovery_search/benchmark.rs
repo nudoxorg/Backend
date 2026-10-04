@@ -1144,7 +1144,7 @@ fn advisory_facet(facet: Option<&Value>) -> Result<DiscoveryFacet<Vec<DiscoveryA
                 if let Some(id) = value.as_str() {
                     advisories.push(DiscoveryAdvisory {
                         id: id.to_owned(),
-                        aliases: Vec::new(),
+                        aliases: DiscoveryFacet::Unknown,
                         summary: DiscoveryFacet::Unknown,
                         severity: DiscoveryFacet::Unknown,
                         fixed_in: DiscoveryFacet::Unknown,
@@ -1155,17 +1155,9 @@ fn advisory_facet(facet: Option<&Value>) -> Result<DiscoveryFacet<Vec<DiscoveryA
                     .get("id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "advisory row must have a string id".to_owned())?;
-                let aliases = value
-                    .get("aliases")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect();
                 advisories.push(DiscoveryAdvisory {
                     id: id.to_owned(),
-                    aliases,
+                    aliases: direct_string_list_facet(value.get("aliases")),
                     summary: direct_string_facet(value.get("summary")),
                     severity: direct_string_facet(value.get("severity")),
                     fixed_in: direct_string_list_facet(value.get("fixed_in")),

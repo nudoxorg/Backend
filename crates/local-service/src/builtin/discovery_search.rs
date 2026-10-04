@@ -5772,7 +5772,7 @@ mod tests {
                         .iter()
                         .flat_map(|advisory| {
                             std::iter::once(advisory.id.as_str())
-                                .chain(advisory.aliases.iter().map(String::as_str))
+                                .chain(known_list_text(&advisory.aliases))
                                 .chain(known_list_text(&advisory.fixed_in))
                                 .chain(known_text(&advisory.summary))
                                 .chain(known_text(&advisory.severity))
@@ -5850,7 +5850,7 @@ mod tests {
                 .iter()
                 .flat_map(|advisory| {
                     std::iter::once(advisory.id.as_str())
-                        .chain(advisory.aliases.iter().map(String::as_str))
+                        .chain(known_list_text(&advisory.aliases))
                         .chain(known_list_text(&advisory.fixed_in))
                         .chain(known_text(&advisory.summary))
                         .chain(known_text(&advisory.severity))
@@ -6025,7 +6025,7 @@ mod tests {
             if let DiscoveryFacet::Known(values) = &metadata.advisories {
                 for advisory in values {
                     advisories.push(advisory.id.as_str());
-                    advisories.extend(advisory.aliases.iter().map(String::as_str));
+                    advisories.extend(known_list_text(&advisory.aliases));
                     advisories.extend(known_list_text(&advisory.fixed_in));
                     advisories.extend(known_text(&advisory.summary));
                     advisories.extend(known_text(&advisory.severity));
