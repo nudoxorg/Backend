@@ -35,6 +35,20 @@ use std::time::{Duration, Instant};
 /// The fixture package root.
 pub(crate) const PACKAGE: &str = "/fixture/present";
 
+/// Deliver one real pixel wheel motion to the last painted native hitboxes.
+pub(crate) fn wheel(
+    cx: &mut VisualTestContext,
+    position: gpui::Point<gpui::Pixels>,
+    delta: gpui::Point<gpui::Pixels>,
+) {
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position,
+        delta: gpui::ScrollDelta::Pixels(delta),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+}
+
 pub(crate) fn coordinate(name: &str) -> String {
     format!("{PACKAGE}::glyph.rs:138::{name}")
 }

@@ -174,7 +174,7 @@ mod tests {
     use crate::runtime::actor::{CancellationToken, EngineActor, EngineDto, EngineRequest};
     use crate::runtime::mailbox::PushResult;
     use crate::runtime::owner::{OwnerFault, OwnerState};
-    use crate::runtime::reads::{Priority, ReadJob, ReadPool};
+    use crate::runtime::reads::{Delivery, Priority, ReadJob, ReadPool};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fixture(tag: &str) -> (std::path::PathBuf, WorkspacePaths) {
@@ -264,19 +264,24 @@ mod tests {
             },
         );
         assert!(matches!(outcome.result, Ok(EngineDto::Root { .. })));
-        assert!(pool.submit(ReadJob {
+        let admitted = pool.submit(ReadJob {
             key: PageKey::Health,
             request: ReadRequest::Health,
             generation: Generation::new(1).expect("nonzero fixture generation"),
             priority: Priority::Normal,
             cancel: CancellationToken::new(),
             affinity: None
-        }));
+        }).expect("recovered page lane admits the Health read");
+        assert!(admitted.evicted.is_none(), "an otherwise idle lane needs no eviction");
         let page = crate::runtime::wait::until_some(
             "the pre-existing page lane binds to the recovered workspace",
-            || pool.drain().into_iter().find(|page| page.complete),
+            || pool.drain().into_iter().find(|page| page.is_terminal()),
         );
-        assert!(matches!(page.result, Ok(PageValue::Health(_))));
+        page.land(|key, generation, delivery| {
+            assert_eq!(key, PageKey::Health);
+            assert_eq!(generation, Generation::new(1).expect("fixture generation"));
+            assert!(matches!(delivery, Delivery::Terminal(Ok(PageValue::Health(_)))));
+        });
         gate.publish(OwnerState::Failed(OwnerFault::Host("retry proof".into())));
         assert!(gate.restart());
         crate::runtime::wait::until("same workspace restarted", || {

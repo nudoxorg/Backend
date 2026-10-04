@@ -81,7 +81,7 @@ fn wheel(rig: &mut tests::Rig, key: &str, delta: f32) -> Ledger {
     let ledger = fit_tests::painted(rig);
     let viewport = &scroll(&ledger, key).viewport;
     assert!(viewport.width > 0.0 && viewport.height > 0.0, "wheel needs real native bounds: {viewport:?}");
-    rig.cx.simulate_scroll(point(px(viewport.x + viewport.width * 0.5), px(viewport.y + viewport.height * 0.5)),
+    crate::shell::tests::wheel(rig.cx, point(px(viewport.x + viewport.width * 0.5), px(viewport.y + viewport.height * 0.5)),
         point(px(0.0), px(delta)));
     rig.settle();
     fit_tests::painted(rig)

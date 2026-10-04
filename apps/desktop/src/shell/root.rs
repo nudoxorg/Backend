@@ -3124,7 +3124,7 @@ mod shelf_scene_admission_tests {
         let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
         let viewport = scroll.viewport_bounds();
         for _ in 0..8 {
-            rig.cx.simulate_scroll(viewport.center(), gpui::point(px(0.0), px(-120.0)));
+            crate::shell::tests::wheel(rig.cx, viewport.center(), gpui::point(px(0.0), px(-120.0)));
         }
         rig.repaint();
         assert!(scroll.logical_scroll_top().item_ix > 1,
@@ -3167,7 +3167,7 @@ mod shelf_scene_admission_tests {
         rig.repaint();
         let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
         for _ in 0..8 {
-            rig.cx.simulate_scroll(scroll.viewport_bounds().center(), gpui::point(px(0.0), px(-120.0)));
+            crate::shell::tests::wheel(rig.cx, scroll.viewport_bounds().center(), gpui::point(px(0.0), px(-120.0)));
         }
         rig.repaint();
         assert!(scroll.logical_scroll_top().item_ix > 1);
@@ -3461,7 +3461,7 @@ mod shelf_scene_admission_tests {
         let queued = drawer.read_with(rig.cx, |shelf, _|
             shelf.diagnostic_restore_ticket()).expect("second restore is queued before native input");
         let before_wheel = scroll.logical_scroll_top();
-        rig.cx.simulate_scroll(viewport.center(), gpui::point(px(0.0), px(120.0)));
+        crate::shell::tests::wheel(rig.cx, viewport.center(), gpui::point(px(0.0), px(120.0)));
         let wheeled = scroll.logical_scroll_top();
         assert!(wheeled.item_ix != before_wheel.item_ix || wheeled.offset_in_item != before_wheel.offset_in_item,
             "native wheel moved the real drawer before its queued restore prepaint");

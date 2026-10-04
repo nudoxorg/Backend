@@ -10,7 +10,7 @@ use crate::model::pages::{
 };
 use crate::navigation::{Intent, PackageLane, PackageRoute, Route};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
-use gpui::{Modifiers, TestAppContext, point, px};
+use gpui::{Focusable as _, Modifiers, TestAppContext, point, px};
 use std::sync::Arc;
 
 const PINNED: &str = "pkg:cargo/toml@0.8.23";
@@ -875,7 +875,7 @@ fn measured_shelf_wheel_offset_survives_back_and_keyboard_reveals_a_row(cx: &mut
         "the fixture must have a scrollable shelf: {before:?}");
     let at = point(px(before.viewport.x + before.viewport.width / 2.0),
         px(before.viewport.y + before.viewport.height / 2.0));
-    rig.cx.simulate_scroll(at, point(px(0.0), px(-120.0)));
+    crate::shell::tests::wheel(rig.cx, at, point(px(0.0), px(-120.0)));
     rig.settle();
     let scrolled = read_scroll(&mut rig);
     let displacement = scrolled.offset.expect("measured list publishes displacement").y;
@@ -939,7 +939,7 @@ fn ask_veil_blocks_wheel_over_the_covered_shelf_but_keeps_its_editor_live(cx: &m
     let covered = (offset(&mut rig), reading(&mut rig));
     assert!((covered.0 - before.0).abs() <= 1.0 && (covered.1 - before.1).abs() <= 1.0,
         "opening Ask does not move the underlying measured Shelf");
-    rig.cx.simulate_scroll(at, point(px(0.0), px(-120.0)));
+    crate::shell::tests::wheel(rig.cx, at, point(px(0.0), px(-120.0)));
     rig.settle();
     let wheeled = (offset(&mut rig), reading(&mut rig));
     assert!((wheeled.0 - covered.0).abs() <= 1.0 && (wheeled.1 - covered.1).abs() <= 1.0,
@@ -952,7 +952,7 @@ fn ask_veil_blocks_wheel_over_the_covered_shelf_but_keeps_its_editor_live(cx: &m
     let uncovered = (offset(&mut rig), reading(&mut rig));
     assert!((uncovered.0 - before.0).abs() <= 1.0 && (uncovered.1 - before.1).abs() <= 1.0,
         "dismissing Ask preserves the covered Shelf position and visit intent");
-    rig.cx.simulate_scroll(at, point(px(0.0), px(-120.0)));
+    crate::shell::tests::wheel(rig.cx, at, point(px(0.0), px(-120.0)));
     rig.settle();
     assert!(offset(&mut rig) < uncovered.0 - 20.0,
         "the same native wheel point scrolls the Shelf once the veil retires");

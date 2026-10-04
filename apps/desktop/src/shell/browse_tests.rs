@@ -1028,7 +1028,7 @@ fn compare_selected_identity_and_scroll_survive_reflow_and_back(cx: &mut TestApp
         "a temporarily absent alignment must not erase the visit's semantic choice");
     land_history_compare(&mut rig, &selection, true, false);
     rig.settle();
-    rig.cx.simulate_scroll(point(px(1200.0), px(700.0)), point(px(0.0), px(-96.0)));
+    crate::shell::tests::wheel(rig.cx, point(px(1200.0), px(700.0)), point(px(0.0), px(-96.0)));
     rig.repaint();
     rig.settle();
     let saved = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());

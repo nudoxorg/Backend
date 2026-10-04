@@ -1471,7 +1471,7 @@ mod measured_layout_tests {
     use super::{DeferredScroll, Do, Item, RevealIntent, Row, RowId, RowLayout, StickyGeometry, sticky_ancestors_in};
     use super::row::Mark;
     use facet::icons::Kind;
-    use gpui::{AppContext as _, IntoElement, ListOffset, px};
+    use gpui::{AppContext as _, InteractiveElement as _, IntoElement, ListOffset, ParentElement as _, px};
     use std::{rc::Rc, sync::Arc};
 
     struct MeasuredRows {
@@ -1526,7 +1526,7 @@ mod measured_layout_tests {
         let old = layout.deferred_scroll().expect("restore waits for paint");
         paint_rows(cx, &layout, px(32.0), false);
         let before = layout.scroll.logical_scroll_top();
-        cx.simulate_scroll(point(px(50.0), px(50.0)), point(px(0.0), px(-64.0)));
+        crate::shell::tests::wheel(cx, point(px(50.0), px(50.0)), point(px(0.0), px(-64.0)));
         let wheeled = layout.scroll.logical_scroll_top();
         assert!(wheeled.item_ix != before.item_ix || wheeled.offset_in_item != before.offset_in_item,
             "a real native scroll event moved the mounted list");
@@ -1712,7 +1712,7 @@ mod measured_layout_tests {
         let ticket = layout.deferred_scroll().expect("prepaint reveal is pending");
         paint_rows(cx, &layout, px(32.0), false);
         let revealed = layout.scroll.logical_scroll_top();
-        cx.simulate_scroll(point(px(50.0), px(50.0)), point(px(0.0), px(-64.0)));
+        crate::shell::tests::wheel(cx, point(px(50.0), px(50.0)), point(px(0.0), px(-64.0)));
         let wheeled = layout.scroll.logical_scroll_top();
         assert!(wheeled.item_ix != revealed.item_ix
             || wheeled.offset_in_item != revealed.offset_in_item,
@@ -1753,7 +1753,7 @@ mod measured_layout_tests {
         layout.queue_current_reveal();
         paint_rows(cx, &layout, px(32.0), false);
         let abandoned = layout.reveal.as_ref().expect("second route waits").ticket();
-        cx.simulate_scroll(point(px(50.0), px(50.0)), point(px(0.0), px(-32.0)));
+        crate::shell::tests::wheel(cx, point(px(50.0), px(50.0)), point(px(0.0), px(-32.0)));
         layout.update(ready.clone(), px(264.0), 1.0, px(32.0));
         layout.admit_current_reveal(50);
         assert!(layout.reveal.is_none(), "native wheel during Loading retires the old route reveal");
