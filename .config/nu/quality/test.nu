@@ -301,7 +301,10 @@ def pr-quarantine []: nothing -> list<record<filter: string, reason: string>> {
         "marks::tests::what_is_not_known_is_said_as_unknown_never_invented"
     ] | each {|name| $"test\(=($name)\)" } | str join " or "
     let linux_platform = [
-        {filter: $"package\(backend-facet\) and \(($facet_captures)\)", reason: "gallery and marks captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}
+        {
+            filter: $"package\(backend-facet\) and \(($facet_captures)\)"
+            reason: "gallery and marks captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"
+        }
         {filter: "package(backend-journeys) and test(=cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf)", reason: "its GUI first-launch journey needs the macOS offscreen renderer: 'backend-journey-gui: the current GPUI platform has no direct offscreen renderer'"}
         {filter: "package(backend-desktop) and (test(=host::embedded_owner_tests::a_finder_launch_compiles_rust_with_the_rust_the_person_installed) or test(=host::embedded_owner_tests::a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them))", reason: "macOS Finder-launch journeys: they need a Rust a person installed through rustup or Homebrew, and the worker has Rust only through the Nix shell: 'this machine has no Rust a person installed (rustup or Homebrew)'"}
         {filter: "package(backend-facet) and (test(/^graph::gallery::/) or test(=data::tests::harness_storms_over_the_marks_find_nothing) or test(=overlay::float::storm::float_storm_keeps_every_invariant_and_settles_to_a_fresh_boot))", reason: "pixel captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}

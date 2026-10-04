@@ -53,17 +53,21 @@ def platform-packages []: nothing -> list<string> {
     ]
 }
 
-
 # Prints each failed test case from the run's JUnit report, with the first
 # lines of its failure: the record that survives whatever the reporter did.
 def print-junit-failures []: nothing -> nothing {
-    let target = ($env.CARGO_TARGET_DIR? | default "target")
-    let report = ($target | path join "nextest" "emulated" "junit.xml")
+    let target = $env.CARGO_TARGET_DIR? | default "target"
+    let report = $target | path join "nextest" "emulated" "junit.xml"
     if not ($report | path exists) {
         print $"   no JUnit report at ($report)"
         return
     }
-    let suites = (open --raw $report | from xml | get content | where tag == "testsuite")
+    let suites = (
+        open --raw $report
+        | from xml
+        | get content
+        | where tag == "testsuite"
+    )
     let failed = ($suites | each {|suite|
         $suite.content | where tag == "testcase" | where {|case|
             $case.content | any {|child| $child.tag? in ["failure" "error"] }
@@ -94,12 +98,31 @@ def --env start-wine []: nothing -> nothing {
     # programs neither ("LocalAppData directory is unavailable"). Say what
     # Wine provides, and when it is missing, name the profile wineboot made:
     # Wine passes other variables through to Windows programs unchanged.
-    let seen = (do { ^(wine-bin wine) cmd /c "echo %USERPROFILE%^|%LOCALAPPDATA%" } | complete | get stdout | str trim)
+    let seen = (
+        do { ^(wine-bin wine) cmd /c "echo %USERPROFILE%^|%LOCALAPPDATA%" }
+        | complete
+        | get stdout
+        | str trim
+    )
     print $"   wine profile: ($seen)"
-    let local = ($seen | split row "|" | get --optional 1 | default "" | str trim)
+    let local = (
+        $seen
+        | split row "|"
+        | get --optional 1
+        | default ""
+        | str trim
+    )
     if ($local | is-empty) or ($local | str starts-with "%") {
-        let users = ($env.WINEPREFIX | path join "drive_c" "users")
-        let profiles = (try { ls $users | where type == dir | get name | path basename | where {|name| $name != "Public" } } catch { [] })
+        let users = $env.WINEPREFIX | path join "drive_c" "users"
+        let profiles = (
+            try {
+                ls $users
+                | where type == dir
+                | get name
+                | path basename
+                | where {|name| $name != "Public" }
+            } catch { [] }
+        )
         # On CI wineboot makes no user profile at all (the container's root
         # has no account for it to map), so make one the tests can use.
         let name = if ($profiles | is-empty) {
@@ -122,7 +145,7 @@ def stop-wine []: nothing -> nothing {
 def main [
     platform: string # windows or arm64
 ]: nothing -> nothing {
-    let lane = (lanes | get --optional $platform)
+    let lane = lanes | get --optional $platform
     if $lane == null {
         error make {msg: $"unknown platform ($platform); expected one of: (lanes | columns | str join ', ')"}
     }
@@ -138,11 +161,17 @@ def main [
     # of native speed; nextest still names any test that needed it FLAKY.
     # The JUnit report names every failure even where the CI log keeps none
     # of nextest's own output (Concourse gives the task a terminal).
-    let store = ($env.CARGO_TARGET_DIR? | default "target" | path join "nextest")
+    let store = $env.CARGO_TARGET_DIR? | default "target" | path join "nextest"
     $"[store]\ndir = \"($store)\"\n\n" + "[profile.emulated]\nfail-fast = false\nretries = 1\nslow-timeout = { period = \"60s\", terminate-after = 3 }\n\n[profile.emulated.junit]\npath = \"junit.xml\"\n" | save --force $config
-    let packages = (platform-packages | each {|name| ["-p" $name] } | flatten)
+    let packages = platform-packages | each {|name| ["-p" $name] } | flatten
     print $"== emulated: ($platform) \(($lane.target)\) on (platform-packages | length) crates =="
-    let counts = ($lane.excluded | group-by category | transpose category entries | each {|row| $"($row.category): ($row.entries | length)" } | str join ", ")
+    let counts = (
+        $lane.excluded
+        | group-by category
+        | transpose category entries
+        | each {|row| $"($row.category): ($row.entries | length)" }
+        | str join ", "
+    )
     print $"   excluded ($lane.excluded | length) tests \(($counts)\); each with its reason:"
     for entry in $lane.excluded { print $"   - [($entry.category)] ($entry.filter): ($entry.reason)" }
     let started = (date now)
@@ -151,9 +180,14 @@ def main [
     # from the CI log alone: the tool versions, the runner environment, and
     # nextest's own listing of the selected tests through the runner.
     print $"   nextest: (^cargo nextest --version | lines | first)"
-    $env | transpose name value | where {|row| $row.name =~ '^(CARGO_TARGET_DIR|CARGO_HOME|TMPDIR|WINEPREFIX|NEXTEST_|CARGO_TARGET_.*_RUNNER)' }
-        | each {|row| print $"   env ($row.name)=($row.value)" }
-    let listed = (do { ^cargo nextest list --locked --config-file $config --profile emulated --target $lane.target ...$packages -E $filter } | complete)
+    $env
+    | transpose name value
+    | where {|row| $row.name =~ '^(CARGO_TARGET_DIR|CARGO_HOME|TMPDIR|WINEPREFIX|NEXTEST_|CARGO_TARGET_.*_RUNNER)' }
+    | each {|row| print $"   env ($row.name)=($row.value)" }
+    let listed = (
+        do { ^cargo nextest list --locked --config-file $config --profile emulated --target $lane.target ...$packages -E $filter }
+        | complete
+    )
     print $"   nextest list exit=($listed.exit_code), (($listed.stdout | lines | length)) listed lines"
     if $listed.exit_code != 0 {
         print "   nextest list stderr (last 40 lines):"

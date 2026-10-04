@@ -20,7 +20,7 @@ def print-captured-failures []: nothing -> nothing {
         print $"---- ($file) ----"
         # Bounded: a full cargo failure can run to tens of MB and Concourse
         # stores every log line. Keep the verdict summary plus a large tail.
-        let output = (open --raw $file | lines)
+        let output = open --raw $file | lines
         let verdicts = ($output | where {|line|
             ($line | str contains 'FAIL [') or ($line | str contains 'TIMEOUT [') or ($line | str contains 'tests were not run')
         })
@@ -32,17 +32,21 @@ def print-captured-failures []: nothing -> nothing {
         # prints it twice (as the test fails, then in its final summary). Key
         # every stderr block by the FAIL/TIMEOUT line above it and keep one per
         # test, so every failure gets its reason, not just the first few dozen.
-        let headers = ($output | enumerate | where {|row| $row.item =~ '^\s+(FAIL|TIMEOUT) \[' })
+        let headers = (
+            $output
+            | enumerate
+            | where {|row| $row.item =~ '^\s+(FAIL|TIMEOUT) \[' }
+        )
         let blocks = (
             $output
             | enumerate
             | where {|row| $row.item | str contains 'stderr ───' }
             | each {|row|
-                let above = ($headers | where index < $row.index)
+                let above = $headers | where index < $row.index
                 if ($above | is-empty) {
                     null
                 } else {
-                    let header = ($above | last)
+                    let header = $above | last
                     {
                         key: ($header.item | str replace --regex '^\s+(FAIL|TIMEOUT) \[[^\]]*\]\s+\(\s*\d+/\d+\)\s+' '')
                         header: $header.item
@@ -72,7 +76,10 @@ def print-captured-failures []: nothing -> nothing {
         if not ($compile_errors | is-empty) {
             print $"== ($compile_errors | length) compile errors \(first 30, 40 lines each\) =="
             for start in ($compile_errors | first 30) {
-                $output | skip ([($start - 2) 0] | math max) | first 40 | str join (char nl) | print
+                $output | skip ([
+                    ($start - 2)
+                    0
+                ] | math max) | first 40 | str join (char nl) | print
                 print '--'
             }
         }
@@ -89,7 +96,10 @@ def warm-registry-cache []: nothing -> nothing {
     # included, which a Linux build never downloads. `cargo fetch` with no
     # --target fetches them all.
     run-external "cargo" "fetch" "--locked"
-    for manifest in ["frontends/rust/fixtures/toml_pin/Cargo.toml" "apps/desktop/tests/fixtures/browse_tree/Cargo.toml"] {
+    for manifest in [
+        "frontends/rust/fixtures/toml_pin/Cargo.toml"
+        "apps/desktop/tests/fixtures/browse_tree/Cargo.toml"
+    ] {
         run-external "cargo" "fetch" "--locked" "--manifest-path" $manifest
     }
     # Releases named by tests but pinned by no fixture lockfile.
@@ -97,7 +107,7 @@ def warm-registry-cache []: nothing -> nothing {
     mkdir ($scratch | path join "src")
     "" | save ($scratch | path join "src" "lib.rs")
     "[package]\nname = \"nudox-registry-cache-warmup\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\ntoml = \"=0.5.11\"\nanyhow = \"=1.0.104\"\n\n[workspace]\n"
-        | save ($scratch | path join "Cargo.toml")
+    | save ($scratch | path join "Cargo.toml")
     run-external "cargo" "fetch" "--manifest-path" ($scratch | path join "Cargo.toml")
     rm --recursive --force $scratch
     # The owner indexes each release as its own root under an offline
@@ -112,10 +122,12 @@ def warm-registry-cache []: nothing -> nothing {
         | append ["toml-0.5.11" "anyhow-1.0.104" "log-0.4.34"]
         | uniq
     )
-    let cargo_home = ($env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo"))
+    let cargo_home = $env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo")
     for release in $releases {
-        let matches = (glob ($cargo_home | path join "registry" "src" "*" $release))
-        let unpacked = if ($matches | is-empty) { null } else { $matches | first }
+        let matches = glob ($cargo_home | path join "registry" "src" "*" $release)
+        let unpacked = if ($matches | is-empty) { null } else {
+            $matches | first
+        }
         if $unpacked == null { continue }
         let copy = (mktemp --directory)
         cp --recursive ($unpacked | path join "*" | into glob) $copy
@@ -128,7 +140,13 @@ def warm-registry-cache []: nothing -> nothing {
 def step [name: string, body: closure]: nothing -> bool {
     print $"== linux: ($name) =="
     let started = (date now)
-    let passed = (try { do $body; true } catch {|error| print $error.msg; false })
+    let passed = (try {
+        do $body
+        true
+    } catch {|error|
+        print $error.msg
+        false
+    })
     print $"== linux: ($name) (if $passed { 'passed' } else { 'FAILED' }) in ((date now) - $started) =="
     $passed
 }
@@ -136,6 +154,7 @@ def step [name: string, body: closure]: nothing -> bool {
 def main [
     --skip-flake-check # run only the test step (the flake check is already cached on the host store)
 ]: nothing -> nothing {
+
     # The flake closes over ~1,100 pinned corpus archives; the default 1,024
     # soft descriptor limit is exhausted before any check fails.
     ulimit --file-descriptor-count --soft 65536
@@ -148,11 +167,9 @@ def main [
         # under it that its sandbox cannot see, and nushell builders fail
         # with "$env.PWD points to a non-existent directory". Check with the
         # plain /tmp the flake check always had outside the shell.
-        step "root flake check" {||
-            with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
+        step "root flake check" {|| with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
                 run-external "nix" "flake" "check" "-L" "--keep-going" "path:."
-            }
-        }
+            } }
     }
 
     # "private-debug" makes the CLI write the child's stdout/stderr beside its
@@ -167,9 +184,11 @@ def main [
     #
     # The owner's Rust authority also needs a Cargo home, which the dev shell
     # cannot name because it is per-user.
-    let cargo_home = ($env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo"))
+    let cargo_home = $env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo")
     let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"}
-        | merge (if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} })
+    | merge (
+        if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
+    )
     # Desktop registry and journey tests read real releases from this
     # machine's Cargo cache, as they do on a developer's Mac. A fresh CI
     # container has none, so fetch (download and unpack) them first: what

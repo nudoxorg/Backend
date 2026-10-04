@@ -54,19 +54,22 @@ def main [--bless, --packages: string = "", --product-root: path]: nothing -> no
     # The sources are reached through CARGO_HOME: Dylint's build script
     # treats a copy outside it as a source checkout with a sibling `driver`
     # directory, and the driver it builds on first use resolves from them.
-    let vendor = ($env.BACKEND_DYLINT_VENDOR? | default "")
+    let vendor = $env.BACKEND_DYLINT_VENDOR? | default ""
     if not ($vendor | is-empty) {
         let vendored = $environment.CARGO_HOME | path join "vendor"
         if not ($vendored | path exists) { ^ln -s $vendor $vendored }
         $"[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.vendored-sources]\ndirectory = \"($vendored)\"\n"
-            | save --force ($environment.CARGO_HOME | path join "config.toml")
+        | save --force ($environment.CARGO_HOME | path join "config.toml")
     }
     # The shims run under this same nu: a Nix build sandbox has no
     # /usr/bin/env for their `#!/usr/bin/env nu` line to name.
-    for pair in [[$cargo_shim "cargo.nu"] [$shim "rustup.nu"]] {
+    for pair in [
+        [$cargo_shim "cargo.nu"]
+        [$shim "rustup.nu"]
+    ] {
         open --raw ($lint_root | path join $pair.1)
-            | str replace --regex '^#![^\n]*' $"#!($nu.current-exe)"
-            | save --force --raw $pair.0
+        | str replace --regex '^#![^\n]*' $"#!($nu.current-exe)"
+        | save --force --raw $pair.0
     }
     run-external "chmod" "+x" $cargo_shim $shim
     let arguments = if $bless {

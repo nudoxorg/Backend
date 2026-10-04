@@ -18,18 +18,21 @@ let
   # wrapper execs the real tool by its full path, whatever it is renamed to.
   testCoreutils = pkgs.symlinkJoin {
     name = "nudox-test-coreutils";
-    paths = map (
-      tool:
-      pkgs.writeShellScriptBin tool ''
-        exec ${pkgs.coreutils}/bin/${tool} "$@"
-      ''
-    ) [
-      "cat"
-      "true"
-      "sleep"
-      "kill"
-      "mv"
-    ];
+    paths =
+      map
+        (
+          tool:
+          pkgs.writeShellScriptBin tool ''
+            exec ${pkgs.coreutils}/bin/${tool} "$@"
+          ''
+        )
+        [
+          "cat"
+          "true"
+          "sleep"
+          "kill"
+          "mv"
+        ];
   };
   # `nix develop` assembles `NIX_CFLAGS_COMPILE`/`NIX_LDFLAGS` (and the
   # per-target-triple "role marker" that gates them, e.g.

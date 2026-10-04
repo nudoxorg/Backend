@@ -58,13 +58,10 @@ let
 in
 {
   inherit (evaluated.config.build) configFile wrapper;
-  # The check copies its source and runs `git init; git add .; git commit`.
-  # Under `nix flake check path:.` the source carries the checkout's own
-  # .git, so that commit finds nothing new, exits 1, and no formatter runs.
-  check = evaluated.config.build.check (
-    pkgs.lib.cleanSourceWith {
-      src = workspaceRoot;
-      filter = path: _type: baseNameOf path != ".git";
-    }
-  );
+  # Gate only .config/, as canonical does. The rest of the workspace has never
+  # been held to this formatter (about 750 files would change), so widening
+  # this waits for a one-time `backend fmt` on canonical. .config/ also has no
+  # .git: under `nix flake check path:.` a workspace-root source carries the
+  # checkout's own, and the check's `git commit` then fails before formatting.
+  check = evaluated.config.build.check (workspaceRoot + "/.config");
 }

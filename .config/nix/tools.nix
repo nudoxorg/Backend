@@ -90,7 +90,16 @@ let
     ];
     text =
       builtins.replaceStrings
-        [ "@cargo@" "@git@" "@sccache@" "@rustc_cache_wrapper@" "@python3@" "@rustc@" "@wrapper_source@" "@provenance@" ]
+        [
+          "@cargo@"
+          "@git@"
+          "@sccache@"
+          "@rustc_cache_wrapper@"
+          "@python3@"
+          "@rustc@"
+          "@wrapper_source@"
+          "@provenance@"
+        ]
         [
           "${toolchains.stable}/bin/cargo"
           "${pkgs.git}/bin/git"
@@ -218,7 +227,7 @@ let
       workspaceAvailable
       stableRustPlatform
       gpuiOutputHashes
-    ;
+      ;
   };
   backendControl =
     if workspaceAvailable then
