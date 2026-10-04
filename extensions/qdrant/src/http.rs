@@ -1220,23 +1220,6 @@ impl PointPayload {
         }
     }
 
-    #[cfg(test)]
-    fn for_residence(
-        binding: Binding,
-        residence: PointResidence,
-        candidate: CandidateId,
-        values: &[f32],
-    ) -> Self {
-        let mut scratch = Vec::new();
-        Self::for_residence_bound(
-            &BindingText::from_binding(binding),
-            residence,
-            candidate,
-            values,
-            &mut scratch,
-        )
-    }
-
     fn for_residence_bound(
         bound: &BindingText,
         residence: PointResidence,
