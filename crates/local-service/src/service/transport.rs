@@ -52,9 +52,12 @@ pub trait OwnerService {
         request: EngineRequest,
     ) -> Result<EngineStatus, ProtocolError>;
 
-    /// Runs one fair owner-loop operation. Returning `true` means work was
-    /// processed. The listener uses this between client reads to prevent a
-    /// busy or slow connection from starving another lane.
+    /// Runs one fair owner-loop operation. Returning `true` means the
+    /// replication-admission poll or daemon engine lane made progress;
+    /// lease-expiry reclamation is housekeeping and returns `false`. The
+    /// listener uses this between client reads to prevent a busy or slow
+    /// connection from starving another lane and to decide whether its
+    /// idle-retirement timer resets.
     fn serve_one(&mut self) -> bool;
 
     /// Handles one command body, or takes it and replies later under

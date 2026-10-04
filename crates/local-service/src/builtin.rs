@@ -2164,11 +2164,13 @@ mod authority_tests {
 #[allow(clippy::expect_used, clippy::panic)]
 mod owner_fairness_tests {
     use super::*;
-    use crate::protocol::EngineRequest;
+    use crate::listener::{ListenerConfig, UnixListenerService};
+    use crate::protocol::{EngineRequest, FrameLimits};
     use crate::service::{
-        LocaldOwner, NoCompletionAdmission, OwnerService, ReplicationAdmission,
-        SubscriptionLeaseLimits,
+        LocaldOwner, LocaldService, NoCompletionAdmission, OwnerService,
+        ReplicationAdmission, SubscriptionLeaseLimits,
     };
+    use backend_client::monotonic::ManualClock;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -2302,7 +2304,9 @@ mod owner_fairness_tests {
             pending: AtomicUsize::new(8),
             polled: AtomicUsize::new(0),
         });
-        let (mut owner, cursor, client) = owner(&directory, Arc::clone(&remote_progress));
+        let clock = ManualClock::new();
+        let (owner, cursor, client) = owner(&directory, Arc::clone(&remote_progress));
+        let mut owner = owner.with_lease_clock(clock.clone());
         owner = owner.with_subscription_lease_limits(
             SubscriptionLeaseLimits::new(
                 4,
@@ -2374,7 +2378,7 @@ mod owner_fairness_tests {
         else {
             panic!("short lease open must return its owner-issued lease");
         };
-        std::thread::sleep(Duration::from_millis(20));
+        clock.advance(Duration::from_millis(20));
 
         // This is a real queued daemon request. The owner must continue
         // admitting productive remote work, yet service this request on its
@@ -2446,14 +2450,14 @@ mod owner_fairness_tests {
                 ..
             }) if renewed_lease == lease
         ));
-        std::thread::sleep(Duration::from_millis(120));
+        clock.advance(Duration::from_millis(120));
         assert!(
-            OwnerService::serve_one(&mut owner),
-            "an otherwise idle owner turn reports the one expired lease"
+            !OwnerService::serve_one(&mut owner),
+            "expiry reclamation is housekeeping, not served work"
         );
         assert!(
             !OwnerService::serve_one(&mut owner),
-            "the expired lease is reclaimed only once"
+            "the following idle turn still reports no served work"
         );
         assert!(matches!(
             OwnerService::engine(
@@ -2467,5 +2471,56 @@ mod owner_fairness_tests {
             Err(crate::ProtocolError::InvalidControl("unknown subscription lease"))
         ));
         OwnerService::close(&mut owner);
+    }
+
+    #[test]
+    fn listener_polls_expired_leases_without_reporting_owner_work() {
+        let directory = test_workspace_path();
+        let _remove_workspace = RemoveWorkspace(directory.clone());
+        let remote_progress = Arc::new(RemoteProgressState::default());
+        let clock = ManualClock::new();
+        let (mut owner, cursor, _) = owner(&directory, remote_progress);
+        owner = owner.with_lease_clock(clock.clone());
+        let opened = OwnerService::engine(
+            &mut owner,
+            501,
+            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                request_id: 501,
+                operation: backend_engine::LocalSubscriptionOperation::Open {
+                    cursor,
+                    credit: 1,
+                    lease_ms: 1_000,
+                },
+            }),
+        )
+        .expect("open short-lived lease");
+        let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
+            lease,
+            ..
+        }) = opened
+        else {
+            panic!("open operation must return its owner-issued lease");
+        };
+
+        let socket = directory.with_extension("sock");
+        let mut config = ListenerConfig::new(&socket);
+        config.idle_timeout = None;
+        let service = LocaldService::new(owner, FrameLimits::default()).expect("service");
+        let mut listener = UnixListenerService::bind(service, config).expect("listener");
+        assert!(!listener.run_once().expect("idle poll before expiry"));
+        clock.advance(Duration::from_secs(1));
+        assert!(!listener.run_once().expect("idle poll at expiry"));
+        assert!(!listener.run_once().expect("idle poll after reclamation"));
+        assert!(matches!(
+            OwnerService::engine(
+                listener.service_mut().owner_mut(),
+                502,
+                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                    request_id: 502,
+                    operation: backend_engine::LocalSubscriptionOperation::Cancel { lease },
+                }),
+            ),
+            Err(crate::ProtocolError::InvalidControl("unknown subscription lease"))
+        ));
     }
 }
