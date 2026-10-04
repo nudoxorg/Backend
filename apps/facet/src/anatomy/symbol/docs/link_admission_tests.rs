@@ -7,6 +7,8 @@ use gpui::{
 };
 use std::{cell::Cell, rc::Rc};
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 struct Paragraph {
     words: gpui::SharedString,
     current: Rc<Cell<bool>>,
@@ -62,16 +64,16 @@ fn draw(cx: &mut VisualTestContext) {
         window.draw(cx).clear(cx);
     });
 }
-fn link(cx: &mut VisualTestContext, words: &str) -> gpui::accesskit::NodeId {
+fn link(cx: &mut VisualTestContext, words: &str) -> TestResult<gpui::accesskit::NodeId> {
     cx.update(|window, _| {
         window
             .a11y_tree()
-            .unwrap()
+            .ok_or("forced Unicode link tree")?
             .nodes
             .iter()
             .find(|(_, node)| node.role() == gpui::Role::Link && node.label() == Some(words))
             .map(|(id, _)| *id)
-            .expect("the actual visible Unicode link")
+            .ok_or("the actual visible Unicode link")
     })
 }
 fn click_ax(cx: &mut VisualTestContext, node: gpui::accesskit::NodeId) {
@@ -99,6 +101,11 @@ fn words() -> gpui::SharedString {
 
 #[gpui::test]
 fn retained_link_rechecks_owner_before_focus_glyph_and_native_activation(cx: &mut TestAppContext) {
+    let result = check_retained_link_rechecks_owner_before_focus_glyph_and_native_activation(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_retained_link_rechecks_owner_before_focus_glyph_and_native_activation(cx: &mut TestAppContext) -> TestResult {
     init(cx);
     let current = Rc::new(Cell::new(true));
     let calls = Rc::new(Cell::new(0));
@@ -114,8 +121,9 @@ fn retained_link_rechecks_owner_before_focus_glyph_and_native_activation(cx: &mu
         }
     });
     draw(cx);
-    let node = link(cx, &words);
-    let at = cx.update(|window, _| window.a11y_node_bounds(node).unwrap().center());
+    let node = link(cx, &words)?;
+    let at = cx.update(|window, _| window.a11y_node_bounds(node))
+        .ok_or("current Unicode link bounds")?.center();
     let reader = paragraph.read_with(cx, |paragraph, _| paragraph.reader.clone());
     cx.update(|window, cx| window.focus(&reader, cx));
     draw(cx);
@@ -174,12 +182,20 @@ fn retained_link_rechecks_owner_before_focus_glyph_and_native_activation(cx: &mu
         5,
         "key and AX callback admission stays live after a focus handoff"
     );
+    Ok(())
 }
 
 #[gpui::test]
 fn partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(
     cx: &mut TestAppContext,
 ) {
+    let result = check_partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let calls = Rc::new(Cell::new(0));
     let words = words();
@@ -195,18 +211,18 @@ fn partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(
     });
     draw(cx);
     // Read the actual native painting height, rather than predict wrapping.
-    let full_height = cx.update(|window, _| {
-        f32::from(
+    let full_height = cx.update(|window, _| -> TestResult<f32> {
+        Ok(f32::from(
             window
                 .painted_texts()
                 .iter()
                 .find(|run| run.text == words)
-                .unwrap()
+                .ok_or("the actual full Unicode body paint")?
                 .bounds
                 .size
                 .height,
-        )
-    });
+        ))
+    })?;
     assert!(
         full_height > 64.,
         "the real Unicode body wraps across several rows"
@@ -217,9 +233,9 @@ fn partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(
             cx.notify();
         });
         draw(cx);
-        let node = link(cx, &words);
-        cx.update(|window, _| {
-            let bounds = window.a11y_node_bounds(node).unwrap();
+        let node = link(cx, &words)?;
+        cx.update(|window, _| -> TestResult {
+            let bounds = window.a11y_node_bounds(node).ok_or("partially visible Unicode link bounds")?;
             assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
             assert!(
                 bounds.top() >= px(0.) && bounds.bottom() <= px(8.),
@@ -232,7 +248,8 @@ fn partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(
                     && run.bounds.size.height <= px(8.)),
                 "the same UTF-8 body is actually painted inside that mask"
             );
-        });
+            Ok(())
+        })?;
         click_ax(cx, node);
         assert_eq!(
             calls.get(),
@@ -240,4 +257,5 @@ fn partially_visible_first_and_last_unicode_rows_keep_masked_native_link_bounds(
             "partially visible native link remains reachable exactly once"
         );
     }
+    Ok(())
 }

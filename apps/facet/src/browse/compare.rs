@@ -736,16 +736,17 @@ mod tests {
             }}).collect()), complete, coverage: None }
     }
     #[test]
-    fn alignment_is_kind_aware_and_retains_same_named_declarations() {
+    fn alignment_is_kind_aware_and_retains_same_named_declarations() -> Result<(), &'static str> {
         let a = candidate("one", &[Kind::Struct, Kind::Struct, Kind::Function], true);
         let b = candidate("two", &[Kind::Struct, Kind::Macro], true);
         let rows = align(&[a, b]);
-        let value = rows.iter().find(|row| row.kind == Kind::Struct).unwrap();
+        let value = rows.iter().find(|row| row.kind == Kind::Struct).ok_or("aligned struct row")?;
         assert_eq!(value.slots, vec![vec![0, 1], vec![0]]);
         assert_eq!(value.present(), 2);
-        let macro_ = rows.iter().find(|row| row.kind == Kind::Macro).unwrap();
+        let macro_ = rows.iter().find(|row| row.kind == Kind::Macro).ok_or("aligned macro row")?;
         assert_eq!(macro_.slots, vec![vec![], vec![1]]);
         assert!(!rows.iter().any(|row| row.kind == Kind::Macro && row.present() == 2));
+        Ok(())
     }
 
     #[test]

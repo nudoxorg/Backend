@@ -490,6 +490,8 @@ mod fault_tests {
     use super::*;
     use gpui::{AppContext as _, Context, Render, TestAppContext, TextTrace};
 
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
     struct Fixture { state: Entity<InputState>, fault: Option<SharedString> }
     impl Render for Fixture {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -500,6 +502,11 @@ mod fault_tests {
     }
     #[gpui::test]
     fn current_visible_fault_is_native_status_and_disappears_when_valid(cx: &mut TestAppContext) {
+        let result = check_current_visible_fault_is_native_status_and_disappears_when_valid(cx);
+        assert!(result.is_ok(), "fixture failed: {result:?}");
+    }
+
+    fn check_current_visible_fault_is_native_status_and_disappears_when_valid(cx: &mut TestAppContext) -> TestResult {
         cx.update(|cx| {
             gpui_component::init(cx);
             let _ = crate::fonts::install(cx);
@@ -513,10 +520,10 @@ mod fault_tests {
         });
         for reason in [Some("Line 90 is outside this file's 12 lines."), Some("Enter a whole line number."), None] {
             fixture.update(cx, |fixture, cx| { fixture.fault = reason.map(SharedString::from); cx.notify(); });
-            cx.update(|window, cx| {
+            cx.update(|window, cx| -> TestResult {
                 window.refresh(); window.draw(cx).clear(cx);
-                let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().unwrap()).unwrap();
-                let statuses: Vec<_> = tree["nodes"].as_object().unwrap().values().filter(|node| node["aria"]["role"] == "Status").collect();
+                let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().ok_or("forced field tree")?)?;
+                let statuses: Vec<_> = tree["nodes"].as_object().ok_or("native field node map")?.values().filter(|node| node["aria"]["role"] == "Status").collect();
                 if let Some(reason) = reason {
                     assert_eq!(statuses.len(), 1);
                     assert_eq!(statuses[0]["aria"]["label"], reason);
@@ -524,7 +531,9 @@ mod fault_tests {
                 } else {
                     assert!(statuses.is_empty(), "valid input cannot retain a stale fault");
                 }
-            });
+                Ok(())
+            })?;
         }
+        Ok(())
     }
 }

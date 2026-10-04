@@ -3,6 +3,8 @@ use super::*;
 use gpui::{AppContext as _, Context, Render, TestAppContext, VisualTestContext, point};
 use std::cell::Cell;
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 struct Fixture {
     current: Rc<Cell<bool>>,
     calls: Rc<Cell<usize>>,
@@ -58,6 +60,13 @@ fn click_ax(cx: &mut VisualTestContext, node: gpui::accesskit::NodeId) {
 fn stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(
     cx: &mut TestAppContext,
 ) {
+    let result = check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(
+    cx: &mut TestAppContext,
+) -> TestResult {
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = crate::fonts::install(cx);
@@ -86,19 +95,20 @@ fn stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_
     });
     cx.update(|window, cx| window.focus(&reader_focus, cx));
     draw(cx);
-    let node = cx.update(|window, _| {
+    let node = cx.update(|window, _| -> TestResult<_> {
         window
             .a11y_tree()
-            .unwrap()
+            .ok_or("forced native button tree")?
             .nodes
             .iter()
             .find(|(_, node)| {
                 node.role() == gpui::Role::Button && node.label() == Some("Open source")
             })
             .map(|(id, _)| *id)
-            .unwrap()
-    });
-    let at = cx.update(|window, _| window.a11y_node_bounds(node).unwrap().center());
+            .ok_or("current Open source button")
+    })?;
+    let at = cx.update(|window, _| window.a11y_node_bounds(node))
+        .ok_or("current native button bounds")?.center();
     // The committed visible control and listeners are still the current frame.
     // Only the producer predicate changes; admission cannot rely on rerender.
     current.set(false);
@@ -148,6 +158,7 @@ fn stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_
         4,
         "release and AX/key callbacks recheck current ownership"
     );
+    Ok(())
 }
 
 #[gpui::test]

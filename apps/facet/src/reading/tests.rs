@@ -7,6 +7,8 @@ use gpui::{
 };
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 struct Document {
     words: SharedString,
     role: ReadingRole,
@@ -157,7 +159,7 @@ fn reading_roles_share_native_paint_and_have_no_editable_actions(cx: &mut TestAp
             .collect();
         assert_eq!(matching.len(), 1, "one native node for the one text layout");
         let (id, node) = matching[0];
-        assert_eq!(node.role(), Intent::Reading(role).native_role().unwrap());
+        assert_eq!(Some(node.role()), Intent::Reading(role).native_role());
         for action in [
             gpui::AccessibleAction::SetValue,
             gpui::AccessibleAction::Click,
@@ -192,6 +194,11 @@ fn reading_roles_share_native_paint_and_have_no_editable_actions(cx: &mut TestAp
 
 #[gpui::test]
 fn native_reading_names_only_the_actual_clamped_text(cx: &mut TestAppContext) {
+    let result = check_native_reading_names_only_the_actual_clamped_text(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_native_reading_names_only_the_actual_clamped_text(cx: &mut TestAppContext) -> TestResult {
     init(cx);
     let words: SharedString =
         format!("{} HIDDEN_SOURCE_TAIL", "café visible words 🧭 ".repeat(24)).into();
@@ -207,7 +214,7 @@ fn native_reading_names_only_the_actual_clamped_text(cx: &mut TestAppContext) {
         .filter(|(_, node)| node.role() == gpui::Role::Label)
         .collect();
     assert_eq!(native.len(), 1);
-    let read = native[0].1.label().unwrap();
+    let read = native[0].1.label().ok_or("current clamped reading label")?;
     assert!(!read.contains("HIDDEN_SOURCE_TAIL"));
     let painted = cx.update(|window, _| {
         window
@@ -221,12 +228,20 @@ fn native_reading_names_only_the_actual_clamped_text(cx: &mut TestAppContext) {
         read, painted,
         "native words come from the very layout that paints"
     );
+    Ok(())
 }
 
 #[gpui::test]
 fn existing_control_names_are_not_duplicated_and_covered_actions_stay_inert(
     cx: &mut TestAppContext,
 ) {
+    let result = check_existing_control_names_are_not_duplicated_and_covered_actions_stay_inert(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_existing_control_names_are_not_duplicated_and_covered_actions_stay_inert(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let words: SharedString = "Open the current package".into();
     let (document, cx) = mount(cx, words.clone());
@@ -268,7 +283,7 @@ fn existing_control_names_are_not_duplicated_and_covered_actions_stay_inert(
     let (covered_id, covered) = nodes
         .iter()
         .find(|(_, node)| node.label() == Some(words.as_ref()))
-        .unwrap();
+        .ok_or("covered current control")?;
     assert_ne!(
         *covered_id, *id,
         "the host's actual key owns native identity"
@@ -292,6 +307,7 @@ fn existing_control_names_are_not_duplicated_and_covered_actions_stay_inert(
             .any(|(_, node)| node.label() == Some(words.as_ref()))
     );
     assert!(cx.update(|window, _| window.painted_texts().iter().any(|run| run.text == words)));
+    Ok(())
 }
 
 #[test]

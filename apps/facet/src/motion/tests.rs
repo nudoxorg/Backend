@@ -27,6 +27,8 @@ fn advance(cx: &mut VisualTestContext, millis: u64) {
     cx.run_until_parked();
 }
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 struct Tweened {
     seen: Rc<Cell<f32>>,
 }
@@ -895,6 +897,11 @@ impl Render for SeededFlights {
 
 #[gpui::test]
 fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppContext) {
+    let result = check_still_guard_lands_seeded_flights_and_releases_local_policy(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppContext) -> TestResult {
     use crate::theme::ActiveFacet as _;
     let seen = Rc::new(Cell::new(None));
     let target = super::Camera::new(100.0, 40.0, 50.0);
@@ -910,14 +917,15 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
     });
     let preference = cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion()));
     assert_eq!(preference, (false, false));
-    let assert_landed = |target| {
-        for shot in seen.get().expect("mounted flights sampled") {
+    let assert_landed = |target| -> TestResult {
+        for shot in seen.get().ok_or("mounted flights sampled")? {
             assert_eq!(shot.camera, target);
             assert!(!shot.live && shot.from.is_none() && shot.fade == 1.0);
         }
+        Ok(())
     };
     frame(cx);
-    assert_landed(target);
+    assert_landed(target)?;
     assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0);
 
     // Releasing policy cannot replay either seed or its carried velocity.
@@ -926,7 +934,7 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
         cx.notify();
     });
     frame(cx);
-    assert_landed(target);
+    assert_landed(target)?;
     assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0);
 
     let next = super::Camera::new(200.0, 0.0, 80.0);
@@ -935,11 +943,11 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
         cx.notify();
     });
     frame(cx);
-    assert!(seen.get().unwrap().iter().all(|shot| shot.live));
+    assert!(seen.get().ok_or("new target flights sampled")?.iter().all(|shot| shot.live));
     assert!(cx.update(|_, cx| frames_requested(cx)) > 0);
     advance(cx, 16);
     frame(cx);
-    for shot in seen.get().unwrap() {
+    for shot in seen.get().ok_or("advancing flights sampled")? {
         assert!(shot.live);
         assert_ne!(
             shot.camera, target,
@@ -954,7 +962,7 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
         cx.notify();
     });
     frame(cx);
-    assert_landed(next);
+    assert_landed(next)?;
     let requested = cx.update(|_, cx| frames_requested(cx));
     advance(cx, 16);
     assert_eq!(frame(cx), 0, "the pending wake drained without renewing");
@@ -964,7 +972,7 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
         cx.notify();
     });
     frame(cx);
-    assert_landed(next);
+    assert_landed(next)?;
     assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
     assert_eq!(
         cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion())),
@@ -977,11 +985,11 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
         cx.notify();
     });
     frame(cx);
-    assert!(seen.get().unwrap().iter().all(|shot| shot.live));
+    assert!(seen.get().ok_or("final target flights sampled")?.iter().all(|shot| shot.live));
     assert!(cx.update(|_, cx| frames_requested(cx)) > requested);
     advance(cx, 10_000);
     frame(cx);
-    assert_landed(final_target);
+    assert_landed(final_target)?;
     let requested = cx.update(|_, cx| frames_requested(cx));
     assert_eq!(frame(cx), 0, "landed flights leave no frame demand");
     assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
@@ -989,4 +997,5 @@ fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppCo
         cx.update(|_, cx| (cx.facet().reduced_motion, cx.reduce_motion())),
         preference
     );
+    Ok(())
 }

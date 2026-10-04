@@ -7,6 +7,8 @@ use gpui::{
 };
 use std::cell::{Cell, RefCell};
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 struct Board {
     modules: Rc<[ModuleFacts]>,
     width: f32,
@@ -115,9 +117,9 @@ fn full_row_receipt_height(top: Pixels, shaped_height: Pixels) -> Pixels {
     (top + shaped_height) - top
 }
 
-fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
+fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) -> TestResult {
     cx.update(|window, _| {
-        let labels = layout.labels.as_ref().unwrap();
+        let labels = layout.labels.as_ref().ok_or("measured native map labels")?;
         for (i, words) in words.iter().enumerate() {
             let runs: Vec<_> = window
                 .painted_texts()
@@ -155,22 +157,28 @@ fn assert_painted(cx: &mut VisualTestContext, layout: &Layout, words: &[&str]) {
             }
             let node = window
                 .a11y_tree()
-                .unwrap()
+                .ok_or("forced native map tree")?
                 .nodes
                 .iter()
                 .find(|(_, node)| node.label() == Some(*words) && node.role() == gpui::Role::Button)
                 .map(|(id, _)| *id)
-                .expect("current native region");
+                .ok_or("current native region")?;
             assert_eq!(
-                window.a11y_node_bounds(node).unwrap(),
+                window.a11y_node_bounds(node).ok_or("current native region bounds")?,
                 native_region,
                 "native target must exactly obey GPUI authored-metric/device snapping"
             );
         }
-    });
+        Ok(())
+    })
 }
 #[gpui::test]
 fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut TestAppContext) {
+    let result = check_compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut TestAppContext) -> TestResult {
     init(cx);
     let observed = Rc::new(RefCell::new(None));
     let (board, cx) = cx.add_window_view(|window, _| {
@@ -211,7 +219,7 @@ fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut 
                     cx.notify();
                 });
                 draw(cx);
-                let layout = observed.borrow().as_ref().unwrap().clone();
+                let layout = observed.borrow().as_ref().cloned().ok_or("mounted compact map layout")?;
                 assert_eq!(
                     layout.regions[0].label_lines, 1,
                     "compact lib wrapped at width {width}, scale {scale}"
@@ -220,11 +228,11 @@ fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut 
                     layout.regions[1].label_lines, 1,
                     "cadence wrapped despite ample Reader room"
                 );
-                assert_painted(cx, &layout, &["lib", "cadence"]);
+                assert_painted(cx, &layout, &["lib", "cadence"])?;
             }
         }
     }
-    let unlit = observed.borrow().as_ref().unwrap().clone();
+    let unlit = observed.borrow().as_ref().cloned().ok_or("mounted unlit map layout")?;
     let before = cx.update(|window, _| {
         window
             .painted_texts()
@@ -241,7 +249,7 @@ fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut 
     });
     draw(cx);
     assert!(
-        Rc::ptr_eq(&unlit, observed.borrow().as_ref().unwrap()),
+        Rc::ptr_eq(&unlit, observed.borrow().as_ref().ok_or("mounted lit map layout")?),
         "foreground changes reuse the measured native layout"
     );
     assert_eq!(
@@ -255,11 +263,19 @@ fn compact_lib_remains_one_native_row_across_shelf_room_and_text_scale(cx: &mut 
             .collect::<Vec<_>>()),
         "hover ink cannot change glyph geometry"
     );
+    Ok(())
 }
 #[gpui::test]
 fn current_unicode_regions_resize_replace_and_release_native_actions_when_covered(
     cx: &mut TestAppContext,
 ) {
+    let result = check_current_unicode_regions_resize_replace_and_release_native_actions_when_covered(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_current_unicode_regions_resize_replace_and_release_native_actions_when_covered(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let observed = Rc::new(RefCell::new(None));
     let (board, cx) = cx.add_window_view(|window, _| {
@@ -301,9 +317,9 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
                     cx.notify();
                 });
                 draw(cx);
-                let layout = observed.borrow().as_ref().unwrap().clone();
+                let layout = observed.borrow().as_ref().cloned().ok_or("mounted Unicode map layout")?;
                 assert_eq!(layout.regions.len(), words.len());
-                assert_painted(cx, &layout, &words);
+                assert_painted(cx, &layout, &words)?;
                 if words.len() == 3 {
                     assert!(
                         layout.regions[1].label_lines > 1,
@@ -319,20 +335,20 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
     });
     draw(cx);
     let calls = board.read_with(cx, |board, _| board.calls.clone());
-    let at = cx.update(|window, _| {
-        let tree = window.a11y_tree().unwrap();
+    let at = cx.update(|window, _| -> TestResult<_> {
+        let tree = window.a11y_tree().ok_or("forced covered map tree")?;
         let (id, node) = tree
             .nodes
             .iter()
             .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("lib"))
-            .unwrap();
+            .ok_or("covered lib region")?;
         assert!(node.is_disabled());
         assert!(
             !node.supports_action(gpui::AccessibleAction::Click),
             "covered map releases native activation"
         );
-        window.a11y_node_bounds(*id).unwrap().center()
-    });
+        Ok(window.a11y_node_bounds(*id).ok_or("covered lib region bounds")?.center())
+    })?;
     cx.simulate_click(at, gpui::Modifiers::none());
     assert_eq!(calls.get(), 0, "covered region cannot activate");
     board.update(cx, |board, cx| {
@@ -342,43 +358,52 @@ fn current_unicode_regions_resize_replace_and_release_native_actions_when_covere
         cx.notify();
     });
     draw(cx);
-    assert_painted(cx, observed.borrow().as_ref().unwrap(), &["new_owner"]);
-    let at = cx.update(|window, _| {
+    assert_painted(cx, observed.borrow().as_ref().ok_or("replacement map layout")?, &["new_owner"])?;
+    let at = cx.update(|window, _| -> TestResult<_> {
         let node = window
             .a11y_tree()
-            .unwrap()
+            .ok_or("forced replacement map tree")?
             .nodes
             .iter()
             .find(|(_, node)| {
                 node.role() == gpui::Role::Button && node.label() == Some("new_owner")
             })
             .map(|(id, _)| *id)
-            .unwrap();
-        window.a11y_node_bounds(node).unwrap().center()
-    });
+            .ok_or("replacement new_owner region")?;
+        Ok(window.a11y_node_bounds(node).ok_or("replacement region bounds")?.center())
+    })?;
     cx.simulate_click(at, gpui::Modifiers::none());
     assert_eq!(
         calls.get(),
         1,
         "the replacement native region activates once"
     );
-    cx.update(|window, _| {
+    cx.update(|window, _| -> TestResult {
         assert!(
             !window
                 .a11y_tree()
-                .unwrap()
+                .ok_or("forced current map tree")?
                 .nodes
                 .iter()
                 .any(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("lib")),
             "replacement cannot expose the old native region"
-        )
-    });
+        );
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[gpui::test]
 fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
     cx: &mut TestAppContext,
 ) {
+    let result = check_retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let observed = Rc::new(RefCell::new(None));
     let (board, cx) = cx.add_window_view(|window, _| {
@@ -395,8 +420,8 @@ fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
     });
     cx.simulate_resize(size(px(1000.), px(1200.)));
     draw(cx);
-    let retained = observed.borrow().as_ref().unwrap().clone();
-    assert_painted(cx, &retained, &["lib"]);
+    let retained = observed.borrow().as_ref().cloned().ok_or("mounted retained map layout")?;
+    assert_painted(cx, &retained, &["lib"])?;
     // Changing pending inputs does not provide a way to rebind facts or
     // font/container measure inside an already measured immutable bundle.
     // This checks coherence only; the host still owns current-page admission.
@@ -416,8 +441,8 @@ fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
         )
     });
     draw(cx);
-    assert!(Rc::ptr_eq(&retained, observed.borrow().as_ref().unwrap()));
-    assert_painted(cx, &retained, &["lib"]);
+    assert!(Rc::ptr_eq(&retained, observed.borrow().as_ref().ok_or("pending map retains layout")?));
+    assert_painted(cx, &retained, &["lib"])?;
     cx.update(|window, _| {
         assert!(
             !window
@@ -432,11 +457,11 @@ fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
         cx.notify();
     });
     draw(cx);
-    let fresh = observed.borrow().as_ref().unwrap().clone();
+    let fresh = observed.borrow().as_ref().cloned().ok_or("fresh map layout")?;
     assert!(!Rc::ptr_eq(&retained, &fresh));
     assert_eq!(fresh.width, 500.);
-    assert!(fresh.labels.as_ref().unwrap().role.size > retained.labels.as_ref().unwrap().role.size);
-    assert_painted(cx, &fresh, &["new_café_日本語"]);
+    assert!(fresh.labels.as_ref().ok_or("fresh map labels")?.role.size > retained.labels.as_ref().ok_or("retained map labels")?.role.size);
+    assert_painted(cx, &fresh, &["new_café_日本語"])?;
     cx.update(|window, _| {
         assert!(
             !window
@@ -445,6 +470,7 @@ fn retained_bundle_keeps_its_facts_and_measure_until_fresh_native_replacement(
                 .any(|run| run.text.as_ref() == "lib")
         )
     });
+    Ok(())
 }
 
 struct NativeMetrics;
@@ -465,6 +491,11 @@ impl Render for NativeMetrics {
 }
 #[gpui::test]
 fn native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx: &mut TestAppContext) {
+    let result = check_native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx: &mut TestAppContext) -> TestResult {
     let (metrics, cx) = cx.add_window_view(|window, _| {
         window.set_a11y_forced(true);
         NativeMetrics
@@ -485,16 +516,16 @@ fn native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx: &mut Te
         cx.update(|window, _| window.set_scale_factor(scale));
         metrics.update(cx, |_, cx| cx.notify());
         draw(cx);
-        cx.update(|window, _| {
+        cx.update(|window, _| -> TestResult {
             let node = window
                 .a11y_tree()
-                .unwrap()
+                .ok_or("forced native metric tree")?
                 .nodes
                 .iter()
                 .find(|(_, node)| node.label() == Some("native metric"))
                 .map(|(id, _)| *id)
-                .unwrap();
-            assert_eq!(window.a11y_node_bounds(node).unwrap(), expected);
+                .ok_or("native metric node")?;
+            assert_eq!(window.a11y_node_bounds(node).ok_or("native metric bounds")?, expected);
             assert_eq!(
                 native_authored_bounds(
                     Bounds::new(
@@ -505,8 +536,10 @@ fn native_authored_metrics_snap_exactly_at_one_and_two_device_pixels(cx: &mut Te
                 ),
                 expected
             );
-        });
+            Ok(())
+        })?;
     }
+    Ok(())
 }
 
 #[test]
@@ -541,6 +574,13 @@ fn fully_visible_bounds_reconstruct_exact_float_edges() {
 fn wide_native_row_preserves_shaped_height_and_records_exact_visible_edges(
     cx: &mut TestAppContext,
 ) {
+    let result = check_wide_native_row_preserves_shaped_height_and_records_exact_visible_edges(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_wide_native_row_preserves_shaped_height_and_records_exact_visible_edges(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let observed = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view(|window, _| {
@@ -557,20 +597,22 @@ fn wide_native_row_preserves_shaped_height_and_records_exact_visible_edges(
     });
     cx.simulate_resize(size(px(1800.), px(700.)));
     draw(cx);
-    let layout = observed.borrow().as_ref().unwrap().clone();
+    let layout = observed.borrow().as_ref().cloned().ok_or("mounted wide native map layout")?;
     assert_eq!(layout.regions[0].label_lines, 1);
     // At 1600 room and 100% text the role is 15 * 1.36 = 20.4,
     // starting at 8 * 1.36 = 10.88. These are unsnapped native metrics.
-    assert_eq!(layout.labels.as_ref().unwrap().role.line, 20.4);
-    cx.update(|window, _| {
+    assert_eq!(layout.labels.as_ref().ok_or("wide native map labels")?.role.line, 20.4);
+    cx.update(|window, _| -> TestResult {
         let row = window
             .painted_texts()
             .iter()
             .find(|run| run.text.as_ref() == "lib")
-            .unwrap();
+            .ok_or("actual wide lib row paint")?;
         assert_eq!(row.bounds.top(), px(10.88));
         assert_eq!(row.bounds.size.height, px(f32::from_bits(0x41a33332)));
         assert_eq!(row.bounds.bottom(), px(f32::from_bits(0x41fa3d70)));
-    });
-    assert_painted(cx, &layout, &["lib"]);
+        Ok(())
+    })?;
+    assert_painted(cx, &layout, &["lib"])?;
+    Ok(())
 }

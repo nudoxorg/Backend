@@ -8,6 +8,8 @@ use gpui::{
 };
 use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 struct Board;
 
 impl Render for Board {
@@ -204,9 +206,7 @@ fn a_warm_swap_names_only_current_content_while_the_prior_copy_wipes_out(cx: &mu
             .borrow()
             .model
             .top()
-            .unwrap()
-            .previous
-            .is_some()),
+            .is_some_and(|top| top.previous.is_some())),
         "the old content is genuinely retained during the existing wipe"
     );
     assert!(has(cx, "Current reading"));
@@ -228,6 +228,13 @@ fn a_warm_swap_names_only_current_content_while_the_prior_copy_wipes_out(cx: &mu
 fn a_parent_hidden_behind_the_current_sheet_has_no_native_reading_or_control(
     cx: &mut TestAppContext,
 ) {
+    let result = check_a_parent_hidden_behind_the_current_sheet_has_no_native_reading_or_control(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_a_parent_hidden_behind_the_current_sheet_has_no_native_reading_or_control(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let (_, cx) = cx.add_window_view(|window, _| {
         window.set_a11y_forced(true);
@@ -245,16 +252,16 @@ fn a_parent_hidden_behind_the_current_sheet_has_no_native_reading_or_control(
     });
     advance(cx, 400);
     let parent = button(cx, "Open Parent reading");
-    let child_anchor = cx.update(|window, cx| {
+    let child_anchor = cx.update(|window, cx| -> TestResult<_> {
         let painted = super::state(window, cx)
             .borrow()
             .model
             .top()
-            .unwrap()
+            .ok_or("current parent float")?
             .painted
-            .unwrap();
-        gpui::Bounds::new(painted.center(), size(px(1.), px(1.)))
-    });
+            .ok_or("painted parent float anchor")?;
+        Ok(gpui::Bounds::new(painted.center(), size(px(1.), px(1.))))
+    })?;
     cx.update(|window, cx| {
         super::open(
             request(
@@ -278,4 +285,5 @@ fn a_parent_hidden_behind_the_current_sheet_has_no_native_reading_or_control(
     let current = button(cx, "Open Current child reading");
     click(cx, current);
     assert_eq!(calls.get(), 1);
+    Ok(())
 }

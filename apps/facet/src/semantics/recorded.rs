@@ -479,126 +479,134 @@ pub fn callable(signature: &str, name: &str, language: Language) -> Option<Pipe>
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestResult = Result<(), &'static str>;
 
     #[test]
-    fn a_recorded_callable_keeps_input_result_bounds_and_receiver_distinct() {
-        let pipe = rust_pipe("pub fn from_str<'de, T>(s: &'de str) -> Result<T, Error> where T: Deserialize<'de>", "").unwrap();
+    fn a_recorded_callable_keeps_input_result_bounds_and_receiver_distinct() -> TestResult {
+        let pipe = rust_pipe("pub fn from_str<'de, T>(s: &'de str) -> Result<T, Error> where T: Deserialize<'de>", "").ok_or("recorded Rust callable")?;
         assert_eq!(pipe.inputs[0].name.as_ref(), "s");
-        assert_eq!(pipe.inputs[0].ty.as_ref().unwrap().plain(), "text");
-        assert_eq!(pipe.output.as_ref().unwrap().plain(), "T");
-        assert_eq!(pipe.fails.as_ref().unwrap().as_ref().unwrap().plain(), "Error");
+        assert_eq!(pipe.inputs[0].ty.as_ref().ok_or("recorded input type")?.plain(), "text");
+        assert_eq!(pipe.output.as_ref().ok_or("recorded output type")?.plain(), "T");
+        assert_eq!(pipe.fails.as_ref().ok_or("recorded fallibility")?.as_ref().ok_or("recorded error type")?.plain(), "Error");
         assert_eq!(pipe.wheres[0].name.as_ref(), "T");
-        let method = rust_pipe("pub fn as_table(&self) -> Option<&Table>", "").unwrap();
+        let method = rust_pipe("pub fn as_table(&self) -> Option<&Table>", "").ok_or("recorded receiver method")?;
         assert_eq!(method.inputs[0].name.as_ref(), "reads it");
-        assert!(method.output.unwrap().plain().contains("maybe"));
+        assert!(method.output.ok_or("optional method output")?.plain().contains("maybe"));
+        Ok(())
     }
 
     #[test]
-    fn annotated_languages_use_the_same_typed_ports() {
-        let ts = callable("function size(items: Array<Item>): number", "size", Language::TypeScript).unwrap();
+    fn annotated_languages_use_the_same_typed_ports() -> TestResult {
+        let ts = callable("function size(items: Array<Item>): number", "size", Language::TypeScript).ok_or("TypeScript callable")?;
         assert_eq!(ts.inputs[0].name.as_ref(), "items");
-        assert_eq!(ts.output.unwrap().source.as_ref(), "number");
-        let java = callable("public String name(int index)", "name", Language::Java).unwrap();
-        assert_eq!(java.inputs[0].ty.as_ref().unwrap().source.as_ref(), "int");
-        assert_eq!(java.output.unwrap().source.as_ref(), "String");
+        assert_eq!(ts.output.ok_or("TypeScript output")?.source.as_ref(), "number");
+        let java = callable("public String name(int index)", "name", Language::Java).ok_or("Java callable")?;
+        assert_eq!(java.inputs[0].ty.as_ref().ok_or("Java input type")?.source.as_ref(), "int");
+        assert_eq!(java.output.ok_or("Java output")?.source.as_ref(), "String");
         assert!(callable("def size(items)", "size", Language::Python).is_none());
         assert!(callable("function size(items: Item)", "size", Language::TypeScript).is_none());
+        Ok(())
     }
 
     #[test]
-    fn c_uses_declarator_nodes_for_names_types_and_variadic_arity() {
-        let pointer = callable("const char *copy(const char *source);", "copy", Language::C).unwrap();
+    fn c_uses_declarator_nodes_for_names_types_and_variadic_arity() -> TestResult {
+        let pointer = callable("const char *copy(const char *source);", "copy", Language::C).ok_or("C pointer callable")?;
         assert_eq!(pointer.inputs[0].name.as_ref(), "source");
-        assert_eq!(pointer.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
-        assert_eq!(pointer.output.as_ref().unwrap().source.as_ref(), "const char *");
+        assert_eq!(pointer.inputs[0].ty.as_ref().ok_or("C pointer input")?.source.as_ref(), "const char *");
+        assert_eq!(pointer.output.as_ref().ok_or("C pointer output")?.source.as_ref(), "const char *");
 
         let definition = callable(
             "static inline char *find(const char *text) { return (char *)text; }",
             "find",
             Language::C,
-        ).unwrap();
-        assert_eq!(definition.output.as_ref().unwrap().source.as_ref(), "char *");
+        ).ok_or("C inline definition")?;
+        assert_eq!(definition.output.as_ref().ok_or("C inline output")?.source.as_ref(), "char *");
 
         let callback = callable(
             "int apply(void *context, int (*callback)(const char *value, unsigned count));",
             "apply",
             Language::C,
-        ).unwrap();
+        ).ok_or("C callback callable")?;
         assert_eq!(callback.inputs[1].name.as_ref(), "callback");
-        assert_eq!(callback.inputs[1].ty.as_ref().unwrap().source.as_ref(), "int (*)(const char *value, unsigned count)");
+        assert_eq!(callback.inputs[1].ty.as_ref().ok_or("C function-pointer input")?.source.as_ref(), "int (*)(const char *value, unsigned count)");
 
-        let array = callable("size_t fill(char destination[static 8], size_t capacity);", "fill", Language::C).unwrap();
+        let array = callable("size_t fill(char destination[static 8], size_t capacity);", "fill", Language::C).ok_or("C array callable")?;
         assert_eq!(array.inputs[0].name.as_ref(), "destination");
-        assert_eq!(array.inputs[0].ty.as_ref().unwrap().source.as_ref(), "char [static 8]");
+        assert_eq!(array.inputs[0].ty.as_ref().ok_or("C array input")?.source.as_ref(), "char [static 8]");
 
-        let qualified = callable("void accept(int * const * restrict value);", "accept", Language::C).unwrap();
-        assert_eq!(qualified.inputs[0].ty.as_ref().unwrap().source.as_ref(), "int * const * restrict");
+        let qualified = callable("void accept(int * const * restrict value);", "accept", Language::C).ok_or("C qualified pointer callable")?;
+        assert_eq!(qualified.inputs[0].ty.as_ref().ok_or("C qualified pointer input")?.source.as_ref(), "int * const * restrict");
 
-        let variadic = callable("int log_line(const char *format, ...);", "log_line", Language::C).unwrap();
+        let variadic = callable("int log_line(const char *format, ...);", "log_line", Language::C).ok_or("C variadic callable")?;
         assert_eq!(variadic.flags, vec!["accepts additional arguments"]);
         assert_eq!(variadic.inputs[0].name.as_ref(), "format");
 
-        let terminating = callable("_Noreturn void fail(const char *reason);", "fail", Language::C).unwrap();
+        let terminating = callable("_Noreturn void fail(const char *reason);", "fail", Language::C).ok_or("C terminating callable")?;
         assert!(terminating.output.is_none());
         assert!(terminating.flags.contains(&"does not return"));
+        Ok(())
     }
 
     #[test]
-    fn c_distinguishes_unnamed_void_empty_and_unprototyped_parameter_lists() {
-        let unnamed = callable("void consume(const char *, int);", "consume", Language::C).unwrap();
+    fn c_distinguishes_unnamed_void_empty_and_unprototyped_parameter_lists() -> TestResult {
+        let unnamed = callable("void consume(const char *, int);", "consume", Language::C).ok_or("C unnamed inputs")?;
         assert_eq!(unnamed.inputs[0].name.as_ref(), "argument 1");
         assert_eq!(unnamed.inputs[1].name.as_ref(), "argument 2");
-        assert_eq!(unnamed.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
+        assert_eq!(unnamed.inputs[0].ty.as_ref().ok_or("C unnamed pointer input")?.source.as_ref(), "const char *");
         assert!(unnamed.output.is_none());
 
-        let empty = callable("void reset(void);", "reset", Language::C).unwrap();
+        let empty = callable("void reset(void);", "reset", Language::C).ok_or("C void input list")?;
         assert!(empty.inputs.is_empty());
         assert!(empty.output.is_none());
         assert!(callable("void unknown();", "unknown", Language::C).is_none());
         assert!(callable("int (*not_callable)(int);", "not_callable", Language::C).is_none());
         assert!(callable("int broken(int value", "broken", Language::C).is_none());
         assert!(callable("/* expected */ int other(void);", "expected", Language::C).is_none());
+        Ok(())
     }
 
     #[test]
-    fn c_reads_tagged_and_sized_types_from_the_grammar_type_field() {
+    fn c_reads_tagged_and_sized_types_from_the_grammar_type_field() -> TestResult {
         let lookup = callable(
             "struct item *lookup(struct table *table, unsigned long key, Entry entry);",
             "lookup",
             Language::C,
-        ).unwrap();
-        assert_eq!(lookup.inputs[0].ty.as_ref().unwrap().source.as_ref(), "struct table *");
-        assert_eq!(lookup.inputs[1].ty.as_ref().unwrap().source.as_ref(), "unsigned long");
-        assert_eq!(lookup.inputs[2].ty.as_ref().unwrap().source.as_ref(), "Entry");
-        assert_eq!(lookup.output.as_ref().unwrap().source.as_ref(), "struct item *");
-        let named = callable("enum mode pick(union value value);", "pick", Language::C).unwrap();
-        assert_eq!(named.inputs[0].ty.as_ref().unwrap().source.as_ref(), "union value");
-        assert_eq!(named.output.as_ref().unwrap().source.as_ref(), "enum mode");
+        ).ok_or("C tagged callable")?;
+        assert_eq!(lookup.inputs[0].ty.as_ref().ok_or("C struct input")?.source.as_ref(), "struct table *");
+        assert_eq!(lookup.inputs[1].ty.as_ref().ok_or("C sized input")?.source.as_ref(), "unsigned long");
+        assert_eq!(lookup.inputs[2].ty.as_ref().ok_or("C named input")?.source.as_ref(), "Entry");
+        assert_eq!(lookup.output.as_ref().ok_or("C struct output")?.source.as_ref(), "struct item *");
+        let named = callable("enum mode pick(union value value);", "pick", Language::C).ok_or("C enum callable")?;
+        assert_eq!(named.inputs[0].ty.as_ref().ok_or("C union input")?.source.as_ref(), "union value");
+        assert_eq!(named.output.as_ref().ok_or("C enum output")?.source.as_ref(), "enum mode");
+        Ok(())
     }
 
     #[test]
-    fn c_accepts_the_bodyless_definition_header_kept_by_the_signature_producer() {
-        let pipe = callable("static int count(const char *text)", "count", Language::C).unwrap();
+    fn c_accepts_the_bodyless_definition_header_kept_by_the_signature_producer() -> TestResult {
+        let pipe = callable("static int count(const char *text)", "count", Language::C).ok_or("C bodyless signature")?;
         assert_eq!(pipe.inputs[0].name.as_ref(), "text");
-        assert_eq!(pipe.inputs[0].ty.as_ref().unwrap().source.as_ref(), "const char *");
-        assert_eq!(pipe.output.as_ref().unwrap().source.as_ref(), "int");
+        assert_eq!(pipe.inputs[0].ty.as_ref().ok_or("C signature input")?.source.as_ref(), "const char *");
+        assert_eq!(pipe.output.as_ref().ok_or("C signature output")?.source.as_ref(), "int");
         assert!(callable("int count(const char *text", "count", Language::C).is_none());
+        Ok(())
     }
 
     #[test]
-    fn nested_callable_inputs_do_not_end_the_outer_signature_and_unknown_is_not_nothing() {
-        let pipe = rust_pipe("fn map<F: Fn(i32) -> i32>(f: F, value: Vec<(i32, i32)>) -> Vec<i32>", "").unwrap();
+    fn nested_callable_inputs_do_not_end_the_outer_signature_and_unknown_is_not_nothing() -> TestResult {
+        let pipe = rust_pipe("fn map<F: Fn(i32) -> i32>(f: F, value: Vec<(i32, i32)>) -> Vec<i32>", "").ok_or("Rust nested callable inputs")?;
         assert_eq!(pipe.inputs.len(), 2);
         assert_eq!(pipe.inputs[1].name.as_ref(), "value");
         assert!(rust_pipe("fn broken(text: &str", "").is_none());
         assert!(rust_pipe("function parse(text: string): Value", "").is_none());
         assert!(rust_pipe("fn unknown(value)", "").is_none());
-        assert_eq!(rust_pipe("fn go() -> Somewhere", "").unwrap().output.unwrap().plain(), "Somewhere");
+        assert_eq!(rust_pipe("fn go() -> Somewhere", "").ok_or("Rust unresolved output callable")?.output.ok_or("Rust unresolved output type")?.plain(), "Somewhere");
+        Ok(())
     }
     #[test]
-    fn comments_attributes_names_and_lifetimes_cannot_invent_callable_facts() {
+    fn comments_attributes_names_and_lifetimes_cannot_invent_callable_facts() -> TestResult {
         let source = "#[doc = \"fn fake(text: Wrong) -> Wrong\"]\n/// fn other(x: Wrong)\npub fn actual(&'muted self, text: &str) -> String";
-        let actual = callable(source, "actual", Language::Rust).unwrap();
+        let actual = callable(source, "actual", Language::Rust).ok_or("actual Rust callable after comments")?;
         assert_eq!(actual.inputs[0].name.as_ref(), "reads it");
         assert_eq!(actual.inputs[1].name.as_ref(), "text");
         assert!(callable(source, "fake", Language::Rust).is_none());
@@ -608,6 +616,7 @@ mod tests {
         assert!(callable("def size(items: Item) -> dict[str, int]:", "size", Language::Python).is_some());
         assert!(callable("func size(items []Item) (value int, err error)", "size", Language::Go).is_none());
         assert!(callable("auto size(Item item) -> Value", "size", Language::Cpp).is_none());
+        Ok(())
     }
 
 }

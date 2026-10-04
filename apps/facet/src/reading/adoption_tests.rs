@@ -16,6 +16,8 @@ use gpui::{
 };
 use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
 
+type TestResult<T = ()> = Result<T, &'static str>;
+
 enum Scene {
     Card(Rc<CardFacts>),
     ControlledModule(Rc<CardFacts>),
@@ -192,6 +194,13 @@ fn facts() -> Rc<CardFacts> {
 fn adopted_folio_card_words_are_readonly_and_the_summary_follows_its_real_clamp(
     cx: &mut TestAppContext,
 ) {
+    let result = check_adopted_folio_card_words_are_readonly_and_the_summary_follows_its_real_clamp(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_adopted_folio_card_words_are_readonly_and_the_summary_follows_its_real_clamp(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let (_page, cx) = mount(cx, Scene::Card(facts()));
     draw(cx);
@@ -207,7 +216,7 @@ fn adopted_folio_card_words_are_readonly_and_the_summary_follows_its_real_clamp(
         })
         .collect();
     assert_eq!(summaries.len(), 1);
-    let words = summaries[0].1.label().unwrap();
+    let words = summaries[0].1.label().ok_or("current clamped folio summary")?;
     assert!(!words.contains("HIDDEN_CARD_SOURCE_TAIL"));
     assert!(cx.update(|window, _| {
         window
@@ -220,12 +229,20 @@ fn adopted_folio_card_words_are_readonly_and_the_summary_follows_its_real_clamp(
             .1
             .supports_action(gpui::AccessibleAction::SetValue)
     );
+    Ok(())
 }
 
 #[gpui::test]
 fn adopted_module_card_name_stays_on_its_existing_control_through_cover_and_owner_key_change(
     cx: &mut TestAppContext,
 ) {
+    let result = check_adopted_module_card_name_stays_on_its_existing_control_through_cover_and_owner_key_change(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_adopted_module_card_name_stays_on_its_existing_control_through_cover_and_owner_key_change(
+    cx: &mut TestAppContext,
+) -> TestResult {
     init(cx);
     let (page, cx) = mount(cx, Scene::ControlledModule(facts()));
     draw(cx);
@@ -254,7 +271,7 @@ fn adopted_module_card_name_stays_on_its_existing_control_through_cover_and_owne
     let (_, control) = covered
         .iter()
         .find(|(_, node)| node.label() == Some("état_🧭"))
-        .unwrap();
+        .ok_or("covered module card control")?;
     assert!(!control.supports_action(gpui::AccessibleAction::Click));
     click(cx, *old_id);
     assert_eq!(calls.get(), 1);
@@ -271,13 +288,14 @@ fn adopted_module_card_name_stays_on_its_existing_control_through_cover_and_owne
     let (current_id, _) = next
         .iter()
         .find(|(_, node)| node.label() == Some("état_🧭"))
-        .unwrap();
+        .ok_or("replacement module card control")?;
     assert_ne!(
         current_id, old_id,
         "existing qualified host keys distinguish mounted identities"
     );
     click(cx, *current_id);
     assert_eq!(calls.get(), 2);
+    Ok(())
 }
 
 #[gpui::test]

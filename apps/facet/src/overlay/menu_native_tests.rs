@@ -2,22 +2,23 @@
 use super::*;
 use gpui::{Context, Render, TestAppContext, VisualTestContext, point, size};
 
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
 struct Board;
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(float::layer(window, cx))
     }
 }
-fn tree(cx: &mut VisualTestContext) -> serde_json::Value {
-    cx.update(|window, cx| {
+fn tree(cx: &mut VisualTestContext) -> TestResult<serde_json::Value> {
+    cx.update(|window, cx| -> TestResult<_> {
         window.refresh();
         window.draw(cx).clear(cx);
-        serde_json::from_str(
+        Ok(serde_json::from_str(
             &window
                 .debug_a11y_tree_json()
-                .expect("forced native menu tree"),
-        )
-        .unwrap()
+                .ok_or("forced native menu tree")?,
+        )?)
     })
 }
 fn request(key: &ElementId, menu: Menu) -> (FloatRequest, Rc<Owner>) {
@@ -36,6 +37,13 @@ fn request(key: &ElementId, menu: Menu) -> (FloatRequest, Rc<Owner>) {
 fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
     cx: &mut TestAppContext,
 ) {
+    let result = check_native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(cx);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+fn check_native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
+    cx: &mut TestAppContext,
+) -> TestResult {
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = crate::fonts::install(cx);
@@ -52,7 +60,7 @@ fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
         Board
     });
     cx.simulate_resize(size(px(900.), px(700.)));
-    tree(cx);
+    tree(cx)?;
     let key: ElementId = "package-menu".into();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let count = calls.clone();
@@ -66,8 +74,8 @@ fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
     );
     let (old_request, old_owner) = request(&key, menu.clone());
     cx.update(|window, cx| float::open(old_request.clone(), window, cx));
-    let native = tree(cx);
-    let nodes = native["nodes"].as_object().unwrap();
+    let native = tree(cx)?;
+    let nodes = native["nodes"].as_object().ok_or("native menu node map")?;
     assert!(nodes.values().any(|node| node["aria"]["role"] == "Menu"));
     for words in ["all 2 packages", "café_🧭", "disabled"] {
         assert!(
@@ -76,20 +84,22 @@ fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
                 .any(|node| node["aria"]["role"] == "MenuItem" && node["aria"]["label"] == words)
         );
     }
-    let focus = cx.update(|window, cx| old_owner.focus(&key, window, cx).unwrap());
+    let focus = cx.update(|window, cx| old_owner.focus(&key, window, cx))
+        .ok_or("open prior menu focus")?;
     assert!(cx.update(|window, _| focus.is_focused(window)));
     cx.update(|window, cx| float::close(&key, window, cx));
     let (new_request, new_owner) = request(&key, menu.clone());
     cx.update(|window, cx| float::open(new_request.clone(), window, cx));
-    tree(cx);
+    tree(cx)?;
     let stale_state = Rc::new(RefCell::new(State {
         active: Some(0),
         ..State::default()
     }));
-    cx.update(|window, cx| {
+    let down = Keystroke::parse("down")?;
+    cx.update(|window, cx| -> TestResult {
         let current = new_owner
             .focus(&key, window, cx)
-            .expect("replacement is open");
+            .ok_or("replacement menu is open")?;
         choose(&old_owner, &menu, &key, 1, window, cx);
         assert!(calls.borrow().is_empty(), "denial precedes action");
         assert!(
@@ -103,7 +113,7 @@ fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
             &menu,
             &key,
             &[false, false, true],
-            &Keystroke::parse("down").unwrap(),
+            &down,
             window,
             cx
         ));
@@ -112,29 +122,30 @@ fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
             Some(0),
             "denial precedes selection mutation"
         );
-    });
+        Ok(())
+    })?;
     cx.simulate_keystrokes("down enter");
     assert_eq!(
         *calls.borrow(),
         vec![1],
         "current native menu chooses the actual package once"
     );
-    tree(cx);
+    tree(cx)?;
     assert!(cx.update(|window, cx| new_owner.focus(&key, window, cx).is_none()));
     let (ax_request, _) = request(&key, menu);
     cx.update(|window, cx| float::open(ax_request, window, cx));
-    tree(cx);
-    cx.update(|window, cx| {
+    tree(cx)?;
+    cx.update(|window, cx| -> TestResult {
         let node = window
             .a11y_tree()
-            .unwrap()
+            .ok_or("forced native menu action tree")?
             .nodes
             .iter()
             .find(|(_, node)| {
                 node.role() == gpui::Role::MenuItem && node.label() == Some("all 2 packages")
             })
             .map(|(id, _)| *id)
-            .unwrap();
+            .ok_or("current all-packages MenuItem")?;
         window.simulate_a11y_action(
             gpui::accesskit::ActionRequest {
                 action: gpui::AccessibleAction::Click,
@@ -144,10 +155,12 @@ fn native_menu_retained_owner_cannot_close_focus_or_mutate_same_key_replacement(
             },
             cx,
         );
-    });
+        Ok(())
+    })?;
     assert_eq!(
         *calls.borrow(),
         vec![1, 0],
         "native AX chooses one actual row once"
     );
+    Ok(())
 }

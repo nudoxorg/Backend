@@ -178,7 +178,7 @@ fn pending_read_preserves_snapshot_and_input_but_external_back_cancels_dirty_tim
     state.read_with(cx, |state, cx| {
         assert_eq!(state.input, input, "IME engine survives query admission");
         assert_eq!(state.input.read(cx).value(), "toml_edit");
-        assert!(Arc::ptr_eq(state.snapshot.as_ref().unwrap(), &initial));
+        assert!(state.snapshot.as_ref().is_some_and(|snapshot| Arc::ptr_eq(snapshot, &initial)), "pending read retains the exact admitted snapshot");
         assert!(state.loaded_query.is_none(), "pending snapshot is not an admitted Enter target");
     });
     cx.update(|window, cx| assert!(input.read(cx).focus_handle(cx).is_focused(window), "pending query preserves native input focus"));
