@@ -565,6 +565,16 @@ impl OwnedChild {
         self.0 = OwnedChildState::Reaped;
     }
 
+    #[cfg(not(all(
+        unix,
+        not(any(
+            target_os = "cygwin",
+            target_os = "horizon",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "wasi"
+        ))
+    )))]
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, ProcessError> {
         let status = self.child_mut()?.try_wait().map_err(|_| ProcessError::Io)?;
         if status.is_some() {
@@ -2597,6 +2607,7 @@ fn workspace_entry_disappeared(error: &io::Error) -> bool {
 }
 
 struct TempOutput {
+    #[cfg(test)]
     path: PathBuf,
     file: File,
     staging: Option<TempStagingDirectory>,
@@ -2690,9 +2701,11 @@ impl TempInput {
 impl TempOutput {
     fn create(label: &str) -> Result<Self, ProcessError> {
         let staging = TempStagingDirectory::create(label)?;
+        #[cfg(test)]
         let path = staging.file_path();
         let file = staging.create_file()?;
         Ok(Self {
+            #[cfg(test)]
             path,
             file,
             staging: Some(staging),

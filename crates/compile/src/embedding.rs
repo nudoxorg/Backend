@@ -2001,25 +2001,6 @@ impl EmbeddingExecutable {
         Ok(())
     }
 
-    fn infer_inner(
-        &self,
-        invocation: EmbeddingInvocation<'_>,
-        use_cache: bool,
-    ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
-        let deadline = self.request_deadline()?;
-        self.infer_inner_with_deadline(invocation, use_cache, None, deadline)
-    }
-
-    fn infer_inner_with_cancellation_flag(
-        &self,
-        invocation: EmbeddingInvocation<'_>,
-        use_cache: bool,
-        cancelled: Option<&AtomicBool>,
-    ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
-        let deadline = self.request_deadline()?;
-        self.infer_inner_with_deadline(invocation, use_cache, cancelled, deadline)
-    }
-
     fn infer_inner_with_deadline(
         &self,
         invocation: EmbeddingInvocation<'_>,

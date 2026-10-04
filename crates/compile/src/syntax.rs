@@ -1566,7 +1566,7 @@ fn push_typescript_named_imports(
             .child_by_field_name("alias")
             .map(|alias| node_text(alias, text))
             .filter(|alias| !alias.is_empty())
-            .unwrap_or_else(|| exported.clone());
+            .unwrap_or(exported);
         imports.push(value_import(local, line, specifier, &exported, excerpt));
     }
 }
@@ -1644,13 +1644,7 @@ fn push_rust_use_argument(
             let Some((specifier, exported)) = rust_value_path_parts(node, text) else {
                 return;
             };
-            imports.push(value_import(
-                exported.clone(),
-                line,
-                &specifier,
-                &exported,
-                excerpt,
-            ));
+            imports.push(value_import(exported, line, &specifier, &exported, excerpt));
         }
         "identifier" => {
             let local = node_text(node, text);
@@ -1692,13 +1686,7 @@ fn push_rust_use_list(
                     .map(|name| node_text(name, text))
                     .filter(|name| !name.is_empty());
                 if let Some(exported) = exported {
-                    imports.push(value_import(
-                        exported.clone(),
-                        line,
-                        specifier,
-                        &exported,
-                        excerpt,
-                    ));
+                    imports.push(value_import(exported, line, specifier, &exported, excerpt));
                 }
             }
             "identifier" => {
