@@ -269,6 +269,9 @@ impl std::fmt::Display for Pick {
 /// One assertion on a settled checkpoint frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Assert {
+    /// The mounted Reader's actual scroll offset matches this endpoint or
+    /// one-page position. Requires positive overflow, not merely a stable route.
+    ReaderScroll(ReaderScroll),
     /// The route, exactly (harness route words, resolved on the fixture).
     Route(String),
     /// The route as exact words matches this glob (`*` any run): the
@@ -328,6 +331,32 @@ pub enum Assert {
         /// The limit in ms.
         limit_ms: f64,
     },
+}
+
+/// A position measured from the Reader's actual mounted viewport and reach.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReaderScroll {
+    /// Offset zero.
+    Top,
+    /// Offset at the negative maximum reach.
+    Bottom,
+    /// One viewport down from the top, clamped at the bottom.
+    PageDown,
+    /// One viewport up from the bottom, clamped at the top.
+    PageUp,
+}
+
+impl ReaderScroll {
+    /// The assertion's position spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::PageDown => "page-down",
+            Self::PageUp => "page-up",
+        }
+    }
 }
 
 /// How a ground reads.
@@ -609,8 +638,21 @@ pub(super) fn assertion(line: &str) -> Result<Assert, String> {
                 _ => Err(format!("`state {rest}`: expected `state KEY \"GLOB\"`, KEY one of {}", KEYS.join(", "))),
             }
         }
+        "scroll" => match tokens(rest)?.as_slice() {
+            [Tok::Word(reader), Tok::Word(position)] if reader == "reader" => {
+                let position = match position.as_str() {
+                    "top" => ReaderScroll::Top,
+                    "bottom" => ReaderScroll::Bottom,
+                    "page-down" => ReaderScroll::PageDown,
+                    "page-up" => ReaderScroll::PageUp,
+                    _ => return Err("expected `scroll reader top|bottom|page-down|page-up`".to_owned()),
+                };
+                Ok(Assert::ReaderScroll(position))
+            }
+            _ => Err("expected `scroll reader top|bottom|page-down|page-up`".to_owned()),
+        },
         other => Err(format!(
-            "`{other}` is not an assert (route, route like, text, like, unlike, saw, ground, order, absent, line, link, focus, budget, size, state)"
+            "`{other}` is not an assert (route, route like, text, like, unlike, saw, ground, order, absent, line, link, focus, budget, size, state, scroll)"
         )),
     }
 }
@@ -721,8 +763,17 @@ pub(super) fn glob(pattern: &str, key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Area, Assert, Pick, PickerAnswer, StepKind, Until, assertion, glob, pick, split_else, step_kind, strings_in};
+    use super::{Area, Assert, Pick, PickerAnswer, ReaderScroll, StepKind, Until, assertion, glob, pick, split_else, step_kind, strings_in};
     use std::time::Duration;
+
+    #[test]
+    fn mounted_reader_scroll_assertions_parse_without_allowing_an_unknown_position() {
+        for (word, expected) in [("top", ReaderScroll::Top), ("bottom", ReaderScroll::Bottom), ("page-down", ReaderScroll::PageDown), ("page-up", ReaderScroll::PageUp)] {
+            assert_eq!(assertion(&format!("scroll reader {word}")), Ok(Assert::ReaderScroll(expected)));
+        }
+        assert!(assertion("scroll shelf top").is_err());
+        assert!(assertion("scroll reader anywhere").is_err());
+    }
 
     #[test]
     fn globs_match_whole_keys() {

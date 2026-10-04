@@ -2,11 +2,35 @@
 //! (areas from the shell's resolved frame), what the words point at, rows of
 //! words as one line, and routes as exact words.
 
-use super::script::{Area, Pick, glob};
+use super::script::{Area, Pick, ReaderScroll, glob};
 use crate::navigation::{OrbitRoute, PackageLane, Route};
 use crate::shell::Frame;
 use backend_gui_harness::{Drawn, Viewport};
 use facet::probe::{BoundsSample, Ledger, TargetSample, TextSample};
+
+/// Judge the Reader's live scroll probe, whose reach and offset are read from
+/// the same mounted GPUI ScrollHandle. A short page cannot pass a scroll case.
+pub(super) fn reader_scroll(scrolls: &[facet::probe::ScrollSample], position: ReaderScroll) -> Result<String, String> {
+    let mut matches = scrolls.iter().filter(|sample| sample.key == "reader-scroll");
+    let sample = matches.next().ok_or("the mounted Reader did not report scroll geometry")?;
+    if matches.next().is_some() { return Err("more than one Reader scroll container was mounted".to_owned()); }
+    let offset = sample.offset.ok_or("the mounted Reader did not report its scroll offset")?.y;
+    let viewport = sample.viewport.height;
+    let reach = sample.content.height - viewport;
+    if !offset.is_finite() || !viewport.is_finite() || !reach.is_finite()
+        || viewport <= 1.0 || reach <= 1.0 || offset > 1.0 || offset < -reach - 1.0
+    {
+        return Err(format!("Reader scroll is not a valid overflowing viewport: offset={offset}, viewport={viewport}, reach={reach}"));
+    }
+    let expected = match position {
+        ReaderScroll::Top => 0.0,
+        ReaderScroll::Bottom => -reach,
+        ReaderScroll::PageDown => -viewport.min(reach),
+        ReaderScroll::PageUp => (-reach + viewport).min(0.0),
+    };
+    let evidence = format!("scroll reader {}: offset={offset:.2}, expected={expected:.2}, viewport={viewport:.2}, reach={reach:.2}", position.name());
+    if (offset - expected).abs() <= 1.0 { Ok(evidence) } else { Err(evidence) }
+}
 
 /// The frame just drawn.
 pub(super) struct Seen {
@@ -587,11 +611,46 @@ pub(super) fn describe(route: &Route) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::unoccluded;
+    use super::{ReaderScroll, reader_scroll, unoccluded};
     use facet::probe::{BoundsSample, Ledger, StackEntry, StackPhase, StackSample, TextOverflow, TextSample};
 
     fn at(key: &str, x: f32, y: f32, width: f32, height: f32) -> BoundsSample {
         BoundsSample { key: key.to_owned(), x, y, width, height }
+    }
+
+    fn scroll(offset: f32, viewport: f32, reach: f32) -> facet::probe::ScrollSample {
+        facet::probe::ScrollSample {
+            key: "reader-scroll".to_owned(),
+            viewport: at("reader-scroll", 300.0, 60.0, 800.0, viewport),
+            content: at("reader-scroll", 300.0, 60.0, 800.0, viewport + reach),
+            offset: Some(facet::probe::ScrollOffset { x: 0.0, y: offset }),
+            ancestors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reader_scroll_assertions_reject_noops_and_measure_partial_page_clamps() {
+        assert!(reader_scroll(&[scroll(-900.0, 900.0, 1234.0)], ReaderScroll::PageDown).is_ok());
+        assert!(reader_scroll(&[scroll(0.0, 900.0, 1234.0)], ReaderScroll::PageDown).is_err(), "Page Down cannot pass on its initial top");
+        assert!(reader_scroll(&[scroll(-334.0, 900.0, 1234.0)], ReaderScroll::PageUp).is_ok());
+        assert!(reader_scroll(&[scroll(-1234.0, 900.0, 1234.0)], ReaderScroll::PageUp).is_err(), "Page Up cannot pass on its initial bottom");
+        assert!(reader_scroll(&[scroll(-275.0, 900.0, 275.0)], ReaderScroll::PageDown).is_ok(), "a partial final page clamps at actual reach");
+        assert!(reader_scroll(&[scroll(0.0, 900.0, 275.0)], ReaderScroll::PageUp).is_ok());
+        assert!(reader_scroll(&[scroll(-1234.0, 900.0, 1234.0)], ReaderScroll::Top).is_err());
+        assert!(reader_scroll(&[scroll(0.0, 900.0, 1234.0)], ReaderScroll::Bottom).is_err());
+    }
+
+    #[test]
+    fn reader_scroll_requires_one_real_finite_overflowing_mount() {
+        assert!(reader_scroll(&[], ReaderScroll::Top).is_err());
+        let sample = scroll(0.0, 900.0, 1234.0);
+        assert!(reader_scroll(&[sample.clone(), sample.clone()], ReaderScroll::Top).is_err());
+        let mut missing_offset = sample;
+        missing_offset.offset = None;
+        assert!(reader_scroll(&[missing_offset], ReaderScroll::Top).is_err());
+        for sample in [scroll(0.0, 900.0, 0.0), scroll(0.0, 0.0, 1234.0), scroll(f32::NAN, 900.0, 1234.0), scroll(0.0, 900.0, f32::INFINITY), scroll(-1236.0, 900.0, 1234.0)] {
+            assert!(reader_scroll(&[sample], ReaderScroll::Top).is_err());
+        }
     }
 
     fn text(content: &str, x: f32, y: f32, region: Option<&str>) -> TextSample {

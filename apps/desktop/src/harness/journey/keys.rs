@@ -64,6 +64,10 @@ fn case(command: KeyCommand) -> Case {
         C::Forward => (Library, &["key j", "key enter", "key cmd-["], &["route like \"package *toml_pin\""], NONE, &["key ctrl-1"]),
         C::DepthOrbit => (Library, &["key j", "key enter"], &["route like \"orbit\""], NONE, NONE),
         C::Surface => (Library, &["key j", "key enter"], &["route like \"orbit\""], NONE, NONE),
+        C::ReaderPageDown => (Value, &["key home"], &["route like \"symbol *toml*Value*view=page*\"", "state zone \"reader\"", "scroll reader page-down"], NONE, &["key home"]),
+        C::ReaderPageUp => (Value, &["key end"], &["route like \"symbol *toml*Value*view=page*\"", "state zone \"reader\"", "scroll reader page-up"], NONE, &["key home"]),
+        C::ReaderTop => (Value, &["key end"], &["route like \"symbol *toml*Value*view=page*\"", "state zone \"reader\"", "scroll reader top"], NONE, NONE),
+        C::ReaderBottom => (Value, &["key home"], &["route like \"symbol *toml*Value*view=page*\"", "state zone \"reader\"", "scroll reader bottom"], NONE, &["key home"]),
         C::CodePage => (Value, NONE, &["route like \"symbol *Value*view=code*\""], &["route like \"symbol *Value*view=page*\""], NONE),
         C::DepthCode => (Value, NONE, &["route like \"symbol *Value*view=code*\""], NONE, &["key ctrl-3"]),
         C::DepthPage => (Value, &["key ctrl-4"], &["route like \"symbol *Value*view=page*\""], NONE, NONE),
@@ -137,6 +141,16 @@ pub fn plan(parts: &Parts) -> Result<Plan, String> {
                 arrive(plan, case.place, index)?;
                 for line in case.setup {
                     plan.step(line);
+                }
+                // Certify the opposite endpoint before testing a scroll key.
+                // This rejects a no-op key even if the route stays correct.
+                let before = if matches!(key.command, KeyCommand::ReaderPageDown | KeyCommand::ReaderBottom) {
+                    Some("scroll reader top")
+                } else if matches!(key.command, KeyCommand::ReaderPageUp | KeyCommand::ReaderTop) {
+                    Some("scroll reader bottom")
+                } else { None };
+                if let Some(before) = before {
+                    check(plan, &format!("{name}-before"), &["route like \"symbol *toml*Value*view=page*\"", "state zone \"reader\"", before])?;
                 }
                 plan.step(&format!("key {pressed}"));
                 check(plan, &name, case.then)?;

@@ -44,7 +44,8 @@
 //! production check), `text "S"… [in AREA]`, `saw "S"… [in AREA]` (on screen
 //! in some frame since the previous checkpoint), `order`, `absent`, `line`,
 //! `link PICK`, `focus PICK`, `focus restored`, and `budget page-open|search|
-//! flight|frame-p95 <= N ms`. Areas come from the shell's resolved frame.
+//! flight|frame-p95 <= N ms`; `scroll reader top|bottom|page-down|page-up`
+//! checks the mounted scroll handle. Areas come from the shell's resolved frame.
 //! Every checkpoint also requires zero lints.
 //!
 //! Budgets: `page-open` and `search` time the last activation to its first
@@ -646,6 +647,7 @@ fn squash(text: &str) -> String {
 #[allow(clippy::too_many_lines, reason = "one arm per assert, each short")]
 fn judge_one(runner: &Runner, seen: &Seen, image: &RgbaImage, route: Option<&Route>, assert: &Assert, production: bool) -> Vec<Result<String, String>> {
     match assert {
+        Assert::ReaderScroll(position) => vec![look::reader_scroll(&seen.ledger.scrolls, *position)],
         Assert::Ground(tone, area) => vec![ground(seen, image, *tone, *area)],
         Assert::Route(words) => {
             let actual = route.map_or_else(|| "(no route)".to_owned(), describe);
