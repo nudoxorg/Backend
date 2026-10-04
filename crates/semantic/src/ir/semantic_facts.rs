@@ -46,44 +46,111 @@ pub struct OccurrenceLane<'bytes> {
 /// every observed operand.
 #[derive(Debug, Error)]
 pub enum OccurrenceFault {
+    /// Occurrence owner coordinate does not fit the entity lane.
     #[error(
         "occurrence {ordinal} names entity {owner:?} outside the fragment entity lane of {entity_count}"
     )]
     Owner {
+        /// Position of the offending occurrence row.
         ordinal: u32,
+        /// Entity coordinate recorded as its owner.
         owner: EntityId,
+        /// Number of entity rows in the fragment.
         entity_count: u32,
     },
+    /// Local occurrence target coordinate does not fit the entity lane.
     #[error(
         "occurrence {ordinal} names local target {target} outside the fragment entity lane of {entity_count}"
     )]
     LocalTarget {
+        /// Position of the occurrence containing the target.
         ordinal: u32,
+        /// Raw local entity coordinate from the occurrence target.
         target: u32,
+        /// Number of entity rows in the fragment.
         entity_count: u32,
     },
+    /// Occurrence target discriminant is outside the wire registry.
     #[error("occurrence {ordinal} carries an unknown target tag {actual}")]
-    TargetTag { ordinal: u32, actual: u8 },
+    TargetTag {
+        /// Position of the row with the unknown target tag.
+        ordinal: u32,
+        /// Unrecognized discriminant byte.
+        actual: u8,
+    },
+    /// Foreign-origin discriminant is outside the wire registry.
     #[error("occurrence {ordinal} carries an unknown foreign origin tag {actual}")]
-    OriginTag { ordinal: u32, actual: u8 },
+    OriginTag {
+        /// Position of the row with the unknown origin tag.
+        ordinal: u32,
+        /// Unrecognized discriminant byte.
+        actual: u8,
+    },
+    /// Reference-kind value does not belong to the closed reference registry.
     #[error("occurrence {ordinal} carries an unknown reference kind {actual}")]
-    ReferenceKind { ordinal: u32, actual: u8 },
+    ReferenceKind {
+        /// Position of the row with the invalid kind.
+        ordinal: u32,
+        /// Raw one-byte reference-kind value.
+        actual: u8,
+    },
+    /// Confidence value does not belong to the closed confidence registry.
     #[error("occurrence {ordinal} carries an unknown confidence {actual}")]
-    Confidence { ordinal: u32, actual: u8 },
+    Confidence {
+        /// Position of the row with the invalid confidence.
+        ordinal: u32,
+        /// Raw one-byte confidence value.
+        actual: u8,
+    },
+    /// Owner-relative byte range has an end before its start.
     #[error("occurrence {ordinal} carries an inverted relative span {start}..{end}")]
-    Span { ordinal: u32, start: u32, end: u32 },
+    Span {
+        /// Position of the row with the invalid span.
+        ordinal: u32,
+        /// Start byte offset relative to the owning entity's source span.
+        start: u32,
+        /// End byte offset relative to the owning entity's source span.
+        end: u32,
+    },
+    /// Foreign target kind cell is not recognized by the semantic vocabulary.
     #[error("occurrence {ordinal} carries an unknown foreign kind cell {actual}")]
-    KindCell { ordinal: u32, actual: u16 },
+    KindCell {
+        /// Position of the row containing the unknown kind.
+        ordinal: u32,
+        /// Raw kind code from the foreign key record.
+        actual: u16,
+    },
+    /// Foreign key path is empty and cannot identify a target.
     #[error("occurrence {ordinal} foreign key has an empty path")]
-    EmptyPath { ordinal: u32 },
+    EmptyPath {
+        /// Position of the occurrence with the empty path.
+        ordinal: u32,
+    },
+    /// Encoded row ends before its required fields are available.
     #[error("occurrence record {ordinal} payload ended before {needed} bytes")]
-    Truncated { ordinal: u32, needed: usize },
+    Truncated {
+        /// Position of the row being decoded.
+        ordinal: u32,
+        /// Minimum payload length in bytes required by the current field read.
+        needed: usize,
+    },
+    /// Bytes remain after all declared occurrence rows have been decoded.
     #[error("occurrence section declares {declared} records but carries trailing bytes")]
-    TrailingBytes { declared: u32 },
+    TrailingBytes {
+        /// Number of rows declared by the section header.
+        declared: u32,
+    },
+    /// Older schema's family-only endpoint cannot identify an exact overload variant.
     #[error(
         "occurrence {ordinal} uses a schema-{schema} family-only stable endpoint that cannot represent an exact declaration variant"
     )]
-    LegacyStableTarget { ordinal: u32, schema: u16 },
+    LegacyStableTarget {
+        /// Position of the family-only stable endpoint.
+        ordinal: u32,
+        /// Schema number whose endpoint grammar lacks a variant identity.
+        schema: u16,
+    },
+    /// A serialized typed identity cell could not be decoded.
     #[error("a serialized identity cell in the occurrence section is invalid")]
     Authority(#[from] ContentIdDecodeError),
 }

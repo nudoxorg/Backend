@@ -27,81 +27,135 @@ use crate::ir::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Layout region used to identify which calculation overflowed or exceeded a count width.
 pub enum LayoutStep {
+    /// Section directory and its fixed-width descriptors.
     Directory,
+    /// One entity record per input declaration.
     EntityLane,
+    /// One type-node record per input type coordinate.
     TypeNodeLane,
+    /// Fixed-size atom descriptors, excluding atom bytes.
     AtomRecordLane,
+    /// Concatenated bytes referenced by atom descriptors.
     AtomByteLane,
+    /// Fixed-size source identity record.
     SourceIdentityLane,
+    /// Fixed-size compilation recipe record.
     RecipeFactLane,
+    /// Embedded canonical semantic-data graph.
     SemanticData,
+    /// Graph occurrence-site records.
     Occurrences,
+    /// Declared and computed semantic type records.
     TypeFacts,
+    /// Documentation fragment pool.
     Documentation,
+    /// Sparse language-specific extension section.
     LanguageExtensions,
+    /// Shared language-extension support pools.
     ExtensionPools,
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]
+/// Failure while validating inputs or deriving a fragment's exact wire layout.
 pub enum PrepareError {
+    /// A row or section count cannot fit its encoded count field.
     #[error("{lane:?} count {actual} exceeds the fragment count width")]
     Count {
+        /// Lane whose item count did not fit.
         lane: LayoutStep,
+        /// Input item count before conversion.
         actual: usize,
         #[source]
+        /// Integer-conversion failure from narrowing to the wire width.
         source: TryFromIntError,
     },
+    /// Appending the atom bytes for one input would overflow the compact offset range.
     #[error("atom byte pool overflowed while adding atom {ordinal:?}")]
-    AtomBytePoolOverflow { ordinal: AtomId },
+    AtomBytePoolOverflow {
+        /// Atom whose bytes would exceed the addressable pool.
+        ordinal: AtomId,
+    },
+    /// Checked layout arithmetic overflowed while placing one fragment lane.
     #[error(
         "fragment layout overflow at {step:?} for {entity_count} entities and {type_node_count} type nodes"
     )]
     LayoutOverflow {
+        /// Lane whose offset or extent overflowed.
         step: LayoutStep,
+        /// Number of entity rows included in the layout calculation.
         entity_count: u32,
+        /// Number of type-node rows included in the layout calculation.
         type_node_count: u32,
     },
+    /// A valid wire count cannot fit the current process's native address width.
     #[error("{step:?} item count {actual} exceeds the native address width")]
     NativeCount {
+        /// Lane whose item count cannot be represented as `usize`.
         step: LayoutStep,
+        /// Encoded-width count that failed conversion.
         actual: u32,
         #[source]
+        /// Integer-conversion failure to the native address width.
         source: TryFromIntError,
     },
+    /// The complete output byte length cannot fit the fragment's byte-coordinate width.
     #[error("fragment output length {actual} exceeds the wire byte-coordinate width")]
     OutputLength {
+        /// Required total fragment length in bytes.
         actual: usize,
         #[source]
+        /// Integer-conversion failure to the wire offset width.
         source: TryFromIntError,
     },
+    /// One entity record refers to an invalid type, atom, kind, or reserved value.
     #[error("entity {ordinal:?} is invalid: {fault}")]
     Entity {
+        /// Ordinal of the invalid input entity row.
         ordinal: EntityId,
         #[source]
+        /// Exact validation failure from the entity record.
         fault: EntityRecordFault,
     },
+    /// One type-node record contains an invalid tag or local edge.
     #[error("type node {ordinal:?} is invalid: {fault}")]
     TypeNode {
+        /// Ordinal of the invalid input type node.
         ordinal: TypeId,
         #[source]
+        /// Exact validation failure from the type-node record.
         fault: TypeNodeFault,
     },
+    /// Checked semantic-graph payload sizing overflowed.
     #[error(
         "semantic graph with {atoms} atoms, {products} products, and {children} children overflows the semantic payload layout"
     )]
     SemanticDataOverflow {
+        /// Number of semantic atoms in the graph.
         atoms: u32,
+        /// Number of semantic products in the graph.
         products: u32,
+        /// Number of semantic product children in the graph.
         children: u32,
     },
+    /// The graph root table does not contain exactly one root per entity row.
     #[error("semantic graph carries {roots} declaration roots for {entities} fragment entities")]
-    SemanticEntityRoots { roots: u32, entities: u32 },
+    SemanticEntityRoots {
+        /// Number of declaration roots retained by the graph.
+        roots: u32,
+        /// Number of entity rows that require roots.
+        entities: u32,
+    },
+    /// One semantic atom exceeds the byte-length width used on the wire.
     #[error("semantic atom {ordinal:?} has {actual} bytes, exceeding the wire length width")]
     SemanticAtomLength {
+        /// Ordinal of the atom whose byte length is too large.
         ordinal: AtomId,
+        /// Input byte length before narrowing.
         actual: usize,
         #[source]
+        /// Integer-conversion failure from narrowing the byte length.
         source: TryFromIntError,
     },
     /// Canonical semantic-data preparation failed before the fragment layout
@@ -114,56 +168,84 @@ pub enum PrepareError {
     },
     #[error("occurrence lane admission rejected a reference fact: {fault}")]
     OccurrenceLane {
+        /// Occurrence ordinal rejected by admission.
         ordinal: u32,
         #[source]
+        /// Exact validation failure for that occurrence fact.
         fault: crate::ir::view::OccurrenceFault,
     },
     #[error("type-fact lane admission rejected: {fault}")]
     TypeFacts {
         #[source]
+        /// Type-fact validation or coordinate failure.
         fault: crate::ir::TypeFactFault,
     },
     #[error("documentation lane admission rejected: {fault}")]
     Documentation {
         #[source]
+        /// Documentation-lane validation failure.
         fault: crate::ir::DocFactFault,
     },
     #[error("extension-pool admission rejected: {fault}")]
     ExtensionPools {
         #[source]
+        /// Shared extension-pool validation failure.
         fault: crate::ir::ExtensionPoolFault,
     },
+    /// Extension rows and the support pools they reference were not supplied as one unit.
     #[error("the language-extension section and its pooled lanes must be committed together")]
     ExtensionPoolsMismatch,
 }
 
 #[derive(Debug, Error)]
+/// Failure while writing a prepared fragment into caller-owned output bytes.
 pub enum WriteError {
+    /// The provided output slice is shorter than the exact prepared capacity.
     #[error("fragment output needs {required} bytes but only {available} are available")]
-    OutputTooSmall { required: usize, available: usize },
+    OutputTooSmall {
+        /// Exact number of output bytes required.
+        required: usize,
+        /// Length of the caller's output slice in bytes.
+        available: usize,
+    },
+    /// Encoding the language-extension section failed after preparation.
     #[error("language-extension section encoding failed: {fault}")]
     ExtensionSection {
         #[source]
+        /// Exact section-encoding failure.
         fault: crate::ir::semantic_extension_section::LanguageExtensionEncodeError,
     },
+    /// A prepared atom no longer fits its fixed-width byte-length field.
     #[error("prepared atom {ordinal:?} no longer fits the compact byte width")]
     AtomLength {
+        /// Atom-table ordinal being written.
         ordinal: AtomId,
+        /// Current borrowed atom length in bytes.
         actual: usize,
         #[source]
+        /// Integer-conversion failure to the encoded length width.
         source: TryFromIntError,
     },
+    /// A borrowed atom's current extent no longer matches its prepared pool range.
     #[error("prepared atom {ordinal:?} no longer fits its prepared byte region")]
-    AtomExtent { ordinal: AtomId },
+    AtomExtent {
+        /// Atom-table ordinal whose extent changed after preparation.
+        ordinal: AtomId,
+    },
+    /// A borrowed semantic atom no longer fits its fixed-width encoded length.
     #[error("semantic atom {ordinal:?} no longer fits the semantic wire length width")]
     SemanticAtomLength {
+        /// Semantic atom ordinal being written.
         ordinal: AtomId,
+        /// Current borrowed atom length in bytes.
         actual: usize,
         #[source]
+        /// Integer-conversion failure to the semantic wire length width.
         source: TryFromIntError,
     },
 }
 
+/// Validated inputs plus the exact offsets and capacity needed for one fragment write.
 pub struct PreparedFragment<'facts> {
     source: SourceIdentity,
     recipe: RecipeFact,
@@ -182,11 +264,17 @@ pub struct PreparedFragment<'facts> {
 /// Optional semantic planes committed beside the fragment's required lanes.
 #[derive(Clone, Copy, Default)]
 pub struct FragmentSemantics<'facts> {
+    /// Optional embedded graph with one canonical semantic root per entity.
     pub data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
+    /// Optional occurrence-site rows for graph relations.
     pub occurrences: Option<&'facts crate::ir::semantic_facts::OccurrenceLane<'facts>>,
+    /// Optional declared/computed type facts and their shared child pool.
     pub type_facts: Option<&'facts crate::ir::type_facts::TypeFactLane<'facts>>,
+    /// Optional documentation records and their text bytes.
     pub docs: Option<&'facts DocumentationLane<'facts>>,
+    /// Optional per-language extension rows.
     pub extensions: Option<&'facts ExtensionSectionInput<'facts>>,
+    /// Optional atom/type/entity pools required by extension references.
     pub pools: Option<&'facts ExtensionPoolsLane<'facts>>,
 }
 
@@ -200,6 +288,7 @@ struct FragmentInput<'facts> {
 }
 
 impl<'facts> PreparedFragment<'facts> {
+    /// Validates required fragment lanes and derives their canonical wire layout.
     pub fn prepare(
         source: SourceIdentity,
         recipe: RecipeFact,
@@ -427,10 +516,15 @@ impl<'facts> PreparedFragment<'facts> {
     }
 
     #[must_use]
+    /// Returns the exact output-slice length required by [`Self::write_into`], in bytes.
     pub const fn required_capacity(&self) -> usize {
         self.layout.output_len
     }
 
+    /// Encodes the prepared lanes into `output` and returns the number of bytes written.
+    ///
+    /// The slice must be at least [`Self::required_capacity`] bytes long; the borrowed
+    /// inputs must also remain unchanged since preparation so the derived layout still fits.
     pub fn write_into<'output>(
         &self,
         output: &'output mut [u8],

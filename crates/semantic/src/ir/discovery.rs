@@ -15,9 +15,13 @@ use crate::ir::{
 /// durable pools.
 #[derive(Debug, Eq, PartialEq)]
 pub enum FragmentDiscoveryError {
+    /// The section refers to a shared extension pool that was not supplied.
     MissingExtensionPools,
+    /// The durable type-fact lane failed validation.
     TypeFacts(crate::ir::TypeFactFault),
+    /// Shared extension-pool references or bounds failed validation.
     ExtensionPools(ExtensionPoolFault),
+    /// The profile-bound language-extension section could not be reopened.
     LanguageExtensions(LanguageExtensionReopenError),
 }
 
@@ -34,19 +38,30 @@ pub struct FragmentDiscovery<'fragment> {
 /// compare a source-built IR census with this value after publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticCensus {
+    /// Number of compact declaration rows.
     pub entities: u32,
+    /// Number of compact atom records.
     pub atoms: u32,
+    /// Number of compact type nodes, separate from durable type-fact records.
     pub compact_type_nodes: u32,
+    /// Number of deduplicated canonical semantic products.
     pub canonical_products: u32,
+    /// Number of ordered child rows shared by canonical products.
     pub canonical_product_children: u32,
     /// Schema-3-and-later declaration roots; legacy fragments report zero and expose
     /// `UnavailableInLegacySchema` through the semantic-data view.
     pub canonical_entity_roots: u32,
+    /// Number of graph occurrence records.
     pub occurrences: u32,
+    /// Number of declared type-fact rows.
     pub declared_type_facts: u32,
+    /// Number of schema-2 computed type-fact rows.
     pub computed_type_facts: u32,
+    /// Number of ordered documentation fragments.
     pub documentation_fragments: u32,
+    /// Whether the language-extension section exists in the fragment.
     pub language_extension_section: bool,
+    /// Whether the shared extension-pool section exists in the fragment.
     pub extension_pool_section: bool,
 }
 

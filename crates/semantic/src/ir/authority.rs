@@ -104,8 +104,11 @@ pub struct EntityAuthorityFacts {
 /// scratch and authority input have gone away.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticScopeFacts {
+    /// Atom naming the package ecosystem used to interpret `package`.
     pub ecosystem: AtomId,
+    /// Atom containing the package name in that ecosystem.
     pub package: AtomId,
+    /// Atom containing the source path relative to the package root.
     pub path: AtomId,
     /// Exact canonical package URL when this image came from package compilation.
     pub coordinate: Option<AtomId>,
@@ -116,6 +119,7 @@ pub struct SemanticScopeFacts {
 /// framed scope; the owned header retains the queryable atom values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticScopeClaim {
+    /// Domain-separated commitment to the package coordinate and exact source path.
     pub identity: ContentId<SemanticScopeDomain>,
 }
 
@@ -139,8 +143,11 @@ impl SemanticScopeClaim {
 /// Exact image provenance requested at a write-once admission boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageProvenanceClaim {
+    /// Source-content identity and exact source byte length requested for admission.
     pub source: SourceIdentity,
+    /// Compiler recipe whose identity binds the source and compilation settings.
     pub recipe: CompileRecipeFact,
+    /// Package/file scope commitment the image must retain.
     pub scope: SemanticScopeClaim,
 }
 
@@ -149,9 +156,13 @@ pub struct ImageProvenanceClaim {
 /// state rather than inventing source, recipe, or scope facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageProvenance {
+    /// No source-authority transaction supplied provenance for this image.
     Unavailable,
+    /// Provenance retained from a successfully admitted source-authority transaction.
     Captured {
+        /// Exact source identity admitted for the compiled image.
         source: SourceIdentity,
+        /// Exact recipe identity admitted for the compiled image.
         recipe: CompileRecipeFact,
         /// Coordinate-free scope commitment used for idempotent provenance
         /// admission and exact rebind diagnostics.
@@ -173,14 +184,23 @@ impl Default for ImageProvenance {
 /// semantic value.
 #[derive(Clone, Copy, Debug)]
 pub struct EntityAuthorityColumns<'ir> {
+    /// Containment authority for each entity ordinal.
     pub parentage: &'ir [ParentageAuthority],
+    /// Availability of the primary source span for each entity ordinal.
     pub source: &'ir [FactAvailability],
+    /// Availability of source-file identity tied to the primary span.
     pub source_file: &'ir [FactAvailability],
+    /// Availability of the complete local member set, including known-empty sets.
     pub members: &'ir [FactAvailability],
+    /// Availability of the entity's semantic type observation.
     pub semantic_type: &'ir [FactAvailability],
+    /// Availability of the entity's documentation observation.
     pub documentation: &'ir [FactAvailability],
+    /// Availability of the entity's visibility observation.
     pub visibility: &'ir [FactAvailability],
+    /// Availability of the entity's attribute observation.
     pub attributes: &'ir [FactAvailability],
+    /// Availability of the language-profile-specific extension observation.
     pub language_extension: &'ir [FactAvailability],
 }
 
@@ -192,12 +212,14 @@ pub struct EntityAuthorityColumns<'ir> {
 /// captured-but-unprojectable evidence would require a future third state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OccurrenceAuthorityFacts {
+    /// Whether the source site for this graph occurrence was observed by authority.
     pub source: FactAvailability,
 }
 
 /// Borrowed cold authority lane aligned with [`crate::ir::LinkOccurrence`] rows.
 #[derive(Clone, Copy, Debug)]
 pub struct OccurrenceAuthorityColumns<'ir> {
+    /// Source-site availability aligned with each `LinkOccurrence` ordinal.
     pub source: &'ir [FactAvailability],
 }
 
@@ -220,14 +242,23 @@ impl EntityAuthorityColumns<'_> {
 /// Closed authority plane named by an admission mismatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorityFactPlane {
+    /// Primary declaration source span.
     Source,
+    /// Source-file identity associated with the primary span.
     SourceFile,
+    /// Complete set of local members owned by the declaration.
     Members,
+    /// Semantic type assigned to the declaration.
     SemanticType,
+    /// Documentation observed for the declaration.
     Documentation,
+    /// Visibility observed for the declaration.
     Visibility,
+    /// Attributes observed for the declaration.
     Attributes,
+    /// Language-specific extension facts observed for the declaration.
     LanguageExtension,
+    /// Source-site span on a graph occurrence row.
     OccurrenceSource,
 }
 
@@ -236,18 +267,25 @@ pub enum AuthorityFactPlane {
 pub enum AuthorityFactFault {
     /// Containment truth did not agree with the local parent relationship.
     Parentage {
+        /// Containment fact supplied by the authority.
         claimed: ParentageAuthority,
+        /// Local parent derived from the owned entity row, if any.
         local_parent: Option<DeclarationIdentity>,
     },
     /// An optional authority plane did not agree with its owned value.
     Availability {
+        /// Plane whose captured/unavailable state disagreed with its value.
         plane: AuthorityFactPlane,
+        /// Availability state supplied by the authority.
         claimed: FactAvailability,
+        /// Whether the corresponding finalized semantic value exists.
         present: bool,
     },
     /// Source-file authority cannot exist independently of a source span.
     SourceFileWithoutSource {
+        /// Source-span availability supplied for the entity.
         source: FactAvailability,
+        /// Source-file availability that cannot be represented without a span.
         source_file: FactAvailability,
     },
 }

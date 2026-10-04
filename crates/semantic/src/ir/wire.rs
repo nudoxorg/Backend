@@ -107,11 +107,14 @@ const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
 
 macro_rules! wire_enum_u16 {
-    ($visibility:vis enum $name:ident { $($variant:ident = $wire:literal),+ $(,)? }) => {
+    ($(#[$enum_meta:meta])* $visibility:vis enum $name:ident {
+        $($(#[$variant_meta:meta])* $variant:ident = $wire:literal),+ $(,)?
+    }) => {
         #[repr(u16)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        $(#[$enum_meta])*
         $visibility enum $name {
-            $($variant = $wire),+
+            $($(#[$variant_meta])* $variant = $wire),+
         }
 
         impl From<$name> for u16 {
@@ -136,18 +139,31 @@ macro_rules! wire_enum_u16 {
 }
 
 wire_enum_u16! {
+    /// Closed two-byte tags identifying sections in the semantic image wire.
     pub enum SectionKind {
+        /// Entity type declarations.
         EntityTypes = 1,
+        /// Type-node definitions.
         TypeNodes = 2,
+        /// Atom table records.
         AtomRecords = 3,
+        /// Interned atom bytes.
         AtomBytes = 4,
+        /// Source identity facts.
         SourceIdentity = 5,
+        /// Compile recipe facts.
         RecipeFact = 6,
+        /// Semantic data products.
         SemanticData = 7,
+        /// Occurrence records.
         Occurrences = 8,
+        /// Type-fact records.
         TypeFacts = 9,
+        /// Documentation facts.
         Documentation = 10,
+        /// Language-specific extension records.
         LanguageExtensions = 11,
+        /// Pools referenced by language extensions.
         ExtensionPools = 12,
     }
 }

@@ -84,30 +84,72 @@ pub struct DocumentationLane<'bytes> {
 /// every observed operand.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum DocFactFault {
+    /// Documentation record owner coordinate does not fit the entity lane.
     #[error("doc fact {ordinal} names entity {owner:?} outside {entity_count}")]
     Owner {
+        /// Position of the offending documentation record.
         ordinal: u32,
+        /// Entity coordinate recorded as its owner.
         owner: EntityId,
+        /// Number of entity rows in the fragment.
         entity_count: u32,
     },
+    /// Documentation fragment discriminant is outside the wire registry.
     #[error("doc fact {ordinal} carries an unknown fragment tag {actual}")]
-    FragmentTag { ordinal: u32, actual: u8 },
+    FragmentTag {
+        /// Position of the record with the unknown fragment tag.
+        ordinal: u32,
+        /// Unrecognized discriminant byte.
+        actual: u8,
+    },
+    /// Documentation link-target discriminant is outside the wire registry.
     #[error("doc fact {ordinal} carries an unknown link target tag {actual}")]
-    LinkTag { ordinal: u32, actual: u8 },
+    LinkTag {
+        /// Position of the record with the unknown target tag.
+        ordinal: u32,
+        /// Unrecognized discriminant byte.
+        actual: u8,
+    },
+    /// A required text, code, label, ecosystem, or path cell is empty.
     #[error("doc fact {ordinal} carries empty {field} bytes")]
-    EmptyCell { ordinal: u32, field: &'static str },
+    EmptyCell {
+        /// Position of the record containing the empty cell.
+        ordinal: u32,
+        /// Name of the cell in the documentation wire record.
+        field: &'static str,
+    },
+    /// A same-fragment link target coordinate does not fit the entity lane.
     #[error("doc fact {ordinal} names local link target {target} outside {entity_count}")]
     LinkTarget {
+        /// Position of the link record with the invalid target.
         ordinal: u32,
+        /// Raw entity coordinate stored in the target cell.
         target: u32,
+        /// Number of entity rows in the fragment.
         entity_count: u32,
     },
+    /// Encoded row ends before all fields described by its tag are available.
     #[error("doc fact {ordinal} is truncated before {needed} bytes")]
-    Truncated { ordinal: u32, needed: usize },
+    Truncated {
+        /// Position of the row being decoded.
+        ordinal: u32,
+        /// Minimum section length in bytes required by the current field read.
+        needed: usize,
+    },
+    /// Bytes remain after all declared documentation records have been decoded.
     #[error("doc section declares {declared} records but carries trailing bytes")]
-    TrailingBytes { declared: u32 },
+    TrailingBytes {
+        /// Number of records declared by the section header.
+        declared: u32,
+    },
+    /// Optional-cell presence byte is not a canonical presence tag.
     #[error("doc fact {ordinal} carries an unknown presence tag {actual}")]
-    Presence { ordinal: u32, actual: u8 },
+    Presence {
+        /// Position of the row with the invalid presence value.
+        ordinal: u32,
+        /// Unrecognized presence discriminant.
+        actual: u8,
+    },
 }
 
 impl<'bytes> DocumentationLane<'bytes> {

@@ -42,22 +42,32 @@ pub(crate) mod sealed {
 /// The precise semantic stage which has no lossless renderer yet.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum UnsupportedSemanticStage {
+    /// A type exists, but the neutral grammar has no lossless type-suffix position.
     #[error(
         "neutral declaration rendering cannot place a captured semantic type for entity {entity:?}"
     )]
-    NeutralTypeSuffix { entity: EntityId },
+    NeutralTypeSuffix {
+        /// Declaration whose type cannot be placed without a selected dialect.
+        entity: EntityId,
+    },
+    /// The selected profile needs a language-specific declaration grammar.
     #[error(
         "profile {profile:?} requires a language declaration syntax renderer for entity {entity:?}"
     )]
     LanguageDeclarationSyntax {
+        /// Language profile whose declaration syntax owns this row.
         profile: LanguageProfile,
+        /// Declaration that requires that syntax.
         entity: EntityId,
     },
+    /// A C-family declarator requires ordering across prefix, declarator, and suffix.
     #[error(
         "C-family profile {profile:?} requires prefix/declarator/suffix ownership for entity {entity:?}"
     )]
     CFamilyDeclarator {
+        /// C-family profile that selects the declarator grammar.
         profile: LanguageProfile,
+        /// Declaration whose type requires prefix/declarator/suffix placement.
         entity: EntityId,
     },
 }
@@ -65,39 +75,63 @@ pub enum UnsupportedSemanticStage {
 /// Exact render admission or caller-buffer failure.
 #[derive(Debug, Error)]
 pub enum RenderFailure {
+    /// The requested image-local entity coordinate is outside the core reader.
     #[error("entity {entity:?} is not present in this semantic image")]
-    MissingEntity { entity: EntityId },
+    MissingEntity {
+        /// Entity coordinate that could not be resolved.
+        entity: EntityId,
+    },
+    /// The declaration's name coordinate does not resolve to atom bytes.
     #[error("entity {entity:?} names missing atom {atom:?}")]
     MissingAtom {
+        /// Entity whose rendered name could not be read.
         entity: EntityId,
+        /// Atom coordinate stored in the entity row.
         atom: crate::ir::AtomId,
     },
+    /// A selected language stage has no exact lossless renderer.
     #[error(transparent)]
     Unsupported(#[from] UnsupportedSemanticStage),
+    /// Caller-provided output storage cannot hold the prepared declaration.
     #[error(
         "rendering entity {entity:?} needs at least {required_at_least} bytes but the caller supplied {available}"
     )]
     OutputTooSmall {
+        /// Entity whose output was requested.
         entity: EntityId,
+        /// Length of the caller's output buffer in bytes.
         available: usize,
+        /// Lower bound on required output bytes.
         required_at_least: usize,
     },
+    /// Rendered output byte-length arithmetic overflowed `usize`.
     #[error("neutral rendering length overflowed for entity {entity:?}")]
-    OutputLengthOverflow { entity: EntityId },
+    OutputLengthOverflow {
+        /// Entity whose length could not be represented.
+        entity: EntityId,
+    },
+    /// A writer emitted a different byte count from the prepared exact length.
     #[error(
         "prepared neutral rendering for entity {entity:?} wrote {written} bytes despite promised length {promised}"
     )]
     PreparedLengthMismatch {
+        /// Entity whose prepared write violated its length promise.
         entity: EntityId,
+        /// Exact length computed during preparation, in bytes.
         promised: usize,
+        /// Number of bytes actually written.
         written: usize,
     },
+    /// The caller's formatter rejected an output write.
     #[error("the caller formatter rejected the rendered declaration")]
     OutputWrite,
+    /// The renderer's byte buffer does not contain valid UTF-8.
     #[error("the renderer produced invalid UTF-8 after {valid_up_to} bytes")]
     OutputEncoding {
+        /// Byte index at which UTF-8 validation stopped.
         valid_up_to: usize,
         #[source]
+        /// Standard UTF-8 decoding failure for the emitted bytes.
         source: str::Utf8Error,
     },
 }
@@ -105,7 +139,9 @@ pub enum RenderFailure {
 /// Public immutable facts promised by one prepared neutral rendering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PreparedNeutralView {
+    /// Core declaration facts whose name and visibility were admitted for neutral rendering.
     pub entity: CoreSemanticEntity,
+    /// Exact number of bytes the prepared neutral declaration will write.
     pub encoded_len: usize,
 }
 
@@ -194,6 +230,7 @@ pub fn prepare_neutral<'image, R: SemanticCoreReader + ?Sized>(
 /// Sealed static language-rendering policy. No runtime trait object can hide
 /// which dialect owns a declarator or type suffix.
 pub trait RenderDialect: sealed::Sealed {
+    /// Admits one entity for this exact profile and prepares its neutral form.
     fn prepare<'image, R: SemanticCoreReader + ?Sized>(
         profile: LanguageProfile,
         reader: &'image R,
@@ -318,10 +355,10 @@ const fn visibility_name(visibility: Visibility) -> &'static str {
     }
 }
 
-const fn availability_name(value: crate::ir::FactAvailability) -> &'static str {
+const fn availability_name(value: FactAvailability) -> &'static str {
     match value {
-        crate::ir::FactAvailability::Captured => "captured",
-        crate::ir::FactAvailability::Unavailable => "unavailable",
+        FactAvailability::Captured => "captured",
+        FactAvailability::Unavailable => "unavailable",
     }
 }
 

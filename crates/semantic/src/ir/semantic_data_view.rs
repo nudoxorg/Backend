@@ -21,10 +21,15 @@ use crate::ir::{
 /// Exact cardinalities of a validated canonical semantic graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticDataCounts {
+    /// Number of canonical atom records.
     pub atoms: u32,
+    /// Number of deduplicated canonical product records.
     pub products: u32,
+    /// Number of constructor records referenced by products.
     pub constructors: u32,
+    /// Number of product-list records.
     pub lists: u32,
+    /// Number of ordered product-child records.
     pub children: u32,
 }
 
@@ -41,14 +46,18 @@ pub enum SemanticDataEntityRoot {
 /// One role-bearing canonical product edge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticDataChild {
+    /// Semantic role assigned to this edge by its parent product.
     pub role: ProductChildRole,
+    /// Local or external product coordinate at the end of this edge.
     pub target: ProductRef,
 }
 
 /// One sequentially decoded canonical semantic atom.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticDataAtom<'fragment> {
+    /// Immutable atom-table ordinal assigned during canonicalization.
     pub ordinal: AtomId,
+    /// Borrowed atom bytes from the fragment payload.
     pub atom: SemanticAtom<'fragment>,
 }
 
@@ -99,6 +108,7 @@ impl<'fragment> SemanticDataView<'fragment> {
         Self { payload, layout }
     }
 
+    /// Returns the validated graph's exact pool cardinalities.
     #[must_use]
     pub const fn counts(self) -> SemanticDataCounts {
         SemanticDataCounts {

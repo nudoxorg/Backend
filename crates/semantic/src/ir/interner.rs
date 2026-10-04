@@ -207,6 +207,7 @@ impl<T: Eq + Hash, Owner> Interner<T, Owner> {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Half-open element interval assigned to one value in an interned arena.
 pub struct ArenaRange {
     /// First element in the arena.
     pub start: u32,

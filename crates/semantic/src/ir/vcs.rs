@@ -22,14 +22,17 @@ use crate::ir::{
 pub struct GenerationId([u8; 32]);
 
 impl GenerationId {
+    /// Wraps a fixed-width generation claim without validating its origin.
     #[must_use]
     pub const fn from_raw(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
+    /// Hashes the exact canonical bytes of a complete IR generation.
     #[must_use]
     pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
         Self(*blake3::hash(bytes).as_bytes())
     }
+    /// Returns the generation's fixed 32-byte content identity.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -39,7 +42,9 @@ impl GenerationId {
 /// One VCS generation borrowing the same IR used by renderers and graph queries.
 #[derive(Clone, Copy)]
 pub struct Snapshot<'ir> {
+    /// Content identity used to name this immutable comparison endpoint.
     pub generation: GenerationId,
+    /// Borrowed finalized IR whose rows belong to `generation`.
     pub ir: &'ir Ir,
 }
 
@@ -61,7 +66,9 @@ impl fmt::Debug for Snapshot<'_> {
 /// compared without rebuilding an owned [`Ir`] or introducing a second VCS
 /// representation.
 pub struct SemanticSnapshot<'reader, Reader: SemanticReader + ?Sized> {
+    /// Content identity used to name this immutable comparison endpoint.
     pub generation: GenerationId,
+    /// Borrowed complete reader containing the endpoint's semantic rows.
     pub reader: &'reader Reader,
 }
 
@@ -85,22 +92,34 @@ impl<Reader: SemanticReader + ?Sized> fmt::Debug for SemanticSnapshot<'_, Reader
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Delta<T> {
+    /// The compared values are equal.
     Unchanged,
-    Changed { before: T, after: T },
+    /// Values differ; each value remains attached to its source generation.
+    Changed {
+        /// Value from the older generation.
+        before: T,
+        /// Value from the newer generation.
+        after: T,
+    },
 }
 
 /// Whether the reader has a complete value for one semantic facet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FacetCoverage {
+    /// The authority captured the complete facet value.
     Complete,
+    /// Some facet values were observed, but the full value is not known.
     Partial,
+    /// No value for this facet was supplied by the authority.
     Unavailable,
 }
 
 /// Result of comparing one facet's semantic values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FacetComparison {
+    /// Available comparable values match exactly.
     Unchanged,
+    /// Available comparable values differ.
     Changed,
     /// The facet is present or claimed, but this diff cannot compare it exactly.
     NeedsComparison,
@@ -111,7 +130,9 @@ pub enum FacetComparison {
 /// Value comparison paired with an explicit before/after coverage witness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FacetChange {
+    /// Before/after capture coverage for the facet.
     pub coverage: Delta<FacetCoverage>,
+    /// Value comparison result, or why exact comparison was unavailable.
     pub comparison: FacetComparison,
 }
 
@@ -135,15 +156,22 @@ impl FacetChange {
 /// occurrence-site delta.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EntityFacetChanges {
+    /// Declaration kind, shape, name, or other core declaration facts.
     pub declaration_shape: FacetChange,
+    /// Documentation content and its capture state.
     pub documentation: FacetChange,
+    /// Visibility value and its capture state.
     pub visibility: FacetChange,
+    /// Attribute values and their capture state.
     pub attributes: FacetChange,
+    /// Primary source span and source identity facts.
     pub source: FacetChange,
+    /// Language-profile-specific extension values and their capture state.
     pub language_extension: FacetChange,
 }
 
 impl EntityFacetChanges {
+    /// Reports unresolved, changed, or coverage-changing facets conservatively.
     #[must_use]
     pub const fn requires_change(self) -> bool {
         self.declaration_shape.requires_change()
@@ -155,34 +183,42 @@ impl EntityFacetChanges {
     }
 }
 
+/// One declaration's lifecycle or fact change in the owned-IR comparison.
 #[derive(Clone, Copy)]
 pub enum EntityChange<'before, 'after> {
+    /// Composite declaration identity appears only in the newer IR.
     Introduced {
+        /// Stable identity of the newly introduced declaration.
         identity: DeclarationIdentity,
+        /// New-generation row borrowed from the after image.
         after: ItemView<'after>,
     },
+    /// Composite declaration identity appears only in the older IR.
     Deleted {
+        /// Stable identity of the removed declaration.
         identity: DeclarationIdentity,
+        /// Old-generation row borrowed from the before image.
         before: ItemView<'before>,
     },
+    /// Declaration remains matched within its family but one or more facts differ.
     Retained {
+        /// Stable family key shared by the before and after declaration rows.
         family: DeclarationFamilyId,
+        /// Old-generation row borrowed from the before image.
         before: ItemView<'before>,
+        /// New-generation row borrowed from the after image.
         after: ItemView<'after>,
+        /// Change in the overload or declaration variant fingerprint.
         variant: Delta<VariantFingerprint>,
+        /// Change in the core payload fingerprint.
         core_payload: Delta<CorePayloadHash>,
+        /// Change in the resolved parent identity, including root/absence.
         parent: Delta<Option<DeclarationIdentity>>,
+        /// Exact or unresolved comparisons for optional declaration facets.
         facets: EntityFacetChanges,
     },
 }
 
-/// One stable declaration delta borrowed from any complete semantic reader.
-///
-/// Exact composite identities are merged directly. A changed overload
-/// fingerprint is consequently represented as one deletion and one
-/// introduction; callers comparing package aggregates may conservatively
-/// re-pair singleton families without guessing inside ambiguous overload
-/// groups.
 /// Stable handle to one declaration in a borrowed semantic reader.
 ///
 /// The handle keeps change records small while preserving allocation-free
@@ -190,7 +226,9 @@ pub enum EntityChange<'before, 'after> {
 /// callers from constructing an identity/id pair that was not admitted by the
 /// reader.
 pub struct SemanticEntityRef<'reader, Reader: SemanticReader + ?Sized> {
+    /// Reader-local ordinal used to resolve the complete entity row.
     pub id: EntityId,
+    /// Stable composite identity checked when this handle was created.
     pub identity: DeclarationIdentity,
     reader: &'reader Reader,
 }
@@ -231,26 +269,40 @@ impl<Reader: SemanticReader + ?Sized> fmt::Debug for SemanticEntityRef<'_, Reade
     }
 }
 
+/// One declaration lifecycle or fact change between complete semantic readers.
 pub enum SemanticEntityChange<
     'before,
     'after,
     Before: SemanticReader + ?Sized,
     After: SemanticReader + ?Sized,
 > {
+    /// Declaration identity occurs only in the after reader.
     Introduced {
+        /// Stable composite identity of the new declaration.
         identity: DeclarationIdentity,
+        /// Reader-bound handle for the new row.
         after: SemanticEntityRef<'after, After>,
     },
+    /// Declaration identity occurs only in the before reader.
     Deleted {
+        /// Stable composite identity of the removed declaration.
         identity: DeclarationIdentity,
+        /// Reader-bound handle for the old row.
         before: SemanticEntityRef<'before, Before>,
     },
+    /// Declaration identity is present in both readers and some facts changed.
     Retained {
+        /// Stable composite identity shared by both rows.
         identity: DeclarationIdentity,
+        /// Reader-bound handle for the old row.
         before: SemanticEntityRef<'before, Before>,
+        /// Reader-bound handle for the new row.
         after: SemanticEntityRef<'after, After>,
+        /// Change in the declaration's core payload fingerprint.
         core_payload: Delta<CorePayloadHash>,
+        /// Change in the resolved parent identity, including root/absence.
         parent: Delta<Option<DeclarationIdentity>>,
+        /// Comparisons for optional declaration facets.
         facets: EntityFacetChanges,
     },
 }
@@ -314,6 +366,7 @@ impl<
 > SemanticEntityChanges<'before, 'after, Before, After>
 {
     #[must_use]
+    /// Merges canonical entity streams and computes image-level provenance once.
     pub fn new(
         before: SemanticSnapshot<'before, Before>,
         after: SemanticSnapshot<'after, After>,
@@ -2111,8 +2164,11 @@ fn semantic_parent<Reader: SemanticReader + ?Sized>(
 
 /// One canonical graph relation borrowed from any complete semantic reader.
 pub struct SemanticStableLink<'reader, Reader: SemanticReader + ?Sized> {
+    /// Reader-local link ordinal for retrieving the evidence row.
     pub id: LinkId,
+    /// Coordinate-independent directed relation identity.
     pub key: StableLinkKey,
+    /// Relation confidence and source-site evidence retained by the reader.
     pub evidence: Link,
     reader: &'reader Reader,
 }
@@ -2144,6 +2200,7 @@ pub struct SemanticStableLinks<'reader, Reader: SemanticReader + ?Sized + 'reade
 
 impl<'reader, Reader: SemanticReader + ?Sized> SemanticStableLinks<'reader, Reader> {
     #[must_use]
+    /// Starts a canonical stable-key traversal over one reader generation.
     pub fn new(snapshot: SemanticSnapshot<'reader, Reader>) -> Self {
         Self {
             reader: snapshot.reader,
@@ -2177,20 +2234,28 @@ impl<Reader: SemanticReader + ?Sized> FusedIterator for SemanticStableLinks<'_, 
 /// semantic readers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SemanticLinkChangeKind {
+    /// Stable relation key occurs only in the after reader.
     Added,
+    /// Stable relation key occurs only in the before reader.
     Removed,
+    /// Stable relation key exists in both readers but its evidence differs.
     EvidenceChanged,
 }
 
+/// Stable-key graph change with borrowed evidence from either source generation.
 pub struct SemanticLinkChange<
     'before,
     'after,
     Before: SemanticReader + ?Sized,
     After: SemanticReader + ?Sized,
 > {
+    /// Coordinate-independent relation key used to match before and after rows.
     pub key: StableLinkKey,
+    /// Lifecycle or evidence change classification.
     pub kind: SemanticLinkChangeKind,
+    /// Old-generation relation evidence, absent for a new relation.
     pub before: Option<SemanticStableLink<'before, Before>>,
+    /// New-generation relation evidence, absent for a removed relation.
     pub after: Option<SemanticStableLink<'after, After>>,
 }
 
@@ -2227,6 +2292,7 @@ impl<
 > SemanticLinkChanges<'before, 'after, Before, After>
 {
     #[must_use]
+    /// Merges the two readers' stable-key-ordered graph streams.
     pub fn new(
         before: SemanticSnapshot<'before, Before>,
         after: SemanticSnapshot<'after, After>,
@@ -2339,7 +2405,9 @@ pub struct SemanticDiff<
     Before: SemanticReader + ?Sized + 'before,
     After: SemanticReader + ?Sized + 'after,
 > {
+    /// Declaration additions, removals, and retained-row facet changes.
     pub entities: SemanticEntityChanges<'before, 'after, Before, After>,
+    /// Stable relation additions, removals, and evidence changes.
     pub links: SemanticLinkChanges<'before, 'after, Before, After>,
 }
 
@@ -2351,6 +2419,7 @@ impl<
 > SemanticDiff<'before, 'after, Before, After>
 {
     #[must_use]
+    /// Constructs direct entity and link deltas between the supplied readers.
     pub fn between(
         before: SemanticSnapshot<'before, Before>,
         after: SemanticSnapshot<'after, After>,
@@ -2410,6 +2479,7 @@ pub struct EntityChanges<'before, 'after> {
 
 impl<'before, 'after> EntityChanges<'before, 'after> {
     #[must_use]
+    /// Starts a zero-copy merge over the two owned IR declaration indices.
     pub fn new(before: Snapshot<'before>, after: Snapshot<'after>) -> Self {
         Self {
             provenance: compare_image_provenance(before.ir, after.ir),
@@ -2548,16 +2618,22 @@ fn stable_parent(ir: &Ir, item: ItemView<'_>) -> Option<DeclarationIdentity> {
 /// Canonical identity of a directed graph link.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct StableLinkKey {
+    /// Stable identity of the relation's source declaration.
     pub from: DeclarationIdentity,
+    /// Stable or external identity of the relation target.
     pub target: DeclarationLinkTarget,
+    /// Relation category, such as calls or references.
     pub kind: LinkKind,
 }
 
 /// One canonical link carrying a reconstructed register-sized evidence row.
 #[derive(Clone, Copy)]
 pub struct StableLink<'ir> {
+    /// Image-local coordinate of the retained link row.
     pub id: LinkId,
+    /// Stable identity used to compare this relation across generations.
     pub key: StableLinkKey,
+    /// Confidence and optional source-span evidence stored on the row.
     pub evidence: Link,
     ir: &'ir Ir,
 }
@@ -2597,7 +2673,7 @@ impl<'ir> Iterator for StableLinks<'ir> {
     }
 }
 impl ExactSizeIterator for StableLinks<'_> {}
-impl core::iter::FusedIterator for StableLinks<'_> {}
+impl FusedIterator for StableLinks<'_> {}
 
 impl Ir {
     /// Iterates graph links in the canonical stable order used by IR-VCS.
@@ -2613,17 +2689,24 @@ impl Ir {
 /// Link lifecycle/evidence change classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LinkChangeKind {
+    /// Stable relation key occurs only in the after IR.
     Added,
+    /// Stable relation key occurs only in the before IR.
     Removed,
+    /// Stable relation exists in both IRs but confidence or source evidence differs.
     EvidenceChanged,
 }
 
 /// One allocation-free stable link delta.
 #[derive(Clone, Copy, Debug)]
 pub struct LinkChange<'before, 'after> {
+    /// Coordinate-independent key used to match the relation across images.
     pub key: StableLinkKey,
+    /// Lifecycle or evidence change classification.
     pub kind: LinkChangeKind,
+    /// Old-generation link, absent when the relation was added.
     pub before: Option<StableLink<'before>>,
+    /// New-generation link, absent when the relation was removed.
     pub after: Option<StableLink<'after>>,
 }
 
@@ -2635,6 +2718,7 @@ pub struct LinkChanges<'before, 'after> {
 
 impl<'before, 'after> LinkChanges<'before, 'after> {
     #[must_use]
+    /// Starts a zero-copy merge over the two owned IR stable-link indices.
     pub fn new(before: Snapshot<'before>, after: Snapshot<'after>) -> Self {
         Self {
             left: before.ir.stable_links().peekable(),
@@ -2783,12 +2867,15 @@ fn link_evidence_equal(before: StableLink<'_>, after: StableLink<'_>) -> bool {
 
 /// Convenience pair of direct, zero-copy entity and link diff iterators.
 pub struct Diff<'before, 'after> {
+    /// Entity deltas over the two canonical declaration indices.
     pub entities: EntityChanges<'before, 'after>,
+    /// Link deltas over the two canonical stable-link indices.
     pub links: LinkChanges<'before, 'after>,
 }
 
 impl<'before, 'after> Diff<'before, 'after> {
     #[must_use]
+    /// Constructs direct zero-copy entity and link deltas between two owned IR snapshots.
     pub fn between(before: Snapshot<'before>, after: Snapshot<'after>) -> Self {
         Self {
             entities: EntityChanges::new(before, after),

@@ -132,11 +132,17 @@ pub struct SignatureCarrierBinding {
 pub enum SignatureCarrierOwnerInput {
     /// The frontend could not prove the complete tuple-cell/product-edge
     /// join for this Function row.
-    Unavailable { owner: EntityId },
+    Unavailable {
+        /// Function row whose signature could not be captured completely.
+        owner: EntityId,
+    },
     /// A proven function type and product edge sequence, possibly empty.
     Captured {
+        /// Function row whose ordered signature was joined with declaration carriers.
         owner: EntityId,
+        /// Number of captured parameter slots, including receivers and variadic tails.
         parameters: u32,
+        /// Number of captured result slots.
         results: u32,
     },
 }
@@ -401,10 +407,16 @@ impl ScopedExternalTargetIdentity {
 pub enum ExternalTargetIdentityFault {
     /// The image has no external row at the claimed typed coordinate.
     #[error("semantic image has no external endpoint at {external:?}")]
-    MissingExternal { external: ExternalId },
+    MissingExternal {
+        /// External-table ordinal that could not be resolved.
+        external: ExternalId,
+    },
     /// An admitted external row refers to an absent atom.
     #[error("semantic external endpoint refers to missing atom {atom:?}")]
-    MissingAtom { atom: AtomId },
+    MissingAtom {
+        /// Atom-table ordinal referenced by an otherwise admitted endpoint.
+        atom: AtomId,
+    },
 }
 
 fn hash_external_atom<Reader: SemanticCoreReader + ?Sized>(
@@ -434,24 +446,38 @@ pub type SemanticCursor<'image, T> = Copied<slice::Iter<'image, T>>;
 /// readers cross the owned/borrowed boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticEntity {
+    /// Ordinal of this row in the image's entity table.
     pub id: EntityId,
+    /// Atom-table coordinate containing the declaration's name bytes.
     pub name: AtomId,
+    /// Closed declaration-shape category used for matching and rendering.
     pub kind: crate::ir::ItemKind,
+    /// Finalized visibility value; consult authority to distinguish an observed value from absence.
     pub visibility: crate::ir::Visibility,
+    /// Local parent row when projected; `authority.parentage` retains whether this was proved.
     pub parent: Option<EntityId>,
+    /// Type-table coordinate when a semantic type value was retained.
     pub semantic_type: Option<TypeId>,
+    /// Pool coordinate for direct local members; authority records whether the set is complete.
     pub members: EntityListId,
+    /// Pool coordinate for documentation fragments; authority distinguishes empty from unavailable.
     pub docs: DocId,
+    /// Pool coordinate for the declaration's attribute atoms.
     pub attributes: AtomListId,
+    /// Primary source span when the producer could project one into the image.
     pub source: Option<SourceSpan>,
+    /// Captured/unavailable state for planes whose values alone are ambiguous.
     pub authority: EntityAuthorityFacts,
+    /// Stable declaration-family and variant identity assigned during admission.
     pub version: EntityVersion,
 }
 
 /// Immutable image-level authority facts shared by every semantic row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticImageFacts {
+    /// Authority facts admitted for the image as a whole.
     pub authority: SemanticImageAuthority,
+    /// Captured source, recipe, and scope provenance, or explicit unavailability.
     pub provenance: ImageProvenance,
 }
 
@@ -461,16 +487,23 @@ pub struct SemanticImageFacts {
 /// admitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CoreSemanticEntity {
+    /// Ordinal of this declaration in the image's entity table.
     pub id: EntityId,
+    /// Atom-table coordinate containing the declaration's name bytes.
     pub name: AtomId,
+    /// Closed declaration-shape category retained in the portable core plane.
     pub kind: crate::ir::ItemKind,
+    /// Finalized visibility observation; its availability is recorded separately.
     pub visibility: crate::ir::Visibility,
     /// Canonical local containment coordinate when the image retained one.
     /// The authority row separately proves whether this relationship is root,
     /// bound, unrepresented, or unavailable.
     pub parent: Option<EntityId>,
+    /// Per-entity authority for interpreting optional and projected core facts.
     pub authority: EntityAuthorityFacts,
+    /// Primary source span when the core image retained one.
     pub source: Option<SourceSpan>,
+    /// Stable declaration identity and payload fingerprint.
     pub version: EntityVersion,
 }
 
@@ -487,15 +520,22 @@ pub struct CoreSemanticEntity {
 /// a partial image and must ask for the full capability before traversing
 /// types, lists, externals, graph rows, or language extensions.
 pub trait SemanticCoreReader: sealed::Sealed {
+    /// Exact-size cursor over every declaration row supported by the core plane.
     type CanonicalCoreEntities<'image>: ExactSizeIterator<Item = CoreSemanticEntity> + FusedIterator
     where
         Self: 'image;
 
+    /// Returns authority and provenance shared by all rows in this image.
     fn image_facts(&self) -> SemanticImageFacts;
+    /// Resolves one entity-table ordinal if it is in bounds.
     fn core_entity(&self, id: EntityId) -> Option<CoreSemanticEntity>;
+    /// Resolves a declaration by its admitted composite identity rather than a local ordinal.
     fn core_entity_by_identity(&self, identity: DeclarationIdentity) -> Option<CoreSemanticEntity>;
+    /// Borrows the exact bytes for one atom-table coordinate.
     fn atom(&self, id: AtomId) -> Option<&[u8]>;
+    /// Borrows validated UTF-8 text for one text-table coordinate.
     fn text(&self, id: crate::ir::TextId) -> Option<&str>;
+    /// Enumerates declarations in the reader's canonical declaration order.
     fn canonical_core_entities(&self) -> Self::CanonicalCoreEntities<'_>;
 }
 
@@ -506,83 +546,108 @@ pub trait SemanticCoreReader: sealed::Sealed {
 /// available.  A partial portable image therefore cannot silently substitute
 /// an empty lane for unavailable semantic truth.
 pub trait SemanticReader: SemanticCoreReader {
+    /// Exact-size cursor over complete entity rows in canonical declaration order.
     type CanonicalEntities<'image>: ExactSizeIterator<Item = SemanticEntity> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over graph links sorted by stable relation key.
     type CanonicalLinks<'image>: ExactSizeIterator<Item = (LinkId, Link)> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over links outgoing from one entity.
     type Links<'image>: ExactSizeIterator<Item = (LinkId, Link)> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over graph occurrence-site rows.
     type Occurrences<'image>: ExactSizeIterator<Item = (LinkOccurrenceId, LinkOccurrence)>
         + FusedIterator
     where
         Self: 'image;
+    /// Sparse TypeScript extension rows keyed by their entity ordinals.
     type TypeScriptExtensions<'image>: ExactSizeIterator<Item = (EntityId, TypeScriptFacts)>
         + FusedIterator
     where
         Self: 'image;
+    /// Sparse C# extension rows keyed by their entity ordinals.
     type CSharpExtensions<'image>: ExactSizeIterator<Item = (EntityId, CSharpFacts)> + FusedIterator
     where
         Self: 'image;
+    /// Sparse Go extension rows keyed by their entity ordinals.
     type GoExtensions<'image>: ExactSizeIterator<Item = (EntityId, GoFacts)> + FusedIterator
     where
         Self: 'image;
+    /// Sparse Rust extension rows keyed by their entity ordinals.
     type RustExtensions<'image>: ExactSizeIterator<Item = (EntityId, RustFacts)> + FusedIterator
     where
         Self: 'image;
+    /// Sparse Python extension rows keyed by their entity ordinals.
     type PythonExtensions<'image>: ExactSizeIterator<Item = (EntityId, PythonFacts)> + FusedIterator
     where
         Self: 'image;
+    /// Sparse Java extension rows keyed by their entity ordinals.
     type JavaExtensions<'image>: ExactSizeIterator<Item = (EntityId, JavaFacts)> + FusedIterator
     where
         Self: 'image;
+    /// Sparse Clang extension rows keyed by their entity ordinals.
     type ClangExtensions<'image>: ExactSizeIterator<Item = (EntityId, ClangFacts)> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over type-table ordinals.
     type Types<'image>: ExactSizeIterator<Item = TypeId> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over atom-table ordinals.
     type Atoms<'image>: ExactSizeIterator<Item = AtomId> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over entity-table ordinals.
     type Entities<'image>: ExactSizeIterator<Item = EntityId> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over documentation fragments.
     type Docs<'image>: ExactSizeIterator<Item = DocFragment> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over tuple member facts.
     type TupleElements<'image>: ExactSizeIterator<Item = TupleElement> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over object member facts.
     type ObjectMembers<'image>: ExactSizeIterator<Item = ObjectMember> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over interpolated template parts.
     type TemplateParts<'image>: ExactSizeIterator<Item = TemplatePart> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over generic parameter facts.
     type TypeParameters<'image>: ExactSizeIterator<Item = TypeParameter> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over bounds attached to type parameters.
     type TypeParameterBounds<'image>: ExactSizeIterator<Item = TypeParameterBound> + FusedIterator
     where
         Self: 'image;
+    /// Exact-size cursor over free-predicate facts.
     type FreePredicates<'image>: ExactSizeIterator<Item = FreePredicate> + FusedIterator
     where
         Self: 'image;
+    /// Canonically ordered type coordinates paired with their decoded expressions.
     type CanonicalTypes<'image>: ExactSizeIterator<Item = (TypeId, TypeExpr)> + FusedIterator
     where
         Self: 'image;
+    /// Canonically ordered external coordinates paired with their decoded targets.
     type CanonicalExternals<'image>: ExactSizeIterator<Item = (ExternalId, ExternalTarget)>
         + FusedIterator
     where
         Self: 'image;
+    /// Borrowed exact slot-to-declaration bindings for a captured function signature.
     type SignatureCarrierBindings<'image>: ExactSizeIterator<Item = SignatureCarrierBinding>
         + FusedIterator
     where
         Self: 'image;
 
+    /// Resolves one complete entity row by its image-local ordinal.
     fn entity(&self, id: EntityId) -> Option<SemanticEntity>;
     /// Returns one entity's structural function-signature carrier role.
     ///
@@ -607,25 +672,40 @@ pub trait SemanticReader: SemanticCoreReader {
             .filter(|entity| entity.kind == crate::ir::ItemKind::Function)
             .map(|_| SignatureCarrierBindingsObservation::Unavailable)
     }
+    /// Resolves one complete entity row by its stable composite declaration identity.
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity>;
+    /// Resolves one external endpoint by its image-local ordinal.
     fn external(&self, id: ExternalId) -> Option<ExternalTarget>;
+    /// Resolves one stable graph relation by its image-local ordinal.
     fn link(&self, id: LinkId) -> Option<Link>;
+    /// Returns whether this occurrence row's source-site fact was captured.
     fn occurrence_authority(&self, id: LinkOccurrenceId) -> Option<OccurrenceAuthorityFacts>;
 
+    /// Resolves a type expression by its image-local type coordinate.
     fn ty(&self, id: TypeId) -> Option<TypeExpr>;
+    /// Borrows the ordered type coordinates in one type-list pool row.
     fn types(&self, id: TypeListId) -> Option<Self::Types<'_>>;
+    /// Borrows atom coordinates in one atom-list pool row.
     fn atom_list(&self, id: AtomListId) -> Option<Self::Atoms<'_>>;
+    /// Borrows entity coordinates in one entity-list pool row.
     fn entity_list(&self, id: EntityListId) -> Option<Self::Entities<'_>>;
+    /// Borrows documentation fragments in the selected documentation row.
     fn docs(&self, id: DocId) -> Option<Self::Docs<'_>>;
+    /// Borrows tuple element facts in their source order.
     fn tuple_elements(&self, id: TupleElementListId) -> Option<Self::TupleElements<'_>>;
+    /// Borrows object-member facts in their canonical row order.
     fn object_members(&self, id: ObjectMemberListId) -> Option<Self::ObjectMembers<'_>>;
+    /// Borrows template segments in their interpolation order.
     fn template_parts(&self, id: TemplatePartListId) -> Option<Self::TemplateParts<'_>>;
+    /// Borrows generic parameter rows in declaration order.
     fn type_parameters(&self, id: TypeParameterListId) -> Option<Self::TypeParameters<'_>>;
+    /// Borrows the ordered bounds attached to one generic parameter.
     fn type_parameter_bounds(
         &self,
         id: TypeParameterBoundListId,
     ) -> Option<Self::TypeParameterBounds<'_>>;
 
+    /// Borrows free predicates retained for one type expression.
     fn free_predicates(&self, id: FreePredicateListId) -> Option<Self::FreePredicates<'_>>;
 
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_>;
@@ -641,25 +721,40 @@ pub trait SemanticReader: SemanticCoreReader {
     /// Enumerates every external endpoint exactly once in this image's
     /// validated coordinate order.
     fn canonical_externals(&self) -> Self::CanonicalExternals<'_>;
+    /// Enumerates outgoing graph links for one entity without materializing them.
     fn links_from(&self, entity: EntityId) -> Self::Links<'_>;
+    /// Enumerates each retained occurrence site with its image-local occurrence ID.
     fn link_occurrences(&self) -> Self::Occurrences<'_>;
+    /// Enumerates captured TypeScript extension rows; absent entities are omitted.
     fn typescript_extensions(&self) -> Self::TypeScriptExtensions<'_>;
+    /// Enumerates captured C# extension rows; absent entities are omitted.
     fn csharp_extensions(&self) -> Self::CSharpExtensions<'_>;
+    /// Enumerates captured Go extension rows; absent entities are omitted.
     fn go_extensions(&self) -> Self::GoExtensions<'_>;
+    /// Enumerates captured Rust extension rows; absent entities are omitted.
     fn rust_extensions(&self) -> Self::RustExtensions<'_>;
+    /// Enumerates captured Python extension rows; absent entities are omitted.
     fn python_extensions(&self) -> Self::PythonExtensions<'_>;
+    /// Enumerates captured Java extension rows; absent entities are omitted.
     fn java_extensions(&self) -> Self::JavaExtensions<'_>;
+    /// Enumerates captured Clang extension rows; absent entities are omitted.
     fn clang_extensions(&self) -> Self::ClangExtensions<'_>;
 
     /// Looks up one declaration's TypeScript facts without scanning the
     /// sparse plane.  Named scans above remain available for whole-image
     /// traversal; this accessor is the rendering/indexing hot path.
     fn typescript_extension(&self, entity: EntityId) -> Option<TypeScriptFacts>;
+    /// Looks up C# extension facts for one entity without scanning the sparse plane.
     fn csharp_extension(&self, entity: EntityId) -> Option<CSharpFacts>;
+    /// Looks up Go extension facts for one entity without scanning the sparse plane.
     fn go_extension(&self, entity: EntityId) -> Option<GoFacts>;
+    /// Looks up Rust extension facts for one entity without scanning the sparse plane.
     fn rust_extension(&self, entity: EntityId) -> Option<RustFacts>;
+    /// Looks up Python extension facts for one entity without scanning the sparse plane.
     fn python_extension(&self, entity: EntityId) -> Option<PythonFacts>;
+    /// Looks up Java extension facts for one entity without scanning the sparse plane.
     fn java_extension(&self, entity: EntityId) -> Option<JavaFacts>;
+    /// Looks up Clang extension facts for one entity without scanning the sparse plane.
     fn clang_extension(&self, entity: EntityId) -> Option<ClangFacts>;
 }
 
@@ -890,7 +985,7 @@ impl SemanticReader for Ir {
     type CanonicalTypes<'image> = IrCanonicalTypes<'image>;
     type CanonicalExternals<'image> = IrCanonicalExternals<'image>;
     type SignatureCarrierBindings<'image>
-        = crate::ir::SignatureCarrierBindings<'image>
+        = SignatureCarrierBindings<'image>
     where
         Self: 'image;
 

@@ -24,7 +24,7 @@
 //! may overlap it with tree construction); the cold zipper does not change
 //! that producer/aggregate memory profile.
 
-use std::{ops::Bound, vec::Vec};
+use std::{mem::size_of, ops::Bound, vec::Vec};
 
 use backend_version::{
     CanonicalRelation, CanonicalRootAdmissionError, CheckedCanonicalRoot, DEFAULT_CUT_POLICY,
@@ -294,7 +294,7 @@ impl SemanticTypedPlaneRowTreeBuilderV3 {
     pub fn buffered_descriptor_capacity_bytes(&self) -> usize {
         self.rows
             .capacity()
-            .saturating_mul(std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>())
+            .saturating_mul(size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>())
     }
 
     /// Finishes a deterministic canonical bulk build.
@@ -358,7 +358,6 @@ impl SemanticTypedPlaneFamilyIndexV3 {
             end.map_or(Bound::Unbounded, Bound::Excluded),
         );
         Ok(SemanticTypedPlaneRangeCursorV3 {
-            family: self.family,
             inner: self.tree.range(bounds),
         })
     }
@@ -410,7 +409,6 @@ pub struct SemanticTypedPlaneIndexEntryV3<'entry> {
 
 /// Borrowed half-open range cursor over one retained family index.
 pub struct SemanticTypedPlaneRangeCursorV3<'tree> {
-    family: RowFamily,
     inner: V3RowTreeIter<'tree>,
 }
 
@@ -855,7 +853,7 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
         let mut visited_nodes = 0_usize;
         let mut examined_rows = 0_usize;
         let mut peak_logical_live_buffer_bytes = 0_usize;
-        let mut queued_root_bytes = match pending.first() {
+        let queued_root_bytes = match pending.first() {
             Some(PendingDescriptorNodeV3::Root(root)) => root.bytes().len(),
             _ => 0,
         };
@@ -872,7 +870,6 @@ impl<'loader, L: TreeNodeLoader<SemanticTypedPlaneRowRelationV3>>
             }
             let node = match pending_node {
                 PendingDescriptorNodeV3::Root(root) => {
-                    queued_root_bytes = 0;
                     root
                 }
                 PendingDescriptorNodeV3::Child {
@@ -1338,23 +1335,23 @@ fn logical_live_buffer_bytes(
 ) -> usize {
     let mut bytes = pending
         .capacity()
-        .saturating_mul(std::mem::size_of::<PendingDescriptorNodeV3>());
+        .saturating_mul(size_of::<PendingDescriptorNodeV3>());
     bytes = bytes.saturating_add(
         output_capacity
-            .saturating_mul(std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>()),
+            .saturating_mul(size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>()),
     );
     bytes = bytes.saturating_add(queued_root_bytes);
     if active_node_bytes != 0 {
         bytes = bytes.saturating_add(active_node_bytes);
-        bytes = bytes.saturating_add(std::mem::size_of::<
+        bytes = bytes.saturating_add(size_of::<
             CheckedCanonicalRoot<SemanticTypedPlaneRowRelationV3>,
         >());
     }
     bytes = bytes.saturating_add(
         leaf_row_capacity
-            .saturating_mul(std::mem::size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>()),
+            .saturating_mul(size_of::<(StableRowKey, SemanticRowPayloadClaimV3)>()),
     );
-    bytes.saturating_add(branch_child_capacity.saturating_mul(std::mem::size_of::<
+    bytes.saturating_add(branch_child_capacity.saturating_mul(size_of::<
         backend_version::CommittedChild<SemanticTypedPlaneRowRelationV3>,
     >()))
 }

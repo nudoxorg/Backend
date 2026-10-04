@@ -10,8 +10,7 @@ use alloc::vec::Vec;
 use core::{cmp::Ordering, fmt};
 
 use backend_version::{
-    AuthorityScopeClaim, Coverage, CoverageWitness, ObjectVersion, Schema, SchemaIdentity,
-    ScopeRoot,
+    Coverage, CoverageWitness, ObjectVersion, Schema, SchemaIdentity, ScopeRoot,
 };
 use thiserror::Error;
 
@@ -44,6 +43,7 @@ const COVERAGE_WIRE_BYTES: usize = 1 + 32 + 1 + 96;
 pub struct SemanticSegmentId([u8; 32]);
 
 impl SemanticSegmentId {
+    /// Returns the canonical 32-byte digest after payload admission.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -57,11 +57,13 @@ impl SemanticSegmentId {
 pub struct UntrustedSemanticSegmentId([u8; 32]);
 
 impl UntrustedSemanticSegmentId {
+    /// Wraps manifest bytes as a claim; this does not verify a segment payload.
     #[must_use]
     pub const fn from_raw(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
+    /// Returns the raw 32-byte untrusted claim for comparison or encoding.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -75,6 +77,7 @@ impl UntrustedSemanticSegmentId {
 pub struct SemanticPlaneRoot([u8; 32]);
 
 impl SemanticPlaneRoot {
+    /// Returns the canonical 32-byte digest of the plane descriptor and ordered segments.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -226,30 +229,37 @@ impl EmbeddingPlaneIdentity {
     }
 
     #[must_use]
+    /// Returns the model identity digest.
     pub const fn model(&self) -> &[u8; 32] {
         &self.model
     }
     #[must_use]
+    /// Returns the identity digest for the exact model version.
     pub const fn model_version(&self) -> &[u8; 32] {
         &self.model_version
     }
     #[must_use]
+    /// Returns the tokenizer identity digest used for vector production.
     pub const fn tokenizer(&self) -> &[u8; 32] {
         &self.tokenizer
     }
     #[must_use]
+    /// Returns the number of scalar values in each emitted embedding vector.
     pub const fn dimension(&self) -> u32 {
         self.dimension
     }
     #[must_use]
+    /// Returns the vector normalization recipe recorded in this plane identity.
     pub const fn normalization(&self) -> EmbeddingNormalization {
         self.normalization
     }
     #[must_use]
+    /// Returns the toolchain identity digest for embedding production.
     pub const fn toolchain(&self) -> &[u8; 32] {
         &self.toolchain
     }
     #[must_use]
+    /// Returns the complete recipe identity digest.
     pub const fn recipe(&self) -> &[u8; 32] {
         &self.recipe
     }
@@ -278,6 +288,7 @@ pub struct SemanticBuildIdentity {
 }
 
 impl SemanticBuildIdentity {
+    /// Records the package, target, recipe, toolchain, and environment build coordinates.
     #[must_use]
     pub const fn new(
         package: [u8; 32],
@@ -302,34 +313,42 @@ impl SemanticBuildIdentity {
     }
 
     #[must_use]
+    /// Package identity digest used by the compilation.
     pub const fn package(&self) -> &[u8; 32] {
         &self.package
     }
     #[must_use]
+    /// Target identity digest within the package build.
     pub const fn target(&self) -> &[u8; 32] {
         &self.target
     }
     #[must_use]
+    /// Source-language profile that selected the compiler frontend.
     pub const fn profile(&self) -> LanguageProfile {
         self.profile
     }
     #[must_use]
+    /// Compilation stage represented by this build.
     pub const fn stage(&self) -> Stage {
         self.stage
     }
     #[must_use]
+    /// Compilation recipe identity digest.
     pub const fn recipe(&self) -> &[u8; 32] {
         &self.recipe
     }
     #[must_use]
+    /// Toolchain identity digest.
     pub const fn toolchain(&self) -> &[u8; 32] {
         &self.toolchain
     }
     #[must_use]
+    /// Environment identity digest included in the reuse boundary.
     pub const fn environment(&self) -> &[u8; 32] {
         &self.environment
     }
     #[must_use]
+    /// Target-platform identity digest included in the reuse boundary.
     pub const fn target_platform(&self) -> &[u8; 32] {
         &self.target_platform
     }
@@ -345,10 +364,12 @@ pub struct SemanticCoverageState {
 }
 
 impl SemanticCoverageState {
+    /// Returns the claimed coverage category, whether or not authority admitted it.
     #[must_use]
     pub const fn state(self) -> Coverage {
         self.state
     }
+    /// True only for complete coverage backed by a live admitted capability.
     #[must_use]
     pub const fn is_authorized_complete(self) -> bool {
         self.authorized && matches!(self.state, Coverage::Complete)
@@ -549,14 +570,17 @@ impl SemanticInputWitness {
         *hasher.finalize().as_bytes()
     }
 
+    /// Returns the opaque identity of the exact input set.
     #[must_use]
     pub const fn input_root(&self) -> &[u8; 32] {
         &self.input_root
     }
+    /// Returns the read-manifest scope whose frontier was observed.
     #[must_use]
     pub const fn read_manifest_root(&self) -> ScopeRoot {
         self.read_manifest
     }
+    /// Returns claimed coverage and whether its authority capability is live.
     #[must_use]
     pub fn coverage(&self) -> SemanticCoverageState {
         self.coverage.status()
@@ -669,30 +693,37 @@ impl SemanticPlaneSegment {
         )
     }
 
+    /// Returns the first stable key in this segment's inclusive key interval.
     #[must_use]
     pub const fn first_key(&self) -> &[u8; 32] {
         &self.first_key
     }
+    /// Returns the last stable key in this segment's inclusive key interval.
     #[must_use]
     pub const fn last_key(&self) -> &[u8; 32] {
         &self.last_key
     }
+    /// Returns the number of canonical rows committed by the segment identity.
     #[must_use]
     pub const fn row_count(&self) -> u32 {
         self.row_count
     }
+    /// Returns the declared canonical payload length in bytes.
     #[must_use]
     pub const fn byte_length(&self) -> u64 {
         self.byte_length
     }
+    /// Returns the manifest's untrusted identity claim for this segment.
     #[must_use]
     pub const fn id_claim(&self) -> UntrustedSemanticSegmentId {
         self.id_claim
     }
+    /// Returns an ID verified against local payload bytes, if they were admitted here.
     #[must_use]
     pub const fn admitted_id(&self) -> Option<SemanticSegmentId> {
         self.admitted_id
     }
+    /// Returns the input-frontier witness attached to this segment range.
     #[must_use]
     pub const fn input_witness(&self) -> SemanticInputWitness {
         self.input
@@ -829,17 +860,21 @@ impl SemanticPlane {
     }
 
     #[must_use]
+    /// Returns the independently transferable semantic-plane namespace.
     pub const fn kind(&self) -> SemanticPlaneKind {
         self.kind
     }
+    /// Returns ordered descriptors for each stable-key range in the plane.
     #[must_use]
     pub fn segments(&self) -> &[SemanticPlaneSegment] {
         &self.segments
     }
+    /// Returns the content root committed by this plane descriptor and its segment sequence.
     #[must_use]
     pub const fn root(&self) -> SemanticPlaneRoot {
         self.root
     }
+    /// Returns the claimed coverage category and live-admission state for this plane.
     #[must_use]
     pub fn coverage(&self) -> SemanticCoverageState {
         self.coverage.status()
@@ -869,6 +904,7 @@ impl SemanticManifestRoot {
         Self(bytes)
     }
 
+    /// Returns the fixed-width 32-byte manifest content identity.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -911,16 +947,19 @@ impl SemanticPlaneImageKey {
         )
     }
 
+    /// Returns the canonical artifact ordinal selected by this key.
     #[must_use]
     pub const fn artifact_ordinal(self) -> u32 {
         self.artifact_ordinal
     }
 
+    /// Returns the semantic VCS generation paired with the manifest root.
     #[must_use]
     pub const fn semantic_generation(self) -> GenerationId {
         self.semantic_generation
     }
 
+    /// Returns the manifest content identity selected for this image.
     #[must_use]
     pub const fn manifest_root(self) -> SemanticManifestRoot {
         self.manifest_root
@@ -946,6 +985,7 @@ impl SemanticPlaneCatalogRoot {
         Self(bytes)
     }
 
+    /// Returns the fixed-width 32-byte catalog content identity.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -974,11 +1014,13 @@ impl SemanticPlaneCatalogEntry {
         })
     }
 
+    /// Returns the artifact selection paired with the manifest byte length.
     #[must_use]
     pub const fn image(self) -> SemanticPlaneImageKey {
         self.image
     }
 
+    /// Returns the exact encoded manifest length in bytes.
     #[must_use]
     pub const fn manifest_length(self) -> u32 {
         self.manifest_length
@@ -1069,11 +1111,13 @@ impl SemanticPlaneCatalog {
         encode_catalog_entries(&self.entries)
     }
 
+    /// Returns entries sorted by strictly increasing artifact ordinal.
     #[must_use]
     pub fn entries(&self) -> &[SemanticPlaneCatalogEntry] {
         &self.entries
     }
 
+    /// Returns the content identity recomputed from the canonical catalog bytes.
     #[must_use]
     pub const fn root(&self) -> SemanticPlaneCatalogRoot {
         self.root
@@ -1093,6 +1137,7 @@ pub struct SemanticPlaneManifest {
 }
 
 impl SemanticPlaneManifest {
+    /// Constructs bounded plane metadata and derives its canonical root.
     pub fn new(
         semantic_generation: GenerationId,
         build: SemanticBuildIdentity,
@@ -1354,6 +1399,7 @@ impl SemanticPlaneManifest {
         Ok(out)
     }
 
+    /// Returns the canonical content identity of this manifest.
     #[must_use]
     pub const fn root(&self) -> SemanticManifestRoot {
         self.root
@@ -1363,18 +1409,22 @@ impl SemanticPlaneManifest {
     pub const fn semantic_generation(&self) -> GenerationId {
         self.semantic_generation
     }
+    /// Returns the build coordinates shared by every plane in this manifest.
     #[must_use]
     pub const fn build(&self) -> SemanticBuildIdentity {
         self.build
     }
+    /// Returns the input/read-frontier witness captured for this generation.
     #[must_use]
     pub const fn input(&self) -> SemanticInputWitness {
         self.input
     }
+    /// Returns plane descriptors in canonical kind order.
     #[must_use]
     pub fn planes(&self) -> &[SemanticPlane] {
         &self.planes
     }
+    /// Finds a descriptor by its exact IR or embedding-plane identity.
     #[must_use]
     pub fn plane(&self, kind: SemanticPlaneKind) -> Option<&SemanticPlane> {
         self.planes
@@ -1457,6 +1507,7 @@ pub struct SemanticHydrationCoverage {
 }
 
 impl SemanticHydrationCoverage {
+    /// True once every selected segment has a locally present or acknowledged ID.
     #[must_use]
     pub const fn is_hydrated(&self) -> bool {
         self.missing_segments == 0
@@ -1482,15 +1533,18 @@ pub struct SemanticHydrationCursorToken {
 }
 
 impl SemanticHydrationCursorToken {
+    /// Returns the manifest root to which this resume position is bound.
     #[must_use]
     pub const fn manifest_root(&self) -> SemanticManifestRoot {
         self.manifest_root
     }
+    /// Returns the number of selected segment positions already consumed.
     #[must_use]
     pub const fn ordinal(&self) -> u32 {
         self.ordinal
     }
 
+    /// Returns the optional plane restriction carried by this checkpoint.
     #[must_use]
     pub const fn plane_filter(&self) -> Option<SemanticPlaneKind> {
         self.plane_filter
@@ -1518,6 +1572,7 @@ impl SemanticHydrationCursorToken {
         Ok(out)
     }
 
+    /// Decodes one exact canonical checkpoint, rejecting trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, SemanticManifestError> {
         let mut reader = Reader::new(bytes);
         let manifest_root = SemanticManifestRoot(reader.array32()?);
@@ -1677,6 +1732,7 @@ impl<'manifest, 'have> SemanticHydrationCursor<'manifest, 'have> {
         Ok(())
     }
 
+    /// Summarizes selected-plane authority and local segment presence at this cursor position.
     #[must_use]
     pub fn coverage(&self) -> SemanticHydrationCoverage {
         let plane = selected_plane_coverage(self.manifest, self.plane_filter);
@@ -1698,6 +1754,7 @@ impl<'manifest, 'have> SemanticHydrationCursor<'manifest, 'have> {
     }
 
     #[must_use]
+    /// Captures a root-bound resume token at the current selected-segment ordinal.
     pub const fn checkpoint(&self) -> SemanticHydrationCursorToken {
         SemanticHydrationCursorToken {
             manifest_root: self.manifest.root,
@@ -1781,6 +1838,7 @@ impl<'manifest, 'have> SemanticHydrationCursor<'manifest, 'have> {
 pub enum SemanticDeltaAction {
     /// Reuse the exact existing immutable segment bytes.
     Reuse {
+        /// Plane in which the segment range is reusable.
         plane: SemanticPlaneKind,
         /// Checked ID from the base payload. The target manifest's admitted
         /// closure claim is equal, so these exact bytes satisfy it without a
@@ -1792,7 +1850,9 @@ pub enum SemanticDeltaAction {
     Fetch(SemanticRangeRequest),
     /// Drop a stable range that is absent from the target manifest.
     Remove {
+        /// Plane from which the range should be removed.
         plane: SemanticPlaneKind,
+        /// Descriptor of the range absent from the target manifest.
         segment: SemanticPlaneSegment,
     },
 }
@@ -1833,6 +1893,7 @@ impl<'base, 'target> SemanticDeltaCursor<'base, 'target> {
         })
     }
 
+    /// Yields the next sorted reuse, fetch, or removal action until both manifests end.
     pub fn next_action(&mut self) -> Option<SemanticDeltaAction> {
         loop {
             let base = positioned_segment(self.base, self.base_position);
@@ -2640,123 +2701,241 @@ impl<'bytes> Reader<'bytes> {
 /// Precise rejection from plane construction, wire reopen, or cursor checks.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum SemanticManifestError {
+    /// Embedding output cannot have zero components per vector.
     #[error("embedding dimension must be positive")]
     ZeroEmbeddingDimension,
+    /// Catalog entries are not ordered by strictly increasing artifact ordinal.
     #[error("semantic-plane catalog image ordinals must be strictly increasing")]
     CatalogImageOrder,
+    /// Catalog entry count cannot fit the canonical `u32` count field.
     #[error("semantic-plane catalog image count exceeds the canonical u32 extent")]
     CatalogImageCountOverflow,
+    /// Catalog entries must commit to a nonempty manifest payload.
     #[error("semantic-plane catalog manifest length must be nonzero")]
     CatalogManifestLength,
+    /// Catalog entry count exceeds the format's fixed maximum.
     #[error("semantic-plane catalog contains {observed} images, maximum is {maximum}")]
-    TooManyCatalogImages { observed: usize, maximum: usize },
+    TooManyCatalogImages {
+        /// Number of catalog images observed.
+        observed: usize,
+        /// Maximum number of catalog images admitted by the format.
+        maximum: usize,
+    },
+    /// Encoded catalog size exceeds the format's byte bound.
     #[error("semantic-plane catalog bytes are {observed}, maximum is {maximum}")]
-    CatalogTooLarge { observed: usize, maximum: usize },
+    CatalogTooLarge {
+        /// Catalog byte length observed.
+        observed: usize,
+        /// Maximum catalog byte length.
+        maximum: usize,
+    },
+    /// Encoded catalog length does not match its entry count.
     #[error("semantic-plane catalog byte length is {observed}, expected {expected}")]
-    CatalogLength { expected: usize, observed: usize },
+    CatalogLength {
+        /// Byte length derived from the fixed header and entry count.
+        expected: usize,
+        /// Actual input or output byte length.
+        observed: usize,
+    },
+    /// Catalog header does not begin with the canonical catalog marker.
     #[error("semantic-plane catalog magic is invalid")]
     BadCatalogMagic,
+    /// First stable key sorts after the last stable key in a segment.
     #[error("segment stable-key interval is reversed")]
     KeyRange,
+    /// A segment descriptor must cover at least one row.
     #[error("segment must contain at least one row")]
     ZeroSegmentRows,
+    /// Segment payload is larger than the bounded transfer size.
     #[error("segment has {observed} bytes, maximum is {maximum}")]
-    SegmentBytes { observed: u64, maximum: u64 },
+    SegmentBytes {
+        /// Payload length declared or received, in bytes.
+        observed: u64,
+        /// Maximum payload length admitted for one segment, in bytes.
+        maximum: u64,
+    },
+    /// Segment payload byte count differs from the descriptor's exact length.
     #[error("segment payload length is {observed}, expected {expected}")]
-    SegmentLength { expected: u64, observed: u64 },
+    SegmentLength {
+        /// Byte length committed by the segment descriptor.
+        expected: u64,
+        /// Byte length of the payload being admitted.
+        observed: u64,
+    },
+    /// Hash of admitted bytes does not match the untrusted manifest claim.
     #[error("segment content ID differs: expected {expected:?}, observed {observed:?}")]
     SegmentIdentity {
+        /// ID read from the manifest and checked against payload bytes.
         expected: UntrustedSemanticSegmentId,
+        /// ID computed from the admitted plane metadata and exact payload.
         observed: SemanticSegmentId,
     },
+    /// Segment intervals overlap or are not in strict stable-key order.
     #[error("segments are not in strict non-overlapping stable-key order")]
     SegmentOrder,
+    /// Plane descriptors are not in their canonical kind order.
     #[error("semantic planes are not in strict canonical order")]
     PlaneOrder,
+    /// Plane descriptor root differs from the root recomputed from its segments.
     #[error("plane root does not match its segment descriptor")]
     PlaneRootMismatch,
+    /// Authority coverage scope is not bound to this exact plane root.
     #[error("plane coverage scope differs: expected {expected:?}, observed {observed:?}")]
     PlaneScopeMismatch {
+        /// Scope root derived from the plane descriptor.
         expected: ScopeRoot,
+        /// Scope root carried by the authority witness.
         observed: ScopeRoot,
     },
+    /// Closure witness is not scoped to this exact manifest root.
     #[error("manifest closure scope differs: expected {expected:?}, observed {observed:?}")]
     ManifestClosureScopeMismatch {
+        /// Scope root derived from the canonical manifest identity.
         expected: ScopeRoot,
+        /// Scope root carried by the closure witness.
         observed: ScopeRoot,
     },
+    /// Closure bytes have no live authority-admitted complete witness.
     #[error("canonical manifest closure is not authority-admitted complete")]
     ManifestClosureNotAdmitted,
+    /// Re-admitted witness does not match the canonical coverage claim.
     #[error("re-admitted coverage evidence differs from its canonical manifest claim")]
     CoverageClaimMismatch,
     #[error(
         "manifest admission supplied {observed_planes}/{expected_planes} plane and {observed_segments}/{expected_segments} segment witnesses"
     )]
     AdmissionWitnessCount {
+        /// Number of plane witnesses required by the manifest.
         expected_planes: usize,
+        /// Number of plane witnesses supplied by the caller.
         observed_planes: usize,
+        /// Number of per-segment input witnesses required by the manifest.
         expected_segments: usize,
+        /// Number of per-segment input witnesses supplied by the caller.
         observed_segments: usize,
     },
+    /// Input coverage witness does not name the read-manifest scope in the claim.
     #[error("input read-manifest scope differs: expected {expected:?}, observed {observed:?}")]
     InputScopeMismatch {
+        /// Read-manifest scope claimed by the semantic input.
         expected: ScopeRoot,
+        /// Scope root carried by the supplied authority witness.
         observed: ScopeRoot,
     },
+    /// Claimed input coverage is not complete and authority-admitted.
     #[error("input coverage is {state:?}, not authority-admitted complete coverage")]
-    InputCoverageNotAdmitted { state: Coverage },
+    InputCoverageNotAdmitted {
+        /// Coverage state found on the input witness.
+        state: Coverage,
+    },
+    /// The caller's expected root differs from the root stored in the manifest.
     #[error("manifest root is stale: expected {expected:?}, observed {observed:?}")]
     StaleManifest {
+        /// Root recomputed from the manifest currently being read.
         expected: SemanticManifestRoot,
+        /// Root supplied by the caller or resume token.
         observed: SemanticManifestRoot,
     },
+    /// Plane count exceeds the bounded manifest limit.
     #[error("manifest has {observed} planes, maximum is {maximum}")]
-    TooManyPlanes { observed: usize, maximum: usize },
+    TooManyPlanes {
+        /// Plane descriptors observed.
+        observed: usize,
+        /// Maximum plane descriptors admitted by the format.
+        maximum: usize,
+    },
+    /// Segment count for one plane exceeds the bounded manifest limit.
     #[error("plane has {observed} segments, maximum is {maximum}")]
-    TooManySegments { observed: usize, maximum: usize },
+    TooManySegments {
+        /// Segment descriptors observed in one plane.
+        observed: usize,
+        /// Maximum segment descriptors admitted per plane.
+        maximum: usize,
+    },
+    /// Encoded manifest size exceeds its resident metadata bound.
     #[error("manifest is {observed} bytes, maximum is {maximum}")]
-    ManifestTooLarge { observed: usize, maximum: usize },
+    ManifestTooLarge {
+        /// Manifest byte length observed or computed.
+        observed: usize,
+        /// Maximum admitted manifest length in bytes.
+        maximum: usize,
+    },
+    /// Manifest header does not begin with the canonical manifest marker.
     #[error("canonical manifest magic is invalid")]
     BadMagic,
+    /// Manifest wire revision is not supported by this decoder.
     #[error("manifest version {0} is unsupported")]
     UnsupportedVersion(u8),
+    /// Manifest names a semantic plane code outside the closed kind registry.
     #[error("unknown semantic plane code {0}")]
     UnknownPlane(u8),
+    /// Manifest names an IR-plane code outside the closed IR registry.
     #[error("unknown IR plane code {0}")]
     UnknownIrPlane(u8),
+    /// Manifest names an embedding normalization outside the closed registry.
     #[error("unknown normalization code {0}")]
     UnknownNormalization(u8),
+    /// Manifest contains an unrecognized coverage-state discriminant.
     #[error("unknown coverage code {0}")]
     UnknownCoverage(u8),
+    /// Manifest contains an unrecognized coverage-identity presence tag.
     #[error("unknown coverage identity code {0}")]
     UnknownCoverageIdentity(u8),
+    /// Coverage identity fields are populated for a state other than complete.
     #[error("coverage evidence is present for a non-complete state")]
     CoverageIdentityForNonComplete,
+    /// Manifest language profile is not in the closed language-profile registry.
     #[error("manifest contains unknown language profile {0:?}")]
     UnknownProfile([u8; 2]),
+    /// Manifest compilation-stage tag is not in the closed stage registry.
     #[error("manifest contains unknown compilation stage {0}")]
     UnknownStage(u8),
+    /// A reserved wire byte is nonzero, so the encoding is not canonical.
     #[error("manifest contains nonzero reserved bytes")]
     NonCanonicalPadding,
+    /// Input ended before all fields described by the header were available.
     #[error("manifest is truncated")]
     Truncated,
+    /// Input contains bytes after the complete encoded manifest.
     #[error("manifest has {0} trailing bytes")]
     TrailingBytes(usize),
+    /// Checked count or byte-length arithmetic exceeded its integer width.
     #[error("manifest length computation overflowed")]
     CountOverflow,
+    /// Bounded metadata allocation could not reserve its required capacity.
     #[error("bounded metadata allocation failed")]
     AllocationLimit,
+    /// Encoder output size differed from the precomputed canonical length.
     #[error("encoded manifest length differs: expected {expected}, observed {observed}")]
-    InternalLengthMismatch { expected: usize, observed: usize },
+    InternalLengthMismatch {
+        /// Length computed before encoding, in bytes.
+        expected: usize,
+        /// Length actually produced by the encoder, in bytes.
+        observed: usize,
+    },
+    /// Locally held segment IDs are not strictly sorted and unique.
     #[error("local segment IDs are not in strict sorted order")]
     LocalIdOrder,
+    /// Resume ordinal exceeds the number of selected manifest segments.
     #[error("cursor ordinal {ordinal} exceeds {total} selected segments")]
-    CursorOutOfRange { ordinal: u32, total: u32 },
+    CursorOutOfRange {
+        /// Requested resume position.
+        ordinal: u32,
+        /// Number of selected segment positions.
+        total: u32,
+    },
+    /// A resume token skips a segment that is absent from the caller's local-have set.
     #[error("cursor checkpoint skips segment {segment:?}, which is absent locally")]
-    CursorCheckpointMissingSegment { segment: UntrustedSemanticSegmentId },
+    CursorCheckpointMissingSegment {
+        /// Untrusted segment claim at the missing acknowledged position.
+        segment: UntrustedSemanticSegmentId,
+    },
+    /// Acknowledged segment ID does not match the request currently awaiting admission.
     #[error("cursor acknowledgement was {observed:?}, expected {expected:?}")]
     UnexpectedAcknowledgement {
+        /// ID claim for the pending range, if a request is outstanding.
         expected: Option<UntrustedSemanticSegmentId>,
+        /// Admitted ID supplied to the acknowledgement call.
         observed: UntrustedSemanticSegmentId,
     },
 }

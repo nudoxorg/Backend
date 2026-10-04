@@ -33,16 +33,22 @@ const CHILD_EXTERNAL: u8 = 1;
 const CHILD_TEXT: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One declared or computed type record paired with the entity that owns it.
 pub struct TypeFactInput<'bytes> {
+    /// Entity-table coordinate owning this semantic type record.
     pub owner: EntityId,
+    /// Tag, payload, nominal reference, and child span retained for the record.
     pub record: SemanticTypeRecord<'bytes>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Borrowed inputs for both type-fact segments and their shared child table.
 pub struct TypeFactLane<'bytes> {
+    /// Schema-1-compatible declared records, in their assigned type order.
     pub inputs: &'bytes [TypeFactInput<'bytes>],
     /// Schema-2 computed rows, encoded after all declared rows.
     pub computed: &'bytes [TypeFactInput<'bytes>],
+    /// Child values addressed by every record's `children` span.
     pub children: &'bytes [SemanticTypeChild<'bytes>],
 }
 
@@ -54,11 +60,14 @@ pub struct TypeFactLane<'bytes> {
 /// reference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TypeFactCounts {
+    /// Number of declared records at the beginning of the type-coordinate space.
     pub declared: u32,
+    /// Number of schema-2 computed records following the declared prefix.
     pub computed: u32,
 }
 
 impl TypeFactCounts {
+    /// Creates segment counts; use [`Self::total`] to reject width overflow.
     pub const fn new(declared: u32, computed: u32) -> Self {
         Self { declared, computed }
     }
@@ -75,79 +84,151 @@ impl TypeFactCounts {
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
+/// Admission, decoding, or coordinate error in the type-fact plane.
 pub enum TypeFactFault {
+    /// The declared and computed counts cannot share one `u32` coordinate space.
     #[error("type-fact segments {declared}+{computed} overflow the type-coordinate width")]
-    CountOverflow { declared: u32, computed: u32 },
+    CountOverflow {
+        /// Declared segment count.
+        declared: u32,
+        /// Computed segment count.
+        computed: u32,
+    },
+    /// A type record names an entity outside the image's entity table.
     #[error("type fact {ordinal} names entity {owner:?} outside {entity_count}")]
     Owner {
+        /// Coordinate of the offending type record in the combined type plane.
         ordinal: u32,
+        /// Entity-table coordinate encoded as the owner.
         owner: EntityId,
+        /// Number of entity rows available for this image.
         entity_count: u32,
     },
+    /// The record's tag-specific payload or child layout violates the semantic type grammar.
     #[error("type fact {ordinal} is invalid: {fault:?}")]
     Record {
+        /// Coordinate of the offending type record.
         ordinal: u32,
+        /// Exact grammar validation failure for that record.
         fault: SemanticTypeFault,
     },
+    /// A record's child span does not fit in the shared child pool.
     #[error("type fact {ordinal} child span {start}+{length} exceeds {child_count}")]
     ChildSpan {
+        /// Coordinate of the record containing the invalid span.
         ordinal: u32,
+        /// Child-pool start offset.
         start: u32,
+        /// Number of child rows requested by the span.
         length: u32,
+        /// Number of child rows in the shared pool.
         child_count: u32,
     },
+    /// A schema-1 local child type target is not strictly before its source row.
     #[error("type fact {ordinal} child {position} target {target} is not strictly backward")]
     ForwardReference {
+        /// Source type-record coordinate.
         ordinal: u32,
+        /// Child position within the record's span.
         position: u32,
+        /// Referenced local type-record coordinate.
         target: u32,
     },
+    /// A declared record may refer only to the declared prefix in schema 2.
     #[error(
         "type fact {ordinal} child {position} targets computed row {target} from declared segment"
     )]
     ComputedTargetFromDeclared {
+        /// Declared source-record coordinate.
         ordinal: u32,
+        /// Child position within the source record.
         position: u32,
+        /// Computed target that the declared row is not allowed to reference.
         target: u32,
     },
+    /// A computed child target must precede the computed record that refers to it.
     #[error("computed type fact {ordinal} child {position} targets later computed row {target}")]
     ComputedForwardReference {
+        /// Computed source-record coordinate in the combined type space.
         ordinal: u32,
+        /// Child position within the source record.
         position: u32,
+        /// Later computed target that would violate the acyclic ordering.
         target: u32,
     },
+    /// A local child target is outside both declared and computed records.
     #[error(
         "type fact {ordinal} child {position} target {target} is outside {record_count} records"
     )]
     ChildTargetOutOfRange {
+        /// Source type-record coordinate.
         ordinal: u32,
+        /// Child position within the source record.
         position: u32,
+        /// Referenced type coordinate.
         target: u32,
+        /// Total number of records in the schema's type-coordinate space.
         record_count: u32,
     },
+    /// A schema-1 nominal reference points forward to a non-self row.
     #[error("type fact {ordinal} nominal target {target} points forward at another row")]
-    NominalForward { ordinal: u32, target: u32 },
+    NominalForward {
+        /// Source type-record coordinate.
+        ordinal: u32,
+        /// Forward local nominal target.
+        target: u32,
+    },
+    /// A local nominal declaration coordinate does not fit the allowed domain.
     #[error("type fact {ordinal} nominal target {target} is outside the type lane")]
-    NominalOutOfRange { ordinal: u32, target: u32 },
+    NominalOutOfRange {
+        /// Source type-record coordinate.
+        ordinal: u32,
+        /// Referenced entity coordinate.
+        target: u32,
+    },
+    /// A stable or external child identity is malformed.
     #[error("type fact {ordinal} child {position} external identity is invalid")]
     Authority {
+        /// Source type-record coordinate.
         ordinal: u32,
+        /// Child position containing the malformed external identity.
         position: u32,
+        /// Content-ID decoding failure from the typed identity.
         #[source]
         source: ContentIdDecodeError,
     },
+    /// The payload ends before the declared record or child fields are complete.
     #[error("type fact {ordinal} is truncated before {needed} bytes")]
-    Truncated { ordinal: u32, needed: usize },
+    Truncated {
+        /// Type-record coordinate being decoded.
+        ordinal: u32,
+        /// Minimum payload length in bytes required to reach the missing field.
+        needed: usize,
+    },
+    /// Bytes remain after the number of records and children encoded by the header.
     #[error("type-fact section declares {declared} records but has trailing bytes")]
-    TrailingBytes { declared: u32 },
+    TrailingBytes {
+        /// Combined number of records advertised by the segment header.
+        declared: u32,
+    },
+    /// A discriminant in a record does not belong to its closed wire registry.
     #[error("type fact {ordinal} has unknown {field} tag {actual}")]
     Tag {
+        /// Type-record coordinate containing the unknown discriminant.
         ordinal: u32,
+        /// Wire field whose discriminant failed decoding.
         field: &'static str,
+        /// Unrecognized discriminant byte.
         actual: u8,
     },
+    /// Child text bytes are not valid UTF-8 for the text-child case.
     #[error("type fact {ordinal} child {position} has invalid text")]
-    Text { ordinal: u32, position: u32 },
+    Text {
+        /// Source type-record coordinate.
+        ordinal: u32,
+        /// Child position whose text payload failed validation.
+        position: u32,
+    },
 }
 
 impl<'bytes> TypeFactLane<'bytes> {
@@ -169,6 +250,8 @@ impl<'bytes> TypeFactLane<'bytes> {
         Ok(counts)
     }
 
+    /// Validates this lane using the schema-1 rule set: all local child edges
+    /// must point to an earlier declared row.
     pub fn admit(
         &self,
         entity_count: u32,
@@ -177,6 +260,9 @@ impl<'bytes> TypeFactLane<'bytes> {
         self.admit_schema(entity_count, children, 1)
     }
 
+    /// Validates owners, spans, tags, and reference ordering for `schema`.
+    /// Schema 2 adds computed rows after the declared prefix and permits a
+    /// declared nominal to name its owning entity.
     pub fn admit_schema(
         &self,
         entity_count: u32,
@@ -280,6 +366,7 @@ impl<'bytes> TypeFactLane<'bytes> {
     }
 
     #[must_use]
+    /// Returns the exact encoded byte length for this lane's current contents.
     pub fn payload_len(&self) -> usize {
         let mut size = 8;
         for input in self.inputs.iter().chain(self.computed) {
@@ -307,6 +394,7 @@ impl<'bytes> TypeFactLane<'bytes> {
         size
     }
 
+    /// Writes the canonical payload into a caller-provided buffer of at least [`Self::payload_len`] bytes.
     pub fn write_payload(&self, output: &mut [u8]) {
         let mut at = 0;
         put_u32(
@@ -441,7 +529,7 @@ fn read_stable_ref(reader: &mut Reader<'_>) -> Result<StableRef, TypeFactFault> 
     })
 }
 
-pub fn validate_payload(
+pub(crate) fn validate_payload(
     payload: &[u8],
     entity_count: u32,
     schema: u16,
@@ -762,14 +850,20 @@ impl<'bytes> Reader<'bytes> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Identifies whether a decoded row came from the declared or computed segment.
 pub enum TypeFactSegment {
+    /// Row belongs to the declared prefix used by older schema readers.
     Declared,
+    /// Row belongs to the schema-2 computed suffix.
     Computed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One decoded type record with the entity owner and segment that assigned its coordinate.
 pub struct DecodedTypeFact<'fragment> {
+    /// Entity-table coordinate that owns this record.
     pub owner: EntityId,
+    /// Decoded semantic type value borrowing any retained text from the payload.
     pub record: SemanticTypeRecord<'fragment>,
+    /// Declared prefix or computed suffix containing this record.
     pub segment: TypeFactSegment,
 }
 
@@ -779,10 +873,13 @@ pub struct DecodedTypeFact<'fragment> {
 /// `SemanticTypeRecord::children` span; it is not an entity or image row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodedTypeFactChild<'fragment> {
+    /// Shared child-pool coordinate referenced by record spans.
     pub ordinal: u32,
+    /// Decoded child value borrowing text bytes from the payload when present.
     pub child: SemanticTypeChild<'fragment>,
 }
 
+/// Lazy decoder over a validated type-fact payload.
 pub struct TypeFactCursor<'fragment> {
     payload: &'fragment [u8],
     at: usize,

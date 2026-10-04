@@ -11,14 +11,14 @@
 //! legacy NXFI pool rows are not part of this semantic authority.
 
 use alloc::{string::String, vec::Vec};
+use core::mem::size_of;
 
 use crate::ir::versioned_records::aggregate::{
     JumboObjectClosureAdmissionV2, JumboPlaneClosureAdmissionV2,
     SemanticTypedPlaneInventoryV2Error, SemanticTypedPlaneVerificationLimitsV2,
     TypedPlaneFamilyPayloadsV2, TypedPlaneSegmentPayloadV2, VerifiedTypedPlaneFamilyV2,
-    VerifiedTypedPlaneInventoryV2, VerifiedTypedPlaneSegmentV2,
+    VerifiedTypedPlaneInventoryV2,
     verify_semantic_typed_plane_history_v3_with_segment_source,
-    verify_semantic_typed_plane_inventory_v2,
     verify_semantic_typed_plane_inventory_v2_with_admission,
     verify_semantic_typed_plane_inventory_v2_with_segment_source,
 };
@@ -541,7 +541,6 @@ pub fn verify_typed_plane_content_v2_with_tier(
     verify_typed_plane_content_v2_with_admission(
         manifest,
         exact_ordered_payloads,
-        tier,
         None,
         limits,
     )
@@ -568,7 +567,6 @@ where
     verify_typed_plane_content_v2_with_admission(
         manifest,
         exact_ordered_payloads,
-        tier,
         Some(&mut admission),
         limits,
     )
@@ -758,7 +756,6 @@ where
 fn verify_typed_plane_content_v2_with_admission(
     manifest: &SemanticTypedPlaneManifestV2,
     exact_ordered_payloads: &[&[u8]],
-    tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_admission: Option<&mut dyn JumboPlaneClosureAdmissionV2>,
     limits: SemanticTypedPlaneVerificationLimitsV2,
 ) -> Result<VerifiedTypedPlaneContentV2, SemanticGenerationProofError> {
@@ -874,12 +871,12 @@ fn enforce_verification_adapter_bound(
     segment_count: usize,
 ) -> Result<(), SemanticGenerationProofError> {
     let segment_bytes = segment_count
-        .checked_mul(core::mem::size_of::<TypedPlaneSegmentPayloadV2<'static>>())
+        .checked_mul(size_of::<TypedPlaneSegmentPayloadV2<'static>>())
         .ok_or(SemanticGenerationProofError::ManifestResourcePolicy)?;
     let fixed_bytes = IR_FAMILY_COUNT
         .checked_mul(
-            core::mem::size_of::<TypedPlaneFamilyPayloadsV2<'static>>()
-                + core::mem::size_of::<Vec<TypedPlaneSegmentPayloadV2<'static>>>(),
+            size_of::<TypedPlaneFamilyPayloadsV2<'static>>()
+                + size_of::<Vec<TypedPlaneSegmentPayloadV2<'static>>>(),
         )
         .and_then(|bytes| bytes.checked_add(4096))
         .ok_or(SemanticGenerationProofError::ManifestResourcePolicy)?;
@@ -958,7 +955,12 @@ pub enum SemanticGenerationProofError {
     ManifestResourcePolicy,
     /// Manifest segment descriptors and the supplied exact c004 payloads differ in count.
     #[error("V2 typed-plane manifest expects {expected} payloads, observed {observed}")]
-    PayloadCountMismatch { expected: usize, observed: usize },
+    PayloadCountMismatch {
+        /// Number of c004 payloads required by the manifest descriptors.
+        expected: usize,
+        /// Number of payloads supplied by the caller.
+        observed: usize,
+    },
     /// Allocating bounded family/payload adapter storage failed.
     #[error("V2 typed-plane verifier adapter allocation failed")]
     Allocation,
@@ -969,16 +971,27 @@ pub enum SemanticGenerationProofError {
     #[error(
         "V2 typed-plane verifier adapters need an estimated {estimated} bytes; maximum is {maximum}"
     )]
-    VerificationAdapterLimitExceeded { estimated: usize, maximum: usize },
+    VerificationAdapterLimitExceeded {
+        /// Estimated temporary adapter capacity in bytes.
+        estimated: usize,
+        /// Fixed adapter-storage ceiling in bytes.
+        maximum: usize,
+    },
     /// Aggregate verified values did not preserve the manifest claims.
     #[error("verified V2 typed-plane inventory differs from its manifest claims")]
     InventoryClaimMismatch,
     /// A family descriptor differs from the aggregate-verified family.
     #[error("verified V2 typed-plane family differs from its manifest at slot {index}")]
-    InventoryFamilyMismatch { index: usize },
+    InventoryFamilyMismatch {
+        /// Zero-based family slot whose descriptor differs.
+        index: usize,
+    },
     /// A segment descriptor differs from its aggregate-verified payload.
     #[error("verified V2 typed-plane segment differs from its manifest at family slot {index}")]
-    InventorySegmentMismatch { index: usize },
+    InventorySegmentMismatch {
+        /// Zero-based family slot containing a mismatched segment.
+        index: usize,
+    },
     /// The untrusted content-root claim does not match the exact typed payloads.
     #[error("V2 typed-plane content-root claim does not match the verified payloads")]
     ContentRootClaimMismatch,
@@ -997,13 +1010,19 @@ pub enum SemanticGenerationProofError {
         "semantic generation family inventory differs at slot {index}: expected {expected:?}, observed {observed:?}"
     )]
     FamilyInventory {
+        /// Zero-based slot in the required canonical family order.
         index: usize,
+        /// Family required at this slot for the build profile.
         expected: SemanticIrPlane,
+        /// Family supplied by the manifest at this slot.
         observed: SemanticIrPlane,
     },
     /// Image-level facts contradict the canonical build identity.
     #[error("semantic image facts differ from build identity at {field}")]
-    ImageFactsBuildMismatch { field: &'static str },
+    ImageFactsBuildMismatch {
+        /// Image-authority field that disagrees with the build identity.
+        field: &'static str,
+    },
 }
 
 fn validate_image_facts(
@@ -1161,6 +1180,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::ir::versioned_records::aggregate::verify_semantic_typed_plane_inventory_v2;
     use crate::ir::{
         AtomId, LanguageProfile, RustEdition, SemanticInputWitness, SemanticScopeClaim,
         SemanticScopeFacts, SemanticTypedPlaneFamilyDescriptorV2, SourceIdentity,

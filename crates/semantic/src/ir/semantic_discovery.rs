@@ -14,42 +14,64 @@ use crate::ir::{
 /// Counts captured and explicitly unavailable rows in one authority plane.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AvailabilityCensus {
+    /// Number of rows whose authority explicitly captured this plane.
     pub captured: usize,
+    /// Number of rows whose authority marks this plane unavailable.
     pub unavailable: usize,
 }
 
 /// Exact containment-authority distribution for the discovered declarations.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ParentageCensus {
+    /// Number of rows with no captured containment fact.
     pub unavailable: usize,
+    /// Number of rows whose authority proves they are roots.
     pub roots: usize,
+    /// Number of rows bound to an exact local parent identity.
     pub bound: usize,
+    /// Number of rows whose proven parent has no local entity row.
     pub unrepresented_authority_owner: usize,
 }
 
 /// Exact availability distribution for every common declaration fact plane.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EntityAuthorityCensus {
+    /// Distribution of containment states across entity rows.
     pub parentage: ParentageCensus,
+    /// Distribution of captured/unavailable primary source-span facts.
     pub source: AvailabilityCensus,
+    /// Distribution of source-file identity availability.
     pub source_file: AvailabilityCensus,
+    /// Distribution of complete local member-set availability.
     pub members: AvailabilityCensus,
+    /// Distribution of semantic-type availability.
     pub semantic_type: AvailabilityCensus,
+    /// Distribution of documentation-plane availability.
     pub documentation: AvailabilityCensus,
+    /// Distribution of visibility-observation availability.
     pub visibility: AvailabilityCensus,
+    /// Distribution of attribute-plane availability.
     pub attributes: AvailabilityCensus,
+    /// Distribution of language-extension-plane availability.
     pub language_extension: AvailabilityCensus,
 }
 
 /// Exact row counts for the seven typed sparse language-extension planes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LanguageExtensionCensus {
+    /// Number of entities with captured TypeScript facts.
     pub typescript: usize,
+    /// Number of entities with captured C# facts.
     pub csharp: usize,
+    /// Number of entities with captured Go facts.
     pub go: usize,
+    /// Number of entities with captured Rust facts.
     pub rust: usize,
+    /// Number of entities with captured Python facts.
     pub python: usize,
+    /// Number of entities with captured Java facts.
     pub java: usize,
+    /// Number of entities with captured Clang facts.
     pub clang: usize,
 }
 
@@ -59,19 +81,33 @@ pub struct LanguageExtensionCensus {
 /// through an exact-size borrowed cursor. No saturating narrowing is applied.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticImageCensus {
+    /// Image-level provenance and authority shared by all counted rows.
     pub image: SemanticImageFacts,
+    /// Number of declaration rows in the complete reader.
     pub entities: usize,
+    /// Number of declarations with no local parent coordinate.
     pub root_entities: usize,
+    /// Number of declarations carrying a semantic-type coordinate.
     pub typed_entities: usize,
+    /// Number of declarations with a primary source span.
     pub source_bound_entities: usize,
+    /// Total number of local-member coordinates across declaration rows.
     pub member_references: usize,
+    /// Total number of documentation fragments across declarations.
     pub documentation_fragments: usize,
+    /// Total number of attribute-atom coordinates across declarations.
     pub attribute_references: usize,
+    /// Number of type rows in the complete reader.
     pub types: usize,
+    /// Number of external endpoint rows.
     pub external_targets: usize,
+    /// Number of canonical graph relation rows.
     pub links: usize,
+    /// Number of graph occurrence-site rows.
     pub link_occurrences: usize,
+    /// Captured/unavailable distribution for occurrence source sites.
     pub occurrence_source_authority: AvailabilityCensus,
+    /// Present row count in each language-specific sparse extension plane.
     pub language_extensions: LanguageExtensionCensus,
     pub entity_authority: EntityAuthorityCensus,
 }
@@ -79,16 +115,22 @@ pub struct SemanticImageCensus {
 /// Exact pooled reference which a purported complete reader failed to lend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SemanticDiscoveryReference {
+    /// Entity-list coordinate referenced by a declaration's member field.
     Members(EntityListId),
+    /// Documentation row coordinate referenced by a declaration.
     Documentation(DocId),
+    /// Atom-list coordinate referenced by a declaration's attributes.
     Attributes(AtomListId),
+    /// Occurrence coordinate whose authority fact is missing.
     OccurrenceAuthority(crate::ir::LinkOccurrenceId),
 }
 
 /// A complete semantic reader exposed a coordinate without its required row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticDiscoveryError {
+    /// Declaration row associated with the missing pooled value, when the reference is entity-owned.
     pub entity: Option<EntityId>,
+    /// Exact pool or occurrence coordinate that the reader failed to resolve.
     pub reference: SemanticDiscoveryReference,
 }
 
@@ -107,6 +149,7 @@ impl core::error::Error for SemanticDiscoveryError {}
 /// One allocation-free discovery session over an owned or reopened image.
 #[derive(Clone, Copy)]
 pub struct SemanticImageDiscovery<'image, Reader: SemanticReader + ?Sized> {
+    /// Complete borrowed reader used as the source of every census value.
     pub reader: &'image Reader,
 }
 

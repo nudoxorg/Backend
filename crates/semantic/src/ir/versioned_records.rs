@@ -9,6 +9,7 @@
 //! bounded, independently addressable segment payloads.
 
 use alloc::{boxed::Box, vec::Vec};
+use core::mem::size_of;
 
 use thiserror::Error;
 
@@ -1258,7 +1259,7 @@ where
     let key_capacity = keys
         .rows
         .capacity()
-        .checked_mul(core::mem::size_of::<
+        .checked_mul(size_of::<
             CanonicalSemanticPlaneRowKey<Encoder::Handle>,
         >())
         .and_then(|bytes| u64::try_from(bytes).ok())
@@ -2201,21 +2202,44 @@ pub enum SemanticPlaneRecordError {
     IrKindRequired,
     /// The requested bounded segment size is outside the supported limit.
     #[error("canonical segment ceiling {observed} is invalid; maximum is {maximum}")]
-    InvalidByteCeiling { observed: usize, maximum: usize },
+    InvalidByteCeiling {
+        /// Requested segment byte ceiling.
+        observed: usize,
+        /// Maximum supported segment byte ceiling.
+        maximum: usize,
+    },
     /// The row payload output ceiling is outside the supported wire bound.
     #[error("canonical row payload ceiling {observed} is invalid; maximum is {maximum}")]
-    InvalidRowPayloadCeiling { observed: usize, maximum: usize },
+    InvalidRowPayloadCeiling {
+        /// Requested row-payload ceiling in bytes.
+        observed: usize,
+        /// Maximum supported row-payload ceiling in bytes.
+        maximum: usize,
+    },
     /// One encoded typed-row payload exceeded the row sink's admission bound.
     #[error("canonical row payload has {observed} bytes; sink ceiling is {maximum}")]
-    RowPayloadExceedsCeiling { observed: usize, maximum: usize },
+    RowPayloadExceedsCeiling {
+        /// Encoded row payload length in bytes.
+        observed: usize,
+        /// Active row-sink admission ceiling in bytes.
+        maximum: usize,
+    },
     /// The canonical inline threshold for a row family is outside the wire bound.
     #[error("canonical inline-row ceiling {observed} is invalid; maximum is {maximum}")]
-    InvalidInlineRowCeiling { observed: usize, maximum: usize },
+    InvalidInlineRowCeiling {
+        /// Requested inline-row threshold in bytes.
+        observed: usize,
+        /// Maximum supported inline-row threshold in bytes.
+        maximum: usize,
+    },
     /// Stable-key policy byte range is invalid or exceeds the closed u32 wire form.
     #[error("canonical segment boundary range {minimum}..={target}..={maximum} is invalid")]
     InvalidSegmentBoundaryRange {
+        /// Minimum segment size in bytes.
         minimum: usize,
+        /// Target segment size in bytes.
         target: usize,
+        /// Maximum segment size in bytes.
         maximum: usize,
     },
     /// A boundary-policy parameter could not be represented in its wire type.
@@ -2302,7 +2326,12 @@ pub enum SemanticPlaneRecordError {
     PlaneKind,
     /// A row count differs from the segment descriptor.
     #[error("canonical row payload has {observed} rows; descriptor claims {expected}")]
-    RowCount { expected: u32, observed: u32 },
+    RowCount {
+        /// Row count claimed by the segment descriptor.
+        expected: u32,
+        /// Row count decoded from the segment payload.
+        observed: u32,
+    },
     /// Row keys are duplicate or not in strict canonical order.
     #[error("canonical row keys are not in strict ascending order")]
     RecordOrder,
@@ -2320,13 +2349,28 @@ pub enum SemanticPlaneRecordError {
     UnknownPlane,
     /// Supplied payload cardinality differs from canonical family output.
     #[error("plane inventory has {observed} segments; expected {expected}")]
-    SegmentCount { expected: usize, observed: usize },
+    SegmentCount {
+        /// Number of canonical segments produced from the reader.
+        expected: usize,
+        /// Number of segments supplied by the caller.
+        observed: usize,
+    },
     /// Complete-family segment count differs from its durable policy claim.
     #[error("boundary verifier observed {observed} segments; manifest claims {expected}")]
-    BoundaryFamilySegmentCount { expected: u64, observed: u64 },
+    BoundaryFamilySegmentCount {
+        /// Segment count committed by the boundary-policy claim.
+        expected: u64,
+        /// Segment count observed by the complete-family verifier.
+        observed: u64,
+    },
     /// Complete-family row count differs from its durable policy claim.
     #[error("boundary verifier observed {observed} rows; manifest claims {expected}")]
-    BoundaryFamilyRowCount { expected: u64, observed: u64 },
+    BoundaryFamilyRowCount {
+        /// Row count committed by the boundary-policy claim.
+        expected: u64,
+        /// Row count observed by the complete-family verifier.
+        observed: u64,
+    },
     /// Stable payload bytes differ from the complete reader projection.
     #[error("versioned plane payload differs from its canonical reader projection")]
     PlaneOracleMismatch,
@@ -2337,21 +2381,6 @@ pub enum SemanticPlaneRecordError {
 
 fn prefix_value(key: &[u8; 32], bits: u16) -> u8 {
     key[0] >> (8 - bits as u8)
-}
-
-fn validate_record(
-    kind: SemanticPlaneKind,
-    key: [u8; 32],
-    tag: u8,
-    payload: &[u8],
-) -> Result<(), SemanticPlaneRecordError> {
-    validate_record_with_row_limit(
-        kind,
-        key,
-        tag,
-        payload,
-        crate::ir::MAX_SEMANTIC_SEGMENT_BYTES,
-    )
 }
 
 fn validate_record_with_row_limit(

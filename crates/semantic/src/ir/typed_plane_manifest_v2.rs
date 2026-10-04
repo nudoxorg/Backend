@@ -10,6 +10,7 @@
 //! it never recreates a live coverage capability.
 
 use alloc::{boxed::Box, vec::Vec};
+use core::mem::size_of;
 
 use backend_version::{
     CompileRecipeDomain, ContentId, Coverage, Schema, SchemaIdentity, ScopeRoot,
@@ -30,7 +31,7 @@ const MAGIC: [u8; 4] = *b"STPV";
 /// c007 wire revision carrying V2 typed-plane boundary policies.
 pub const SEMANTIC_TYPED_PLANE_MANIFEST_V2_WIRE_REVISION: u16 = 3;
 const WIRE_VERSION: u16 = SEMANTIC_TYPED_PLANE_MANIFEST_V2_WIRE_REVISION;
-const HEADER_BYTES: usize = MAGIC.len() + core::mem::size_of::<u16>();
+const HEADER_BYTES: usize = MAGIC.len() + size_of::<u16>();
 const FAMILY_COUNT: usize = 7;
 const BUILD_BYTES: usize = 32 * 6 + 2 + 1;
 const INPUT_CLAIM_BYTES: usize = 32 + 32 + 1;
@@ -623,17 +624,17 @@ fn estimated_peak_resident_bytes(
     // Account for the segment vector while it is converted into owned family
     // storage, the retained descriptors, the duplicate-ID validation vector,
     // and fixed family/container overhead. This is intentionally conservative.
-    let per_segment = core::mem::size_of::<SemanticTypedPlaneSegmentClaimV2>()
+    let per_segment = size_of::<SemanticTypedPlaneSegmentClaimV2>()
         .checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(core::mem::size_of::<[u8; 32]>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<[u8; 32]>()))
         .ok_or(SemanticTypedPlaneManifestV2Error::CountOverflow)?;
     let descriptors = segment_count
         .checked_mul(per_segment)
         .ok_or(SemanticTypedPlaneManifestV2Error::CountOverflow)?;
     let fixed = FAMILY_COUNT
         .checked_mul(
-            core::mem::size_of::<SemanticTypedPlaneFamilyDescriptorV2>()
-                + core::mem::size_of::<Vec<SemanticTypedPlaneSegmentClaimV2>>(),
+            size_of::<SemanticTypedPlaneFamilyDescriptorV2>()
+                + size_of::<Vec<SemanticTypedPlaneSegmentClaimV2>>(),
         )
         .and_then(|bytes| bytes.checked_add(4096))
         .ok_or(SemanticTypedPlaneManifestV2Error::CountOverflow)?;
@@ -698,10 +699,20 @@ pub enum SemanticTypedPlaneManifestV2Error {
     NonCanonical,
     /// The manifest or an allocation exceeds its safe resource bound.
     #[error("V2 typed-plane manifest has {actual} bytes; maximum is {maximum}")]
-    ManifestTooLarge { actual: usize, maximum: usize },
+    ManifestTooLarge {
+        /// Actual encoded manifest size or requested allocation, in bytes.
+        actual: usize,
+        /// Maximum manifest size or allocation admitted by this format.
+        maximum: usize,
+    },
     /// The manifest contains more segment descriptors than allowed.
     #[error("V2 typed-plane manifest has {actual} segments; maximum is {maximum}")]
-    TooManySegments { actual: usize, maximum: usize },
+    TooManySegments {
+        /// Number of segment descriptors present in the manifest.
+        actual: usize,
+        /// Maximum number of descriptors admitted by this format.
+        maximum: usize,
+    },
     /// An allocation failed while decoding or encoding a bounded manifest.
     #[error("V2 typed-plane manifest allocation failed")]
     Allocation,
@@ -709,18 +720,29 @@ pub enum SemanticTypedPlaneManifestV2Error {
     #[error(
         "V2 typed-plane manifest needs an estimated {estimated} resident bytes; maximum is {maximum}"
     )]
-    ResidentLimitExceeded { estimated: usize, maximum: usize },
+    ResidentLimitExceeded {
+        /// Conservative peak owned-allocation estimate, in bytes.
+        estimated: usize,
+        /// Maximum owned-allocation estimate admitted by this decoder.
+        maximum: usize,
+    },
     /// A field length, count, or fixed-width conversion overflowed.
     #[error("V2 typed-plane manifest length or count overflow")]
     CountOverflow,
     /// One mandatory family slot is absent from the exact seven-family list.
     #[error("V2 typed-plane manifest has {observed} family entries; expected seven")]
-    FamilyCount { observed: u8 },
+    FamilyCount {
+        /// Number of family descriptors found in the manifest.
+        observed: u8,
+    },
     /// A family slot is missing, duplicated, or in a noncanonical order.
     #[error("V2 typed-plane family at slot {index} is {observed:?}; expected {expected:?}")]
     FamilyOrder {
+        /// Zero-based family descriptor slot being validated.
         index: usize,
+        /// Family required at this canonical slot.
         expected: SemanticIrPlane,
+        /// Family actually found at this slot.
         observed: SemanticIrPlane,
     },
     /// A family total differs from the sum of its segment row counts.
@@ -728,7 +750,10 @@ pub enum SemanticTypedPlaneManifestV2Error {
     FamilyRowCount,
     /// A segment has no rows, invalid key order, or invalid payload length.
     #[error("invalid V2 typed-plane segment descriptor at index {index}")]
-    SegmentClaim { index: usize },
+    SegmentClaim {
+        /// Zero-based segment descriptor index that failed validation.
+        index: usize,
+    },
     /// A family boundary policy names an algorithm not admitted by this wire version.
     #[error("unknown V2 typed-plane boundary algorithm {0}")]
     BoundaryAlgorithm(u8),
@@ -737,16 +762,25 @@ pub enum SemanticTypedPlaneManifestV2Error {
     BoundaryPolicy,
     /// Segment key ranges overlap or are not strictly increasing.
     #[error("V2 typed-plane segment ranges overlap or are out of order at index {index}")]
-    SegmentOrder { index: usize },
+    SegmentOrder {
+        /// Zero-based segment descriptor whose key range is out of order.
+        index: usize,
+    },
     /// A segment's claimed byte length exceeds its committed family policy.
     #[error("V2 typed-plane segment at index {index} exceeds its boundary policy maximum")]
-    SegmentExceedsBoundaryPolicy { index: usize },
+    SegmentExceedsBoundaryPolicy {
+        /// Zero-based segment descriptor whose byte length exceeds the policy.
+        index: usize,
+    },
     /// The manifest repeats a semantic segment identity.
     #[error("V2 typed-plane manifest repeats a segment identity")]
     DuplicateSegmentId,
     /// A V2 generation manifest must claim complete input/read coverage.
     #[error("V2 typed-plane input claim is {observed:?}, not Complete")]
-    InputClaimNotComplete { observed: Coverage },
+    InputClaimNotComplete {
+        /// Coverage state encoded by the manifest input claim.
+        observed: Coverage,
+    },
     /// The profile bytes do not name a registered compiler profile.
     #[error("unknown V2 typed-plane language profile {0:?}")]
     UnknownProfile([u8; 2]),
@@ -785,7 +819,12 @@ pub enum SemanticTypedPlaneManifestV2Error {
     ScopeIdentity,
     /// The output length differed from the precomputed canonical length.
     #[error("V2 typed-plane manifest encoded {observed} bytes; expected {expected}")]
-    LengthMismatch { expected: usize, observed: usize },
+    LengthMismatch {
+        /// Precomputed canonical encoded size, in bytes.
+        expected: usize,
+        /// Number of bytes actually written.
+        observed: usize,
+    },
 }
 
 fn required_families(profile: LanguageProfile) -> [SemanticIrPlane; FAMILY_COUNT] {

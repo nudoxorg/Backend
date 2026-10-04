@@ -27,12 +27,19 @@ const NONE: u32 = u32::MAX;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LanguageExtensionDirectoryKind {
+    /// Sparse plane containing TypeScript declaration facts.
     TypeScript = 1,
+    /// Sparse plane containing C# declaration facts.
     CSharp = 2,
+    /// Sparse plane containing Go declaration facts.
     Go = 3,
+    /// Sparse plane containing Rust declaration facts.
     Rust = 4,
+    /// Sparse plane containing Python declaration facts.
     Python = 5,
+    /// Sparse plane containing Java declaration facts.
     Java = 6,
+    /// Sparse plane containing Clang declaration facts.
     Clang = 7,
 }
 
@@ -86,11 +93,17 @@ impl LanguageExtensionDirectoryKind {
 /// Exact capacities of already validated common semantic columns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LanguageExtensionCommonBounds {
+    /// Number of atom-table entries available to extension facts.
     pub atoms: u32,
+    /// Number of type coordinates available to extension facts.
     pub types: u32,
+    /// Number of entity rows addressable by extension planes.
     pub entities: u32,
+    /// Number of type-list rows available for extension references.
     pub type_lists: u32,
+    /// Number of entity-list rows available for extension references.
     pub entity_lists: u32,
+    /// Number of atom-list rows available for extension references.
     pub atom_lists: u32,
     /// Number of Rust free-predicate list rows.
     pub free_predicates: u32,
@@ -123,30 +136,50 @@ impl ValidatedLanguageExtensionCommonBounds {
 /// Typed failure while writing the caller-owned extension-section buffer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LanguageExtensionEncodeError {
+    /// The caller's output slice is shorter than the exact encoded section size.
     OutputTooShort {
+        /// Required output capacity in bytes.
         required: usize,
+        /// Actual output slice length in bytes.
         actual: usize,
     },
+    /// A checked write would extend beyond the output slice.
     OutputRange {
+        /// Byte offset where the failed write would begin.
         offset: usize,
+        /// Width of the attempted write in bytes.
         width: usize,
+        /// Actual output slice length in bytes.
         actual: usize,
     },
+    /// A plane's ordinal table does not cover the entity-row count declared for that plane.
     RowCountMismatch {
+        /// Common entity-row count expected by the section header.
         expected: usize,
+        /// Logical row count supplied for the plane.
         observed: usize,
     },
+    /// Ordinal storage is malformed for the supplied sparse rows and dense facts.
     OrdinalCountMismatch {
+        /// Number of logical entity rows.
         rows: usize,
+        /// Number of explicit row ordinals supplied.
         ordinals: usize,
+        /// Number of dense fact records available to be referenced.
         facts: usize,
     },
+    /// A row ordinal names a fact outside the dense pool for its language plane.
     FactOrdinal {
+        /// Plane whose row table contains the invalid ordinal.
         plane: LanguageExtensionDirectoryKind,
+        /// Entity row carrying the invalid ordinal.
         row: u32,
+        /// Dense fact ordinal read from that row.
         fact: u32,
+        /// Number of dense facts in the plane.
         fact_count: usize,
     },
+    /// Checked section-size arithmetic overflowed the host or wire width.
     LengthOverflow,
 }
 
@@ -163,101 +196,172 @@ impl core::error::Error for LanguageExtensionEncodeError {}
 /// Typed failure while validating a borrowed extension section.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LanguageExtensionReopenError {
+    /// The four-byte section marker does not identify a language-extension section.
     Magic {
+        /// Marker bytes present in the input.
         observed: [u8; 4],
     },
+    /// The section schema is not supported by this reader.
     Schema {
+        /// Schema version encoded in the header.
         observed: u16,
     },
+    /// Header length does not match the borrowed section extent.
     Length {
+        /// Total byte length claimed by the section header.
         claimed: u32,
+        /// Actual length of the borrowed section.
         actual: usize,
     },
+    /// Section authority differs from the profile authority expected by its owner.
     Authority {
+        /// Authority selected by the containing image.
         expected: SemanticImageAuthority,
+        /// Three authority-tag bytes read from the section header.
         observed: [u8; 3],
     },
+    /// Authority tag in the section header is outside the closed registry.
     AuthorityTag {
+        /// Unrecognized authority discriminant.
         observed: u8,
     },
+    /// Profile bytes in the section header do not decode as a supported profile.
     Profile {
+        /// Exact profile-decoding failure.
         source: crate::vocabulary::UnknownLanguageProfile,
     },
+    /// Header plane count differs from the fixed seven-plane directory grammar.
     PlaneCount {
+        /// Required plane count for this section schema.
         expected: u8,
+        /// Plane count found in the header.
         observed: u8,
     },
+    /// A reserved header or directory byte is nonzero.
     Reserved {
+        /// Byte offset of the reserved value in the section.
         offset: usize,
+        /// Noncanonical byte value.
         observed: u8,
     },
+    /// The selected profile does not admit the listed nonempty language plane.
     ProfilePlane {
+        /// Profile authority encoded in the section header.
         authority: SemanticImageAuthority,
+        /// Plane containing facts that this profile cannot select.
         kind: LanguageExtensionDirectoryKind,
+        /// Number of facts present in that plane.
         facts: u32,
     },
+    /// A directory entry appears in the wrong language-plane slot or has an unknown tag.
     DirectoryKind {
+        /// Plane kind required at this directory position.
         expected: LanguageExtensionDirectoryKind,
+        /// Discriminant present in the directory entry.
         observed: u8,
     },
+    /// Directory offset differs from the offset implied by preceding regions.
     DirectoryOffset {
+        /// Plane whose directory entry has a noncanonical offset.
         kind: LanguageExtensionDirectoryKind,
+        /// Offset derived from the section geometry, in bytes.
         expected: u32,
+        /// Offset encoded in the directory entry, in bytes.
         observed: u32,
     },
+    /// Directory byte length differs from the plane's row and fact counts.
     DirectoryLength {
+        /// Plane whose directory entry has a noncanonical length.
         kind: LanguageExtensionDirectoryKind,
+        /// Length derived from the plane counts, in bytes.
         expected: u32,
+        /// Length encoded in the directory entry, in bytes.
         observed: u32,
     },
+    /// Checked offset arithmetic overflowed while walking section regions.
     StructuralOverflow {
+        /// Offset at which region-size arithmetic failed.
         offset: usize,
     },
+    /// The section uses a different entity-row count than the common columns.
     EntityRows {
+        /// Entity count expected from the containing semantic image.
         expected: u32,
+        /// Entity count encoded in the section header.
         observed: u32,
     },
+    /// A sparse row ordinal is outside the plane's dense fact pool.
     Ordinal {
+        /// Plane containing the invalid ordinal.
         kind: LanguageExtensionDirectoryKind,
+        /// Row index in the entity-aligned ordinal table.
         row: u32,
+        /// Raw ordinal read from that row.
         raw: u32,
+        /// Number of dense fact records in this plane.
         facts: u32,
     },
+    /// Dense facts are not listed once each in canonical ordinal order.
     CanonicalFact {
+        /// Plane whose fact sequence is not canonical.
         kind: LanguageExtensionDirectoryKind,
+        /// Dense fact ordinal where ordering or completeness failed.
         fact: u32,
     },
     /// A sparse row table named a dense fact that an earlier row had already
     /// claimed.  Sparse columns are canonical only when every fact appears
     /// exactly once in increasing fact order.
     DuplicateFact {
+        /// Plane whose row table reused a dense fact.
         kind: LanguageExtensionDirectoryKind,
+        /// Later row that repeated the fact ordinal.
         row: u32,
+        /// Dense fact ordinal already claimed by an earlier row.
         fact: u32,
     },
+    /// A common-pool reference in an extension fact exceeds its admitted bound.
     SharedReference {
+        /// Plane containing the invalid fact.
         kind: LanguageExtensionDirectoryKind,
+        /// Dense fact ordinal containing the invalid reference.
         fact: u32,
+        /// Raw common-pool coordinate read from the fact.
         raw: u32,
+        /// Number of entries admitted in the referenced common pool.
         limit: u32,
     },
+    /// A fixed-width fact word is not canonical or violates its field constraints.
     FactEncoding {
+        /// Plane containing the invalid fact.
         kind: LanguageExtensionDirectoryKind,
+        /// Dense fact ordinal containing the invalid word.
         fact: u32,
+        /// Zero-based word number within the fact record.
         word: u8,
+        /// Raw word value read from the payload.
         observed: u32,
     },
+    /// A source-span range is malformed for its file atom and byte coordinates.
     SourceSpanEncoding {
+        /// Plane containing the invalid source-span fact.
         kind: LanguageExtensionDirectoryKind,
+        /// Dense fact ordinal containing the span.
         fact: u32,
+        /// Atom coordinate naming the source file.
         file: u32,
+        /// Start byte offset within that file.
         start: u32,
+        /// Exclusive end byte offset within that file.
         end: u32,
     },
+    /// Bytes for a validated fact could not be decoded into the requested row type.
     DecodedFact {
+        /// Entity row whose fact was being read.
         row: u32,
+        /// Dense fact ordinal selected by the row's ordinal entry.
         fact: u32,
     },
+    /// A header, directory entry, ordinal, or fact extends past the borrowed bytes.
     Truncated,
 }
 
@@ -271,15 +375,25 @@ impl core::error::Error for LanguageExtensionReopenError {}
 /// Once-validated borrowed subordinate extension section.
 #[derive(Clone, Copy, Debug)]
 pub struct ReopenedLanguageExtensionSection<'wire> {
+    /// Entire validated subordinate section, borrowed for the lifetime `'wire`.
     pub bytes: &'wire [u8],
+    /// Authority decoded from the section header and checked against its owner.
     pub authority: SemanticImageAuthority,
+    /// Entity-row count shared by all seven sparse planes.
     pub entity_rows: u32,
+    /// Validated TypeScript plane view.
     pub typescript: ReopenedLanguageExtensionColumn<'wire, crate::ir::TypeScriptFacts>,
+    /// Validated C# plane view.
     pub csharp: ReopenedLanguageExtensionColumn<'wire, crate::ir::CSharpFacts>,
+    /// Validated Go plane view.
     pub go: ReopenedLanguageExtensionColumn<'wire, crate::ir::GoFacts>,
+    /// Validated Rust plane view.
     pub rust: ReopenedLanguageExtensionColumn<'wire, crate::ir::RustFacts>,
+    /// Validated Python plane view.
     pub python: ReopenedLanguageExtensionColumn<'wire, crate::ir::PythonFacts>,
+    /// Validated Java plane view.
     pub java: ReopenedLanguageExtensionColumn<'wire, crate::ir::JavaFacts>,
+    /// Validated Clang plane view.
     pub clang: ReopenedLanguageExtensionColumn<'wire, crate::ir::ClangFacts>,
 }
 
@@ -292,6 +406,7 @@ struct PlaneLayout {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Borrowed reader for one already-validated sparse language-extension plane.
 pub struct ReopenedLanguageExtensionColumn<'wire, Facts> {
     bytes: &'wire [u8],
     layout: PlaneLayout,
@@ -302,14 +417,21 @@ mod wire_fact_sealed {
     pub trait Sealed {}
 }
 
+/// Internal wire contract implemented by each closed language-fact record type.
 pub trait LanguageExtensionWireFact: Copy + wire_fact_sealed::Sealed {
     #[doc(hidden)]
+    /// Fixed encoded size of one fact record, in bytes.
     const WIDTH: usize;
     #[doc(hidden)]
+    /// Decodes one fact beginning at `offset`, returning `None` for an invalid range or value.
     fn decode(bytes: &[u8], offset: usize) -> Option<Self>;
 }
 
 impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'wire, Facts> {
+    /// Reads the optional fact assigned to one entity row from the validated plane.
+    ///
+    /// Out-of-range entities and rows without a plane fact return `Ok(None)`;
+    /// structural or fact-decoding failures are returned as errors.
     pub fn get(
         self,
         entity: crate::ir::EntityId,

@@ -297,11 +297,18 @@ pub enum FragmentRangeVerifyError {
     },
     /// Response names a different complete fragment length.
     #[error("range response fragment length is {observed}, expected {expected}")]
-    FragmentLength { expected: u32, observed: u32 },
+    FragmentLength {
+        /// Complete fragment length committed by the manifest, in bytes.
+        expected: u32,
+        /// Length declared by the response, in bytes.
+        observed: u32,
+    },
     /// Complete fragment bytes do not satisfy the manifest artifact commitment.
     #[error("complete fragment identity mismatch")]
     FragmentIdentity {
+        /// Typed artifact identity committed for the complete fragment.
         expected: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+        /// Identity recomputed from the response's complete fragment bytes.
         observed: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
     },
     /// Complete bytes satisfy the artifact commitment but violate the IR grammar.
@@ -316,30 +323,42 @@ pub enum FragmentRangeVerifyError {
     /// Response offset differs from its section commitment.
     #[error("range response section {section:?} starts at {observed}, expected {expected}")]
     Offset {
+        /// Requested optional section.
         section: SectionKind,
+        /// Section byte offset committed by the manifest.
         expected: u32,
+        /// Offset supplied by the range response.
         observed: u32,
     },
     /// Native response length cannot fit the fixed range coordinate.
     #[error("range response section {section:?} has unaddressable length {observed}")]
     BodyLengthAddressSpace {
+        /// Section whose response length failed conversion.
         section: SectionKind,
+        /// Native response-body length, in bytes.
         observed: usize,
         #[source]
+        /// Integer-conversion failure to the range coordinate width.
         source: TryFromIntError,
     },
     /// Response body length differs from its section commitment.
     #[error("range response section {section:?} has {observed} bytes, expected {expected}")]
     BodyLength {
+        /// Section whose body length differs from its commitment.
         section: SectionKind,
+        /// Section byte length committed by the manifest.
         expected: u32,
+        /// Byte length supplied by the response.
         observed: u32,
     },
     /// Response body does not satisfy its exact typed commitment.
     #[error("range response section {section:?} identity mismatch")]
     Identity {
+        /// Section whose payload identity did not match.
         section: SectionKind,
+        /// Typed section identity committed by the range manifest.
         expected: ArtifactId<IrFragmentRangeEncoding, IrFragmentDomain>,
+        /// Identity recomputed from the response body.
         observed: ArtifactId<IrFragmentRangeEncoding, IrFragmentDomain>,
     },
 }

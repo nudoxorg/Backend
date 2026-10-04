@@ -253,7 +253,10 @@ impl DependencyChannel {
 pub enum SemanticDependencyEdgeError {
     /// The source and target families do not match the named channel.
     #[error("dependency keys do not match channel {channel:?}")]
-    KeyChannelMismatch { channel: DependencyChannel },
+    KeyChannelMismatch {
+        /// Channel whose source and target keys belong to incompatible row families.
+        channel: DependencyChannel,
+    },
 }
 
 /// Observed canonical row contributed by one compiler source unit.
@@ -1577,13 +1580,19 @@ pub enum SemanticUnitCaptureError {
     MissingScopeAtom,
     /// A row segment named a different family from its canonical encoder.
     #[error("canonical {family:?} encoder emitted a different plane")]
-    FamilyKindMismatch { family: RowFamily },
+    FamilyKindMismatch {
+        /// Family selected for capture whose encoder produced another plane.
+        family: RowFamily,
+    },
     /// The unit observation attempted to store an embedding as an IR family.
     #[error("embedding output cannot be captured as an IR source-unit family")]
     UnexpectedEmbeddingFamily,
     /// Row keys emitted for one unit family were not strictly increasing.
     #[error("canonical {family:?} unit rows are not strictly ordered")]
-    UnsortedOrDuplicateRows { family: RowFamily },
+    UnsortedOrDuplicateRows {
+        /// Family whose canonical row keys are not strictly increasing.
+        family: RowFamily,
+    },
     /// Checked identity, length, or counter arithmetic overflowed.
     #[error("source-unit identity or row payload size overflow")]
     Overflow,
@@ -1600,14 +1609,20 @@ pub enum SemanticUnitCaptureError {
 pub enum SemanticUnitObservationError {
     /// An edge was supplied while its channel was declared unobserved.
     #[error("dependency edge supplied for unobserved channel {channel:?}")]
-    UnobservedDependencyEdge { channel: DependencyChannel },
+    UnobservedDependencyEdge {
+        /// Channel on which an edge was supplied without a complete observation.
+        channel: DependencyChannel,
+    },
     /// The same exact dependency edge appeared twice in one unit event.
     #[error("duplicate dependency edge in source-unit observation")]
     DuplicateDependencyEdge,
     /// An IR dependent key must belong to the same unit observation as its
     /// dependency event so replay can identify the affected owner slab.
     #[error("dependency event's {family:?} dependent row is not owned by this unit")]
-    DependentRowNotOwned { family: RowFamily },
+    DependentRowNotOwned {
+        /// IR family of the dependent row that is outside this unit's owned set.
+        family: RowFamily,
+    },
 }
 
 /// Edit-session rejection before a semantic frontier is returned.
@@ -1615,7 +1630,12 @@ pub enum SemanticUnitObservationError {
 pub enum SemanticEditOwnerError {
     /// A source unit was assigned two conflicting events with one revision.
     #[error("source unit {unit:?} has conflicting events at revision {revision}")]
-    DuplicateUnitRevision { unit: SourceUnitKey, revision: u64 },
+    DuplicateUnitRevision {
+        /// Source package/file unit receiving conflicting events.
+        unit: SourceUnitKey,
+        /// Revision at which the conflicting events were recorded.
+        revision: u64,
+    },
     /// A dependency edge was already present in the reverse owner index.
     #[error("duplicate dependency edge in source-unit owner index")]
     DuplicateDependencyEdge,
