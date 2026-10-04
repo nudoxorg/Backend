@@ -227,301 +227,6 @@ impl std::error::Error for DirectoryCreateRollbackFailure {
     }
 }
 
-#[derive(Debug)]
-struct FileCreateRollbackFailure {
-    create: io::Error,
-    cleanup: io::Error,
-}
-
-impl std::fmt::Display for FileCreateRollbackFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "private file setup failed ({}); receipt-authorized rollback failed ({})",
-            self.create, self.cleanup
-        )
-    }
-}
-
-impl std::error::Error for FileCreateRollbackFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.create)
-    }
-}
-
-/// Ownership outcome of an exclusive private-file creation.
-///
-/// A `NotCreated` error carries no authority over the requested name. A
-/// `CreatedButUnready` error carries the exact exclusive-create handle and its
-/// parent/name binding. Unix cleanup compares the held identity with the
-/// no-follow direct-name stat before unlinking; a same-user actor that ignores
-/// the caller's cooperative namespace fence can still race the final unlink.
-/// Windows cleanup marks the exact `FILE_CREATE` handle for deletion, which
-/// retains DELETE access until setup succeeds or rollback completes.
-#[derive(Debug)]
-pub enum FileCreateFailure {
-    /// Exclusive creation did not create an entry.
-    NotCreated(io::Error),
-    /// Creation succeeded, but private setup failed while its exact handle is
-    /// still held for receipt-authorized cleanup.
-    CreatedButUnready {
-        /// Receipt for the exact created file.
-        file: CreatedFile,
-        /// The setup operation that failed after creation.
-        source: io::Error,
-    },
-}
-
-impl std::fmt::Display for FileCreateFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotCreated(source) => write!(formatter, "private file was not created: {source}"),
-            Self::CreatedButUnready { source, .. } => {
-                write!(formatter, "private file was created but setup failed: {source}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for FileCreateFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(match self {
-            Self::NotCreated(source) | Self::CreatedButUnready { source, .. } => source,
-        })
-    }
-}
-
-/// Outcome of removing a file through its exclusive-creation receipt.
-///
-/// `NotRemoved` returns the still-held receipt so the caller can retry without
-/// reopening the name or losing its lock. The other outcomes mean the platform
-/// accepted deletion, but the caller could not confirm a durable, absent
-/// direct name after the held handle was released.
-#[derive(Debug)]
-pub enum CreatedFileRemovalError {
-    /// Removal did not commit; the receipt and its handle remain available.
-    NotRemoved {
-        /// The still-owned file receipt.
-        file: CreatedFile,
-        /// The refusal that prevented deletion.
-        source: io::Error,
-    },
-    /// Removal committed, but flushing the pinned parent failed.
-    RemovedButNotDurable(io::Error),
-    /// Removal was requested, but the direct-name postcondition was not
-    /// confirmed after releasing the held handle.
-    RemovedButUnverified(io::Error),
-}
-
-impl CreatedFileRemovalError {
-    /// Returns the filesystem error that caused the incomplete cleanup.
-    #[must_use]
-    pub fn cause(&self) -> &io::Error {
-        match self {
-            Self::NotRemoved { source, .. }
-            | Self::RemovedButNotDurable(source)
-            | Self::RemovedButUnverified(source) => source,
-        }
-    }
-
-    /// Returns whether the exact receipt accepted a deletion request.
-    #[must_use]
-    pub const fn committed(&self) -> bool {
-        !matches!(self, Self::NotRemoved { .. })
-    }
-
-    /// Converts this result to `io::Error` while preserving commit state in
-    /// the source chain.
-    #[must_use]
-    pub fn into_io_error(self) -> io::Error {
-        let kind = self.cause().kind();
-        io::Error::new(kind, self)
-    }
-}
-
-impl std::fmt::Display for CreatedFileRemovalError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotRemoved { source, .. } => write!(formatter, "file was not removed: {source}"),
-            Self::RemovedButNotDurable(source) => {
-                write!(formatter, "file removal committed but was not flushed: {source}")
-            }
-            Self::RemovedButUnverified(source) => {
-                write!(formatter, "file removal committed but its name was not verified: {source}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CreatedFileRemovalError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cause())
-    }
-}
-
-/// Receipt for a regular file created exclusively beneath a pinned parent.
-///
-/// It binds the exact handle to the parent and direct name until the caller
-/// transfers the handle or completes receipt-authorized cleanup. It does not
-/// claim hostile same-user race exclusion beyond the platform's held-handle
-/// guarantees.
-#[derive(Debug)]
-pub struct CreatedFile {
-    parent: DirectoryCapability,
-    file: File,
-    name: String,
-}
-
-impl CreatedFile {
-    /// Returns the held file handle for writing or locking while the creation
-    /// receipt remains live.
-    #[must_use]
-    pub fn file(&self) -> &File {
-        &self.file
-    }
-
-    /// Returns a mutable reference to the held file handle.
-    #[must_use]
-    pub fn file_mut(&mut self) -> &mut File {
-        &mut self.file
-    }
-
-    /// Transfers the held file handle to a compatibility caller.
-    #[must_use]
-    pub fn into_file(self) -> File {
-        self.file
-    }
-
-    /// Removes the exact created file if its recorded name remains admitted.
-    ///
-    /// On pre-commit refusal the error returns this still-held receipt so the
-    /// caller can retry without reopening the name. Unix checks the held file
-    /// identity immediately before unlinking by name; a same-user actor that
-    /// ignores the cooperative namespace fence can still race that final
-    /// unlink. Windows marks the original exclusive-create handle for deletion,
-    /// releases it, then checks the direct-name postcondition. Releasing the
-    /// handle before verification also covers filesystems where legacy Windows
-    /// delete disposition takes effect only after the last handle closes.
-    pub fn remove(self) -> io::Result<()> {
-        self.remove_with_outcome()
-            .map_err(CreatedFileRemovalError::into_io_error)
-    }
-
-    /// Removes this file and preserves whether deletion committed.
-    pub fn remove_with_outcome(self) -> Result<(), CreatedFileRemovalError> {
-        self.remove_with_flush(DirectoryCapability::sync_all)
-    }
-
-    fn remove_with_flush(
-        self,
-        flush_parent: impl FnOnce(&DirectoryCapability) -> io::Result<()>,
-    ) -> Result<(), CreatedFileRemovalError> {
-        #[cfg(unix)]
-        {
-            use rustix::fs::{AtFlags, FileType, fstat, statat, unlinkat};
-
-            if let Err(source) = self.parent.ensure_writable() {
-                return Err(CreatedFileRemovalError::NotRemoved { file: self, source });
-            }
-            let expected = match fstat(&self.file) {
-                Ok(expected) => expected,
-                Err(error) => {
-                    return Err(CreatedFileRemovalError::NotRemoved {
-                        file: self,
-                        source: io::Error::from(error),
-                    });
-                }
-            };
-            let current = statat(
-                self.parent.handle.as_ref(),
-                &self.name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            );
-            let current = match current {
-                Ok(current) => current,
-                Err(error) => {
-                    return Err(CreatedFileRemovalError::NotRemoved {
-                        file: self,
-                        source: io::Error::from(error),
-                    });
-                }
-            };
-            if !FileType::from_raw_mode(current.st_mode).is_file()
-                || current.st_dev != expected.st_dev
-                || current.st_ino != expected.st_ino
-            {
-                return Err(CreatedFileRemovalError::NotRemoved {
-                    file: self,
-                    source: invalid("created file name now refers to another object"),
-                });
-            }
-            if let Err(error) = unlinkat(self.parent.handle.as_ref(), &self.name, AtFlags::empty()) {
-                return Err(CreatedFileRemovalError::NotRemoved {
-                    file: self,
-                    source: io::Error::from(error),
-                });
-            }
-            let postcondition = match statat(
-                self.parent.handle.as_ref(),
-                &self.name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            ) {
-                Ok(_) => Err(invalid("created file name remained after cleanup")),
-                Err(error) => {
-                    let error = io::Error::from(error);
-                    if error.kind() == io::ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(error)
-                    }
-                }
-            };
-            if let Err(source) = postcondition {
-                return Err(CreatedFileRemovalError::RemovedButUnverified(source));
-            }
-            flush_parent(&self.parent)
-                .map_err(CreatedFileRemovalError::RemovedButNotDurable)
-        }
-        #[cfg(windows)]
-        {
-            if let Err(source) = self
-                .parent
-                .handle
-                .mark_created_file_handle_for_removal(&self.name, &self.file)
-            {
-                return Err(CreatedFileRemovalError::NotRemoved { file: self, source });
-            }
-
-            // FILE_DISPOSITION_INFO_EX with POSIX semantics can remove the
-            // name immediately. The legacy FILE_DISPOSITION_INFO fallback
-            // may defer it until the last handle closes, so verify only after
-            // releasing this exact FILE_CREATE handle.
-            let Self { parent, file, name } = self;
-            drop(file);
-            match parent.open_file_read_write(&name, false) {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Ok(_) => {
-                    return Err(CreatedFileRemovalError::RemovedButUnverified(invalid(
-                        "created file name remained after delete disposition",
-                    )));
-                }
-                Err(error) => {
-                    return Err(CreatedFileRemovalError::RemovedButUnverified(error));
-                }
-            }
-            flush_parent(&parent).map_err(CreatedFileRemovalError::RemovedButNotDurable)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = flush_parent;
-            Err(CreatedFileRemovalError::NotRemoved {
-                file: self,
-                source: unsupported(),
-            })
-        }
-    }
-}
-
 /// Operational receipt tying one exclusive child-creation attempt to its
 /// parent handle, direct name, and held child identity. Windows retains the
 /// exact object returned by exclusive `FILE_CREATE`. Unix pins the private
@@ -1184,43 +889,9 @@ impl DirectoryCapability {
     }
 
     /// Creates one direct regular file exclusively with owner-only mode or ACL.
-    ///
-    /// This compatibility entrypoint delegates to tracked creation and rolls
-    /// back post-create setup failures only through their exact creation
-    /// receipt.
     pub fn create_file_exclusive(&self, name: &str) -> io::Result<File> {
-        match self.create_file_exclusive_tracked(name) {
-            Ok(file) => Ok(file.into_file()),
-            Err(FileCreateFailure::NotCreated(source)) => Err(source),
-            Err(FileCreateFailure::CreatedButUnready { file, source }) => {
-                match file.remove() {
-                    Ok(()) => Err(source),
-                    Err(cleanup) => Err(io::Error::other(FileCreateRollbackFailure {
-                        create: source,
-                        cleanup,
-                    })),
-                }
-            }
-        }
-    }
-
-    /// Creates one owner-only regular file while retaining exact ownership
-    /// information if setup fails after exclusive creation.
-    pub fn create_file_exclusive_tracked(
-        &self,
-        name: &str,
-    ) -> Result<CreatedFile, FileCreateFailure> {
-        self.create_file_exclusive_with(name, || Ok(()))
-    }
-
-    fn create_file_exclusive_with(
-        &self,
-        name: &str,
-        after_create: impl FnOnce() -> io::Result<()>,
-    ) -> Result<CreatedFile, FileCreateFailure> {
-        self.ensure_writable()
-            .map_err(FileCreateFailure::NotCreated)?;
-        validate_component(name).map_err(FileCreateFailure::NotCreated)?;
+        self.ensure_writable()?;
+        validate_component(name)?;
         #[cfg(unix)]
         {
             use rustix::fs::{Mode, OFlags, openat};
@@ -1229,63 +900,20 @@ impl DirectoryCapability {
                 name,
                 OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_bits_truncate(0o600),
-            )
-            .map_err(|error| FileCreateFailure::NotCreated(io::Error::from(error)))?;
+            )?;
             let file = File::from(file);
-            let created = CreatedFile {
-                parent: self.clone(),
-                file,
-                name: name.to_owned(),
-            };
-            let setup = after_create()
-                .and_then(|()| {
-                    rustix::fs::fchmod(
-                        &created.file,
-                        Mode::from_bits_truncate(0o600),
-                    )
-                    .map_err(io::Error::from)
-                })
-                .and_then(|()| validate_private_file(&created.file, Linkage::Named));
-            if let Err(source) = setup {
-                return Err(FileCreateFailure::CreatedButUnready {
-                    file: created,
-                    source,
-                });
-            }
-            return Ok(created);
+            rustix::fs::fchmod(&file, Mode::from_bits_truncate(0o600))?;
+            validate_private_file(&file, Linkage::Named)?;
+            return Ok(file);
         }
         #[cfg(windows)]
         {
-            use crate::win32::workspace_fs::WorkspaceFileCreateFailure;
-            let file = match self
-                .handle
-                .create_file_exclusive_tracked(&[name], after_create)
-            {
-                Ok(file) => file,
-                Err(WorkspaceFileCreateFailure::NotCreated(source)) => {
-                    return Err(FileCreateFailure::NotCreated(source));
-                }
-                Err(WorkspaceFileCreateFailure::Created { file, source, .. }) => {
-                    return Err(FileCreateFailure::CreatedButUnready {
-                        file: CreatedFile {
-                            parent: self.clone(),
-                            file,
-                            name: name.to_owned(),
-                        },
-                        source,
-                    });
-                }
-            };
-            return Ok(CreatedFile {
-                parent: self.clone(),
-                file,
-                name: name.to_owned(),
-            });
+            return self.handle.create_file_exclusive(&[name]);
         }
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = (name, after_create);
-            Err(FileCreateFailure::NotCreated(unsupported()))
+            let _ = name;
+            Err(unsupported())
         }
     }
 
@@ -1768,10 +1396,7 @@ fn file_is_unlinked(_file: &File) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{
-        CreatedDirectoryCleanup, CreatedFileRemovalError, DirectoryCapability,
-        DirectoryCreateFailure, FileCreateFailure,
-    };
+    use super::{CreatedDirectoryCleanup, DirectoryCapability, DirectoryCreateFailure};
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
@@ -1958,116 +1583,6 @@ mod tests {
         drop(created);
         drop(parent);
         fs::remove_dir_all(root.join("moved-original")).expect("remove moved original");
-        fs::remove_dir_all(root).expect("remove fixture");
-    }
-
-    #[test]
-    fn exclusive_file_refusal_preserves_existing_bytes_without_cleanup_authority() {
-        let root = scratch();
-        let path = root.join("occupied");
-        fs::write(&path, b"preserve me").expect("write existing file");
-        let parent = DirectoryCapability::open(&root).expect("pin parent");
-        let failure = parent
-            .create_file_exclusive_tracked("occupied")
-            .expect_err("exclusive create refuses the existing file");
-        assert!(matches!(
-            failure,
-            FileCreateFailure::NotCreated(ref error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-        ));
-        assert_eq!(fs::read(&path).expect("existing file remains"), b"preserve me");
-
-        drop(parent);
-        fs::remove_dir_all(root).expect("remove fixture");
-    }
-
-    #[test]
-    fn postcreate_file_setup_failure_cleans_through_its_creation_receipt() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = scratch();
-        let parent = DirectoryCapability::open(&root).expect("pin parent");
-        let result = parent.create_file_exclusive_with("new-marker", || {
-            fs::set_permissions(
-                root.join("new-marker"),
-                fs::Permissions::from_mode(0),
-            )?;
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "injected file setup refusal after making the name unreadable",
-            ))
-        });
-        let FileCreateFailure::CreatedButUnready { file, source } =
-            result.expect_err("post-create failure retains the exclusive file")
-        else {
-            panic!("post-create failure lost its ownership category");
-        };
-        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
-        file.remove().expect("receipt removes the created marker");
-        assert!(!root.join("new-marker").exists());
-
-        drop(parent);
-        fs::remove_dir_all(root).expect("remove fixture");
-    }
-
-    #[test]
-    fn file_removal_flush_failure_reports_committed_unlink() {
-        let root = scratch();
-        let parent = DirectoryCapability::open(&root).expect("pin parent");
-        let file = parent
-            .create_file_exclusive_tracked("marker")
-            .expect("create marker with receipt");
-        let failure = file
-            .remove_with_flush(|_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "injected parent flush refusal after unlink",
-                ))
-            })
-            .expect_err("post-unlink flush refusal is committed");
-        assert!(failure.committed());
-        assert!(matches!(
-            failure,
-            CreatedFileRemovalError::RemovedButNotDurable(ref source)
-                if source.kind() == std::io::ErrorKind::PermissionDenied
-        ));
-        assert!(
-            !root.join("marker").exists(),
-            "the unlink is not rolled back or reported as uncommitted"
-        );
-
-        drop(parent);
-        fs::remove_dir_all(root).expect("remove fixture");
-    }
-
-    #[test]
-    fn replaced_created_file_name_refuses_cleanup_and_preserves_both_objects() {
-        let root = scratch();
-        let parent = DirectoryCapability::open(&root).expect("pin parent");
-        let original_path = root.join("marker-original");
-        let marker_path = root.join("marker");
-        let result = parent.create_file_exclusive_with("marker", || {
-            fs::rename(&marker_path, &original_path)?;
-            fs::write(&marker_path, b"replacement bytes")?;
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "injected setup refusal after name replacement",
-            ))
-        });
-        let FileCreateFailure::CreatedButUnready { file, source } =
-            result.expect_err("post-create failure retains original file handle")
-        else {
-            panic!("post-create failure lost its ownership category");
-        };
-        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
-        let cleanup = file
-            .remove()
-            .expect_err("receipt must refuse a substituted direct name");
-        assert_eq!(cleanup.kind(), std::io::ErrorKind::InvalidData);
-        assert!(original_path.is_file(), "original object remains untouched");
-        assert_eq!(fs::read(&marker_path).expect("replacement survives"), b"replacement bytes");
-
-        drop(parent);
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
@@ -2345,10 +1860,7 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{
-        CreatedDirectoryCleanup, CreatedFileRemovalError, DirectoryCapability,
-        DirectoryCreateFailure, FileCreateFailure,
-    };
+    use super::{CreatedDirectoryCleanup, DirectoryCapability, DirectoryCreateFailure};
     use std::fs;
     use std::io::Read as _;
     use std::path::PathBuf;
@@ -2420,57 +1932,6 @@ mod windows_tests {
         assert_eq!(
             fs::read(path.join("occupied/payload")).expect("existing bytes remain"),
             b"preserve me"
-        );
-
-        drop(parent);
-        fs::remove_dir_all(path).expect("remove fixture");
-    }
-
-    #[test]
-    fn tracked_file_creation_refusal_preserves_existing_bytes() {
-        let (path, parent) = private_parent("tracked-file-collision");
-        fs::write(path.join("occupied"), b"preserve file bytes")
-            .expect("create existing file");
-        let failure = parent
-            .create_file_exclusive_tracked("occupied")
-            .expect_err("exclusive create refuses the existing file");
-        assert!(matches!(
-            failure,
-            FileCreateFailure::NotCreated(ref error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-        ));
-        assert_eq!(
-            fs::read(path.join("occupied")).expect("existing file remains"),
-            b"preserve file bytes"
-        );
-
-        drop(parent);
-        fs::remove_dir_all(path).expect("remove fixture");
-    }
-
-    #[test]
-    fn windows_file_removal_checks_name_after_releasing_delete_handle() {
-        let (path, parent) = private_parent("file-removal-postcondition");
-        let file = parent
-            .create_file_exclusive_tracked("marker")
-            .expect("create marker with pinned receipt");
-        let failure = file
-            .remove_with_flush(|_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "injected parent flush refusal after delete disposition",
-                ))
-            })
-            .expect_err("post-disposition flush refusal is committed");
-        assert!(failure.committed());
-        assert!(matches!(
-            failure,
-            CreatedFileRemovalError::RemovedButNotDurable(ref source)
-                if source.kind() == std::io::ErrorKind::PermissionDenied
-        ));
-        assert!(
-            !path.join("marker").exists(),
-            "the FILE_CREATE handle is released before checking its deleted name"
         );
 
         drop(parent);
