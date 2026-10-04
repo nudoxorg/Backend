@@ -9,7 +9,7 @@
 use crate::tokens::TypeRole;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, Global,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Position, ScrollHandle,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, ListState, Pixels, Position, ScrollHandle,
     SharedString, Style, TextRun, Window, px, size,
 };
 use std::cell::RefCell;
@@ -283,7 +283,7 @@ pub struct TargetSample {
     pub state: Target,
 }
 
-/// A scrollable container's viewport and its full scrollable content extent,
+/// A scrollable container's viewport and its reported scrollable extent,
 /// both in window space (as if scrolled to the origin), published by a
 /// container so the `offscreen` lint can tell "below the fold, reachable by
 /// scrolling" from "clipped by a fixed box or the window, unreachable".
@@ -300,9 +300,9 @@ pub struct ScrollSample {
     pub key: String,
     /// The container's own visible viewport, in window space.
     pub viewport: BoundsSample,
-    /// The full scrollable content extent, in the same window space, as it
-    /// would be laid out at scroll offset zero (i.e. everything reachable by
-    /// scrolling this container, not just what is visible right now).
+    /// The owner's reported content extent at scroll offset zero. A GPUI
+    /// ListState includes actual heights for measured rows and height hints
+    /// for unmeasured rows, so this is an estimate until those rows paint.
     pub content: BoundsSample,
     /// The scroll's current window displacement (GPUI `ScrollHandle::offset`:
     /// negative when content has moved up or left). Missing means this sample
@@ -323,7 +323,7 @@ pub struct ScrollOffset {
 
 impl ScrollSample {
     /// Whether `bounds` is reachable by scrolling this container: inside the
-    /// full content extent on every axis the container actually scrolls, and
+    /// reported content extent on every axis the container actually scrolls, and
     /// inside the viewport on every axis it does not (scrolling that axis
     /// cannot help, so the container's own fixed cross-axis size still
     /// bounds it). A container whose content does not exceed its viewport on
@@ -618,12 +618,24 @@ pub fn record_scroll_with_offset(
 /// with the same key. Both observations then come from the same native handle
 /// and the renderer's actual child ancestry.
 pub fn scroll_probe(key: impl Into<SharedString>, handle: ScrollHandle) -> impl IntoElement {
-    ScrollProbe { key: ElementId::Name(key.into()), handle }
+    ScrollProbe { key: ElementId::Name(key.into()), source: ScrollSource::Handle(handle) }
+}
+
+/// Publishes the viewport, estimated reach, and displacement owned by a
+/// heterogeneous GPUI list. Measured rows contribute actual heights; only
+/// unmeasured offscreen rows use the list owner's declared height hints.
+pub fn list_scroll_probe(key: impl Into<SharedString>, state: ListState) -> impl IntoElement {
+    ScrollProbe { key: ElementId::Name(key.into()), source: ScrollSource::List(state) }
+}
+
+enum ScrollSource {
+    Handle(ScrollHandle),
+    List(ListState),
 }
 
 struct ScrollProbe {
     key: ElementId,
-    handle: ScrollHandle,
+    source: ScrollSource,
 }
 
 impl IntoElement for ScrollProbe {
@@ -672,13 +684,15 @@ impl Element for ScrollProbe {
         if !enabled(cx) {
             return ();
         }
-        let viewport = self.handle.bounds();
-        let reach = self.handle.max_offset();
+        let (viewport, reach, offset) = match &self.source {
+            ScrollSource::Handle(handle) => (handle.bounds(), handle.max_offset(), handle.offset()),
+            ScrollSource::List(state) => (state.viewport_bounds(), state.max_offset_for_scrollbar(), state.scroll_px_offset_for_scrollbar()),
+        };
         let content = Bounds::new(
             viewport.origin,
             size(viewport.size.width + reach.x, viewport.size.height + reach.y),
         );
-        record_scroll_with_offset(cx, &self.key, viewport, content, self.handle.offset());
+        record_scroll_with_offset(cx, &self.key, viewport, content, offset);
     }
 
     fn paint(

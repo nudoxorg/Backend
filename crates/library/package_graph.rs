@@ -7,7 +7,9 @@
 //! questions without pretending that an unresolved requirement is a resolved
 //! edge.
 
-use crate::{PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem};
+use crate::{
+    MAX_PRODUCT_TEXT_BYTES, PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -251,6 +253,16 @@ impl PackageGraphSourceKey {
         Self::new(coordinate, PackageGraphSourceAuthority::Unattributed)
     }
 
+    /// Orders source keys by the shared canonical coordinate identity, then
+    /// by authority kind and authority bytes.
+    #[must_use]
+    pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.coordinate
+            .canonical_cmp(&other.coordinate)
+            .then_with(|| self.authority.kind_tag().cmp(&other.authority.kind_tag()))
+            .then_with(|| self.authority.id_bytes().cmp(&other.authority.id_bytes()))
+    }
+
     /// Canonical coordinate spelling, for diagnostics and presentation.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -263,6 +275,88 @@ pub type PackageDependencySourceFacts = (
     PackageGraphSourceKey,
     DependencyFacts<Box<[PackageDependencyRecord]>>,
 );
+
+/// One closed package-source state borrowed while checking its v1 witness.
+///
+/// This deliberately excludes nonempty Known rows: those require full graph
+/// admission through [`CheckedPackageGraphFacts`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BorrowedPackageGraphSourceState<'a> {
+    /// The source is known to have no dependency edges.
+    KnownEmpty,
+    /// The source did not publish dependency metadata.
+    Unknown(&'a ProductText),
+    /// The source could not provide dependency metadata.
+    Unavailable(&'a ProductText),
+}
+
+/// A v1 source-state witness that was admitted without owning or cloning its
+/// source coordinate or reason text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CheckedPackageGraphSourceWitness([u8; 32]);
+
+impl CheckedPackageGraphSourceWitness {
+    /// Admits one exact source and closed source state, then computes its
+    /// existing v1 witness directly from borrowed values. This specialized
+    /// check does not admit nonempty Known facts or certify edge rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductAdmissionError`] for the PURL ordering floor or a
+    /// local coordinate/reason that does not satisfy the retained
+    /// [`ProductText`] shape.
+    pub fn admit(
+        source: &PackageGraphSourceKey,
+        state: BorrowedPackageGraphSourceState<'_>,
+    ) -> Result<Self, ProductAdmissionError> {
+        admit_package_graph_source_coordinate(&source.coordinate)?;
+        let state = match state {
+            BorrowedPackageGraphSourceState::KnownEmpty => SourceWitnessState::KnownRows(&[]),
+            BorrowedPackageGraphSourceState::Unknown(reason) => {
+                admit_package_graph_source_text(reason)?;
+                SourceWitnessState::Unknown(reason)
+            }
+            BorrowedPackageGraphSourceState::Unavailable(reason) => {
+                admit_package_graph_source_text(reason)?;
+                SourceWitnessState::Unavailable(reason)
+            }
+        };
+        Ok(Self(package_dependency_source_witness_v1(source, state)))
+    }
+
+    /// Returns the checked fixed-width source-state digest.
+    #[must_use]
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+fn admit_package_graph_source_coordinate(
+    coordinate: &PackageReference,
+) -> Result<(), ProductAdmissionError> {
+    match coordinate {
+        PackageReference::Purl(value) if value.as_str().is_empty() => {
+            Err(ProductAdmissionError::PackageReference)
+        }
+        PackageReference::Purl(_) => Ok(()),
+        PackageReference::Local(value) => admit_package_graph_source_text(value),
+    }
+}
+
+fn admit_package_graph_source_text(value: &ProductText) -> Result<(), ProductAdmissionError> {
+    let text = value.as_str();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(ProductAdmissionError::EmptyText);
+    }
+    if trimmed.len() > MAX_PRODUCT_TEXT_BYTES
+        || trimmed.bytes().any(|byte| byte == 0)
+        || trimmed.len() != text.len()
+    {
+        return Err(ProductAdmissionError::TextBound);
+    }
+    Ok(())
+}
 
 /// Validated immutable dependency facts with their canonical witness cached.
 ///
@@ -283,6 +377,13 @@ impl CheckedPackageGraphFacts {
     ) -> Result<Self, ProductAdmissionError> {
         let mut source_keys = BTreeSet::new();
         for (source, state) in &mut facts {
+            admit_package_graph_source_coordinate(&source.coordinate)?;
+            match state {
+                DependencyFacts::Known(_) => {}
+                DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
+                    admit_package_graph_source_text(reason)?;
+                }
+            }
             if !source_keys.insert(source.clone()) {
                 return Err(ProductAdmissionError::DependencyShape);
             }
@@ -294,6 +395,7 @@ impl CheckedPackageGraphFacts {
             }
             let mut identities = BTreeSet::new();
             for row in rows.iter() {
+                row.target.admit()?;
                 if row.source != source.coordinate
                     || row.source_authority != source.authority
                     || !source.authority.matches_evidence(row.evidence.authority)
@@ -308,13 +410,7 @@ impl CheckedPackageGraphFacts {
         // Keep source entries in the same order as Turso's keyed source
         // witness table. Projection sync can then merge borrowed slices
         // directly without allocating and sorting a second source vector.
-        facts.sort_unstable_by(|(left, _), (right, _)| {
-            left.coordinate
-                .as_str()
-                .cmp(right.coordinate.as_str())
-                .then_with(|| left.authority.kind_tag().cmp(&right.authority.kind_tag()))
-                .then_with(|| left.authority.id_bytes().cmp(&right.authority.id_bytes()))
-        });
+        facts.sort_unstable_by(|(left, _), (right, _)| left.canonical_cmp(right));
         // Keep one digest beside each immutable source entry. Consumers can
         // compare a checked snapshot with a persisted per-source index without
         // re-hashing every edge during every projection update.
@@ -573,30 +669,78 @@ fn package_dependency_source_facts_witness(
     source: &PackageGraphSourceKey,
     state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
 ) -> [u8; 32] {
-    package_dependency_source_facts_witness_inner(source, state, false)
+    match state {
+        DependencyFacts::Known(rows) => {
+            if rows.windows(2).all(|pair| {
+                (pair[0].recomputed_version(), pair[0].facts_version)
+                    <= (pair[1].recomputed_version(), pair[1].facts_version)
+            }) {
+                package_dependency_source_witness_v1(
+                    source,
+                    SourceWitnessState::KnownRows(rows.as_ref()),
+                )
+            } else {
+                // Unchecked callers may present rows in any order. Sort only
+                // the fixed-width edge identities, then use the same v1
+                // writer as checked rows and the borrowed closed-state API.
+                let mut edges = rows
+                    .iter()
+                    .map(|row| (row.recomputed_version(), row.facts_version))
+                    .collect::<Vec<_>>();
+                edges.sort_unstable();
+                package_dependency_source_witness_v1(
+                    source,
+                    SourceWitnessState::KnownEdgeVersions(&edges),
+                )
+            }
+        }
+        DependencyFacts::Unknown(reason) => package_dependency_source_witness_v1(
+            source,
+            SourceWitnessState::Unknown(reason),
+        ),
+        DependencyFacts::Unavailable(reason) => package_dependency_source_witness_v1(
+            source,
+            SourceWitnessState::Unavailable(reason),
+        ),
+    }
 }
 
 fn package_dependency_source_facts_witness_canonical(
     source: &PackageGraphSourceKey,
     state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
 ) -> [u8; 32] {
-    package_dependency_source_facts_witness_inner(source, state, true)
+    package_dependency_source_witness_v1(source, source_witness_state_from_facts(state))
 }
 
-fn package_dependency_source_facts_witness_inner(
-    source: &PackageGraphSourceKey,
+#[derive(Clone, Copy)]
+enum SourceWitnessState<'a> {
+    KnownRows(&'a [PackageDependencyRecord]),
+    KnownEdgeVersions(&'a [([u8; 32], [u8; 32])]),
+    Unknown(&'a ProductText),
+    Unavailable(&'a ProductText),
+}
+
+fn source_witness_state_from_facts(
     state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
-    canonical_edges: bool,
+) -> SourceWitnessState<'_> {
+    match state {
+        DependencyFacts::Known(rows) => SourceWitnessState::KnownRows(rows.as_ref()),
+        DependencyFacts::Unknown(reason) => SourceWitnessState::Unknown(reason),
+        DependencyFacts::Unavailable(reason) => SourceWitnessState::Unavailable(reason),
+    }
+}
+
+fn package_dependency_source_witness_v1(
+    source: &PackageGraphSourceKey,
+    state: SourceWitnessState<'_>,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"nudox.package-dependency-source-facts.v1\0");
 
     // Stream the canonical nested package-reference field encoding, avoiding
     // a temporary encoded source or edge vector.
-    let (kind, coordinate) = match &source.coordinate {
-        PackageReference::Purl(value) => (1_u8, value.as_str()),
-        PackageReference::Local(value) => (2_u8, value.as_str()),
-    };
+    let kind = source.coordinate.kind().tag();
+    let coordinate = source.coordinate.as_str();
     let reference_len = (1 + 8 + 1 + 1 + 8 + coordinate.len()) as u64;
     hasher.update(&[1]);
     hasher.update(&reference_len.to_be_bytes());
@@ -615,40 +759,29 @@ fn package_dependency_source_facts_witness_inner(
     hasher.update(&source.authority.id_bytes());
 
     match state {
-        DependencyFacts::Known(rows) => {
+        SourceWitnessState::KnownRows(rows) => {
             hasher.update(&[2]);
             hasher.update(&1_u64.to_be_bytes());
             hasher.update(&[1]);
-            if canonical_edges
-                || rows.windows(2).all(|pair| {
-                    (pair[0].recomputed_version(), pair[0].facts_version)
-                        <= (pair[1].recomputed_version(), pair[1].facts_version)
-                })
-            {
-                for row in rows.iter() {
-                    hash_source_edge(&mut hasher, row.recomputed_version(), row.facts_version);
-                }
-            } else {
-                // Unchecked callers may present rows in any order. Keep this
-                // fallback bounded to one source while checked snapshots use
-                // their already canonical row order and allocate no edge list.
-                let mut edges = rows
-                    .iter()
-                    .map(|row| (row.recomputed_version(), row.facts_version))
-                    .collect::<Vec<_>>();
-                edges.sort_unstable();
-                for (content_version, declared_version) in edges {
-                    hash_source_edge(&mut hasher, content_version, declared_version);
-                }
+            for row in rows.iter() {
+                hash_source_edge(&mut hasher, row.recomputed_version(), row.facts_version);
             }
         }
-        DependencyFacts::Unknown(reason) => {
+        SourceWitnessState::KnownEdgeVersions(edges) => {
+            hasher.update(&[2]);
+            hasher.update(&1_u64.to_be_bytes());
+            hasher.update(&[1]);
+            for (content_version, declared_version) in edges {
+                hash_source_edge(&mut hasher, *content_version, *declared_version);
+            }
+        }
+        SourceWitnessState::Unknown(reason) => {
             hasher.update(&[2]);
             hasher.update(&1_u64.to_be_bytes());
             hasher.update(&[2]);
             hash_field(&mut hasher, 4, reason.as_str().as_bytes());
         }
-        DependencyFacts::Unavailable(reason) => {
+        SourceWitnessState::Unavailable(reason) => {
             hasher.update(&[2]);
             hasher.update(&1_u64.to_be_bytes());
             hasher.update(&[3]);
@@ -769,17 +902,27 @@ impl PackageDependencyTarget {
             requirement: ProductText::new(requirement)?,
             resolved,
         };
-        if let Some(reference) = &target.resolved {
+        target.admit()?;
+        Ok(target)
+    }
+
+    /// Rechecks a target assembled from public fields or decoded through serde.
+    ///
+    /// Resolved dependencies are exact registry package coordinates. This
+    /// method is allocation-free so graph and page admission can enforce that
+    /// contract even when callers bypass [`Self::new`].
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Some(reference) = &self.resolved {
             let PackageReference::Purl(purl) = reference else {
                 return Err(ProductAdmissionError::PackageReference);
             };
-            if purl.package_type().registry() != Some(ecosystem)
-                || purl.lineage_name() != target.name.as_str()
+            if purl.package_type().registry() != Some(self.ecosystem)
+                || purl.lineage_name() != self.name.as_str()
             {
                 return Err(ProductAdmissionError::PackageReference);
             }
         }
-        Ok(target)
+        Ok(())
     }
 }
 
@@ -953,10 +1096,8 @@ fn dependency_authority_tag(authority: DependencyAuthority) -> u8 {
 }
 
 fn package_reference_bytes(reference: &PackageReference) -> Vec<u8> {
-    let (kind, value) = match reference {
-        PackageReference::Purl(value) => (1, value.as_str()),
-        PackageReference::Local(value) => (2, value.as_str()),
-    };
+    let kind = reference.kind().tag();
+    let value = reference.as_str();
     let mut encoded = Vec::with_capacity(19 + value.len());
     append_field(&mut encoded, 1, &[kind]);
     append_field(&mut encoded, 2, value.as_bytes());
@@ -1004,6 +1145,7 @@ pub fn admit_dependency_rows(
     }
     let mut identities = BTreeSet::new();
     for row in &rows {
+        row.target.admit()?;
         if row.facts_version != row.recomputed_version() || !identities.insert(row.facts_version) {
             return Err(ProductAdmissionError::DependencyShape);
         }
@@ -1022,7 +1164,7 @@ pub fn admit_dependency_rows(
 #[derive(Debug, Default)]
 struct PackageGraphIndex {
     by_source: BTreeMap<PackageGraphSourceKey, usize>,
-    by_coordinate: BTreeMap<String, Vec<usize>>,
+    by_coordinate: BTreeMap<PackageReference, Vec<usize>>,
     reverse: BTreeMap<RegistryEcosystem, BTreeMap<String, ReverseEdges>>,
     first_incomplete_source: Option<usize>,
 }
@@ -1104,8 +1246,8 @@ impl IndexedCheckedPackageGraph {
         self.checked.witness()
     }
 
-    /// Returns the unique source fact for `package`, or exact authority
-    /// choices if several sources publish that coordinate.
+    /// Returns the unique source fact for this typed `package` coordinate, or
+    /// exact authority choices if several sources publish it.
     #[must_use]
     pub fn dependencies(&self, package: &PackageReference) -> PackageDependencyLookup<'_> {
         self.index.dependencies(self.checked.facts(), package)
@@ -1163,7 +1305,7 @@ struct ReverseEdge {
 #[derive(Clone, Debug, Default)]
 struct ReverseEdges {
     unresolved: Vec<ReverseEdge>,
-    resolved: BTreeMap<String, Vec<ReverseEdge>>,
+    resolved: BTreeMap<PackageReference, Vec<ReverseEdge>>,
 }
 
 /// Sources that declare a runtime or optional edge onto one package.
@@ -1211,28 +1353,28 @@ impl ReverseCoverage<'_> {
     }
 }
 
-/// Result of a coordinate-only forward graph lookup.
+/// Result of a typed-coordinate forward graph lookup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PackageDependencyLookup<'a> {
-    /// No source fact has this coordinate.
+    /// No source fact has this typed coordinate.
     Missing,
-    /// Exactly one source authority owns this coordinate.
+    /// Exactly one source authority owns this typed coordinate.
     Exact {
-        /// Exact source authority selected by the unique coordinate match.
+        /// Exact source authority selected by the unique typed-coordinate match.
         source: &'a PackageGraphSourceKey,
         /// Facts observed from that authority.
         facts: &'a DependencyFacts<Box<[PackageDependencyRecord]>>,
     },
-    /// Several authorities publish the same coordinate; the caller must pick
-    /// one exact key rather than merging or selecting by iteration order.
+    /// Several authorities publish the same typed coordinate; the caller must
+    /// pick one exact key rather than merging or selecting by iteration order.
     Ambiguous(Box<[PackageGraphSourceKey]>),
 }
 
 impl PackageGraphIndex {
     /// Builds forward and reverse adjacency from source/authority order.
     ///
-    /// Multiple registries may publish the same coordinate. Their facts stay
-    /// separate in both directions; malformed rows whose embedded source key
+    /// Multiple registries may publish the same typed coordinate. Their facts
+    /// stay separate in both directions; malformed rows whose embedded source key
     /// disagrees with the containing key are ignored by this convenience
     /// index and rejected by [`CheckedPackageGraphFacts::new`].
     #[must_use]
@@ -1243,7 +1385,7 @@ impl PackageGraphIndex {
                 index.by_source.insert(source.clone(), source_index);
                 index
                     .by_coordinate
-                    .entry(source.coordinate.as_str().to_owned())
+                    .entry(source.coordinate.clone())
                     .or_default()
                     .push(source_index);
             }
@@ -1271,7 +1413,7 @@ impl PackageGraphIndex {
                         if let Some(resolved) = &row.target.resolved {
                             posting
                                 .resolved
-                                .entry(resolved.as_str().to_owned())
+                                .entry(resolved.clone())
                                 .or_default()
                                 .push(edge);
                         } else {
@@ -1307,7 +1449,7 @@ impl PackageGraphIndex {
         facts: &'a [PackageDependencySourceFacts],
         package: &PackageReference,
     ) -> PackageDependencyLookup<'a> {
-        let Some(indices) = self.by_coordinate.get(package.as_str()) else {
+        let Some(indices) = self.by_coordinate.get(package) else {
             return PackageDependencyLookup::Missing;
         };
         if indices.len() != 1 {
@@ -1372,7 +1514,7 @@ impl PackageGraphIndex {
             };
             for edge in unresolved
                 .iter()
-                .chain(edges.resolved.get(target.as_str()).into_iter().flatten())
+                .chain(edges.resolved.get(package).into_iter().flatten())
             {
                 if let Some((source, _)) = facts.get(edge.source_index) {
                     sources.insert(source.clone());
@@ -1461,7 +1603,7 @@ impl PackageGraphIndex {
         };
         let resolved = postings
             .resolved
-            .get(target.as_str())
+            .get(package)
             .map_or(&[][..], Vec::as_slice);
         let mut unresolved_index = after.map_or(0, |edge_id| {
             unresolved.partition_point(|edge| reverse_edge_id(facts, edge) <= edge_id)
@@ -1550,7 +1692,7 @@ pub fn linear_dependent_sources(
                         continue;
                     }
                     match &row.target.resolved {
-                        Some(resolved) if resolved.as_str() == target.as_str() => {
+                        Some(resolved) if resolved == package => {
                             sources.insert(source.clone());
                         }
                         None if qualified => unresolved_authority = true,
@@ -1590,6 +1732,16 @@ mod tests {
 
     fn source() -> PackageReference {
         PackageReference::parse("pkg:cargo/demo@1.0.0").expect("valid source")
+    }
+
+    fn source_witness_hex(digest: &[u8; 32]) -> String {
+        use std::fmt::Write as _;
+
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            write!(&mut hex, "{byte:02x}").expect("write digest hex");
+        }
+        hex
     }
 
     fn edge(requirement: &str, frontier: u8) -> PackageDependencyRecord {
@@ -2278,6 +2430,269 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_closed_source_witness_matches_v1_goldens_and_legacy_facts() {
+        let source = PackageGraphSourceKey::new(
+            PackageReference::parse("pkg:cargo/witness-golden@1.0.0").expect("source"),
+            PackageGraphSourceAuthority::Registry(RegistryAuthorityId::from_configured_source(
+                [0x42; 32],
+            )),
+        );
+        let reason = ProductText::new("golden reason").expect("reason");
+
+        let known = CheckedPackageGraphSourceWitness::admit(
+            &source,
+            BorrowedPackageGraphSourceState::KnownEmpty,
+        )
+        .expect("Known-empty source witness");
+        let legacy_known = CheckedPackageGraphFacts::new(vec![(
+            source.clone(),
+            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+        )])
+        .expect("legacy Known-empty facts");
+        assert_eq!(
+            source_witness_hex(known.digest()),
+            "e750934ddd3bb2881b5e5957757c13c30aabd80e1497b9b97d85715e925b5c4d"
+        );
+        assert_eq!(known.digest(), &legacy_known.source_witnesses()[0]);
+
+        let unknown = CheckedPackageGraphSourceWitness::admit(
+            &source,
+            BorrowedPackageGraphSourceState::Unknown(&reason),
+        )
+        .expect("Unknown source witness");
+        let legacy_unknown = CheckedPackageGraphFacts::new(vec![(
+            source.clone(),
+            DependencyFacts::Unknown(reason.clone()),
+        )])
+        .expect("legacy Unknown facts");
+        assert_eq!(
+            source_witness_hex(unknown.digest()),
+            "87f5d79ead14bdc60912a46b6fb228c20741a32d3103a9a70ee8985f47241e16"
+        );
+        assert_eq!(unknown.digest(), &legacy_unknown.source_witnesses()[0]);
+
+        let unavailable = CheckedPackageGraphSourceWitness::admit(
+            &source,
+            BorrowedPackageGraphSourceState::Unavailable(&reason),
+        )
+        .expect("Unavailable source witness");
+        let legacy_unavailable = CheckedPackageGraphFacts::new(vec![(
+            source.clone(),
+            DependencyFacts::Unavailable(reason.clone()),
+        )])
+        .expect("legacy Unavailable facts");
+        assert_eq!(
+            source_witness_hex(unavailable.digest()),
+            "ba21d04b26c0ef39ddb1d061e8ab0b348b644885377487ced6ee2a63d4c45b87"
+        );
+        assert_eq!(unavailable.digest(), &legacy_unavailable.source_witnesses()[0]);
+    }
+
+    #[test]
+    fn borrowed_source_witness_separates_typed_identity_and_state() {
+        let spelling = "pkg:cargo/witness-kind@1.0.0";
+        let purl = PackageReference::from_kind(crate::PackageReferenceKind::Purl, spelling)
+            .expect("PURL");
+        let local = PackageReference::from_kind(crate::PackageReferenceKind::Local, spelling)
+            .expect("local label that begins with pkg:");
+        assert_eq!(purl.as_str(), local.as_str());
+        assert_eq!(local.kind(), crate::PackageReferenceKind::Local);
+        let registry = PackageGraphSourceAuthority::Registry(
+            RegistryAuthorityId::from_configured_source([0x24; 32]),
+        );
+        let purl_key = PackageGraphSourceKey::new(purl, registry);
+        let local_key = PackageGraphSourceKey::new(local, registry);
+        let reason = ProductText::new("same reason").expect("reason");
+        let changed_reason = ProductText::new("changed reason").expect("reason");
+
+        let purl_unknown = CheckedPackageGraphSourceWitness::admit(
+            &purl_key,
+            BorrowedPackageGraphSourceState::Unknown(&reason),
+        )
+        .expect("PURL state");
+        let local_unknown = CheckedPackageGraphSourceWitness::admit(
+            &local_key,
+            BorrowedPackageGraphSourceState::Unknown(&reason),
+        )
+        .expect("Local state");
+        let unavailable = CheckedPackageGraphSourceWitness::admit(
+            &purl_key,
+            BorrowedPackageGraphSourceState::Unavailable(&reason),
+        )
+        .expect("Unavailable state");
+        let changed_reason_witness = CheckedPackageGraphSourceWitness::admit(
+            &purl_key,
+            BorrowedPackageGraphSourceState::Unknown(&changed_reason),
+        )
+        .expect("changed reason");
+        let known_empty = CheckedPackageGraphSourceWitness::admit(
+            &purl_key,
+            BorrowedPackageGraphSourceState::KnownEmpty,
+        )
+        .expect("Known-empty state");
+        let other_authority = PackageGraphSourceKey::new(
+            purl_key.coordinate.clone(),
+            PackageGraphSourceAuthority::Local([0x24; 32]),
+        );
+        let other_authority_witness = CheckedPackageGraphSourceWitness::admit(
+            &other_authority,
+            BorrowedPackageGraphSourceState::Unknown(&reason),
+        )
+        .expect("different authority kind");
+        let other_authority_id = PackageGraphSourceKey::new(
+            purl_key.coordinate.clone(),
+            PackageGraphSourceAuthority::Registry(
+                RegistryAuthorityId::from_configured_source([0x25; 32]),
+            ),
+        );
+        let other_authority_id_witness = CheckedPackageGraphSourceWitness::admit(
+            &other_authority_id,
+            BorrowedPackageGraphSourceState::Unknown(&reason),
+        )
+        .expect("different authority identity");
+
+        assert_ne!(purl_unknown.digest(), local_unknown.digest());
+        assert_ne!(purl_unknown.digest(), unavailable.digest());
+        assert_ne!(purl_unknown.digest(), changed_reason_witness.digest());
+        assert_ne!(purl_unknown.digest(), known_empty.digest());
+        assert_ne!(purl_unknown.digest(), other_authority_witness.digest());
+        assert_ne!(purl_unknown.digest(), other_authority_id_witness.digest());
+    }
+
+    #[test]
+    fn borrowed_source_witness_rejects_non_admitted_public_values() {
+        let authority = PackageGraphSourceAuthority::Unattributed;
+        let reason = ProductText::new("valid reason").expect("reason");
+        assert!(CheckedPackageGraphFacts::new(Vec::new()).is_ok());
+        let floor = PackageGraphSourceKey::new(
+            PackageReference::Purl(crate::PackageCoordinate::ordering_floor()),
+            authority,
+        );
+        assert!(CheckedPackageGraphSourceWitness::admit(
+            &floor,
+            BorrowedPackageGraphSourceState::KnownEmpty,
+        )
+        .is_err());
+        assert!(CheckedPackageGraphFacts::new(vec![(
+            floor.clone(),
+            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+        )])
+        .is_err());
+
+        let padded_source = PackageGraphSourceKey::new(
+            PackageReference::Local(ProductText::from_static(" padded local label ")),
+            authority,
+        );
+        assert!(CheckedPackageGraphSourceWitness::admit(
+            &padded_source,
+            BorrowedPackageGraphSourceState::KnownEmpty,
+        )
+        .is_err());
+        assert!(CheckedPackageGraphFacts::new(vec![(
+            padded_source,
+            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+        )])
+        .is_err());
+
+        let source = PackageGraphSourceKey::unattributed(source());
+        let padded_reason = ProductText::from_static(" padded reason ");
+        assert!(CheckedPackageGraphSourceWitness::admit(
+            &source,
+            BorrowedPackageGraphSourceState::Unknown(&padded_reason),
+        )
+        .is_err());
+        assert!(CheckedPackageGraphSourceWitness::admit(
+            &source,
+            BorrowedPackageGraphSourceState::Unavailable(&padded_reason),
+        )
+        .is_err());
+        assert!(CheckedPackageGraphFacts::new(vec![(
+            source.clone(),
+            DependencyFacts::Unknown(padded_reason.clone()),
+        )])
+        .is_err());
+        assert!(CheckedPackageGraphFacts::new(vec![(
+            source.clone(),
+            DependencyFacts::Unavailable(padded_reason),
+        )])
+        .is_err());
+
+        assert!(CheckedPackageGraphSourceWitness::admit(
+            &source,
+            BorrowedPackageGraphSourceState::Unknown(&reason),
+        )
+        .is_ok());
+        assert!(CheckedPackageGraphFacts::new(vec![(
+            source,
+            DependencyFacts::Unknown(reason),
+        )])
+        .is_ok());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn borrowed_source_witness_rechecks_empty_nul_and_oversized_static_values() {
+        fn leaked_text(value: String) -> ProductText {
+            ProductText::from_static(Box::leak(value.into_boxed_str()))
+        }
+
+        let authority = PackageGraphSourceAuthority::Unattributed;
+        let valid_source = PackageGraphSourceKey::new(
+            PackageReference::parse("pkg:cargo/witness-shape@1.0.0").expect("source"),
+            authority,
+        );
+        let invalid_reasons = [
+            ProductText::from_static(""),
+            ProductText::from_static("reason\0with-nul"),
+            leaked_text("r".repeat(MAX_PRODUCT_TEXT_BYTES + 1)),
+        ];
+        for reason in &invalid_reasons {
+            assert!(CheckedPackageGraphSourceWitness::admit(
+                &valid_source,
+                BorrowedPackageGraphSourceState::Unknown(reason),
+            )
+            .is_err());
+            assert!(CheckedPackageGraphSourceWitness::admit(
+                &valid_source,
+                BorrowedPackageGraphSourceState::Unavailable(reason),
+            )
+            .is_err());
+            assert!(CheckedPackageGraphFacts::new(vec![(
+                valid_source.clone(),
+                DependencyFacts::Unknown(reason.clone()),
+            )])
+            .is_err());
+            assert!(CheckedPackageGraphFacts::new(vec![(
+                valid_source.clone(),
+                DependencyFacts::Unavailable(reason.clone()),
+            )])
+            .is_err());
+        }
+
+        let invalid_sources = [
+            ProductText::from_static(""),
+            ProductText::from_static("local\0source"),
+            leaked_text("s".repeat(MAX_PRODUCT_TEXT_BYTES + 1)),
+        ];
+        for coordinate in invalid_sources {
+            let source = PackageGraphSourceKey::new(
+                PackageReference::Local(coordinate),
+                authority,
+            );
+            assert!(CheckedPackageGraphSourceWitness::admit(
+                &source,
+                BorrowedPackageGraphSourceState::KnownEmpty,
+            )
+            .is_err());
+            assert!(CheckedPackageGraphFacts::new(vec![(
+                source,
+                DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+            )])
+            .is_err());
+        }
+    }
+
+    #[test]
     fn checked_graph_facts_reject_stale_duplicate_and_mismatched_rows() {
         let source = PackageGraphSourceKey::unattributed(source());
         let valid = edge("^1", 1);
@@ -2470,6 +2885,173 @@ mod tests {
             package_dependency_facts_witness(&original_facts),
             package_dependency_facts_witness(&mutated_facts)
         );
+    }
+
+    #[test]
+    fn package_reference_kind_separates_lookups_and_canonicalizes_equal_spellings() {
+        let text = "pkg:cargo/widget@1.0.0";
+        let purl = PackageReference::from_kind(crate::PackageReferenceKind::Purl, text)
+            .expect("PURL reference");
+        let local = PackageReference::from_kind(crate::PackageReferenceKind::Local, text)
+            .expect("local reference with the same display spelling");
+        assert_eq!(purl.as_str(), local.as_str());
+
+        let purl_source = PackageGraphSourceKey::unattributed(purl.clone());
+        let local_source = PackageGraphSourceKey::unattributed(local.clone());
+        assert_eq!(
+            purl_source.canonical_cmp(&local_source),
+            std::cmp::Ordering::Less
+        );
+        let purl_facts = (
+            purl_source.clone(),
+            DependencyFacts::Unknown(ProductText::from_static("purl facts")),
+        );
+        let local_facts = (
+            local_source.clone(),
+            DependencyFacts::Unknown(ProductText::from_static("local facts")),
+        );
+
+        let local_only =
+            IndexedCheckedPackageGraph::new(vec![local_facts.clone()], generous_graph_limits())
+                .expect("local-only graph");
+        assert_eq!(
+            local_only.dependencies(&purl),
+            PackageDependencyLookup::Missing,
+            "a PURL lookup must not return a local fact with the same spelling"
+        );
+        assert!(matches!(
+            local_only.dependencies(&local),
+            PackageDependencyLookup::Exact {
+                source,
+                facts: DependencyFacts::Unknown(reason),
+            } if source == &local_source && reason.as_str() == "local facts"
+        ));
+
+        let facts = vec![local_facts.clone(), purl_facts.clone()];
+        let reordered = vec![purl_facts, local_facts];
+        let checked = CheckedPackageGraphFacts::new(facts.clone()).expect("checked graph");
+        let checked_reordered =
+            CheckedPackageGraphFacts::new(reordered.clone()).expect("checked reordered graph");
+        assert_eq!(checked.facts(), checked_reordered.facts());
+        assert_eq!(
+            checked.source_witnesses(),
+            checked_reordered.source_witnesses()
+        );
+        assert_eq!(checked.witness(), checked_reordered.witness());
+        assert_eq!(
+            checked.facts()[0].0.coordinate.kind(),
+            crate::PackageReferenceKind::Purl
+        );
+        assert_eq!(
+            package_dependency_facts_witness(&facts),
+            package_dependency_facts_witness(&reordered),
+            "the existing kind-tagged global witness stays input-order independent"
+        );
+
+        let both = IndexedCheckedPackageGraph::new(facts, generous_graph_limits())
+            .expect("both typed identities may coexist");
+        assert!(matches!(
+            both.dependencies(&purl),
+            PackageDependencyLookup::Exact {
+                source,
+                facts: DependencyFacts::Unknown(reason),
+            } if source == &purl_source && reason.as_str() == "purl facts"
+        ));
+        assert!(matches!(
+            both.dependencies(&local),
+            PackageDependencyLookup::Exact {
+                source,
+                facts: DependencyFacts::Unknown(reason),
+            } if source == &local_source && reason.as_str() == "local facts"
+        ));
+    }
+
+    #[test]
+    fn resolved_target_admission_and_reverse_lookup_preserve_typed_identity() {
+        let source = source();
+        let purl_target = PackageReference::parse("pkg:cargo/widget@1.0.0").expect("PURL target");
+        let local_target =
+            PackageReference::from_kind(crate::PackageReferenceKind::Local, purl_target.as_str())
+                .expect("same-spelling Local target");
+        assert_eq!(purl_target.as_str(), local_target.as_str());
+
+        let raw_target = |ecosystem, name: &str, resolved| PackageDependencyTarget {
+            ecosystem,
+            name: ProductText::new(name).expect("target name"),
+            requirement: ProductText::new("^1").expect("requirement"),
+            resolved: Some(resolved),
+        };
+        let make_row = |target| {
+            PackageDependencyRecord::new_with_source_authority(
+                source.clone(),
+                PackageGraphSourceAuthority::Unattributed,
+                target,
+                DependencyScope::Runtime,
+                false,
+                DependencyEvidence {
+                    authority: DependencyAuthority::RegistryMetadata,
+                    frontier: [0x71; 32],
+                    provenance: [0x72; 32],
+                },
+            )
+        };
+
+        let local_resolved_row =
+            make_row(raw_target(RegistryEcosystem::Cargo, "widget", local_target));
+        assert_eq!(
+            local_resolved_row.facts_version,
+            local_resolved_row.recomputed_version(),
+            "the malformed target carries a valid row digest"
+        );
+        let local_resolved_facts = vec![(
+            PackageGraphSourceKey::unattributed(source.clone()),
+            DependencyFacts::Known(vec![local_resolved_row.clone()].into_boxed_slice()),
+        )];
+        assert_eq!(
+            CheckedPackageGraphFacts::new(local_resolved_facts.clone()).unwrap_err(),
+            ProductAdmissionError::PackageReference,
+            "checked graph admission must enforce the target constructor's PURL contract"
+        );
+        assert_eq!(
+            admit_dependency_rows(vec![local_resolved_row]),
+            Err(ProductAdmissionError::PackageReference),
+            "the standalone row admission boundary enforces the same target contract"
+        );
+
+        let raw_index = PackageGraphIndex::from_facts(&local_resolved_facts);
+        assert!(matches!(
+            raw_index.dependent_sources(&local_resolved_facts, &purl_target),
+            DependentSources::Matched { sources, gap: None } if sources.is_empty()
+        ));
+        assert!(matches!(
+            linear_dependent_sources(&local_resolved_facts, &purl_target),
+            DependentSources::Matched { sources, gap: None } if sources.is_empty()
+        ));
+
+        for (ecosystem, name, resolved) in [
+            (
+                RegistryEcosystem::Cargo,
+                "widget",
+                PackageReference::parse("pkg:npm/widget@1.0.0").expect("wrong ecosystem PURL"),
+            ),
+            (
+                RegistryEcosystem::Cargo,
+                "widget",
+                PackageReference::parse("pkg:cargo/other@1.0.0").expect("wrong lineage PURL"),
+            ),
+        ] {
+            let row = make_row(raw_target(ecosystem, name, resolved));
+            assert_eq!(row.facts_version, row.recomputed_version());
+            let facts = vec![(
+                PackageGraphSourceKey::unattributed(source.clone()),
+                DependencyFacts::Known(vec![row].into_boxed_slice()),
+            )];
+            assert_eq!(
+                CheckedPackageGraphFacts::new(facts).unwrap_err(),
+                ProductAdmissionError::PackageReference,
+                "checked graph admission rejects resolved PURLs with the wrong target contract"
+            );
+        }
     }
 
     #[test]

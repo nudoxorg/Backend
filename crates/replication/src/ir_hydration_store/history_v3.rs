@@ -5,7 +5,8 @@
 use super::{FileSemanticRangeStore, history_v2};
 use crate::ir_generation_store::{HistoryTypedV3RootClaim, TypedV3HistoryLocator};
 use crate::{
-    DurableSemanticObjectAdmission, ProducedSemanticTypedPlaneV3,
+    DurableSemanticObjectAdmission, ProducedSemanticTypedPlaneContentV3,
+    ProducedSemanticTypedPlaneV3,
     ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
 };
 use backend_semantic::ir::{
@@ -518,6 +519,24 @@ impl TypedV3HistoryProducer for ProducedSemanticTypedPlaneV3 {
     }
 }
 
+impl TypedV3HistoryProducer for ProducedSemanticTypedPlaneContentV3 {
+    fn manifest(&self) -> &backend_semantic::ir::SemanticTypedPlaneManifestV2 {
+        ProducedSemanticTypedPlaneContentV3::manifest(self)
+    }
+
+    fn input_claim(&self) -> SemanticInputClaimV2 {
+        SemanticInputClaimV2::from_witness(&self.input_witness())
+    }
+
+    fn segment_admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        ProducedSemanticTypedPlaneContentV3::segment_admissions(self)
+    }
+
+    fn jumbo_admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        ProducedSemanticTypedPlaneContentV3::jumbo_admissions(self)
+    }
+}
+
 impl TypedV3HistoryProducer for ProducedSelectedNativeTypedPlaneHistoryV3 {
     fn manifest(&self) -> &backend_semantic::ir::SemanticTypedPlaneManifestV2 {
         ProducedSelectedNativeTypedPlaneHistoryV3::manifest(self)
@@ -634,6 +653,35 @@ impl FileSemanticRangeStore {
                 != produced.verified_content().generation_root()
         {
             return Err("typed V3 cold closure proof differs from producer receipt".to_owned());
+        }
+        Ok(admission)
+    }
+
+    /// Independently reopens and verifies one claim-only c007 content closure.
+    /// This path accepts a Partial or Unproven input claim but cannot create
+    /// compiler-read completeness authority or authorize semantic reuse.
+    pub(crate) fn verify_produced_typed_v3_content<'pin>(
+        &self,
+        pin: &'pin TypedV3HistoryGcPin,
+        produced: &'pin ProducedSemanticTypedPlaneContentV3,
+        tier: SemanticTypedPlaneVerificationTierV2,
+        jumbo_limits: JumboRopeLimits,
+    ) -> Result<TypedV3HistoryAdmission<'pin>, String> {
+        let input_claim = SemanticInputClaimV2::from_witness(&produced.input_witness());
+        if produced.manifest().input_claim() != input_claim
+            || produced.verified_content().input_claim() != input_claim
+        {
+            return Err("typed V3 content receipt changed its exact input claim".to_owned());
+        }
+        let admission = self
+            .verify_typed_v3_history_producer(pin, produced, tier, jumbo_limits)
+            .map_err(|error| error.to_string())?;
+        if admission.content().input_claim() != input_claim
+            || admission.content().content_root() != produced.verified_content().content_root()
+            || admission.content().generation_root()
+                != produced.verified_content().generation_root()
+        {
+            return Err("typed V3 cold closure differs from claim-only producer receipt".to_owned());
         }
         Ok(admission)
     }

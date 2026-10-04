@@ -40,7 +40,8 @@ pub use self::compiler::{
     PackageSourceCoverageGapCause, PackageSourceSet, PackageSourceSetError,
     PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
     StagedSemanticOutputObject, StagedSemanticPackage, StagedSemanticReaderError,
-    StagedSemanticReaderMetrics, StagedVersionedPlaneArtifact, StagedVersionedPlaneError,
+    StagedSemanticReaderMetrics, StagedTypedPlaneContentArtifact, StagedTypedPlaneContentError,
+    StagedTypedPlaneContentV3, StagedVersionedPlaneArtifact, StagedVersionedPlaneError,
     StagedVersionedPlaneSegment, StagedVersionedPlanes,
 };
 pub use self::config::{

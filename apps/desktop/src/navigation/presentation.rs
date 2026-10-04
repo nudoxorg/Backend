@@ -8,7 +8,7 @@ pub const MAX_READING_TEXT: usize = 1024;
 pub const MAX_READING_FOLDS: usize = 128;
 
 /// Checked monotonic identity; zero is reserved for route-only cold history.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct VisitId(u64);
 impl VisitId {
     pub const fn initial() -> Self {
@@ -80,6 +80,42 @@ impl ReadingOffset {
     }
 }
 
+/// The semantic kind of a Shelf row. Navigation owns this small identity,
+/// never the GPUI row/widget that happens to paint it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ShelfRowKind {
+    Item,
+    Heading,
+    Note,
+}
+
+/// A checked, session-local scroll anchor. `occurrence` distinguishes repeated
+/// headings/notes; the 16-bit fraction restores the same position within a
+/// wrapped row after its height changes with text scale or width.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShelfRowAnchor {
+    pub kind: ShelfRowKind,
+    pub key: ReadingText,
+    pub occurrence: u16,
+    fraction: u16,
+}
+impl ShelfRowAnchor {
+    pub fn new(kind: ShelfRowKind, key: ReadingText, occurrence: usize, fraction: f32) -> Option<Self> {
+        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) { return None; }
+        Some(Self {
+            kind,
+            key,
+            occurrence: u16::try_from(occurrence).ok()?,
+            // An exact end-of-row offset aliases the following row. Keep
+            // every restored anchor inside the row whose identity it names.
+            fraction: ((fraction * u16::MAX as f32).round() as u16).min(u16::MAX - 1),
+        })
+    }
+    pub fn fraction(&self) -> f32 {
+        f32::from(self.fraction) / f32::from(u16::MAX)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShelfReading {
     pub lens: ShelfLens,
@@ -87,6 +123,7 @@ pub struct ShelfReading {
     pub via: Option<ReadingText>,
     folds: Arc<BTreeSet<ReadingText>>,
     pub offset: ReadingOffset,
+    pub anchor: Option<ShelfRowAnchor>,
 }
 impl ShelfReading {
     pub fn folds(&self) -> impl Iterator<Item = &ReadingText> {
@@ -276,7 +313,7 @@ pub enum ReadingChange {
         via: Option<ReadingText>,
     },
     ShelfFold(ReadingText),
-    ShelfOffset(ReadingOffset),
+    ShelfScroll { offset: ReadingOffset, anchor: Option<ShelfRowAnchor> },
     ReaderLens(ReaderLens),
     ReaderOffset(ReadingOffset),
     Focus(Option<ReadingFocus>),
@@ -299,14 +336,19 @@ impl ReadingPresentation {
             ReadingChange::ShelfLens(lens) => {
                 controls.shelf.lens = lens;
                 controls.shelf.offset = Default::default();
+                controls.shelf.anchor = None;
             }
             ReadingChange::ShelfFilter { narrow, via } => {
                 controls.shelf.narrow = narrow;
                 controls.shelf.via = via;
                 controls.shelf.offset = Default::default();
+                controls.shelf.anchor = None;
             }
             ReadingChange::ShelfFold(key) => controls.shelf.flip(key),
-            ReadingChange::ShelfOffset(offset) => controls.shelf.offset = offset,
+            ReadingChange::ShelfScroll { offset, anchor } => {
+                controls.shelf.offset = offset;
+                controls.shelf.anchor = anchor;
+            }
             ReadingChange::ReaderLens(lens) => controls.lens = lens,
             ReadingChange::ReaderOffset(offset) => controls.offset = offset,
             ReadingChange::Focus(focus) => controls.focus = focus,
@@ -318,6 +360,14 @@ impl ReadingPresentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_visit_order_matches_allocation_order() {
+        let first = VisitId::initial();
+        let second = first.next().expect("checked next visit");
+        let third = second.next().expect("checked next visit");
+        assert!(VisitId::default() < first && first < second && second < third);
+    }
 
     #[test]
     fn shelf_fold_text_has_the_same_identity_in_ordered_and_hashed_collections() {
@@ -381,6 +431,31 @@ mod tests {
             shelf.flip(ReadingText::new(format!("fold-{n}")).expect("bounded"));
         }
         assert_eq!(shelf.folds().count(), MAX_READING_FOLDS);
+        let key = ReadingText::new("shelf-dep-example").expect("checked anchor key");
+        assert!(ShelfRowAnchor::new(ShelfRowKind::Item, key.clone(), usize::from(u16::MAX) + 1, 0.5).is_none());
+        assert!(ShelfRowAnchor::new(ShelfRowKind::Item, key.clone(), 0, f32::NAN).is_none());
+        assert!(ShelfRowAnchor::new(ShelfRowKind::Item, key.clone(), 0, 1.1).is_none());
+        assert!(ShelfRowAnchor::new(ShelfRowKind::Item, key.clone(), 0, 1.0)
+            .expect("last bounded position").fraction() < 1.0);
+        let anchor = ShelfRowAnchor::new(ShelfRowKind::Item, key, 0, 0.5).expect("bounded fraction");
+        assert!((anchor.fraction() - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn shelf_scroll_is_atomic_and_lens_or_filter_retires_its_anchor() {
+        let mut presentation = ReadingPresentation::for_route(&Route::Orbit(OrbitRoute::Home));
+        let anchor = ShelfRowAnchor::new(ShelfRowKind::Item,
+            ReadingText::new("shelf-dep-example").expect("key"), 0, 0.25).expect("anchor");
+        let offset = ReadingOffset::new(0.0, -450.0).expect("offset");
+        assert!(presentation.apply(ReadingChange::ShelfScroll { offset, anchor: Some(anchor.clone()) }));
+        assert_eq!(presentation.controls().shelf.offset, offset);
+        assert_eq!(presentation.controls().shelf.anchor, Some(anchor.clone()));
+        assert!(presentation.apply(ReadingChange::ShelfLens(ShelfLens::Versions)));
+        assert_eq!(presentation.controls().shelf.offset, ReadingOffset::default());
+        assert_eq!(presentation.controls().shelf.anchor, None);
+        assert!(presentation.apply(ReadingChange::ShelfScroll { offset, anchor: Some(anchor) }));
+        assert!(presentation.apply(ReadingChange::ShelfFilter { narrow: ReadingText::new("x"), via: None }));
+        assert_eq!(presentation.controls().shelf.anchor, None);
     }
     #[test]
     fn preview_cancellation_restores_intent_and_preserves_allocator() {

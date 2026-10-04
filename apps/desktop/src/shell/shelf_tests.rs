@@ -806,3 +806,154 @@ fn native_used_by_lens_is_visit_local_and_forward_restores_the_mounted_tab(cx: &
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.presentation.controls().shelf.lens), ShelfLens::Contents,
         "a fresh visit to the same package has independent intent");
 }
+
+/// The library's guidance is a semantic row, even when it needs several
+/// lines. The following row must begin below its actually measured paint.
+#[gpui::test]
+fn mounted_library_guidance_wraps_without_covering_the_next_row(cx: &mut TestAppContext) {
+    use crate::navigation::presentation::{ReadingChange, ShelfLens};
+    use facet::probe::TextOverflow;
+
+    const NOTE: &str = "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages.";
+    for width in [1440.0, 390.0] {
+        let mut rig = super::tests::rig(cx, Some(Route::Orbit(crate::navigation::OrbitRoute::Home)), width, 700.0);
+        let visit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
+        rig.go(Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) });
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        for percent in [100, 150, 200] {
+            rig.go(Intent::ZoomTo { display: display.clone(), percent });
+            let first = super::fit_tests::painted(&mut rig);
+            if !first.texts.iter().any(|text| text.content == NOTE) {
+                let toggle = first.targets.iter().find(|target| target.key == "tb-shelf")
+                    .expect("native shelf toggle when the shelf is compact").bounds.clone();
+                rig.cx.simulate_click(point(px(toggle.x + toggle.width / 2.0), px(toggle.y + toggle.height / 2.0)), Modifiers::default());
+                rig.settle();
+            }
+            for theme in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
+                rig.go(Intent::SetAppearance(theme));
+                rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+                let ledger = super::fit_tests::painted(&mut rig);
+                let note = ledger.texts.iter().find(|text| text.content == NOTE)
+                    .expect("full library guidance is in the painted shelf");
+                assert_eq!(note.overflow, TextOverflow::Wrap, "{width}px at {percent}%");
+                assert!(note.natural_width > note.bounds.width && note.bounds.height > note.line_height * 1.5,
+                    "guidance needs multiple measured lines at {width}px and {percent}%: {note:?}");
+                let next = ledger.texts.iter().filter(|text| text.scroll_ancestors.iter().any(|key| key == "shelf-rows")
+                    && text.bounds.y > note.bounds.y + 1.0 && text.content != NOTE)
+                    .min_by(|a, b| a.bounds.y.total_cmp(&b.bounds.y))
+                    .expect("a semantic row follows the guidance");
+                assert!(note.bounds.y + note.bounds.height <= next.bounds.y + 1.0,
+                    "wrapped guidance overlaps the following row at {width}px and {percent}%: {note:?}, {next:?}");
+                let painted = rig.cx.update(|window, _| window.painted_texts().iter()
+                    .find(|text| text.text.as_ref() == NOTE).cloned())
+                    .expect("the complete suffix 'inspect its packages.' is painted as one wrapped paragraph");
+                let viewport = ledger.scrolls.iter().find(|sample| sample.key == "shelf-rows")
+                    .expect("the note's measured list viewport");
+                assert!(f32::from(painted.bounds.size.height) >= note.bounds.height - note.line_height * 0.5,
+                    "every wrapped line, including the recovery suffix, must survive native paint clipping");
+                assert!(f32::from(painted.bounds.bottom()) <= viewport.viewport.y + viewport.viewport.height + 1.0,
+                    "the guidance's painted recovery suffix remains visible inside the list");
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn measured_shelf_wheel_offset_survives_back_and_keyboard_reveals_a_row(cx: &mut TestAppContext) {
+    let mut rig = open(cx);
+    click_text(&mut rig, "Types");
+    assert!(row_names(&mut rig).iter().any(|name| name == "RelationLabel"),
+        "the real fold inserts its semantic children before scrolling");
+    super::fit_tests::resize(&mut rig, 1440.0, 360.0);
+    let read_scroll = |rig: &mut Rig| {
+        let ledger = super::fit_tests::painted(rig);
+        ledger.scrolls.into_iter().find(|sample| sample.key == "shelf-rows")
+            .expect("the measured shelf publishes its own viewport and extent")
+    };
+    let before = read_scroll(&mut rig);
+    assert!(before.content.height > before.viewport.height + 100.0,
+        "the fixture must have a scrollable shelf: {before:?}");
+    let at = point(px(before.viewport.x + before.viewport.width / 2.0),
+        px(before.viewport.y + before.viewport.height / 2.0));
+    rig.cx.simulate_scroll(at, point(px(0.0), px(-120.0)));
+    rig.settle();
+    let scrolled = read_scroll(&mut rig);
+    let displacement = scrolled.offset.expect("measured list publishes displacement").y;
+    assert!(displacement < -20.0, "native wheel did not move the list: {scrolled:?}");
+    let remembered = rig.graph.store.read_with(rig.cx, |store, _| {
+        store.snapshot().session().reading.current.presentation.controls().shelf.offset.pixels().1
+    });
+    assert!((remembered - displacement).abs() <= 1.0,
+        "the reading visit must save the measured list's actual displacement");
+
+    rig.go(Intent::Navigate(Route::World));
+    rig.keys("secondary-[");
+    assert_eq!(rig.route(), toml());
+    let restored = read_scroll(&mut rig);
+    let actual = restored.offset.expect("restored measured offset").y;
+    assert!((actual - remembered).abs() <= 2.0,
+        "Back must restore the prior visit's shelf position: {remembered} → {actual}");
+
+    into_the_sidebar(&mut rig);
+    rig.keys("down down down down down down");
+    let ledger = super::fit_tests::painted(&mut rig);
+    let viewport = ledger.scrolls.iter().find(|sample| sample.key == "shelf-rows")
+        .expect("measured shelf scroll probe").viewport.clone();
+    let focused = ledger.targets.iter().find(|target| target.scroll_ancestors.iter().any(|key| key == "shelf-rows")
+        && target.state.focused && target.state.focusable)
+        .expect("keyboard focus is on a mounted shelf row");
+    assert!(focused.bounds.y < viewport.y + viewport.height
+        && focused.bounds.y + focused.bounds.height > viewport.y,
+        "the focused row must be revealed in the measured viewport: {focused:?}, {viewport:?}");
+}
+
+#[gpui::test]
+fn ask_veil_blocks_wheel_over_the_covered_shelf_but_keeps_its_editor_live(cx: &mut TestAppContext) {
+    let mut rig = open(cx);
+    click_text(&mut rig, "Types");
+    super::fit_tests::resize(&mut rig, 1440.0, 360.0);
+    let ledger = super::fit_tests::painted(&mut rig);
+    let viewport = ledger.scrolls.iter().find(|sample| sample.key == "shelf-rows")
+        .expect("the expanded Shelf has a measured viewport");
+    assert!(viewport.content.height > viewport.viewport.height + 100.0,
+        "the covered Shelf must have room for a real wheel displacement: {viewport:?}");
+    let at = point(px(viewport.viewport.x + viewport.viewport.width / 2.0),
+        px(viewport.viewport.y + viewport.viewport.height / 2.0));
+    let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
+    let offset = |rig: &mut Rig| shelf.read_with(rig.cx, |shelf, _| {
+        f32::from(shelf.diagnostic_scroll_state().scroll_px_offset_for_scrollbar().y)
+    });
+    let reading = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| {
+        store.snapshot().session().reading.current.presentation.controls().shelf.offset.pixels().1
+    });
+    let before = (offset(&mut rig), reading(&mut rig));
+
+    rig.keys("secondary-k");
+    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+    let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
+        "Ask's native editor owns the covered frame");
+    rig.cx.simulate_input("mystery");
+    rig.settle();
+    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+    let covered = (offset(&mut rig), reading(&mut rig));
+    assert!((covered.0 - before.0).abs() <= 1.0 && (covered.1 - before.1).abs() <= 1.0,
+        "opening Ask does not move the underlying measured Shelf");
+    rig.cx.simulate_scroll(at, point(px(0.0), px(-120.0)));
+    rig.settle();
+    let wheeled = (offset(&mut rig), reading(&mut rig));
+    assert!((wheeled.0 - covered.0).abs() <= 1.0 && (wheeled.1 - covered.1).abs() <= 1.0,
+        "the Ask veil blocks native wheel input and saved Shelf intent: {covered:?} → {wheeled:?}");
+    assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
+        "wheel input over the veil cannot take Ask editor focus");
+    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+
+    rig.keys("escape");
+    let uncovered = (offset(&mut rig), reading(&mut rig));
+    assert!((uncovered.0 - before.0).abs() <= 1.0 && (uncovered.1 - before.1).abs() <= 1.0,
+        "dismissing Ask preserves the covered Shelf position and visit intent");
+    rig.cx.simulate_scroll(at, point(px(0.0), px(-120.0)));
+    rig.settle();
+    assert!(offset(&mut rig) < uncovered.0 - 20.0,
+        "the same native wheel point scrolls the Shelf once the veil retires");
+}
