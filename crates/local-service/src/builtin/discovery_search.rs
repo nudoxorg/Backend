@@ -6222,7 +6222,7 @@ mod tests {
                     coordinate: ProductPackageCoordinate::parse(*coordinate).expect("coordinate"),
                     standing: *standing,
                     observed_at: DiscoveryObservedAt::from_unix_millis(observed_at),
-                    source_event: DiscoverySourceEvent::Unordered,
+                    source_event: DiscoverySourceEvent::Snapshot,
                     source_event_time: Some((*event_time).to_owned()),
                     proof: [*proof; 32],
                     metadata: DiscoveryMetadata::default(),
