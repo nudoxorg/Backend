@@ -964,20 +964,27 @@ fn rust_gated_and_facade_crate_roots_admit_the_empty_product() {
 /// file when the variable is unset, instead of panicking in every sandbox
 /// that lacks a bisect session in flight.
 #[test]
-fn diag_bisect_ga() {
+fn diag_bisect_ga() -> Result<(), Box<dyn std::error::Error>> {
     let Some(dir) = std::env::var_os("GA_PREFIX_DIR").map(std::path::PathBuf::from) else {
         eprintln!("GA_PREFIX_DIR unset; skipping ad hoc bisect driver");
-        return;
+        return Ok(());
     };
     let mut failures = Vec::new();
-    for entry in fs::read_dir(&dir).expect("dir") {
-        let path = entry.expect("entry").path();
-        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+    for entry in fs::read_dir(&dir)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| std::io::Error::other("bisect fixture has no UTF-8 file name"))?
+            .to_owned();
         if !name.ends_with(".rs") {
             continue;
         }
-        let index: usize = name.trim_end_matches(".rs").trim_start_matches('p').parse().expect("idx");
-        let bytes = fs::read(&path).expect("read");
+        let index: usize = name
+            .trim_end_matches(".rs")
+            .trim_start_matches('p')
+            .parse()?;
+        let bytes = fs::read(&path)?;
         let outcome = compile_corpus_file(&bytes);
         if outcome != "OK" {
             eprintln!("BISECT prefix {index} => {outcome}");
@@ -985,4 +992,5 @@ fn diag_bisect_ga() {
         }
     }
     eprintln!("BISECT failing prefixes: {failures:?}");
+    Ok(())
 }

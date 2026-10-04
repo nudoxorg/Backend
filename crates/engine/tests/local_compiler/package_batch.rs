@@ -155,7 +155,10 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
         staged.binding_facts().manifest
     );
     assert_eq!(
-        staged.output_object(0).unwrap().bytes(),
+        staged
+            .output_object(0)
+            .ok_or_else(|| std::io::Error::other("staged manifest object is missing"))?
+            .bytes(),
         staged.manifest_bytes()
     );
     assert!(
@@ -185,11 +188,17 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
     assert_eq!(staged.manifest_facts(), published.publication.manifest);
     assert_eq!(staged.binding_facts(), published.publication.binding);
     assert_eq!(
-        staged.output_object(2).unwrap().bytes(),
+        staged
+            .output_object(2)
+            .ok_or_else(|| std::io::Error::other("first staged image object is missing"))?
+            .bytes(),
         published.images[0].as_ref()
     );
     assert_eq!(
-        staged.output_object(4).unwrap().bytes(),
+        staged
+            .output_object(4)
+            .ok_or_else(|| std::io::Error::other("second staged image object is missing"))?
+            .bytes(),
         published.images[1].as_ref()
     );
     assert_eq!(

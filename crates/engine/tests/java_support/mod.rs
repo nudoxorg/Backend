@@ -11,6 +11,7 @@ use backend_engine::driver::{
 use backend_semantic::ir::Ir;
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
+use std::io;
 
 const NONE: u32 = u32::MAX;
 
@@ -163,17 +164,17 @@ fn encode_u32(values: &[u32]) -> Vec<u8> {
         .flat_map(|value| value.to_le_bytes())
         .collect()
 }
-pub fn compile(source: &'static [u8], image: Vec<u8>) -> Ir {
+pub fn compile(source: &'static [u8], image: Vec<u8>) -> io::Result<Ir> {
     let tool = ResolvedToolchain::from_version(
         NativeTool::JavaCompiler,
         Path::new("/usr/bin/true"),
         b"fixture",
     )
-    .unwrap();
+    .map_err(io::Error::other)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0; 4096];
     let work = std::env::temp_dir();
-    compile_ir(
+    let output = compile_ir(
         CompileRequest {
             profile: LanguageProfile::Java(JavaRelease::Java21),
             stage: Stage::LowerIr,
@@ -191,6 +192,6 @@ pub fn compile(source: &'static [u8], image: Vec<u8>) -> Ir {
             native_work: &work,
         },
     )
-    .unwrap()
-    .ir
+    .map_err(|error| io::Error::other(format!("Java fixture compilation failed: {error:?}")))?;
+    Ok(output.ir)
 }

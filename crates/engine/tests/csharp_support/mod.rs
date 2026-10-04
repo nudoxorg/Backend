@@ -851,7 +851,7 @@ mod tests {
     /// central directory, and end record, using the real 30-byte local and
     /// 46-byte central header layouts. Stored payloads use method 0,
     /// deflated ones method 8 via the real encoder.
-    fn zip(entries: &[FixtureEntry]) -> Vec<u8> {
+    fn zip(entries: &[FixtureEntry]) -> std::io::Result<Vec<u8>> {
         let mut out = Vec::new();
         let mut central = Vec::new();
         for item in entries {
@@ -859,8 +859,8 @@ mod tests {
                 0 => item.payload.clone(),
                 _ => {
                     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(6));
-                    encoder.write_all(&item.payload).expect("fixture deflate");
-                    encoder.finish().expect("fixture deflate finish")
+                    encoder.write_all(&item.payload)?;
+                    encoder.finish()?
                 }
             };
             let checksum = crc32(&item.payload);
@@ -874,21 +874,9 @@ mod tests {
             out.extend_from_slice(&0_u16.to_le_bytes());
             out.extend_from_slice(&0_u16.to_le_bytes());
             out.extend_from_slice(&checksum.to_le_bytes());
-            out.extend_from_slice(
-                &u32::try_from(compressed.len())
-                    .expect("fixture size")
-                    .to_le_bytes(),
-            );
-            out.extend_from_slice(
-                &u32::try_from(item.payload.len())
-                    .expect("fixture size")
-                    .to_le_bytes(),
-            );
-            out.extend_from_slice(
-                &u16::try_from(item.name.len())
-                    .expect("fixture size")
-                    .to_le_bytes(),
-            );
+            out.extend_from_slice(&zip_u32(compressed.len())?.to_le_bytes());
+            out.extend_from_slice(&zip_u32(item.payload.len())?.to_le_bytes());
+            out.extend_from_slice(&zip_u16(item.name.len())?.to_le_bytes());
             out.extend_from_slice(&0_u16.to_le_bytes());
             out.extend_from_slice(item.name.as_bytes());
             out.extend_from_slice(&compressed);
@@ -902,28 +890,15 @@ mod tests {
             central.extend_from_slice(&0_u16.to_le_bytes());
             central.extend_from_slice(&0_u16.to_le_bytes());
             central.extend_from_slice(&checksum.to_le_bytes());
-            central.extend_from_slice(
-                &u32::try_from(compressed.len())
-                    .expect("fixture size")
-                    .to_le_bytes(),
-            );
-            central.extend_from_slice(
-                &u32::try_from(item.payload.len())
-                    .expect("fixture size")
-                    .to_le_bytes(),
-            );
-            central.extend_from_slice(
-                &u16::try_from(item.name.len())
-                    .expect("fixture size")
-                    .to_le_bytes(),
-            );
+            central.extend_from_slice(&zip_u32(compressed.len())?.to_le_bytes());
+            central.extend_from_slice(&zip_u32(item.payload.len())?.to_le_bytes());
+            central.extend_from_slice(&zip_u16(item.name.len())?.to_le_bytes());
             central.extend_from_slice(&0_u16.to_le_bytes());
             central.extend_from_slice(&0_u16.to_le_bytes());
             central.extend_from_slice(&0_u16.to_le_bytes());
             central.extend_from_slice(&0_u16.to_le_bytes());
             central.extend_from_slice(&0_u32.to_le_bytes());
-            central
-                .extend_from_slice(&u32::try_from(local_at).expect("fixture size").to_le_bytes());
+            central.extend_from_slice(&zip_u32(local_at)?.to_le_bytes());
             central.extend_from_slice(item.name.as_bytes());
         }
         let central_at = out.len();
@@ -931,28 +906,20 @@ mod tests {
         out.extend_from_slice(&END_SIGNATURE.to_le_bytes());
         out.extend_from_slice(&0_u16.to_le_bytes());
         out.extend_from_slice(&0_u16.to_le_bytes());
-        out.extend_from_slice(
-            &u16::try_from(entries.len())
-                .expect("fixture size")
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(
-            &u16::try_from(entries.len())
-                .expect("fixture size")
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(
-            &u32::try_from(central.len())
-                .expect("fixture size")
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(
-            &u32::try_from(central_at)
-                .expect("fixture size")
-                .to_le_bytes(),
-        );
+        out.extend_from_slice(&zip_u16(entries.len())?.to_le_bytes());
+        out.extend_from_slice(&zip_u16(entries.len())?.to_le_bytes());
+        out.extend_from_slice(&zip_u32(central.len())?.to_le_bytes());
+        out.extend_from_slice(&zip_u32(central_at)?.to_le_bytes());
         out.extend_from_slice(&0_u16.to_le_bytes());
-        out
+        Ok(out)
+    }
+
+    fn zip_u16(value: usize) -> std::io::Result<u16> {
+        u16::try_from(value).map_err(std::io::Error::other)
+    }
+
+    fn zip_u32(value: usize) -> std::io::Result<u32> {
+        u32::try_from(value).map_err(std::io::Error::other)
     }
 
     /// Declares a fixed total-entries cell without touching entry count 0.
@@ -963,125 +930,146 @@ mod tests {
         mutated
     }
 
-    fn fresh(label: &str) -> std::path::PathBuf {
+    fn fresh(label: &str) -> std::io::Result<std::path::PathBuf> {
         let path =
             std::env::temp_dir().join(format!("nudox-csharp-zip-{label}-{}", std::process::id()));
-        drop(std::fs::remove_dir_all(&path));
-        std::fs::create_dir_all(&path).expect("fixture root");
-        path
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
     }
 
     /// Stored and deflated entries both round-trip through the central
     /// directory reader.
     #[test]
-    fn stored_and_deflated_entries_round_trip() {
+    fn stored_and_deflated_entries_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         let archive = zip(&[
             entry("lib/stored.txt", b"plain bytes", 0),
             entry("lib/deflated.txt", &b"compressed bytes ".repeat(64), 8),
-        ]);
-        let root = fresh("roundtrip");
-        unpack(&archive, &root).expect("unpack");
+        ])?;
+        let root = fresh("roundtrip")?;
+        unpack(&archive, &root)?;
         assert_eq!(
-            std::fs::read(root.join("lib/stored.txt")).expect("stored"),
+            std::fs::read(root.join("lib/stored.txt"))?,
             b"plain bytes"
         );
         assert_eq!(
-            std::fs::read(root.join("lib/deflated.txt")).expect("deflated"),
+            std::fs::read(root.join("lib/deflated.txt"))?,
             b"compressed bytes ".repeat(64)
         );
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// A `..` member name must be rejected, never written outside root.
     #[test]
-    fn parent_traversing_entry_is_typed_rejection() {
-        let archive = zip(&[entry("../pwned.cs", b"hostile", 0)]);
-        let root = fresh("traversal");
+    fn parent_traversing_entry_is_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let archive = zip(&[entry("../pwned.cs", b"hostile", 0)])?;
+        let root = fresh("traversal")?;
         match unpack(&archive, &root) {
             Err(Error::Path { path }) => assert_eq!(path, "../pwned.cs"),
-            _ => panic!("traversal admitted"),
+            Err(error) => return Err(Box::new(error)),
+            Ok(()) => return Err(std::io::Error::other("traversal entry was admitted").into()),
         }
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// An absolute member name must be rejected before any write.
     #[test]
-    fn absolute_entry_is_typed_rejection() {
-        let archive = zip(&[entry("/etc/pwned.cs", b"hostile", 0)]);
-        let root = fresh("absolute");
+    fn absolute_entry_is_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let archive = zip(&[entry("/etc/pwned.cs", b"hostile", 0)])?;
+        let root = fresh("absolute")?;
         match unpack(&archive, &root) {
             Err(Error::Path { path }) => assert_eq!(path, "/etc/pwned.cs"),
-            _ => panic!("absolute path admitted"),
+            Err(error) => return Err(Box::new(error)),
+            Ok(()) => return Err(std::io::Error::other("absolute entry was admitted").into()),
         }
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// A corrupted end-of-central-directory signature is a typed Archive
     /// rejection, never a partial unpack.
     #[test]
-    fn corrupt_end_record_is_typed_rejection() {
-        let mut archive = zip(&[entry("a.cs", b"content", 0)]);
+    fn corrupt_end_record_is_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let mut archive = zip(&[entry("a.cs", b"content", 0)])?;
         let at = archive.len() - 22;
         archive[at] ^= 1;
-        let root = fresh("eocd");
+        let root = fresh("eocd")?;
         match unpack(&archive, &root) {
             Err(Error::Archive { cause }) => {
-                assert!(matches!(cause, ArchiveCause::EndRecord))
+                if !matches!(cause, ArchiveCause::EndRecord) {
+                    return Err(std::io::Error::other("unexpected archive rejection cause").into());
+                }
             }
-            _ => panic!("corrupt end record admitted"),
+            Err(error) => return Err(Box::new(error)),
+            Ok(()) => return Err(std::io::Error::other("corrupt end record was admitted").into()),
         }
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// An entry count above the central cap is a typed capacity rejection.
     #[test]
-    fn entry_count_cap_is_typed_rejection() {
-        let archive = zip(&[entry("a.cs", b"content", 0)]);
+    fn entry_count_cap_is_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let archive = zip(&[entry("a.cs", b"content", 0)])?;
         let mutated = with_total(&archive, 4097);
-        let root = fresh("count");
+        let root = fresh("count")?;
         match unpack(&mutated, &root) {
             Err(Error::Capacity { bound, observed }) => {
                 assert_eq!((bound, observed), (4096, 4097))
             }
-            _ => panic!("entry count cap admitted"),
+            Err(error) => return Err(Box::new(error)),
+            Ok(()) => return Err(std::io::Error::other("entry count cap was admitted").into()),
         }
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// A per-entry uncompressed size above the cap is a typed capacity
     /// rejection observed from the central record.
     #[test]
-    fn entry_size_cap_is_typed_rejection() {
-        let mut archive = zip(&[entry("big.cs", b"tiny", 0)]);
+    fn entry_size_cap_is_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let mut archive = zip(&[entry("big.cs", b"tiny", 0)])?;
         // The central entry's uncompressed-size cell sits at header offset 24;
         // claim one byte above the 4 MiB entry bound.
         let central_at = archive.len() - 22 - (46 + "big.cs".len());
-        let claimed = (4 * 1024 * 1024 + 1) as u32;
+        let claimed = u32::try_from(4 * 1024 * 1024 + 1)?;
         archive[central_at + 24..central_at + 28].copy_from_slice(&claimed.to_le_bytes());
-        let root = fresh("size");
+        let root = fresh("size")?;
         match unpack(&archive, &root) {
             Err(Error::Capacity { bound, observed }) => {
                 assert_eq!((bound, observed), (4 * 1024 * 1024, 4 * 1024 * 1024 + 1))
             }
-            _ => panic!("entry size cap admitted"),
+            Err(error) => return Err(Box::new(error)),
+            Ok(()) => return Err(std::io::Error::other("entry size cap was admitted").into()),
         }
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     /// A deflated entry whose stream is corrupted is a typed Archive
     /// rejection carrying the inflate cause.
     #[test]
-    fn corrupted_deflate_stream_is_typed_rejection() {
-        let mut archive = zip(&[entry("lib/text.cs", &b"payload ".repeat(128), 8)]);
+    fn corrupted_deflate_stream_is_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let mut archive = zip(&[entry("lib/text.cs", &b"payload ".repeat(128), 8)])?;
         let data_at = 30 + "lib/text.cs".len();
         archive[data_at] ^= 0xFF;
-        let root = fresh("inflate");
+        let root = fresh("inflate")?;
         match unpack(&archive, &root) {
             Err(Error::Archive { cause }) => {
-                assert!(matches!(cause, ArchiveCause::Inflate { .. }))
+                if !matches!(cause, ArchiveCause::Inflate { .. }) {
+                    return Err(std::io::Error::other("unexpected deflate rejection cause").into());
+                }
             }
-            _ => panic!("corrupted deflate stream admitted"),
+            Err(error) => return Err(Box::new(error)),
+            Ok(()) => return Err(std::io::Error::other("corrupted deflate stream was admitted").into()),
         }
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 }

@@ -358,9 +358,13 @@ fn torn_alternate_slot_keeps_previous_lease_recoverable() {
         .expect("remove the older slot before replacement");
     fs::write(store.lease_temp_path(key), b"torn newer record")
         .expect("leave an interrupted temp record");
-    std::mem::forget(lease);
 
     let reopened = LeaseStore::open(&root).expect("reopen store");
+    assert_eq!(
+        reopened.latest_lease(key).expect("recover last complete slot"),
+        Some(current),
+        "an incomplete inactive slot must leave the prior lease record readable"
+    );
     assert!(
         reopened
             .acquire(key, Duration::from_secs(30))
@@ -368,6 +372,7 @@ fn torn_alternate_slot_keeps_previous_lease_recoverable() {
             .is_none(),
         "a torn inactive slot must not authorize takeover"
     );
+    drop(lease);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -583,9 +588,11 @@ fn paired_publication_recovers_after_torn_followup_generation() {
             .expect("paired durable publication")
             .is_some()
     );
-    std::mem::forget(endpoint);
-    std::mem::forget(product);
 
+    let endpoint_current = store
+        .latest_lease(endpoint_key)
+        .expect("current endpoint generation")
+        .expect("endpoint record");
     let current = store
         .latest_lease(product_key)
         .expect("current product generation")
@@ -604,6 +611,20 @@ fn paired_publication_recovers_after_torn_followup_generation() {
         fs::read(&published_marker).expect("published marker"),
         b"both fences renewed"
     );
+    assert_eq!(
+        reopened
+            .latest_lease(endpoint_key)
+            .expect("endpoint recovered from its complete slot"),
+        Some(endpoint_current),
+        "the endpoint's exact published fence remains readable"
+    );
+    assert_eq!(
+        reopened
+            .latest_lease(product_key)
+            .expect("product recovered from its last complete slot"),
+        Some(current),
+        "a torn followup leaves the exact product fence readable"
+    );
     assert!(
         reopened
             .acquire(endpoint_key, Duration::from_secs(30))
@@ -618,6 +639,8 @@ fn paired_publication_recovers_after_torn_followup_generation() {
             .is_none(),
         "the product fence must remain live after torn followup recovery"
     );
+    drop(endpoint);
+    drop(product);
     let _ = fs::remove_dir_all(root);
 }
 

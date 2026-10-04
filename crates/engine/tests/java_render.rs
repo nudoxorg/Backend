@@ -3,11 +3,12 @@ mod java_support;
 use backend_semantic::ir::semantic_render::EmbeddingProfile;
 use backend_semantic::ir::{EntityId, Ir, ItemKind};
 use java_support::ImageBuilder;
+use std::{error::Error, io};
 
 const SOURCE: &[u8] =
     b"class Widget { int value; int run(int input, String label) { return 1; } }\n";
 
-fn fixture() -> Ir {
+fn fixture() -> Result<Ir, Box<dyn Error>> {
     let mut b = ImageBuilder::new();
     let widget = b.atom(b"Widget");
     let shape = b.atom(b"Shape");
@@ -62,25 +63,40 @@ fn fixture() -> Ir {
     b.declaration(8, input, Some(owner), Some(t_array), None, None);
     b.declaration(8, label, Some(owner), Some(t_wild), None, None);
     b.declaration(8, nested, Some(owner), Some(t_path), None, Some(docs));
-    java_support::compile(SOURCE, b.finish(SOURCE))
+    Ok(java_support::compile(SOURCE, b.finish(SOURCE))?)
 }
 
-fn item(ir: &Ir, name: &[u8], kind: ItemKind) -> EntityId {
+fn missing(name: &[u8], kind: ItemKind) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("missing Java fixture item {:?} ({kind:?})", String::from_utf8_lossy(name)),
+    )
+}
+
+fn item(ir: &Ir, name: &[u8], kind: ItemKind) -> Result<EntityId, io::Error> {
     ir.items()
         .find(|item| item.name() == name && item.kind() == kind)
-        .unwrap()
-        .id()
+        .map(|item| item.id())
+        .ok_or_else(|| missing(name, kind))
 }
-fn signature(ir: &Ir, name: &[u8], kind: ItemKind) -> String {
-    ir.signature(item(ir, name, kind)).unwrap().to_string()
+fn signature(ir: &Ir, name: &[u8], kind: ItemKind) -> Result<String, io::Error> {
+    ir.signature(item(ir, name, kind)?)
+        .map(ToString::to_string)
+        .ok_or_else(|| io::Error::other(format!("missing Java fixture signature for {:?}", name)))
 }
-fn signatures(ir: &Ir, name: &[u8]) -> Vec<String> {
+fn signatures(ir: &Ir, name: &[u8]) -> Result<Vec<String>, io::Error> {
     ir.items()
         .filter(|item| item.name() == name && item.kind() == ItemKind::Function)
-        .map(|item| ir.signature(item.id()).unwrap().to_string())
+        .map(|item| {
+            ir.signature(item.id())
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    io::Error::other(format!("missing Java fixture signature for {:?}", name))
+                })
+        })
         .collect()
 }
-fn primitive(ir: &Ir) -> String {
+fn primitive(ir: &Ir) -> Result<String, io::Error> {
     let ty = ir
         .items()
         .find_map(|item| {
@@ -88,89 +104,99 @@ fn primitive(ir: &Ir) -> String {
                 .then(|| item.semantic_type())
                 .flatten()
         })
-        .unwrap();
-    ir.display_type(ty).unwrap().to_string()
+        .ok_or_else(|| io::Error::other("Java fixture has no parameter semantic type"))?;
+    ir.display_type(ty)
+        .map(ToString::to_string)
+        .ok_or_else(|| io::Error::other("Java fixture parameter type has no display form"))
 }
-fn field_type(ir: &Ir, name: &[u8]) -> String {
+fn field_type(ir: &Ir, name: &[u8]) -> Result<String, io::Error> {
     let ty = ir
-        .item(item(ir, name, ItemKind::Field))
-        .unwrap()
+        .item(item(ir, name, ItemKind::Field)?)
+        .ok_or_else(|| missing(name, ItemKind::Field))?
         .semantic_type()
-        .unwrap();
-    ir.display_type(ty).unwrap().to_string()
+        .ok_or_else(|| io::Error::other(format!("Java fixture field {:?} has no type", name)))?;
+    ir.display_type(ty)
+        .map(ToString::to_string)
+        .ok_or_else(|| io::Error::other(format!("Java fixture field {:?} has no display type", name)))
 }
 
 #[test]
-fn java_declarations_render_exactly() {
-    let ir = fixture();
+fn java_declarations_render_exactly() -> Result<(), Box<dyn Error>> {
+    let ir = fixture()?;
     // Trunk 4d1cceba9: unknown visibility renders prefix-free, and a record
     // ignores its self-nominal row.
-    assert_eq!(signature(&ir, b"Widget", ItemKind::Record), "struct Widget");
+    assert_eq!(signature(&ir, b"Widget", ItemKind::Record)?, "struct Widget");
     // Trunk 4d1cceba9 exposes the symbol's FunctionPointer row as a live
     // function tail; the fixture's carriers keep their javac type-spelling
     // names (`int`, `int`), typed i32, with the declared result i32.
     assert_eq!(
-        signature(&ir, b"run", ItemKind::Function),
+        signature(&ir, b"run", ItemKind::Function)?,
         "fn run(int: i32, int: i32) -> i32"
     );
     // `value` declares the primitive `int` row, which lowers to i32.
-    assert_eq!(signature(&ir, b"value", ItemKind::Field), "value: i32");
+    assert_eq!(signature(&ir, b"value", ItemKind::Field)?, "value: i32");
+    Ok(())
 }
 
 #[test]
-fn java_kind_prefixes_and_overloads_are_exact() {
-    let ir = fixture();
+fn java_kind_prefixes_and_overloads_are_exact() -> Result<(), Box<dyn Error>> {
+    let ir = fixture()?;
     // Trunk 4d1cceba9: unknown visibility renders prefix-free for every kind.
-    assert_eq!(signature(&ir, b"Shape", ItemKind::Trait), "trait Shape");
-    assert_eq!(signature(&ir, b"Color", ItemKind::Enum), "enum Color");
+    assert_eq!(signature(&ir, b"Shape", ItemKind::Trait)?, "trait Shape");
+    assert_eq!(signature(&ir, b"Color", ItemKind::Enum)?, "enum Color");
     // Trunk 4d1cceba9 renders each overload's own FunctionPointer row: the
     // fixtures declare int -> int and boolean -> boolean; carriers keep their
     // javac spelling as the label while types lower to i32 and bool.
     assert_eq!(
-        signatures(&ir, b"overloaded"),
+        signatures(&ir, b"overloaded")?,
         vec![
             "fn overloaded(int: i32) -> i32",
             "fn overloaded(boolean: bool) -> bool"
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn java_type_rows_render_exactly() {
-    let ir = fixture();
-    assert_eq!(primitive(&ir), "i32");
+fn java_type_rows_render_exactly() -> Result<(), Box<dyn Error>> {
+    let ir = fixture()?;
+    assert_eq!(primitive(&ir)?, "i32");
     // ba97930fc closed the structural forms these rows use: `input`'s Array
     // row is one structural sequence over its `Widget` component, `label`'s
     // wildcard is `? extends Widget`, and `Outer.Inner` is a qualified path.
-    assert_eq!(field_type(&ir, b"input"), "[]Widget");
-    assert_eq!(field_type(&ir, b"label"), "? extends Widget");
-    assert_eq!(field_type(&ir, b"Outer.Inner"), "Outer.Inner");
+    assert_eq!(field_type(&ir, b"input")?, "[]Widget");
+    assert_eq!(field_type(&ir, b"label")?, "? extends Widget");
+    assert_eq!(field_type(&ir, b"Outer.Inner")?, "Outer.Inner");
+    Ok(())
 }
 
 #[test]
-fn java_docs_and_embedding_render_exactly() {
-    let ir = fixture();
-    let id = item(&ir, b"Outer.Inner", ItemKind::Field);
+fn java_docs_and_embedding_render_exactly() -> Result<(), Box<dyn Error>> {
+    let ir = fixture()?;
+    let id = item(&ir, b"Outer.Inner", ItemKind::Field)?;
     // Trunk 4d1cceba9 attaches admitted Javadoc: the fixture's inline
     // {@link Target target} links locally to the admitted Target class,
     // rendered as a docs.rs markdown link.
     assert_eq!(
-        ir.display_docs(id).unwrap().to_string(),
+        ir.display_docs(id)
+            .ok_or_else(|| io::Error::other("Java fixture docs are missing"))?
+            .to_string(),
         "See [target](struct.Target.html)."
     );
-    let run = item(&ir, b"run", ItemKind::Function);
+    let run = item(&ir, b"run", ItemKind::Function)?;
     // `run` carries no documentation facts, so the DOCUMENTED profile stream
     // equals the signature-only stream under the new docs plane.
     assert_eq!(
         ir.embedding_text(run, EmbeddingProfile::SYMBOL)
-            .unwrap()
+            .ok_or_else(|| io::Error::other("Java fixture symbol embedding is missing"))?
             .to_string(),
         "fn run(int: i32, int: i32) -> i32"
     );
     assert_eq!(
         ir.embedding_text(run, EmbeddingProfile::DOCUMENTED)
-            .unwrap()
+            .ok_or_else(|| io::Error::other("Java fixture documented embedding is missing"))?
             .to_string(),
         "fn run(int: i32, int: i32) -> i32"
     );
+    Ok(())
 }
