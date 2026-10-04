@@ -1337,7 +1337,7 @@ fn require_live_selected_native_image<S: SelectedNativeImageSource>(
     source: &mut S,
     target: &crate::SemanticTargetKey,
     stamp: crate::SelectedGenerationStamp,
-    image: backend_semantic::ir::SemanticPlaneImageKey,
+    image: SemanticPlaneImageKey,
     identity: SemanticImageIdentity,
 ) -> Result<(), SelectedTypedV3HistoryError> {
     let selected_target = source.selected_semantic_target().map_err(|error| {

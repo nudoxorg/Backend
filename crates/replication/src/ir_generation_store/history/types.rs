@@ -714,7 +714,7 @@ impl HistoryAdmissionReceipt {
     /// closure claim required by the proof-bearing ref publication path.
     pub(crate) fn typed_v2_publication_admission(
         &self,
-        store_root: &std::path::Path,
+        store_root: &Path,
     ) -> Option<TypedV2HistoryPublicationAdmission<'_>> {
         let gc_pin = self._gc_pin.as_ref()?;
         let proof = self.typed_v2_proof.as_ref()?;
@@ -734,7 +734,7 @@ impl HistoryAdmissionReceipt {
     /// proof required by V3 ref publication.
     pub(crate) fn typed_v3_publication_admission(
         &self,
-        store_root: &std::path::Path,
+        store_root: &Path,
     ) -> Option<TypedV3HistoryPublicationAdmission<'_>> {
         let gc_pin = self._gc_pin.as_ref()?;
         let proof = self.typed_v3_proof.as_ref()?;
@@ -756,7 +756,7 @@ impl HistoryAdmissionReceipt {
         content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
         closure: ArtifactClosureClaim,
         locator: HistoryTypedV2LocatorId,
-        store_root: std::path::PathBuf,
+        store_root: PathBuf,
     ) -> Result<Self, String> {
         let HistoryGenerationRoot::TypedV2(claim) = self.commit.generation_root() else {
             return Err("typed V2 publication proof was attached to a V1 commit".to_owned());
@@ -787,7 +787,7 @@ impl HistoryAdmissionReceipt {
         input_claim: backend_semantic::ir::SemanticInputClaimV2,
         closure: ArtifactClosureClaim,
         locator: HistoryTypedV3LocatorId,
-        store_root: std::path::PathBuf,
+        store_root: PathBuf,
     ) -> Result<Self, String> {
         let HistoryGenerationRoot::TypedV3(claim) = self.commit.generation_root() else {
             return Err(
@@ -924,7 +924,7 @@ struct TypedV2HistoryPublicationProof {
     content: backend_semantic::ir::VerifiedTypedPlaneContentV2,
     closure: ArtifactClosureClaim,
     locator: HistoryTypedV2LocatorId,
-    store_root: std::path::PathBuf,
+    store_root: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -934,7 +934,7 @@ struct TypedV3HistoryPublicationProof {
     input_claim: backend_semantic::ir::SemanticInputClaimV2,
     closure: ArtifactClosureClaim,
     locator: HistoryTypedV3LocatorId,
-    store_root: std::path::PathBuf,
+    store_root: PathBuf,
 }
 
 /// One validated reference selected from the durable named-ref catalog.
@@ -1260,19 +1260,19 @@ impl TypedV2HistoryReplay {
     /// confirmation attestations. Do not use it to alias or rewrite identity.
     pub fn lineage_candidates(
         &self,
-    ) -> Result<Option<lineage::UnprovenTypedLineageEdgeSetV1<'_>>, lineage::LineageEdgeSetErrorV1>
+    ) -> Result<Option<UnprovenTypedLineageEdgeSetV1<'_>>, LineageEdgeSetErrorV1>
     {
         let Some(bytes) = &self.lineage_edge_set else {
             return Ok(None);
         };
-        let view = lineage::BorrowedTypedLineageEdgeSetV1::parse(bytes)?;
+        let view = BorrowedTypedLineageEdgeSetV1::parse(bytes)?;
         if self.commit.parents().first().copied() != Some(view.parent_commit()) {
-            return Err(lineage::LineageEdgeSetErrorV1::EndpointMismatch);
+            return Err(LineageEdgeSetErrorV1::EndpointMismatch);
         }
         if view.child_generation_claim() != self.content.generation_root().as_bytes() {
-            return Err(lineage::LineageEdgeSetErrorV1::GenerationRootMismatch);
+            return Err(LineageEdgeSetErrorV1::GenerationRootMismatch);
         }
-        Ok(Some(lineage::UnprovenTypedLineageEdgeSetV1::root_bound(
+        Ok(Some(UnprovenTypedLineageEdgeSetV1::root_bound(
             view,
             self.commit.identity(),
         )))

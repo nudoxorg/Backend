@@ -3,7 +3,6 @@
 //! records; they never copy or lower the canonical semantic IR.
 
 use std::{
-    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},

@@ -38,7 +38,7 @@ impl HistoryRefCatalog {
     }
 }
 
-pub(crate) fn read_history_catalog_snapshot(
+pub(super) fn read_history_catalog_snapshot(
     target_root: &Path,
 ) -> Result<(HistoryRefCatalog, [u8; 32]), String> {
     let history_root = target_root.join("history");
@@ -52,7 +52,7 @@ pub(crate) fn read_history_catalog_snapshot(
     Ok((decode_ref_catalog(&bytes)?, digest))
 }
 
-pub(crate) fn read_history_catalog_snapshot_typed(
+fn read_history_catalog_snapshot_typed(
     target_root: &Path,
 ) -> Result<(HistoryRefCatalog, [u8; 32]), HistoryMutationError> {
     let history_root = target_root.join("history");
@@ -112,15 +112,15 @@ pub(super) fn validate_history_commit_node(
     if record.target != *target {
         return Err("semantic history commit belongs to another target".to_owned());
     }
-    super::v2::validate_typed_v2_locator_binding(target_root, &record)?;
-    super::v3::validate_typed_v3_locator_binding(target_root, &record)?;
+    v2::validate_typed_v2_locator_binding(target_root, &record)?;
+    v3::validate_typed_v3_locator_binding(target_root, &record)?;
     let generation = load_record(target_root, record.generation, target)?;
     validate_commit_generation(&record, &generation)?;
     validate_parent_set(commits_root, &record)?;
     for parent in &record.parents {
         let parent_record = load_history_commit(commits_root, *parent)?;
-        super::v2::validate_typed_v2_locator_binding(target_root, &parent_record)?;
-        super::v3::validate_typed_v3_locator_binding(target_root, &parent_record)?;
+        v2::validate_typed_v2_locator_binding(target_root, &parent_record)?;
+        v3::validate_typed_v3_locator_binding(target_root, &parent_record)?;
         let parent_generation = load_record(target_root, parent_record.generation, target)?;
         validate_commit_generation(&parent_record, &parent_generation)?;
     }
@@ -201,7 +201,7 @@ pub(crate) fn may_prune_generation_records(
 }
 
 impl LocalSemanticGenerationFiles {
-    pub(crate) fn require_local_cache_head_alignment(
+    pub(in crate::ir_generation_store) fn require_local_cache_head_alignment(
         &self,
         target: &SemanticTargetKey,
         cache_head: Option<super::super::LocalHead>,
@@ -331,7 +331,7 @@ impl LocalSemanticGenerationFiles {
         byte_length: u64,
     ) -> Result<(), String> {
         let target_root = self.target_root(target);
-        super::retention::recover_pending_delete(&target_root)?;
+        retention::recover_pending_delete(&target_root)?;
         let history_root = target_root.join("history");
         prepare_history_layout(&target_root)?;
         let directory = history_root.join("segment-map");
@@ -373,17 +373,17 @@ impl LocalSemanticGenerationFiles {
         target: &SemanticTargetKey,
     ) -> Result<HistoryGcProgress, String> {
         let target_root = self.target_root(target);
-        let mut progress = super::gc::advance_history_gc(&target_root, target)?;
+        let mut progress = gc::advance_history_gc(&target_root, target)?;
         if progress.complete {
             let remaining = MAX_HISTORY_GC_BATCH_RECORDS.saturating_sub(progress.processed_records);
-            let retention = super::retention::advance_retention(&target_root, target, remaining)?;
+            let retention = retention::advance_retention(&target_root, target, remaining)?;
             progress.processed_records = progress
                 .processed_records
                 .checked_add(retention.processed_records)
                 .ok_or_else(|| "semantic history GC work counter overflows".to_owned())?;
             progress.complete = retention.complete;
             progress.stats = retention.stats;
-        } else if let Some(stats) = super::retention::read_stats(&target_root)? {
+        } else if let Some(stats) = retention::read_stats(&target_root)? {
             progress.stats = stats;
         }
         Ok(progress)
@@ -458,7 +458,7 @@ impl LocalSemanticGenerationFiles {
         source: &mut S,
     ) -> Result<HistoryAdmissionReceipt, E> {
         let target_root = self.target_root(&proposal.record.target);
-        super::retention::recover_pending_delete(&target_root)?;
+        retention::recover_pending_delete(&target_root)?;
         let commits_root = prepare_history_layout_typed(&target_root).map_err(E::from_typed)?;
         let generation = load_record(
             &target_root,
@@ -466,7 +466,7 @@ impl LocalSemanticGenerationFiles {
             &proposal.record.target,
         )?;
         validate_commit_generation(&proposal.record, &generation)?;
-        super::v2::validate_typed_v2_locator_binding(&target_root, &proposal.record)?;
+        v2::validate_typed_v2_locator_binding(&target_root, &proposal.record)?;
         require_current(source, proposal.record.stamp, generation.image)?;
         validate_parent_set(&commits_root, &proposal.record)?;
         let bytes = encode_history_commit(&proposal.record, proposal.identity)?;
@@ -724,7 +724,7 @@ impl LocalSemanticGenerationFiles {
         typed_v3_admission: Option<&TypedV3HistoryPublicationAdmission<'_>>,
     ) -> Result<HistoryRefUpdateReceipt, E> {
         let target_root = self.target_root(target);
-        super::retention::recover_pending_delete(&target_root)?;
+        retention::recover_pending_delete(&target_root)?;
         let commits_root = prepare_history_layout_typed(&target_root).map_err(E::from_typed)?;
         let (mut catalog, _) =
             read_history_catalog_snapshot_typed(&target_root).map_err(E::from_typed)?;
@@ -891,7 +891,7 @@ impl LocalSemanticGenerationFiles {
         expected: HistoryCommitId,
     ) -> Result<HistoryRefUpdateReceipt, String> {
         let target_root = self.target_root(target);
-        super::retention::recover_pending_delete(&target_root)?;
+        retention::recover_pending_delete(&target_root)?;
         prepare_history_layout(&target_root)?;
         let (mut catalog, _) = read_history_catalog_snapshot(&target_root)?;
         validate_catalog_tips(&target_root, target, &catalog)?;
@@ -940,7 +940,7 @@ impl LocalSemanticGenerationFiles {
     ) -> Result<HistoryAdmissionReceipt, String> {
         let target = &generation.target;
         let target_root = self.target_root(target);
-        super::retention::recover_pending_delete(&target_root)?;
+        retention::recover_pending_delete(&target_root)?;
         prepare_history_layout(&target_root)?;
         let name = HistoryRefName::new("local-cache")?;
         let previous = self.history_ref(target, HistoryRefKind::Branch, &name)?;
@@ -1051,7 +1051,7 @@ pub(super) fn generation_from_validated_record(
     }
 }
 
-pub(crate) fn validate_commit_generation(
+pub(super) fn validate_commit_generation(
     commit: &HistoryCommitRecord,
     generation: &GenerationRecord,
 ) -> Result<(), String> {

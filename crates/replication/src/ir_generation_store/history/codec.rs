@@ -5,7 +5,7 @@ pub(super) fn identify_history_record(
     mut record: HistoryCommitRecord,
 ) -> Result<(HistoryCommitRecord, HistoryCommitId), String> {
     let body = encode_history_body(&record)?;
-    let identity = super::v2::history_commit_identity(record.generation_root, &body);
+    let identity = v2::history_commit_identity(record.generation_root, &body);
     record.identity = identity;
     Ok((record, identity))
 }
@@ -34,7 +34,7 @@ pub(super) fn encode_history_commit(
     identity: HistoryCommitId,
 ) -> Result<Vec<u8>, String> {
     let body = encode_history_body(record)?;
-    if super::v2::history_commit_identity(record.generation_root, &body) != identity
+    if v2::history_commit_identity(record.generation_root, &body) != identity
         || record.identity != identity
     {
         return Err("semantic history proposal identity is inconsistent".to_owned());
@@ -103,7 +103,7 @@ pub(super) fn decode_history_commit(bytes: &[u8]) -> Result<HistoryCommitRecord,
         first_parent_depth,
         checkpoint,
     };
-    if super::v2::history_commit_identity(record.generation_root, content) != identity {
+    if v2::history_commit_identity(record.generation_root, content) != identity {
         return Err("semantic history commit identity does not match its record".to_owned());
     }
     if encode_history_body(&record)? != content {
@@ -248,7 +248,7 @@ pub(super) fn decode_ref_catalog(bytes: &[u8]) -> Result<HistoryRefCatalog, Stri
     Ok(HistoryRefCatalog { refs })
 }
 
-pub(crate) fn load_history_commit(
+pub(super) fn load_history_commit(
     commits_root: &Path,
     identity: HistoryCommitId,
 ) -> Result<HistoryCommitRecord, String> {

@@ -1,6 +1,6 @@
 //! FileStore-backed cold replay for typed V2 history commits.
 
-use super::{FileSemanticRangeStore, IO_BUFFER_BYTES, display_error, display_io};
+use super::{FileSemanticRangeStore, IO_BUFFER_BYTES, display_error};
 
 use crate::{HistoryTypedV2JumboObject, HistoryTypedV2SegmentObject};
 use backend_semantic::ir::{
@@ -872,7 +872,7 @@ fn locator_working_bytes(
 fn typed_v2_capacity_bytes<T>(capacity: usize) -> u64 {
     u64::try_from(capacity)
         .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(std::mem::size_of::<T>()).unwrap_or(u64::MAX))
+        .saturating_mul(u64::try_from(size_of::<T>()).unwrap_or(u64::MAX))
 }
 
 static TYPED_V2_SPOOL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1123,7 +1123,6 @@ const WINDOWS_FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
 #[derive(Clone, Copy)]
 struct AdmittedTypedV2HistorySegment {
     claim: SemanticTypedPlaneSegmentClaimV2,
-    object: ObjectId,
     byte_length: u64,
     spool_offset: u64,
 }
@@ -1178,7 +1177,6 @@ impl TypedV2SpoolSegmentSource {
                 }
                 segments.push(AdmittedTypedV2HistorySegment {
                     claim: *claim,
-                    object: member.id,
                     byte_length: member.byte_length,
                     spool_offset: member.offset,
                 });

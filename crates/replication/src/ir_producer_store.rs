@@ -29,7 +29,6 @@ use backend_semantic::ir::{
     ValidatedCanonicalSemanticPlaneSegment, VerifiedTypedPlaneContentV2,
     VerifiedTypedPlaneHistoryContentV3, derive_typed_plane_content_v2_from_admitted_reader,
     derive_typed_plane_history_content_v3,
-    stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
     stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits,
     typed_plane_work_limits_v2,
 };
@@ -56,7 +55,7 @@ pub(crate) enum SelectedTypedPlaneProductionError {
     UnclassifiedFailure(String),
 }
 
-impl std::fmt::Display for SelectedTypedPlaneProductionError {
+impl fmt::Display for SelectedTypedPlaneProductionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::RetryableAvailability(detail)
@@ -360,10 +359,6 @@ impl V3SegmentAdmissionBuilder {
         }
     }
 
-    fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
-        &self.admissions
-    }
-
     fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {
         self.admissions
     }
@@ -532,10 +527,6 @@ impl V3JumboAdmissionBuilder {
             poisoned: false,
             pending: None,
         })
-    }
-
-    fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
-        &self.admissions
     }
 
     fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {
@@ -2193,7 +2184,7 @@ impl TypedPlaneSegmentSourceV2 for ProducedSegmentSource<'_, '_> {
                 "typed V2 verifier requested an unknown produced segment".to_owned()
             })?;
         let ProducedSemanticObjectIdentity::Segment {
-            family: observed_family,
+            family: _,
             id,
             first_key,
             last_key,

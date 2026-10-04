@@ -282,7 +282,9 @@ impl TypedV2HistoryResidentReplay<'_> {
 /// admission returns an ordinary cold replay token, never a proof-only entry.
 #[derive(Debug)]
 pub enum TypedV2HistoryResidencyReplay<'cache> {
+    /// The requested replay is retained in the bounded in-memory residency cache.
     Resident(TypedV2HistoryResidentReplay<'cache>),
+    /// The replay was verified cold because it was not admitted to the cache.
     Cold(crate::TypedV2HistoryReplay),
 }
 
@@ -687,15 +689,14 @@ impl TypedV2HistoryResidencyCache {
                 segments.len(),
             ))
             .saturating_add(capacity_bytes::<HistoryTypedV2JumboObject>(jumbo.len()));
-        let (mut additional_payload_bytes, mut additional_objects) =
-            self.candidate_new_objects(spool)?;
+        let (initial_additional_payload_bytes, _) = self.candidate_new_objects(spool)?;
         let ghost_bytes_freed = self
             .ghosts
             .iter()
             .find(|ghost| ghost.key == key)
             .map(|_| target_bytes(&key.target))
             .unwrap_or(0);
-        let generation_cost = metadata_bytes.saturating_add(additional_payload_bytes);
+        let generation_cost = metadata_bytes.saturating_add(initial_additional_payload_bytes);
         let desired_tier = if repeated_cold_miss && generation_cost <= self.protected_limit() {
             ResidentTier::Protected
         } else {
@@ -714,7 +715,8 @@ impl TypedV2HistoryResidencyCache {
             // Evicting an entry can remove pool objects that the incoming
             // generation previously shared. Recompute after every victim so
             // admission remains correctly bounded under deduplication.
-            (additional_payload_bytes, additional_objects) = self.candidate_new_objects(spool)?;
+            let (additional_payload_bytes, additional_objects) =
+                self.candidate_new_objects(spool)?;
             let object_capacity = self
                 .objects
                 .len()

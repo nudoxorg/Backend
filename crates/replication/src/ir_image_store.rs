@@ -138,6 +138,7 @@ pub(super) struct LocalSemanticImageFiles {
 pub(super) struct HistoryImageScratch {
     path: PathBuf,
     file: Option<File>,
+    identity: SemanticImageIdentity,
 }
 
 impl HistoryImageScratch {
@@ -153,6 +154,11 @@ impl HistoryImageScratch {
         generation: GenerationId,
         expected_length: u64,
     ) -> Result<MappedSemanticImage, String> {
+        if identity != self.identity {
+            return Err(
+                "historical semantic-image scratch identity changed before finalization".to_owned(),
+            );
+        }
         let file = self
             .file
             .take()
@@ -286,6 +292,7 @@ impl LocalSemanticImageFiles {
             return Ok(HistoryImageScratch {
                 path,
                 file: Some(file),
+                identity,
             });
         }
         Err("could not allocate a unique historical image scratch file".to_owned())
@@ -494,7 +501,7 @@ impl LocalSemanticImageFiles {
                 if byte_range.start != 0 {
                     return Err("semantic-image stage must begin at byte zero".to_owned());
                 }
-                let mut file = OpenOptions::new()
+                let file = OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create_new(true)
@@ -662,6 +669,7 @@ impl LocalSemanticImageFiles {
     }
 
     /// Reopens an already admitted content object by its typed identity.
+    #[cfg(test)]
     pub(super) fn open_identity(
         &self,
         target: &SemanticTargetKey,
@@ -753,11 +761,11 @@ impl LocalSemanticImageFiles {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err("local semantic image object path is not a directory".to_owned());
         }
-        let keep = keep.into_iter().collect::<std::collections::BTreeSet<_>>();
+        let keep = keep.into_iter().collect::<BTreeSet<_>>();
         let keep_identities = keep
             .iter()
             .map(|(_, identity)| hex(identity.as_ref()))
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         let mut entries = Vec::new();
         for entry in fs::read_dir(&objects).map_err(display_io)? {
             let entry = entry.map_err(display_io)?;
@@ -930,8 +938,8 @@ fn discard_history_view_scratch(directory: &Path) -> Result<(), String> {
                 drop(lease);
                 files.push(path);
             }
-            Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(error)) => return Err(display_io(error)),
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(error)) => return Err(display_io(error)),
         }
     }
     for path in files {
@@ -1167,6 +1175,7 @@ fn decode_checkpoint(bytes: &[u8]) -> Result<SemanticImageResume, String> {
     })
 }
 
+#[cfg(test)]
 fn read_locator(
     path: &Path,
     expected_image: SemanticPlaneImageKey,
@@ -1449,6 +1458,15 @@ mod tests {
             .begin_history_image_scratch(&target, commit, identity, 1)
             .expect("begin concurrent checkout scratch");
         assert_ne!(first.path, second.path);
+        let changed_identity = SemanticImageIdentity::from_encoded_bytes(b"different image");
+        let mismatched = images
+            .begin_history_image_scratch(&target, commit, identity, 1)
+            .expect("begin mismatched-identity scratch");
+        let mismatched_path = mismatched.path.clone();
+        assert!(mismatched
+            .finish(changed_identity, GenerationId::from_raw([3; 32]), 1)
+            .is_err());
+        assert!(!mismatched_path.exists());
 
         // A second store open may recover crashes while these checkouts are
         // in flight. File leases prevent it from deleting their private files.

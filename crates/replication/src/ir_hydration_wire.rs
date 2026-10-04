@@ -1124,7 +1124,7 @@ impl SemanticRangeClientCheckpoint {
     /// Rebinds the semantic cursor after restart and a fresh authority read.
     pub fn restore_hydration<S: SelectedGenerationSource>(
         &self,
-        manifest: &backend_semantic::ir::SemanticPlaneManifest,
+        manifest: &SemanticPlaneManifest,
         source: &mut S,
     ) -> Result<IrHydrationCheckpoint, IrHydrationError> {
         validate_checkpoint_binding(self)?;
@@ -1186,9 +1186,9 @@ impl SemanticRangeClientCheckpoint {
     /// against a newly planned missing-range request.
     pub fn resume<'manifest, 'have, A, C>(
         &self,
-        manifest: &'manifest backend_semantic::ir::SemanticPlaneManifest,
+        manifest: &'manifest SemanticPlaneManifest,
         source: &mut A,
-        have_ids: &'have [backend_semantic::ir::SemanticSegmentId],
+        have_ids: &'have [SemanticSegmentId],
         limits: TransportLimits,
         store: &mut C,
     ) -> Result<

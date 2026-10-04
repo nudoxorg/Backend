@@ -22,7 +22,7 @@ const TYPED_V3_LOCATOR_TAG: u8 = 16;
 const TYPED_V3_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v3-locator.v1\0";
 const MAX_TYPED_V3_LOCATOR_BYTES: usize = MAX_HISTORY_TYPED_V2_LOCATOR_BYTES + 128;
 const MAX_TYPED_V3_ROOT_CLAIM_BYTES: usize = 1 + 4 * 32 + CHECKSUM_BYTES;
-const MAX_TYPED_V3_PENDING_RECONCILE: usize = super::MAX_HISTORY_GC_BATCH_RECORDS / 2;
+const MAX_TYPED_V3_PENDING_RECONCILE: usize = MAX_HISTORY_GC_BATCH_RECORDS / 2;
 
 struct FencedSelectedGenerationSource<'fence> {
     fence: &'fence dyn crate::SelectedNativeImagePublicationFence,
@@ -758,7 +758,7 @@ impl LocalSemanticGenerationFiles {
         {
             return Err("typed V3 commit roots differ from its cold manifest".to_owned());
         }
-        let selected = super::super::load_record(&target_root, commit.generation(), target)?;
+        let selected = load_record(&target_root, commit.generation(), target)?;
         if manifest.build() != selected.manifest.build()
             || manifest.input_claim()
                 != backend_semantic::ir::SemanticInputClaimV2::from_witness(
@@ -770,7 +770,7 @@ impl LocalSemanticGenerationFiles {
                     .to_owned(),
             );
         }
-        let payload_root = super::codec::read_history_payload_root(&target_root, identity)?
+        let payload_root = codec::read_history_payload_root(&target_root, identity)?
             .ok_or_else(|| "typed V3 history payload root is missing".to_owned())?;
         if payload_root.closure.as_bytes() != claim.closure().as_bytes() {
             return Err("typed V3 history payload root differs from its commit".to_owned());
@@ -793,9 +793,9 @@ impl LocalSemanticGenerationFiles {
     ) -> Result<LocalSemanticGeneration, String> {
         let commit = self.history_commit(target, identity)?;
         let target_root = self.target_root(target);
-        let record = super::super::load_record(&target_root, commit.generation(), target)?;
-        super::catalog::validate_commit_generation(&commit.record, &record)?;
-        super::catalog::generation_from_record(record, commit.selected_stamp())
+        let record = load_record(&target_root, commit.generation(), target)?;
+        validate_commit_generation(&commit.record, &record)?;
+        generation_from_record(record, commit.selected_stamp())
     }
 
     pub(crate) fn revalidate_typed_v3_publication_snapshot(
@@ -924,12 +924,12 @@ impl LocalSemanticGenerationFiles {
         }
         let target_root = self.target_root(&proposal.record.target);
         let _ = load_typed_v3_history_locator(&target_root, proposal.identity, claim.locator())?;
-        let selected = super::super::load_record(
+        let selected = load_record(
             &target_root,
             proposal.record.generation,
             &proposal.record.target,
         )?;
-        super::catalog::validate_commit_generation(&proposal.record, &selected)?;
+        validate_commit_generation(&proposal.record, &selected)?;
         if selection_fence.selected_image() != selected.image
             || selection_fence.selected_image_identity() != selected.image_identity
         {
@@ -939,7 +939,7 @@ impl LocalSemanticGenerationFiles {
         }
         // Persist the payload root before the commit/index. If interrupted,
         // the durable pending-locator marker removes both unreachable sidecars.
-        super::codec::write_history_payload_root_typed(
+        codec::write_history_payload_root_typed(
             &target_root,
             proposal.identity,
             payload_root,

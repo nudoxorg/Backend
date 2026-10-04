@@ -19,11 +19,13 @@ use backend_semantic::ir::{
     GenerationId, LanguageProfile, MAX_SEMANTIC_SEGMENT_BYTES, SemanticCoverageState,
     SemanticDeltaAction, SemanticDeltaCursor, SemanticHydrationCoverage, SemanticHydrationCursor,
     SemanticHydrationCursorToken, SemanticImageIdentity, SemanticImageView, SemanticInputWitness,
-    SemanticManifestError, SemanticManifestRoot, SemanticPlaneCatalog, SemanticPlaneCatalogEntry,
+    SemanticManifestError, SemanticManifestRoot,
     SemanticPlaneCatalogRoot, SemanticPlaneImageKey, SemanticPlaneKind, SemanticPlaneManifest,
     SemanticPlaneRoot, SemanticPlaneSegment, SemanticRangeRequest, SemanticSegmentId,
     UntrustedSemanticSegmentId,
 };
+#[cfg(test)]
+use backend_semantic::ir::{SemanticPlaneCatalog, SemanticPlaneCatalogEntry};
 use backend_version::Coverage;
 
 use crate::{ByteRange, ReplicationError, SparseCoverage, TransportLimits};

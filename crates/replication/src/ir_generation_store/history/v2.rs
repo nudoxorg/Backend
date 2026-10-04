@@ -18,7 +18,7 @@ const TYPED_V2_LOCATOR_DOMAIN: &[u8] = b"backend.semantic.history-typed-v2-locat
 const TYPED_V2_COMMIT_DOMAIN: &[u8] = b"backend.semantic.history-commit.typed-v2.v1\0";
 const TYPED_V3_COMMIT_DOMAIN: &[u8] = b"backend.semantic.history-commit.typed-v3.v1\0";
 const MAX_TYPED_V2_MANIFEST_BYTES: usize = backend_semantic::ir::MAX_TYPED_PLANE_MANIFEST_V2_BYTES;
-const MAX_TYPED_V2_PENDING_RECONCILE: usize = super::MAX_HISTORY_GC_BATCH_RECORDS / 2;
+const MAX_TYPED_V2_PENDING_RECONCILE: usize = MAX_HISTORY_GC_BATCH_RECORDS / 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TypedV2HistoryLocator {
@@ -68,7 +68,7 @@ impl TypedV2HistoryLocator {
             .ok_or_else(|| "typed V2 history locator object count overflows".to_owned())?;
         if expected_segments != segment_count
             || segment_count > backend_semantic::ir::MAX_TYPED_PLANE_SEGMENTS_V2
-            || object_count > super::MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS
+            || object_count > MAX_HISTORY_TYPED_V2_LOCATOR_OBJECTS
         {
             return Err("typed V2 history locator object count exceeds its bounds".to_owned());
         }

@@ -163,7 +163,9 @@ pub use history::{
     VerifiedLineageEdgeViewV1, VerifiedLineageRootV2, VerifiedLineageStatusV1,
     VerifiedTypedLineageEdgeSetV1,
 };
-pub(super) use history::{AdmittedHistoryPayloadRoot, HistoryPayloadRoot};
+pub(super) use history::AdmittedHistoryPayloadRoot;
+#[cfg(test)]
+pub(super) use history::HistoryPayloadRoot;
 
 /// Content identity of one admitted target/catalog/image-manifest tuple.
 ///
@@ -476,6 +478,7 @@ impl LocalSemanticGenerationFiles {
         }))
     }
 
+    #[cfg(test)]
     pub(super) fn commit<S: SelectedGenerationSource>(
         &self,
         target: &SemanticTargetKey,
@@ -542,7 +545,10 @@ impl LocalSemanticGenerationFiles {
             record.manifest.root(),
         )?;
         let next = advance_head(prior, record.identity, stamp)?;
-        let may_prune = history::may_prune_generation_records(&target_root, target)?;
+        // Validate the history reachability gate before durable generation
+        // writes. The value is intentionally re-read after the local-cache
+        // ref update because that mutation may change whether pruning is safe.
+        history::may_prune_generation_records(&target_root, target)?;
 
         // Persist the immutable record first. If the process stops here, HEAD
         // still identifies the prior generation and the orphan is reclaimed

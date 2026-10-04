@@ -11,7 +11,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
+#[cfg(test)]
+use std::time::UNIX_EPOCH;
 
 use backend_semantic::ir::{
     FacetChange, GenerationId, MAX_SEMANTIC_SEGMENT_BYTES, MappedSemanticImage, SemanticDiff,
@@ -22,8 +24,8 @@ use backend_semantic::ir::{
 };
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ArtifactObjectReader, ClosureCompositionBudget,
-    ClosureId, ClosureMembershipChange, DurableManifest, FileStore, GcLimits, GcPinGuard, GcReport,
-    GcRoot, GcRootResolver, ObjectId, PinnedStoredClosureReceipt, TypedObject, UntrustedObjectId,
+    ClosureMembershipChange, DurableManifest, FileStore, GcLimits, GcPinGuard, GcReport, GcRoot,
+    GcRootResolver, ObjectId, TypedObject, UntrustedObjectId,
 };
 use backend_version::{
     ObjectKey, ObjectKeyHasher, ObjectVersion, ObjectVersionHasher, Schema, SchemaIdentity,
@@ -421,6 +423,7 @@ impl VerifiedMappedSemanticSegment {
 
     /// Compares a complete payload through caller-owned bounded scratch while
     /// recomputing its typed identities from the bytes actually read.
+    #[cfg(test)]
     fn matches_payload(&mut self, expected: &[u8], scratch: &mut [u8]) -> Result<bool, String> {
         if u64::try_from(expected.len()).map_err(display_error)? != self.byte_length {
             return Ok(false);
@@ -2109,7 +2112,7 @@ impl FileSemanticRangeStore {
             .transpose()?;
         let base_id = base.as_ref().map(DurableManifest::id);
 
-        let mut object_lengths = std::collections::BTreeMap::<ObjectId, u64>::new();
+        let mut object_lengths = BTreeMap::<ObjectId, u64>::new();
         for (_, object, byte_length) in segments {
             match object_lengths.insert(*object, *byte_length) {
                 Some(prior) if prior != *byte_length => {
@@ -2143,7 +2146,7 @@ impl FileSemanticRangeStore {
         }
         let base_members = base
             .as_ref()
-            .map_or(0, backend_store::DurableManifest::object_count);
+            .map_or(0, DurableManifest::object_count);
         let max_members = usize::try_from(base_members)
             .ok()
             .and_then(|count| count.checked_add(changes.len()))

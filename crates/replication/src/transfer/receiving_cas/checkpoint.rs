@@ -335,9 +335,9 @@ impl<T: Schema> WireReceivingCheckpoint<T> {
             return Err(ReplicationError::CoverageLimit);
         }
         self.key
-            .admit_context(backend_version::IdContext::object_key::<T>())?;
+            .admit_context(IdContext::object_key::<T>())?;
         self.version
-            .admit_context(backend_version::IdContext::schema::<T>())?;
+            .admit_context(IdContext::schema::<T>())?;
         for extent in &self.extents {
             let extent: StagedExtent = (*extent).into();
             if extent.id != ExtentId(extent.chain.0) {
@@ -834,9 +834,9 @@ impl<T: Schema> WireLeasedReceivingCheckpoint<T> {
         }
         for root in &self.roots {
             root.key
-                .admit_context(backend_version::IdContext::object_key::<T>())?;
+                .admit_context(IdContext::object_key::<T>())?;
             root.version
-                .admit_context(backend_version::IdContext::schema::<T>())?;
+                .admit_context(IdContext::schema::<T>())?;
         }
         Ok(())
     }

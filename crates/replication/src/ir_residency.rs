@@ -603,7 +603,7 @@ impl FrequencySketch {
     }
 
     const fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        size_of::<Self>()
     }
 }
 
@@ -691,7 +691,7 @@ impl AdaptiveIrResidency {
         metrics.frequency_sketch_ages = self.frequency.ages;
         metrics.route_observation_entries = self.route_observations.len() as u64;
         metrics.route_observation_bytes = (self.route_observations.len() as u64)
-            .saturating_mul(std::mem::size_of::<(SegmentLookupKey, RouteObservation)>() as u64);
+            .saturating_mul(size_of::<(SegmentLookupKey, RouteObservation)>() as u64);
         metrics.live_owner_bytes = self.ledger.as_ref().map_or(self.hot_bytes, |ledger| {
             ledger.live_owner_bytes.load(Ordering::Relaxed)
         });
@@ -1988,6 +1988,7 @@ impl AdaptiveIrResidency {
         ledger
     }
 
+    #[cfg(test)]
     fn evict_one(&mut self, only_unpinned: bool) -> bool {
         let victim = self
             .hot

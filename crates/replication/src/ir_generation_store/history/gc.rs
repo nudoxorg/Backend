@@ -52,7 +52,7 @@ pub(super) fn decode_history_gc_state(bytes: &[u8]) -> Result<HistoryGcState, St
     })
 }
 
-pub(crate) fn read_history_gc_state(target_root: &Path) -> Result<Option<HistoryGcState>, String> {
+pub(super) fn read_history_gc_state(target_root: &Path) -> Result<Option<HistoryGcState>, String> {
     read_optional_bounded(
         &history_gc_state_path(target_root),
         MAX_HISTORY_GC_STATE_BYTES,
@@ -260,7 +260,7 @@ pub(super) fn advance_history_gc(
     // holding the history state lock. Reconcile bounded prefixes here so a
     // crash before commit admission cannot leave untracked sidecars behind.
     let (mut processed, pending_locators_remain) =
-        super::v2::reconcile_pending_typed_v2_locators(target_root, target)?;
+        v2::reconcile_pending_typed_v2_locators(target_root, target)?;
     if pending_locators_remain {
         return Ok(HistoryGcProgress {
             processed_records: processed,
@@ -269,7 +269,7 @@ pub(super) fn advance_history_gc(
         });
     }
     let (v3_processed, pending_v3_locators_remain) =
-        super::v3::reconcile_pending_typed_v3_locators(target_root, target)?;
+        v3::reconcile_pending_typed_v3_locators(target_root, target)?;
     processed = processed
         .checked_add(v3_processed)
         .ok_or_else(|| "semantic history GC work counter overflows".to_owned())?;
@@ -282,7 +282,6 @@ pub(super) fn advance_history_gc(
     }
     let (catalog, digest) = read_history_catalog_snapshot(target_root)?;
     validate_catalog_tips(target_root, target, &catalog)?;
-    let state_path = history_gc_state_path(target_root);
     let mut state = match read_history_gc_state(target_root)? {
         Some(state) if state.refs_digest == digest => state,
         _ => initialize_history_gc(target_root, &catalog, digest)?,
