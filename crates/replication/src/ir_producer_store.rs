@@ -359,6 +359,10 @@ impl V3SegmentAdmissionBuilder {
         }
     }
 
+    fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.admissions
+    }
+
     fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {
         self.admissions
     }
@@ -527,6 +531,11 @@ impl V3JumboAdmissionBuilder {
             poisoned: false,
             pending: None,
         })
+    }
+
+    #[cfg(test)]
+    fn admissions(&self) -> &[DurableSemanticObjectAdmission] {
+        &self.admissions
     }
 
     fn into_admissions(self) -> Vec<DurableSemanticObjectAdmission> {

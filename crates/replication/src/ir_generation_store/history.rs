@@ -38,14 +38,12 @@ mod retention;
 mod v2;
 mod v3;
 
-pub(super) use catalog::{
-    generation_from_record, may_prune_generation_records, read_history_catalog_snapshot,
-    validate_commit_generation,
-};
-use codec::decode_history_index_intent;
+pub(super) use catalog::{generation_from_record, may_prune_generation_records};
+use catalog::{read_history_catalog_snapshot, validate_commit_generation};
+use codec::{decode_history_index_intent, load_history_commit};
 pub(super) use codec::{
     append_history_index_entry, decode_history_segment_map_count, decode_history_segment_mapping,
-    history_commit_path, history_index_intent_path, history_payload_root_path, load_history_commit,
+    history_commit_path, history_index_intent_path, history_payload_root_path,
     recover_history_index_intent, write_history_segment_map_count,
 };
 #[cfg(test)]
@@ -55,8 +53,8 @@ pub(super) use codec::{
 };
 pub(super) use gc::{
     HistoryReachabilityClass, history_gc_epoch_root, history_gc_marked, history_index_id_at,
-    read_history_gc_state,
 };
+use gc::read_history_gc_state;
 pub use lineage::{
     BorrowedTypedLineageEdgeSetV1, LineageAttestationId, LineageAttestationVerifierV1,
     LineageCandidateGroupIdV1, LineageConfirmationStatementV1, LineageEdgeIterV1,

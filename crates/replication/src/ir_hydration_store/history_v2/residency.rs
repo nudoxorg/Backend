@@ -711,7 +711,7 @@ impl TypedV2HistoryResidencyCache {
             return Ok(TypedV2Admission::Rejected(proof));
         }
 
-        loop {
+        let (additional_payload_bytes, additional_objects) = loop {
             // Evicting an entry can remove pool objects that the incoming
             // generation previously shared. Recompute after every victim so
             // admission remains correctly bounded under deduplication.
@@ -737,7 +737,7 @@ impl TypedV2HistoryResidencyCache {
                 && projected_global <= self.byte_budget
                 && projected_tier <= tier_limit
             {
-                break;
+                break (additional_payload_bytes, additional_objects);
             }
             let victim = if projected_tier > tier_limit {
                 match desired_tier {
@@ -766,7 +766,7 @@ impl TypedV2HistoryResidencyCache {
                 return Ok(TypedV2Admission::Rejected(proof));
             }
             self.remove_entry(victim);
-        }
+        };
 
         if additional_objects != 0 {
             self.objects
