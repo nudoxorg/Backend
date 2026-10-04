@@ -8654,8 +8654,27 @@ mod lane_tests {
     /// occupies the separate result role.
     #[test]
     fn optional_and_rest_parameters_keep_owner_local_binding_positions() -> Result<(), LaneError> {
-        let source = "export function gather(head: string, suffix?: number, ...items: boolean[]): string { return head; }\n";
+        let source = "type GatherResult = string;\nexport function gather(head: string, suffix?: number, ...items: boolean[]): GatherResult { return head; }\n";
         let ir = owned_ir(source, None)?;
+        let alias_declaration = "type GatherResult = string;";
+        let alias_start = u32::try_from(
+            source
+                .find(alias_declaration)
+                .ok_or(LaneError::Missing("GatherResult declaration source span"))?,
+        )?;
+        let alias_end = alias_start + u32::try_from(alias_declaration.len())?;
+        let expected_result = ir
+            .items()
+            .find(|item| {
+                item.name() == b"GatherResult"
+                    && item.kind() == backend_semantic::ir::ItemKind::Alias
+                    && item
+                        .source()
+                        .is_some_and(|span| span.start() == alias_start && span.end() == alias_end)
+            })
+            .ok_or(LaneError::Missing(
+                "result target from the exact GatherResult source declaration",
+            ))?;
         let owner = ir
             .items()
             .find(|item| item.name() == b"gather" && item.kind() == EntityKind::Function)
@@ -8685,9 +8704,6 @@ mod lane_tests {
                 )
             })
             .collect();
-        let Some(result) = slots.get(3).copied() else {
-            return Err(LaneError::Missing("gather result slot"));
-        };
         if slots
             != vec![
                 (
@@ -8712,7 +8728,7 @@ mod lane_tests {
                     owner.id(),
                     backend_semantic::ir::SignatureCarrierBindingRole::Result,
                     0,
-                    result.3,
+                    expected_result.id(),
                 ),
             ]
         {
