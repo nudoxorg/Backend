@@ -127,12 +127,15 @@ pub struct ReleaseFailure {
 /// Result of selecting the first Java release that can produce an image.
 #[derive(Debug)]
 pub enum HarnessOutcome {
+    /// A requested or fallback release produced an image.
     Available {
         /// Release profile that successfully produced `output`.
         release: crate::legacy::JavaRelease,
         /// Earlier compilation failures before this release succeeded.
         prior_failures: Vec<ReleaseFailure>,
     },
+    /// No attempted release produced an image. Fallback may have stopped after
+    /// a non-compilation failure.
     Unavailable {
         /// Attempts retained when no candidate release produced an image.
         attempts: Vec<ReleaseFailure>,

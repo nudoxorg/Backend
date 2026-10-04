@@ -507,6 +507,7 @@ pub enum RustPurlError<'url> {
         version: &'url str,
     },
     #[error("workspace root error at {path}: {source}")]
+    /// The selected workspace root was not absolute or could not be loaded as a Cargo project.
     WorkspaceRoot {
         /// Workspace root whose Cargo project model was requested.
         path: PathBuf,
@@ -515,6 +516,7 @@ pub enum RustPurlError<'url> {
         source: RustAuthorityError,
     },
     #[error("package {requested_name}@{requested_version} observed versions {observed_versions:?}")]
+    /// Cargo metadata contained the requested crate name, but none of its versions matched.
     VersionMismatch {
         /// Crate name encoded by the PURL.
         requested_name: &'url str,
@@ -536,6 +538,7 @@ pub enum RustPurlError<'url> {
         path: PathBuf,
     },
     #[error("package project error at {path}: {source}")]
+    /// The matching workspace or registry package could not be opened as a source project.
     Project {
         /// Manifest or project path whose package could not be loaded.
         path: PathBuf,
@@ -556,6 +559,7 @@ pub enum RustPurlError<'url> {
         bytes: usize,
     },
     #[error("cargo metadata failed with status {status:?}: {stderr:?}")]
+    /// The offline `cargo metadata` process exited unsuccessfully.
     MetadataFailed {
         /// Process exit code, or `None` when it terminated without a numeric code.
         status: Option<i32>,
@@ -581,6 +585,7 @@ pub enum RustPurlError<'url> {
         spelling: String,
     },
     #[error("cannot read package manifest at {path}: {source}")]
+    /// Reading a manifest needed to locate a registry package failed.
     ManifestIo {
         /// Manifest path whose bytes could not be read.
         path: PathBuf,

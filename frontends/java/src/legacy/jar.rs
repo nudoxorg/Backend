@@ -85,6 +85,7 @@ pub enum JarError {
         method: u16,
     },
     #[error("local header mismatch at offset {offset}: expected {expected}, actual {actual}")]
+    /// A local-file header's signature or entry name disagrees with its directory record.
     LocalHeaderMismatch {
         /// Byte offset of the entry's local header.
         offset: usize,
@@ -94,6 +95,7 @@ pub enum JarError {
         actual: u64,
     },
     #[error("size mismatch at offset {offset}: expected {expected}, actual {actual}")]
+    /// A declared ZIP size disagrees with the size measured during parsing or extraction.
     SizeMismatch {
         /// Offset associated with the check: the EOCD size field or an entry's directory record.
         offset: usize,
@@ -111,6 +113,7 @@ pub enum JarError {
         raw: u64,
     },
     #[error("CRC mismatch at offset {offset}: expected {expected:#x}, actual {actual:#x}")]
+    /// The CRC-32 computed from extracted bytes differs from the directory value.
     CrcMismatch {
         /// Byte offset of the entry's central-directory record.
         offset: usize,
@@ -128,6 +131,7 @@ pub enum JarError {
         size: u64,
     },
     #[error("deflate failed at offset {offset}: {source}")]
+    /// The bounded deflate decoder rejected the entry's compressed data.
     Deflate {
         /// Byte offset of the entry's central-directory record.
         offset: usize,
@@ -137,6 +141,8 @@ pub enum JarError {
     #[error(
         "output buffer is not large enough at offset {offset}: expected {expected}, actual {actual}"
     )]
+    /// Describes an extraction request whose output buffer cannot hold the
+    /// entry's uncompressed bytes.
     OutputTooSmall {
         /// Entry offset associated with the rejected output request.
         offset: usize,
