@@ -2,7 +2,8 @@
 
 use crate::{
     CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
-    PackageDependencyRecord, RegistryForgeAssociation, RegistryNativeMetadata,
+    PackageDependencyRecord, RegistryDiscoveryCargoMetadata, RegistryForgeAssociation,
+    RegistryNativeMetadata,
 };
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
@@ -2197,8 +2198,10 @@ pub struct RegistryDiscoveryAdvisory {
     pub fixed_in: RegistryEvidenceFacet<Box<[ProductText]>>,
 }
 
-/// Advisory and download observations for one exact registry release.
+/// Source observations for one exact registry release.
 /// Every known facet is attributed to the enclosing candidate's `source`.
+/// The enclosing candidate's [`RegistryDiscoveryCandidate::admit`] check is
+/// required after decoding before these source atoms are treated as admitted.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryDiscoveryMetadata {
@@ -2208,6 +2211,10 @@ pub struct RegistryDiscoveryMetadata {
     pub advisories: RegistryEvidenceFacet<Box<[RegistryDiscoveryAdvisory]>>,
     /// Explicit source-reported yank state, separate from package standing.
     pub yanked: RegistryEvidenceFacet<bool>,
+    /// Exact-revision deprecation notice, retaining source whitespace verbatim.
+    pub deprecation: RegistryEvidenceFacet<crate::SourceAtomText>,
+    /// Cargo sparse-index facts for this exact Cargo release row.
+    pub cargo_sparse: RegistryEvidenceFacet<RegistryDiscoveryCargoMetadata>,
 }
 
 /// One discovered release claim, kept distinct by source identity.
@@ -2228,8 +2235,7 @@ pub struct RegistryDiscoveryCandidate {
     pub freshness: RegistryDiscoveryFreshness,
     /// Digest of the exact source record that produced this claim.
     pub proof: [u8; 32],
-    /// Optional source-attributed advisory, download, and yank facts.
-    #[serde(default)]
+    /// Optional source-attributed release facts reported by this registry.
     pub metadata: RegistryDiscoveryMetadata,
 }
 
@@ -2251,6 +2257,11 @@ impl RegistryDiscoveryCandidate {
             | RegistryDiscoveryFreshness::Historical { .. }
             | RegistryDiscoveryFreshness::Expired { .. }
             | RegistryDiscoveryFreshness::Unavailable { .. } => {
+                if matches!(&self.metadata.cargo_sparse, RegistryEvidenceFacet::Known(_))
+                    && self.coordinate.package_type().registry() != Some(RegistryEcosystem::Cargo)
+                {
+                    return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+                }
                 admit_registry_discovery_metadata(&self.metadata)
             }
         }
@@ -2260,25 +2271,32 @@ impl RegistryDiscoveryCandidate {
 fn admit_registry_discovery_metadata(
     metadata: &RegistryDiscoveryMetadata,
 ) -> Result<(), ProductAdmissionError> {
-    let RegistryEvidenceFacet::Known(advisories) = &metadata.advisories else {
-        return Ok(());
-    };
-    if advisories.len() > 128 {
-        return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
-    }
-    for advisory in advisories.iter() {
-        if advisory.aliases.len() > 32 {
+    if let RegistryEvidenceFacet::Known(advisories) = &metadata.advisories {
+        if advisories.len() > 128 {
             return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
         }
-        for facet in [&advisory.summary, &advisory.severity] {
-            if matches!(facet, RegistryEvidenceFacet::Known(value) if value.as_str().len() > 4096) {
+        for advisory in advisories.iter() {
+            if advisory.aliases.len() > 32 {
+                return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+            }
+            for facet in [&advisory.summary, &advisory.severity] {
+                if matches!(facet, RegistryEvidenceFacet::Known(value) if value.as_str().len() > 4096)
+                {
+                    return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+                }
+            }
+            if matches!(&advisory.fixed_in, RegistryEvidenceFacet::Known(values) if values.len() > 256 || values.iter().any(|value| value.as_str().len() > 4096))
+            {
                 return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
             }
         }
-        if matches!(&advisory.fixed_in, RegistryEvidenceFacet::Known(values) if values.len() > 256 || values.iter().any(|value| value.as_str().len() > 4096))
-        {
-            return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
-        }
+    }
+    if matches!(&metadata.deprecation, RegistryEvidenceFacet::Known(value) if value.as_str().len() > MAX_PRODUCT_TEXT_BYTES || value.as_str().contains('\0'))
+    {
+        return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+    }
+    if let RegistryEvidenceFacet::Known(cargo) = &metadata.cargo_sparse {
+        cargo.admit()?;
     }
     Ok(())
 }
@@ -3272,7 +3290,7 @@ impl SurfaceReply {
                         registry_package_record_bound(record)
                     }
                     RegistrySearchHit::Discovered(candidate) => {
-                        fixed_record_bound().saturating_add(candidate.coordinate.as_str().len())
+                        fixed_record_bound().saturating_add(serialized_json_size(candidate))
                     }
                     RegistrySearchHit::ForgeDiscovered(candidate) => fixed_record_bound()
                         .saturating_add(
@@ -3703,6 +3721,79 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("partial wire decode");
         assert_eq!(decoded, reply);
         assert!(reply.encoded_size_bound() >= encoded.len());
+    }
+
+    #[test]
+    fn discovered_cargo_source_atoms_are_checked_after_wire_decode_before_admission() {
+        fn candidate(dependency_name: &str) -> RegistryDiscoveryCandidate {
+            let text = |value: &str| crate::SourceAtomText::new(value).expect("source atom");
+            RegistryDiscoveryCandidate {
+                source: [4; 32],
+                coordinate: PackageCoordinate::parse("pkg:cargo/discovery-fixture@1.0.0")
+                    .expect("Cargo coordinate"),
+                standing: RegistryDiscoveryStanding::Published,
+                completeness: RegistryDiscoveryCompleteness::Incomplete,
+                caught_up: false,
+                freshness: RegistryDiscoveryFreshness::Historical {
+                    observed_at_millis: 10,
+                },
+                proof: [5; 32],
+                metadata: RegistryDiscoveryMetadata {
+                    cargo_sparse: RegistryEvidenceFacet::Known(RegistryDiscoveryCargoMetadata {
+                        checksum: text(&"0".repeat(64)),
+                        schema_version: 2,
+                        rust_version: RegistryEvidenceFacet::Unknown,
+                        links: RegistryEvidenceFacet::Absent,
+                        features: RegistryEvidenceFacet::Known(Box::new([])),
+                        features2: RegistryEvidenceFacet::Unknown,
+                        dependencies: RegistryEvidenceFacet::Known(Box::new([
+                            crate::RegistryDiscoveryCargoDependency {
+                                name: text(dependency_name),
+                                requirement: text("^1"),
+                                package: RegistryEvidenceFacet::Unknown,
+                                features: RegistryEvidenceFacet::Known(Box::new([])),
+                                optional: RegistryEvidenceFacet::Unknown,
+                                default_features: RegistryEvidenceFacet::Unknown,
+                                target: RegistryEvidenceFacet::Unknown,
+                                kind: RegistryEvidenceFacet::Unknown,
+                                registry: RegistryEvidenceFacet::Unknown,
+                            },
+                        ])),
+                    }),
+                    ..RegistryDiscoveryMetadata::default()
+                },
+            }
+        }
+
+        let round_trip_reply = |name: &str| {
+            let reply =
+                SurfaceReply::IndexSearchWithDiscovery(Box::new([RegistrySearchHit::Discovered(
+                    candidate(name),
+                )]));
+            let encoded = serde_json::to_vec(&reply).expect("typed reply encodes");
+            assert!(reply.encoded_size_bound() >= encoded.len());
+            serde_json::from_slice::<SurfaceReply>(&encoded).expect("typed reply decodes")
+        };
+
+        round_trip_reply("serde")
+            .admit(CommandId::IndexSearch)
+            .expect("source-equivalent dependency name passes");
+        let oversized_name = "x".repeat(257);
+        for invalid_name in ["", "serde\0alias", oversized_name.as_str()] {
+            let reply = round_trip_reply(invalid_name);
+            assert!(reply.admit(CommandId::IndexSearch).is_err());
+        }
+
+        let mut missing_metadata =
+            serde_json::to_value(candidate("serde")).expect("candidate serializes");
+        missing_metadata
+            .as_object_mut()
+            .expect("candidate is an object")
+            .remove("metadata");
+        assert!(
+            serde_json::from_value::<RegistryDiscoveryCandidate>(missing_metadata).is_err(),
+            "a missing metadata object must not collapse new release facts into unknown"
+        );
     }
 
     #[test]

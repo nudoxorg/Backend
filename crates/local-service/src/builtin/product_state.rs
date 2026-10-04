@@ -23,12 +23,13 @@ use backend_library::{
     PackageCoordinate as ProductPackageCoordinate, PackageDependencyLookup,
     PackageDependencyRecord, PackageGraphIndex, PackageGraphSourceAuthority, PackageGraphSourceKey,
     PackageReference, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
-    RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
-    RegistryDiscoveryMetadata, RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem,
-    RegistryEvidenceFacet, RegistryFactAvailability, RegistryMetadata, RegistryNativeMetadata,
-    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
-    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
-    ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord, TreeNodeRecord, TreeOpener,
+    RegistryDiscoveryCandidate, RegistryDiscoveryCargoFeature, RegistryDiscoveryCargoMetadata,
+    RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
+    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
+    RegistryFactAvailability, RegistryMetadata, RegistryNativeMetadata, RegistryPackageRecord,
+    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistryReleaseStanding,
+    RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, Row,
+    SemanticVersionRecord, SourceAtomText, SubscriptionRecord, TreeNodeRecord, TreeOpener,
     TreeSubject, command_spec,
 };
 use backend_platform::durable;
@@ -2165,6 +2166,11 @@ fn registry_discovery_metadata(
     use backend_engine::registry::DiscoveryFacet;
     use backend_library::{RegistryDiscoveryAdvisory, RegistryEvidenceFacet};
 
+    metadata
+        .admit()
+        .map_err(|error| format!("registry discovery source metadata failed admission: {error}"))?;
+    preflight_registry_discovery_metadata(metadata)?;
+
     let advisories = match &metadata.advisories {
         DiscoveryFacet::Known(values) => {
             let mut records = Vec::with_capacity(values.len());
@@ -2197,11 +2203,252 @@ fn registry_discovery_metadata(
         DiscoveryFacet::Absent => RegistryEvidenceFacet::Absent,
         DiscoveryFacet::Unknown => RegistryEvidenceFacet::Unknown,
     };
-    Ok(backend_library::RegistryDiscoveryMetadata {
+    let projected = backend_library::RegistryDiscoveryMetadata {
         downloads: discovery_product_facet(&metadata.downloads, |value| Ok(*value))?,
         advisories,
         yanked: discovery_product_facet(&metadata.yanked, |value| Ok(*value))?,
+        deprecation: discovery_product_facet(&metadata.deprecation, |text| source_atom_text(text))?,
+        cargo_sparse: discovery_product_facet(&metadata.cargo_sparse, |cargo| {
+            registry_discovery_cargo_metadata(cargo)
+        })?,
+    };
+    if let RegistryEvidenceFacet::Known(cargo) = &projected.cargo_sparse {
+        cargo.admit().map_err(|error| {
+            format!("projected Cargo sparse metadata failed admission: {error}")
+        })?;
+    }
+    Ok(projected)
+}
+
+fn preflight_registry_discovery_metadata(
+    metadata: &backend_engine::registry::DiscoveryMetadata,
+) -> Result<(), String> {
+    use backend_engine::registry::{CratesSparseMetadata, DiscoveryFacet};
+    use backend_library::{
+        MAX_REGISTRY_DISCOVERY_CARGO_ITEMS, MAX_REGISTRY_DISCOVERY_FACT_ROWS,
+        MAX_REGISTRY_DISCOVERY_METADATA_BYTES, RegistryDiscoveryCargoDependency,
+        RegistryDiscoveryCargoFeature, RegistryDiscoveryCargoMetadata, SourceAtomText,
+    };
+
+    struct Budget {
+        rows: usize,
+        bytes: usize,
+    }
+    impl Budget {
+        fn add_rows(&mut self, count: usize, row_bytes: usize) -> Result<(), String> {
+            self.rows = self
+                .rows
+                .checked_add(count)
+                .ok_or_else(|| "Cargo sparse metadata row budget overflow".to_owned())?;
+            self.bytes = self
+                .bytes
+                .checked_add(
+                    count
+                        .checked_mul(row_bytes)
+                        .ok_or_else(|| "Cargo sparse metadata retained-size overflow".to_owned())?,
+                )
+                .ok_or_else(|| "Cargo sparse metadata retained-size overflow".to_owned())?;
+            self.check()
+        }
+
+        fn add_text(&mut self, text: &str) -> Result<(), String> {
+            self.bytes = self
+                .bytes
+                .checked_add(text.len())
+                .ok_or_else(|| "Cargo sparse metadata retained-size overflow".to_owned())?;
+            self.check()
+        }
+
+        fn check(&self) -> Result<(), String> {
+            if self.rows > MAX_REGISTRY_DISCOVERY_CARGO_ITEMS
+                || self.bytes > MAX_REGISTRY_DISCOVERY_METADATA_BYTES
+            {
+                Err("Cargo sparse metadata exceeds public projection bounds".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn text_facet(facet: &DiscoveryFacet<String>, budget: &mut Budget) -> Result<(), String> {
+        if let DiscoveryFacet::Known(text) = facet {
+            budget.add_text(text)?;
+        }
+        Ok(())
+    }
+
+    fn source_facet(
+        facet: &DiscoveryFacet<Vec<String>>,
+        budget: &mut Budget,
+    ) -> Result<(), String> {
+        if let DiscoveryFacet::Known(values) = facet {
+            if values.len() > MAX_REGISTRY_DISCOVERY_FACT_ROWS {
+                return Err(
+                    "Cargo dependency feature list exceeds public projection bounds".to_owned(),
+                );
+            }
+            budget.add_rows(values.len(), std::mem::size_of::<SourceAtomText>())?;
+            for value in values {
+                budget.add_text(value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn features_facet(
+        facet: &DiscoveryFacet<Vec<backend_engine::registry::CratesSparseFeature>>,
+        budget: &mut Budget,
+    ) -> Result<(), String> {
+        if let DiscoveryFacet::Known(features) = facet {
+            if features.len() > MAX_REGISTRY_DISCOVERY_FACT_ROWS {
+                return Err("Cargo feature map exceeds public projection bounds".to_owned());
+            }
+            budget.add_rows(
+                features.len(),
+                std::mem::size_of::<RegistryDiscoveryCargoFeature>(),
+            )?;
+            for feature in features {
+                budget.add_text(&feature.name)?;
+                if feature.members.len() > MAX_REGISTRY_DISCOVERY_FACT_ROWS {
+                    return Err(
+                        "Cargo feature expression list exceeds public projection bounds".to_owned(),
+                    );
+                }
+                budget.add_rows(feature.members.len(), std::mem::size_of::<SourceAtomText>())?;
+                for member in &feature.members {
+                    budget.add_text(member)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cargo_metadata(cargo: &CratesSparseMetadata, budget: &mut Budget) -> Result<(), String> {
+        budget.add_text(&cargo.checksum)?;
+        text_facet(&cargo.rust_version, budget)?;
+        text_facet(&cargo.links, budget)?;
+        features_facet(&cargo.features, budget)?;
+        features_facet(&cargo.features2, budget)?;
+        if let DiscoveryFacet::Known(dependencies) = &cargo.dependencies {
+            if dependencies.len() > MAX_REGISTRY_DISCOVERY_FACT_ROWS {
+                return Err("Cargo dependency list exceeds public projection bounds".to_owned());
+            }
+            budget.add_rows(
+                dependencies.len(),
+                std::mem::size_of::<RegistryDiscoveryCargoDependency>(),
+            )?;
+            for dependency in dependencies {
+                budget.add_text(&dependency.name)?;
+                budget.add_text(&dependency.requirement)?;
+                text_facet(&dependency.package, budget)?;
+                source_facet(&dependency.features, budget)?;
+                text_facet(&dependency.target, budget)?;
+                text_facet(&dependency.kind, budget)?;
+                text_facet(&dependency.registry, budget)?;
+            }
+        }
+        Ok(())
+    }
+
+    let DiscoveryFacet::Known(cargo) = &metadata.cargo_sparse else {
+        return Ok(());
+    };
+    let mut budget = Budget { rows: 0, bytes: 0 };
+    budget.add_rows(1, std::mem::size_of::<RegistryDiscoveryCargoMetadata>())?;
+    cargo_metadata(cargo, &mut budget)
+}
+
+fn registry_discovery_cargo_metadata(
+    cargo: &backend_engine::registry::CratesSparseMetadata,
+) -> Result<RegistryDiscoveryCargoMetadata, String> {
+    use backend_library::{RegistryDiscoveryCargoDependency, RegistryDiscoveryCargoFeature};
+
+    let features = discovery_product_facet(&cargo.features, |features| {
+        project_discovery_cargo_features(features)
+    })?;
+    let features2 = discovery_product_facet(&cargo.features2, |features| {
+        project_discovery_cargo_features(features)
+    })?;
+    let dependencies = discovery_product_facet(&cargo.dependencies, |dependencies| {
+        let mut rows = dependencies
+            .iter()
+            .map(|dependency| {
+                Ok(RegistryDiscoveryCargoDependency {
+                    name: source_atom_text(&dependency.name)?,
+                    requirement: source_atom_text(&dependency.requirement)?,
+                    package: discovery_product_facet(&dependency.package, |value| {
+                        source_atom_text(value)
+                    })?,
+                    features: discovery_product_facet(&dependency.features, |values| {
+                        project_source_atom_list(values)
+                    })?,
+                    optional: discovery_product_facet(&dependency.optional, |value| Ok(*value))?,
+                    default_features: discovery_product_facet(
+                        &dependency.default_features,
+                        |value| Ok(*value),
+                    )?,
+                    target: discovery_product_facet(&dependency.target, |value| {
+                        source_atom_text(value)
+                    })?,
+                    kind: discovery_product_facet(&dependency.kind, |value| {
+                        source_atom_text(value)
+                    })?,
+                    registry: discovery_product_facet(&dependency.registry, |value| {
+                        source_atom_text(value)
+                    })?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        rows.sort();
+        Ok(rows.into_boxed_slice())
+    })?;
+    Ok(RegistryDiscoveryCargoMetadata {
+        checksum: source_atom_text(&cargo.checksum)?,
+        schema_version: cargo.schema_version,
+        rust_version: discovery_product_facet(&cargo.rust_version, |value| {
+            source_atom_text(value)
+        })?,
+        links: discovery_product_facet(&cargo.links, |value| source_atom_text(value))?,
+        features,
+        features2,
+        dependencies,
     })
+}
+
+fn project_discovery_cargo_features(
+    features: &[backend_engine::registry::CratesSparseFeature],
+) -> Result<Box<[RegistryDiscoveryCargoFeature]>, String> {
+    let mut rows = features
+        .iter()
+        .map(|feature| {
+            let mut members = feature
+                .members
+                .iter()
+                .map(|member| source_atom_text(member))
+                .collect::<Result<Vec<_>, _>>()?;
+            members.sort();
+            Ok(RegistryDiscoveryCargoFeature {
+                name: source_atom_text(&feature.name)?,
+                members: members.into_boxed_slice(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    rows.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(rows.into_boxed_slice())
+}
+
+fn project_source_atom_list(values: &[String]) -> Result<Box<[SourceAtomText]>, String> {
+    let mut values = values
+        .iter()
+        .map(|value| source_atom_text(value))
+        .collect::<Result<Vec<_>, _>>()?;
+    values.sort();
+    Ok(values.into_boxed_slice())
+}
+
+fn source_atom_text(value: &str) -> Result<SourceAtomText, String> {
+    SourceAtomText::new(value)
+        .map_err(|error| format!("registry source atom violates product bounds: {error}"))
 }
 
 fn discovery_product_facet<T, U>(
@@ -3532,8 +3779,8 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
 mod tests {
     use super::*;
     use backend_engine::registry::{
-        DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,
-        DiscoverySourceIdentity, DiscoveryStanding, RegistryEndpoint,
+        discovery_source_identity, DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor,
+        DiscoveryFact, DiscoveryObservedAt, DiscoveryStanding, RegistryEndpoint,
     };
     use backend_engine::{
         AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,
@@ -4640,7 +4887,7 @@ mod tests {
         let path = root.join("discovery.journal");
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
             .expect("Cargo discovery source");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
         let mut discovery = DiscoveryStore::open(path).expect("discovery journal");
         let discovery_coordinate =
@@ -4661,6 +4908,7 @@ mod tests {
                     coordinate: discovery_coordinate,
                     standing: DiscoveryStanding::Yanked,
                     observed_at: observed,
+                    source_event: backend_engine::registry::DiscoverySourceEvent::Unordered,
                     source_event_time: None,
                     proof: [0x51; 32],
                     metadata: backend_engine::registry::DiscoveryMetadata::default(),
@@ -4986,7 +5234,7 @@ mod tests {
         let path = root.join("discovery.journal");
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
             .expect("Cargo discovery source");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
         let coordinate =
             backend_engine::ProductPackageCoordinate::parse("pkg:cargo/rare-needle@2.0.0")
@@ -5007,6 +5255,7 @@ mod tests {
                     coordinate,
                     standing: DiscoveryStanding::Yanked,
                     observed_at: observed,
+                    source_event: backend_engine::registry::DiscoverySourceEvent::Unordered,
                     source_event_time: None,
                     proof: [7; 32],
                     metadata: backend_engine::registry::DiscoveryMetadata::default(),
@@ -5109,7 +5358,7 @@ mod tests {
         let path = root.join("discovery.journal");
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
             .expect("Cargo discovery source");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let now = discovery_now();
         let old_observation = now.saturating_sub(DISCOVERY_FRESHNESS_MILLIS + 1);
         let old = DiscoveryObservedAt::from_unix_millis(old_observation);
@@ -5123,6 +5372,7 @@ mod tests {
             .expect("coordinate"),
             standing: DiscoveryStanding::Published,
             observed_at,
+            source_event: backend_engine::registry::DiscoverySourceEvent::Unordered,
             source_event_time: None,
             proof: [1; 32],
             metadata: backend_engine::registry::DiscoveryMetadata::default(),
@@ -5872,5 +6122,304 @@ edition = \"2021\"
         let _ = fs::remove_dir_all(poisoned_root);
         let _ = fs::remove_dir_all(real_root);
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn discovery_source_facts_survive_adapter_journal_reopen_and_candidate_projection() {
+        use backend_engine::registry::{parse_crates_sparse_package, parse_npm_packument_document};
+
+        let root = fixture("discovery-source-native-metadata");
+        let journal = root.join("discovery.journal");
+        let cargo_endpoint =
+            RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
+                .expect("Cargo source endpoint");
+        let npm_endpoint =
+            RegistryEndpoint::new(RegistryEcosystem::Npm, "https://registry.npmjs.org")
+                .expect("npm source endpoint");
+        let cargo_source = discovery_source_identity(&cargo_endpoint);
+        let npm_source = discovery_source_identity(&npm_endpoint);
+        let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
+        let checksum = "0".repeat(64);
+        let second_checksum = "a".repeat(64);
+        let sparse = format!(
+            concat!(
+                "{{\"name\":\"fact-fixture\",\"vers\":\"1.0.0\",\"cksum\":\"{}\",",
+                "\"yanked\":true,\"v\":2,\"rust_version\":\"1.62\",",
+                "\"features\":{{\"z\":[\"zed\",\"alpha\"],\"a\":[\"default\"]}},",
+                "\"features2\":{{\"wire\":[\"dep:serde\"]}},",
+                "\"deps\":[{{\"name\":\"serde\",\"req\":\"^1\",",
+                "\"features\":[\"serde_derive\",\"alloc\"],\"optional\":true,",
+                "\"default_features\":false,\"target\":\"cfg(unix)\",\"kind\":\"normal\"}}]}}\n",
+                "{{\"name\":\"fact-fixture\",\"vers\":\"1.1.0\",\"cksum\":\"{}\",",
+                "\"yanked\":false,\"v\":2,\"features\":{{}},\"deps\":[]}}"
+            ),
+            checksum, second_checksum,
+        );
+        let cargo_page = parse_crates_sparse_package(sparse.as_bytes(), "fact-fixture", 16)
+            .expect("captured sparse-index rows parse");
+        let npm_page = parse_npm_packument_document(
+            br#"{"name":"fact-fixture","versions":{"1.0.0":{"deprecated":" "},"2.0.0":{"deprecated":""},"3.0.0":{"deprecated":null},"4.0.0":{}}}"#,
+            "fact-fixture",
+            42,
+            16,
+        )
+        .expect("captured npm packument parses");
+
+        let cargo_facts = cargo_page
+            .releases
+            .into_iter()
+            .map(|release| DiscoveryFact {
+                source: cargo_source,
+                coordinate: release.coordinate,
+                standing: release.standing,
+                observed_at: observed,
+                source_event: backend_engine::registry::DiscoverySourceEvent::Unordered,
+                source_event_time: None,
+                proof: release.proof,
+                metadata: release.metadata,
+            })
+            .collect();
+        let npm_facts = npm_page
+            .releases
+            .into_iter()
+            .map(|release| DiscoveryFact {
+                source: npm_source,
+                coordinate: release.coordinate,
+                standing: release.standing,
+                observed_at: observed,
+                source_event: backend_engine::registry::DiscoverySourceEvent::Unordered,
+                source_event_time: release.source_event_time,
+                proof: release.proof,
+                metadata: release.metadata,
+            })
+            .collect();
+        let cursor = |value: &[u8]| DiscoveryCursor::new(value.to_vec()).expect("cursor");
+        {
+            let mut store = DiscoveryStore::open(journal.clone()).expect("open journal");
+            for (source, facts, completeness, caught_up, next) in [
+                (
+                    cargo_source,
+                    cargo_facts,
+                    DiscoveryCompleteness::Windowed,
+                    false,
+                    b"cargo-page".as_slice(),
+                ),
+                (
+                    npm_source,
+                    npm_facts,
+                    DiscoveryCompleteness::CompleteThroughCursor,
+                    true,
+                    b"npm-sequence".as_slice(),
+                ),
+            ] {
+                let next_cursor = cursor(next);
+                store
+                    .commit(DiscoveryBatch {
+                        source,
+                        previous_cursor: DiscoveryCursor::default(),
+                        next_cursor: next_cursor.clone(),
+                        source_high_watermark: next_cursor,
+                        caught_up,
+                        observed_at: observed,
+                        completeness,
+                        facts,
+                        package_retractions: Vec::new(),
+                    })
+                    .expect("commit adapter facts");
+            }
+        }
+
+        let store = DiscoveryStore::open(journal.clone()).expect("reopen journal");
+        assert!(store.is_historical(cargo_source));
+        assert!(store.is_historical(npm_source));
+        let project = |source, coordinate: &str| {
+            let fact = store
+                .fact(source, coordinate)
+                .expect("reopened release fact");
+            registry_discovery_candidate(&store, source, fact, discovery_now())
+                .expect("candidate projection")
+        };
+
+        let cargo_v1 = project(cargo_source, "pkg:cargo/fact-fixture@1.0.0");
+        let cargo_v2 = project(cargo_source, "pkg:cargo/fact-fixture@1.1.0");
+        assert_eq!(
+            cargo_v1.proof,
+            store
+                .fact(cargo_source, cargo_v1.coordinate.as_str())
+                .unwrap()
+                .proof
+        );
+        assert!(matches!(
+            cargo_v1.freshness,
+            RegistryDiscoveryFreshness::Historical { .. }
+        ));
+        assert_eq!(cargo_v1.standing, RegistryDiscoveryStanding::Yanked);
+        assert_eq!(cargo_v1.metadata.yanked, RegistryEvidenceFacet::Known(true));
+        assert_eq!(cargo_v1.metadata.downloads, RegistryEvidenceFacet::Absent);
+        assert_eq!(cargo_v1.metadata.deprecation, RegistryEvidenceFacet::Absent);
+        let RegistryEvidenceFacet::Known(cargo_v1_facts) = &cargo_v1.metadata.cargo_sparse else {
+            panic!("the exact Cargo sparse row stays known after reopening");
+        };
+        assert_eq!(cargo_v1_facts.schema_version, 2);
+        assert_eq!(cargo_v1_facts.checksum.as_str(), "0".repeat(64));
+        assert_eq!(
+            cargo_v1_facts.rust_version,
+            RegistryEvidenceFacet::Known(SourceAtomText::new("1.62").unwrap())
+        );
+        assert_eq!(cargo_v1_facts.links, RegistryEvidenceFacet::Unknown);
+        let RegistryEvidenceFacet::Known(features) = &cargo_v1_facts.features else {
+            panic!("Cargo features stay known");
+        };
+        assert_eq!(
+            features
+                .iter()
+                .map(|feature| feature.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "z"]
+        );
+        assert_eq!(
+            features[1]
+                .members
+                .iter()
+                .map(SourceAtomText::as_str)
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zed"]
+        );
+        let RegistryEvidenceFacet::Known(features2) = &cargo_v1_facts.features2 else {
+            panic!("Cargo features2 declarations stay separate");
+        };
+        assert_eq!(features2[0].name.as_str(), "wire");
+        assert_eq!(features2[0].members[0].as_str(), "dep:serde");
+        let RegistryEvidenceFacet::Known(dependencies) = &cargo_v1_facts.dependencies else {
+            panic!("Cargo dependency declarations stay known");
+        };
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(
+            dependencies[0].features,
+            RegistryEvidenceFacet::Known(
+                vec![
+                    SourceAtomText::new("alloc").unwrap(),
+                    SourceAtomText::new("serde_derive").unwrap(),
+                ]
+                .into_boxed_slice()
+            )
+        );
+        assert_eq!(dependencies[0].optional, RegistryEvidenceFacet::Known(true));
+        assert_eq!(
+            dependencies[0].default_features,
+            RegistryEvidenceFacet::Known(false)
+        );
+        assert_eq!(dependencies[0].package, RegistryEvidenceFacet::Unknown);
+        assert_eq!(dependencies[0].registry, RegistryEvidenceFacet::Unknown);
+        assert_eq!(
+            dependencies[0].target,
+            RegistryEvidenceFacet::Known(SourceAtomText::new("cfg(unix)").unwrap())
+        );
+        assert_eq!(
+            dependencies[0].kind,
+            RegistryEvidenceFacet::Known(SourceAtomText::new("normal").unwrap())
+        );
+        assert_eq!(
+            cargo_v2.metadata.yanked,
+            RegistryEvidenceFacet::Known(false)
+        );
+        let RegistryEvidenceFacet::Known(cargo_v2_facts) = &cargo_v2.metadata.cargo_sparse else {
+            panic!("second Cargo sparse row stays known");
+        };
+        assert_eq!(
+            cargo_v2_facts.features,
+            RegistryEvidenceFacet::Known(Box::new([]))
+        );
+        assert_eq!(
+            cargo_v2_facts.dependencies,
+            RegistryEvidenceFacet::Known(Box::new([]))
+        );
+        assert_eq!(cargo_v2_facts.features2, RegistryEvidenceFacet::Unknown);
+        assert_eq!(cargo_v2_facts.rust_version, RegistryEvidenceFacet::Unknown);
+
+        let npm_space = project(npm_source, "pkg:npm/fact-fixture@1.0.0");
+        let npm_empty = project(npm_source, "pkg:npm/fact-fixture@2.0.0");
+        let npm_null = project(npm_source, "pkg:npm/fact-fixture@3.0.0");
+        let npm_missing = project(npm_source, "pkg:npm/fact-fixture@4.0.0");
+        assert_eq!(
+            npm_space.metadata.deprecation,
+            RegistryEvidenceFacet::Known(SourceAtomText::new(" ").unwrap())
+        );
+        assert_eq!(
+            npm_empty.metadata.deprecation,
+            RegistryEvidenceFacet::Known(SourceAtomText::new("").unwrap())
+        );
+        assert_eq!(npm_null.metadata.deprecation, RegistryEvidenceFacet::Absent);
+        assert_eq!(
+            npm_missing.metadata.deprecation,
+            RegistryEvidenceFacet::Unknown
+        );
+        assert_eq!(npm_space.metadata.yanked, RegistryEvidenceFacet::Absent);
+        assert_eq!(npm_space.metadata.downloads, RegistryEvidenceFacet::Absent);
+        assert_eq!(
+            npm_space.proof,
+            store
+                .fact(npm_source, npm_space.coordinate.as_str())
+                .unwrap()
+                .proof
+        );
+        assert!(matches!(
+            npm_space.freshness,
+            RegistryDiscoveryFreshness::Historical { .. }
+        ));
+        assert_eq!(npm_space.source, npm_source.id());
+
+        let hit = RegistrySearchHit::Discovered(npm_space.clone());
+        let reply = SurfaceReply::IndexSearchWithDiscovery(vec![hit].into_boxed_slice());
+        reply
+            .admit(backend_library::CommandId::IndexSearch)
+            .expect("source discovery reply admission");
+        let encoded = serde_json::to_vec(&reply).expect("typed public discovery reply serializes");
+        let decoded: SurfaceReply =
+            serde_json::from_slice(&encoded).expect("typed public discovery reply deserializes");
+        decoded
+            .admit(backend_library::CommandId::IndexSearch)
+            .expect("decoded public discovery reply admission");
+        let SurfaceReply::IndexSearchWithDiscovery(hits) = decoded else {
+            panic!("the existing discovery reply surface is retained");
+        };
+        let RegistrySearchHit::Discovered(round_tripped) = &hits[0] else {
+            panic!("the source candidate stays a discovery hit");
+        };
+        round_tripped
+            .admit()
+            .expect("round-tripped candidate is admitted");
+        assert_eq!(round_tripped, &npm_space);
+
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_discovery_projection_rejects_excess_nested_feature_materialization() {
+        use backend_engine::registry::{CratesSparseFeature, DiscoveryFacet, DiscoveryMetadata};
+
+        let features = (0..17)
+            .map(|index| CratesSparseFeature {
+                name: format!("feature-{index:02}"),
+                members: vec!["x".to_owned(); 4096],
+            })
+            .collect();
+        let metadata = DiscoveryMetadata {
+            cargo_sparse: DiscoveryFacet::Known(backend_engine::registry::CratesSparseMetadata {
+                checksum: "0".repeat(64),
+                schema_version: 2,
+                rust_version: DiscoveryFacet::Unknown,
+                links: DiscoveryFacet::Unknown,
+                features: DiscoveryFacet::Known(features),
+                features2: DiscoveryFacet::Unknown,
+                dependencies: DiscoveryFacet::Unknown,
+            }),
+            ..DiscoveryMetadata::default()
+        };
+        metadata
+            .admit()
+            .expect("engine's per-field parser limits pass");
+        assert!(super::registry_discovery_metadata(&metadata).is_err());
     }
 }

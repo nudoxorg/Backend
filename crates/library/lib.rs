@@ -36,6 +36,7 @@ mod package_graph_page;
 mod progress;
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
+mod registry_discovery;
 mod registry_forge;
 mod registry_native;
 mod rich_graph;
@@ -44,11 +45,16 @@ mod surface;
 mod view;
 mod wire;
 
+pub use registry_discovery::{
+    MAX_REGISTRY_DISCOVERY_CARGO_ITEMS, MAX_REGISTRY_DISCOVERY_FACT_ROWS,
+    MAX_REGISTRY_DISCOVERY_METADATA_BYTES, RegistryDiscoveryCargoDependency,
+    RegistryDiscoveryCargoFeature, RegistryDiscoveryCargoMetadata,
+};
+
 /// Maximum number of events admitted from one bounded subscription payload.
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
 pub use arrangement::QueryWork;
-pub use source_atom::SourceAtomText;
 pub use backend_advisory::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
     AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,
@@ -191,6 +197,7 @@ pub use rich_graph::{
     RichGraphError, RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision,
     RichGraphSnapshot,
 };
+pub use source_atom::SourceAtomText;
 pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
     ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,
