@@ -1,0 +1,463 @@
+diff --git a/apps/desktop/src/shell/root.rs b/apps/desktop/src/shell/root.rs
+index 79a829bc61..a914debaa8 100644
+--- a/apps/desktop/src/shell/root.rs
++++ b/apps/desktop/src/shell/root.rs
+@@ -2915,6 +2915,92 @@ mod deferred_target_admission_tests {
+ mod shelf_scene_admission_tests {
+     use super::*;
+ 
++    #[gpui::test]
++    fn real_shelf_resize_keeps_a_native_row_below_the_sticky_clip_on_its_first_frame(cx: &mut gpui::TestAppContext) {
++        let mut rig = super::super::tests::rig(cx,
++            Some(super::super::tests::page_route("RelationLabel")), 1440.0, 400.0);
++        rig.cx.update(|_, cx| facet::probe::enable(cx));
++        rig.repaint();
++        let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
++        let types = ledger.texts.iter().find(|text| text.content == "Types" && text.bounds.x < 264.0)
++            .expect("real Shelf exposes its Types fold");
++        let at = gpui::point(px(types.bounds.x + types.bounds.width / 2.0),
++            px(types.bounds.y + types.bounds.height / 2.0));
++        rig.cx.simulate_click(at, gpui::Modifiers::none());
++        rig.settle();
++        let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf.clone());
++        assert!(shelf.update(rig.cx, |shelf, cx| {
++            let moved = shelf.diagnostic_scroll_to_nested_row();
++            cx.notify();
++            moved
++        }), "the actual folded outline has a nested native row");
++        rig.repaint();
++        assert!(rig.cx.debug_bounds("shelf-sticky-clip").is_some(),
++            "the real Shelf paints its parent chain over the list");
++
++        // Draw exactly the first shortened Shell frame: its sticky chain was
++        // selected against the preceding viewport, but the clip belongs to
++        // this frame's parent constraints.
++        rig.cx.simulate_resize(gpui::size(px(1440.0), px(360.0)));
++        rig.repaint();
++        let clip = rig.cx.debug_bounds("shelf-sticky-clip").expect("real sticky clip after resize");
++        let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
++        let viewport = scroll.viewport_bounds();
++        let row = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_row_height());
++        assert!(viewport.size.height > row && clip.bottom() <= viewport.bottom() - row,
++            "the first short frame leaves room for a real row below the sticky hitboxes: {clip:?}, {viewport:?}");
++    }
++
++    #[gpui::test]
++    fn real_drawer_rearms_inert_restoration_and_wheel_retires_queued_intent(cx: &mut gpui::TestAppContext) {
++        let mut rig = super::super::tests::rig(cx,
++            Some(super::super::tests::page_route("RelationLabel")), 360.0, 360.0);
++        rig.keys("secondary-\\");
++        let drawer = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_over.clone());
++        let anchor = drawer.read_with(rig.cx, |shelf, _|
++            shelf.diagnostic_last_row_anchor()).expect("real mounted drawer has an item row");
++        rig.keys("escape");
++        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
++        drawer.update(rig.cx, |shelf, cx| {
++            shelf.diagnostic_queue_restore(Default::default(), Some(anchor.clone()));
++            cx.notify();
++        });
++        let waiting = drawer.read_with(rig.cx, |shelf, _|
++            shelf.diagnostic_restore_ticket()).expect("checked restore queued while drawer is inert");
++        rig.repaint();
++        assert_eq!(drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), Some(waiting),
++            "a closed drawer cannot consume its own pending measurement");
++
++        rig.keys("secondary-\\");
++        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
++        assert_eq!(drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), None,
++            "the same mounted owner must settle after the drawer becomes active again");
++
++        let scroll = drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
++        let viewport = scroll.viewport_bounds();
++        assert!(viewport.size.height > px(0.0), "the reopened native list has a real viewport");
++        assert!(scroll.max_offset_for_scrollbar().y > px(0.0), "the real drawer has wheel travel");
++        drawer.update(rig.cx, |shelf, cx| {
++            shelf.diagnostic_queue_restore(Default::default(), Some(anchor));
++            cx.notify();
++        });
++        let queued = drawer.read_with(rig.cx, |shelf, _|
++            shelf.diagnostic_restore_ticket()).expect("second restore is queued before native input");
++        let before_wheel = scroll.logical_scroll_top();
++        rig.cx.simulate_scroll(viewport.center(), gpui::point(px(0.0), px(120.0)));
++        let wheeled = scroll.logical_scroll_top();
++        assert!(wheeled.item_ix != before_wheel.item_ix || wheeled.offset_in_item != before_wheel.offset_in_item,
++            "native wheel moved the real drawer before its queued restore prepaint");
++        rig.repaint();
++        assert_ne!(drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), Some(queued),
++            "the real list wheel handler supersedes an older restore before its callback");
++        rig.settle();
++        let settled = scroll.logical_scroll_top();
++        assert_eq!(settled.item_ix, wheeled.item_ix);
++        assert_eq!(settled.offset_in_item, wheeled.offset_in_item,
++            "the retired proportional adjustment cannot move the newer wheel position");
++    }
++
+     #[gpui::test]
+     fn mounted_shelf_click_keeps_its_scene_but_back_never_revives_old_callbacks(cx: &mut gpui::TestAppContext) {
+         let route = super::super::tests::page_route("RelationLabel");
+diff --git a/apps/desktop/src/shell/side/mod.rs b/apps/desktop/src/shell/side/mod.rs
+index 3c7f9fb8d9..d34a0887f1 100644
+--- a/apps/desktop/src/shell/side/mod.rs
++++ b/apps/desktop/src/shell/side/mod.rs
+@@ -166,6 +166,7 @@ impl RowLayout {
+         self.next_intent();
+         self.restore = Restore::Idle;
+         self.pending_reveal = None;
++        self.scroll.clear_pending_scroll_adjustment();
+     }
+ 
+     fn discard_superseded(&mut self) {
+@@ -173,6 +174,7 @@ impl RowLayout {
+             && !matches!(&self.restore, Restore::Queued { ticket, .. } | Restore::Measuring { ticket, .. }
+                 if self.intent.get() == Some(*ticket)) {
+             self.restore = Restore::Idle;
++            self.scroll.clear_pending_scroll_adjustment();
+         }
+         if self.pending_reveal.as_ref().is_some_and(|(ticket, _)| self.intent.get() != Some(*ticket)) {
+             self.pending_reveal = None;
+@@ -243,17 +245,18 @@ impl RowLayout {
+         }
+         let Restore::Measuring { offset, anchor, .. } = std::mem::replace(&mut self.restore, Restore::Idle) else { unreachable!() };
+         let Some(index) = self.anchor_index(&anchor) else {
++            self.scroll.clear_pending_scroll_adjustment();
+             self.restore_pixels(offset);
+             return true;
+         };
+-        let Some(bounds) = self.scroll.bounds_for_item(index) else {
++        // The list applied the frozen fraction while measuring this item in
++        // its own prepaint. Settlement only releases presentation publication;
++        // changing the scroll here would be one painted frame too late.
++        if self.scroll.viewport_bounds().size.height <= px(0.0)
++            || self.scroll.bounds_for_item(index).is_none() {
+             self.restore = Restore::Measuring { ticket, offset, anchor };
+             return false;
+-        };
+-        self.scroll.scroll_to(ListOffset {
+-            item_ix: index,
+-            offset_in_item: bounds.size.height * anchor.fraction(),
+-        });
++        }
+         true
+     }
+ 
+@@ -425,8 +428,7 @@ impl RowLayout {
+         }
+         if matches!(self.restore, Restore::Idle) && let Some(index) = surviving_top {
+             if let Some(anchor) = previous_anchor {
+-                self.scroll.scroll_to(ListOffset { item_ix: index,
+-                    offset_in_item: self.row_height * anchor.fraction() });
++                self.scroll.scroll_to_proportional(index, anchor.fraction());
+                 if let Some(ticket) = self.next_intent() {
+                     self.restore = Restore::Measuring { ticket, offset: previous_offset, anchor };
+                 }
+@@ -438,20 +440,19 @@ impl RowLayout {
+         match std::mem::replace(&mut self.restore, Restore::Idle) {
+             Restore::Queued { ticket, offset, anchor: Some(anchor) } => {
+                 if let Some(index) = self.anchor_index(&anchor) {
+-                    let estimated_height = self.scroll.bounds_for_item(index)
+-                        .map_or(self.row_height, |bounds| bounds.size.height);
+-                    self.scroll.scroll_to(ListOffset {
+-                        item_ix: index,
+-                        offset_in_item: estimated_height * anchor.fraction(),
+-                    });
++                    self.scroll.scroll_to_proportional(index, anchor.fraction());
+                     self.restore = Restore::Measuring { ticket, offset, anchor };
+                 } else {
+                     // A folded-away or changed row has no semantic target.
+                     // Use the checked pixel displacement from that visit.
++                    self.scroll.clear_pending_scroll_adjustment();
+                     self.restore_pixels(offset);
+                 }
+             }
+-            Restore::Queued { offset, anchor: None, .. } => self.restore_pixels(offset),
++            Restore::Queued { offset, anchor: None, .. } => {
++                self.scroll.clear_pending_scroll_adjustment();
++                self.restore_pixels(offset);
++            }
+             measuring @ Restore::Measuring { .. } => self.restore = measuring,
+             Restore::Idle => {}
+         }
+@@ -524,6 +525,50 @@ pub(crate) struct Shelf {
+ }
+ 
+ impl Shelf {
++    #[cfg(test)]
++    pub(super) fn diagnostic_restore_ticket(&self) -> Option<u64> {
++        match &self.layout.restore {
++            Restore::Queued { ticket, .. } | Restore::Measuring { ticket, .. }
++                if self.layout.intent.get() == Some(*ticket) => Some(*ticket),
++            _ => None,
++        }
++    }
++
++    #[cfg(test)]
++    pub(super) fn diagnostic_scroll_state(&self) -> ListState {
++        self.layout.scroll.clone()
++    }
++
++    #[cfg(test)]
++    pub(super) fn diagnostic_row_height(&self) -> Pixels {
++        self.layout.row_height
++    }
++
++    #[cfg(test)]
++    pub(super) fn diagnostic_queue_restore(&mut self, offset: ReadingOffset, anchor: Option<ShelfRowAnchor>) {
++        self.layout.queue_restore(offset, anchor);
++    }
++
++    #[cfg(test)]
++    pub(super) fn diagnostic_last_row_anchor(&self) -> Option<ShelfRowAnchor> {
++        let index = self.layout.rows.iter().rposition(|row| row.item().is_some())?;
++        let key = self.layout.identities.get(index)?.as_ref()?;
++        ShelfRowAnchor::new(key.kind, key.text.clone(), usize::from(key.occurrence), 0.25)
++    }
++
++    #[cfg(test)]
++    pub(super) fn diagnostic_scroll_to_nested_row(&mut self) -> bool {
++        let preferred = self.layout.rows.iter().enumerate().find(|(index, row)|
++            self.layout.rows.len().saturating_sub(*index) >= 6
++                && row.item().is_some_and(|item| item.depth > 0)).map(|(index, _)| index);
++        let Some(index) = preferred.or_else(|| self.layout.rows.iter().position(|row|
++            row.item().is_some_and(|item| item.depth > 0))) else {
++            return false;
++        };
++        self.layout.scroll_to_user(index);
++        true
++    }
++
+     /// A shelf called `name` (`shelf`, or `shelf-over` for the overlay one).
+     pub(crate) fn new(name: &'static str, links: Links, store: &DataStore) -> Self {
+         let snapshot = store.snapshot();
+@@ -1527,6 +1572,10 @@ mod measured_layout_tests {
+         assert_eq!(layout.scroll.logical_scroll_top().item_ix, 20,
+             "Back must select the visited semantic row before distant notes are remeasured");
+         paint_rows(cx, &layout, px(32.0), true);
++        let first_paint = layout.scroll.logical_scroll_top();
++        assert_eq!(first_paint.item_ix, 20);
++        assert!((f32::from(first_paint.offset_in_item) - 8.0).abs() < 0.1,
++            "the list's first prepaint must use the measured fraction, before any parent callback");
+         let request = layout.deferred_scroll().expect("Back has a measured target to settle");
+         assert!(layout.deliver_deferred(request), "the target item is measured after Back's first paint");
+         let top = layout.scroll.logical_scroll_top();
+@@ -1550,6 +1599,8 @@ mod measured_layout_tests {
+         assert_eq!(layout.scroll.logical_scroll_top().item_ix, 62,
+             "the changed range includes the old top, but its row identity survives");
+         paint_rows(cx, &layout, px(64.0), false);
++        assert!((f32::from(layout.scroll.logical_scroll_top().offset_in_item) - 16.0).abs() < 0.1,
++            "the first zoom paint must already use the new measured row height");
+         let request = layout.deferred_scroll().expect("zoom has a measured target to settle");
+         assert!(layout.deliver_deferred(request), "the target is measured at the new scale");
+         let top = layout.scroll.logical_scroll_top();
+@@ -1621,7 +1672,8 @@ mod measured_layout_tests {
+             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+                 let layout = self.0.borrow();
+                 let top = layout.scroll.logical_scroll_top().item_ix;
+-                let chain = layout.visible_sticky_ancestors(top);
++                let chain = layout.sticky_ancestors(top);
++                let row_count = chain.len();
+                 let mut pinned = div().w_full().flex().flex_col();
+                 for (index, _) in chain {
+                     pinned = pinned.child(div().id(format!("sticky-{index}")).h(px(32.0)).w_full());
+@@ -1629,7 +1681,7 @@ mod measured_layout_tests {
+                 div().relative().size_full()
+                     .child(list(layout.scroll.clone(), |_, _, _|
+                         div().h(px(32.0)).w_full().into_any_element()).size_full())
+-                    .child(super::view::clipped_sticky_chain(pinned, px(32.0)))
++                    .child(super::view::clipped_sticky_chain(pinned, px(32.0), row_count))
+             }
+         }
+         let view = cx.update(|_, cx| cx.new(|_| StickyView(Rc::clone(&layout))));
+@@ -1645,11 +1697,19 @@ mod measured_layout_tests {
+         let clip = cx.debug_bounds("shelf-sticky-clip").expect("the production sticky clip painted");
+         assert!(clip.size.height <= px(64.0),
+             "the new 96px viewport reserves one 32px real row despite the old 400px list bounds: {clip:?}");
+-        assert!(cx.debug_bounds("sticky-0").is_some() && cx.debug_bounds("sticky-4").is_some(),
+-            "the synthetic deep chain was present; the bound is a real layout clip");
++        let outer = cx.debug_bounds("sticky-0").expect("outer sticky row mounted");
++        let deepest = cx.debug_bounds("sticky-4").expect("deepest sticky row mounted");
++        assert!(outer.bottom() <= clip.top() && deepest.top() >= clip.top()
++            && deepest.bottom() <= clip.bottom(),
++            "the new frame must clip outer ancestors and preserve the deepest useful one: {outer:?}, {deepest:?}, {clip:?}");
+         let uncovered = layout.borrow().scroll.bounds_for_item(42).expect("a real row is measured below the chain");
+         assert!(uncovered.top() >= clip.bottom() && uncovered.top() < px(96.0),
+             "a native list row remains unobscured after shrink: {uncovered:?}, {clip:?}");
++        paint(cx, 400.0);
++        let grown_clip = cx.debug_bounds("shelf-sticky-clip").expect("the first expanded paint");
++        let outer = cx.debug_bounds("sticky-0").expect("outer ancestor stays mounted");
++        assert!(outer.top() == grown_clip.top() && outer.bottom() <= grown_clip.bottom(),
++            "the newly roomy parent reveals outer ancestors in its first paint: {outer:?}, {grown_clip:?}");
+     }
+ }
+ 
+@@ -1800,10 +1860,11 @@ impl Render for Shelf {
+         root = root.on_children_prepainted(move |_, _, cx| {
+             if links.snapshot(cx).overlay().is_some()
+                 || !links.shell.upgrade().is_some_and(|shell| shell.read(cx).shelf_input_owner(overlay_surface)) { return; }
+-            // The list child has now prepainted with this frame's actual
+-            // viewport and row heights. Settle once, then repaint the new
+-            // offset. If this owner was inert or unmounted, this hook did not
+-            // run and a later active paint can retry the same checked ticket.
++            // The list child applied the checked in-row fraction during this
++            // frame's own measurement. This callback only retires the ticket;
++            // the notified frame publishes the settled presentation offset.
++            // If this owner was inert or unmounted, a later active paint can
++            // retry the same checked ticket.
+             if let Some(request) = deferred_scroll
+                 && shelf.update(cx, |shelf, cx| {
+                     if shelf.reading_visit == visit && shelf.layout.deliver_deferred(request) {
+diff --git a/apps/desktop/src/shell/side/view.rs b/apps/desktop/src/shell/side/view.rs
+index fbeb47aaec..4c5c43fb0a 100644
+--- a/apps/desktop/src/shell/side/view.rs
++++ b/apps/desktop/src/shell/side/view.rs
+@@ -150,12 +150,19 @@ impl Shelf {
+     ) -> Option<AnyElement> {
+         let height = measure.row() + measure.space(Space::Tight);
+         let first = self.layout.scroll.logical_scroll_top().item_ix;
+-        let chain = self.layout.visible_sticky_ancestors(first);
++        // Keep the full semantic chain here. The current parent's measured
++        // clip, not the previous ListState viewport, decides how many fit.
++        // Bottom alignment makes both a shrink and an expansion correct in
++        // their first frame without changing which ancestors are deepest.
++        let chain = self.layout.sticky_ancestors(first);
+         if chain.is_empty() {
+             return None;
+         }
++        let row_count = chain.len();
+         let mut pinned = div()
+             .w_full()
++            .flex()
++            .flex_col()
+             .bg(palette.g1)
+             .border_b_1()
+             .border_color(palette.line1.hsla());
+@@ -167,6 +174,7 @@ impl Shelf {
+                 div()
+                     .id(SharedString::from(format!("{}#sticky", item.key)))
+                     .h(height)
++                    .flex_none()
+                     .flex()
+                     .items_center()
+                     .gap(measure.space(Space::Base))
+@@ -189,12 +197,10 @@ impl Shelf {
+                     })),
+             );
+         }
+-        // The chain was chosen during render using the preceding frame's
+-        // ListState viewport. A newly shortened viewport must still leave
+-        // one real row unobscured in this very paint. Layout constrains the
+-        // overlay against the parent's current height, even before the list
+-        // publishes its new measured viewport.
+-        Some(clipped_sticky_chain(pinned, height))
++        // A newly shortened viewport must still leave one real row
++        // unobscured in this very paint. Current parent constraints clip the
++        // full chain before the list publishes its new measured viewport.
++        Some(clipped_sticky_chain(pinned, height, row_count))
+     }
+ 
+     /// What you hold, above the lenses: the hand's cards as chips, each with
+@@ -919,11 +925,18 @@ impl Shelf {
+ /// Clip against this paint's actual parent height, which may be smaller than
+ /// ListState's viewport from the preceding frame. Reserve a real row below
+ /// every sticky chain before the list publishes its new measured bounds.
+-pub(super) fn clipped_sticky_chain(pinned: impl IntoElement, row_height: gpui::Pixels) -> AnyElement {
++pub(super) fn clipped_sticky_chain(pinned: impl IntoElement, row_height: gpui::Pixels, row_count: usize) -> AnyElement {
+     div()
+         .absolute().top_0().bottom_0().left_0().right_0()
+         .flex().flex_col()
+-        .child(div().id("shelf-sticky-clip").flex_1().min_h(px(0.0)).overflow_hidden().child(pinned))
++        .child(div().id("shelf-sticky-clip").relative().flex_1().min_h(px(0.0)).overflow_hidden()
++            // The full chain may exceed this frame's viewport. Keep the
++            // *deepest* useful ancestors in the new clip, with each
++            // native hitbox masked to the actual available height.
++            .child(div().absolute().bottom_0().left_0().right_0()
++                // A short chain fills the clip and begins at its top. An
++                // overfull chain keeps its own height and clips from above.
++                .h(row_height * row_count as f32).min_h(gpui::relative(1.0)).child(pinned)))
+         .child(div().h(row_height).flex_none())
+         .into_any_element()
+ }
+diff --git a/vendor/gpui-ce/NUDOX-PATCHES.md b/vendor/gpui-ce/NUDOX-PATCHES.md
+index 7d4008a1a3..cc4261cbe0 100644
+--- a/vendor/gpui-ce/NUDOX-PATCHES.md
++++ b/vendor/gpui-ce/NUDOX-PATCHES.md
+@@ -118,6 +118,7 @@ repaint its lines, so they are not traced in the replayed frame.
+ | `src/elements/list.rs` `ListState::remeasure_with_uniform_item_height` | new: re-hint every item at a new uniform height, keeping the logical scroll anchor and focus handles | a Library row's height follows the text size; offscreen estimates must follow a reflow |
+ | `src/elements/list.rs` `StateInner::uniform_item_height`; `apply_uniform_item_height`, `remeasure_items_with_scroll_anchor`, `List::prepaint` | the declared uniform height is remembered, and the width-change invalidation in `prepaint` (which the first layout also takes) re-hints unmeasured items with it instead of `None` | upstream reset every hint to `None` there, so `with_uniform_item_height` was erased before its first use: unmeasured rows counted as zero height, the scrollbar covered only the measured rows, and a wheel scroll stopped at their end (`uniform_hints_survive_the_first_layout_and_a_width_change`) |
+ | `src/elements/list.rs` `ListState::splice_focusable` | newly inserted unmeasured items inherit an already-declared uniform height hint, while existing measured items and focus handles remain intact | offscreen inserted rows otherwise contribute zero to the scroll range until painted (`offscreen_splice_keeps_measured_rows_and_extends_the_hinted_scroll_range`); callers without a declared hint remain unchanged |
++| `src/elements/list.rs` `ListState::scroll_to_proportional`, `clear_pending_scroll_adjustment` | a checked semantic row can request a bounded in-row fraction that the list applies when it measures the row during prepaint; a newer owner input can retire that adjustment without moving its logical offset | restoring a reading visit from an offscreen height estimate in a parent `on_children_prepainted` callback changed the next frame only, visibly painting one frame at the estimated offset (`back_restores_the_same_row_past_an_unmeasured_tall_note`); native wheel before that paint must own the resulting position |
+ 
+ ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
+ 
+diff --git a/vendor/gpui-ce/src/elements/list.rs b/vendor/gpui-ce/src/elements/list.rs
+index b277e88d78..e812776523 100644
+--- a/vendor/gpui-ce/src/elements/list.rs
++++ b/vendor/gpui-ce/src/elements/list.rs
+@@ -691,6 +691,35 @@ impl ListState {
+         state.logical_scroll_top = Some(scroll_top);
+     }
+ 
++    /// Position an item at a fractional offset after its next measurement.
++    /// This is applied during the list's own prepaint, before the item layout
++    /// and paint for that frame are fixed. Offscreen estimates never stand in
++    /// for the measured height of the requested item.
++    pub fn scroll_to_proportional(&self, item_ix: usize, fraction: f32) {
++        let state = &mut *self.0.borrow_mut();
++        let count = state.items.summary().count;
++        let item_ix = item_ix.min(count);
++        if item_ix < count {
++            state.follow_state.stop_following();
++            state.pending_scroll = Some(PendingScroll::Proportional(PendingScrollFraction {
++                item_ix,
++                fraction: if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 0.0 },
++            }));
++        } else {
++            state.pending_scroll = None;
++        }
++        state.logical_scroll_top = Some(ListOffset {
++            item_ix,
++            offset_in_item: px(0.0),
++        });
++    }
++
++    /// Retire a measurement adjustment when the owner has accepted newer
++    /// direct input. The logical offset produced by that input remains intact.
++    pub fn clear_pending_scroll_adjustment(&self) {
++        self.0.borrow_mut().pending_scroll = None;
++    }
++
+     /// Scroll the list to the given item, such that the item is fully visible.
+     pub fn scroll_to_reveal_item(&self, ix: usize) {
+         let state = &mut *self.0.borrow_mut();
+@@ -1768,6 +1797,32 @@ mod test {
+         assert_eq!(items.items.iter().nth(7).and_then(|item| item.focus_handle()), Some(focus));
+     }
+ 
++    #[gpui::test]
++    fn proportional_target_is_measured_before_its_first_paint(cx: &mut TestAppContext) {
++        let cx = cx.add_empty_window();
++        let state = ListState::new(50, crate::ListAlignment::Top, px(0.))
++            .with_uniform_item_height(px(20.));
++        struct TestView(ListState);
++        impl Render for TestView {
++            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++                list(self.0.clone(), |index, _, _| {
++                    let row = div().h(if index == 20 { px(80.) } else { px(20.) }).w_full();
++                    if index == 20 { row.id("target").into_any() } else { row.into_any() }
++                }).w_full().h_full()
++            }
++        }
++        state.scroll_to_proportional(20, 0.25);
++        let view = cx.update(|_, cx| cx.new(|_| TestView(state.clone())));
++        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, _| {
++            view.into_any_element()
++        });
++        let top = state.logical_scroll_top();
++        assert_eq!(top.item_ix, 20);
++        assert_eq!(top.offset_in_item, px(20.), "the 80px row, not its 20px hint, determines the first-frame fraction");
++        let painted = cx.debug_bounds("target").expect("the target mounted in the first list paint");
++        assert_eq!(painted.top(), px(-20.), "the first painted row uses the corrected offset");
++    }
++
+     /// NUDOX: a declared uniform height outlives the first layout and a width
+     /// change (both invalidate measured heights). 100 rows are declared 30 px
+     /// and render 20 px; a 60 px viewport measures a handful of them.

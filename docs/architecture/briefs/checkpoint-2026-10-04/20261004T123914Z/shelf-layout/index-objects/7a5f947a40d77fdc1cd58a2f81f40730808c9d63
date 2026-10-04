@@ -9,7 +9,7 @@
 use crate::tokens::TypeRole;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, Global,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, ListState, Pixels, Position, ScrollHandle,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Position, ScrollHandle,
     SharedString, Style, TextRun, Window, px, size,
 };
 use std::cell::RefCell;
@@ -618,24 +618,12 @@ pub fn record_scroll_with_offset(
 /// with the same key. Both observations then come from the same native handle
 /// and the renderer's actual child ancestry.
 pub fn scroll_probe(key: impl Into<SharedString>, handle: ScrollHandle) -> impl IntoElement {
-    ScrollProbe { key: ElementId::Name(key.into()), source: ScrollSource::Handle(handle) }
-}
-
-/// Publishes the viewport, extent, and displacement owned by a heterogeneous
-/// GPUI list. Its extent uses the list's measured heights and offscreen hints,
-/// never an assumed row count times a constant height.
-pub fn list_scroll_probe(key: impl Into<SharedString>, state: ListState) -> impl IntoElement {
-    ScrollProbe { key: ElementId::Name(key.into()), source: ScrollSource::List(state) }
-}
-
-enum ScrollSource {
-    Handle(ScrollHandle),
-    List(ListState),
+    ScrollProbe { key: ElementId::Name(key.into()), handle }
 }
 
 struct ScrollProbe {
     key: ElementId,
-    source: ScrollSource,
+    handle: ScrollHandle,
 }
 
 impl IntoElement for ScrollProbe {
@@ -684,15 +672,13 @@ impl Element for ScrollProbe {
         if !enabled(cx) {
             return ();
         }
-        let (viewport, reach, offset) = match &self.source {
-            ScrollSource::Handle(handle) => (handle.bounds(), handle.max_offset(), handle.offset()),
-            ScrollSource::List(state) => (state.viewport_bounds(), state.max_offset_for_scrollbar(), state.scroll_px_offset_for_scrollbar()),
-        };
+        let viewport = self.handle.bounds();
+        let reach = self.handle.max_offset();
         let content = Bounds::new(
             viewport.origin,
             size(viewport.size.width + reach.x, viewport.size.height + reach.y),
         );
-        record_scroll_with_offset(cx, &self.key, viewport, content, offset);
+        record_scroll_with_offset(cx, &self.key, viewport, content, self.handle.offset());
     }
 
     fn paint(
