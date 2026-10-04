@@ -90,6 +90,7 @@ pub(crate) enum DiscoveryCommit {
 
 #[derive(Clone, Debug, Default)]
 struct SourceProgress {
+    sequence: u64,
     cursor: DiscoveryCursor,
     source_high_watermark: DiscoveryCursor,
     caught_up: bool,
@@ -140,7 +141,7 @@ pub(crate) struct DiscoveryGateway {
 enum DiscoveryWorkerMessage {
     Batch {
         batch: DiscoveryBatch,
-        acknowledgement: SyncSender<bool>,
+        acknowledgement: SyncSender<Option<u64>>,
     },
     Failed {
         source: DiscoverySourceIdentity,
@@ -173,6 +174,7 @@ impl DiscoveryGateway {
                 let worker_cancelled = Arc::clone(&cancelled);
                 let max_pages = config.max_pages;
                 let cursor = store.cursor(source);
+                let expected_base_sequence = store.sequence(source).unwrap_or(0);
                 let source_id = source.id();
                 let worker = thread::Builder::new()
                     .name(format!(
@@ -183,6 +185,7 @@ impl DiscoveryGateway {
                         discovery_worker(
                             endpoint,
                             cursor,
+                            expected_base_sequence,
                             max_pages,
                             worker_sender,
                             worker_cancelled,
@@ -224,7 +227,8 @@ impl DiscoveryGateway {
                     let source = batch.source;
                     let committed = self.store.commit(batch).is_ok();
                     self.store.mark_failed(source, !committed);
-                    let _ = acknowledgement.send(committed);
+                    let latest = committed.then(|| self.store.sequence(source)).flatten();
+                    let _ = acknowledgement.send(latest);
                 }
                 Ok(DiscoveryWorkerMessage::Failed { source }) => {
                     self.store.mark_failed(source, true);
@@ -247,7 +251,7 @@ impl Drop for DiscoveryGateway {
                 acknowledgement, ..
             } = message
             {
-                let _ = acknowledgement.send(false);
+                let _ = acknowledgement.send(None);
             }
         }
         for worker in &self.workers {
@@ -262,6 +266,7 @@ impl Drop for DiscoveryGateway {
 fn discovery_worker(
     endpoint: RegistryEndpoint,
     mut cursor: DiscoveryCursor,
+    mut expected_base_sequence: u64,
     max_pages: usize,
     sender: SyncSender<DiscoveryWorkerMessage>,
     cancelled: Arc<AtomicBool>,
@@ -279,7 +284,8 @@ fn discovery_worker(
             &cancelled,
             &mut sparse_cache,
         ) {
-            Ok(batch) => {
+            Ok(mut batch) => {
+                batch.expected_base_sequence = expected_base_sequence;
                 let next_cursor = batch.next_cursor.clone();
                 let (acknowledgement, response) = mpsc::sync_channel(1);
                 if !send_worker_message(
@@ -297,12 +303,13 @@ fn discovery_worker(
                         return;
                     }
                     match response.try_recv() {
-                        Ok(true) => {
+                        Ok(Some(sequence)) => {
                             cursor = next_cursor;
+                            expected_base_sequence = sequence;
                             retry_delay = DISCOVERY_REFRESH_INTERVAL;
                             break;
                         }
-                        Ok(false) | Err(TryRecvError::Disconnected) => break,
+                        Ok(None) | Err(TryRecvError::Disconnected) => break,
                         Err(TryRecvError::Empty) => thread::park_timeout(Duration::from_millis(50)),
                     }
                 }
@@ -546,6 +553,7 @@ fn refresh_crates(
     }
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor: parsed.next_cursor.clone(),
         source_high_watermark: parsed.next_cursor,
@@ -673,6 +681,7 @@ fn refresh_npm(
     let caught_up = page.pending == 0 && page.next_cursor == source_high_watermark;
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: page.previous_cursor,
         next_cursor: page.next_cursor,
         source_high_watermark,
@@ -782,6 +791,7 @@ fn refresh_pypi(
     };
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor,
         source_high_watermark,
@@ -834,6 +844,7 @@ fn refresh_maven(
     let next_cursor = next_maven_window_cursor(&previous)?;
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor: next_cursor.clone(),
         // The opaque monotone cursor identifies this local bounded observation
@@ -887,6 +898,7 @@ fn refresh_go_modules(
     let caught_up = facts.len() < limit;
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: page.previous_cursor,
         next_cursor: page.next_cursor,
         source_high_watermark: page.source_high_watermark,
@@ -994,6 +1006,7 @@ fn refresh_conan_center(
     let caught_up = next_offset >= tree.recipes.len() && !tree.truncated;
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: previous,
         next_cursor,
         source_high_watermark,
@@ -1226,6 +1239,7 @@ fn refresh_nuget(
         .collect();
     let batch = DiscoveryBatch {
         source,
+        expected_base_sequence: 0,
         previous_cursor: plan.previous_cursor,
         next_cursor: plan.next_cursor,
         source_high_watermark: plan.source_high_watermark,
@@ -1520,7 +1534,9 @@ impl DiscoveryStore {
             .sources
             .get(&batch.source)
             .map_or_else(DiscoveryCursor::default, |state| state.cursor.clone());
-        if current != batch.previous_cursor {
+        if self.sequence(batch.source).unwrap_or(0) != batch.expected_base_sequence
+            || current != batch.previous_cursor
+        {
             return Err(DiscoveryStoreError::Conflict);
         }
         let materialized = self.materialize_package_retractions(&batch)?;
@@ -1581,6 +1597,10 @@ impl DiscoveryStore {
         self.sources
             .get(&source)
             .map_or_else(DiscoveryCursor::default, |state| state.cursor.clone())
+    }
+
+    fn sequence(&self, source: DiscoverySourceIdentity) -> Option<u64> {
+        self.sources.get(&source).map(|state| state.sequence)
     }
 
     /// Completeness last committed for this source, if it has been observed.
@@ -1733,7 +1753,9 @@ impl DiscoveryStore {
 
     fn apply_recovered(&mut self, batch: DiscoveryBatch) -> Result<(), DiscoveryStoreError> {
         let expected = self.cursor(batch.source);
-        if batch.previous_cursor != expected {
+        if batch.previous_cursor != expected
+            || self.sequence(batch.source).unwrap_or(0) != batch.expected_base_sequence
+        {
             return Err(DiscoveryStoreError::Corrupt);
         }
         let input_fingerprint = batch_fingerprint(&batch)?;
@@ -1761,7 +1783,11 @@ impl DiscoveryStore {
         fingerprint: [u8; 32],
     ) -> Result<Vec<DiscoverySearchDocument>, DiscoveryStoreError> {
         let source_identity = batch.source;
+        let expected_base_sequence = batch.expected_base_sequence;
         let source = self.sources.entry(source_identity).or_default();
+        let next_sequence = expected_base_sequence
+            .checked_add(1)
+            .ok_or(DiscoveryStoreError::Bounds)?;
         let mut search_documents = Vec::new();
         for fact in batch.facts {
             let key = fact.coordinate.as_str().to_owned();
@@ -1783,6 +1809,7 @@ impl DiscoveryStore {
                 source.facts.insert(key, fact);
             }
         }
+        source.sequence = next_sequence;
         source.cursor = batch.next_cursor;
         source.source_high_watermark = batch.source_high_watermark;
         source.caught_up = batch.caught_up;
@@ -2041,6 +2068,7 @@ mod tests {
         let observed = DiscoveryObservedAt::from_unix_millis(100);
         DiscoveryBatch {
             source,
+            expected_base_sequence: 0,
             previous_cursor: previous,
             next_cursor: next.clone(),
             source_high_watermark: next,

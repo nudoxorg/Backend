@@ -588,6 +588,10 @@ pub struct DiscoveryFact {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryBatch {
     pub source: DiscoverySourceIdentity,
+    /// Local per-source sequence captured before this batch's network work.
+    /// This is a CAS fence; source cursors and upstream watermarks remain
+    /// opaque adapter hints and never substitute for this local sequence.
+    pub expected_base_sequence: u64,
     pub previous_cursor: DiscoveryCursor,
     pub next_cursor: DiscoveryCursor,
     /// Source's captured high watermark for this observation.
