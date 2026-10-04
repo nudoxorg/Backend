@@ -3509,7 +3509,6 @@ mod project_call_tests {
 
     #[test]
     fn join_project_call_rust_function_retargets_set_note() -> Result<(), String> {
-        let package = package_key("fixture");
         let (service_bytes, caller_bytes, set_note_identity, _) = rust_set_note_drive_fixture(79)?;
         let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
         let images = [&service_bytes[..], &caller_bytes[..]];

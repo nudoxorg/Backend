@@ -1878,7 +1878,7 @@ fn retry_one_pending_compiler_ack(
                     if authority.is_none() {
                         match SemanticAuthority::open(authority_workspace) {
                             Ok(opened) => *authority = Some(opened),
-                            Err(error) => {
+                            Err(_) => {
                                 return cluster_dispatch::PendingAckRetryOutcome::TransientFailure;
                             }
                         }

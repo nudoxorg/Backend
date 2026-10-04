@@ -6977,7 +6977,7 @@ mod route_cost_tests {
             let _notify_drop = NotifyDrop(Some(dropped_sender));
             std::future::pending::<Result<Option<u8>, ClusterDispatchError>>().await
         });
-        let mut probes = FuturesUnordered::new();
+        let probes = FuturesUnordered::new();
         probes.push(fast);
         probes.push(delayed);
         probes.push(dead);

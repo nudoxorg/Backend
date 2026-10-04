@@ -4,9 +4,8 @@ use super::super::registry::{
 };
 use super::super::{
     BuiltinIntent, BuiltinModel, BuiltinModelError, BuiltinSemanticChange, BuiltinSemanticRelation,
-    BuiltinSourceChange, BuiltinWorkspaceRelation, Command, CommandReply, ForgeGateway,
-    ProductDaemon, ProductSourceRecord, RegistryGateway, WireCertificate, WireClaim,
-    WorkspaceModel, activate_semantic_publication, ingest, projection, publish_builtin_view,
+    Command, CommandReply, ForgeGateway, ProductDaemon, RegistryGateway, WireCertificate,
+    WireClaim, WorkspaceModel, ingest, projection, publish_builtin_view,
 };
 use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
@@ -14,8 +13,8 @@ use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
     DeferredIndex, DeferredProfileTicket, IndexScanFailure, IndexScanResult, IndexScanWork,
     PreparedIndex, PreparedProductSelection, capture_index_scan, deferred_compile_was_cancelled,
-    finish_deferred_index, finish_deferred_profile, finish_index_scan, index_project_intent,
-    index_project_intent_at, index_project_intent_with_cluster_and_intent, remove_project_intent,
+    finish_deferred_index, finish_deferred_profile, finish_index_scan, index_project_intent_at,
+    index_project_intent_with_cluster_and_intent, remove_project_intent,
     run_deferred_compile, run_index_scan, semantic_version_record, semantic_versions,
 };
 use super::index_operation::{
@@ -1524,7 +1523,7 @@ impl CommandAdapter {
             let _ = self.resolve_index_operation(daemon, operation_key, None);
         }
         if let Some(mut indexing) = self.indexing.take() {
-            let mut terminal = None;
+            let mut terminal;
             let mut legacy_reply = None;
             let work = std::mem::replace(&mut indexing.work, IndexJobWork::Transition);
             // Candidate-attempt cleanup inventory is built only when a
@@ -3607,8 +3606,8 @@ mod tests {
         admitted_project_source_root, classify_add_target,
     };
     use crate::builtin::{
-        BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinProfile,
-        BuiltinSemanticRelation, BuiltinValidator, BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET,
+        BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
+        BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET,
         SemanticDeployment, builtin_dispatcher, forge_gateway::ForgeGateway, genesis,
         profile_descriptor, publish_builtin_view,
     };

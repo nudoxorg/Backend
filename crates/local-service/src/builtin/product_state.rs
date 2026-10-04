@@ -24,8 +24,8 @@ use backend_library::{
     PackageDependencyRecord, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
-    RegistryDiscoveryMetadata, RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem,
-    RegistryEvidenceFacet, RegistryFactAvailability, RegistryMetadata, RegistryNativeMetadata,
+    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability,
+    RegistryMetadata, RegistryNativeMetadata,
     RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
     RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
     ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord, TreeNodeRecord, TreeOpener,
@@ -3524,7 +3524,7 @@ mod tests {
         PackageDependencyTarget, PackageReference, RegistryDownloadCount, RegistryEcosystem,
         RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding,
     };
-    use backend_library::{PackageGraphIndexLimits, RegistryNativeMetadata};
+    use backend_library::{PackageGraphIndexLimits, RegistryEvidenceFacet, RegistryNativeMetadata};
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 

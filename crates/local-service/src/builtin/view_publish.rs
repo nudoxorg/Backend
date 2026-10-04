@@ -312,9 +312,9 @@ pub(super) fn row_belongs_to_package(row: &Row, package: PackageKey) -> bool {
     row.package == Some(package) || row.id == RowId::Package(package)
 }
 
-/// Row clones performed by the splice/patch functions in this module, since
-/// the last reset. Thread-local so tests running concurrently never
-/// cross-pollinate counts. `#[cfg(test)]`-only: absent from a non-test build.
+// Row clones performed by the splice/patch functions in this module, since
+// the last reset. Thread-local so tests running concurrently never
+// cross-pollinate counts. `#[cfg(test)]`-only: absent from a non-test build.
 #[cfg(test)]
 thread_local! {
     static ROW_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

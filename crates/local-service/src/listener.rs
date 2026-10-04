@@ -1363,7 +1363,7 @@ mod tests {
         let state = Arc::new(DeferredState::default());
         let service = LocaldService::new(GatedOwner(Arc::clone(&state)), config.limits)
             .unwrap_or_else(|error| panic!("service: {error}"));
-        let mut listener = UnixListenerService::bind(service, config)
+        let listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
         let mut runner = RunningListener::spawn(listener);
 
@@ -1892,7 +1892,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
-        let mut held = backend_engine::LocalStream::connect(&path)
+        let held = backend_engine::LocalStream::connect(&path)
             .unwrap_or_else(|error| panic!("connect: {error}"));
         held.set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap_or_else(|error| panic!("read timeout: {error}"));

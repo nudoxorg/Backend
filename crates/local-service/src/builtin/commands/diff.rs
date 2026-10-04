@@ -7,7 +7,6 @@ use super::snapshot::{
     semantic_package_snapshot,
 };
 use backend_engine::application::LocalCompilerClient;
-use backend_semantic::ir::StableLinkKey;
 use std::collections::BTreeMap;
 
 pub(super) fn execute_semantic_diff(
@@ -566,7 +565,7 @@ mod semantic_diff_tests {
     };
     use super::*;
     use backend_semantic::ir::{
-        CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityVersion,
+        CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityVersion, StableLinkKey,
         VariantFingerprint,
     };
 

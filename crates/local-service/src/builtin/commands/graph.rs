@@ -1,6 +1,6 @@
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
-    BuiltinValidator, Command, CommandReply, WireCertificate, projection,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinValidator, Command,
+    CommandReply, WireCertificate, projection,
 };
 use super::semantic_query::{SemanticQueryJob, semantic_query_executor};
 use backend_engine::application::LocalCompilerClient;

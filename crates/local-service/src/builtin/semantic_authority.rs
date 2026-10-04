@@ -482,7 +482,6 @@ impl CommittedSemanticSelectionLease<'_> {
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
         self.authority.selected_native_image_identity_for(
-            &self.key,
             self.claim,
             &self.selected,
             image,
@@ -1689,12 +1688,11 @@ impl SemanticAuthority {
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
         let (expected_claim, selected) = self.image_loader.committed_pair(key)?;
-        self.selected_native_image_identity_for(key, expected_claim, &selected, image)
+        self.selected_native_image_identity_for(expected_claim, &selected, image)
     }
 
     fn selected_native_image_identity_for(
         &self,
-        key: &ProductSemanticPublicationKey,
         expected_claim: SemanticPublicationClaim,
         selected: &SelectedGeneration,
         image: backend_semantic::ir::SemanticPlaneImageKey,

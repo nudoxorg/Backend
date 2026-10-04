@@ -1,3 +1,5 @@
+//! Exercises public index-operation lifecycle receipts across service restarts.
+
 #![cfg(any(unix, windows))]
 #![allow(clippy::expect_used, clippy::panic)]
 

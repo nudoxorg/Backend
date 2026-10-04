@@ -30,8 +30,7 @@ pub(crate) use call_join::{
 };
 #[cfg(test)]
 pub(crate) use call_join::{
-    foreign_display_name, foreign_namespace_field_retarget, foreign_package_field_retarget,
-    foreign_package_mention_retarget, join_project_call,
+    foreign_display_name, join_project_call,
 };
 
 #[cfg(test)]

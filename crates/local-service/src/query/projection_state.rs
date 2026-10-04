@@ -1537,7 +1537,7 @@ mod tests {
         let mut state = ProjectionState::open_in_directory(&directory, [0xC3; 32])
             .expect("fresh collection state");
         let owner = state.owner_id;
-        let mut operation = state.begin_operation().expect("operation fence");
+        let operation = state.begin_operation().expect("operation fence");
         let pin_name = owner_pin_name(owner);
         let mut pin = operation
             .state

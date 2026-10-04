@@ -2,7 +2,7 @@
 
 use super::{
     ProjectCallableIndex, compiled_source_path, join_project_field, query_semantic_id,
-    semantic_coordinate, semantic_symbol,
+    semantic_coordinate,
 };
 use backend_engine::{RowId, package_key};
 use backend_extension_trustfall::{

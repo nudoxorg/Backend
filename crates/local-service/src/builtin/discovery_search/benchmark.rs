@@ -23,7 +23,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
-use tantivy::{Directory, HasLen};
+use tantivy::Directory;
 
 const CORPUS_FILE: &str = "corpus.jsonl";
 const JOURNAL_FILE: &str = "catalog.journal";

@@ -3936,7 +3936,7 @@ mod tests {
     #[test]
     fn retirement_confirmation_survives_worker_trust_revocation() {
         let root = TestRoot::new();
-        let mut row = record();
+        let row = record();
         let peer = EndpointId::from_bytes(&row.worker_peer).expect("worker endpoint");
         let mut trust = TrustedCompilerWorkerPolicy::default();
         trust
@@ -4169,7 +4169,7 @@ mod tests {
         // deletion performs no journal mutation; a later process reopens the
         // exact row and can retry the idempotent Stored ACK.
         drop(journal);
-        let mut retry = open(&root);
+        let retry = open(&root);
         assert_eq!(
             retry.rows().next().map(|(_, row)| row.state),
             Some(PendingStoredAckState::StoredAckPending)

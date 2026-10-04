@@ -4196,7 +4196,7 @@ mod compiler_input_witness_tests {
             .expect("write TypeScript source");
         fs::write(root.join("package-lock.json"), "{\"lockfileVersion\":3}\n")
             .expect("write package lockfile");
-        let mut ignored_lockfile = fs::File::create(root.join(".next/cache/package-lock.json"))
+        let ignored_lockfile = fs::File::create(root.join(".next/cache/package-lock.json"))
             .expect("create ignored large lockfile");
         ignored_lockfile
             .set_len((ingest::MAX_COMPILER_CONFIGURATION_FILE_BYTES as u64) * 2)

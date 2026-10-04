@@ -702,7 +702,7 @@ mod tests {
     fn owner_receipt_hydration_uses_real_loopback_s3_range_gets() {
         use backend_semantic::ir::VersionedPlaneSegmentSchema;
         use backend_store::{ClosureCompositionBudget, ClosureMembershipChange, TypedObject};
-        use backend_version::{ObjectKey, Schema};
+        use backend_version::ObjectKey;
 
         let scratch = std::env::temp_dir().join(format!(
             "backend-s3-owner-range-{}-{}",

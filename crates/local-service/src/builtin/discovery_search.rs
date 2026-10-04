@@ -2,8 +2,7 @@
 
 use crate::discovery::{DiscoverySearchDocument, DiscoveryStore};
 use backend_engine::registry::{
-    DiscoveryFacet, DiscoveryMetadata, DiscoverySourceEvent, DiscoverySourceIdentity,
-    RegistryEcosystem, discovery_source_identity,
+    DiscoveryFacet, DiscoveryMetadata, DiscoverySourceIdentity, RegistryEcosystem,
 };
 use backend_engine::{
     CommittedViewDelta, DependencyFacts, ForgeAcquisitionResult, ForgeCoordinate, ForgeFact,
@@ -5598,8 +5597,8 @@ mod tests {
     use super::*;
     use backend_engine::registry::{
         DiscoveryAdvisory, DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact,
-        DiscoveryObservedAt, DiscoveryStanding, DiscoveryTimestamp, RegistryEcosystem,
-        RegistryEndpoint,
+        DiscoveryObservedAt, DiscoverySourceEvent, DiscoveryStanding, DiscoveryTimestamp,
+        RegistryEcosystem, RegistryEndpoint, discovery_source_identity,
     };
     use std::collections::BTreeSet;
 
@@ -8274,7 +8273,7 @@ mod tests {
         assert_eq!(expected_key(&reopened, "ambercachemarker91"), expected_v1);
         drop(reopened);
 
-        let mut updated = forge_document(
+        let updated = forge_document(
             "https://github.com/acme/amber@tag:v1.0.0",
             "pkg:cargo/amber@1.0.0",
             DiscoveryFacet::Known(vec!["amber package".to_owned()]),

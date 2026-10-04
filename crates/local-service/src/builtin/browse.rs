@@ -5857,6 +5857,7 @@ mod tests {
             .get(&request_binding_key(binding_a_member))
             .expect("refreshed A member invocation context")
             .clone();
+        assert!(owner.has_current_binding(&member_context_a, binding_a_member));
         assert!(!Arc::ptr_eq(
             &shared_a_input,
             &owner
@@ -6184,7 +6185,7 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
-        let scratch = Scratch(package.clone());
+        let _scratch = Scratch(package.clone());
         std::fs::create_dir_all(&package).expect("package");
         for number in 0..=MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS {
             std::fs::write(package.join(format!("source-{number:04}.rs")), "")

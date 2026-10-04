@@ -844,13 +844,13 @@ struct RowClaimSeed {
     links: Vec<backend_engine::SymbolKey>,
 }
 
-/// Row-body clones performed by [`counted_row_clone`], since the last reset.
-/// Thread-local so concurrent tests never cross-pollinate counts.
-/// `#[cfg(test)]`-only: `row_claim_seed` below never calls
-/// `counted_row_clone` in production, so this exists purely for tests to
-/// measure the cost of the naive `.cloned()` alternative with the same
-/// counting primitive, and to catch a reintroduced clone if one is ever
-/// routed here.
+// Row-body clones performed by [`counted_row_clone`], since the last reset.
+// Thread-local so concurrent tests never cross-pollinate counts.
+// `#[cfg(test)]`-only: `row_claim_seed` below never calls
+// `counted_row_clone` in production, so this exists purely for tests to
+// measure the cost of the naive `.cloned()` alternative with the same
+// counting primitive, and to catch a reintroduced clone if one is ever
+// routed here.
 #[cfg(test)]
 thread_local! {
     static ROW_BODY_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

@@ -870,7 +870,7 @@ mod tests {
         permissions.set_readonly(false);
         fs::set_permissions(&object_path, permissions)
             .expect("make fixture writable for truncation");
-        let mut file = fs::OpenOptions::new()
+        let file = fs::OpenOptions::new()
             .write(true)
             .open(object_path)
             .expect("open object for truncation fixture");

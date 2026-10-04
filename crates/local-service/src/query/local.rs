@@ -399,7 +399,7 @@ pub(crate) struct Corpus {
     pub(crate) coverage: CoverageWitness,
     pub(crate) lexical: lexical::TantivyAdapter,
     pub(crate) lexical_binding: lexical::Binding,
-    pub(crate) selected: SelectedCorpus,
+    selected: SelectedCorpus,
     pub(crate) semantic_evidence: SemanticQueryCorpus,
 }
 
