@@ -3,7 +3,7 @@
 
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
-use crate::navigation::Intent;
+use crate::navigation::{Intent, View};
 use crate::runtime::UiRootEntity;
 use crate::runtime::store::{Branch, DataStore, StoreEvent, Watch};
 use facet::fluid::Modes;
@@ -343,6 +343,19 @@ impl Links {
         if let Some(root) = self.root.upgrade() {
             self.capture_departure(&intent, &root, cx);
             root.update(cx, |root, cx| root.queue(intent, cx));
+        }
+    }
+
+    /// Capture a graph Page/Code request at the activated selection, before
+    /// another pointer or key can change the focus in this effect cycle. The
+    /// UI owner emits its exact selection/attachment request immediately;
+    /// its Map recipient still performs the normal current-owner checks.
+    pub(crate) fn dispatch_graph_view(&self, view: View, cx: &mut App) {
+        debug_assert!(matches!(view, View::Page | View::Code));
+        if let Some(root) = self.root.upgrade() {
+            let intent = Intent::SetView(view);
+            self.capture_departure(&intent, &root, cx);
+            root.update(cx, |root, cx| root.dispatch(intent, cx));
         }
     }
 

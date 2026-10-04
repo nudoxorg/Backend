@@ -121,6 +121,18 @@ fn cmd_shift_c_copies_the_address(cx: &mut TestAppContext) {
     assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("nudox://orbit"));
 }
 
+#[gpui::test]
+fn titlebar_find_is_a_local_door_to_the_real_package_index_reader(cx: &mut TestAppContext) {
+    let mut rig = open(cx, "RelationLabel");
+    click(&mut rig, "tb-find-packages", MouseButton::Left);
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)));
+    let native = rig.cx.update(|window, _| window.a11y_tree().expect("Find native tree")
+        .nodes.iter().any(|(_, node)| node.label() == Some("Find query")));
+    assert!(native, "quick Find mounts the existing typed query editor");
+    rig.keys("secondary-[");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "Find is a history stop with a clear return");
+}
+
 /// Depth moved to ⌃1–⌃4 when the hand took ⌘1–⌘5.
 #[gpui::test]
 fn ctrl_1_to_4_move_through_the_depths(cx: &mut TestAppContext) {

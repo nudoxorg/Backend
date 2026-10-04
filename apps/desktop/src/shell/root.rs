@@ -8,7 +8,6 @@
 
 use super::ask::Ask;
 use super::ask_presentation::{AskPresentation, AskScene};
-use super::bodies::graph::OpenView;
 use super::facet_sync::{Surroundings, facet_for};
 use super::system;
 use facet::overlay::float;
@@ -1481,8 +1480,8 @@ impl Shell {
     /// S: the focused declaration's code. On the page's own declaration it
     /// is a view switch (the entry is replaced); on another one it goes there.
     fn peel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.request_graph_view(View::Code, cx) { return; }
         if !self.mode_input_allowed(cx) { return; }
-        if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let Some(target) = self.current(cx) else {
             let Some(input) = self.page_input_scope(cx) else { return; };
             let Some(symbol) = route_symbol(self.links.snapshot(cx).route()) else { return; };
@@ -1523,37 +1522,69 @@ impl Shell {
         });
     }
 
-    /// All graph-to-declaration commands use the visible graph selection.
-    fn open_graph_view(&mut self, target: OpenView, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.mode_input_allowed(cx) { return false; }
+    /// All graph-to-declaration controls ask the typed UI owner to open the
+    /// current graph selection. It captures the exact selection and owner
+    /// attachment, and the Map rechecks both before resolving a read. The
+    /// Reader's painted-graph receipt also fences owner replacement before
+    /// a new scene has claimed the current attachment.
+    fn request_graph_view(&mut self, view: View, cx: &mut Context<Self>) -> bool {
         let snapshot = self.links.snapshot(cx);
-        if super::bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
-            let eligibility = self.links.store.read(cx).graph_view_eligibility();
+        if super::bodies::graph::is_graph(snapshot.route()) {
+            if !self.page_input_allowed(cx) || snapshot.page_overlay().is_some() { return true; }
+            let (eligibility, owner_attached) = {
+                let store = self.links.store.read(cx);
+                (store.graph_view_eligibility(), store.current_owner_attachment().is_some())
+            };
             if let Some(message) = eligibility.guidance() {
-                let notice = crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
-                    message: message.into(),
-                    retry: None,
-                };
-                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                self.graph_view_notice(message, cx);
                 return true;
             }
-            self.reader.update(cx, |reader, cx| reader.open_graph_current(target, window, cx));
+            if !owner_attached {
+                self.graph_view_notice("The local index owner is unavailable. This graph selection cannot open Page or Code yet.", cx);
+                return true;
+            }
+            if !self.mode_input_allowed(cx) {
+                self.graph_view_notice("The graph is settling. Choose Page or Code again when its current view appears.", cx);
+                return true;
+            }
+            self.links.dispatch_graph_view(view, cx);
             return true;
         }
         false
     }
 
-    /// G enters the graph, or opens the graph's current symbol page.
-    fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn graph_view_notice(&mut self, message: &str, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
-        let local_navigation = matches!(snapshot.route(), Route::Orbit(_) | Route::Package(_) | Route::World);
-        if if local_navigation { !self.local_navigation_allowed(cx) } else { !self.mode_input_allowed(cx) } { return; }
+        let notice = crate::runtime::graph_focus::Notice {
+            visit: snapshot.route().clone(), root: snapshot.key(), message: message.into(), retry: None,
+        };
+        self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+    }
+
+    /// One synchronous boundary for a painted header control. The captured
+    /// JumpVisit is checked by Titlebar before this call; keyboard depth and
+    /// pointer activation then share the same graph request below.
+    pub(crate) fn header_view(&mut self, view: View, cx: &mut Context<Self>) {
+        if self.request_graph_view(view, cx) { return; }
+        if view == View::Graph {
+            if self.local_navigation_allowed(cx) && matches!(self.links.snapshot(cx).route(), Route::Symbol(_)) {
+                self.links.dispatch(Intent::SetView(View::Graph), cx);
+            }
+        } else if self.mode_input_allowed(cx) && matches!(self.links.snapshot(cx).route(), Route::Symbol(_)) {
+            self.links.dispatch(Intent::SetView(view), cx);
+        }
+    }
+
+    /// G enters the graph, or opens the graph's current symbol page.
+    fn toggle_graph(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = self.links.snapshot(cx);
+        let local_navigation = matches!(snapshot.route(), Route::Orbit(_) | Route::Package(_) | Route::World)
+            || matches!(snapshot.route(), Route::Symbol(route) if route.view != View::Graph);
+        if local_navigation && !self.local_navigation_allowed(cx) { return; }
         if super::bodies::graph::is_graph(snapshot.route())
             && (self.reader.read(cx).graph_focused(cx) || matches!(snapshot.route(), Route::Symbol(_)))
         {
-            self.open_graph_view(OpenView::Page, window, cx);
+            self.request_graph_view(View::Page, cx);
             return;
         }
         let intent = match snapshot.route() {
@@ -1569,9 +1600,9 @@ impl Shell {
     }
 
     /// ⌘.: a declaration's code ↔ its page.
-    fn code_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn code_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.request_graph_view(View::Code, cx) { return; }
         if !self.mode_input_allowed(cx) { return; }
-        if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         if let Route::Symbol(route) = snapshot.route() {
             let view = if route.view == View::Code { View::Page } else { View::Code };
@@ -1923,6 +1954,15 @@ impl Shell {
         }
     }
 
+    /// The titlebar's Back action uses the same top-layer semantics as the
+    /// key, while completing under its exact captured visit.
+    pub(crate) fn header_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.links.snapshot(cx).overlay() == Some(Overlay::AddProject) || self.background_input_allowed() {
+            self.take_zone(Zone::Titlebar, window, cx);
+            self.back(window, cx);
+        }
+    }
+
     /// Esc: the topmost transient closes, one per press.
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let overlay = self.links.snapshot(cx).overlay();
@@ -2112,7 +2152,11 @@ impl Shell {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(address));
     }
 
-    fn depth(&mut self, depth: RouteDepth, window: &mut Window, cx: &mut Context<Self>) {
+    fn depth(&mut self, depth: RouteDepth, _window: &mut Window, cx: &mut Context<Self>) {
+        if let RouteDepth::Page | RouteDepth::Source = depth {
+            let view = if depth == RouteDepth::Page { View::Page } else { View::Code };
+            if self.request_graph_view(view, cx) { return; }
+        }
         let allowed = match depth {
             RouteDepth::Orbit | RouteDepth::Package => self.local_navigation_allowed(cx),
             RouteDepth::Page | RouteDepth::Source => self.mode_input_allowed(cx),
@@ -2122,8 +2166,6 @@ impl Shell {
         let route = snapshot.route();
         match depth {
             RouteDepth::Page | RouteDepth::Source => {
-                let target = if depth == RouteDepth::Page { OpenView::Page } else { OpenView::Code };
-                if self.open_graph_view(target, window, cx) { return; }
                 if matches!(route, Route::Symbol(_)) {
                     let view = if depth == RouteDepth::Page { View::Page } else { View::Code };
                     self.links.dispatch(Intent::SetView(view), cx);

@@ -11,7 +11,7 @@
 //! It degrades from its own measured room, in three modes
 //! (`facet::tokens::fluid::BAR`): everything from 760 design px; from 560 the
 //! plate drops the package segment and the view switch gives way to it; below
-//! that the plate keeps only the name and the inbox button goes. The modes
+//! that the plate keeps only the name and a compact Find door; the inbox button goes. The modes
 //! hold through a hysteresis band, and what arrives or leaves glides to its
 //! place (`Flow`) instead of jumping. The shelf toggle never goes: below 640
 //! the shelf is not inline, and this button is the pointer's only way to open
@@ -24,7 +24,7 @@ use super::region::{Links, Region, RegionCore};
 use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
-use crate::navigation::{Intent, OrbitRoute, Overlay, Route, View};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, route_package, route_symbol};
 use facet::icons::{self, Icon, IconSize, KindSize};
 use facet::motion::{Flow, Motion};
@@ -97,10 +97,7 @@ impl JumpAction {
         match self {
             Self::Ask => links.shell(cx, |shell, cx| shell.open_ask(cx)),
             Self::Back { visit } if visit.current(links, cx) => {
-                // Back can retire its own auxiliary-page button. Dispatch
-                // through the live Shell's existing top-layer boundary.
-                links.shell(cx, |shell, cx| shell.take_zone(super::focus::Zone::Titlebar, window, cx));
-                window.dispatch_action(Box::new(super::keys::Back), cx);
+                links.shell(cx, |shell, cx| shell.header_back(window, cx));
             },
             Self::Forward { visit } if visit.current(links, cx) && links.snapshot(cx).overlay().is_none()
                 && !links.snapshot(cx).session().forward.is_empty() => links.dispatch(Intent::Forward, cx),
@@ -122,14 +119,12 @@ impl JumpAction {
                     && visit.subject.page_route().is_some()
                     && links.snapshot(cx).overlay().is_none()
                     && links.snapshot(cx).page_overlay().is_none()
-                    && links.store.read(cx).graph_view_eligibility().allows(*view) => match view {
-                View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
-                View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
-                View::Graph => {
-                    if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
-                        window.dispatch_action(Box::new(super::keys::Graph), cx);
-                    }
-                }
+                    && links.store.read(cx).graph_view_eligibility().allows(*view) => {
+                // Pointer and native keyboard activation use the same typed
+                // route boundary as the Shell's depth keys. A deferred
+                // window action would route from whichever focus node exists
+                // on the next frame, after this exact selection can retire.
+                links.shell(cx, |shell, cx| shell.header_view(*view, cx));
             },
             _ => {}
         }
@@ -310,6 +305,22 @@ impl Render for Titlebar {
         };
 
         let mut right = div().flex().flex_none().items_center().gap(measure.space(Space::Tight)).pr(measure.space(Space::Roomy));
+        let on_find = matches!(snapshot.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_))));
+        if snapshot.overlay().is_none() && snapshot.page_overlay().is_none() && !on_find {
+            let id = "tb-find-packages";
+            let find_links = links.clone();
+            let act: super::focus::Act = Rc::new(move |_, cx| find_links.dispatch(
+                Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))), cx,
+            ));
+            let target_action = local_target_action(&self.links, act, cx);
+            let act = target_action.callback();
+            self.targets.push(Target { id: id.into(), label: "Find packages".into(), action: target_action, peek: None, source: None });
+            right = right.child(self.targets.track(
+                id,
+                facet::controls::icon_button(id, Icon::Search, "Find packages", &measure)
+                    .on_click(move |window, cx| act(window, cx)),
+            ));
+        }
         if inbox_shown {
             let id = "tb-inbox";
             let target_links = links.clone();
@@ -424,7 +435,11 @@ impl Titlebar {
         let visit = JumpVisit::at(snapshot, self.links.store.read(cx));
         let can_back = snapshot.overlay().is_some() || !session.back.is_empty()
             || self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).shelf_input_owner(true));
+        let back_to_graph = snapshot.overlay().is_none()
+            && !self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).shelf_input_owner(true))
+            && session.back.last().is_some_and(super::bodies::graph::is_graph);
         if can_back {
+            let back_label = if back_to_graph { "Back to graph" } else { "Back" };
             let target_action = jump_target_action(JumpAction::Back { visit: visit.clone() }, &self.links, &self.targets, cx);
             let act = target_action.callback();
             let key_act = Rc::clone(&act);
@@ -436,18 +451,21 @@ impl Titlebar {
             let press_targets = self.targets.clone();
             let weak = cx.weak_entity();
             let release = cx.weak_entity();
-            self.targets.push(Target { id: "jump-back".into(), label: "Back".into(), action: target_action.clone(), peek: None, source: None });
+            self.targets.push(Target { id: "jump-back".into(), label: back_label.into(), action: target_action.clone(), peek: None, source: None });
             let right_links = menu_links.clone();
             let right_targets = targets.clone();
             bar = bar.child(self.targets.track("jump-back",
                 div()
                     .id("jump-back")
                     .role(gpui::Role::Button)
-                    .aria_label("Back")
+                    .aria_label(back_label)
                     .focusable()
-                    .relative().flex().items_center().justify_center().size(hit_side(measure))
+                    .relative().flex().items_center().justify_center().h(hit_side(measure)).min_w(hit_side(measure))
+                    .px(if back_to_graph { measure.space(Space::Snug) } else { px(0.0) })
+                    .gap(measure.space(Space::Hair))
                     .cursor_pointer()
                     .child(text(ty::ROW, measure, palette.ink2).child("‹"))
+                    .children(back_to_graph.then(|| text(ty::SMALL, measure, palette.ink2).child("Graph")))
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         let links = press_links.clone();
                         let targets = press_targets.clone();

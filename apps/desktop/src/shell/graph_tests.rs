@@ -587,6 +587,100 @@ fn newly_entered_world_native_page_and_code_open_exact_semantic_selection(cx: &m
     }
 }
 
+/// The header must capture the same selected node that native Enter opens.
+/// Window::dispatch_action defers routing to a later focus tree; this oracle
+/// observes the typed GraphViewRequest generation in the activation event
+/// itself, before that later tree or a second input can choose another node.
+#[gpui::test]
+fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut TestAppContext) {
+    for (view, id) in [(View::Page, "view-page"), (View::Code, "view-code")] {
+        let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
+        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+        rig.settle();
+        let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
+            .expect("painted selected graph control");
+        let before = rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation());
+        let root = rig.graph.root.clone();
+        rig.cx.update(|window, cx| {
+            action(window, cx);
+            assert_eq!(root.read(cx).graph_view_generation(), before + 1,
+                "the event owns the typed graph request before any deferred focus dispatch");
+        });
+        rig.settle();
+        assert_eq!(rig.route(), indexed_view_route("relation_label", view),
+            "the header opens the selected B, not the route's RelationLabel");
+        let back = super::tests::native_bounds(&mut rig, "Button", "Back to graph", true)
+            .expect("the selected page exposes a named return to its graph");
+        assert!(painted(&mut rig).texts.iter().any(|text| text.content == "Graph"),
+            "the return route is visible as text, not only a native label");
+        rig.cx.simulate_click(back.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(3)"),
+            "Back restores the chosen graph node and its retained scene");
+    }
+}
+
+#[gpui::test]
+fn graph_header_never_substitutes_a_later_selection_for_its_activated_one(cx: &mut TestAppContext) {
+    let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+    rig.settle();
+    let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
+        .expect("B's current header action");
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        action(window, cx);
+        shell.update(cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
+    });
+    rig.settle();
+    assert_ne!(rig.route(), page_route("RelationLabel"),
+        "a later selected A cannot replace the B captured by the activated header control");
+    assert!(matches!(rig.route(), Route::Symbol(ref route) if route.view == View::Graph)
+        || rig.route() == indexed_view_route("relation_label", View::Page),
+        "either the exact B opens or the newer input cancels it; no route target is guessed");
+}
+
+#[gpui::test]
+fn captured_graph_header_action_cannot_cross_same_root_owner_replacement(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter");
+    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+    rig.native_press("enter");
+    rig.settle();
+    let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
+        .expect("captured current header action");
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    let before = rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation());
+    rig.cx.update(|window, cx| action(window, cx));
+    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation()), before,
+        "the captured target does not even emit a request under a new attachment");
+    assert_eq!(rig.route(), Route::World);
+}
+
+#[gpui::test]
+fn graph_return_is_local_even_when_the_index_owner_stops_after_open(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter");
+    tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
+    rig.native_press("enter");
+    let page = super::tests::native_bounds(&mut rig, "Button", "Show Page view", true).expect("current selected page action");
+    rig.cx.simulate_click(page.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(ref route) if route.view == View::Page));
+    gate.publish(crate::runtime::owner::OwnerState::Failed("index unavailable after navigation".into()));
+    rig.repaint(); rig.settle();
+    let back = super::tests::native_bounds(&mut rig, "Button", "Back to graph", true)
+        .expect("the graph-origin history remains a local navigation control");
+    rig.cx.simulate_click(back.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(rig.route(), Route::World, "Back does not require a fresh graph read to return");
+}
+
 #[gpui::test]
 fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);

@@ -104,6 +104,25 @@ fn the_first_screen_says_what_the_app_is_for_and_offers_the_way_in(cx: &mut Test
 }
 
 #[gpui::test]
+fn empty_library_opens_real_find_without_adding_a_project_or_claiming_an_index(cx: &mut TestAppContext) {
+    for width in [480.0, 1440.0] {
+        let mut rig = first_run(cx, width);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+        let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Find packages")
+            .expect("a separate package door beside Add a folder").clone();
+        assert!(drawn(&mut rig).iter().any(|line| line.contains("exact version")),
+            "the Library explains how an observed registry result differs from a ready index");
+        rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)));
+        let query_mounted = rig.cx.update(|window, _| window.a11y_tree().expect("native Find tree")
+            .nodes.iter().any(|(_, node)| node.label() == Some("Find query")));
+        assert!(query_mounted, "the real Find editor mounts even while its first owner read is pending or failed");
+        assert!(snapshot(&mut rig).workspace().projects.is_empty(), "browsing did not submit AddProject");
+    }
+}
+
+#[gpui::test]
 fn pressing_the_button_opens_the_dialog_with_the_cursor_in_the_field(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();

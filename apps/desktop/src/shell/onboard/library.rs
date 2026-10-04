@@ -14,7 +14,7 @@ use crate::core::LocalProjectId;
 use crate::model::{AppSnapshot, Note, ProjectPhase, WorkspaceProject};
 use crate::runtime::acquire::{NOT_CARGO, Origin, ProjectPackages, Stage as Adding};
 use crate::runtime::offload::Asker;
-use crate::navigation::Intent;
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::shell::bodies::{Ctx, Leaf};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{quiet, text};
@@ -22,7 +22,7 @@ use crate::shell::reader::Reader;
 use facet::controls::{Glyph, KbdVoice, button, kbd};
 use facet::data::{Door, Stage, StageState, gem_progress, seam};
 use facet::overlay::tooltip::{TipText, content};
-use facet::icons::Kind;
+use facet::icons::{Icon, Kind};
 use facet::tokens::fluid::EMPTY_GEM;
 use facet::tokens::ty;
 use facet::Space;
@@ -188,6 +188,7 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let palette = ctx.palette;
     let lede = ctx.say("Read the code you depend on.");
     let how = ctx.say("Add a project folder. Nudox compiles it and every package it uses, then keeps them together here, ready to browse.");
+    let find_how = ctx.say("Find searches indexed declarations and registry releases. Inspect an exact version and its recorded standing before adding it.");
     let private = ctx.say("Your source stays on this machine.");
     // Which Rust the index compiles with, found where people install it (a
     // Finder launch names none): said before anything is added, so a missing
@@ -218,6 +219,7 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let mut control = button("add-folder", "Add a folder", &measure).primary().on_click(move |window, cx| act(window, cx));
     if let Some(focus) = focus { control = control.focus_handle(focus); }
     let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
+    let find = find_packages(ctx, cx);
     Leaf::new(
         div()
             .flex()
@@ -239,6 +241,8 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
                     .child(text(ty::SMALL, &measure, palette.ink3).child("or press"))
                     .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet)),
             )
+            .child(find)
+            .child(quiet(find_how, &measure, palette).text_center().min_w(px(0.0)))
             .child(quiet(private, &measure, palette))
             .children(rust.map(|(words, missing)| {
                 if missing {
@@ -308,6 +312,7 @@ pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let mut control = button("add-folder", "Add a folder", &measure).ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx));
     if let Some(focus) = focus { control = control.focus_handle(focus); }
     let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
+    let find = find_packages(ctx, cx);
     Leaf::new(
         div()
             .flex()
@@ -317,8 +322,29 @@ pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             .gap(measure.space(Space::Roomy))
             .child(add)
             .child(text(ty::SMALL, &measure, palette.ink3).child("or press"))
-            .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet)),
+            .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet))
+            .child(find),
     )
+}
+
+/// One local door into the existing typed Find reading and its exact-release
+/// Add actions. It never claims that a catalog result is already indexed.
+fn find_packages(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
+    let links = ctx.links.clone();
+    let act: Act = Rc::new(move |_, cx| links.dispatch(
+        Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))), cx,
+    ));
+    let target_action = ctx.target_local_action(act, cx);
+    let act = target_action.callback();
+    ctx.targets.push(Target {
+        id: "find-packages".into(), label: "Find packages".into(),
+        action: target_action, peek: None, source: None,
+    });
+    let focus = ctx.native_handle(&SharedString::from("find-packages"), cx);
+    let mut control = button("find-packages", "Find packages", &ctx.measure)
+        .ghost().icon(Icon::Search).on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
+    ctx.targets.track("find-packages", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)).into_any_element()
 }
 
 /// What each running index is doing, under the projects it belongs to, and
