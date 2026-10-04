@@ -1785,10 +1785,15 @@ pub enum ImageError {
     /// A type-node kind's closed child arity was violated before lowering.
     #[error("C# authority type row {index} {kind:?} has {actual} children; expected {min}..={max}")]
     TypeChildCount {
+        /// Zero-based index of the malformed type row.
         index: usize,
+        /// Type-node kind whose arity rule was violated.
         kind: TypeNodeKind,
+        /// Inclusive minimum number of children allowed for `kind`.
         min: usize,
+        /// Inclusive maximum number of children allowed for `kind`.
         max: usize,
+        /// Number of child rows actually referenced by the type node.
         actual: usize,
     },
 }
