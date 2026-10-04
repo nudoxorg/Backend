@@ -176,7 +176,9 @@ pub(crate) enum Do {
     Lens(Lens),
     /// Reads the book at a release (`None`: the one you pin).
     Release(Option<ReleaseId>),
-    /// Makes a project the active one.
+    /// Activates a project and opens its typed local dependency tree.
+    /// Browsing an already-active project still moves the reader; indexing
+    /// remains a separate workspace action.
     Project(LocalProjectId),
     /// Activates a project and reads its own dependency tree.
     ProjectTree(LocalProjectId),

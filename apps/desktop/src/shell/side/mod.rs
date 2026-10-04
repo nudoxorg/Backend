@@ -31,6 +31,10 @@ mod row;
 mod scope;
 mod state;
 mod view;
+#[cfg(test)]
+mod height_budget_tests;
+#[cfg(test)]
+mod project_browse_tests;
 
 pub(crate) use input::KEYS;
 pub(crate) use listing::{LibraryOrder, beside_your_projects, told_apart};
@@ -52,7 +56,7 @@ use facet::tokens::fluid::{SIDE, SideForm};
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
     App, Context, InteractiveElement, IntoElement, KeystrokeEvent, ParentElement, Pixels, Render,
-    FocusHandle, ListAlignment, ListOffset, ListState, SharedString, Styled, Subscription, Task, Window, div,
+    FocusHandle, ListAlignment, ListOffset, ListState, ScrollHandle, SharedString, Styled, Subscription, Task, Window, div,
     px,
 };
 use input::{Chord, Peek, Query, SideKey, Typed};
@@ -116,6 +120,63 @@ struct RowLayout {
     reveal: Option<RevealIntent>,
     focused_in_list: Option<(SharedString, usize, FocusHandle)>,
     intent: Rc<Cell<Option<u64>>>,
+}
+
+/// Native scroll ownership for the package context, lens controls and Trail.
+/// These are viewports, not another copy of the listing or reading state.
+struct ChromeScroll {
+    package: ScrollHandle,
+    controls: ScrollHandle,
+    trail: ScrollHandle,
+}
+
+impl Default for ChromeScroll {
+    fn default() -> Self {
+        Self {
+            package: ScrollHandle::new(),
+            controls: ScrollHandle::new(),
+            trail: ScrollHandle::new(),
+        }
+    }
+}
+
+/// Allocate the measured chrome around a useful declaration viewport. In a
+/// roomy column every section keeps its natural height. Under pressure the
+/// native chrome viewports shorten continuously and scroll independently;
+/// text, row identity and the list's existing scroll owner never change.
+#[derive(Clone, Copy, Debug)]
+struct ShelfHeightBudget {
+    package: Pixels,
+    controls: Pixels,
+    rows: Pixels,
+    trail: Pixels,
+}
+
+impl ShelfHeightBudget {
+    fn new(height: Pixels, row: Pixels, package: Pixels, controls: Pixels, trail: Pixels) -> Self {
+        let height = height.max(px(0.0));
+        // Three ordinary rows leave room for a pinned ancestor and two
+        // declarations. Very short columns devote at least half to rows.
+        let reserve = (row * 3.0).min(height * 0.5);
+        let chrome = height - reserve;
+        // The lens/filter strip stays whole whenever the package and Trail
+        // can each retain useful context. If even that does not fit, all
+        // three chrome sections still get a real scroll viewport.
+        let package_weight = package.min(row * 2.0);
+        let trail_weight = trail.min(row);
+        let demand = controls + package_weight + trail_weight;
+        let controls = if demand > px(0.0) {
+            controls.min(chrome * (controls / demand))
+        } else { px(0.0) };
+        let available = (chrome - controls).min(package + trail);
+        let weight = package_weight + trail_weight;
+        let package = if weight > px(0.0) {
+            (available * (package_weight / weight))
+                .clamp((available - trail).max(px(0.0)), package.min(available))
+        } else { px(0.0) };
+        let trail = (available - package).min(trail);
+        Self { package, controls, rows: height - package - controls - trail, trail }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -602,6 +663,7 @@ pub(crate) struct Shelf {
     spine: Pixels,
     /// What was last drawn.
     layout: RowLayout,
+    chrome_scroll: ChromeScroll,
     matched: Option<Matched>,
     /// What each item carries, and what it was made from.
     book: Option<(BookKey, Rc<StateBook>)>,
@@ -711,6 +773,7 @@ impl Shelf {
             rest: px(264.0),
             spine: px(42.0),
             layout,
+            chrome_scroll: ChromeScroll::default(),
             matched: None,
             book: None,
             no_book: Rc::new(StateBook::none()),
@@ -915,8 +978,7 @@ impl Shelf {
             Do::Fold(id) => self.flip(id.clone(), cx),
             Do::Lens(lens) => self.set_lens(*lens, cx),
             Do::Release(at) => self.links.dispatch(Intent::SetRelease(at.clone()), cx),
-            Do::Project(id) => self.links.dispatch(Intent::ActivateProject(id.clone()), cx),
-            Do::ProjectTree(id) => {
+            Do::Project(id) | Do::ProjectTree(id) => {
                 self.links.dispatch(Intent::ActivateProject(id.clone()), cx);
                 self.links.dispatch(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
                     crate::navigation::BrowseRoute::Tree(id.clone()),

@@ -3,7 +3,7 @@
 //! collapses to. Everything drawn was decided in the model; nothing here
 //! chooses what a row says or does.
 
-use super::{Shelf, StickyGeometry};
+use super::{Shelf, ShelfHeightBudget, StickyGeometry};
 use super::glyph::{self, Marked};
 use super::hold::{self, Chip, Step};
 use super::lens::{Counts, Lens};
@@ -17,10 +17,10 @@ use facet::tokens::fluid::SideForm;
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Element, ElementId, GlobalElementId, Hsla,
+    AnyElement, App, AppContext as _, AvailableSpace, Bounds, ClickEvent, Context, Element, ElementId, GlobalElementId, Hsla,
     InspectorElementId, InteractiveElement, IntoElement, LayoutId, ListState, ParentElement,
-    Pixels, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
-    div, list, px, radians,
+    Pixels, ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Transformation, Window,
+    div, list, point, px, radians,
 };
 use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, PI};
@@ -73,6 +73,86 @@ impl Element for MeasuredStickyList {
     }
 }
 
+/// Measure the actual native chrome at the current width, then constrain its
+/// scroll viewports before any children prepaint. A container's old bounds or
+/// a guessed number of title/Trail lines cannot consume the declaration list.
+struct MeasuredColumn {
+    package: AnyElement,
+    controls: AnyElement,
+    rows: AnyElement,
+    trail: AnyElement,
+    row_height: Pixels,
+}
+
+impl IntoElement for MeasuredColumn {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+impl Element for MeasuredColumn {
+    type RequestLayoutState = ();
+    type PrepaintState = ShelfHeightBudget;
+
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
+        window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+        let mut style = gpui::Style::default();
+        style.size.width = gpui::relative(1.0).into();
+        style.size.height = gpui::relative(1.0).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> ShelfHeightBudget {
+        let natural = Size { width: AvailableSpace::Definite(bounds.size.width), height: AvailableSpace::MaxContent };
+        let package = self.package.layout_as_root(natural, window, cx).height;
+        let controls = self.controls.layout_as_root(natural, window, cx).height;
+        let trail = self.trail.layout_as_root(natural, window, cx).height;
+        let budget = ShelfHeightBudget::new(bounds.size.height, self.row_height, package, controls, trail);
+        let mut y = bounds.top();
+        for (key, section, height) in [
+            ("shelf-package-viewport", &mut self.package, budget.package),
+            ("shelf-controls-viewport", &mut self.controls, budget.controls),
+            ("shelf-row-viewport", &mut self.rows, budget.rows),
+            ("shelf-trail-viewport", &mut self.trail, budget.trail),
+        ] {
+            if height > px(0.0) {
+                let size = Size { width: bounds.size.width, height };
+                section.layout_as_root(size.map(AvailableSpace::Definite), window, cx);
+                section.prepaint_at(point(bounds.left(), y), window, cx);
+                facet::probe::record_bounds(cx, &key.into(), Bounds::new(point(bounds.left(), y), size));
+            }
+            y += height;
+        }
+        budget
+    }
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>, _: &mut (), budget: &mut ShelfHeightBudget, window: &mut Window, cx: &mut App) {
+        for (section, height) in [
+            (&mut self.package, budget.package), (&mut self.controls, budget.controls),
+            (&mut self.rows, budget.rows), (&mut self.trail, budget.trail),
+        ] {
+            if height > px(0.0) { section.paint(window, cx); }
+        }
+    }
+}
+
+/// The body retains its natural height while its native viewport can shrink.
+/// The probe follows that very handle and clip, so wheel hit testing and
+/// reachability evidence refer to the same mounted scroll area.
+fn chrome_viewport(key: &'static str, label: &'static str, body: gpui::Div, scroll: &ScrollHandle) -> AnyElement {
+    div().relative().size_full()
+        .child(facet::probe::scroll_scope(key,
+            div().id(key).role(gpui::Role::Group).aria_label(label)
+                .size_full().overflow_y_scroll().track_scroll(scroll)
+                .flex().flex_col().child(body.w_full().flex_none())))
+        .child(facet::probe::scroll_probe(key, scroll.clone()))
+        .into_any_element()
+}
+
 /// The narrowing line's caret: its width and its height at 100 % text.
 const CARET: (f32, f32) = (1.5, 14.0);
 
@@ -112,23 +192,22 @@ impl Shelf {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let gutter = measure.space(Space::Roomy);
-        let mut column = div()
-            .size_full()
+        let mut package = div()
             .flex()
             .flex_col()
             .pt(measure.space(Space::Roomy));
         if let Some(step) = &head.step_out {
-            column = column.child(self.step_out_row(step, measure, palette, cx));
+            package = package.child(self.step_out_row(step, measure, palette, cx));
         }
         #[cfg(test)]
         self.upgrade.replace(None);
         if let Some(title) = &head.title {
-            column = column.child(title_block(title, measure, palette));
+            package = package.child(title_block(title, measure, palette));
             if let Some(releases) = &head.releases
                 && !releases.list.is_empty()
             {
                 for element in self.comb_block(releases, measure, palette) {
-                    column = column.child(
+                    package = package.child(
                         div()
                             .px(gutter)
                             .pb(measure.space(Space::Roomy))
@@ -138,10 +217,11 @@ impl Shelf {
             }
         }
         if !head.held.is_empty() {
-            column = column.child(self.held_chips(&head.held, measure, palette, cx));
+            package = package.child(self.held_chips(&head.held, measure, palette, cx));
         }
+        let mut controls = div().flex().flex_col();
         if let Some(counts) = head.counts {
-            column = column
+            controls = controls
                 .child(self.lens_strip(counts, measure, palette, cx))
                 .child(self.narrow_line(measure, palette, cx));
         }
@@ -175,14 +255,13 @@ impl Shelf {
             overlay: Box::new(move |first, height, cx| shelf.upgrade().and_then(|shelf|
                 shelf.update(cx, |shelf, cx| shelf.sticky(first, height, &sticky_measure, &sticky_palette, cx)))),
         };
-        column
+        let rows = div().relative().size_full()
             .child(
                 facet::probe::scroll_scope(
                     "shelf-rows",
                     div()
                     .relative()
-                    .flex_1()
-                    .min_h(px(0.0))
+                    .size_full()
                     .child(list),
                 ),
             )
@@ -190,11 +269,16 @@ impl Shelf {
                 "shelf-rows",
                 self.layout.scroll.clone(),
             ))
-            .children(
-                (!head.trail.is_empty())
-                    .then(|| self.trail_block(&head.trail, measure, palette, cx)),
-            )
-            .into_any_element()
+            .into_any_element();
+        let trail = div().flex().flex_col().children(
+            (!head.trail.is_empty()).then(|| self.trail_block(&head.trail, measure, palette, cx)));
+        MeasuredColumn {
+            package: chrome_viewport("shelf-package", "Package context", package, &self.chrome_scroll.package),
+            controls: chrome_viewport("shelf-controls", "Library view controls", controls, &self.chrome_scroll.controls),
+            rows,
+            trail: chrome_viewport("shelf-trail", "Reading trail", trail, &self.chrome_scroll.trail),
+            row_height: measure.row() + measure.space(Space::Tight),
+        }.into_any_element()
     }
 
     /// Sticky ancestors (VS Code's Explorer): in a long list, the chain of
@@ -343,8 +427,12 @@ impl Shelf {
                     .role(gpui::Role::Link)
                     .aria_label(step.label.clone())
                     .focusable()
+                    .min_w(px(0.0))
+                    .max_w_full()
                     .cursor_pointer()
-                    .child(text(ty::MONO_SMALL, measure, palette.ink3).child(step.label.clone()))
+                    .child(text(ty::MONO_SMALL, measure, palette.ink3)
+                        .min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis()
+                        .child(step.label.clone()))
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                         if !guard(cx) { return; }
                         shelf.perform(&Do::Go(route.clone()), cx)

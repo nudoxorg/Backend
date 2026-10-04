@@ -3396,11 +3396,19 @@ mod shelf_scene_admission_tests {
 
         let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
         let row = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_row_height());
-        let mut window_height = 400.0;
         for wanted in [97.0, 99.0, 127.0] {
-            window_height += wanted - f32::from(scroll.viewport_bounds().size.height);
-            rig.cx.simulate_resize(gpui::size(px(1440.0), px(window_height)));
-            rig.repaint(); // inspect the first Shell frame after each resize
+            // Chrome now shares height pressure with the list. Find the
+            // requested native viewport through measured resizing instead
+            // of assuming a window pixel always becomes a list pixel.
+            let (mut lower, mut upper) = (200.0, 400.0);
+            for _ in 0..16 {
+                let height = (lower + upper) * 0.5;
+                rig.cx.simulate_resize(gpui::size(px(1440.0), px(height)));
+                rig.repaint(); // every measurement is the first resized frame
+                let measured = f32::from(scroll.viewport_bounds().size.height);
+                if (measured - wanted).abs() <= 0.5 { break; }
+                if measured < wanted { lower = height; } else { upper = height; }
+            }
             let viewport = scroll.viewport_bounds();
             let clip = rig.cx.debug_bounds("shelf-sticky-clip").expect("real current-frame sticky clip");
             let covered = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_sticky_covered());
