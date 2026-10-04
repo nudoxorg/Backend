@@ -274,8 +274,8 @@ impl Render for Titlebar {
         let mut left = div().flex().flex_none().items_center().gap(measure.space(Space::Base)).pl(inset);
         let id: SharedString = "tb-shelf".into();
         let toggle_links = links.clone();
-        let act: super::focus::Act = Rc::new(move |window, cx| {
-            toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(window, cx));
+        let act: super::focus::Act = Rc::new(move |_, cx| {
+            toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
         });
         let target_action = local_target_action(&self.links, act, cx);
         let act = target_action.callback();

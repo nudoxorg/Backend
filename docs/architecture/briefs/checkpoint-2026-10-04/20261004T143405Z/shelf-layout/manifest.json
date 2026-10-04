@@ -1,0 +1,56 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T14:34:05.525129+00:00",
+  "label": "shelf-layout",
+  "branch": "codex/checkpoint-shelf-layout-20261004T143405Z",
+  "worktree": "/private/tmp/nudox-shelf-measured-layout-20261004",
+  "parent": "c70bc0ec690dfad51c625177e5852c727c53985e",
+  "merge_parents": [],
+  "working_source_tree": "364613c7dccffca61c331efaab5db0e372c54ddc",
+  "description": "Partially reviewed measured GPUI Shelf and sticky clipping/layout repair, plus current unified mounted-presentation Target model and hidden-zone focus rehoming. Only admitted Docked/Drawer rows or Spine marks own native targets during crossfade. Worker paused for exact preservation. Latest interaction draft and regression sources are unrun; full Root review, Rust and native acceptance pending.",
+  "changed_paths": [
+    "apps/desktop/src/navigation/presentation.rs",
+    "apps/desktop/src/shell/root.rs",
+    "apps/desktop/src/shell/shelf_tests.rs",
+    "apps/desktop/src/shell/side/mod.rs",
+    "apps/desktop/src/shell/side/view.rs",
+    "apps/desktop/src/shell/titlebar.rs",
+    "apps/facet/src/probe.rs",
+    "vendor/gpui-ce/NUDOX-PATCHES.md",
+    "vendor/gpui-ce/src/elements/list.rs"
+  ],
+  "source_sha256": {
+    "apps/desktop/src/navigation/presentation.rs": "16933213316572b7e876a914c2eedc740557920a18c99305f31d7b33493d5965",
+    "apps/desktop/src/shell/root.rs": "c90be5fede90e20d295f9a3467a006139429ae4ea30776445eecbb4c27dd425f",
+    "apps/desktop/src/shell/shelf_tests.rs": "a7e6eb7dbcca65e6e0d4cc6891bf23d2a6853c149f484e9b139597a52191d3d7",
+    "apps/desktop/src/shell/side/mod.rs": "4d40d3d36a8ada9920319dfc1c0087af10300f25798f3e5d7c73e03a44a27f99",
+    "apps/desktop/src/shell/side/view.rs": "1da4ec1a894bf014884a7ed0aeb360666e7325471ef7ff94d43966f2fb73e351",
+    "apps/desktop/src/shell/titlebar.rs": "bb0c759ba642456e8a2cc9a6256ec4b60ceb5c87b49e2a6cdcada2094fa6747a",
+    "apps/facet/src/probe.rs": "e1b8a45343cec12c3a321689e0aa5d7413e9d230dbb99b89f19066f179c6c6b7",
+    "vendor/gpui-ce/NUDOX-PATCHES.md": "b78f57ae823c090384f0a3ccab2141b0187b1aa0bbd5448c48fdff6ff7b9e093",
+    "vendor/gpui-ce/src/elements/list.rs": "ddde781725f96a4fdb3839a9155d4d3bd4c7ac604bd53bbd73d540d5377f455c"
+  },
+  "untracked_source_paths": [],
+  "original_index_sha256": "01b56f9ec34eff8c960a489d13085de7a904adc89676ee8682744649ff127d4f",
+  "original_index_stages_sha256": "310e6aa66d76c8ada59d9155099753a2b4c7ab1b8c14e520061b28bd984213e0",
+  "original_status_sha256": "4f9074ecac5d30814e8da5b47ba90e6999f9ff9fb7ddf122cd8b7b2bed43f1af",
+  "preserved_index_blobs": [
+    "188bd60ff79ed4508bd7d96b34d0fb51e7d5fcab",
+    "5ea0572bb9be4d58cea7287432f42a2ec2731717",
+    "645d8be0dd5e3c5b8c4f2484b3507f68f4765318",
+    "79a829bc617e2b2d8865b2873edf0c3d35b6237c",
+    "7a5f947a40d77fdc1cd58a2f81f40730808c9d63",
+    "b2138685cf01c9ff0005198384c22512d2d587cb",
+    "ce3146ffd436909a4053d01207605495ee02cbc6",
+    "dd47339b1f8ebaa2dc93f821ce78e5f79959c710",
+    "fa892b9c8773f6eba8f70911db53fc5aaa0482bd"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {},
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}

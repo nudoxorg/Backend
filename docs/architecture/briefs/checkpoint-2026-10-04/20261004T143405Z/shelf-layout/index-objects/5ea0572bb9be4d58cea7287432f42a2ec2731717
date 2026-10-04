@@ -3,7 +3,7 @@
 //! collapses to. Everything drawn was decided in the model; nothing here
 //! chooses what a row says or does.
 
-use super::{Shelf, StickyGeometry};
+use super::Shelf;
 use super::glyph::{self, Marked};
 use super::hold::{self, Chip, Step};
 use super::lens::{Counts, Lens};
@@ -17,61 +17,14 @@ use facet::tokens::fluid::SideForm;
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Element, ElementId, GlobalElementId, Hsla,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, ListState, ParentElement,
-    Pixels, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
-    div, list, px, radians,
+    AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div, px,
+    radians, uniform_list,
 };
 use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, PI};
+use std::ops::Range;
 use std::rc::Rc;
-
-/// The list establishes its current-frame scroll top during prepaint. Build
-/// the ordinary sticky Div only after that prepaint, so a cold reveal and a
-/// resized viewport use the same measured top and bounds in their first paint.
-pub(super) struct MeasuredStickyList {
-    pub(super) list: AnyElement,
-    pub(super) scroll: ListState,
-    pub(super) overlay: Box<dyn FnMut(usize, Pixels, &mut App) -> Option<AnyElement>>,
-}
-
-impl IntoElement for MeasuredStickyList {
-    type Element = Self;
-    fn into_element(self) -> Self { self }
-}
-
-impl Element for MeasuredStickyList {
-    type RequestLayoutState = ();
-    type PrepaintState = Option<AnyElement>;
-
-    fn id(&self) -> Option<ElementId> { None }
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
-
-    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
-        window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
-        (self.list.request_layout(window, cx), ())
-    }
-
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-        self.list.prepaint(window, cx);
-        let first = self.scroll.logical_scroll_top().item_ix;
-        let mut overlay = (self.overlay)(first, bounds.size.height, cx)?;
-        // A separate root has no containing block for an absolute child;
-        // the native Div supplies the list's exact measured viewport.
-        overlay = div().relative().size_full().child(overlay).into_any_element();
-        overlay.layout_as_root(bounds.size.into(), window, cx);
-        overlay.prepaint_at(bounds.origin, window, cx);
-        Some(overlay)
-    }
-
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>, _: &mut (), overlay: &mut Option<AnyElement>, window: &mut Window,
-        cx: &mut App) {
-        self.list.paint(window, cx);
-        if let Some(overlay) = overlay { overlay.paint(window, cx); }
-    }
-}
 
 /// The narrowing line's caret: its width and its height at 100 % text.
 const CARET: (f32, f32) = (1.5, 14.0);
@@ -145,35 +98,17 @@ impl Shelf {
                 .child(self.lens_strip(counts, measure, palette, cx))
                 .child(self.narrow_line(measure, palette, cx));
         }
-        let top = self.layout.scroll.logical_scroll_top().item_ix;
-        let viewport = self.layout.scroll.viewport_bounds();
-        let ordinary = f32::from(measure.row() + measure.space(Space::Tight)).max(1.0);
-        let capacity = (f32::from(viewport.size.height) / ordinary).ceil() as usize + 32;
-        let from = top.saturating_sub(16);
-        let through = top.saturating_add(capacity).min(self.layout.rows.len());
-        let visible: HashSet<SharedString> = self.layout.rows.get(from..through).unwrap_or(&[])
-            .iter().filter_map(Row::item).map(|item| item.key.clone())
-            .collect();
-        let focused = self.layout.focused_in_list.as_ref().map(|(key, _, _)| key.clone());
-        if self.input_surface != Some(super::super::root::ShelfNativeSurface::Spine) {
-            self.targets.retain_native_handles(|key| visible.contains(key)
-                || focused.as_ref().is_some_and(|focused| focused.as_ref() == key));
-        }
+        let count = self.rows.len();
         let row_measure = *measure;
-        let list = list(self.layout.scroll.clone(),
-            cx.processor(move |shelf: &mut Self, index: usize, window, cx| {
-                shelf.render_row(index, &row_measure, window, cx)
-            }))
-            .size_full().into_any_element();
-        let shelf = cx.weak_entity();
-        let sticky_measure = *measure;
-        let sticky_palette = *palette;
-        let list = MeasuredStickyList {
-            list,
-            scroll: self.layout.scroll.clone(),
-            overlay: Box::new(move |first, height, cx| shelf.upgrade().and_then(|shelf|
-                shelf.update(cx, |shelf, cx| shelf.sticky(first, height, &sticky_measure, &sticky_palette, cx)))),
-        };
+        let list = uniform_list(
+            "shelf-rows",
+            count,
+            cx.processor(move |shelf: &mut Self, range: Range<usize>, window, cx| {
+                shelf.render_rows(range, &row_measure, window, cx)
+            }),
+        )
+        .size_full()
+        .track_scroll(&self.scroll);
         column
             .child(
                 facet::probe::scroll_scope(
@@ -182,12 +117,13 @@ impl Shelf {
                     .relative()
                     .flex_1()
                     .min_h(px(0.0))
-                    .child(list),
+                    .child(list)
+                        .children(self.sticky(measure, palette, cx)),
                 ),
             )
-            .child(facet::probe::list_scroll_probe(
+            .child(facet::probe::scroll_probe(
                 "shelf-rows",
-                self.layout.scroll.clone(),
+                self.scroll.0.borrow().base_handle.clone(),
             ))
             .children(
                 (!head.trail.is_empty())
@@ -201,24 +137,43 @@ impl Shelf {
     /// see which module and type you are inside.
     fn sticky(
         &self,
-        first: usize,
-        viewport_height: Pixels,
         measure: &Measure,
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let height = measure.row() + measure.space(Space::Tight);
-        // The owning list has already prepainted. Its exact current-frame
-        // logical top and this wrapper's bounds decide the chain and clip.
-        let chain = self.layout.sticky_ancestors(first);
+        let scrolled = -self.scroll.0.borrow().base_handle.offset().y;
+        let mut first = 0usize;
+        let mut top = px(0.0);
+        while top + height <= scrolled && first < self.rows.len() {
+            top += height;
+            first += 1;
+        }
+        let Some(Row::Item(row)) = self.rows.get(first) else {
+            return None;
+        };
+        let mut wanted = row.depth;
+        let mut chain: Vec<(usize, &Item)> = Vec::new();
+        for (index, line) in self.rows[..first].iter().enumerate().rev() {
+            if wanted == 0 {
+                break;
+            }
+            if let Row::Item(item) = line
+                && item.depth < wanted
+            {
+                chain.push((index, item));
+                wanted = item.depth;
+            }
+        }
         if chain.is_empty() {
             return None;
         }
-        let row_count = chain.len();
+        chain.reverse();
         let mut pinned = div()
-            .w_full()
-            .flex()
-            .flex_col()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
             .bg(palette.g1)
             .border_b_1()
             .border_color(palette.line1.hsla());
@@ -230,7 +185,6 @@ impl Shelf {
                 div()
                     .id(SharedString::from(format!("{}#sticky", item.key)))
                     .h(height)
-                    .flex_none()
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Base))
@@ -248,15 +202,12 @@ impl Shelf {
                     )
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                         if !guard(cx) { return; }
-                        shelf.layout.scroll_to_user(index);
+                        shelf.scroll.scroll_to_item(index, ScrollStrategy::Top);
                         cx.notify();
                     })),
             );
         }
-        // A newly shortened viewport must still leave one real row
-        // unobscured in this very paint. Current parent constraints clip the
-        // full chain before the list publishes its new measured viewport.
-        Some(clipped_sticky_chain(pinned, viewport_height, height, row_count))
+        Some(pinned.into_any_element())
     }
 
     /// What you hold, above the lenses: the hand's cards as chips, each with
@@ -630,16 +581,24 @@ impl Shelf {
         line.into_any_element()
     }
 
-    fn render_row(
+    fn render_rows(
         &mut self,
-        index: usize,
+        range: Range<usize>,
         measure: &Measure,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<AnyElement> {
         let palette = cx.facet().palette();
-        let row = self.layout.rows.get(index).cloned().expect("list item belongs to row layout");
-        self.line(index, &row, measure, palette, window, cx)
+        let rows = Rc::clone(&self.rows);
+        let visible: HashSet<SharedString> = rows.get(range.clone()).unwrap_or(&[]).iter()
+            .filter_map(Row::item).map(|item| item.key.clone())
+            .chain(rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
+                .take(24).map(|item| SharedString::from(format!("spine-{}", item.key)))).collect();
+        self.targets.retain_native_handles(|key| visible.contains(key));
+        range
+            .filter_map(|index| rows.get(index).map(|row| (index, row)))
+            .map(|(index, row)| self.line(index, row, measure, palette, window, cx))
+            .collect()
     }
 
     fn line(
@@ -683,17 +642,17 @@ impl Shelf {
                 .id(SharedString::from(format!("shelf-note-{index}")))
                 .role(gpui::Role::Label)
                 .aria_label(words.clone())
-                .min_h(height)
+                .h(height)
                 .w_full()
                 .flex()
                 .items_center()
                 .px(measure.space(Space::Roomy))
-                .py(measure.space(Space::Base))
                 .child(
                     text(ty::CAPTION, measure, palette.ink3)
                         .min_w(px(0.0))
-                        .w_full()
-                        .whitespace_normal()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
                         .child(words.clone()),
                 )
                 .into_any_element(),
@@ -718,10 +677,7 @@ impl Shelf {
         };
         let mut element = div()
             .id(item.key.clone())
-            .role(if item.does != Do::Nothing && self.input_surface.is_some_and(|surface|
-                matches!(surface, super::super::root::ShelfNativeSurface::Docked | super::super::root::ShelfNativeSurface::Drawer)) {
-                gpui::Role::Button
-            } else { gpui::Role::Label })
+            .role(if item.does == Do::Nothing { gpui::Role::Label } else { gpui::Role::Button })
             .aria_label(item.accessible_name.clone().unwrap_or_else(|| match &item.sub {
                 Some(sub) => format!("{}, {}", item.name, sub).into(),
                 None => item.name.clone(),
@@ -739,13 +695,11 @@ impl Shelf {
             .child(self.chevron(item, measure, palette, cx))
             .child(mark(item.mark, measure, palette))
             .child(self.name(item, ink, measure, palette));
-        let row_owns_input = self.input_surface.is_some_and(|surface|
-            matches!(surface, super::super::root::ShelfNativeSurface::Docked | super::super::root::ShelfNativeSurface::Drawer));
-        if row_owns_input && item.does != Do::Nothing {
-            let handle = self.targets.native_handle(&item.key, cx);
-            if FocusRepresentative::for_leaf(self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
-                element = element.aria_active_descendant();
-            }
+        let handle = self.targets.native_handle(&item.key, cx);
+        if FocusRepresentative::for_leaf(item.does != Do::Nothing && self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
+            element = element.aria_active_descendant();
+        }
+        if item.does != Do::Nothing {
             element = element.track_focus(&handle);
         }
         if let Some(sub) = item
@@ -790,7 +744,7 @@ impl Shelf {
                     .bg(palette.mint.base),
             );
         }
-        if row_owns_input && item.does != Do::Nothing {
+        if item.does != Do::Nothing {
             let (id, does, hoists) = (item.key.clone(), item.does.clone(), item.hoists.clone());
             // A row that opens a declaration hands its name's box to that
             // declaration's title (W-Page2's `title_key`), so the title grows
@@ -833,11 +787,9 @@ impl Shelf {
                 shelf.hover.hover(key.clone(), *hovered, &links, cx);
             }));
         }
-        if row_owns_input {
-            self.targets.track(item.key.clone(), element).into_any_element()
-        } else {
-            self.targets.measure(item.key.clone(), element).into_any_element()
-        }
+        self.targets
+            .track(item.key.clone(), element)
+            .into_any_element()
     }
 
     /// The disclosure chevron (its own click, the whole slot), or the empty
@@ -919,15 +871,10 @@ impl Shelf {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let visible_spine: HashSet<SharedString> = self.layout.rows.iter().filter_map(Row::item)
+        let visible_spine: HashSet<SharedString> = self.rows.iter().filter_map(Row::item)
             .filter(|item| item.depth == 0 || item.current).take(24)
             .map(|item| SharedString::from(format!("spine-{}", item.key))).collect();
-        let spine_owns_input = self.input_surface == Some(super::super::root::ShelfNativeSurface::Spine);
-        self.targets.retain_native_handles(|key| if spine_owns_input {
-            visible_spine.contains(key)
-        } else {
-            !key.starts_with("spine-")
-        });
+        self.targets.retain_native_handles(|key| !key.starts_with("spine-") || visible_spine.contains(key));
         let side = px(28.0 * measure.scale());
         let gap = measure.space(Space::Snug);
         let mut column = div()
@@ -939,7 +886,7 @@ impl Shelf {
             .pt(measure.space(Space::Roomy))
             .overflow_hidden();
         for item in self
-            .layout.rows
+            .rows
             .iter()
             .filter_map(Row::item)
             .filter(|item| item.depth == 0 || item.current)
@@ -947,7 +894,7 @@ impl Shelf {
         {
             let mut cell = div()
                 .id(SharedString::from(format!("spine-{}", item.key)))
-                .role(if spine_owns_input && item.does != Do::Nothing { gpui::Role::Button } else { gpui::Role::Label })
+                .role(if item.does == Do::Nothing { gpui::Role::Label } else { gpui::Role::Button })
                 .aria_label(item.accessible_name.clone().unwrap_or_else(|| item.name.clone()))
                 .relative()
                 .flex_none()
@@ -959,6 +906,10 @@ impl Shelf {
                 .hover(|style| style.opacity(1.0))
                 .child(mark(item.mark, measure, palette));
             let spine_key = SharedString::from(format!("spine-{}", item.key));
+            let handle = self.targets.native_handle(&spine_key, cx);
+            if FocusRepresentative::for_leaf(item.does != Do::Nothing && self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
+                cell = cell.aria_active_descendant();
+            }
             if item.current {
                 cell = cell.child(
                     div()
@@ -970,52 +921,20 @@ impl Shelf {
                         .bg(palette.mint.base),
                 );
             }
-            if spine_owns_input && item.does != Do::Nothing {
-                let guard = self.action_guard_for(Some(super::super::root::ShelfNativeSurface::Spine), cx);
-                let action = super::super::focus::TargetAction::new(guard.clone(),
-                    super::act(&cx.weak_entity(), item.does.clone(), self.reading_visit, guard));
-                self.targets.push(super::super::focus::Target {
-                    id: spine_key.clone(), label: item.name.clone(), action: action.clone(),
-                    peek: item.warm.clone(), source: item.source.clone(),
-                });
-                let handle = self.targets.native_handle(&spine_key, cx);
-                if FocusRepresentative::for_leaf(self.targets.is_focused(&spine_key), &handle, window) == FocusRepresentative::Descendant {
-                    cell = cell.aria_active_descendant();
-                }
+            if item.does != Do::Nothing {
                 cell = cell.track_focus(&handle);
-                let targets = self.targets.clone();
-                let id = spine_key.clone();
-                cell = cell.on_click(move |_: &ClickEvent, window, cx| {
-                    if !action.admits(cx) { return; }
-                    targets.focus(id.clone());
-                    action.run(window, cx);
+                let does = item.does.clone();
+                let shelf = cx.weak_entity();
+                let guard = self.action_guard_for(Some(super::super::root::ShelfNativeSurface::Spine), cx);
+                cell = cell.on_click(move |_: &ClickEvent, _, cx| {
+                    if !guard(cx) { return; }
+                    let _ = shelf.update(cx, |shelf, cx| shelf.perform(&does, cx));
                 });
-                column = column.child(self.targets.track(spine_key, cell));
-            } else {
-                column = column.child(cell);
             }
+            column = column.child(cell);
         }
         column.into_any_element()
     }
-}
-
-/// Use the same current-frame StickyGeometry that the List's reveal callback
-/// used. The overlay occupies only its covered height, leaving a native row
-/// and its hitbox below even when the viewport is not a multiple of a row.
-pub(super) fn clipped_sticky_chain(pinned: impl IntoElement, viewport_height: Pixels,
-    row_height: Pixels, row_count: usize) -> AnyElement {
-    let covered = StickyGeometry::new(viewport_height, row_height, row_count).covered_height();
-    div()
-        .absolute().top_0().left_0().right_0().h(covered)
-        .child(div().id("shelf-sticky-clip").relative().h_full().overflow_hidden()
-            // The full chain may exceed this frame's viewport. Keep the
-            // *deepest* useful ancestors in the new clip, with each
-            // native hitbox masked to the actual available height.
-            .child(div().absolute().bottom_0().left_0().right_0()
-                // A short chain fills the clip and begins at its top. An
-                // overfull chain keeps its own height and clips from above.
-                .h(row_height * row_count as f32).min_h(gpui::relative(1.0)).child(pinned)))
-        .into_any_element()
 }
 
 /// A row's mark.
