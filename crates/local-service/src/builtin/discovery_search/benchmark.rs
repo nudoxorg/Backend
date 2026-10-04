@@ -1157,10 +1157,10 @@ fn advisory_facet(facet: Option<&Value>) -> Result<DiscoveryFacet<Vec<DiscoveryA
                     .ok_or_else(|| "advisory row must have a string id".to_owned())?;
                 advisories.push(DiscoveryAdvisory {
                     id: id.to_owned(),
-                    aliases: direct_string_list_facet(value.get("aliases")),
+                    aliases: direct_string_list_facet(value.get("aliases"), "advisory aliases")?,
                     summary: direct_string_facet(value.get("summary")),
                     severity: direct_string_facet(value.get("severity")),
-                    fixed_in: direct_string_list_facet(value.get("fixed_in")),
+                    fixed_in: direct_string_list_facet(value.get("fixed_in"), "advisory fixed_in")?,
                 });
             }
             Ok(DiscoveryFacet::Known(advisories))
@@ -1178,19 +1178,83 @@ fn direct_string_facet(value: Option<&Value>) -> DiscoveryFacet<String> {
         .unwrap_or(DiscoveryFacet::Unknown)
 }
 
-fn direct_string_list_facet(value: Option<&Value>) -> DiscoveryFacet<Vec<String>> {
-    value
-        .and_then(Value::as_array)
-        .map(|values| {
-            DiscoveryFacet::Known(
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
+fn direct_string_list_facet(
+    value: Option<&Value>,
+    field_name: &str,
+) -> Result<DiscoveryFacet<Vec<String>>, String> {
+    // These frozen benchmark rows are not bound to a live registry schema.
+    // Missing and null values therefore remain Unknown; only an explicit
+    // array establishes Known, including a known-empty array.
+    match value {
+        None | Some(Value::Null) => Ok(DiscoveryFacet::Unknown),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
                     .map(str::to_owned)
-                    .collect(),
-            )
-        })
-        .unwrap_or(DiscoveryFacet::Unknown)
+                    .ok_or_else(|| format!("{field_name} values must be strings"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(DiscoveryFacet::Known),
+        Some(_) => Err(format!("{field_name} must be null or an array")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advisory_adapter_preserves_missing_null_and_empty_list_facets() -> Result<(), String> {
+        assert_eq!(
+            direct_string_list_facet(None, "aliases"),
+            Ok(DiscoveryFacet::Unknown)
+        );
+        assert_eq!(
+            direct_string_list_facet(Some(&Value::Null), "aliases"),
+            Ok(DiscoveryFacet::Unknown)
+        );
+        assert_eq!(
+            direct_string_list_facet(Some(&Value::Array(Vec::new())), "aliases"),
+            Ok(DiscoveryFacet::Known(Vec::new()))
+        );
+
+        let input = serde_json::json!({
+            "status": "known",
+            "values": [
+                "legacy-id-only",
+                {"id": "null", "aliases": null, "fixed_in": null},
+                {"id": "empty", "aliases": [], "fixed_in": []}
+            ]
+        });
+        let DiscoveryFacet::Known(advisories) = advisory_facet(Some(&input))? else {
+            return Err("known advisory input did not remain known".to_owned());
+        };
+        assert_eq!(advisories[0].aliases, DiscoveryFacet::Unknown);
+        assert_eq!(advisories[1].aliases, DiscoveryFacet::Unknown);
+        assert_eq!(advisories[2].aliases, DiscoveryFacet::Known(Vec::new()));
+        assert_eq!(advisories[1].fixed_in, DiscoveryFacet::Unknown);
+        assert_eq!(advisories[2].fixed_in, DiscoveryFacet::Known(Vec::new()));
+        Ok(())
+    }
+
+    #[test]
+    fn direct_advisory_list_facets_reject_malformed_collections() {
+        for malformed in [
+            serde_json::json!("not-an-array"),
+            serde_json::json!(["valid", 1]),
+            serde_json::json!([null]),
+        ] {
+            assert!(direct_string_list_facet(Some(&malformed), "aliases").is_err());
+        }
+
+        let malformed_advisory = serde_json::json!({
+            "status": "known",
+            "values": [{"id": "GHSA-test", "aliases": ["valid", false]}]
+        });
+        assert!(advisory_facet(Some(&malformed_advisory)).is_err());
+    }
 }
 
 fn proof_from_row(row: &Value) -> Result<[u8; 32], String> {
