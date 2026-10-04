@@ -18,7 +18,10 @@ pub enum ProjectionLineagePart {
     /// The package-name component.
     Package,
     /// An explicitly identified non-canonical component segment.
-    Invalid { segment: u8 },
+    Invalid {
+        /// Zero-based path component in the package lineage whose spelling is non-canonical.
+        segment: u8,
+    },
 }
 
 /// Exact package-lineage grammar rejection projected by Go, TypeScript, or
@@ -34,7 +37,10 @@ pub enum ProjectionPackageLineageFault {
     /// The package name contained the closed render separator.
     SeparatorInPackage,
     /// The named component contained a path separator.
-    Backslash { part: ProjectionLineagePart },
+    Backslash {
+        /// Package-lineage component in which the forbidden path separator occurred.
+        part: ProjectionLineagePart,
+    },
 }
 
 /// Closed constructor tag used by the portable admission-fault snapshot.
@@ -64,23 +70,35 @@ pub enum ProjectionConstructorTag {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectionConstructorFault {
     /// The observed constructor tag was outside the closed grammar.
-    Tag { actual: u32 },
+    Tag {
+        /// Raw constructor tag value outside the closed IR constructor grammar.
+        actual: u32,
+    },
     /// A reserved constructor payload was nonzero.
     ReservedPayload {
+        /// Closed constructor whose payload cells are being validated.
         tag: ProjectionConstructorTag,
+        /// First constructor payload cell; its meaning or reserved status depends on the closed tag.
         payload0: u32,
+        /// Second constructor payload cell; function result count occupies it and other tags may reserve it.
         payload1: u32,
     },
     /// Constructor payload arity overflowed its source width.
     ArityOverflow {
+        /// Function constructor whose parameter and result counts overflowed the closed arity width.
         tag: ProjectionConstructorTag,
+        /// Function parameter count before checked addition with the result count.
         payload0: u32,
+        /// Function result count before checked addition with the parameter count.
         payload1: u32,
     },
     /// Constructor arity disagreed with its admitted children.
     Arity {
+        /// Closed constructor whose child arity is being checked.
         tag: ProjectionConstructorTag,
+        /// Number of child facts required by the constructor tag and payload.
         expected: u32,
+        /// Number of admitted child facts supplied for the constructor.
         actual: u32,
     },
 }
@@ -197,54 +215,92 @@ pub enum ProjectionTypeCell {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectionSemanticTypeFault {
     /// Observed type tag was outside the closed lattice.
-    Tag { actual: u8 },
+    Tag {
+        /// Raw semantic-type tag outside the closed admitted type lattice.
+        actual: u8,
+    },
     /// A reserved cell carried a value.
     ReservedCell {
+        /// Semantic-type form whose reserved payload cell must be zero.
         tag: ProjectionSemanticTypeTag,
+        /// Specific payload or text cell that must remain empty for this type form.
         cell: ProjectionTypeCell,
+        /// Nonzero cell value; a present-but-forbidden text cell is represented by one.
         actual: u32,
     },
     /// A required cell was absent.
     MissingCell {
+        /// Semantic-type form that requires the absent cell.
         tag: ProjectionSemanticTypeTag,
+        /// Required payload or text cell that was absent.
         cell: ProjectionTypeCell,
     },
     /// Unknown-reason cell was invalid.
-    Reason { actual: u32 },
+    Reason {
+        /// Raw unknown-type reason code that did not map to the closed `TypeReason` set.
+        actual: u32,
+    },
     /// Primitive-shape cell was invalid.
-    PrimitiveShape { actual: u32 },
+    PrimitiveShape {
+        /// Raw primitive-shape code that did not map to the closed `PrimitiveShape` set.
+        actual: u32,
+    },
     /// C-family qualifier cell was invalid.
-    CvQualifiers { actual: u32 },
+    CvQualifiers {
+        /// Complete C-family qualifier bit cell, retained even for unknown bits or an empty wrapper.
+        actual: u32,
+    },
     /// Width cell was invalid.
-    Width { actual: u32 },
+    Width {
+        /// Complete primitive-width cell bits retained from the type record.
+        actual: u32,
+    },
     /// Child count violated the tag law.
     ChildCount {
+        /// Semantic-type form whose child-count law is being checked.
         tag: ProjectionSemanticTypeTag,
+        /// Minimum number of child rows admitted for this type form.
         min: u32,
+        /// Maximum number of child rows admitted for this type form.
         max: u32,
+        /// Number of child rows actually supplied.
         actual: u32,
     },
     /// Child carried a forbidden name.
     ChildNameForbidden {
+        /// Semantic-type form that determines whether this child may carry the value.
         tag: ProjectionSemanticTypeTag,
+        /// Zero-based child position within the type record.
         position: u32,
     },
     /// Child omitted a required name.
     ChildNameRequired {
+        /// Semantic-type form that determines whether this child may carry the value.
         tag: ProjectionSemanticTypeTag,
+        /// Zero-based child position within the type record.
         position: u32,
     },
     /// Child carried forbidden flag bits.
     ChildFlagsForbidden {
+        /// Semantic-type form that determines the allowed child flags.
         tag: ProjectionSemanticTypeTag,
+        /// Zero-based child position within the type record.
         position: u32,
+        /// Raw flag byte carried by that child.
         actual: u8,
     },
     /// Function row's variadic parameter marker was invalid.
-    VariadicParameter { position: u32, actual: u8 },
+    VariadicParameter {
+        /// Zero-based child position marked as the variadic parameter.
+        position: u32,
+        /// Raw marker byte; the function grammar admits only its defined marker values.
+        actual: u8,
+    },
     /// Child carried forbidden text.
     ChildTextForbidden {
+        /// Semantic-type form that determines whether this child may carry the value.
         tag: ProjectionSemanticTypeTag,
+        /// Zero-based child position within the type record.
         position: u32,
     },
 }
@@ -305,9 +361,15 @@ pub enum ProjectionParentageState {
     /// The entity is a proved root.
     Root,
     /// The entity is owned by this emitted parent ordinal.
-    Bound { parent: u32 },
+    Bound {
+        /// Zero-based emitted fact ordinal that owns the entity; absence and root status use separate variants.
+        parent: u32,
+    },
     /// The authority owner had no emitted row.
-    UnrepresentedAuthorityOwner { identity: [u8; 16] },
+    UnrepresentedAuthorityOwner {
+        /// Exact 16-byte authority identity of the claimed parent for which no emitted row exists.
+        identity: [u8; 16],
+    },
 }
 
 /// Exact portable source span snapshot.
@@ -334,44 +396,68 @@ pub enum ProjectionAdmissionFault {
     ChildCapacity,
     /// The flat product-child arena was exhausted.
     ProductChildPoolCapacity {
+        /// Number of product-child entries already retained.
         used: u64,
+        /// Additional product-child entries required by the pending fact.
         requested: u64,
+        /// Maximum product-child entries the flat arena can hold.
         capacity: u64,
     },
     /// Constructor payload/children disagreed.
-    Constructor { cause: ProjectionConstructorFault },
+    Constructor {
+        /// Exact constructor grammar fault, including its tag and child-count operands.
+        cause: ProjectionConstructorFault,
+    },
     /// Product-child role disagreed with the constructor lane.
     ChildRole {
+        /// Zero-based product-child position within the constructor.
         position: u64,
+        /// Child role required at this position by the constructor grammar.
         expected: ProjectionChildRole,
+        /// Child role supplied for this position.
         actual: ProjectionChildRole,
     },
     /// Product-child target was outside the pushed prefix.
     ChildTarget {
+        /// Zero-based product-child position containing the target.
         position: u64,
+        /// Zero-based fact ordinal named by this product child.
         target: u32,
+        /// Number of facts already pushed; valid target ordinals are smaller.
         fact_count: u64,
     },
     /// Type record violated the closed lattice.
-    TypeRecord { cause: ProjectionSemanticTypeFault },
+    TypeRecord {
+        /// Exact semantic-type record fault and the failed cell or tag.
+        cause: ProjectionSemanticTypeFault,
+    },
     /// One type-record child violated the closed child law.
     TypeChild {
+        /// Zero-based semantic-type child position that violated its child law.
         position: u64,
+        /// Exact semantic-type fault for this child.
         cause: ProjectionSemanticTypeFault,
     },
     /// Type child target was outside the pushed prefix.
     TypeChildTarget {
+        /// Zero-based semantic-type child position containing the target.
         position: u64,
+        /// Zero-based fact ordinal named by this type child.
         target: u32,
+        /// Number of facts already pushed; valid target ordinals are smaller.
         fact_count: u64,
     },
     /// The pending type-child lane was full.
     TypeChildCapacity,
     /// The flat type-child arena was exhausted.
     TypeChildPoolCapacity {
+        /// Closed type-child arena lane whose bound was reached.
         lane: ProjectionTypeChildLane,
+        /// Number of child entries already retained in this lane.
         used: u64,
+        /// Additional child entries required by the pending row.
         requested: u64,
+        /// Maximum child entries this lane can hold.
         capacity: u64,
     },
     /// Anonymous type-row lane was full.
@@ -379,11 +465,21 @@ pub enum ProjectionAdmissionFault {
     /// Computed type-row lane was full.
     ComputedRowCapacity,
     /// Occurrence owner was outside the pushed prefix.
-    OccurrenceOwner { owner: u32, fact_count: u64 },
+    OccurrenceOwner {
+        /// Zero-based emitted fact ordinal claimed as the occurrence owner.
+        owner: u32,
+        /// Number of facts already pushed; valid owner ordinals are smaller.
+        fact_count: u64,
+    },
     /// Occurrence lane was full.
     OccurrenceCapacity,
     /// Documentation owner was outside the pushed prefix.
-    DocOwner { owner: u32, fact_count: u64 },
+    DocOwner {
+        /// Zero-based emitted fact ordinal claimed as the documentation owner.
+        owner: u32,
+        /// Number of facts already pushed; valid owner ordinals are smaller.
+        fact_count: u64,
+    },
     /// Documentation lane was full.
     DocCapacity,
     /// Extension-atom lane was full.
@@ -391,34 +487,52 @@ pub enum ProjectionAdmissionFault {
     /// Type-parameter lane was full.
     TypeParameterCapacity,
     /// Type/lifetime bound lane was full.
-    TypeParameterBoundCapacity { requested: u64, available: u64 },
+    TypeParameterBoundCapacity {
+        /// Cumulative bound-plane endpoint after the append; the host's `usize::MAX` records checked-add overflow.
+        requested: u64,
+        /// Total planned capacity of the ordered type/lifetime bound lane.
+        available: u64,
+    },
     /// Reference-list lane was full.
     RefListCapacity,
     /// Reference-list element count was too large.
     RefListElements,
     /// A pooled reference named an invalid target.
     RefTarget {
+        /// Closed relation lane in which the pooled target was read.
         lane: ProjectionFactLane,
+        /// Raw zero-based fact ordinal stored as the relation target.
         raw: u32,
+        /// Number of facts already pushed; valid target ordinals are smaller.
         fact_count: u64,
     },
     /// Source span escaped the entered source lease.
     SourceSpan {
+        /// Zero-based emitted entity row whose span escaped the entered source.
         entity: u32,
+        /// Inclusive source-byte offset of the reported entity span.
         start: u32,
+        /// Exclusive source-byte offset of the reported entity span.
         end: u32,
+        /// Byte length of the entered source lease.
         source_len: u32,
     },
     /// Two authority passes supplied incompatible source spans.
     ConflictingSourceSpan {
+        /// Zero-based emitted entity row reported by both authority passes.
         entity: u32,
+        /// Half-open source-byte span retained from the first pass.
         existing: ProjectionSpan,
+        /// Half-open source-byte span reported by the later pass.
         requested: ProjectionSpan,
     },
     /// Two authority passes supplied incompatible parentage claims.
     ConflictingParentage {
+        /// Zero-based emitted entity row whose owner claims disagree.
         entity: u32,
+        /// Parentage state retained from the first authority pass.
         existing: ProjectionParentageState,
+        /// Parentage state reported by the later authority pass.
         requested: ProjectionParentageState,
     },
 }

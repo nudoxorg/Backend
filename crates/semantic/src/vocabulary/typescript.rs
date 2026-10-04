@@ -1,5 +1,7 @@
 //! Closed TypeScript authority projection vocabulary.
 
+use core::mem::size_of;
+
 use super::projection::{ProjectionForeignKeyFault, ProjectionPackageLineageFault};
 
 /// Closed TypeScript authority projection terminal.
@@ -25,13 +27,19 @@ pub enum TypeScriptProjectionFault {
         cause: ProjectionPackageLineageFault,
     },
     /// A host-size coordinate could not fit the wire's `u32` coordinate.
-    CoordinateOverflow { value: u64 },
+    CoordinateOverflow {
+        /// Exact host-sized source coordinate that could not fit the wire’s u32 coordinate.
+        value: u64,
+    },
     /// An import binding named no retained module row.
-    MissingImportBinding { fact: u32 },
+    MissingImportBinding {
+        /// Zero-based projected import fact for which the authority image supplied no resolved binding.
+        fact: u32,
+    },
 }
 impl core::fmt::Display for TypeScriptProjectionFault {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(formatter, "{self:?}")
     }
 }
-const _: () = assert!(core::mem::size_of::<TypeScriptProjectionFault>() <= 16);
+const _: () = assert!(size_of::<TypeScriptProjectionFault>() <= 16);

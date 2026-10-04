@@ -303,25 +303,50 @@ pub enum PackageUrlError {
     /// The input is empty.
     Empty,
     /// The input exceeds the package URL budget.
-    TooLong { observed: usize, maximum: usize },
+    TooLong {
+        /// Exact package URL input length in UTF-8 bytes.
+        observed: usize,
+        /// Maximum admitted package URL length in UTF-8 bytes.
+        maximum: usize,
+    },
     /// The URL did not begin with the canonical `pkg:` scheme.
     Scheme,
     /// The package type was absent or unsupported.
-    PackageType { range: PackageTextRange },
+    PackageType {
+        /// Half-open UTF-8 byte range of the absent or unsupported package-type token in the retained input.
+        range: PackageTextRange,
+    },
     /// No nonempty package name followed the type and optional namespace.
     Name,
     /// A nonempty pinned version was absent.
     Version,
     /// Query, fragment, or coordinate punctuation appeared repeatedly or out of order.
-    Delimiter { offset: u16 },
+    Delimiter {
+        /// Zero-based UTF-8 byte offset in the original URL where delimiter ordering failed.
+        offset: u16,
+    },
     /// A component contains a byte outside canonical package URL spelling.
-    Character { offset: u16, observed: u8 },
+    Character {
+        /// Zero-based UTF-8 byte offset in the original URL where the forbidden byte occurred.
+        offset: u16,
+        /// Exact input byte rejected by the canonical component grammar.
+        observed: u8,
+    },
     /// A percent escape was truncated, non-hexadecimal, or lower-case.
-    Escape { offset: u16 },
+    Escape {
+        /// Zero-based UTF-8 byte offset of the percent sign beginning the truncated, malformed, or lowercase escape.
+        offset: u16,
+    },
     /// Qualifier keys were empty, repeated, or not strictly ascending.
-    QualifierOrder { offset: u16 },
+    QualifierOrder {
+        /// Zero-based UTF-8 byte offset of the qualifier key that is empty, repeated, or out of lexical order.
+        offset: u16,
+    },
     /// A qualifier omitted its `=` separator or nonempty value.
-    QualifierValue { offset: u16 },
+    QualifierValue {
+        /// Zero-based UTF-8 byte offset of the qualifier that lacks an equals sign or nonempty value.
+        offset: u16,
+    },
 }
 
 impl fmt::Display for PackageUrlError {

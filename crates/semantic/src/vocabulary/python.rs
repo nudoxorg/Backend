@@ -1,5 +1,7 @@
 //! Closed Python authority projection vocabulary.
 
+use core::mem::size_of;
+
 use super::projection::{ProjectionForeignKeyFault, ProjectionPackageLineageFault};
 
 /// Closed Python authority projection terminal.
@@ -44,4 +46,4 @@ impl core::fmt::Display for PythonProjectionFault {
         write!(formatter, "{self:?}")
     }
 }
-const _: () = assert!(core::mem::size_of::<PythonProjectionFault>() <= 16);
+const _: () = assert!(size_of::<PythonProjectionFault>() <= 16);

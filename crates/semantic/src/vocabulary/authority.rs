@@ -1,6 +1,6 @@
 //! Closed registry, language, toolchain, and lowering vocabulary.
 
-use core::{fmt, str::FromStr};
+use core::{fmt, mem::size_of, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -354,12 +354,19 @@ impl TryFrom<u8> for Stage {
 /// Concrete native tool family selected only by the closed compiler registry.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum NativeTool {
+    /// Rust's `rustc` compiler.
     Rustc,
+    /// The Clang compiler for C-family source.
     Clang,
+    /// The selected Python interpreter and frontend.
     Python,
+    /// The TypeScript compiler (`tsc`).
     TypeScriptCompiler,
+    /// The Go compiler and package frontend.
     GoCompiler,
+    /// The Java compiler (`javac`).
     JavaCompiler,
+    /// The .NET C# compiler.
     CSharpCompiler,
 }
 
@@ -560,8 +567,8 @@ impl NativeWorkerPanic {
     }
 }
 
-impl core::fmt::Display for NativeWorkerPanic {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for NativeWorkerPanic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "native worker {:?} panicked with {:?} payload",
@@ -708,4 +715,4 @@ pub enum LoweringUnsupported {
         fault: ClangProjectionFault,
     },
 }
-const _: () = assert!(core::mem::size_of::<LoweringUnsupported>() <= 96);
+const _: () = assert!(size_of::<LoweringUnsupported>() <= 96);
