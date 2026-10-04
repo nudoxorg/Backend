@@ -49,7 +49,6 @@ mod wire;
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
 pub use arrangement::QueryWork;
-pub use source_atom::SourceAtomText;
 pub use backend_advisory::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
     AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,
@@ -192,16 +191,19 @@ pub use rich_graph::{
     RichGraphError, RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision,
     RichGraphSnapshot,
 };
+pub use source_atom::SourceAtomText;
 pub use source_discovery::{
-    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
-    DiscoveryAdvisorySummary, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCargoDependencySummary,
-    DiscoveryCargoSparseSummary, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
+    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata,
+    DISCOVERY_BATCH_ENVELOPE_VERSION, DiscoveryAdvisory, DiscoveryAdvisorySummary, DiscoveryBatch,
+    DiscoveryBatchDraft, DiscoveryCargoDependencySummary, DiscoveryCargoSparseSummary,
+    DiscoveryCompleteness, DiscoveryCursor, DiscoveryDescriptionText, DiscoveryError,
     DiscoveryFacet, DiscoveryFact, DiscoveryFactCore, DiscoveryFactMetadataSummary,
-    DiscoveryMetadata, DiscoveryMetadataFacetState, DiscoveryMetadataPage,
-    DiscoveryMetadataPageCursor, DiscoveryMetadataRow, DiscoveryMetadataSection,
-    DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoverySelectedHead, DiscoverySourceEvent,
-    DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
-    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
+    DiscoveryMetadata, DiscoveryMetadataDelivery, DiscoveryMetadataFacetState,
+    DiscoveryMetadataPage, DiscoveryMetadataPageCursor, DiscoveryMetadataRow,
+    DiscoveryMetadataSection, DiscoveryObservedAt, DiscoveryPackageRetraction,
+    DiscoverySelectedHead, DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
+    DiscoveryTimestamp, MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES,
+    MAX_DISCOVERY_COORDINATE_BYTES, MAX_DISCOVERY_CURSOR_BYTES, MAX_DISCOVERY_DESCRIPTION_BYTES,
     MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES,
     MAX_DISCOVERY_METADATA_PAGE_ROWS, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
