@@ -83,36 +83,6 @@ impl From<ProductText> for String {
     }
 }
 
-/// Stable typed identity tag for one [`PackageReference`] coordinate.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PackageReferenceKind {
-    /// Canonical version-pinned package URL.
-    Purl = 1,
-    /// Canonical label in the immutable local view.
-    Local = 2,
-}
-
-impl PackageReferenceKind {
-    /// Returns the stable wire and persistence tag.
-    #[must_use]
-    pub const fn tag(self) -> u8 {
-        self as u8
-    }
-}
-
-impl TryFrom<u8> for PackageReferenceKind {
-    type Error = ProductAdmissionError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Purl),
-            2 => Ok(Self::Local),
-            _ => Err(ProductAdmissionError::PackageReference),
-        }
-    }
-}
-
 /// An admitted pinned purl or local canonical package label.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
@@ -140,31 +110,6 @@ impl PackageReference {
             ProductText::new(value).map(Self::Local)
         }
     }
-
-    /// Constructs a reference using an explicit kind instead of inferring the
-    /// kind from its spelling.
-    pub fn from_kind(
-        kind: PackageReferenceKind,
-        value: impl Into<String>,
-    ) -> Result<Self, ProductAdmissionError> {
-        let value = value.into();
-        match kind {
-            PackageReferenceKind::Purl => PackageCoordinate::parse(value)
-                .map(Self::Purl)
-                .map_err(|_| ProductAdmissionError::PackageReference),
-            PackageReferenceKind::Local => ProductText::new(value).map(Self::Local),
-        }
-    }
-
-    /// Returns the stable typed identity of this reference.
-    #[must_use]
-    pub const fn kind(&self) -> PackageReferenceKind {
-        match self {
-            Self::Purl(_) => PackageReferenceKind::Purl,
-            Self::Local(_) => PackageReferenceKind::Local,
-        }
-    }
-
     /// Returns the canonical spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -172,17 +117,6 @@ impl PackageReference {
             Self::Purl(v) => v.as_str(),
             Self::Local(v) => v.as_str(),
         }
-    }
-
-    /// Orders references by canonical spelling, then by their typed identity.
-    ///
-    /// This preserves the existing spelling order while distinguishing a
-    /// local label from a PURL with the same display text.
-    #[must_use]
-    pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str()
-            .cmp(other.as_str())
-            .then_with(|| self.kind().cmp(&other.kind()))
     }
 }
 
@@ -1104,7 +1038,10 @@ pub fn index_operation_request_digest(
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.library.index-operation-request.v1\0");
-    hasher.update(&[package.kind().tag()]);
+    hasher.update(&[match package {
+        PackageReference::Purl(_) => 1,
+        PackageReference::Local(_) => 2,
+    }]);
     let bytes = package.as_str().as_bytes();
     hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
     hasher.update(bytes);
@@ -3732,50 +3669,6 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn package_reference_kind_preserves_explicit_local_identity() {
-        let text = "pkg:cargo/widget@1.0.0";
-        let purl = PackageReference::from_kind(PackageReferenceKind::Purl, text)
-            .expect("explicit purl kind");
-        let local = PackageReference::from_kind(PackageReferenceKind::Local, text)
-            .expect("explicit local kind may share the display spelling");
-
-        assert_eq!(
-            PackageReferenceKind::try_from(1),
-            Ok(PackageReferenceKind::Purl)
-        );
-        assert_eq!(
-            PackageReferenceKind::try_from(2),
-            Ok(PackageReferenceKind::Local)
-        );
-        assert_eq!(
-            PackageReferenceKind::try_from(3),
-            Err(ProductAdmissionError::PackageReference)
-        );
-        assert_eq!(PackageReferenceKind::Purl.tag(), 1);
-        assert_eq!(PackageReferenceKind::Local.tag(), 2);
-        assert_eq!(
-            PackageReference::from_kind(PackageReferenceKind::Purl, "local label"),
-            Err(ProductAdmissionError::PackageReference)
-        );
-        assert_eq!(purl, PackageReference::parse(text).expect("parsed purl"));
-        assert_eq!(local.as_str(), purl.as_str());
-        assert_eq!(local.kind(), PackageReferenceKind::Local);
-        assert_eq!(purl.kind(), PackageReferenceKind::Purl);
-        assert_eq!(purl.canonical_cmp(&local), std::cmp::Ordering::Less);
-        assert_eq!(
-            serde_json::to_string(&local).expect("tagged local encoding"),
-            r#"{"kind":"local","value":"pkg:cargo/widget@1.0.0"}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<PackageReference>(
-                r#"{"kind":"local","value":"pkg:cargo/widget@1.0.0"}"#
-            )
-            .expect("tagged local decoding"),
-            local
-        );
-    }
 
     fn operation_receipt_view() -> crate::ViewRoot {
         let root = crate::view_state_root(&[]);
