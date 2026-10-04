@@ -1,0 +1,46 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T13:53:04.346922+00:00",
+  "label": "borrowed-source-witness",
+  "branch": "codex/checkpoint-borrowed-source-witness-20261004T135304Z",
+  "worktree": "/private/tmp/nudox-borrowed-source-witness-20261004",
+  "parent": "d21562d4bfd5e7648b0aeb6bdd8bab6fc8d5555d",
+  "merge_parents": [],
+  "working_source_tree": "e0e08866b37f6162c2ce47469f14551d46a9a892",
+  "description": "Frozen borrowed typed source-state witness API, shared v1 witness encoding and Turso read allocation avoidance. Golden, differential, shape, allocation and durable decoder tests were added but not executed. Full final Root source review and all Rust/storage gates remain pending.",
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs"
+  ],
+  "source_sha256": {
+    "crates/library/lib.rs": "b3a72b5c40848707a56d549d3e1a10268086a1e0d71318acbbff637a291e2c22",
+    "crates/library/package_graph.rs": "9ebe1ec2a29749fc840de54f64fa844fa16a68513332f5554afeb100189b1e61",
+    "extensions/turso/src/graph.rs": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+    "extensions/turso/src/package_graph_read.rs": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e"
+  },
+  "untracked_source_paths": [],
+  "original_index_sha256": "16927742c2499c257ba8f956de9c69415332a2dcbbb476c71675d7db4354102b",
+  "original_index_stages_sha256": "e012d7c550804660bb856fa477020effd724d2ee0cf3821435618691bd7ef91d",
+  "original_status_sha256": "f60361ec6c86bb50bfb798e02528bd327918b9bb4b551164b5be8c9d20eb49dd",
+  "preserved_index_blobs": [
+    "86289f2a9b148331ee8e13a6ac9faadfb58e9687",
+    "b892c4f17fa2bcce89a4587931771ffea0a07510",
+    "bcba5a279e598ac6a74af35823cbd6185b0f2d06",
+    "e796822d0b40542ee0e2b6d9433afb32cf1f3459"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {
+    "patch_sha256": "e2f972c2c209e8d07daab4bc8149a2d55581a367cb470718699b3dcb1be55d76",
+    "preserved_files": {
+      "source.patch": "/private/tmp/nudox-user-checkpoint-20261004T135304Z/borrowed-source-witness.patch"
+    }
+  },
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}

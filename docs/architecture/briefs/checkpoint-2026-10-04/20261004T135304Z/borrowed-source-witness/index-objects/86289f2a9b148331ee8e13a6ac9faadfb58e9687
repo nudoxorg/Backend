@@ -7,9 +7,7 @@
 //! questions without pretending that an unresolved requirement is a resolved
 //! edge.
 
-use crate::{
-    MAX_PRODUCT_TEXT_BYTES, PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem,
-};
+use crate::{PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -275,88 +273,6 @@ pub type PackageDependencySourceFacts = (
     PackageGraphSourceKey,
     DependencyFacts<Box<[PackageDependencyRecord]>>,
 );
-
-/// One closed package-source state borrowed while checking its v1 witness.
-///
-/// This deliberately excludes nonempty Known rows: those require full graph
-/// admission through [`CheckedPackageGraphFacts`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BorrowedPackageGraphSourceState<'a> {
-    /// The source is known to have no dependency edges.
-    KnownEmpty,
-    /// The source did not publish dependency metadata.
-    Unknown(&'a ProductText),
-    /// The source could not provide dependency metadata.
-    Unavailable(&'a ProductText),
-}
-
-/// A v1 source-state witness that was admitted without owning or cloning its
-/// source coordinate or reason text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CheckedPackageGraphSourceWitness([u8; 32]);
-
-impl CheckedPackageGraphSourceWitness {
-    /// Admits one exact source and closed source state, then computes its
-    /// existing v1 witness directly from borrowed values. This specialized
-    /// check does not admit nonempty Known facts or certify edge rows.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProductAdmissionError`] for the PURL ordering floor or a
-    /// local coordinate/reason that does not satisfy the retained
-    /// [`ProductText`] shape.
-    pub fn admit(
-        source: &PackageGraphSourceKey,
-        state: BorrowedPackageGraphSourceState<'_>,
-    ) -> Result<Self, ProductAdmissionError> {
-        admit_source_witness_coordinate(&source.coordinate)?;
-        let state = match state {
-            BorrowedPackageGraphSourceState::KnownEmpty => SourceWitnessState::KnownRows(&[]),
-            BorrowedPackageGraphSourceState::Unknown(reason) => {
-                admit_source_witness_text(reason)?;
-                SourceWitnessState::Unknown(reason)
-            }
-            BorrowedPackageGraphSourceState::Unavailable(reason) => {
-                admit_source_witness_text(reason)?;
-                SourceWitnessState::Unavailable(reason)
-            }
-        };
-        Ok(Self(package_dependency_source_witness_v1(source, state)))
-    }
-
-    /// Returns the checked fixed-width source-state digest.
-    #[must_use]
-    pub const fn digest(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-fn admit_source_witness_coordinate(
-    coordinate: &PackageReference,
-) -> Result<(), ProductAdmissionError> {
-    match coordinate {
-        PackageReference::Purl(value) if value.as_str().is_empty() => {
-            Err(ProductAdmissionError::PackageReference)
-        }
-        PackageReference::Purl(_) => Ok(()),
-        PackageReference::Local(value) => admit_source_witness_text(value),
-    }
-}
-
-fn admit_source_witness_text(value: &ProductText) -> Result<(), ProductAdmissionError> {
-    let text = value.as_str();
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Err(ProductAdmissionError::EmptyText);
-    }
-    if trimmed.len() > MAX_PRODUCT_TEXT_BYTES
-        || trimmed.bytes().any(|byte| byte == 0)
-        || trimmed.len() != text.len()
-    {
-        return Err(ProductAdmissionError::TextBound);
-    }
-    Ok(())
-}
 
 /// Validated immutable dependency facts with their canonical witness cached.
 ///
@@ -662,70 +578,20 @@ fn package_dependency_source_facts_witness(
     source: &PackageGraphSourceKey,
     state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
 ) -> [u8; 32] {
-    match state {
-        DependencyFacts::Known(rows) => {
-            if rows.windows(2).all(|pair| {
-                (pair[0].recomputed_version(), pair[0].facts_version)
-                    <= (pair[1].recomputed_version(), pair[1].facts_version)
-            }) {
-                package_dependency_source_witness_v1(
-                    source,
-                    SourceWitnessState::KnownRows(rows.as_ref()),
-                )
-            } else {
-                // Unchecked callers may present rows in any order. Sort only
-                // the fixed-width edge identities, then use the same v1
-                // writer as checked rows and the borrowed closed-state API.
-                let mut edges = rows
-                    .iter()
-                    .map(|row| (row.recomputed_version(), row.facts_version))
-                    .collect::<Vec<_>>();
-                edges.sort_unstable();
-                package_dependency_source_witness_v1(
-                    source,
-                    SourceWitnessState::KnownEdgeVersions(&edges),
-                )
-            }
-        }
-        DependencyFacts::Unknown(reason) => package_dependency_source_witness_v1(
-            source,
-            SourceWitnessState::Unknown(reason),
-        ),
-        DependencyFacts::Unavailable(reason) => package_dependency_source_witness_v1(
-            source,
-            SourceWitnessState::Unavailable(reason),
-        ),
-    }
+    package_dependency_source_facts_witness_inner(source, state, false)
 }
 
 fn package_dependency_source_facts_witness_canonical(
     source: &PackageGraphSourceKey,
     state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
 ) -> [u8; 32] {
-    package_dependency_source_witness_v1(source, source_witness_state_from_facts(state))
+    package_dependency_source_facts_witness_inner(source, state, true)
 }
 
-#[derive(Clone, Copy)]
-enum SourceWitnessState<'a> {
-    KnownRows(&'a [PackageDependencyRecord]),
-    KnownEdgeVersions(&'a [([u8; 32], [u8; 32])]),
-    Unknown(&'a ProductText),
-    Unavailable(&'a ProductText),
-}
-
-fn source_witness_state_from_facts(
-    state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
-) -> SourceWitnessState<'_> {
-    match state {
-        DependencyFacts::Known(rows) => SourceWitnessState::KnownRows(rows.as_ref()),
-        DependencyFacts::Unknown(reason) => SourceWitnessState::Unknown(reason),
-        DependencyFacts::Unavailable(reason) => SourceWitnessState::Unavailable(reason),
-    }
-}
-
-fn package_dependency_source_witness_v1(
+fn package_dependency_source_facts_witness_inner(
     source: &PackageGraphSourceKey,
-    state: SourceWitnessState<'_>,
+    state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
+    canonical_edges: bool,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"nudox.package-dependency-source-facts.v1\0");
@@ -752,29 +618,40 @@ fn package_dependency_source_witness_v1(
     hasher.update(&source.authority.id_bytes());
 
     match state {
-        SourceWitnessState::KnownRows(rows) => {
+        DependencyFacts::Known(rows) => {
             hasher.update(&[2]);
             hasher.update(&1_u64.to_be_bytes());
             hasher.update(&[1]);
-            for row in rows.iter() {
-                hash_source_edge(&mut hasher, row.recomputed_version(), row.facts_version);
+            if canonical_edges
+                || rows.windows(2).all(|pair| {
+                    (pair[0].recomputed_version(), pair[0].facts_version)
+                        <= (pair[1].recomputed_version(), pair[1].facts_version)
+                })
+            {
+                for row in rows.iter() {
+                    hash_source_edge(&mut hasher, row.recomputed_version(), row.facts_version);
+                }
+            } else {
+                // Unchecked callers may present rows in any order. Keep this
+                // fallback bounded to one source while checked snapshots use
+                // their already canonical row order and allocate no edge list.
+                let mut edges = rows
+                    .iter()
+                    .map(|row| (row.recomputed_version(), row.facts_version))
+                    .collect::<Vec<_>>();
+                edges.sort_unstable();
+                for (content_version, declared_version) in edges {
+                    hash_source_edge(&mut hasher, content_version, declared_version);
+                }
             }
         }
-        SourceWitnessState::KnownEdgeVersions(edges) => {
-            hasher.update(&[2]);
-            hasher.update(&1_u64.to_be_bytes());
-            hasher.update(&[1]);
-            for (content_version, declared_version) in edges {
-                hash_source_edge(&mut hasher, *content_version, *declared_version);
-            }
-        }
-        SourceWitnessState::Unknown(reason) => {
+        DependencyFacts::Unknown(reason) => {
             hasher.update(&[2]);
             hasher.update(&1_u64.to_be_bytes());
             hasher.update(&[2]);
             hash_field(&mut hasher, 4, reason.as_str().as_bytes());
         }
-        SourceWitnessState::Unavailable(reason) => {
+        DependencyFacts::Unavailable(reason) => {
             hasher.update(&[2]);
             hasher.update(&1_u64.to_be_bytes());
             hasher.update(&[3]);
@@ -1716,7 +1593,6 @@ mod tests {
     use super::*;
     use crate::MAX_PRODUCT_TEXT_BYTES;
     use std::{
-        alloc::{GlobalAlloc, Layout, System},
         cell::Cell,
         fs,
         path::PathBuf,
@@ -1724,71 +1600,8 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    thread_local! {
-        static COUNT_SOURCE_WITNESS_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
-        static SOURCE_WITNESS_ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct SourceWitnessTestAllocator;
-
-    #[global_allocator]
-    static SOURCE_WITNESS_TEST_ALLOCATOR: SourceWitnessTestAllocator = SourceWitnessTestAllocator;
-
-    unsafe impl GlobalAlloc for SourceWitnessTestAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            count_source_witness_allocation();
-            unsafe { System.alloc(layout) }
-        }
-
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            count_source_witness_allocation();
-            unsafe { System.alloc_zeroed(layout) }
-        }
-
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(pointer, layout) }
-        }
-
-        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            count_source_witness_allocation();
-            unsafe { System.realloc(pointer, layout, size) }
-        }
-    }
-
-    fn count_source_witness_allocation() {
-        let enabled = COUNT_SOURCE_WITNESS_ALLOCATIONS
-            .try_with(|enabled| enabled.get())
-            .unwrap_or(false);
-        if enabled {
-            let _ = SOURCE_WITNESS_ALLOCATION_COUNT.try_with(|count| {
-                count.set(count.get().saturating_add(1));
-            });
-        }
-    }
-
-    fn allocations_while<R>(operation: impl FnOnce() -> R) -> (R, usize) {
-        // Initialize the thread-local counter before measuring, and ignore
-        // allocations made by other concurrent test threads.
-        SOURCE_WITNESS_ALLOCATION_COUNT.with(|count| count.set(0));
-        COUNT_SOURCE_WITNESS_ALLOCATIONS.with(|enabled| enabled.set(true));
-        let result = operation();
-        COUNT_SOURCE_WITNESS_ALLOCATIONS.with(|enabled| enabled.set(false));
-        let count = SOURCE_WITNESS_ALLOCATION_COUNT.with(|count| count.get());
-        (result, count)
-    }
-
     fn source() -> PackageReference {
         PackageReference::parse("pkg:cargo/demo@1.0.0").expect("valid source")
-    }
-
-    fn source_witness_hex(digest: &[u8; 32]) -> String {
-        use std::fmt::Write as _;
-
-        let mut hex = String::with_capacity(64);
-        for byte in digest {
-            write!(&mut hex, "{byte:02x}").expect("write digest hex");
-        }
-        hex
     }
 
     fn edge(requirement: &str, frontier: u8) -> PackageDependencyRecord {
@@ -2474,236 +2287,6 @@ mod tests {
             panic!("checked dependency rows should stay known");
         };
         assert_eq!(cached_rows.as_ref(), std::slice::from_ref(&original_edge));
-    }
-
-    #[test]
-    fn borrowed_closed_source_witness_matches_v1_goldens_and_legacy_facts() {
-        let source = PackageGraphSourceKey::new(
-            PackageReference::parse("pkg:cargo/witness-golden@1.0.0").expect("source"),
-            PackageGraphSourceAuthority::Registry(RegistryAuthorityId::from_configured_source(
-                [0x42; 32],
-            )),
-        );
-        let reason = ProductText::new("golden reason").expect("reason");
-
-        let known = CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .expect("Known-empty source witness");
-        let legacy_known = CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
-        )])
-        .expect("legacy Known-empty facts");
-        assert_eq!(
-            source_witness_hex(known.digest()),
-            "e750934ddd3bb2881b5e5957757c13c30aabd80e1497b9b97d85715e925b5c4d"
-        );
-        assert_eq!(known.digest(), &legacy_known.source_witnesses()[0]);
-
-        let unknown = CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .expect("Unknown source witness");
-        let legacy_unknown = CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Unknown(reason.clone()),
-        )])
-        .expect("legacy Unknown facts");
-        assert_eq!(
-            source_witness_hex(unknown.digest()),
-            "87f5d79ead14bdc60912a46b6fb228c20741a32d3103a9a70ee8985f47241e16"
-        );
-        assert_eq!(unknown.digest(), &legacy_unknown.source_witnesses()[0]);
-
-        let unavailable = CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unavailable(&reason),
-        )
-        .expect("Unavailable source witness");
-        let legacy_unavailable = CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Unavailable(reason.clone()),
-        )])
-        .expect("legacy Unavailable facts");
-        assert_eq!(
-            source_witness_hex(unavailable.digest()),
-            "ba21d04b26c0ef39ddb1d061e8ab0b348b644885377487ced6ee2a63d4c45b87"
-        );
-        assert_eq!(unavailable.digest(), &legacy_unavailable.source_witnesses()[0]);
-    }
-
-    #[test]
-    fn borrowed_source_witness_separates_typed_identity_and_state() {
-        let spelling = "pkg:cargo/witness-kind@1.0.0";
-        let purl = PackageReference::from_kind(crate::PackageReferenceKind::Purl, spelling)
-            .expect("PURL");
-        let local = PackageReference::from_kind(crate::PackageReferenceKind::Local, spelling)
-            .expect("local label that begins with pkg:");
-        assert_eq!(purl.as_str(), local.as_str());
-        assert_eq!(local.kind(), crate::PackageReferenceKind::Local);
-        let registry = PackageGraphSourceAuthority::Registry(
-            RegistryAuthorityId::from_configured_source([0x24; 32]),
-        );
-        let purl_key = PackageGraphSourceKey::new(purl, registry);
-        let local_key = PackageGraphSourceKey::new(local, registry);
-        let reason = ProductText::new("same reason").expect("reason");
-        let changed_reason = ProductText::new("changed reason").expect("reason");
-
-        let purl_unknown = CheckedPackageGraphSourceWitness::admit(
-            &purl_key,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .expect("PURL state");
-        let local_unknown = CheckedPackageGraphSourceWitness::admit(
-            &local_key,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .expect("Local state");
-        let unavailable = CheckedPackageGraphSourceWitness::admit(
-            &purl_key,
-            BorrowedPackageGraphSourceState::Unavailable(&reason),
-        )
-        .expect("Unavailable state");
-        let changed_reason_witness = CheckedPackageGraphSourceWitness::admit(
-            &purl_key,
-            BorrowedPackageGraphSourceState::Unknown(&changed_reason),
-        )
-        .expect("changed reason");
-        let known_empty = CheckedPackageGraphSourceWitness::admit(
-            &purl_key,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .expect("Known-empty state");
-        let other_authority = PackageGraphSourceKey::new(
-            purl_key.coordinate.clone(),
-            PackageGraphSourceAuthority::Local([0x24; 32]),
-        );
-        let other_authority_witness = CheckedPackageGraphSourceWitness::admit(
-            &other_authority,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .expect("different authority kind");
-        let other_authority_id = PackageGraphSourceKey::new(
-            purl_key.coordinate.clone(),
-            PackageGraphSourceAuthority::Registry(
-                RegistryAuthorityId::from_configured_source([0x25; 32]),
-            ),
-        );
-        let other_authority_id_witness = CheckedPackageGraphSourceWitness::admit(
-            &other_authority_id,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .expect("different authority identity");
-
-        assert_ne!(purl_unknown.digest(), local_unknown.digest());
-        assert_ne!(purl_unknown.digest(), unavailable.digest());
-        assert_ne!(purl_unknown.digest(), changed_reason_witness.digest());
-        assert_ne!(purl_unknown.digest(), known_empty.digest());
-        assert_ne!(purl_unknown.digest(), other_authority_witness.digest());
-        assert_ne!(purl_unknown.digest(), other_authority_id_witness.digest());
-    }
-
-    #[test]
-    fn borrowed_source_witness_rejects_non_admitted_public_values() {
-        let authority = PackageGraphSourceAuthority::Unattributed;
-        let reason = ProductText::new("valid reason").expect("reason");
-        let floor = PackageGraphSourceKey::new(
-            PackageReference::Purl(crate::PackageCoordinate::ordering_floor()),
-            authority,
-        );
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &floor,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .is_err());
-
-        let padded_source = PackageGraphSourceKey::new(
-            PackageReference::Local(ProductText::from_static(" padded local label ")),
-            authority,
-        );
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &padded_source,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .is_err());
-
-        let source = PackageGraphSourceKey::unattributed(source());
-        let padded_reason = ProductText::from_static(" padded reason ");
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unknown(&padded_reason),
-        )
-        .is_err());
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unavailable(&padded_reason),
-        )
-        .is_err());
-
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn borrowed_source_witness_admission_allocates_nothing_after_input_admission() {
-        let source = PackageGraphSourceKey::new(
-            PackageReference::parse("pkg:cargo/allocation-check@1.0.0").expect("source"),
-            PackageGraphSourceAuthority::Registry(RegistryAuthorityId::from_configured_source(
-                [0x52; 32],
-            )),
-        );
-        let reason = ProductText::new("registry omitted dependency metadata").expect("reason");
-
-        let (_, known_allocations) = allocations_while(|| {
-            std::hint::black_box(
-                CheckedPackageGraphSourceWitness::admit(
-                    &source,
-                    BorrowedPackageGraphSourceState::KnownEmpty,
-                )
-                .expect("Known-empty witness"),
-            )
-        });
-        let (_, unknown_allocations) = allocations_while(|| {
-            std::hint::black_box(
-                CheckedPackageGraphSourceWitness::admit(
-                    &source,
-                    BorrowedPackageGraphSourceState::Unknown(&reason),
-                )
-                .expect("Unknown witness"),
-            )
-        });
-        let (_, unavailable_allocations) = allocations_while(|| {
-            std::hint::black_box(
-                CheckedPackageGraphSourceWitness::admit(
-                    &source,
-                    BorrowedPackageGraphSourceState::Unavailable(&reason),
-                )
-                .expect("Unavailable witness"),
-            )
-        });
-        assert_eq!(known_allocations, 0);
-        assert_eq!(unknown_allocations, 0);
-        assert_eq!(unavailable_allocations, 0);
-
-        let (_, legacy_allocations) = allocations_while(|| {
-            std::hint::black_box(
-                CheckedPackageGraphFacts::new(vec![(
-                    source.clone(),
-                    DependencyFacts::Unknown(reason.clone()),
-                )])
-                .expect("legacy one-source witness"),
-            )
-        });
-        assert!(
-            legacy_allocations > 0,
-            "the legacy owned one-source path allocates its source/fact containers"
-        );
     }
 
     #[test]

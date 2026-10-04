@@ -5,8 +5,7 @@ use crate::read::metadata_from;
 use crate::schema::PackageGraphMetadata;
 use crate::{ProjectionError, ProjectionUpdate, TursoProjection};
 use backend_library::{
-    BorrowedPackageGraphSourceState, CheckedPackageGraphFacts,
-    CheckedPackageGraphSourceWitness, DependencyAuthority, DependencyFacts, DependencyScope,
+    CheckedPackageGraphFacts, DependencyAuthority, DependencyFacts, DependencyScope,
     MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord,
     PackageDependencySourceFacts, PackageGraphSourceAuthority, PackageGraphSourceKey,
     PackageReference, PackageReferenceKind, ProductText,
@@ -891,15 +890,14 @@ pub(crate) async fn package_source_state(
                 "package graph state reason exists without a state kind",
             ));
         }
-        let known_empty = CheckedPackageGraphSourceWitness::admit(
+        let known_empty = checked_source_witness(
             source,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .map_err(|_| misuse_graph_edge("invalid package graph source state"))?;
+            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+        )?;
         // This indexed probe distinguishes a deleted Unknown/Unavailable row
         // from Known facts. It does not prove every edge against the graph
         // witness; bounded pages have no Merkle membership proof.
-        let is_known_empty = witness == *known_empty.digest();
+        let is_known_empty = witness == known_empty;
         if (is_known_empty && !has_edge) || (!is_known_empty && has_edge) {
             return Ok(PackageGraphSourceState::Known);
         }
@@ -917,14 +915,12 @@ pub(crate) async fn package_source_state(
         reason.ok_or_else(|| misuse_graph_edge("package graph state reason is missing"))?,
         "invalid graph state reason",
     )?;
-    let borrowed_state = match state {
-        1 => BorrowedPackageGraphSourceState::Unknown(&reason),
-        2 => BorrowedPackageGraphSourceState::Unavailable(&reason),
+    let facts = match state {
+        1 => DependencyFacts::Unknown(reason.clone()),
+        2 => DependencyFacts::Unavailable(reason.clone()),
         _ => return Err(misuse_graph_edge("invalid graph state kind")),
     };
-    let checked = CheckedPackageGraphSourceWitness::admit(source, borrowed_state)
-        .map_err(|_| misuse_graph_edge("invalid package graph source state"))?;
-    if checked.digest() != &witness {
+    if checked_source_witness(source, facts)? != witness {
         return Err(misuse_graph_edge(
             "package graph state differs from its checked source witness",
         ));
@@ -952,6 +948,19 @@ async fn package_state_from(
         kind,
         reason: reason.as_str().to_owned(),
     }))
+}
+
+pub(crate) fn checked_source_witness(
+    source: &PackageGraphSourceKey,
+    facts: DependencyFacts<Box<[PackageDependencyRecord]>>,
+) -> Result<[u8; 32], ProjectionError> {
+    let checked = CheckedPackageGraphFacts::new(vec![(source.clone(), facts)])
+        .map_err(|_| misuse_graph_edge("invalid package graph source witness input"))?;
+    checked
+        .source_witnesses()
+        .first()
+        .copied()
+        .ok_or_else(|| misuse_graph_edge("package graph source witness input is empty"))
 }
 
 const EDGE_WRITE_BATCH: usize = 64;
