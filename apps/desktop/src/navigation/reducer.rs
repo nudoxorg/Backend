@@ -407,18 +407,19 @@ mod tests {
     }
 
     #[test]
-    fn find_typing_keeps_one_history_stop_and_stale_callbacks_cannot_steal_navigation() {
+    fn find_typing_keeps_one_history_stop_and_stale_callbacks_cannot_steal_navigation()
+    -> Result<(), crate::model::pages::KeyError> {
         use crate::model::pages::SearchQuery;
         use crate::navigation::{BrowseRoute, OrbitRoute};
         let initial = snapshot();
-        let first = SearchQuery::new("tom", 50).unwrap();
-        let final_query = SearchQuery::new("toml", 50).unwrap();
+        let first = SearchQuery::new("tom", 50)?;
+        let final_query = SearchQuery::new("toml", 50)?;
         let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(first.clone())));
         let opened = reduce(&initial, Intent::Navigate(route)).snapshot;
         let refined = reduce(&opened, Intent::RefineFind { expected: Some(first.clone()), query: Some(final_query.clone()) }).snapshot;
         assert_eq!(refined.route(), &Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(final_query.clone()))));
         assert_eq!(reduce(&refined, Intent::Back).snapshot.route(), initial.route());
-        let stale = reduce(&refined, Intent::RefineFind { expected: Some(first.clone()), query: Some(SearchQuery::new("old", 50).unwrap()) });
+        let stale = reduce(&refined, Intent::RefineFind { expected: Some(first.clone()), query: Some(SearchQuery::new("old", 50)?) });
         assert_eq!(stale.snapshot, refined);
         assert!(stale.effects.is_empty());
         let departed = reduce(&refined, Intent::Navigate(package_route(None))).snapshot;
@@ -428,6 +429,7 @@ mod tests {
         let cleared = reduce(&refined, Intent::RefineFind { expected: Some(final_query), query: None }).snapshot;
         assert_eq!(cleared.route(), &Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome)));
         assert_eq!(reduce(&cleared, Intent::Back).snapshot.route(), initial.route());
+        Ok(())
     }
 
     #[test]

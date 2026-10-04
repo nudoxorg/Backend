@@ -118,19 +118,27 @@ mod tests {
     }
 
     #[test]
-    fn find_addresses_escape_query_delimiters_and_unicode() {
-        let route = BrowseRoute::Find(SearchQuery::new("a & b/λ?", 50).unwrap());
+    fn find_addresses_escape_query_delimiters_and_unicode()
+    -> Result<(), crate::model::pages::KeyError> {
+        let route = BrowseRoute::Find(SearchQuery::new("a & b/λ?", 50)?);
         assert_eq!(route.address(), (vec![], "find?q=a%20%26%20b%2F%CE%BB%3F".into()));
+        Ok(())
     }
 
     #[test]
-    fn comparisons_preserve_order_and_reject_ambiguous_or_unbounded_selections() {
-        let packages = (0..5).map(|at| PackageRef::parse(&format!("pkg:cargo/example{at}@1.0.0")).unwrap()).collect::<Vec<_>>();
+    fn comparisons_preserve_order_and_reject_ambiguous_or_unbounded_selections()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let packages = (0..5)
+            .map(|at| PackageRef::parse(&format!("pkg:cargo/example{at}@1.0.0")))
+            .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(CompareSet::new([]), Err(CompareError::TooFew));
         assert_eq!(CompareSet::new(packages[..1].iter().cloned()), Err(CompareError::TooFew));
         assert_eq!(CompareSet::new([packages[0].clone(), packages[0].clone()]), Err(CompareError::Duplicate));
         assert_eq!(CompareSet::new(packages.iter().cloned()), Err(CompareError::TooMany));
         let reversed = [packages[2].clone(), packages[0].clone()];
-        assert_eq!(CompareSet::new(reversed.clone()).unwrap().packages(), &reversed);
+        let admitted = CompareSet::new(reversed.clone())
+            .map_err(|error| format!("valid comparison selection: {error:?}"))?;
+        assert_eq!(admitted.packages(), &reversed);
+        Ok(())
     }
 }

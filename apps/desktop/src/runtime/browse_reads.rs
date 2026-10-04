@@ -950,25 +950,26 @@ mod find_tests {
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 12));
     }
 
-    fn candidate(name: &str, indexed: bool) -> FindPackage {
-        FindPackage {
-            package: PackageRef::parse(&format!("pkg:cargo/{name}@1.0.0")).unwrap(),
+    fn candidate(name: &str, indexed: bool) -> Result<FindPackage, crate::model::pages::KeyError> {
+        Ok(FindPackage {
+            package: PackageRef::parse(&format!("pkg:cargo/{name}@1.0.0"))?,
             name: Arc::from(name),
             description: None,
             indexed,
             record: None,
             offer: None,
-        }
+        })
     }
 
     #[test]
-    fn exact_package_names_beat_indexed_partial_matches_and_keep_identity() {
+    fn exact_package_names_beat_indexed_partial_matches_and_keep_identity()
+    -> Result<(), crate::model::pages::KeyError> {
         let ranked = rank_packages(
             "TOML",
             vec![
-                candidate("toml_edit", true),
-                candidate("toml", false),
-                candidate("serde", true),
+                candidate("toml_edit", true)?,
+                candidate("toml", false)?,
+                candidate("serde", true)?,
             ],
         );
         assert_eq!(
@@ -980,17 +981,20 @@ mod find_tests {
         );
         assert!(!ranked[0].indexed);
         assert_eq!(ranked[0].package.as_str(), "pkg:cargo/toml@1.0.0");
+        Ok(())
     }
 
     #[test]
-    fn unmatched_packages_are_empty_and_large_catalogs_are_bounded() {
-        assert!(rank_packages("not-present", vec![candidate("toml", true)]).is_empty());
+    fn unmatched_packages_are_empty_and_large_catalogs_are_bounded()
+    -> Result<(), crate::model::pages::KeyError> {
+        assert!(rank_packages("not-present", vec![candidate("toml", true)?]).is_empty());
         let rows = (0..200)
             .map(|at| candidate(&format!("item{at:03}"), true))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let ranked = rank_packages("item", rows);
         assert_eq!(ranked.len(), 64);
-        assert_eq!(ranked.last().unwrap().name.as_ref(), "item063");
+        assert_eq!(ranked.last().map(|row| row.name.as_ref()), Some("item063"));
+        Ok(())
     }
 
     #[test]

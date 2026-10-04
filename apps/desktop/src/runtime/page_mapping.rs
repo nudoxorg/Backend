@@ -2999,7 +2999,8 @@ mod tests {
     }
 
     #[test]
-    fn name_links_require_complete_outline_but_exact_doc_keys_survive_partial_coverage() {
+    fn name_links_require_complete_outline_but_exact_doc_keys_survive_partial_coverage()
+    -> Result<(), Box<dyn std::error::Error>> {
         let foo = format!("{PRESENT}::src/lib.rs:3::Foo");
         let consumer = format!("{PRESENT}::src/lib.rs:8::consume");
         let rows = vec![
@@ -3034,22 +3035,28 @@ mod tests {
             None,
             Some(&partial),
         );
-        assert!(complete_signature.known().unwrap().links().next().is_some());
-        assert!(partial_signature.known().unwrap().links().next().is_none());
+        let complete_signature = complete_signature
+            .known()
+            .ok_or("complete recorded signature")?;
+        let partial_signature = partial_signature
+            .known()
+            .ok_or("partial recorded signature")?;
+        assert!(complete_signature.links().next().is_some());
+        assert!(partial_signature.links().next().is_none());
         assert_eq!(
-            complete_signature.known().unwrap().name_link_coverage,
+            complete_signature.name_link_coverage,
             NameLinkCoverage::Complete
         );
         assert_eq!(
-            partial_signature.known().unwrap().name_link_coverage,
+            partial_signature.name_link_coverage,
             NameLinkCoverage::Partial
         );
         assert_eq!(
             complete
                 .complete_names()
-                .unwrap()
+                .ok_or("complete outline name authority")?
                 .resolve("Foo", is_type_like)
-                .unwrap()
+                .ok_or("unique Foo type")?
                 .label,
             foo
         );
@@ -3101,6 +3108,7 @@ mod tests {
             Some(DocFragment::Link { coordinate: Some(coordinate), .. })
                 if coordinate.as_str() == foo
         ));
+        Ok(())
     }
 
     #[test]
@@ -3114,7 +3122,11 @@ mod tests {
             position.gap().map(|gap| gap.reason),
             Some(GapReason::Unavailable)
         );
-        assert!(position.gap().unwrap().detail.contains("partial"));
+        assert!(
+            position
+                .gap()
+                .is_some_and(|gap| gap.detail.contains("partial"))
+        );
         let children = outline.children(key(&page_label)).collect::<Vec<_>>();
         let observed_members = members(Some(DeclarationKind::Struct), &children, Some(&outline));
         assert_eq!(observed_members.coverage, MembersCoverage::Partial);
@@ -3152,7 +3164,11 @@ mod tests {
             page.members.gap().map(|gap| gap.reason),
             Some(GapReason::Unavailable)
         );
-        assert!(page.members.gap().unwrap().detail.contains("partial"));
+        assert!(
+            page.members
+                .gap()
+                .is_some_and(|gap| gap.detail.contains("partial"))
+        );
         assert_eq!(
             page.outline.gap().map(|gap| gap.reason),
             Some(GapReason::Unavailable)
@@ -3161,8 +3177,8 @@ mod tests {
 
     #[test]
     fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api()
-     {
-        let package = PackageRef::parse("/repo/crates/present").unwrap();
+    -> Result<(), Box<dyn std::error::Error>> {
+        let package = PackageRef::parse("/repo/crates/present")?;
         let index = OutlineIndex::new(present_rows(), true);
         let api = index.comparison_api(&package);
         assert!(api.complete);
@@ -3170,10 +3186,15 @@ mod tests {
             .items
             .iter()
             .find(|item| item.decl.name.as_ref() == "retitle")
-            .unwrap();
+            .ok_or("comparison retitle method")?;
         assert_eq!(method.decl.kind, Some(DeclarationKind::Method));
         assert_eq!(
-            method.signature.known().unwrap().text.as_ref(),
+            method
+                .signature
+                .known()
+                .ok_or("recorded comparison method signature")?
+                .text
+                .as_ref(),
             "pub fn retitle(&mut self, title: &str)"
         );
         assert_eq!(method.summary, None);
@@ -3181,7 +3202,7 @@ mod tests {
             .items
             .iter()
             .find(|item| item.decl.name.as_ref() == "new")
-            .unwrap();
+            .ok_or("comparison constructor")?;
         assert_eq!(
             constructor.summary.as_deref(),
             Some("Assembles one page from already-typed parts.")
@@ -3210,6 +3231,7 @@ mod tests {
         );
         let partial = OutlineIndex::new(present_rows(), false).comparison_api(&package);
         assert!(!partial.complete);
+        Ok(())
     }
 
     fn present_document(

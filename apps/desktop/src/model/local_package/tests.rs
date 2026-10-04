@@ -543,7 +543,12 @@ fn readme_projection_ignores_manifest_package_facts() -> Outcome {
     let loader = LocalPackageLoader::without_cargo();
     let package = loader.readme(&project).expect("readme");
     assert_eq!(package.source, LocalPackageSource::Readme);
-    assert_eq!(package.name.as_ref(), scratch.0.file_name().unwrap().to_str().unwrap());
+    let folder = scratch
+        .0
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("fixture folder has no UTF-8 name")?;
+    assert_eq!(package.name.as_ref(), folder);
     assert!(package.version.is_none());
     assert!(package.dependencies.is_empty());
     assert!(package.name.as_ref() != "secret-name");

@@ -458,10 +458,10 @@ mod tests {
     #[test]
     fn constructor_and_saved_source_reject_non_unique_line_numbers() {
         let zero = SourceText::new(Arc::from("one"), 0, SourceOrigin::Excerpt, true);
-        assert_eq!(zero.unwrap_err(), SourceTextError::FirstLineZero);
+        assert_eq!(zero.err(), Some(SourceTextError::FirstLineZero));
         let overflow =
             SourceText::new(Arc::from("one\ntwo"), u32::MAX, SourceOrigin::Excerpt, true);
-        assert_eq!(overflow.unwrap_err(), SourceTextError::LineRangeOverflow);
+        assert_eq!(overflow.err(), Some(SourceTextError::LineRangeOverflow));
         let last = SourceText::new(Arc::from("last"), u32::MAX, SourceOrigin::Excerpt, true)
             .expect("one final line is representable");
         assert_eq!(
