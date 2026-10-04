@@ -3779,8 +3779,8 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
 mod tests {
     use super::*;
     use backend_engine::registry::{
-        discovery_source_identity, DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor,
-        DiscoveryFact, DiscoveryObservedAt, DiscoveryStanding, RegistryEndpoint,
+        DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,
+        DiscoveryStanding, RegistryEndpoint, discovery_source_identity,
     };
     use backend_engine::{
         AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,
@@ -4897,6 +4897,7 @@ mod tests {
         discovery
             .commit(DiscoveryBatch {
                 source,
+                expected_base_sequence: 0,
                 previous_cursor: DiscoveryCursor::default(),
                 next_cursor: discovery_cursor.clone(),
                 source_high_watermark: discovery_cursor,
@@ -5244,6 +5245,7 @@ mod tests {
         discovery
             .commit(DiscoveryBatch {
                 source,
+                expected_base_sequence: 0,
                 previous_cursor: DiscoveryCursor::default(),
                 next_cursor: cursor("1"),
                 source_high_watermark: cursor("1"),
@@ -5377,12 +5379,14 @@ mod tests {
             proof: [1; 32],
             metadata: backend_engine::registry::DiscoveryMetadata::default(),
         };
-        let batch = |previous_cursor: DiscoveryCursor,
+        let batch = |expected_base_sequence: u64,
+                     previous_cursor: DiscoveryCursor,
                      next_cursor: DiscoveryCursor,
                      observed_at: DiscoveryObservedAt,
                      facts: Vec<DiscoveryFact>| {
             DiscoveryBatch {
                 source,
+                expected_base_sequence,
                 previous_cursor,
                 next_cursor: next_cursor.clone(),
                 source_high_watermark: next_cursor,
@@ -5397,6 +5401,7 @@ mod tests {
         let mut discovery = DiscoveryStore::open(path.clone()).expect("open discovery journal");
         discovery
             .commit(batch(
+                0,
                 DiscoveryCursor::default(),
                 cursor("1"),
                 old,
@@ -5405,6 +5410,7 @@ mod tests {
             .expect("persist first complete observation");
         discovery
             .commit(batch(
+                1,
                 cursor("1"),
                 cursor("2"),
                 current,
@@ -6145,11 +6151,12 @@ edition = \"2021\"
             concat!(
                 "{{\"name\":\"fact-fixture\",\"vers\":\"1.0.0\",\"cksum\":\"{}\",",
                 "\"yanked\":true,\"v\":2,\"rust_version\":\"1.62\",",
+                "\"links\":null,",
                 "\"features\":{{\"z\":[\"zed\",\"alpha\"],\"a\":[\"default\"]}},",
                 "\"features2\":{{\"wire\":[\"dep:serde\"]}},",
                 "\"deps\":[{{\"name\":\"serde\",\"req\":\"^1\",",
                 "\"features\":[\"serde_derive\",\"alloc\"],\"optional\":true,",
-                "\"default_features\":false,\"target\":\"cfg(unix)\",\"kind\":\"normal\"}}]}}\n",
+                "\"default_features\":false,\"target\":\"cfg(unix)\",\"kind\":\"normal\",\"registry\":null}}]}}\n",
                 "{{\"name\":\"fact-fixture\",\"vers\":\"1.1.0\",\"cksum\":\"{}\",",
                 "\"yanked\":false,\"v\":2,\"features\":{{}},\"deps\":[]}}"
             ),
@@ -6187,7 +6194,9 @@ edition = \"2021\"
                 coordinate: release.coordinate,
                 standing: release.standing,
                 observed_at: observed,
-                source_event: backend_engine::registry::DiscoverySourceEvent::Unordered,
+                // This fixture is a direct packument snapshot, not an npm
+                // changes-feed row with a sequence/revision proof.
+                source_event: backend_engine::registry::DiscoverySourceEvent::Snapshot,
                 source_event_time: release.source_event_time,
                 proof: release.proof,
                 metadata: release.metadata,
@@ -6216,6 +6225,7 @@ edition = \"2021\"
                 store
                     .commit(DiscoveryBatch {
                         source,
+                        expected_base_sequence: 0,
                         previous_cursor: DiscoveryCursor::default(),
                         next_cursor: next_cursor.clone(),
                         source_high_watermark: next_cursor,
@@ -6266,7 +6276,7 @@ edition = \"2021\"
             cargo_v1_facts.rust_version,
             RegistryEvidenceFacet::Known(SourceAtomText::new("1.62").unwrap())
         );
-        assert_eq!(cargo_v1_facts.links, RegistryEvidenceFacet::Unknown);
+        assert_eq!(cargo_v1_facts.links, RegistryEvidenceFacet::Absent);
         let RegistryEvidenceFacet::Known(features) = &cargo_v1_facts.features else {
             panic!("Cargo features stay known");
         };
@@ -6310,7 +6320,7 @@ edition = \"2021\"
             RegistryEvidenceFacet::Known(false)
         );
         assert_eq!(dependencies[0].package, RegistryEvidenceFacet::Unknown);
-        assert_eq!(dependencies[0].registry, RegistryEvidenceFacet::Unknown);
+        assert_eq!(dependencies[0].registry, RegistryEvidenceFacet::Absent);
         assert_eq!(
             dependencies[0].target,
             RegistryEvidenceFacet::Known(SourceAtomText::new("cfg(unix)").unwrap())
@@ -6336,6 +6346,7 @@ edition = \"2021\"
         );
         assert_eq!(cargo_v2_facts.features2, RegistryEvidenceFacet::Unknown);
         assert_eq!(cargo_v2_facts.rust_version, RegistryEvidenceFacet::Unknown);
+        assert_eq!(cargo_v2_facts.links, RegistryEvidenceFacet::Unknown);
 
         let npm_space = project(npm_source, "pkg:npm/fact-fixture@1.0.0");
         let npm_empty = project(npm_source, "pkg:npm/fact-fixture@2.0.0");
@@ -6368,6 +6379,13 @@ edition = \"2021\"
             RegistryDiscoveryFreshness::Historical { .. }
         ));
         assert_eq!(npm_space.source, npm_source.id());
+        assert_eq!(
+            store
+                .fact(npm_source, npm_space.coordinate.as_str())
+                .unwrap()
+                .source_event,
+            backend_engine::registry::DiscoverySourceEvent::Snapshot
+        );
 
         let hit = RegistrySearchHit::Discovered(npm_space.clone());
         let reply = SurfaceReply::IndexSearchWithDiscovery(vec![hit].into_boxed_slice());
