@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn one_and_two_object_streams_seal_and_reopen_cold() {
+    fn one_and_two_object_streams_seal_and_reopen_cold() -> Result<(), std::num::TryFromIntError> {
         let test = TestStore::new();
         for items in [vec![object(1, 37)], vec![object(9, 51), object(4, 29)]] {
             let expected = expected_closure(&items);
@@ -967,8 +967,9 @@ mod tests {
                 )
                 .expect("cold reopen checked closure");
             assert_eq!(reopened.closure(), expected);
-            assert_eq!(reopened.object_count(), u64::try_from(items.len()).unwrap());
+            assert_eq!(reopened.object_count(), u64::try_from(items.len())?);
         }
+        Ok(())
     }
 
     #[test]
@@ -1257,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_gc_pin_does_not_block_head_or_unrelated_object_io() {
+    fn capture_gc_pin_does_not_block_head_or_unrelated_object_io() -> Result<(), StoreError> {
         let test = TestStore::new();
         let item = object(31, 73);
         let mut builder = test
@@ -1271,7 +1272,7 @@ mod tests {
         test.store
             .write_object(&unrelated)
             .expect("admit unrelated immutable object while capture is open");
-        assert_eq!(test.store.read_object(unrelated.id()).unwrap(), unrelated);
+        assert_eq!(test.store.read_object(unrelated.id())?, unrelated);
 
         let gc_store = test.store.clone();
         let (started_tx, started_rx) = mpsc::channel();
@@ -1303,6 +1304,7 @@ mod tests {
                 .contains_object(id)
                 .expect("capture member swept")
         );
+        Ok(())
     }
 
     #[test]

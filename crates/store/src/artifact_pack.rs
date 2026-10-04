@@ -1412,7 +1412,8 @@ mod tests {
     }
 
     #[test]
-    fn cold_paged_layout_matches_an_independent_raw_file_oracle() {
+    fn cold_paged_layout_matches_an_independent_raw_file_oracle()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (temp, file) = TempPack::new();
         let mut candidates = (0..512)
             .map(|index| {
@@ -1489,7 +1490,7 @@ mod tests {
             .expect("root has a final page")
             .offset()
             + u64::from(built.pages().last().expect("root has a final page").bytes());
-        assert!(u64::try_from(directory_upper_bound).unwrap() >= exact_directory_end);
+        assert!(u64::try_from(directory_upper_bound)? >= exact_directory_end);
         assert!(artifact_pack_directory_prefix_upper_bound(0).is_none());
         assert!(artifact_pack_directory_prefix_upper_bound(u32::MAX).is_none());
 
@@ -1501,19 +1502,16 @@ mod tests {
         pack.read_exact(&mut fixed_header)
             .expect("read fixed root header");
         assert_eq!(&fixed_header[..8], MAGIC);
+        assert_eq!(u16::from_be_bytes(fixed_header[8..10].try_into()?), VERSION);
         assert_eq!(
-            u16::from_be_bytes(fixed_header[8..10].try_into().unwrap()),
-            VERSION
-        );
-        assert_eq!(
-            u16::from_be_bytes(fixed_header[10..12].try_into().unwrap()) as usize,
+            u16::from_be_bytes(fixed_header[10..12].try_into()?) as usize,
             HEADER_BYTES
         );
-        let root_len = u32::from_be_bytes(fixed_header[12..16].try_into().unwrap()) as usize;
-        let object_count = u32::from_be_bytes(fixed_header[16..20].try_into().unwrap()) as usize;
-        let page_count = u32::from_be_bytes(fixed_header[20..24].try_into().unwrap()) as usize;
-        let pack_bytes = u64::from_be_bytes(fixed_header[24..32].try_into().unwrap());
-        let data_start = u64::from_be_bytes(fixed_header[32..40].try_into().unwrap());
+        let root_len = u32::from_be_bytes(fixed_header[12..16].try_into()?) as usize;
+        let object_count = u32::from_be_bytes(fixed_header[16..20].try_into()?) as usize;
+        let page_count = u32::from_be_bytes(fixed_header[20..24].try_into()?) as usize;
+        let pack_bytes = u64::from_be_bytes(fixed_header[24..32].try_into()?);
+        let data_start = u64::from_be_bytes(fixed_header[32..40].try_into()?);
         assert_eq!(object_count, items.len());
         assert_eq!(page_count, 2);
         assert_eq!(root_len, HEADER_BYTES + page_count * PAGE_DESCRIPTOR_BYTES);
@@ -1529,11 +1527,11 @@ mod tests {
             let descriptor_offset = HEADER_BYTES + page_index * PAGE_DESCRIPTOR_BYTES;
             let descriptor =
                 &root_bytes[descriptor_offset..descriptor_offset + PAGE_DESCRIPTOR_BYTES];
-            let page_offset = u64::from_be_bytes(descriptor[64..72].try_into().unwrap());
-            let page_bytes = u32::from_be_bytes(descriptor[72..76].try_into().unwrap()) as usize;
-            let page_objects = u16::from_be_bytes(descriptor[76..78].try_into().unwrap()) as usize;
-            let page_data_offset = u64::from_be_bytes(descriptor[80..88].try_into().unwrap());
-            let page_data_end = u64::from_be_bytes(descriptor[88..96].try_into().unwrap());
+            let page_offset = u64::from_be_bytes(descriptor[64..72].try_into()?);
+            let page_bytes = u32::from_be_bytes(descriptor[72..76].try_into()?) as usize;
+            let page_objects = u16::from_be_bytes(descriptor[76..78].try_into()?) as usize;
+            let page_data_offset = u64::from_be_bytes(descriptor[80..88].try_into()?);
+            let page_data_end = u64::from_be_bytes(descriptor[88..96].try_into()?);
             assert_eq!(page_offset, expected_page_offset);
             assert_eq!(page_objects, ARTIFACT_PACK_PAGE_OBJECTS);
             assert_eq!(page_data_offset, expected_data_offset);
@@ -1542,19 +1540,16 @@ mod tests {
                 .expect("seek raw page");
             pack.read_exact(&mut bytes).expect("read raw page");
             assert_eq!(&bytes[..8], PAGE_MAGIC);
+            assert_eq!(u16::from_be_bytes(bytes[8..10].try_into()?), PAGE_VERSION);
             assert_eq!(
-                u16::from_be_bytes(bytes[8..10].try_into().unwrap()),
-                PAGE_VERSION
-            );
-            assert_eq!(
-                u16::from_be_bytes(bytes[10..12].try_into().unwrap()) as usize,
+                u16::from_be_bytes(bytes[10..12].try_into()?) as usize,
                 page_index
             );
             assert_eq!(
-                u16::from_be_bytes(bytes[12..14].try_into().unwrap()) as usize,
+                u16::from_be_bytes(bytes[12..14].try_into()?) as usize,
                 page_objects
             );
-            assert_eq!(u16::from_be_bytes(bytes[14..16].try_into().unwrap()), 0);
+            assert_eq!(u16::from_be_bytes(bytes[14..16].try_into()?), 0);
 
             let first_object = page_index * ARTIFACT_PACK_PAGE_OBJECTS;
             let mut current_data_offset = page_data_offset;
@@ -1563,8 +1558,8 @@ mod tests {
                 let row_bytes = &bytes[row_offset..row_offset + EXTENT_ROW_BYTES];
                 let global_object_index = first_object + row;
                 assert_eq!(&row_bytes[..32], items[global_object_index].id().as_bytes());
-                let object_offset = u64::from_be_bytes(row_bytes[32..40].try_into().unwrap());
-                let object_len = u64::from_be_bytes(row_bytes[40..48].try_into().unwrap());
+                let object_offset = u64::from_be_bytes(row_bytes[32..40].try_into()?);
+                let object_len = u64::from_be_bytes(row_bytes[40..48].try_into()?);
                 assert_eq!(object_offset, current_data_offset);
                 assert_eq!(
                     object_len,
@@ -1629,9 +1624,7 @@ mod tests {
 
         let mut changed_data_offset = root_bytes.clone();
         let first_data_offset = u64::from_be_bytes(
-            changed_data_offset[HEADER_BYTES + 80..HEADER_BYTES + 88]
-                .try_into()
-                .unwrap(),
+            changed_data_offset[HEADER_BYTES + 80..HEADER_BYTES + 88].try_into()?,
         );
         changed_data_offset[HEADER_BYTES + 80..HEADER_BYTES + 88]
             .copy_from_slice(&first_data_offset.saturating_add(1).to_be_bytes());
@@ -1652,6 +1645,7 @@ mod tests {
 
         drop(pack);
         drop(temp);
+        Ok(())
     }
 }
 
