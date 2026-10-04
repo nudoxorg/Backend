@@ -3,14 +3,15 @@
 //! frames. No partial reset can replace the retained complete root.
 
 use crate::subscription::{
-    snapshot_page_from_bytes_with_verifier, subscription_read_from_bytes_against,
+    subscription_read_from_bytes_against,
 };
 use crate::lease_contract::{LeaseMs, PUBLICATION_CREDIT, PUBLICATION_LEASE};
 use crate::monotonic::{MonotonicClock, SystemClock};
 use crate::reset_budget::{ResetBudget, ResetFault};
+use crate::reset_hydration::{ResetBinding, ResetHydration, ResetHydrationError, ResetPageProgress};
 use crate::subscription_local::ConnectionId;
 use crate::{ClientError, LocalSubscriptionExchangeError, LocalSubscriptionTransport};
-use backend_library::{Cursor, CursorEvent, CursorRead, SnapshotHydrator, ViewRoot};
+use backend_library::{Cursor, CursorEvent, CursorRead, ViewRoot};
 use backend_replication::{
     LocalControlExchangeDecision, LocalControlExchangeError, LocalControlExchangeProgress,
     LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionResponse,
@@ -284,16 +285,15 @@ impl PublicationObserver<'_, '_> {
         }
     }
 
-    fn bind_reset(&mut self, budget: &ResetBudget) {
+    fn bind_reset(&mut self, binding: ResetBinding) {
         if let Self::Observed(control) = self
-            && let Some((rows, pages)) = budget.descriptor()
         {
             control.budget = PublicationExchangeBudget {
-                started: budget.started(),
-                deadline: budget.deadline(),
+                started: binding.started,
+                deadline: binding.deadline,
                 kind: PublicationBudgetKind::AuthenticatedReset {
-                    rows,
-                    pages: u64::from(pages),
+                    rows: binding.rows,
+                    pages: u64::from(binding.pages),
                 },
             };
         }
@@ -322,44 +322,96 @@ impl PublicationObserver<'_, '_> {
             Self::Observed(control) => {
                 let budget = control.budget;
                 let cancelled = control.cancelled;
+                let clock = Arc::clone(&control.clock);
                 let tick = &mut control.tick;
-                transport
-                    .lease_request_with_tick(operation, budget.deadline, |exchange| {
+                let mut stopped_for = None;
+                let response = transport.lease_request_with_tick(
+                    operation,
+                    budget.deadline,
+                    |exchange| {
                         if cancelled() {
+                            stopped_for = Some(PublicationTickStop::Cancelled);
                             return LocalControlExchangeDecision::Cancel;
                         }
-                        match tick(PublicationObservationProgress { exchange, budget }) {
-                            PublicationObservationDecision::Continue if !cancelled() => {
-                                LocalControlExchangeDecision::Continue
+                        if clock.now() >= budget.deadline {
+                            stopped_for = Some(PublicationTickStop::BudgetExpired);
+                            return LocalControlExchangeDecision::Cancel;
+                        }
+                        let decision = tick(PublicationObservationProgress { exchange, budget });
+                        if cancelled() {
+                            stopped_for = Some(PublicationTickStop::Cancelled);
+                            LocalControlExchangeDecision::Cancel
+                        } else if clock.now() >= budget.deadline {
+                            stopped_for = Some(PublicationTickStop::BudgetExpired);
+                            LocalControlExchangeDecision::Cancel
+                        } else if decision == PublicationObservationDecision::Cancel {
+                            stopped_for = Some(PublicationTickStop::Cancelled);
+                            LocalControlExchangeDecision::Cancel
+                        } else {
+                            LocalControlExchangeDecision::Continue
+                        }
+                    },
+                );
+                match response {
+                    Ok(response) => Ok(response),
+                    Err(error) => {
+                        if let LocalSubscriptionExchangeError::Exchange(exchange) = &error {
+                            if exchange.failure
+                                == backend_replication::LocalControlExchangeFailure::Cancelled
+                            {
+                                match stopped_for {
+                                    Some(PublicationTickStop::Cancelled) => {
+                                        return Err(PublicationExchangeError::Cancelled);
+                                    }
+                                    Some(PublicationTickStop::BudgetExpired) => {
+                                        return Err(PublicationExchangeError::BudgetExpired(budget));
+                                    }
+                                    None if cancelled() => {
+                                        return Err(PublicationExchangeError::Cancelled);
+                                    }
+                                    None if clock.now() >= budget.deadline => {
+                                        return Err(PublicationExchangeError::BudgetExpired(budget));
+                                    }
+                                    None => {}
+                                }
                             }
-                            PublicationObservationDecision::Continue
-                            | PublicationObservationDecision::Cancel => {
-                                LocalControlExchangeDecision::Cancel
+                            if exchange.failure
+                                == backend_replication::LocalControlExchangeFailure::Stalled
+                                && clock.now() >= budget.deadline
+                            {
+                                return Err(PublicationExchangeError::BudgetExpired(budget));
                             }
                         }
-                    })
-                    .map_err(|error| match error {
-                        LocalSubscriptionExchangeError::Setup(error) => {
-                            PublicationExchangeError::Setup(error)
-                        }
-                        LocalSubscriptionExchangeError::Rejected {
-                            request_id,
-                            message,
-                        } => PublicationExchangeError::ProducerRejected {
-                            operation: tag,
-                            request_id,
-                            message,
-                        },
-                        LocalSubscriptionExchangeError::Invalid(error) => {
-                            PublicationExchangeError::Invalid(error)
-                        }
-                        LocalSubscriptionExchangeError::Exchange(error) => {
-                            PublicationExchangeError::Exchange(error)
-                        }
-                    })
+                        Err(match error {
+                            LocalSubscriptionExchangeError::Setup(error) => {
+                                PublicationExchangeError::Setup(error)
+                            }
+                            LocalSubscriptionExchangeError::Rejected {
+                                request_id,
+                                message,
+                            } => PublicationExchangeError::ProducerRejected {
+                                operation: tag,
+                                request_id,
+                                message,
+                            },
+                            LocalSubscriptionExchangeError::Invalid(error) => {
+                                PublicationExchangeError::Invalid(error)
+                            }
+                            LocalSubscriptionExchangeError::Exchange(error) => {
+                                PublicationExchangeError::Exchange(error)
+                            }
+                        })
+                    }
+                }
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationTickStop {
+    Cancelled,
+    BudgetExpired,
 }
 
 /// Exact producer state retained across socket reconnects. The lease is an
@@ -588,17 +640,15 @@ impl LocalSubscriptionTransport {
         mut response: LocalSubscriptionResponse,
         observer: &mut PublicationObserver<'_, '_>,
     ) -> Result<(), PublicationExchangeError> {
-        let mut budget = ResetBudget::begin(self.now())
+        let mut hydration = ResetHydration::begin(state.cursor, self.now())
             .map_err(|failure| observer.budget_error(failure))?;
-        observer.begin_admission(&budget);
+        observer.begin_admission(hydration.budget());
         let previous = state.cursor;
-        let mut hydrator: Option<SnapshotHydrator> = None;
-        let mut expected_page: Box<[u8]> = Box::new([]);
         // Batch and reset-page replies omit the term, so their successful
         // Resume carries the exact term requested above. Quiet replies carry
         // the grant explicitly and it must match that same fixed term.
         let (root, cursor) = loop {
-            observer.check_budget(&budget, self.now())?;
+            observer.check_budget(hydration.budget(), self.now())?;
             if response.lease() != state.lease {
                 return Err(invalid("publication response changed lease identity"));
             }
@@ -609,7 +659,9 @@ impl LocalSubscriptionTransport {
                 | LocalSubscriptionResponse::Resumed {
                     cursor, lease_ms, ..
                 } => {
-                    if hydrator.is_some() || cursor.as_ref() != previous.encode_control().as_ref() {
+                    if hydration.budget().descriptor().is_some()
+                        || cursor.as_ref() != previous.encode_control().as_ref()
+                    {
                         return Err(invalid("publication acknowledgement changed its cursor"));
                     }
                     granted_term(lease_ms)?;
@@ -621,7 +673,7 @@ impl LocalSubscriptionTransport {
                     payload,
                     ..
                 } => {
-                    if hydrator.is_some()
+                    if hydration.budget().descriptor().is_some()
                         || predecessor.as_ref() != previous.encode_control().as_ref()
                     {
                         return Err(invalid("publication batch predecessor mismatch"));
@@ -656,63 +708,53 @@ impl LocalSubscriptionTransport {
                     payload,
                     ..
                 } => {
-                    if page != expected_page {
-                        return Err(invalid("publication reset page mismatch"));
-                    }
                     let peer = self.authenticated_peer().ok_or_else(|| {
                         protocol("publication reset requires authenticated producer")
                     })?;
-                    let claim =
-                        snapshot_page_from_bytes_with_verifier(&payload, previous, None, peer)?;
-                    let first_descriptor = budget.descriptor().is_none();
-                    let page_result = budget.admit_page(claim.descriptor().row_count(), self.now());
-                    if first_descriptor {
-                        observer.bind_reset(&budget);
-                    }
-                    page_result.map_err(|failure| observer.budget_error(failure))?;
-                    let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
-                    if next.as_deref() == Some(page.as_ref()) {
-                        return Err(invalid("publication reset repeated its continuation"));
-                    }
-                    if admitted_next.as_deref() != next.as_deref() {
-                        return Err(invalid(
-                            "publication reset continuation is not authenticated",
-                        ));
-                    }
-                    let current = match hydrator.take() {
-                        Some(mut current) => {
-                            current.push_page(claim).map_err(ClientError::Protocol)?;
-                            current
-                        }
-                        None => SnapshotHydrator::start(previous, claim)
-                            .map_err(ClientError::Protocol)?,
+                    let clock = Arc::clone(&self.clock);
+                    let progress = hydration
+                        .admit_page(
+                            &page,
+                            next.as_deref(),
+                            &payload,
+                            peer,
+                            clock.as_ref(),
+                        )
+                        .map_err(|failure| match failure {
+                            ResetHydrationError::Budget(fault) => observer.budget_error(fault),
+                            ResetHydrationError::Invalid(error) => {
+                                PublicationExchangeError::Invalid(error)
+                            }
+                        })?;
+                    let newly_bound = match &progress {
+                        ResetPageProgress::Continue { newly_bound, .. }
+                        | ResetPageProgress::Complete { newly_bound, .. } => newly_bound,
                     };
-                    if current.is_complete() {
-                        let CursorRead::Reset { cursor, root, .. } =
-                            current.finish().map_err(ClientError::Protocol)?
-                        else {
-                            return Err(invalid("publication hydration did not reset"));
-                        };
-                        break (Arc::from(root), cursor);
+                    if let Some(binding) = newly_bound {
+                        observer.bind_reset(*binding);
                     }
-                    expected_page =
-                        next.ok_or_else(|| protocol("publication reset omitted continuation"))?;
-                    hydrator = Some(current);
-                    observer.check()?;
-                    response = observer.request(
-                        self,
-                        LocalSubscriptionOperation::Page {
-                            lease: state.lease,
-                            page: expected_page.clone(),
-                            credit: CREDIT,
-                        },
-                        PublicationOperation::Page,
-                    )?;
+                    match progress {
+                        ResetPageProgress::Complete { cursor, root, .. } => {
+                            break (Arc::from(root), cursor);
+                        }
+                        ResetPageProgress::Continue { continuation, .. } => {
+                            observer.check_budget(hydration.budget(), self.now())?;
+                            response = observer.request(
+                                self,
+                                LocalSubscriptionOperation::Page {
+                                    lease: state.lease,
+                                    page: continuation,
+                                    credit: CREDIT,
+                                },
+                                PublicationOperation::Page,
+                            )?;
+                        }
+                    }
                 }
                 _ => return Err(invalid("unexpected publication lifecycle response")),
             }
         };
-        observer.check_budget(&budget, self.now())?;
+        observer.check_budget(hydration.budget(), self.now())?;
         // Quiet Resume has already fenced this exact durable cursor; it
         // does not need another frame or a duplicate root publication.
         if cursor == previous {
@@ -732,7 +774,7 @@ impl LocalSubscriptionTransport {
             } if admitted.as_ref() == cursor.encode_control().as_ref() => {}
             _ => return Err(invalid("publication acknowledgement cursor mismatch")),
         }
-        observer.check_budget(&budget, self.now())?;
+        observer.check_budget(hydration.budget(), self.now())?;
         state.held_on = self.connection();
         state.cursor = cursor;
         state.root = root;
@@ -1687,6 +1729,65 @@ mod tests {
                     ..
                 },
             }) if write_offset > 0
+        ));
+        drop(control);
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn injected_clock_expiry_during_a_partial_response_frame_is_typed() {
+        use crate::monotonic::ManualClock;
+        use backend_replication::{LocalControlExchangePhase, frame};
+        use std::io::Read as _;
+
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([38; 16]);
+        let clock = ManualClock::new();
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, operation) = request(stream);
+            assert!(matches!(operation, LocalSubscriptionOperation::Renew { .. }));
+            let response = LocalControlResponse::Renewed {
+                request_id,
+                lease,
+                cursor: cursor.encode_control(),
+                credit: CREDIT,
+                lease_ms: LEASE_MS,
+            };
+            let wire = frame(&encode_response(&response, crate::limits()).expect("response"), crate::limits())
+                .expect("response frame");
+            stream.write_all(&wire[..1]).expect("partial response header");
+            let mut byte = [0_u8; 1];
+            assert_eq!(stream.read(&mut byte).expect("observe retired socket"), 0);
+        });
+        transport = transport.with_clock(Arc::clone(&clock));
+        let mut state = lease_on(&transport, lease, root, cursor);
+        let recovery_deadline = clock.now() + Duration::from_secs(1);
+        let cancelled = || false;
+        let mut advanced = false;
+        let mut tick = |progress: PublicationObservationProgress| {
+            if !advanced
+                && progress.exchange.phase == LocalControlExchangePhase::ReadingHeader
+                && progress.exchange.header_offset == 1
+            {
+                clock.advance(Duration::from_secs(1));
+                advanced = true;
+            }
+            PublicationObservationDecision::Continue
+        };
+        let mut control = ObservedPublicationControl::new_with_clock(
+            recovery_deadline,
+            Arc::clone(&clock),
+            &cancelled,
+            &mut tick,
+        );
+        let error = transport
+            .renew_publications_observed(&mut state, &mut control)
+            .expect_err("the injected deadline expires during the response frame");
+        assert!(matches!(
+            error,
+            PublicationExchangeError::BudgetExpired(budget)
+                if budget.deadline() == recovery_deadline
         ));
         drop(control);
         owner.join().expect("owner");

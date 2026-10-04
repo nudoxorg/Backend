@@ -8,6 +8,7 @@
 pub mod lease_contract;
 pub mod monotonic;
 mod reset_budget;
+mod reset_hydration;
 #[cfg(any(unix, windows))]
 mod remote_command;
 #[cfg(any(unix, windows))]
