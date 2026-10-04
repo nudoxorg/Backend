@@ -9,6 +9,7 @@ mod envelope;
 mod error;
 mod schema;
 mod schema_preflight;
+mod snapshot;
 mod types;
 mod versioned;
 
@@ -24,6 +25,10 @@ mod disposition_tests;
 #[path = "crash_tests.rs"]
 mod crash_tests;
 
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod snapshot_tests;
+
 use envelope::FileStoreCompilerPublicationVerifier;
 pub use envelope::{
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
@@ -33,6 +38,10 @@ pub use envelope::{
     reopen_selected_compiler_publication,
 };
 pub use error::AuthorityError;
+pub use snapshot::{
+    AuthoritySnapshotBudget, AuthoritySnapshotError, AuthoritySnapshotFailure,
+    AuthoritySnapshotReceipt, IncompleteAuthoritySnapshot, TursoAuthoritySnapshot,
+};
 use types::DurableClosureVerifier;
 pub use types::{
     AttemptDisposition, AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,

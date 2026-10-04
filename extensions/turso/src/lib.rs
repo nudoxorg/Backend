@@ -31,7 +31,9 @@ mod process_tests;
 
 pub use authority::{
     AttemptDisposition, AttemptInvalidatedByObservationProof, AuthorityError, AuthorityHash,
-    AuthorityNamespace, AuthorityPlane, COMPILER_PUBLICATION_ENVELOPE_SCHEMA,
+    AuthorityNamespace, AuthorityPlane, AuthoritySnapshotBudget, AuthoritySnapshotError,
+    AuthoritySnapshotFailure, AuthoritySnapshotReceipt, IncompleteAuthoritySnapshot,
+    TursoAuthoritySnapshot, COMPILER_PUBLICATION_ENVELOPE_SCHEMA,
     COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt,
     CandidateAttemptRecoveryClaim, CandidateAttemptRetirementReason, CandidateGeneration,
     ClosureClaim, ClosureReceipt, CompilerEnvelopeError, CompilerImageMember,
