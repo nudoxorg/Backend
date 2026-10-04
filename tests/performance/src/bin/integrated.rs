@@ -3951,6 +3951,7 @@ fn main() -> BenchResult<()> {
         format!("large corpus selection is deterministic and capped at {} files or {} MiB after canonical row-size filtering.", MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)),
         format!("tail percentiles are emitted only for rows with at least {MIN_TAIL_PERCENTILE_SAMPLES} samples; smaller rows carry null p95/p99 values and an insufficient-sample marker."),
         "The process lifecycle lane uses a real child process for fresh, graceful, SIGKILL, and offline Turso reopen checks; a SIGKILL row is successful only when the killed child exits unsuccessfully and the parent reuses the exact root.".to_owned(),
+        "Catalog database and pack byte fields report post-operation storage occupancy, not bytes processed or reused; catalog byte-throughput fields remain null until per-operation work counters are available.".to_owned(),
         "The production Tantivy query API exposes exact, prefix, and full-text modes used here; no fuzzy constructor is available, so fuzzy latency is recorded as unsupported rather than inferred.".to_owned(),
         "backend_1 is compared only when it exposes the exact backend-performance-tests manifest; otherwise the JSON comparison row records the unavailable reason and attempted command.".to_owned(),
     ];

@@ -63,16 +63,14 @@ pub(super) fn throughput_measurements(
     }
     for item in catalog {
         let elapsed = item.wall.p50_ns.unwrap_or(item.wall.min_ns);
-        let reused = if item.operation.contains("warm") || item.operation.contains("restart") {
-            item.database_bytes
-        } else {
-            Some(0)
-        };
+        // Catalog database_bytes is a storage-footprint snapshot, not bytes
+        // processed or reused by this operation. Keep the timing row while
+        // leaving byte throughput unknown until the owner exposes work counters.
         measurements.push(throughput_row(
             format!("catalog/{}", item.operation),
             item.size_class.clone(),
-            item.database_bytes,
-            reused,
+            None,
+            None,
             elapsed,
         ));
     }
