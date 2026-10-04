@@ -1,0 +1,108 @@
+{
+  "base_commit": "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d",
+  "base_tree": "e8a0ba54bdfae0698aca136b9400d9a1c8a89817",
+  "clone_after": {
+    "entries": 9233,
+    "full_verifier": {
+      "entries": 9233,
+      "gitlink_entries": 4108,
+      "parent_entries": 5125
+    },
+    "inventory_sha256": "63bad68c2d59299a7f0c679345e9599b1356e6e17792f40c73181d354bb90819",
+    "source_relation": {
+      "clone_inventory_sha256": "63bad68c2d59299a7f0c679345e9599b1356e6e17792f40c73181d354bb90819",
+      "entries": 9233,
+      "regular_file_inodes_disjoint": true,
+      "regular_files": 9216,
+      "source_inventory_sha256": "7cba3b5bc97e4c4723b6143f38a30abd65cd4ff4ce276be7377aa4159e762a41"
+    },
+    "standalone_verifier_stdout": {
+      "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+      "commit": "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d",
+      "entries": 9233,
+      "gitlink_entries": 4108,
+      "manifest_kind": "base",
+      "manifest_sha256": "ca834ddcdf16990d59fd040476fecfa3591b20161f3ae527dfd6b7737baea7a2",
+      "parent_entries": 5125,
+      "status": "verified",
+      "tree": "e8a0ba54bdfae0698aca136b9400d9a1c8a89817"
+    }
+  },
+  "clone_before": {
+    "inventory_sha256": "16a112e4daa32ec137d5bc64ed6d41df7ef437f6940dcce9d26503b7f47cbcba",
+    "source_relation": {
+      "clone_inventory_sha256": "16a112e4daa32ec137d5bc64ed6d41df7ef437f6940dcce9d26503b7f47cbcba",
+      "entries": 9233,
+      "regular_file_inodes_disjoint": true,
+      "regular_files": 9216,
+      "source_inventory_sha256": "7cba3b5bc97e4c4723b6143f38a30abd65cd4ff4ce276be7377aa4159e762a41"
+    }
+  },
+  "completed_utc_epoch": 1791114323,
+  "copy_command": [
+    "/bin/cp",
+    "-cRp",
+    "/Users/rmccrar6/.local/share/nudox/source-releases/13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/source",
+    "/Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077-base13-normalized-v1/source"
+  ],
+  "copy_exit": 0,
+  "copy_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "manifest_sha256": "ca834ddcdf16990d59fd040476fecfa3591b20161f3ae527dfd6b7737baea7a2",
+  "mode_changes": {
+    "count": 4108,
+    "proven_mode_pairs": [
+      [
+        "file",
+        "0o644",
+        "0o664",
+        3986
+      ],
+      [
+        "file",
+        "0o755",
+        "0o775",
+        110
+      ],
+      [
+        "symlink",
+        "0o755",
+        "0o777",
+        12
+      ]
+    ],
+    "regular_files": 4096,
+    "rows_sha256": "fc39425123f201c4ba6a9fefc4a77568f081abfa0632577e314dd7e7e8f56569",
+    "symlinks": 12
+  },
+  "python": {
+    "path": "/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3.14",
+    "sha256": "4f3c8b2a70cc7967e1ce900871443300357d017c1c67dfcca74bfe3e9bb6c8ad",
+    "version": "3.14.6"
+  },
+  "source_before": {
+    "entries": 9233,
+    "inventory_sha256": "7cba3b5bc97e4c4723b6143f38a30abd65cd4ff4ce276be7377aa4159e762a41",
+    "mode_drift_count": 4108,
+    "mode_drift_rows_sha256": "fc39425123f201c4ba6a9fefc4a77568f081abfa0632577e314dd7e7e8f56569"
+  },
+  "source_unchanged_after_check": true,
+  "stage": "complete",
+  "started_utc_epoch": 1791114308,
+  "status": "normalized_base_verified",
+  "verifier_command": [
+    "/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3.14",
+    "/Users/rmccrar6/.local/share/nudox/validation-inputs/9a896bf197aed9028e9dbf14f0532eb00daad077/review-v2/verify_source_manifest.py",
+    "--source",
+    "/Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077-base13-normalized-v1/source",
+    "--manifest",
+    "/Users/rmccrar6/.local/share/nudox/validation-inputs/9a896bf197aed9028e9dbf14f0532eb00daad077/base-source-verification.json",
+    "--manifest-kind",
+    "base",
+    "--compare-inodes-to",
+    "/Users/rmccrar6/.local/share/nudox/source-releases/13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/source"
+  ],
+  "verifier_exit": 0,
+  "verifier_sha256": "981c7313c8ea071d44bd58800c834b0b23c459c8c4c4fa6e6f89486129ab9acb",
+  "verifier_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "verifier_stdout_sha256": "582011353ad90346272ad24f1a99ba94c9af51b05450423cc2f93bc0d5ca8335"
+}

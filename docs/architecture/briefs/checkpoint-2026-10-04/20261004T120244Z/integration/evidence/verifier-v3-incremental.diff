@@ -1,0 +1,27 @@
+--- /private/tmp/nudox-validation-delta-9a896bf-20261004/review/verify_source_manifest.py
++++ /private/tmp/nudox-validation-delta-9a896bf-20261004/review-v3/verify_source_manifest.py
+@@ -25,6 +25,7 @@
+ GITLINK_ENTRIES = 4108
+ TOTAL_ENTRIES = PARENT_ENTRIES + GITLINK_ENTRIES
+ FIELDS = ("type", "mode", "bytes", "sha256")
++EXPECTED_CHANGED_PATHS = ('crates/library/benches/package_graph.rs', 'crates/library/lib.rs', 'crates/library/package_graph.rs', 'crates/library/package_graph_page.rs', 'crates/library/semantic_shape.rs', 'crates/library/wire/reply_semantic_shape.rs', 'crates/local-service/src/builtin.rs', 'crates/local-service/src/builtin/commands/adapter.rs', 'crates/local-service/src/builtin/local_manifest_residence.rs', 'crates/local-service/src/builtin/product_state.rs', 'crates/local-service/src/builtin/registry.rs', 'crates/local-service/src/process.rs', 'extensions/turso/src/tests.rs')
+ 
+ 
+ class VerificationError(RuntimeError):
+@@ -93,8 +94,14 @@
+             raise VerificationError("candidate base manifest mismatch")
+         if transport.get("delta_archive_sha256") != "78c35b5b7d1c992bdb507d8d4dafcbadf537eaa1cbc7c18f938a873d4e85cdba":
+             raise VerificationError("candidate delta identity mismatch")
+-        if transport.get("changed_paths") != 13:
+-            raise VerificationError("candidate changed-path count mismatch")
++        changed_paths = transport.get("changed_paths")
++        if not isinstance(changed_paths, list) or len(changed_paths) != len(EXPECTED_CHANGED_PATHS):
++            raise VerificationError("candidate changed-path list/count mismatch")
++        canonical_paths = tuple(safe_relative(path).as_posix() for path in changed_paths)
++        if len(set(canonical_paths)) != len(canonical_paths):
++            raise VerificationError("candidate changed-path list contains duplicates")
++        if tuple(sorted(canonical_paths)) != EXPECTED_CHANGED_PATHS:
++            raise VerificationError("candidate changed-path set differs from the pinned delta")
+     else:
+         raise VerificationError(f"unknown manifest kind: {kind}")
+     return document

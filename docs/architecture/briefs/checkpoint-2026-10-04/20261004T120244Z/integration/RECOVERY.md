@@ -1,0 +1,7 @@
+# Recovery checkpoint
+
+Exact unfinished integration source and original merge index. Includes 55 passing Python motion-harness tests with real FFmpeg timing/crop checks using synthetic media, strict native-control parsing, and an unrun Source accessibility Rust regression. Harness acceptance is not native GUI animation acceptance. Candidate13 platform passed 70 tests; client compilation failed. Candidate9a Rust tests remain unrun. Private APFS base-clone normalization now passes all 9,233 entries with unchanged bytes and source identity; final candidate staging refused because the verifier compared a 13-path list to integer13. A narrow local verifier correction is preserved here but has not been executed. Six isolated source slices are linked as independent recovery branches, not merged. No new deployment/live ingest database snapshot/native binary acceptance. Corrected recorder permissions remain pending.
+
+This preserves frozen working source, not an accepted integration or release. No real worktree index, HEAD, branch, or merge state was changed. The default canonical branch was not moved.
+
+`merge-index-stages.nul` and `index-objects/` preserve staged-only content. To reconstruct the index, use a separate checkout and temporary GIT_INDEX_FILE; feed the NUL records to git update-index -z --index-info after git read-tree --empty. Do not overwrite the existing integration index.

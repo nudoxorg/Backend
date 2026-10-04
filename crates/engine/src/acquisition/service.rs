@@ -433,6 +433,11 @@ impl AcquisitionService {
     /// `WorkInterner` itself is deliberately process-local.
     pub fn from_owner(owner: RegistryOwner, root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
+        // Create the coordination root privately before anything below it. The lease
+        // store makes its subdirectories with ordinary filesystem calls and would
+        // otherwise create `root` itself as a side effect, after which the receipt
+        // store, which pins `root` as a private directory, refuses it on Windows.
+        backend_platform::DirectoryCapability::open_or_create_private(&root)?;
         let leases = LeaseStore::open(root.join("coordination"))?;
         let product_receipts = AcquisitionReceiptStore::open(root.join("product-receipts"))?;
         let breaker =

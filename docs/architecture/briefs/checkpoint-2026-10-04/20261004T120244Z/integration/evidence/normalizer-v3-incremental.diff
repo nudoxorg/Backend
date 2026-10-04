@@ -1,0 +1,50 @@
+--- /private/tmp/nudox-validation-delta-9a896bf-20261004/normalization-review-v1/normalize_base_clone_v2.py
++++ /private/tmp/nudox-validation-delta-9a896bf-20261004/normalization-review-v2/normalize_base_clone_v3.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import argparse
++from collections import Counter
+ import hashlib
+ import json
+ import os
+@@ -19,6 +20,11 @@
+ COMMIT = "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d"
+ TREE = "e8a0ba54bdfae0698aca136b9400d9a1c8a89817"
+ DRIFT_COUNT = 4108
++PROVEN_MODE_PAIRS = {
++    ("file", 0o644, 0o664): 3986,
++    ("file", 0o755, 0o775): 110,
++    ("symlink", 0o755, 0o777): 12,
++}
+ O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+ O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+ 
+@@ -80,14 +86,14 @@
+         actual_mode = int(mode, 8)
+         if actual_mode == expected_mode:
+             continue
+-        if rel not in gitlink_paths or not (
+-            (kind == "file" and expected_mode == 0o664 and actual_mode == 0o644) or
+-            (kind == "symlink" and expected_mode == 0o777 and actual_mode == 0o755)
+-        ):
++        if rel not in gitlink_paths or (kind, actual_mode, expected_mode) not in PROVEN_MODE_PAIRS:
+             raise Refusal("mode drift differs from the proven archive normalization: " + rel)
+         drift.append([rel, kind, actual_mode, expected_mode, content_sha])
+     if len(drift) != DRIFT_COUNT:
+         raise Refusal("expected exactly 4108 gitlink mode-only differences")
++    pairs = Counter((kind, actual, expected_mode) for _, kind, actual, expected_mode, _ in drift)
++    if pairs != Counter(PROVEN_MODE_PAIRS):
++        raise Refusal("gitlink mode-pair counts differ from the proven pinned archive/extraction")
+     return drift
+ 
+ 
+@@ -272,6 +278,8 @@
+                             "source_relation": after_relation, "full_verifier": full,
+                             "standalone_verifier_stdout": json.loads(checked.stdout)},
+             "mode_changes": {"count": len(changes), "rows_sha256": digest(changes),
++                             "proven_mode_pairs": [[kind, oct(actual), oct(wanted), count]
++                                 for (kind, actual, wanted), count in sorted(PROVEN_MODE_PAIRS.items())],
+                              "regular_files": sum(row[1] == "file" for row in changes),
+                              "symlinks": sum(row[1] == "symlink" for row in changes)},
+             "source_unchanged_after_check": True, "completed_utc_epoch": int(time.time())})
