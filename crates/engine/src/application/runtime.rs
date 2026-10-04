@@ -337,31 +337,37 @@ pub struct LocalCompilerPlaneExecutionIdentity {
 }
 
 impl LocalCompilerPlaneExecutionIdentity {
+    /// Returns the exact package or translation-unit target identity.
     #[must_use]
     pub const fn target(self) -> ContentId<CompilationTargetDomain> {
         self.target
     }
 
+    /// Returns the language profile selected for this local plane execution.
     #[must_use]
     pub const fn profile(self) -> LanguageProfile {
         self.profile
     }
 
+    /// Returns the semantic stage admitted for this execution.
     #[must_use]
     pub const fn stage(self) -> Stage {
         self.stage
     }
 
+    /// Returns the native tool selected by the opened local runtime.
     #[must_use]
     pub const fn toolchain(self) -> NativeTool {
         self.toolchain
     }
 
+    /// Returns the opened toolchain identity bound to this execution.
     #[must_use]
     pub const fn toolchain_identity(self) -> [u8; 32] {
         self.toolchain_identity
     }
 
+    /// Returns the fingerprint of the local authority and options.
     #[must_use]
     pub const fn local_authority_fingerprint(self) -> [u8; 32] {
         self.local_authority_fingerprint
@@ -372,16 +378,19 @@ impl LocalCompilerPlaneExecutionIdentity {
         self
     }
 
+    /// Returns the closed child-environment recipe identity.
     #[must_use]
     pub const fn environment_identity(self) -> [u8; 32] {
         self.environment_identity
     }
 
+    /// Returns the host target-platform identity for this local execution.
     #[must_use]
     pub const fn target_platform_identity(self) -> [u8; 32] {
         self.target_platform_identity
     }
 
+    /// Returns the host-scoped recipe identity for this local plane.
     #[must_use]
     pub const fn recipe_identity(self) -> LocalCompilerPlaneRecipeIdentity {
         self.recipe_identity
@@ -483,31 +492,37 @@ const fn coverage_wire_tag(coverage: Coverage) -> u8 {
 }
 
 impl LocalCompilerExecutionIdentity {
+    /// Returns the exact package or translation-unit target identity.
     #[must_use]
     pub const fn target(self) -> ContentId<CompilationTargetDomain> {
         self.target
     }
 
+    /// Returns the language profile selected for this local execution.
     #[must_use]
     pub const fn profile(self) -> LanguageProfile {
         self.profile
     }
 
+    /// Returns the semantic stage admitted for this execution.
     #[must_use]
     pub const fn stage(self) -> Stage {
         self.stage
     }
 
+    /// Returns the native tool selected by the opened local runtime.
     #[must_use]
     pub const fn toolchain(self) -> NativeTool {
         self.toolchain
     }
 
+    /// Returns the opened toolchain identity bound to this execution.
     #[must_use]
     pub const fn toolchain_identity(self) -> [u8; 32] {
         self.toolchain_identity
     }
 
+    /// Returns the fingerprint of the local authority and options.
     #[must_use]
     pub const fn local_authority_fingerprint(self) -> [u8; 32] {
         self.local_authority_fingerprint
@@ -518,16 +533,19 @@ impl LocalCompilerExecutionIdentity {
         self
     }
 
+    /// Returns the closed child-environment recipe identity.
     #[must_use]
     pub const fn environment_identity(self) -> [u8; 32] {
         self.environment_identity
     }
 
+    /// Returns the host target-platform identity for this local execution.
     #[must_use]
     pub const fn target_platform_identity(self) -> [u8; 32] {
         self.target_platform_identity
     }
 
+    /// Returns the portable invocation recipe identity bound to this execution.
     #[must_use]
     pub const fn recipe_identity(self) -> ContentId<CompileRecipeDomain> {
         self.invocation_recipe.identity()
@@ -3161,7 +3179,7 @@ fn run_worker_lanes(
 fn dispatch_runtime_command(
     command: RuntimeCommand,
     lane_queue: &mut BoundedLaneQueue<LaneJob>,
-    budget: &Arc<crate::application::executor::StagedOutputBudget>,
+    budget: &Arc<StagedOutputBudget>,
     capabilities: &LocalCompilerCapabilities,
     image_cap: usize,
     embedding_payload_max: usize,
@@ -3493,22 +3511,22 @@ fn staged_output_reservation(
     let embedding_bytes = source_count
         .checked_mul(embedding_payload_max)?
         .min(MAX_PACKAGE_EMBEDDING_BYTES);
-    let per_source = core::mem::size_of::<StagedCompilerArtifact>()
-        .checked_add(core::mem::size_of::<StagedSemanticArtifact>())?
-        .checked_add(core::mem::size_of::<[u8; 32]>())?
-        .checked_add(core::mem::size_of::<Box<[u8]>>())?
-        .checked_add(core::mem::size_of::<(&str, &str)>())?
-        .checked_add(core::mem::size_of::<&str>())?
-        .checked_add(core::mem::size_of::<StagedSemanticObjectClaim>().checked_mul(2)?)?
-        .checked_add(core::mem::size_of::<usize>())?
+    let per_source = size_of::<StagedCompilerArtifact>()
+        .checked_add(size_of::<StagedSemanticArtifact>())?
+        .checked_add(size_of::<[u8; 32]>())?
+        .checked_add(size_of::<Box<[u8]>>())?
+        .checked_add(size_of::<(&str, &str)>())?
+        .checked_add(size_of::<&str>())?
+        .checked_add(size_of::<StagedSemanticObjectClaim>().checked_mul(2)?)?
+        .checked_add(size_of::<usize>())?
         .checked_add(crate::publication::manifest::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES)?;
     let metadata_bytes = source_count.checked_mul(per_source)?;
     let segment_count = source_count
         .checked_add(image_cap.div_ceil(backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES))?;
     let versioned_plane_bytes = segment_count
         .checked_mul(
-            core::mem::size_of::<backend_semantic::ir::SemanticPlaneSegment>()
-                .checked_add(core::mem::size_of::<StagedVersionedPlaneSegment<'static>>())?
+            size_of::<backend_semantic::ir::SemanticPlaneSegment>()
+                .checked_add(size_of::<StagedVersionedPlaneSegment<'static>>())?
                 .checked_add(backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES / 1024)?,
         )?
         .checked_add(source_count.checked_mul(1024)?)?;
@@ -3520,7 +3538,7 @@ fn staged_output_reservation(
         .checked_add(versioned_plane_bytes)?
         .checked_add(crate::publication::manifest::COMPILATION_MANIFEST_HEADER_BYTES)?
         .checked_add(crate::publication::binding::COMPILATION_BINDING_BYTES)?
-        .checked_add(core::mem::size_of::<StagedSemanticPackage>())
+        .checked_add(size_of::<StagedSemanticPackage>())
 }
 
 fn lane_identity(

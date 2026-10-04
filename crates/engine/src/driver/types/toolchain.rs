@@ -91,16 +91,25 @@ pub enum ToolchainSelection<'path> {
     /// A validated absolute executable may service one locally reproducible native adapter.
     ResolvedNative(ResolvedToolchain<'path>),
     /// This language's selected native tool is intentionally unavailable without a forged path.
-    ExplicitlyUnavailable { tool: NativeTool },
+    ExplicitlyUnavailable {
+        /// Exact native tool family the caller cannot provide.
+        tool: NativeTool,
+    },
 }
 
 /// Exact shape of a supplied toolchain selection retained by mismatch diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolchainSelectionFact {
     /// Request supplied a resolved executable for this concrete tool family.
-    ResolvedNative { tool: NativeTool },
+    ResolvedNative {
+        /// Native tool family identified by the supplied executable selection.
+        tool: NativeTool,
+    },
     /// Request supplied an explicit unavailable terminal for this concrete tool family.
-    ExplicitlyUnavailable { tool: NativeTool },
+    ExplicitlyUnavailable {
+        /// Native tool family named by the explicit unavailable terminal.
+        tool: NativeTool,
+    },
 }
 
 impl<'path> ToolchainSelection<'path> {

@@ -1374,7 +1374,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             projected.child_count,
         );
         let extension = self.extension(declaration, 0)?;
-        let mut fact = projected
+        let fact = projected
             .attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT))
             .with_extension(EmissionExtension::Clang(extension));
         let twins = self.identical_carrier_twins(&carriers, &twin_frame, name);
@@ -1511,7 +1511,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 projected.child_names,
                 projected.child_count,
             );
-            let mut fact = projected
+            let fact = projected
                 .attach(SemanticFact::new(
                     EntityKind::Parameter,
                     parameter_name,
@@ -1570,7 +1570,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 projected.child_names,
                 projected.child_count,
             );
-            let mut fact = projected
+            let fact = projected
                 .attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT))
                 .with_extension(EmissionExtension::Clang(extension));
             let twins = self.identical_carrier_twins(&signature_children, &twin_frame, name);

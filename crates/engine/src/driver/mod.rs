@@ -20,7 +20,7 @@ pub use self::types::{
     CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, CompiledIr,
     CompiledSemantic, DeclarationScope, FactFault, FactRejection, InvalidUtf8Fact,
     MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,
-    NativeWorkPrimary, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
+    NativeWorkPrimary, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass, ParentageState,
     NativeWorkerPanicMessage, PackageDeclarationScopeFault, ResolvedToolchain,
     ResolvedToolchainView, SemanticAuthorityInput, SourceIdentity, SourceSpanFact,
     ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, TypeChildLane, compile,

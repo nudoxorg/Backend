@@ -279,7 +279,7 @@ enum EnteredAuthority<'source> {
 /// Lowerers therefore cannot receive a profile/input mismatch or inspect a
 /// foreign language's authority bytes.
 mod language_spec_seal {
-    pub trait Sealed {}
+    pub(super) trait Sealed {}
 }
 
 trait LanguageSpec: language_spec_seal::Sealed {

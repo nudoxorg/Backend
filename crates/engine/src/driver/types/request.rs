@@ -257,7 +257,7 @@ pub enum SemanticAuthorityInput<'source> {
         /// Opaque workspace that owns the exact Cargo edition/feature/toolchain database and VFS.
         workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
         /// Exact package source selected from the admitted source frontier.
-        source_path: &'source std::path::Path,
+        source_path: &'source Path,
         /// Per-source byte bound checked before HIR lowering.
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },

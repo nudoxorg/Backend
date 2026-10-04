@@ -5,8 +5,8 @@ use super::result_wire::result_output_object;
 use super::result_wire::{
     CompilerResultEnvelopeV1, CompilerResultError, CompilerResultMemberRole,
     CompilerResultMemberV1, MAX_RESULT_ENVELOPE_BYTES, MAX_RESULT_MEMBERS,
-    RESULT_ENVELOPE_SCHEMA_TYPE, RESULT_ENVELOPE_SCHEMA_VERSION, RESULT_MANIFEST_ENTRY_KEY,
-    RESULT_OUTPUT_SCHEMA_DOMAIN, RESULT_OUTPUT_SCHEMA_TYPE, RESULT_OUTPUT_SCHEMA_VERSION,
+    RESULT_MANIFEST_ENTRY_KEY, RESULT_OUTPUT_SCHEMA_DOMAIN, RESULT_OUTPUT_SCHEMA_TYPE,
+    RESULT_OUTPUT_SCHEMA_VERSION,
 };
 use super::runtime::VerifiedCompilerInputAdmission;
 use crate::compiler_cluster_transport::CompilerInvocationRecipeV2;
@@ -14,7 +14,7 @@ use crate::compiler_cluster_transport::StoredRemoteCompilerResult;
 use crate::compiler_input_capture_v2::{CapturedFullWorkspaceV2, CompilerInputCaptureV2Error};
 use crate::compiler_input_manifest_v2::CompilerInputManifestV2;
 use crate::compiler_input_tree_v2::{CompilerInputTreeRecordV2, CompilerWorkspaceFileRoleV2};
-use crate::publication::binding::{CompilationBindingFacts, CompilationBindingView};
+use crate::publication::binding::CompilationBindingFacts;
 use crate::publication::manifest::{
     CompilationManifestFacts, CompilationManifestFormat, CompilationManifestView,
 };
@@ -41,7 +41,7 @@ use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use backend_version::schema::SchemaId;
 use backend_version::{
     ArtifactId, ContentPayloadHasher, Coverage, IrFragmentDomain, IrFragmentEncoding, ObjectDomain,
-    ObjectVersionHasher, SchemaIdentity, SourceFactDomain,
+    ObjectVersionHasher, SchemaIdentity,
 };
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -135,21 +135,25 @@ pub struct CheckedRemoteCompilerPlaneSegment {
 }
 
 impl CheckedRemoteCompilerPlaneSegment {
+    /// First key covered by this already-verified segment range.
     #[must_use]
     pub const fn first_key(&self) -> &[u8; 32] {
         &self.first_key
     }
 
+    /// Last key covered by this already-verified segment range.
     #[must_use]
     pub const fn last_key(&self) -> &[u8; 32] {
         &self.last_key
     }
 
+    /// Number of rows admitted from the segment payload.
     #[must_use]
     pub const fn row_count(&self) -> u32 {
         self.row_count
     }
 
+    /// Encoded payload length committed by the checked segment wrapper.
     #[must_use]
     pub const fn byte_length(&self) -> u64 {
         self.byte_length
@@ -184,11 +188,13 @@ pub struct CheckedRemoteCompilerPlaneDescriptor {
 }
 
 impl CheckedRemoteCompilerPlaneDescriptor {
+    /// Returns whether this descriptor represents semantic IR or embeddings.
     #[must_use]
     pub const fn kind(&self) -> SemanticPlaneKind {
         self.kind
     }
 
+    /// Returns the root identity committed by the plane descriptor.
     #[must_use]
     pub const fn root(&self) -> SemanticPlaneRoot {
         self.root
@@ -200,6 +206,7 @@ impl CheckedRemoteCompilerPlaneDescriptor {
         self.coverage
     }
 
+    /// Returns the verified segments in their manifest order.
     #[must_use]
     pub fn segments(&self) -> &[CheckedRemoteCompilerPlaneSegment] {
         &self.segments
@@ -220,6 +227,7 @@ pub struct CheckedRemoteCompilerPlaneArtifact {
 }
 
 impl CheckedRemoteCompilerPlaneArtifact {
+    /// Returns this artifact's zero-based position in the admitted manifest.
     #[must_use]
     pub const fn artifact_ordinal(&self) -> u32 {
         self.artifact_ordinal
@@ -231,11 +239,13 @@ impl CheckedRemoteCompilerPlaneArtifact {
         self.semantic_image_object_id
     }
 
+    /// Returns the VCS generation identity bound by this plane manifest.
     #[must_use]
     pub const fn semantic_generation(&self) -> GenerationId {
         self.semantic_generation
     }
 
+    /// Returns the canonical root of the admitted plane manifest.
     #[must_use]
     pub const fn manifest_root(&self) -> SemanticManifestRoot {
         self.manifest_root
@@ -253,11 +263,13 @@ impl CheckedRemoteCompilerPlaneArtifact {
         self.manifest_object_id
     }
 
+    /// Returns the result-closure member that carries the manifest wrapper.
     #[must_use]
     pub const fn manifest_member(&self) -> CompilerResultMemberV1 {
         self.manifest_member
     }
 
+    /// Returns every independently checked plane described by this manifest.
     #[must_use]
     pub fn planes(&self) -> &[CheckedRemoteCompilerPlaneDescriptor] {
         &self.planes
@@ -352,7 +364,7 @@ impl CheckedRemoteCompilerOutput {
     /// The CAS reader rechecks closure membership, physical object identity,
     /// output schema, semantic reference, key and version while copying through
     /// its fixed-size buffer. The member must be part of this admitted output.
-    pub fn write_member_payload<W: std::io::Write + ?Sized>(
+    pub fn write_member_payload<W: Write + ?Sized>(
         &self,
         store: &FileStore,
         object_id: ObjectId,

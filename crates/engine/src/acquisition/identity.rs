@@ -102,6 +102,7 @@ impl Write for IdentityFieldWriter {
 macro_rules! identity {
     ($name:ident, $domain:literal) => {
         #[derive(Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+        /// Domain-separated 32-byte identity for one acquisition record kind.
         pub struct $name([u8; ID_BYTES]);
 
         impl $name {

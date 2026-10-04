@@ -820,7 +820,7 @@ pub(super) fn semantic_publication_fixture_with_authority(
             let key = ProductSemanticPublicationKey::new(
                 package,
                 coordinate,
-                LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024),
+                LanguageProfile::Rust(RustEdition::Rust2024),
             )
             .map_err(str::to_owned)?;
             Ok((

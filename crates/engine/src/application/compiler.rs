@@ -39,9 +39,9 @@ use backend_library::interface::{
 };
 use backend_semantic::ir::{
     EmbeddingPlaneIdentity, JumboRopeLimits, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
-    SemanticImageIdentity, SemanticImageReopenError, SemanticImageView, SemanticInputWitness,
-    SemanticInputClaimV2, SemanticIrPlane, SemanticManifestError, SemanticPlane,
-    SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
+    SemanticImageReopenError, SemanticImageView, SemanticInputClaimV2, SemanticInputWitness,
+    SemanticIrPlane, SemanticManifestError, SemanticPlane, SemanticPlaneKind,
+    SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
     SemanticTypedPlaneVerificationTierV2,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
@@ -64,7 +64,6 @@ use std::{
 use thiserror::Error;
 
 use backend_replication::{
-    DurableSemanticObjectAdmission, DurableSemanticObjectPin,
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
     produce_semantic_typed_plane_content_v3,
 };
@@ -342,10 +341,15 @@ pub enum StagedEmbeddingStatus<'reason> {
         cause: EmbeddingProvisioningFailure,
     },
     /// Every artifact has a validated vector under this exact identity.
-    Available { identity: EmbeddingPlaneIdentity },
+    Available {
+        /// Identity of the embedding plane that contains every staged vector.
+        identity: EmbeddingPlaneIdentity,
+    },
     /// Optional inference failed; IR remains usable and the plane has unavailable coverage.
     Unavailable {
+        /// Identity of the embedding plane whose optional inference failed.
         identity: EmbeddingPlaneIdentity,
+        /// Closed, safe-to-display explanation for the unavailable plane.
         reason: &'reason str,
     },
 }
@@ -402,7 +406,7 @@ impl<'source> PackageSource<'source> {
         relative_path: &'source str,
         source: &'source str,
     ) -> Result<Self, PackageSourceSetError> {
-        let path = std::path::Path::new(relative_path);
+        let path = Path::new(relative_path);
         let normalized = !relative_path.is_empty()
             && !relative_path.contains('\\')
             && !path.is_absolute()
@@ -436,7 +440,7 @@ impl<'source> PackageSource<'source> {
 pub struct PackageSourceSet<'source> {
     request: &'source PackageCompileRequest,
     package_target: CompilerPackageTargetV2,
-    package_root: &'source std::path::Path,
+    package_root: &'source Path,
     sources: &'source [PackageSource<'source>],
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
@@ -451,7 +455,7 @@ impl<'source> PackageSourceSet<'source> {
     /// duplicate, or unordered source frontier.
     pub fn new(
         request: &'source PackageCompileRequest,
-        package_root: &'source std::path::Path,
+        package_root: &'source Path,
         sources: &'source [PackageSource<'source>],
     ) -> Result<Self, PackageSourceSetError> {
         let package_target = CompilerPackageTargetV2::for_package(request.as_ref().clone());
@@ -465,7 +469,7 @@ impl<'source> PackageSourceSet<'source> {
     pub fn new_for_unit(
         request: &'source PackageCompileRequest,
         package_target: &CompilerPackageTargetV2,
-        package_root: &'source std::path::Path,
+        package_root: &'source Path,
         sources: &'source [PackageSource<'source>],
     ) -> Result<Self, PackageSourceSetError> {
         if !package_root.is_absolute() {
@@ -938,7 +942,10 @@ pub enum StagedVersionedPlaneError {
     ExecutionIdentityMismatch,
     /// One canonical semantic image was empty and cannot form a nonempty segment range.
     #[error("semantic image {artifact_ordinal} is empty")]
-    EmptySemanticImage { artifact_ordinal: usize },
+    EmptySemanticImage {
+        /// Zero-based artifact position whose semantic image contained no rows.
+        artifact_ordinal: usize,
+    },
     /// The segment constructor did not return an admitted ID for its exact in-memory payload.
     #[error("semantic segment claim did not contain its computed payload ID")]
     MissingAdmittedSegmentId,
@@ -1994,12 +2001,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             application_request,
                             source_authority,
                             toolchain,
-                            PackageAuthorityError::RustProject(
-                                backend_frontend_rust::legacy::RustAuthorityError::SourceBudget {
-                                    actual: u64::try_from(source.source.len()).unwrap_or(u64::MAX),
-                                    maximum: configuration.maximum_source_bytes,
-                                },
-                            ),
+                            PackageAuthorityError::RustProject(RustAuthorityError::SourceBudget {
+                                actual: u64::try_from(source.source.len()).unwrap_or(u64::MAX),
+                                maximum: configuration.maximum_source_bytes,
+                            }),
                         )),
                     });
                 }
@@ -2078,7 +2083,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // database alive through staging; every exit drops it after completion.
         let rust_workspace_lease =
             if let backend_semantic::vocabulary::LanguageProfile::Rust(edition) = target.profile {
-                let source_path = package.package_root.join(first_source.relative_path);
                 let toolchain = self
                     .toolchain(first_application_request)
                     .map_err(|cause| {
@@ -3542,7 +3546,7 @@ fn package_authority_terminal(
             request,
             source,
             toolchain,
-            backend_library::interface::CompilerCause::DeadlineExceeded { diagnostic: None },
+            CompilerCause::DeadlineExceeded { diagnostic: None },
         ),
         PackageAuthorityError::RustProject(cause) => {
             // Package authority failures happen before driver scratch is leased.
@@ -3563,7 +3567,7 @@ fn package_authority_terminal(
                 request,
                 source,
                 toolchain,
-                backend_library::interface::CompilerCause::Authority {
+                CompilerCause::Authority {
                     phase: projection.phase,
                     class: projection.class,
                     diagnostic,
@@ -3576,7 +3580,7 @@ fn package_authority_terminal(
                 request,
                 source,
                 toolchain,
-                backend_library::interface::CompilerCause::Authority {
+                CompilerCause::Authority {
                     phase,
                     class,
                     diagnostic: None,
@@ -3590,7 +3594,7 @@ fn compiler_attempt_terminal(
     request: ApplicationCompilerRequest<'_>,
     source: SourceAuthority,
     toolchain: ToolchainSelection<'_>,
-    cause: backend_library::interface::CompilerCause,
+    cause: CompilerCause,
 ) -> CompilerTerminal {
     let ToolchainSelection::ResolvedNative(resolved) = toolchain else {
         return CompilerTerminal::Toolchain {
@@ -3612,7 +3616,7 @@ fn compiler_attempt_terminal(
         resolved.identity,
     );
     CompilerTerminal::Compile {
-        attempted: backend_library::interface::CompilerAttempt {
+        attempted: CompilerAttempt {
             source,
             recipe: recipe.identity,
         },
@@ -3624,7 +3628,7 @@ const fn package_authority_projection(
     cause: &PackageAuthorityError,
 ) -> (
     backend_semantic::vocabulary::AuthorityPhase,
-    backend_semantic::vocabulary::AuthorityDiagnosticClass,
+    AuthorityDiagnosticClass,
 ) {
     use backend_semantic::vocabulary::{
         AuthorityDiagnosticClass as Class, AuthorityPhase as Phase,

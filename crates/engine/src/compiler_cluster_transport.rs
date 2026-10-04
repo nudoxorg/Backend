@@ -1222,7 +1222,7 @@ pub async fn receive_compiler_result_grant_pages(
     let mut receiver =
         CompilerResultGrantPageReceiver::new(scheduler, assignment, namespace_id, result)?;
     while !receiver.is_complete() {
-        let mut channel =
+        let channel =
             accept_coordinator_control(scheduler, endpoint, assignment, namespace_id).await?;
         receiver.receive_channel(scheduler, channel).await?;
     }

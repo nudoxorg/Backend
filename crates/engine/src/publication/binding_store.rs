@@ -112,7 +112,7 @@ pub enum BindingStoreError {
 
 /// Location and validated facts of a generation-addressed immutable binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StoredBinding {
+pub(super) struct StoredBinding {
     /// Validated complete immutable binding facts.
     pub facts: CompilationBindingFacts,
     /// Deterministic path derived only from the bound generation root and dependency set.

@@ -298,19 +298,46 @@ pub enum CompilationUnitKeyV2 {
     /// A package-wide unit for a genuinely single-boundary authority.
     PackageRoot,
     /// A Rust crate target and its crate-root source file.
-    RustCrate { name: Box<str>, root: Box<str> },
+    RustCrate {
+        /// Cargo target name represented by this unit.
+        name: Box<str>,
+        /// Package-relative root source path for the target.
+        root: Box<str>,
+    },
     /// A TypeScript/JavaScript program rooted at one exact configuration file.
-    TypeScriptProgram { config_path: Box<str> },
+    TypeScriptProgram {
+        /// Package-relative TypeScript configuration path that roots the program.
+        config_path: Box<str>,
+    },
     /// A Python package or module root.
-    PythonModule { root: Box<str> },
+    PythonModule {
+        /// Package-relative source root for the Python module or package.
+        root: Box<str>,
+    },
     /// A Go module or package directory.
-    GoPackage { root: Box<str> },
+    GoPackage {
+        /// Package-relative directory that identifies the Go package.
+        root: Box<str>,
+    },
     /// A Java module name and root directory.
-    JavaModule { name: Box<str>, root: Box<str> },
+    JavaModule {
+        /// Declared Java module name.
+        name: Box<str>,
+        /// Package-relative root directory for the module.
+        root: Box<str>,
+    },
     /// A C# project file.
-    CSharpProject { project_path: Box<str> },
+    CSharpProject {
+        /// Package-relative path of the exact C# project file.
+        project_path: Box<str>,
+    },
     /// One C or C++ translation unit.
-    ClangTranslationUnit { is_cxx: bool, source_path: Box<str> },
+    ClangTranslationUnit {
+        /// Whether this translation unit is compiled as C++ rather than C.
+        is_cxx: bool,
+        /// Package-relative source file path for this unit.
+        source_path: Box<str>,
+    },
 }
 
 impl CompilationUnitKeyV2 {

@@ -2075,7 +2075,7 @@ fn foreign_member_key_kind<'source>(
 /// Borrows an image atom as UTF-8. The reader validates every atom's UTF-8
 /// at open, so this conversion is total for a validated image.
 fn atom_str(bytes: &[u8]) -> &str {
-    core::str::from_utf8(bytes).unwrap_or("")
+    str::from_utf8(bytes).unwrap_or("")
 }
 
 /// The honest lane kind for one closed image use tag. A field read and its

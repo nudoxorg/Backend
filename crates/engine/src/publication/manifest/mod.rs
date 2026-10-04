@@ -20,9 +20,7 @@ pub use validate::{
     CompilationManifestFormat, CompilationManifestView, StoredFragmentFacts,
 };
 
-pub(crate) use build::{
-    CanonicalCompilation, CanonicalSemanticArtifact, CanonicalSemanticCompilation,
-};
+pub(crate) use build::{CanonicalCompilation, CanonicalSemanticCompilation};
 
 /// Typed identity of one complete canonical compiler package manifest.
 pub type CompilationManifestIdentity = backend_version::ArtifactId<

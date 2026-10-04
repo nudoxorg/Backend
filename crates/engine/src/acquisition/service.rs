@@ -15,23 +15,20 @@ use std::{
     time::Duration,
 };
 
-use super::delta::{AcquisitionDelta, DeltaChange, snapshot_changes};
+use super::delta::{AcquisitionDelta, snapshot_changes};
 use super::freshness::{
     FactFreshness, FactObservation, observed_facts_at, remember_fact_observation,
 };
 use super::identity::{
-    AcquisitionRecordId, ID_BYTES, IdentityError, ManifestEntry, RawArchiveObjectId, ReleaseClaim,
-    SourceSnapshot, TreeManifest, now_millis,
+    AcquisitionRecordId, ID_BYTES, ManifestEntry, RawArchiveObjectId, ReleaseClaim, SourceSnapshot,
+    TreeManifest, now_millis,
 };
 use super::lease::{AcquisitionLease, LeaseGuard, LeaseStore};
 use super::outcome::{
     AcquisitionOutcome, CorruptReason, NegativeFact, NegativeFactKind, Offline, RejectReason,
     RetryAt, Unavailable, promote_bytes_outcome, promote_void_outcome,
 };
-use super::phase::{
-    AcquisitionReceipt, AcquisitionRequest, Metadata, MetadataRecord, Policy, PublishedDelta,
-    Resolve,
-};
+use super::phase::{AcquisitionReceipt, AcquisitionRequest, MetadataRecord, Resolve};
 use super::receipt_store::{
     AcquisitionProductTerminal, AcquisitionReceiptStore, AcquisitionRecoveryRecord,
 };
@@ -620,7 +617,7 @@ impl AcquisitionService {
     /// the owner's authenticated facts frontier in bounded path work.
     pub fn link_forge_associations(
         &self,
-        coordinate: &crate::registry::PackageCoordinate,
+        coordinate: &PackageCoordinate,
         associations: Box<[backend_library::RegistryForgeAssociation]>,
     ) -> Result<(), RegistryAcquisitionError> {
         match with_registry_journal_fence(
@@ -648,7 +645,7 @@ impl AcquisitionService {
     /// registry lineage event used by the same owner journal.
     pub fn link_forge_receipt(
         &self,
-        coordinate: &crate::registry::PackageCoordinate,
+        coordinate: &PackageCoordinate,
         result: &crate::forge::ForgeAcquisitionResult,
     ) -> Result<(), RegistryAcquisitionError> {
         let registry = backend_library::PackageReference::Purl(coordinate.clone());
@@ -812,7 +809,7 @@ impl AcquisitionService {
                         }
                         Err(error) => return journal_fence_outcome(request.source, error),
                     }
-                    let mut owner_guard = owner
+                    let owner_guard = owner
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let offline = owner_guard.is_offline();
@@ -1742,8 +1739,7 @@ fn product_record_for_outcome(
             if owner.cursor().token() != fact.cursor || owner.policy_epoch() != fact.policy_epoch {
                 return None;
             }
-            let coordinate =
-                crate::registry::PackageCoordinate::parse(request.coordinate.as_ref()).ok();
+            let coordinate = PackageCoordinate::parse(request.coordinate.as_ref()).ok();
             let package = coordinate
                 .as_ref()
                 .and_then(|coordinate| owner.published(coordinate));

@@ -160,19 +160,19 @@ pub(crate) fn checked_report(
 /// the immutable authority record; this staging-only index removes repeated
 /// linear scans while preserving every borrowed outcome.
 struct CheckerIndex<'report> {
-    inferences: std::collections::HashMap<(u32, u32), &'report InferredType>,
-    symbols: std::collections::HashMap<(u32, u32), &'report SymbolOutcome>,
+    inferences: HashMap<(u32, u32), &'report InferredType>,
+    symbols: HashMap<(u32, u32), &'report SymbolOutcome>,
 }
 
 impl<'report> CheckerIndex<'report> {
     fn build(report: &'report CheckerReport) -> Self {
-        let mut inferences = std::collections::HashMap::with_capacity(report.inferences.len());
+        let mut inferences = HashMap::with_capacity(report.inferences.len());
         for inference in &report.inferences {
             inferences
                 .entry((inference.site.start, inference.site.end))
                 .or_insert(&inference.observed);
         }
-        let mut symbols = std::collections::HashMap::with_capacity(report.symbols.len());
+        let mut symbols = HashMap::with_capacity(report.symbols.len());
         for symbol in &report.symbols {
             symbols
                 .entry((symbol.span.start, symbol.span.end))
@@ -1983,7 +1983,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     },
                 ),
             OccurrenceReceiver::ChainedAttribute { root, attributes } => {
-                let mut class_index = match root {
+                let class_index = match root {
                     AttributeChainRoot::Enclosing { class } => {
                         self.enclosing_class_index(occurrence, class)
                     }
@@ -5773,15 +5773,11 @@ fn target_spelling_span(occurrence: &OccurrenceFact) -> Span {
 /// The total, name-preserving reference-kind mapping. The extractor's closed
 /// call lattice and the lane's reference lattice share both categories, so
 /// no two extractor kinds collapse and no lane kind is unreachable.
-fn reference_kind(kind: backend_frontend_python::legacy::OccurrenceKind) -> ReferenceKind {
+fn reference_kind(kind: OccurrenceKind) -> ReferenceKind {
     match kind {
-        backend_frontend_python::legacy::OccurrenceKind::FunctionCall => {
-            ReferenceKind::FunctionCall
-        }
-        backend_frontend_python::legacy::OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
-        backend_frontend_python::legacy::OccurrenceKind::AttributeRead => {
-            ReferenceKind::FieldAccess
-        }
+        OccurrenceKind::FunctionCall => ReferenceKind::FunctionCall,
+        OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
+        OccurrenceKind::AttributeRead => ReferenceKind::FieldAccess,
     }
 }
 
@@ -6676,8 +6672,7 @@ fn compute_live_set(module: &ModuleFacts) -> Vec<bool> {
     let mut live = vec![true; count];
     // One group per (owner, kind, name): later bindings shadow earlier ones
     // only inside the same lexical scope.
-    let mut groups: std::collections::HashMap<(Option<usize>, u8, &str), Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut groups: HashMap<(Option<usize>, u8, &str), Vec<usize>> = HashMap::new();
     for (index, declaration) in module.declarations.iter().enumerate() {
         if declaration.kind == DeclarationKind::Module {
             continue;
@@ -6697,8 +6692,7 @@ fn compute_live_set(module: &ModuleFacts) -> Vec<bool> {
         }
         // Subgroup by the span-erased signature: distinct overloads never
         // share a fingerprint, identical twins always do.
-        let mut fingerprints: std::collections::HashMap<String, Vec<usize>> =
-            std::collections::HashMap::new();
+        let mut fingerprints: HashMap<String, Vec<usize>> = HashMap::new();
         for index in indices {
             fingerprints
                 .entry(shadowing_fingerprint(module, *index))

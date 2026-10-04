@@ -16,9 +16,8 @@ pub use authority::{
 };
 pub(crate) use compile::rust_authority_diagnostic;
 pub use compile::{compile, compile_ir, compile_semantic};
-pub use lowering::{
-    ClangProjectionFault, FactFault, FactRejection, ParentageState, SourceSpanFact, TypeChildLane,
-};
+pub use lowering::ParentageState;
+pub use lowering::{ClangProjectionFault, FactFault, FactRejection, SourceSpanFact, TypeChildLane};
 pub use request::{
     CompileControl, CompileRequest, CompileScratch, DeclarationScope, PackageDeclarationScopeFault,
     SemanticAuthorityInput,
@@ -35,7 +34,9 @@ pub use toolchain::{
 
 pub use backend_semantic::ir::SourceIdentity;
 pub use backend_semantic::vocabulary::{
-    CompileRecipeFact, InvalidUtf8Fact, LoweringUnsupported, MAX_NATIVE_WORKER_PANIC_BYTES,
-    NativeArtifactRole, NativeTool, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
-    NativeWorkerPanicClass, NativeWorkerPanicMessage,
+    CompileRecipeFact, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeTool, NativeWorker,
+    NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
+};
+pub(super) use backend_semantic::vocabulary::{
+    LoweringUnsupported, NativeArtifactRole, NativeWorkPhase,
 };

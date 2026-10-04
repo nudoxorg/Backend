@@ -269,7 +269,7 @@ fn forge_source_ids_sorted_unique(ids: &[[u8; 32]]) -> bool {
 }
 
 fn package_facts_digest(package: &PublishedPackage) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = Hasher::new();
     hasher.update(b"backend.registry.facts-row.v2\0");
     let coordinate = package.coordinate.as_str().as_bytes();
     hasher.update(&(coordinate.len() as u64).to_be_bytes());
@@ -462,7 +462,7 @@ fn facts_root(state_root: &[u8; 32]) -> [u8; 32] {
 }
 
 fn facts_key(coordinate: &PackageCoordinate) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = Hasher::new();
     hasher.update(b"backend.registry.facts-key.v1\0");
     hasher.update(coordinate.as_str().as_bytes());
     *hasher.finalize().as_bytes()

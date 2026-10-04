@@ -1050,17 +1050,15 @@ impl<'source> FactSet<'source> {
             occurrence_owners: vec![0; plan.occurrences].into_boxed_slice(),
             occurrences: vec![
                 Occurrence {
-                    target: backend_semantic::ir::OccurrenceTarget::Foreign(
-                        backend_semantic::ir::ForeignKey {
-                            origin: backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "" },
-                            path: "",
-                            display: "",
-                            kind: None,
-                        }
-                    ),
-                    kind: backend_semantic::ir::ReferenceKind::FunctionCall,
-                    confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
-                    span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
+                    target: OccurrenceTarget::Foreign(ForeignKey {
+                        origin: ForeignOrigin::Universe { ecosystem: "" },
+                        path: "",
+                        display: "",
+                        kind: None,
+                    }),
+                    kind: ReferenceKind::FunctionCall,
+                    confidence: OccurrenceConfidence::Syntactic,
+                    span: RelSpan { start: 0, end: 0 },
                 };
                 plan.occurrences
             ]
@@ -1244,7 +1242,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::RefTarget {
-                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeRows,
+                    lane: ProjectionFactLane::TypeRows,
                     raw: owner,
                     fact_count: self.len,
                 },
@@ -1288,7 +1286,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::RefTarget {
-                    lane: backend_semantic::vocabulary::ProjectionFactLane::ReservedTypeRows,
+                    lane: ProjectionFactLane::ReservedTypeRows,
                     raw: reserved_owner,
                     fact_count: self.len,
                 },
@@ -1377,7 +1375,7 @@ impl<'source> FactSet<'source> {
                     child_count,
                     &SemanticTypeChild {
                         target: TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
-                            backend_semantic::ir::TypeId::new(self.anonymous_child_targets[pooled]),
+                            TypeId::new(self.anonymous_child_targets[pooled]),
                         )),
                         name: self.anonymous_child_names[pooled],
                         flags: self.anonymous_child_flags[pooled],
@@ -1398,7 +1396,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Computed,
                 FactFault::RefTarget {
-                    lane: backend_semantic::vocabulary::ProjectionFactLane::ComputedOwners,
+                    lane: ProjectionFactLane::ComputedOwners,
                     raw: owner,
                     fact_count: self.len,
                 },
@@ -1420,9 +1418,9 @@ impl<'source> FactSet<'source> {
             let target = if self.computed_child_targets[pooled] == STAGED_TEXT_CHILD {
                 TypeChildTarget::Text
             } else {
-                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
-                    backend_semantic::ir::TypeId::new(self.computed_child_targets[pooled]),
-                ))
+                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(TypeId::new(
+                    self.computed_child_targets[pooled],
+                )))
             };
             if let Err(fault) = record
                 .validate_child_in_row(
@@ -1513,7 +1511,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
+                lane: ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1526,8 +1524,7 @@ impl<'source> FactSet<'source> {
             && extension_type_parameter_start(&extension).is_some()
         {
             return Err(FactFault::RefTarget {
-                lane:
-                    backend_semantic::vocabulary::ProjectionFactLane::ReplacementTypeParameterRange,
+                lane: ProjectionFactLane::ReplacementTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1552,7 +1549,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::AtomLists,
+                lane: ProjectionFactLane::AtomLists,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1586,7 +1583,7 @@ impl<'source> FactSet<'source> {
         let start = start as usize;
         if start > self.type_parameter_len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1609,7 +1606,7 @@ impl<'source> FactSet<'source> {
             .copied()
             .flatten()
             .ok_or(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::CapturedTypeParameterRange,
+                lane: ProjectionFactLane::CapturedTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.len,
             })
@@ -1625,7 +1622,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
+                lane: ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1636,7 +1633,7 @@ impl<'source> FactSet<'source> {
             || matches!(self.type_parameter_ranges[ordinal], Some(existing) if existing != range)
         {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: range.start,
                 fact_count: self.type_parameter_len,
             });
@@ -1656,7 +1653,7 @@ impl<'source> FactSet<'source> {
         let start = start.raw as usize;
         if start > self.type_parameter_len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1680,7 +1677,7 @@ impl<'source> FactSet<'source> {
         let start = start.raw as usize;
         if start > self.free_predicate_len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.free_predicate_len,
             });
@@ -1711,7 +1708,7 @@ impl<'source> FactSet<'source> {
             .impl_traits
             .get_mut(ordinal as usize)
             .ok_or(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
+                lane: ProjectionFactLane::Extensions,
                 raw: ordinal,
                 fact_count: self.len,
             })?;
@@ -2079,7 +2076,7 @@ impl<'source> FactSet<'source> {
                 && !self.is_computed_type_row(raw)
             {
                 return Err(FactFault::RefTarget {
-                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameters,
+                    lane: ProjectionFactLane::TypeParameters,
                     raw,
                     fact_count: self.len,
                 });
@@ -2133,7 +2130,7 @@ impl<'source> FactSet<'source> {
             && !self.is_computed_type_row(subject)
         {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameters,
+                lane: ProjectionFactLane::TypeParameters,
                 raw: subject,
                 fact_count: self.len,
             });
@@ -2147,7 +2144,7 @@ impl<'source> FactSet<'source> {
                 && !self.is_computed_type_row(raw)
             {
                 return Err(FactFault::RefTarget {
-                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameters,
+                    lane: ProjectionFactLane::TypeParameters,
                     raw,
                     fact_count: self.len,
                 });
@@ -2193,7 +2190,7 @@ impl<'source> FactSet<'source> {
         let start = start as usize;
         if start > self.free_predicate_len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.free_predicate_len,
             });
@@ -2215,7 +2212,7 @@ impl<'source> FactSet<'source> {
             .copied()
             .flatten()
             .ok_or(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::CapturedTypeParameterRange,
+                lane: ProjectionFactLane::CapturedTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.len,
             })
@@ -2231,14 +2228,14 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
+                lane: ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
         }
         let Some(start) = extension_free_predicate_start(extension) else {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: range.start,
                 fact_count: self.free_predicate_len,
             });
@@ -2249,7 +2246,7 @@ impl<'source> FactSet<'source> {
             || matches!(self.free_predicate_ranges[ordinal], Some(existing) if existing != range)
         {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: ProjectionFactLane::TypeParameterRanges,
                 raw: range.start,
                 fact_count: self.free_predicate_len,
             });
@@ -2469,7 +2466,7 @@ impl<'source> FactSet<'source> {
     pub(super) fn build_ir(
         &self,
         profile: backend_semantic::vocabulary::LanguageProfile,
-        source: backend_semantic::ir::SourceIdentity,
+        source: SourceIdentity,
         recipe: backend_semantic::vocabulary::CompileRecipeFact,
         declaration_scope: crate::driver::types::DeclarationScope<'source>,
     ) -> Result<Ir, backend_semantic::ir::BuildError> {
@@ -3043,7 +3040,7 @@ impl<'source> FactSet<'source> {
                     space: backend_semantic::ir::SemanticSpace::Entity,
                     raw: owner_raw,
                 })?;
-            if item.kind != backend_semantic::ir::ItemKind::Function {
+            if item.kind != ItemKind::Function {
                 continue;
             }
             function_count =
@@ -3120,7 +3117,7 @@ impl<'source> FactSet<'source> {
                 },
             )?;
             let owner_id = backend_semantic::ir::EntityId::new(owner_raw);
-            if owner_kind != backend_semantic::ir::ItemKind::Function {
+            if owner_kind != ItemKind::Function {
                 for child in product_start..product_end {
                     let product_role = *self.child_roles.get(child).ok_or(
                         backend_semantic::ir::BuildError::Dangling {
@@ -3155,7 +3152,7 @@ impl<'source> FactSet<'source> {
                     raw: owner_raw,
                 },
             )?;
-            if record.tag != backend_semantic::ir::SemanticTypeTag::FunctionPointer {
+            if record.tag != SemanticTypeTag::FunctionPointer {
                 if product_count != 0 {
                     return Err(
                         backend_semantic::ir::BuildError::SignatureCarrierBindingSignature {
@@ -3339,9 +3336,9 @@ impl<'source> FactSet<'source> {
             let target = if child.target == u32::MAX {
                 TypeChildTarget::Text
             } else {
-                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
-                    backend_semantic::ir::TypeId::new(child.target),
-                ))
+                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(TypeId::new(
+                    child.target,
+                )))
             };
             let wire_child = SemanticTypeChild {
                 target,
@@ -3897,46 +3894,28 @@ fn live_extension_span<'source>(
     )
 }
 
-const fn occurrence_link_kind(
-    kind: backend_semantic::ir::ReferenceKind,
-) -> backend_semantic::ir::LinkKind {
+const fn occurrence_link_kind(kind: ReferenceKind) -> backend_semantic::ir::LinkKind {
     match kind {
-        backend_semantic::ir::ReferenceKind::FunctionCall => backend_semantic::ir::LinkKind::Calls,
-        backend_semantic::ir::ReferenceKind::MethodCall => {
-            backend_semantic::ir::LinkKind::MethodCall
-        }
-        backend_semantic::ir::ReferenceKind::TypeReference => {
-            backend_semantic::ir::LinkKind::TypeReference
-        }
-        backend_semantic::ir::ReferenceKind::VariableUse => backend_semantic::ir::LinkKind::Reads,
-        backend_semantic::ir::ReferenceKind::MacroInvocation => {
-            backend_semantic::ir::LinkKind::Calls
-        }
-        backend_semantic::ir::ReferenceKind::FieldAccess => backend_semantic::ir::LinkKind::Reads,
-        backend_semantic::ir::ReferenceKind::Import => backend_semantic::ir::LinkKind::Imports,
-        backend_semantic::ir::ReferenceKind::Overrides => backend_semantic::ir::LinkKind::Overrides,
+        ReferenceKind::FunctionCall => backend_semantic::ir::LinkKind::Calls,
+        ReferenceKind::MethodCall => backend_semantic::ir::LinkKind::MethodCall,
+        ReferenceKind::TypeReference => backend_semantic::ir::LinkKind::TypeReference,
+        ReferenceKind::VariableUse => backend_semantic::ir::LinkKind::Reads,
+        ReferenceKind::MacroInvocation => backend_semantic::ir::LinkKind::Calls,
+        ReferenceKind::FieldAccess => backend_semantic::ir::LinkKind::Reads,
+        ReferenceKind::Import => backend_semantic::ir::LinkKind::Imports,
+        ReferenceKind::Overrides => backend_semantic::ir::LinkKind::Overrides,
     }
 }
 
 const fn occurrence_link_confidence(
-    confidence: backend_semantic::ir::OccurrenceConfidence,
+    confidence: OccurrenceConfidence,
 ) -> backend_semantic::ir::Confidence {
     match confidence {
-        backend_semantic::ir::OccurrenceConfidence::Syntactic => {
-            backend_semantic::ir::Confidence::Syntactic
-        }
-        backend_semantic::ir::OccurrenceConfidence::Suffix => {
-            backend_semantic::ir::Confidence::Heuristic
-        }
-        backend_semantic::ir::OccurrenceConfidence::Index => {
-            backend_semantic::ir::Confidence::Indexed
-        }
-        backend_semantic::ir::OccurrenceConfidence::Import => {
-            backend_semantic::ir::Confidence::Imported
-        }
-        backend_semantic::ir::OccurrenceConfidence::Oracle => {
-            backend_semantic::ir::Confidence::Compiler
-        }
+        OccurrenceConfidence::Syntactic => backend_semantic::ir::Confidence::Syntactic,
+        OccurrenceConfidence::Suffix => backend_semantic::ir::Confidence::Heuristic,
+        OccurrenceConfidence::Index => backend_semantic::ir::Confidence::Indexed,
+        OccurrenceConfidence::Import => backend_semantic::ir::Confidence::Imported,
+        OccurrenceConfidence::Oracle => backend_semantic::ir::Confidence::Compiler,
     }
 }
 
@@ -3947,7 +3926,7 @@ fn occurrence_source_span(
     facts: &FactSet<'_>,
     file: Option<AtomId>,
     owner: u32,
-    relative: backend_semantic::ir::RelSpan,
+    relative: RelSpan,
 ) -> Result<Option<backend_semantic::ir::SourceSpan>, backend_semantic::ir::BuildError> {
     let Some(owner_span) = facts
         .provenance
@@ -3985,16 +3964,16 @@ fn occurrence_source_span(
 fn external_from_occurrence<'source>(
     tree: &mut backend_semantic::ir::TreeBuilder<'_, '_>,
     owner: backend_semantic::ir::EntityId,
-    target: backend_semantic::ir::OccurrenceTarget<'source>,
+    target: OccurrenceTarget<'source>,
 ) -> Result<TreeLinkTarget, backend_semantic::ir::BuildError> {
     match target {
-        backend_semantic::ir::OccurrenceTarget::Local(local) => Ok(TreeLinkTarget::Local(
+        OccurrenceTarget::Local(local) => Ok(TreeLinkTarget::Local(
             backend_semantic::ir::TreeEntityId::new(local.raw),
         )),
-        backend_semantic::ir::OccurrenceTarget::Stable(stable) => Ok(TreeLinkTarget::External(
+        OccurrenceTarget::Stable(stable) => Ok(TreeLinkTarget::External(
             tree.intern_external(ExternalTarget::Stable { target: stable })?,
         )),
-        backend_semantic::ir::OccurrenceTarget::Foreign(foreign) => {
+        OccurrenceTarget::Foreign(foreign) => {
             // The vocabulary owns the domain separation, origin cells, and
             // kind discriminator.  Rebuilding a near-copy here once omitted
             // `ForeignKey::kind`, causing same-path references to collapse.
@@ -4015,24 +3994,20 @@ fn external_from_occurrence<'source>(
                 }
             })?;
             let origin = match foreign.origin {
-                backend_semantic::ir::ForeignOrigin::Package(lineage) => {
-                    ForeignTargetOrigin::Package {
-                        ecosystem: tree.intern_atom(lineage.ecosystem.as_bytes())?,
-                        package: tree.intern_atom(lineage.name.as_bytes())?,
-                    }
-                }
-                backend_semantic::ir::ForeignOrigin::Namespace {
+                ForeignOrigin::Package(lineage) => ForeignTargetOrigin::Package {
+                    ecosystem: tree.intern_atom(lineage.ecosystem.as_bytes())?,
+                    package: tree.intern_atom(lineage.name.as_bytes())?,
+                },
+                ForeignOrigin::Namespace {
                     ecosystem,
                     namespace,
                 } => ForeignTargetOrigin::Namespace {
                     ecosystem: tree.intern_atom(ecosystem.as_bytes())?,
                     namespace: tree.intern_atom(namespace.as_bytes())?,
                 },
-                backend_semantic::ir::ForeignOrigin::Universe { ecosystem } => {
-                    ForeignTargetOrigin::Universe {
-                        ecosystem: tree.intern_atom(ecosystem.as_bytes())?,
-                    }
-                }
+                ForeignOrigin::Universe { ecosystem } => ForeignTargetOrigin::Universe {
+                    ecosystem: tree.intern_atom(ecosystem.as_bytes())?,
+                },
             };
             let path = tree.intern_atom(foreign.path.as_bytes())?;
             let display = tree.intern_atom(foreign.display.as_bytes())?;
@@ -5482,9 +5457,9 @@ pub(super) fn admit<'source, 'output>(
                 target: if raw == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
-                        backend_semantic::ir::TypeId::new(remap(raw)),
-                    ))
+                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(TypeId::new(remap(
+                        raw,
+                    ))))
                 },
                 name: facts.anonymous_child_names[base + offset],
                 flags: facts.anonymous_child_flags[base + offset],
@@ -5509,9 +5484,9 @@ pub(super) fn admit<'source, 'output>(
                 target: if source.0 == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
-                        backend_semantic::ir::TypeId::new(remap(source.0)),
-                    ))
+                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(TypeId::new(remap(
+                        source.0,
+                    ))))
                 },
                 name: source.1,
                 flags: source.2,
@@ -5546,9 +5521,9 @@ pub(super) fn admit<'source, 'output>(
                 target: if raw == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
-                        backend_semantic::ir::TypeId::new(remap(raw)),
-                    ))
+                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(TypeId::new(remap(
+                        raw,
+                    ))))
                 },
                 name: facts.computed_child_names[base + offset],
                 flags: facts.computed_child_flags[base + offset],
@@ -5846,12 +5821,10 @@ pub(super) fn admit<'source, 'output>(
         OccurrenceInput {
             owner: backend_semantic::ir::EntityId::new(0),
             occurrence: Occurrence {
-                target: backend_semantic::ir::OccurrenceTarget::Local(
-                    backend_semantic::ir::EntityId::new(0)
-                ),
-                kind: backend_semantic::ir::ReferenceKind::FunctionCall,
-                confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
-                span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
+                target: OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(0)),
+                kind: ReferenceKind::FunctionCall,
+                confidence: OccurrenceConfidence::Syntactic,
+                span: RelSpan { start: 0, end: 0 },
             },
         };
         facts.occurrence_len

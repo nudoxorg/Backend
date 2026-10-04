@@ -1,6 +1,6 @@
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::sync::Arc;
 
 use backend_execution::{WorkKey, acquisition_work_key};
@@ -10,7 +10,7 @@ use super::freshness::FactFreshness;
 use super::identity::{
     AcquisitionDeltaId, AcquisitionReceiptId, CHUNK_BYTES, ID_BYTES, IdentityError,
     PublicationRootId, RawArchiveObjectId, ReleaseClaim, SourceSnapshot, SourceSnapshotId,
-    TreeManifest, canonical_text, digest,
+    canonical_text, digest,
 };
 use super::lease::{CasAdmission, LeaseStore};
 use super::outcome::{AcquisitionOutcome, CorruptReason, RejectReason, Unavailable};

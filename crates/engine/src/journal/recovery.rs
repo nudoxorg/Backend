@@ -184,7 +184,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
     pub(super) fn open_streaming_with_mode_and_sync<F, S>(
         path: impl AsRef<Path>,
         limits: JournalLimits,
-        mut visitor: F,
+        visitor: F,
         repair_torn_tail: bool,
         sync_scanned: S,
     ) -> Result<(Self, JournalScan<D>), JournalError>

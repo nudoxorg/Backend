@@ -456,7 +456,7 @@ impl LocalCompilerScratch {
     ///
     /// Returns the exact width or allocation rejection before a compiler owner is started.
     pub fn with_fragment_capacity(
-        capacity: core::num::NonZeroUsize,
+        capacity: NonZeroUsize,
     ) -> Result<Self, LocalCompilerScratchError> {
         if capacity.get() > u32::MAX as usize {
             return Err(LocalCompilerScratchError::CapacityWidth {

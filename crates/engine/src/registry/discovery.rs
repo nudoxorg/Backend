@@ -43,21 +43,30 @@ pub const fn discovery_source_identity(endpoint: &RegistryEndpoint) -> Discovery
 /// One page URL and its high-water commit time from the NuGet catalog index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NugetCatalogPageRef {
+    /// Exact URL to fetch for this catalog page.
     pub url: String,
+    /// Original commit timestamp text advertised by the catalog index.
     pub commit_timestamp: String,
+    /// Parsed source timestamp used for ordering and cursor construction.
     pub timestamp: DiscoveryTimestamp,
+    /// Catalog commit identity that distinguishes otherwise equal timestamps.
     pub commit_id: String,
+    /// Number of leaf entries advertised for this catalog page.
     pub count: usize,
 }
 
 /// Bounded plan obtained from an official NuGet Catalog/3.0.0 index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NugetCatalogPlan {
+    /// Cursor supplied by the caller before this bounded catalog walk.
     pub previous_cursor: DiscoveryCursor,
     /// Cursor to use after every selected page is admitted in full.
     pub next_cursor: DiscoveryCursor,
+    /// Highest commit cursor advertised by the catalog index at plan time.
     pub source_high_watermark: DiscoveryCursor,
+    /// Selected catalog pages in source order, bounded by the caller's page budget.
     pub pages: Vec<NugetCatalogPageRef>,
+    /// Whether the selected range is event-complete or still requires follow-up.
     pub completeness: DiscoveryCompleteness,
     /// False when the page budget leaves later catalog pages for a follow-up.
     pub is_caught_up: bool,
@@ -67,50 +76,73 @@ pub struct NugetCatalogPlan {
 /// is fetched separately for the package identity and listed/deleted state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NugetCatalogLeafRef {
+    /// Exact leaf URL to fetch for the catalog event.
     pub url: String,
+    /// Original commit timestamp text advertised by the page entry.
     pub commit_timestamp: String,
+    /// Parsed source timestamp used for event ordering.
     pub timestamp: DiscoveryTimestamp,
+    /// Catalog commit identity that distinguishes events at the same timestamp.
     pub commit_id: String,
 }
 
 /// A NuGet catalog event admitted from its leaf document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NugetCatalogEvent {
+    /// Package and version named by the admitted catalog leaf.
     pub coordinate: PackageCoordinate,
+    /// Published, yanked, or withdrawn standing observed in the leaf.
     pub standing: DiscoveryStanding,
+    /// Original timestamp string from the catalog event.
     pub commit_timestamp: String,
+    /// Parsed timestamp corresponding to `commit_timestamp`.
     pub timestamp: DiscoveryTimestamp,
+    /// Source commit identifier for the leaf event.
     pub commit_id: String,
+    /// Digest of the exact leaf bytes used to admit this event.
     pub proof: [u8; 32],
+    /// Metadata facets parsed from the same leaf response.
     pub metadata: DiscoveryMetadata,
 }
 
 /// One package version observation decoded from a native catalog response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryReleaseObservation {
+    /// Exact package coordinate represented by this release row.
     pub coordinate: PackageCoordinate,
+    /// Source-observed standing for this package version.
     pub standing: DiscoveryStanding,
+    /// Source event time when the adapter exposes one in its original form.
     pub source_event_time: Option<String>,
+    /// Digest of the source evidence used to admit this observation.
     pub proof: [u8; 32],
+    /// Metadata facets attached to the same admitted source observation.
     pub metadata: DiscoveryMetadata,
 }
 
 /// Bounded page from npm's CouchDB-compatible replication changes endpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NpmChangesPage {
+    /// Replication sequence from which this request continues.
     pub previous_cursor: DiscoveryCursor,
+    /// Last sequence returned after the page's package rows are admitted.
     pub next_cursor: DiscoveryCursor,
+    /// Highest sequence the source exposed when the page was read.
     pub source_high_watermark: DiscoveryCursor,
     /// Number of additional feed items when the source provides it.
     pub pending: u64,
+    /// Parsed change rows in the exact order returned by the feed.
     pub packages: Vec<NpmChangedPackage>,
+    /// Completeness of this bounded page relative to the source high-water mark.
     pub completeness: DiscoveryCompleteness,
 }
 
 /// Current packument carried by one npm change row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NpmChangedPackage {
+    /// Exact package name used by the npm changes feed.
     pub name: String,
+    /// Whether this feed row represents package deletion.
     pub deleted: bool,
     /// True when the replication feed omitted package metadata and a current
     /// packument must be fetched from the public metadata API.
@@ -119,16 +151,22 @@ pub struct NpmChangedPackage {
     pub revision: Option<String>,
     /// Whether the observed packument exceeded the accepted version window.
     pub is_truncated: bool,
+    /// Source event time carried by this change row.
     pub source_event_time: String,
+    /// Digest of the exact feed-row bytes used to admit the change.
     pub proof: [u8; 32],
+    /// Release facts obtained from the current packument, if it was fetched.
     pub releases: Vec<DiscoveryReleaseObservation>,
 }
 
 /// Current npm packument fetched separately from the replication feed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NpmPackument {
+    /// Revision of the current packument, when the endpoint returned one.
     pub revision: Option<String>,
+    /// Release standing and metadata parsed from the package document.
     pub releases: Vec<DiscoveryReleaseObservation>,
+    /// Whether the configured version window omitted older release rows.
     pub is_truncated: bool,
 }
 
@@ -183,7 +221,9 @@ fn hash_typed_json<T: Serialize>(value: &T) -> Result<[u8; 32], DiscoveryError> 
 pub struct PypiProjectList {
     /// Optional implementation-specific serial; PEP 691 does not require it.
     pub serial: Option<u64>,
+    /// Project names admitted from this bounded listing response.
     pub projects: Vec<PypiProjectRef>,
+    /// Whether the project listing ended before its complete source snapshot.
     pub is_truncated: bool,
 }
 
@@ -199,9 +239,13 @@ pub struct PypiProjectRef {
 /// Bounded exact-project JSON metadata and release history from PyPI.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PypiProjectMetadata {
+    /// Source-reported project name for the exact metadata response.
     pub name: String,
+    /// Latest version advertised by the project, when supplied.
     pub latest_version: Option<String>,
+    /// Release rows admitted from this project's metadata document.
     pub releases: Vec<DiscoveryReleaseObservation>,
+    /// Whether the configured release window omitted older versions.
     pub is_truncated: bool,
 }
 
@@ -209,27 +253,39 @@ pub struct PypiProjectMetadata {
 /// ranking view, not a change feed, and remains explicitly windowed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MavenSearchPage {
+    /// Search offset requested from Maven Central.
     pub offset: u64,
+    /// Offset to request after consuming this page.
     pub next_offset: u64,
+    /// Total result count reported by the mutable search response.
     pub total_results: u64,
+    /// Release observations admitted from this page.
     pub releases: Vec<DiscoveryReleaseObservation>,
+    /// Completeness of this bounded search window.
     pub completeness: DiscoveryCompleteness,
 }
 
 /// Bounded page from index.golang.org's append-oriented module index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GoModuleIndexPage {
+    /// Index cursor supplied by the caller before this page.
     pub previous_cursor: DiscoveryCursor,
+    /// Last module event cursor returned by this page.
     pub next_cursor: DiscoveryCursor,
+    /// Highest source cursor observed while planning the bounded page.
     pub source_high_watermark: DiscoveryCursor,
+    /// Module release observations admitted in source order.
     pub releases: Vec<DiscoveryReleaseObservation>,
+    /// Whether the page reached the source high-water mark.
     pub completeness: DiscoveryCompleteness,
 }
 
 /// Conan Center recipe entry located in its source forge tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConanRecipeRef {
+    /// Recipe directory name in the Conan Center Index tree.
     pub name: String,
+    /// Repository-relative path of the recipe's `conanfile.py` entry.
     pub config_path: String,
 }
 
@@ -237,8 +293,11 @@ pub struct ConanRecipeRef {
 /// not package binaries, archives, or quality scores.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConanRecipeTree {
+    /// Commit tree identity from which the recipe paths were enumerated.
     pub tree_sha: String,
+    /// Whether the configured recipe limit omitted additional paths.
     pub truncated: bool,
+    /// Bounded recipe paths observed in that tree.
     pub recipes: Vec<ConanRecipeRef>,
 }
 
@@ -1412,9 +1471,13 @@ pub fn parse_nuget_catalog_leaf(bytes: &[u8]) -> Result<NugetCatalogEvent, Disco
 /// One newest-version row from the crates.io recent-updates listing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CratesRecentRelease {
+    /// Package coordinate represented by the recent-update row.
     pub coordinate: PackageCoordinate,
+    /// Source-reported update timestamp in its original string form.
     pub updated_at: String,
+    /// Digest of the exact listing response used to admit this row.
     pub proof: [u8; 32],
+    /// Metadata facets parsed from the source listing row.
     pub metadata: DiscoveryMetadata,
 }
 
@@ -1422,26 +1485,37 @@ pub struct CratesRecentRelease {
 /// move while crates.io receives updates and it is not an event cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CratesRecentPage {
+    /// Page number requested from the mutable recent-updates listing.
     pub requested_page: u32,
+    /// Number of pages reported by the listing, when available.
     pub total_pages: Option<u32>,
+    /// Opaque cursor to use for the next bounded listing request.
     pub next_cursor: DiscoveryCursor,
+    /// Completeness of this mutable offset window.
     pub completeness: DiscoveryCompleteness,
+    /// Newest release rows returned by this page.
     pub releases: Vec<CratesRecentRelease>,
 }
 
 /// Exact release standing observed in one Cargo sparse-index package file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CratesSparseRelease {
+    /// Package coordinate for this sparse-index version entry.
     pub coordinate: PackageCoordinate,
+    /// Published or yanked status recorded in the index entry.
     pub standing: DiscoveryStanding,
+    /// Digest of the exact sparse-index bytes used for this release.
     pub proof: [u8; 32],
+    /// Metadata facets parsed from this version entry.
     pub metadata: DiscoveryMetadata,
 }
 
 /// A complete current version/yank snapshot for one known crates.io package.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CratesSparsePackage {
+    /// Crate name shared by every release in this index snapshot.
     pub package_name: String,
+    /// Complete bounded set of version and yank facts from the index file.
     pub releases: Vec<CratesSparseRelease>,
 }
 

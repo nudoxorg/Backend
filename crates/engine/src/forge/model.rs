@@ -98,7 +98,7 @@ impl ForgeAcquisitionResult {
     /// association used by package/release joins.
     pub fn registry_association(
         &self,
-        registry: backend_library::PackageReference,
+        registry: PackageReference,
     ) -> Result<backend_library::RegistryForgeAssociation, ForgeProtocolError> {
         self.registry_association_with(
             registry,
@@ -113,7 +113,7 @@ impl ForgeAcquisitionResult {
     /// provenance and confidence classification.
     pub fn registry_association_with(
         &self,
-        registry: backend_library::PackageReference,
+        registry: PackageReference,
         provenance: backend_library::RegistryForgeProvenance,
         confidence: backend_library::RegistryForgeConfidence,
     ) -> Result<backend_library::RegistryForgeAssociation, ForgeProtocolError> {

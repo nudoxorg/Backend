@@ -28,7 +28,9 @@ pub enum DeltaError {
     InvalidChanges(IdentityError),
     /// The caller supplied a source root other than the bound base root.
     StaleBase {
+        /// Snapshot identity required by the delta's declared base.
         expected: SourceSnapshotId,
+        /// Snapshot identity supplied for this application attempt.
         actual: SourceSnapshotId,
     },
     /// A before value did not match the base manifest.

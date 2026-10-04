@@ -57,8 +57,11 @@ pub struct SourceSpanFact {
 /// fault, so callers can distinguish protocol shape from resource demand.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TypeChildLane {
+    /// Request-wide arena for children attached directly to declared types.
     Declared,
+    /// Request-wide arena for references among anonymous type rows.
     Anonymous,
+    /// Request-wide arena for references among computed type rows.
     Computed,
 }
 
@@ -85,8 +88,11 @@ pub enum FactFault {
     ChildCapacity,
     /// The request-level flat product-child arena is exhausted.
     ProductChildPoolCapacity {
+        /// Number of child slots already admitted.
         used: usize,
+        /// Additional child slots required by the rejected fact.
         requested: usize,
+        /// Total child slots reserved for this request.
         capacity: usize,
     },
     /// The constructor payload disagrees with its child count.
@@ -131,9 +137,13 @@ pub enum FactFault {
     TypeChildCapacity,
     /// One request-level flat type-child arena is exhausted.
     TypeChildPoolCapacity {
+        /// Exact request-wide child arena that was exhausted.
         lane: TypeChildLane,
+        /// Number of child slots already admitted in this lane.
         used: usize,
+        /// Additional child slots required by the rejected type record.
         requested: usize,
+        /// Total child slots reserved for this lane.
         capacity: usize,
     },
     /// The anonymous type-row pool is full.
@@ -163,7 +173,12 @@ pub enum FactFault {
     /// The type-parameter lane is full.
     TypeParameterCapacity,
     /// The ordered type/lifetime bound lane is full.
-    TypeParameterBoundCapacity { requested: usize, available: usize },
+    TypeParameterBoundCapacity {
+        /// Number of ordered lifetime/type bounds required by this record.
+        requested: usize,
+        /// Number of bound slots remaining in the request-wide lane.
+        available: usize,
+    },
     /// A pooled reference lane is full.
     RefListCapacity,
     /// A pooled reference list has too many elements.
@@ -185,6 +200,7 @@ pub enum FactFault {
         entity: u32,
         /// Observed half-open source range.
         start: u32,
+        /// Exclusive end offset supplied by the authority.
         end: u32,
         /// Exact entered primary source length.
         source_len: u32,
@@ -233,22 +249,34 @@ pub struct FactRejection {
 #[derive(Debug)]
 pub enum ClangProjectionFault {
     /// An authority source span escaped the entered source lease.
-    Span { span: ClangSourceSpan },
+    Span {
+        /// Exact source span supplied by the Clang authority.
+        span: ClangSourceSpan,
+    },
     /// A declaration requiring a name had no nonempty authority name span.
-    Nameless { declaration: ClangDeclarationId },
+    Nameless {
+        /// Native declaration that lacked the required name span.
+        declaration: ClangDeclarationId,
+    },
     /// An anonymous authority type had no representable owning declaration.
     Anchor,
     /// An authority coordinate could not fit the bounded projection index.
     IndexCapacity,
     /// An override named a foreign native identity with no exact public key.
-    ForeignOverride { identity: SymbolIdentity },
+    ForeignOverride {
+        /// Exact native identity that could not be tied to an emitted local declaration.
+        identity: SymbolIdentity,
+    },
     /// A reference named a foreign native identity with no exact public key.
     ///
     /// Its source spelling is presentation, not identity: overloaded native
     /// declarations may share it. Until the authority schema carries the
     /// complete native key, lowering stops with the supplied identity rather
     /// than manufacturing a foreign path from use-site text.
-    ForeignReference { identity: SymbolIdentity },
+    ForeignReference {
+        /// Exact native identity that could not be tied to an emitted local declaration.
+        identity: SymbolIdentity,
+    },
     /// Direct `const`/`volatile`/`restrict` facts named a native shape on
     /// which those qualifiers are not semantically legal. The full authority
     /// row operands remain inspectable; no qualifier is silently relocated.

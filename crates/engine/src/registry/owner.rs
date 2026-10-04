@@ -172,35 +172,35 @@ pub enum RegistryReadiness {
     /// Source is configured but has not completed a poll in this process.
     Configured {
         /// Credential-free source identity.
-        source: super::RegistryId,
+        source: RegistryId,
         /// Committed cursor sequence.
         cursor: u64,
     },
     /// Network use is disabled by local-first policy.
     Offline {
         /// Credential-free source identity.
-        source: super::RegistryId,
+        source: RegistryId,
         /// Committed cursor sequence.
         cursor: u64,
     },
     /// The latest poll reached a definitive authenticated response.
     Ready {
         /// Credential-free source identity.
-        source: super::RegistryId,
+        source: RegistryId,
         /// Committed cursor sequence.
         cursor: u64,
     },
     /// The latest poll could not reach the source before its deadline.
     Unavailable {
         /// Credential-free source identity.
-        source: super::RegistryId,
+        source: RegistryId,
         /// Committed cursor sequence.
         cursor: u64,
     },
     /// The source asked this process to retry later.
     RetryScheduled {
         /// Credential-free source identity.
-        source: super::RegistryId,
+        source: RegistryId,
         /// Committed cursor sequence.
         cursor: u64,
     },
@@ -232,7 +232,7 @@ pub enum AcquisitionError {
     /// Durable history is inconsistent or noncanonical.
     CorruptJournal,
     /// Filesystem persistence failed.
-    Io(std::io::Error),
+    Io(io::Error),
     /// Generic journal failed.
     Journal(JournalError),
     /// Configured fault boundary fired.
@@ -267,8 +267,8 @@ impl fmt::Display for AcquisitionError {
     }
 }
 impl std::error::Error for AcquisitionError {}
-impl From<std::io::Error> for AcquisitionError {
-    fn from(value: std::io::Error) -> Self {
+impl From<io::Error> for AcquisitionError {
+    fn from(value: io::Error) -> Self {
         Self::Io(value)
     }
 }
@@ -728,7 +728,7 @@ impl RegistryOwner {
 
     /// Credential-free source identity used by the acquisition layer.
     #[must_use]
-    pub const fn source_id(&self) -> super::RegistryId {
+    pub const fn source_id(&self) -> RegistryId {
         self.endpoint.id()
     }
 
@@ -1059,7 +1059,7 @@ impl RegistryOwner {
     )]
     pub(crate) fn poll<T: RegistryTransport>(
         &mut self,
-        capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
+        _capability: &crate::acquisition::AcquisitionPublicationCapability<'_>,
         transport: &mut T,
     ) -> Result<AcquisitionOutcome, AcquisitionError> {
         if self.policy == AcquisitionPolicy::Offline {
@@ -1501,7 +1501,7 @@ fn content_store_error(error: ContentStoreError) -> AcquisitionError {
 
 fn archive_transfer_id(package: &super::RemotePackage) -> TransferId {
     let mut transfer_key = Vec::with_capacity(
-        package.coordinate.as_str().len() + std::mem::size_of_val(&package.integrity_version()),
+        package.coordinate.as_str().len() + size_of_val(&package.integrity_version()),
     );
     transfer_key.extend_from_slice(package.coordinate.as_str().as_bytes());
     transfer_key.extend_from_slice(&package.integrity_version());

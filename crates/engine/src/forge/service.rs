@@ -561,14 +561,14 @@ impl ForgeAcquisitionService {
             .store
             .open_object(archive_id)
             .map_err(ForgeAcquisitionError::Content)?;
-        let files = super::archive::extract_archive(
+        let files = archive::extract_archive(
             &mut archive_object,
             format,
             root_prefix.as_deref(),
             &self.limits.archive_budget,
         )
         .map_err(ForgeAcquisitionError::Rejected)?;
-        let manifests = super::manifest::discover_manifests(&files, coordinate.subdir())
+        let manifests = manifest::discover_manifests(&files, coordinate.subdir())
             .map_err(ForgeAcquisitionError::Rejected)?;
         let mut builder = ArchiveManifestBuilder::new(self.limits.archive_budget);
         for file in files {

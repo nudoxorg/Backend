@@ -25,6 +25,7 @@ mod storage;
 pub use self::binding_store::{BindingIoPhase, BindingStoreError};
 /// Exact construction failures while rebuilding one complete compiler generation closure.
 pub use self::generation::GenerationBuildError;
+#[cfg(test)]
 pub(crate) use self::generation::verify_reopened_semantic_generation;
 pub(crate) use self::publication::PreparedSemanticOutput;
 pub(crate) use self::publication::prepare_semantic_bytes;

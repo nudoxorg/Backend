@@ -1357,7 +1357,7 @@ impl EcosystemAdapter {
                 native_metadata: release.native_metadata.clone(),
                 advisory: None,
                 dependency_facts: release.dependency_facts.clone(),
-                archive_url: std::sync::Arc::from(release.archive_url.as_str()),
+                archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();
         if releases.is_empty() && self.target_version().is_some() {

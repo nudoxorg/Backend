@@ -29,7 +29,10 @@ pub enum AttemptFailure {
     /// Request timed out.
     Timeout,
     /// Server requested a retry, optionally with Retry-After milliseconds.
-    RateLimited { retry_after_millis: Option<u64> },
+    RateLimited {
+        /// Server-provided delay before another attempt, when present.
+        retry_after_millis: Option<u64>,
+    },
     /// Source returned an unavailable response.
     Unavailable,
     /// Source returned an explicit negative fact.
@@ -145,7 +148,10 @@ pub enum CircuitState {
     /// Requests flow normally.
     Closed,
     /// Requests fail fast until `until_millis`.
-    Open { until_millis: u64 },
+    Open {
+        /// Millisecond timestamp after which one probe may enter half-open state.
+        until_millis: u64,
+    },
     /// Exactly one probe may run.
     HalfOpen,
 }

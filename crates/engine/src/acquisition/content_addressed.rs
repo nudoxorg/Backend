@@ -95,7 +95,10 @@ pub enum ContentStoreError {
     /// A filesystem operation failed.
     Io(io::Error),
     /// A byte or entry budget was exceeded.
-    Bounds { maximum: u64 },
+    Bounds {
+        /// Maximum encoded object size permitted by the active content-store policy.
+        maximum: u64,
+    },
     /// The stream did not match the authenticated object identity.
     DigestMismatch {
         /// The expected object identity.
@@ -123,12 +126,18 @@ pub enum ContentStoreError {
     /// Another process or thread holds the transfer's exclusive owner lock.
     TransferBusy,
     /// A claimed object on disk failed an explicit integrity verification.
-    CorruptObject { path: PathBuf },
+    CorruptObject {
+        /// Path of the content-addressed object whose bytes failed verification.
+        path: PathBuf,
+    },
     /// A caller rejected the staged bytes before immutable publication.
     ///
     /// The temporary is moved to quarantine before this error is returned so
     /// an integrity or policy rejection can never become a reachable object.
-    VerificationRejected { quarantine: Option<PathBuf> },
+    VerificationRejected {
+        /// Quarantine destination, when the rejected object could be preserved there.
+        quarantine: Option<PathBuf>,
+    },
     /// A supplied archive path is not a safe canonical relative path.
     InvalidArchivePath,
     /// An archive path was admitted more than once.
@@ -2106,8 +2115,8 @@ fn acquire_transfer_owner(path: &Path, token: [u8; ID_BYTES]) -> Result<File, Co
     let mut file = backend_platform::durability::open_or_create_regular_file_nofollow(path)?;
     match file.try_lock() {
         Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Err(ContentStoreError::TransferBusy),
-        Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        Err(fs::TryLockError::WouldBlock) => return Err(ContentStoreError::TransferBusy),
+        Err(fs::TryLockError::Error(error)) => return Err(error.into()),
     }
     if let Some(parent) = path.parent() {
         sync_directory(parent)?;
@@ -2206,7 +2215,7 @@ where
 }
 
 fn read_checkpoint(path: &Path) -> Result<Option<TransferCheckpoint>, ContentStoreError> {
-    let mut file = match backend_platform::durability::open_regular_file_nofollow(path) {
+    let file = match backend_platform::durability::open_regular_file_nofollow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),

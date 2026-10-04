@@ -54,7 +54,7 @@ pub(super) fn scan_path<D: JournalCodec, F>(
     path: &Path,
     limits: JournalLimits,
     checkpoint: Option<JournalCheckpoint<D>>,
-    mut visitor: F,
+    visitor: F,
 ) -> Result<JournalScan<D>, JournalError>
 where
     F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,

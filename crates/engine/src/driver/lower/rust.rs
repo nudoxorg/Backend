@@ -82,9 +82,9 @@ use backend_frontend_rust::legacy::{
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
     ExternalFragmentId, ForeignKey, ForeignOrigin, ListSpan, NominalRef, Occurrence,
-    OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole,
-    ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
-    SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
+    OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ProductChildRole, ReferenceKind,
+    RelSpan, RustFacts, RustOwnership, SemanticProductConstructor, SemanticTypeRecord,
+    SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
 };
 use ra_ap_syntax::{
     AstNode, SyntaxNode,
@@ -113,7 +113,7 @@ const MAX_TYPE_DEPTH: usize = 16;
 /// Maximum children of one compound row. This is the shared type-child lane,
 /// not a separate Rust fold. A tuple, callable, or application inside the
 /// lane keeps every child; only a row past the lane still folds.
-const MAX_COMPOUND_CHILDREN: usize = super::MAX_TYPE_CHILDREN;
+const MAX_COMPOUND_CHILDREN: usize = MAX_TYPE_CHILDREN;
 /// Maximum entries of the anonymous foreign-leaf row dedup table. Measured
 /// against the real corpus demand: a fixture crate root re-exports whole
 /// dependency surfaces (`itertools`'s written re-export list alone names
@@ -146,7 +146,7 @@ pub(crate) enum RustCollectError {
     /// rust-analyzer could not open, resolve, or query the selected Cargo graph.
     Authority(RustAuthorityError),
     /// Canonical admission rejected one borrowed HIR declaration.
-    Lowering(backend_semantic::vocabulary::LoweringUnsupported),
+    Lowering(LoweringUnsupported),
 }
 
 /// Runs a non-escaping rust-analyzer transaction and emits the complete
@@ -248,7 +248,7 @@ fn push<'source>(
     fact: SemanticFact<'source>,
 ) -> Result<usize, RustAuthorityError> {
     push_fact(facts, fact).map_err(|cause| RustAuthorityError::Admission {
-        cause: backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
+        cause: LoweringUnsupported::FactRejected {
             fact: portable_count(cause.fact),
             name_len: portable_count(cause.name_len),
             cause: portable_admission(cause.cause),
@@ -271,7 +271,7 @@ fn admission() -> RustAuthorityError {
 /// diagnosable without consulting emission order.
 fn parentage_fault(ordinal: u32, name_len: usize, fault: FactFault) -> RustAuthorityError {
     RustAuthorityError::Admission {
-        cause: backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
+        cause: LoweringUnsupported::FactRejected {
             fact: portable_count(ordinal as usize),
             name_len: portable_count(name_len),
             cause: portable_admission(fault),
@@ -3877,7 +3877,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Captures the written visibility prefix of one syntax item.
-    fn visibility_of(&self, syntax: &ra_ap_syntax::SyntaxNode) -> backend_semantic::ir::Visibility {
+    fn visibility_of(&self, syntax: &SyntaxNode) -> backend_semantic::ir::Visibility {
         let Some(visibility) =
             ast::AnyHasVisibility::cast(syntax.clone()).and_then(|item| item.visibility())
         else {

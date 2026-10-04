@@ -41,7 +41,7 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
-    pub(super) fn update(&self, update: impl FnOnce(&mut TelemetryCounters)) {
+    fn update(&self, update: impl FnOnce(&mut TelemetryCounters)) {
         let mut counters = self
             .counters
             .lock()

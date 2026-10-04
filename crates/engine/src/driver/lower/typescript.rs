@@ -8099,7 +8099,7 @@ fn intern_computed_children<'source>(
 }
 
 /// Links one bounded child run under a new anonymous row and interns it.
-fn intern_computed_row<'a, 'source>(
+fn intern_computed_row<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
     record: SemanticTypeRecord<'source>,
@@ -8116,7 +8116,7 @@ fn intern_computed_row<'a, 'source>(
         .map_err(|cause| computed_fault(registry, owner, cause))
 }
 
-fn intern_computed_leaf<'a, 'source>(
+fn intern_computed_leaf<'source>(
     facts: &mut FactSet<'source>,
     record: SemanticTypeRecord<'source>,
     owner: u32,

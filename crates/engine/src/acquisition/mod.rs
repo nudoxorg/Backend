@@ -56,22 +56,12 @@ pub use retry::{
 pub use service::{AcquisitionCoordinator, AcquisitionService, RegistryAcquisitionResult};
 pub use telemetry::{AcquisitionTelemetry, Telemetry};
 
-use delta::{merge_manifest_entries, snapshot_changes};
-use freshness::{
-    FactObservation, MAX_FACT_OBSERVATIONS, observed_facts_at, remember_fact_observation,
-};
-use identity::{
-    CHUNK_BYTES, ID_BYTES, canonical_text, collect_directory, digest, frame, now_millis,
-};
 use lease::TOKEN_COUNTER;
-use outcome::{promote_bytes_outcome, promote_void_outcome};
-use service::{
-    CatalogSnapshotKey, ExistingRegistryTransport, SharedSlot, SharedSlotValue,
-    registry_catalog_snapshot, registry_error_outcome, registry_result,
-};
 
 #[cfg(test)]
 mod tests {
+    use super::freshness::{MAX_FACT_OBSERVATIONS, observed_facts_at, remember_fact_observation};
+    use super::identity::now_millis;
     use super::*;
     use backend_execution::Cancellation;
     use std::sync::{

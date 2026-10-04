@@ -84,10 +84,10 @@ fn claim_new(path: &Path) -> io::Result<(File, OwnedFile)> {
         drop(file);
         let _ = fs::remove_file(path);
         return Err(match error {
-            std::fs::TryLockError::WouldBlock => {
+            fs::TryLockError::WouldBlock => {
                 io::Error::other("new private file lock was unexpectedly busy")
             }
-            std::fs::TryLockError::Error(error) => error,
+            fs::TryLockError::Error(error) => error,
         });
     }
     Ok((file, OwnedFile { _claim: claim }))
@@ -156,11 +156,11 @@ fn reclaim_unowned(path: &Path) -> io::Result<Reclaimed> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Reclaimed::Absent),
             Err(error) => Err(error),
         },
-        Err(std::fs::TryLockError::WouldBlock) => Ok(Reclaimed::Owned),
-        Err(std::fs::TryLockError::Error(error)) if error.kind() == io::ErrorKind::NotFound => {
+        Err(fs::TryLockError::WouldBlock) => Ok(Reclaimed::Owned),
+        Err(fs::TryLockError::Error(error)) if error.kind() == io::ErrorKind::NotFound => {
             Ok(Reclaimed::Absent)
         }
-        Err(std::fs::TryLockError::Error(error)) => Err(error),
+        Err(fs::TryLockError::Error(error)) => Err(error),
     }
 }
 

@@ -13,7 +13,7 @@ use backend_compile::{
     MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
     ProcessEnvironment, ProcessLimits, ToolchainArtifact,
 };
-use std::fs::{self, File};
+use std::fs;
 use std::io::Read;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
@@ -231,7 +231,10 @@ pub enum EmbeddingRuntimeStatus {
     /// No embedding runtime has been provisioned; Optional behavior is used.
     NotConfigured,
     /// The exact configured runtime passed artifact checks and a real process self-test.
-    Available { recipe: [u8; 32] },
+    Available {
+        /// Digest of the exact provisioned runtime recipe that passed self-test.
+        recipe: [u8; 32],
+    },
     /// A configured runtime could not activate; Optional keeps IR and Required fails staging.
     Unavailable(EmbeddingUnavailableReason),
 }

@@ -60,8 +60,7 @@ pub struct RemotePackage {
     /// fail-closed when an advisory gate is configured by the product composition.
     pub advisory: Option<AdvisoryObservation>,
     /// Native or archive dependency facts carried with the same source frontier.
-    pub dependency_facts:
-        backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+    pub dependency_facts: DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
     pub(super) archive_url: Arc<str>,
 }
 
@@ -207,7 +206,7 @@ impl ArchiveArtifact {
             ArchiveArtifactSource::Bytes(bytes) => Ok(bytes),
             ArchiveArtifactSource::File(path) => {
                 let result = (|| {
-                    let mut file = File::open(&path).map_err(|_| TransportFailure::Protocol)?;
+                    let file = File::open(&path).map_err(|_| TransportFailure::Protocol)?;
                     let mut bytes = Vec::with_capacity(length);
                     file.take(this.body_length.saturating_add(1))
                         .read_to_end(&mut bytes)
@@ -244,7 +243,7 @@ impl ArchiveArtifact {
                 hex_digest(hasher.finalize().as_slice())
             }
             ChecksumAlgorithm::Sha256 => {
-                let mut hasher = sha2::Sha256::new();
+                let mut hasher = Sha256::new();
                 while let Some(read) = reader.read_chunk(&mut buffer)? {
                     total = total
                         .checked_add(u64::try_from(read).map_err(|_| TransportFailure::Bounds)?)
@@ -441,7 +440,7 @@ impl RemotePackage {
             ArchiveIntegrity::Native(checksum)
                 if checksum.algorithm() == ChecksumAlgorithm::Sha256
         )
-        .then(sha2::Sha256::new);
+        .then(Sha256::new);
         let mut sha512 = matches!(
             &self.integrity,
             ArchiveIntegrity::Native(checksum)
@@ -1459,8 +1458,8 @@ impl HttpRegistryTransport {
                 .filter(|value| !value.is_empty())
                 .ok_or(TransportFailure::Protocol)?;
             release.set_artifacts(vec![super::NativeArtifact {
-                filename: std::sync::Arc::from(filename),
-                url: std::sync::Arc::from(archive_url.as_str()),
+                filename: Arc::from(filename),
+                url: Arc::from(archive_url.as_str()),
                 checksum: release.checksum.clone(),
                 kind: artifact_kind,
                 requires_python: None,
@@ -1620,13 +1619,13 @@ impl HttpRegistryTransport {
             provenance.extend_from_slice(&module.provenance);
             provenance.extend_from_slice(&sum);
             let standing = if module.retracts.iter().any(|range| range.contains(version)) {
-                super::ReleaseFacts::new(
+                ReleaseFacts::new(
                     super::ReleaseStanding::Retracted,
                     super::DownloadCount::NotReported(super::DownloadCountGap::Unsupported),
                     super::SecurityStanding::Unassessed,
                 )
             } else {
-                super::ReleaseFacts::default()
+                ReleaseFacts::default()
             };
             let mut release = adapter.go_release(version, checksum, &provenance, standing)?;
             release.dependency_facts =
@@ -1638,8 +1637,8 @@ impl HttpRegistryTransport {
                 .filter(|value| !value.is_empty())
                 .ok_or(TransportFailure::Protocol)?;
             release.set_artifacts(vec![super::NativeArtifact {
-                filename: std::sync::Arc::from(filename),
-                url: std::sync::Arc::from(archive_url.as_str()),
+                filename: Arc::from(filename),
+                url: Arc::from(archive_url.as_str()),
                 checksum: release.checksum.clone(),
                 kind: super::NativeArtifactKind::GoSource,
                 requires_python: None,
@@ -1877,8 +1876,8 @@ impl HttpRegistryTransport {
             }
         };
         release.set_artifacts(vec![super::NativeArtifact {
-            filename: std::sync::Arc::from(archive_name),
-            url: std::sync::Arc::from(archive_url.as_str()),
+            filename: Arc::from(archive_name),
+            url: Arc::from(archive_url.as_str()),
             checksum: release.checksum.clone(),
             kind: artifact_kind,
             requires_python: None,

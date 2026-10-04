@@ -377,6 +377,10 @@ impl CompilerInputMerkleNodeV2 {
     }
 }
 
+/// Bounded persistent Merkle tree over canonical compiler-input pages.
+///
+/// Clones retain the root node and its structural origin, while equality uses
+/// the closed tree kind and root digest rather than allocation identity.
 #[derive(Clone, Debug)]
 pub struct CompilerInputMerkleTreeV2 {
     kind: CompilerInputTreeKindV2,

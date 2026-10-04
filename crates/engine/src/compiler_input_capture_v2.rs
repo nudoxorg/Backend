@@ -6,14 +6,12 @@
 //! assert a complete compiler read set or authorize incremental reuse.
 
 use crate::compiler_input_manifest_v2::{
-    CompilerInputManifestV2, CompilerInputManifestV2Error, CompilerInputManifestV2Schema,
-    CompilerInvocationRecipeV2, CompilerPackageTargetV2, CompilerReadFrontierStatusV2,
-    validate_compiler_input_path_v2,
+    CompilerInputManifestV2, CompilerInputManifestV2Error, CompilerInvocationRecipeV2,
+    CompilerPackageTargetV2, CompilerReadFrontierStatusV2, validate_compiler_input_path_v2,
 };
 use crate::compiler_input_tree_v2::{
-    CompilerInputMerklePageSchema, CompilerInputMerklePageV2, CompilerInputMerkleTreeV2,
-    CompilerInputTreeKindV2, CompilerInputTreeRecordV2, CompilerInputTreeV2Error,
-    CompilerWorkspaceFileRoleV2,
+    CompilerInputMerklePageV2, CompilerInputMerkleTreeV2, CompilerInputTreeKindV2,
+    CompilerInputTreeRecordV2, CompilerInputTreeV2Error, CompilerWorkspaceFileRoleV2,
 };
 use backend_execution::compiler_full_workspace_transfer_work_id;
 use backend_store::{
