@@ -131,8 +131,8 @@ impl Attachment {
     }
 }
 
-pub(crate) type PrepareSubscriptionReply =
-    dyn FnMut(LocalSubscriptionResponse) -> Result<Vec<u8>, ProtocolError>;
+pub(crate) type PrepareSubscriptionReply<'a> =
+    dyn FnMut(LocalSubscriptionResponse) -> Result<Vec<u8>, ProtocolError> + 'a;
 
 /// The lease a request operates on, if it names one.
 fn target_lease(operation: &LocalSubscriptionOperation) -> Option<LocalSubscriptionId> {
@@ -168,7 +168,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         &mut self,
         request_id: u64,
         request: LocalSubscriptionRequest,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, ProtocolError> {
         if request.request_id != request_id {
             return Err(ProtocolError::InvalidControl(
@@ -219,7 +219,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         &mut self,
         request_id: u64,
         operation: LocalSubscriptionOperation,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         match operation {
             LocalSubscriptionOperation::Open {
@@ -262,7 +262,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         cursor: &[u8],
         credit: usize,
         lease_ms: u64,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::LeaseBounds)?;
         let term = self.table.grant_term(lease_ms)?;
@@ -288,7 +288,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         cursor: &[u8],
         credit: usize,
         lease_ms: u64,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::LeaseBounds)?;
         let term = self.table.grant_term(lease_ms)?;
@@ -314,7 +314,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         requested: &[u8],
         term: LeaseMs,
         reply: SubscriptionReply,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let lease = attachment.lease();
         match reply {
@@ -466,7 +466,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         request_id: u64,
         lease: LocalSubscriptionId,
         credit: usize,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::CreditBounds)?;
         let at = self.table.now();
@@ -493,7 +493,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         request_id: u64,
         lease: LocalSubscriptionId,
         cursor: Box<[u8]>,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let at = self.table.now();
         self.table
@@ -519,7 +519,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         cursor: Box<[u8]>,
         credit: usize,
         lease_ms: u64,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let credit = EventCredit::new(credit).ok_or(LeaseRefusal::LeaseBounds)?;
         let term = self.table.grant_term(lease_ms)?;
@@ -548,7 +548,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         &mut self,
         request_id: u64,
         lease: LocalSubscriptionId,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let committed = self.table.now();
         self.table.active(lease, committed)?;
@@ -576,7 +576,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
         lease: LocalSubscriptionId,
         token: Box<[u8]>,
         credit: usize,
-        prepare: &mut PrepareSubscriptionReply,
+        prepare: &mut PrepareSubscriptionReply<'_>,
     ) -> Result<Vec<u8>, Failure> {
         let credit = PageCredit::new(credit).ok_or(LeaseRefusal::PageCreditBounds)?;
         let began = self.table.now();
