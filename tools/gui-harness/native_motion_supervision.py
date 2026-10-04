@@ -166,18 +166,19 @@ class LineChannel:
             if not block:
                 raise EOFError("native control channel closed")
             self.buffer.extend(block)
-            if len(self.buffer) > MAX_MESSAGE:
+            end = self.buffer.find(b"\n")
+            if end >= MAX_MESSAGE or (end < 0 and len(self.buffer) > MAX_MESSAGE):
                 raise ProtocolError("native control message exceeds 4096 bytes")
         if time.monotonic() >= deadline:
             raise ProtocolError("native control message completed after its first-byte deadline")
         line, _, rest = self.buffer.partition(b"\n")
         self.buffer = bytearray(rest)
         self.message_deadline = None
-        try:
-            row = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ProtocolError("invalid native control JSON") from error
-        if not isinstance(row, dict) or row.get("schema") != 1:
+        row, error = single_sidecar_record(line + b"\n")
+        if error is not None:
+            raise ProtocolError(f"invalid native control JSON: {error}")
+        assert row is not None
+        if type(row.get("schema")) is not int or row["schema"] != 1:
             raise ProtocolError("invalid native control schema")
         return row
 

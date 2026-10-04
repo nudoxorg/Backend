@@ -437,6 +437,179 @@ class NativeMotionTests(unittest.TestCase):
                 channel.receive(0.20)  # A second call cannot reset this line.
         self.assertAlmostEqual(clock.now, 100.20, places=5)
 
+    def test_control_line_rejects_duplicate_typed_and_non_json_admissions(self):
+        invalid = {
+            "duplicate schema": b'{"schema":1,"schema":1,"kind":"check"}\n',
+            "duplicate kind": b'{"schema":1,"kind":"check","kind":"permit"}\n',
+            "duplicate posted": b'{"schema":1,"kind":"done","posted":false,"posted":true}\n',
+            "duplicate held": b'{"schema":1,"kind":"check","held":false,"held":true}\n',
+            "duplicate index": b'{"schema":1,"kind":"permit","index":0,"index":1}\n',
+            "boolean schema": b'{"schema":true,"kind":"check"}\n',
+            "float schema": b'{"schema":1.0,"kind":"check"}\n',
+            "string schema": b'{"schema":"1","kind":"check"}\n',
+            "UTF8 BOM": b'\xef\xbb\xbf{"schema":1,"kind":"check"}\n',
+            "deep metadata": (b'{"schema":1,"kind":"check","meta":' + b'[' * 65 +
+                              b'0' + b']' * 65 + b'}\n'),
+            "NaN metadata": b'{"schema":1,"kind":"check","meta":NaN}\n',
+            "Infinity metadata": b'{"schema":1,"kind":"check","meta":Infinity}\n',
+            "negative Infinity metadata": b'{"schema":1,"kind":"check","meta":-Infinity}\n',
+            "infinite metadata": b'{"schema":1,"kind":"check","meta":1e999}\n',
+        }
+        for encoding, bom in (("utf-16-le", b'\xff\xfe'), ("utf-16-be", b'\xfe\xff'),
+                              ("utf-32-le", b'\xff\xfe\x00\x00'),
+                              ("utf-32-be", b'\x00\x00\xfe\xff')):
+            encoded = '{"schema":1,"kind":"check"}'.encode(encoding)
+            invalid[encoding] = encoded + b'\n'
+            invalid[encoding + " BOM"] = bom + encoded + b'\n'
+        for name, raw in invalid.items():
+            with self.subTest(case=name):
+                driver, peer = socket.socketpair()
+                try:
+                    peer.sendall(raw)
+                    peer.shutdown(socket.SHUT_WR)
+                    with self.assertRaises(motion.supervision.ProtocolError):
+                        motion.supervision.LineChannel(driver).receive(0.3)
+                finally:
+                    driver.close()
+                    peer.close()
+
+    def test_control_line_accepts_complete_peer_frames_and_buffered_successor(self):
+        frames = [
+            {"schema": 1, "kind": "Hello", "nonce": "café 😀"},
+            {"schema": 1, "kind": "permit", "index": 0, "action_kind": "key", "held": False},
+            {"schema": 1, "kind": "done", "index": 0, "action_kind": "key",
+             "posted": True, "held": False},
+            {"schema": 1, "kind": "stopped", "held": False},
+        ]
+        raw = b"".join((json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+                       for row in frames)
+        self.assertLess(len(raw), 1024, "one recv can buffer several complete peer frames")
+        driver, peer = socket.socketpair()
+        try:
+            peer.sendall(raw)
+            channel = motion.supervision.LineChannel(driver)
+            self.assertEqual(channel.receive(0.3), frames[0])
+            self.assertIn(b"\n", channel.buffer, "the next frame was already buffered")
+            for frame in frames[1:]:
+                self.assertEqual(channel.receive(0.3), frame)
+            self.assertEqual(channel.buffer, bytearray())
+        finally:
+            driver.close()
+            peer.close()
+
+    def test_control_line_bounds_each_frame_not_the_buffered_next_frame(self):
+        def padded_frame(length, marker):
+            prefix = f'{{"schema":1,"kind":"check","marker":"{marker}","padding":"'
+            suffix = '"}\n'
+            raw = (prefix + "x" * (length - len(prefix) - len(suffix)) + suffix).encode()
+            self.assertEqual(len(raw), length)
+            return raw
+
+        first = padded_frame(4001, "first")
+        second = padded_frame(620, "second")
+        driver, peer = socket.socketpair()
+        prefix_read = threading.Event()
+        errors = []
+        class ObservedSocket:
+            count = 0
+            def settimeout(self, timeout):
+                driver.settimeout(timeout)
+            def recv(self, size):
+                block = driver.recv(size)
+                self.count += len(block)
+                if self.count == 3500:
+                    prefix_read.set()
+                return block
+        try:
+            peer.sendall(first[:3500])
+            def finish():
+                if prefix_read.wait(1):
+                    peer.sendall(first[3500:] + second)
+                else:
+                    errors.append("receiver did not drain the first fragment")
+            writer = threading.Thread(target=finish)
+            writer.start()
+            channel = motion.supervision.LineChannel(ObservedSocket())
+            self.assertEqual(channel.receive(0.5)["marker"], "first")
+            self.assertTrue(channel.buffer, "successor bytes were already buffered")
+            self.assertEqual(channel.receive(0.5)["marker"], "second")
+            writer.join(1)
+            self.assertFalse(writer.is_alive())
+            self.assertFalse(errors)
+        finally:
+            driver.close()
+            peer.close()
+
+    def test_control_line_socketpair_fragment_timeout_and_frame_bound(self):
+        class ObservedSocket:
+            def __init__(self, connection, partial_seen):
+                self.connection = connection
+                self.partial_seen = partial_seen
+            def settimeout(self, timeout):
+                self.connection.settimeout(timeout)
+            def recv(self, size):
+                block = self.connection.recv(size)
+                if block and b"\n" not in block:
+                    self.partial_seen.set()
+                return block
+
+        row = {"schema": 1, "kind": "check", "held": False}
+        raw = (json.dumps(row, separators=(",", ":")) + "\n").encode()
+        driver, peer = socket.socketpair()
+        partial_seen = threading.Event()
+        errors = []
+        try:
+            peer.sendall(raw[:10])
+            def finish():
+                if partial_seen.wait(1):
+                    peer.sendall(raw[10:])
+                else:
+                    errors.append("receiver did not observe first fragment")
+            writer = threading.Thread(target=finish)
+            writer.start()
+            self.assertEqual(motion.supervision.LineChannel(ObservedSocket(driver, partial_seen)).receive(0.5), row)
+            writer.join(1)
+            self.assertFalse(writer.is_alive())
+            self.assertFalse(errors)
+        finally:
+            driver.close()
+            peer.close()
+
+        driver, peer = socket.socketpair()
+        try:
+            peer.sendall(raw[:10])
+            channel = motion.supervision.LineChannel(driver)
+            with self.assertRaisesRegex(motion.supervision.ProtocolError, "first-byte deadline"):
+                channel.receive(0.05)
+            peer.sendall(raw[10:])
+            with self.assertRaisesRegex(motion.supervision.ProtocolError, "first-byte deadline"):
+                channel.receive(0.5)
+        finally:
+            driver.close()
+            peer.close()
+
+        driver, peer = socket.socketpair()
+        try:
+            peer.sendall(b"x" * (motion.supervision.MAX_MESSAGE + 1))
+            with self.assertRaisesRegex(motion.supervision.ProtocolError, "exceeds 4096 bytes"):
+                motion.supervision.LineChannel(driver).receive(0.5)
+        finally:
+            driver.close()
+            peer.close()
+
+        prefix = '{"schema":1,"kind":"check","padding":"'
+        suffix = '"}\n'
+        bounded = (prefix + "x" * (motion.supervision.MAX_MESSAGE - len(prefix) - len(suffix)) + suffix).encode()
+        self.assertEqual(len(bounded), motion.supervision.MAX_MESSAGE)
+        driver, peer = socket.socketpair()
+        try:
+            peer.sendall(bounded)
+            self.assertEqual(motion.supervision.LineChannel(driver).receive(0.5)["kind"], "check")
+        finally:
+            driver.close()
+            peer.close()
+
+
     def test_supervised_late_permit_line_is_cancelled_before_policy_handles_it(self):
         class Clock:
             now = 0.0
