@@ -20,6 +20,34 @@ fn root() -> VersionedRoot {
 }
 
 #[test]
+fn publication_invalidates_same_root_seed_and_cannot_land_an_old_generation() {
+    let package = PackageRef::parse(PACKAGE).expect("package");
+    let key = PageKey::Package(package.clone());
+    let mut store = PageStore::default();
+    let mut stale = crate::shell::tests::dossier();
+    stale.outline = Known::unknown(crate::model::pages::GapReason::ReadFailed, "library record not found");
+    assert!(store.seed(SeedEntry::Package(package.clone(), Arc::new(stale.clone())), root()));
+    assert!(store.begin(&key, root()).expect("admission").is_none(), "same-root cached miss reproduces the suppression");
+    assert!(!store.revoke_owner_read(&key), "owner attachment preserves quiet launch handling");
+    assert!(store.invalidate_publication(&key), "a publication supersedes the launch snapshot itself");
+    assert!(!store.is_seeded(&key));
+    assert!(store.is_owner_read_revoked(&key));
+    assert_eq!(store.package(&package).activity(), crate::core::Activity::Waiting);
+    let stamp = store.stamp(&key);
+    assert!(!store.invalidate_publication(&key));
+    assert_eq!(store.stamp(&key), stamp, "a duplicate pending invalidation does not churn stamps");
+    let old = store.begin(&key, root()).expect("admission").expect("old read");
+    assert!(store.invalidate_publication(&key));
+    let current = store.begin(&key, root()).expect("admission").expect("new read");
+    assert_ne!(old, current);
+    assert_eq!(store.land(&key, old, Ok(PageValue::Package(stale))), Landing::Superseded);
+    assert_eq!(store.land(&key, current, Ok(read(&ReadRequest::Package(package.clone())))), Landing::Applied);
+    assert!(matches!(store.package(&package).loaded_value().expect("fresh dossier").outline, Known::Known(_)));
+    assert!(!store.is_owner_read_revoked(&key));
+    assert!(store.begin(&key, root()).expect("admission").is_none());
+}
+
+#[test]
 fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     let file = crate::navigation::CargoSourcePath::new("Cargo.toml").expect("relative file");
     let qualified = |digit: char| PackageRef::parse(&format!(

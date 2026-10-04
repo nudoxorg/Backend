@@ -31,6 +31,7 @@ mod cargo_tests;
 mod dependencies;
 mod keeper;
 mod owner_link;
+mod publication;
 #[cfg(test)]
 mod owner_read_tests;
 
@@ -571,6 +572,12 @@ impl DataStore {
     #[must_use]
     pub fn owner_serving(&self) -> bool {
         self.owner.is_current_serving()
+    }
+
+    /// Visible auxiliary readers also revalidate a superseded observation.
+    /// A cached predecessor does not retain current action or save admission.
+    pub(crate) fn observation_revoked(&self, key: &PageKey) -> bool {
+        self.pages.is_owner_read_revoked(key)
     }
 
     /// What the read pool is doing now.
@@ -1488,6 +1495,11 @@ mod tests {
                     Ok(PageValue::Symbol(page(symbol)))
                 }
                 ReadRequest::Health => Ok(PageValue::Health(health(7))),
+                ReadRequest::Package(package) => {
+                    let mut dossier = crate::shell::tests::dossier();
+                    dossier.package = package.clone();
+                    Ok(PageValue::Package(dossier))
+                }
                 _ => Err(ReadFailure::Unavailable(
                     UnavailableReason::Unsupported,
                     Arc::from("fixture reader"),
@@ -2263,6 +2275,68 @@ mod tests {
         rig.store
             .update(cx, |store, cx| store.admit_snapshot(next, cx));
         assert!(rig.take_events().is_empty());
+    }
+
+    #[gpui::test]
+    fn completed_publication_rereads_open_failed_outline_without_navigation_or_root_change(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx, 1);
+        let package = PackageRef::parse("pkg:cargo/fail@0.5.1").expect("release");
+        let key = PageKey::Package(package.clone());
+        let before = rig.store.read_with(cx, |store, _| store.snapshot());
+        rig.store.update(cx, |store, cx| {
+            let mut old = crate::shell::tests::dossier();
+            old.package = package.clone();
+            old.outline = Known::unknown(GapReason::ReadFailed, "library record not found");
+            assert!(store.pages.seed(crate::model::pages::SeedEntry::Package(package.clone(), Arc::new(old)), before.key()));
+            store.focus(vec![key.clone()], cx);
+        });
+        assert!(rig.store.read_with(cx, |store, _| store.package(&package).loaded_value()
+            .is_some_and(|dossier| matches!(dossier.outline, Known::Unknown(_)))));
+        let submitted = rig.store.read_with(cx, |store, _| store.stats().submitted);
+        rig.store.update(cx, |store, cx| {
+            store.packages_published(&BTreeSet::from([package.clone()]), cx);
+            assert!(!store.pages.is_seeded(&key));
+            assert!(store.pages.is_owner_read_revoked(&key));
+            assert_eq!(store.stats().submitted, submitted + 1);
+            assert!(Arc::ptr_eq(&before, &store.snapshot()));
+        });
+        rig.until(cx, |store| store.package(&package).loaded_value()
+            .is_some_and(|dossier| matches!(dossier.outline, Known::Known(_)))
+            && store.pool_activity().is_idle());
+        rig.store.update(cx, |store, cx| {
+            let settled = store.stats().submitted;
+            store.ensure(key.clone(), cx);
+            assert_eq!(store.stats().submitted, settled, "the repaired page is idempotently current");
+            assert_eq!(store.focused, BTreeSet::from([key]));
+            assert!(Arc::ptr_eq(&before, &store.snapshot()), "no route/history/root change was synthesized");
+        });
+    }
+
+    #[gpui::test]
+    fn publication_defers_hidden_pages_and_preserves_unrelated_content(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let changed = PackageRef::parse("pkg:cargo/fail@0.5.1").expect("release");
+        let other = PackageRef::parse("pkg:cargo/fail@0.5.0").expect("other release");
+        rig.store.update(cx, |store, cx| {
+            store.focus(Vec::new(), cx);
+            for package in [&changed, &other] {
+                let mut dossier = crate::shell::tests::dossier();
+                dossier.package = package.clone();
+                assert!(store.pages.seed(crate::model::pages::SeedEntry::Package(package.clone(), Arc::new(dossier)), store.snapshot.key()));
+            }
+            let other_stamp = store.stamp(&PageKey::Package(other.clone()));
+            let submitted = store.stats().submitted;
+            store.packages_published(&BTreeSet::from([changed.clone()]), cx);
+            assert_eq!(store.stats().submitted, submitted, "hidden pages cost no eager read");
+            assert_eq!(store.stamp(&PageKey::Package(other.clone())), other_stamp);
+            assert!(store.pages.is_seeded(&PageKey::Package(other.clone())));
+            assert!(store.pages.is_owner_read_revoked(&PageKey::Package(changed.clone())));
+            store.focus(vec![PageKey::Package(changed.clone())], cx);
+            assert_eq!(store.stats().submitted, submitted + 1, "Back/Forward revalidates on visitation");
+        });
+        rig.until(cx, |store| store.pool_activity().is_idle());
     }
 
     #[gpui::test]

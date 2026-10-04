@@ -16,6 +16,8 @@
 //! grows as its packages arrive.
 
 mod work;
+#[cfg(test)]
+mod publication_tests;
 
 pub(crate) use work::{Dependency, NOT_CARGO, Origin};
 #[cfg(test)]
@@ -32,7 +34,7 @@ use crate::model::pages::PackageRef;
 use crate::model::release::Release;
 use crate::model::{AppSnapshot, ProjectPhase};
 use gpui::{App, Global, Task, WeakEntity};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 pub(crate) use work::{Job, Landed};
 use work::Queue;
@@ -348,13 +350,27 @@ fn drain(cx: &mut App) {
             }
         }
     };
-    let mut added = false;
+    let mut published = BTreeSet::new();
     let additions = cx.global_mut::<Additions>();
     for landed in landed {
         match landed {
             Landed::Stage(release, stage) => {
-                added |= matches!(stage, Stage::Added(_) | Stage::Partial { .. });
                 let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { stage: Stage::Queued, askers: Vec::new() });
+                if entry.stage != stage {
+                    let page = match &stage {
+                        Stage::Added(page) | Stage::Partial { page, .. } => Some(page),
+                        _ => None,
+                    };
+                    if let Some(page) = page {
+                        published.insert(page.clone());
+                        // The source page and its registry discovery address
+                        // have distinct caches. This invalidates observations;
+                        // it does not grant a source-to-registry identity proof.
+                        if let Ok(package) = PackageRef::parse(&release.purl()) {
+                            published.insert(package);
+                        }
+                    }
+                }
                 entry.stage = stage;
                 tell(&entry.askers);
                 for project in additions.projects.values() {
@@ -385,7 +401,7 @@ fn drain(cx: &mut App) {
             Asker::Everyone => cx.refresh_windows(),
         }
     }
-    if added && let Some(root) = root {
-        let _ = root.update(cx, |root, cx| root.refresh_root(cx));
+    if !published.is_empty() && let Some(root) = root {
+        let _ = root.update(cx, |root, cx| root.packages_published(&published, cx));
     }
 }

@@ -588,6 +588,15 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             }
             return false;
         }
+        self.invalidate(key)
+    }
+
+    /// Publication changes invalidate launch bytes as well as live reads.
+    /// Their immutable predecessor stays visible without current admission.
+    fn invalidate(&mut self, key: &K) -> bool {
+        let Some(slot) = self.map.get_mut(key) else {
+            return false;
+        };
         if slot.provenance == Provenance::Revoked
             && !slot.running()
             && slot.asked_at.is_none()
@@ -923,6 +932,19 @@ impl PageStore {
                 | PageKey::Orbit | PageKey::Health | PageKey::Browse(_) => {
                 dispatch!(self, key, |slots, k| slots.revoke_owner_read(k))
             }
+        }
+    }
+
+    /// A completed publication supersedes this observation, even when the
+    /// producer root is unchanged. The caller first cancels its pool job.
+    /// Launch bytes cannot take the quiet first-owner confirmation shortcut.
+    pub(crate) fn invalidate_publication(&mut self, key: &PageKey) -> bool {
+        match key {
+            PageKey::CargoSource(_)
+            | PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_)) => {
+                self.revoke_owner_read(key)
+            }
+            _ => dispatch!(self, key, |slots, k| slots.invalidate(k)),
         }
     }
 

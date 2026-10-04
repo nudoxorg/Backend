@@ -267,8 +267,25 @@ type OutlineEntry = (PackageRef, ViewStateRoot, Arc<OutlineIndex>, usize);
 /// Package outlines shared across workers, keyed by package and revision.
 #[derive(Debug, Default)]
 pub struct OutlineCache {
-    entries: Mutex<VecDeque<OutlineEntry>>,
+    state: Mutex<OutlineCacheState>,
 }
+
+#[derive(Debug)]
+struct OutlineCacheState {
+    entries: VecDeque<OutlineEntry>,
+    /// A local cache fence, never a synthetic producer revision. One word
+    /// bounds the witness history even when many packages are published.
+    epoch: Option<u64>,
+}
+
+impl Default for OutlineCacheState {
+    fn default() -> Self {
+        Self { entries: VecDeque::new(), epoch: Some(0) }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OutlineCachePermit(u64);
 
 impl OutlineCache {
     const CAPACITY: usize = 4;
@@ -277,7 +294,8 @@ impl OutlineCache {
     /// Returns a cached outline for `package` at `root`.
     #[must_use]
     pub fn get(&self, package: &PackageRef, root: ViewStateRoot) -> Option<Arc<OutlineIndex>> {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let entries = &mut state.entries;
         let position = entries
             .iter()
             .position(|(cached, at, _, _)| cached == package && *at == root)?;
@@ -287,9 +305,26 @@ impl OutlineCache {
         Some(index)
     }
 
-    /// Stores an outline, evicting the least recently used.
-    pub fn put(
+    fn permit(&self) -> Option<OutlineCachePermit> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).epoch.map(OutlineCachePermit)
+    }
+
+    /// Retain unaffected entries, but fence every older in-flight insert.
+    /// A cancelled worker cannot repopulate a same-root obsolete outline.
+    fn invalidate(&self, packages: &std::collections::BTreeSet<PackageRef>) {
+        if packages.is_empty() { return; }
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.epoch = state.epoch.and_then(|epoch| epoch.checked_add(1));
+        state.entries.retain(|(package, _, _, _)| {
+            !packages.iter().any(|changed| changed.reference() == package.reference())
+        });
+    }
+
+    /// Stores a complete outline only if publication did not supersede its
+    /// pre-read permit. Exhaustion permanently disables fresh cache inserts.
+    fn put(
         &self,
+        permit: Option<OutlineCachePermit>,
         package: PackageRef,
         root: ViewStateRoot,
         index: Arc<OutlineIndex>,
@@ -298,7 +333,9 @@ impl OutlineCache {
         if !index.is_complete() || bytes > Self::MAX_BYTES {
             return;
         }
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if permit.is_none_or(|permit| Some(permit.0) != state.epoch) { return; }
+        let entries = &mut state.entries;
         entries.retain(|(cached, _, _, _)| *cached != package);
         entries.push_front((package, root, index, bytes));
         while entries.len() > Self::CAPACITY
@@ -881,6 +918,12 @@ fn outline(
     package: &PackageRef,
     context: &ReadContext<'_>,
 ) -> Result<Arc<OutlineIndex>, Gap> {
+    if context.cancel.is_cancelled() {
+        return Err(Gap::new(GapReason::ReadFailed, "cancelled"));
+    }
+    // The native revision query itself can yield to a publication. Capture
+    // insert authority before it rather than borrowing the newer fence.
+    let permit = context.outlines.permit();
     let root = engine
         .revision()
         .map_err(|error| page_mapping::client_gap(&error))?;
@@ -933,10 +976,13 @@ fn outline(
         }
     }
     let index = Arc::new(OutlineIndex::new(rows, complete));
+    if context.cancel.is_cancelled() {
+        return Err(Gap::new(GapReason::ReadFailed, "cancelled"));
+    }
     if complete {
         context
             .outlines
-            .put(package.clone(), root, Arc::clone(&index), retained_bytes);
+            .put(permit, package.clone(), root, Arc::clone(&index), retained_bytes);
     }
     Ok(index)
 }
@@ -2532,12 +2578,14 @@ mod tests {
         let first = PackageRef::parse("pkg:cargo/first@1.0.0").expect("first");
         let second = PackageRef::parse("pkg:cargo/second@1.0.0").expect("second");
         cache.put(
+            cache.permit(),
             first.clone(),
             root,
             Arc::new(OutlineIndex::new(Vec::new(), true)),
             20 * 1024 * 1024,
         );
         cache.put(
+            cache.permit(),
             second.clone(),
             root,
             Arc::new(OutlineIndex::new(Vec::new(), true)),
@@ -2549,6 +2597,7 @@ mod tests {
         );
         assert!(cache.get(&second, root).is_some());
         cache.put(
+            cache.permit(),
             first.clone(),
             root,
             Arc::new(OutlineIndex::new(Vec::new(), false)),
@@ -2558,6 +2607,41 @@ mod tests {
             cache.get(&first, root).is_none(),
             "an incomplete outline cannot become a cache hit"
         );
+    }
+
+    #[test]
+    fn publication_fences_a_late_outline_insert_at_the_same_root_without_dropping_other_packages() {
+        let cache = OutlineCache::default();
+        let root = backend_library::view_state_root(&[("outline".into(), "publication".into())]);
+        let changed = PackageRef::parse("pkg:cargo/fail@0.5.1").expect("release");
+        let other = PackageRef::parse("pkg:cargo/fail@0.5.0").expect("other release");
+        let previous = cache.permit();
+        let old = Arc::new(OutlineIndex::new(Vec::new(), true));
+        cache.put(previous, changed.clone(), root, Arc::clone(&old), 1);
+        cache.put(previous, other.clone(), root, Arc::clone(&old), 1);
+        cache.invalidate(&std::collections::BTreeSet::from([changed.clone()]));
+        assert!(cache.get(&changed, root).is_none());
+        assert!(Arc::ptr_eq(&cache.get(&other, root).expect("unaffected cached outline"), &old));
+        cache.put(previous, changed.clone(), root, Arc::clone(&old), 1);
+        assert!(cache.get(&changed, root).is_none(), "an obsolete worker cannot restore the complete cached miss");
+        let fresh = Arc::new(OutlineIndex::new(Vec::new(), true));
+        cache.put(cache.permit(), changed.clone(), root, Arc::clone(&fresh), 1);
+        assert!(Arc::ptr_eq(&cache.get(&changed, root).expect("fresh outline"), &fresh));
+    }
+
+    #[test]
+    fn outline_publication_fence_exhaustion_never_reopens_old_insert_authority() {
+        let cache = OutlineCache::default();
+        cache.state.lock().unwrap_or_else(PoisonError::into_inner).epoch = Some(u64::MAX);
+        let old = cache.permit();
+        let package = PackageRef::parse("pkg:cargo/fail@0.5.1").expect("release");
+        cache.invalidate(&std::collections::BTreeSet::from([package.clone()]));
+        assert!(cache.permit().is_none());
+        let root = backend_library::view_state_root(&[]);
+        for permit in [old, cache.permit()] {
+            cache.put(permit, package.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), true)), 1);
+            assert!(cache.get(&package, root).is_none());
+        }
     }
 
     /// A reader whose `Symbol` reads block until the test releases them, and

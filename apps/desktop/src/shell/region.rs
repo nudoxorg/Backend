@@ -133,6 +133,15 @@ pub(crate) fn attach<R: Region>(region: &mut R, store: &Entity<DataStore>, cx: &
     region.core().watch_keys(store.read(cx), keys.clone());
     request(store, keys, region.urgency(), cx);
     let subscription = cx.subscribe(store, |region: &mut R, store, event: &StoreEvent, cx| {
+        let revoked = {
+            let data = store.read(cx);
+            match event {
+                StoreEvent::Resource(key)
+                    if data.observation_revoked(key)
+                        && region.keys(&data.snapshot()).contains(key) => Some(key.clone()),
+                _ => None,
+            }
+        };
         let moved = event.is_branch(Branch::Route) || event.is_branch(Branch::Overlay);
         let keys = if moved || event.is_branch(Branch::Root) {
             let keys = region.keys(&store.read(cx).snapshot());
@@ -149,6 +158,11 @@ pub(crate) fn attach<R: Region>(region: &mut R, store: &Entity<DataStore>, cx: &
         let changed = region.core().watch.changed(store.read(cx), event);
         if let Some(keys) = keys {
             request(&store, keys, region.urgency(), cx);
+        }
+        if let Some(key) = revoked {
+            // A mounted region can read beyond the route's focused keys.
+            // Ensure also holds this exact key while the owner starts.
+            request(&store, vec![key], Urgency::Now, cx);
         }
         if changed {
             cx.notify();

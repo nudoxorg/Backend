@@ -3357,3 +3357,5 @@ fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &
     assert_eq!(snapshot.workspace().projects[0].request, None, "an outage does not issue an index mutation");
     assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()));
 }
+
+mod publication;

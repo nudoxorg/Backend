@@ -715,6 +715,20 @@ impl UiRootEntity {
         self.dispatch_runtime(Intent::RefreshRoot { basis: self.snapshot().key(), request }, cx);
     }
 
+    /// A publication changes package observations independently of the root
+    /// read's catalog. Refresh open resources in place; retain route/history.
+    pub(crate) fn packages_published(
+        &mut self,
+        packages: &BTreeSet<crate::model::pages::PackageRef>,
+        cx: &mut Context<Self>,
+    ) {
+        if packages.is_empty() { return; }
+        if let Some(store) = &self.store {
+            store.update(cx, |store, cx| store.packages_published(packages, cx));
+        }
+        self.refresh_root(cx);
+    }
+
     /// The owner watcher alone withdraws a previously confirmed generation.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
         self.connection_probe.clear();

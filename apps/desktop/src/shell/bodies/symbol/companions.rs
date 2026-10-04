@@ -10,6 +10,7 @@
 //! and silent when nothing lands.
 
 use crate::model::pages::{DeclRef, PageKey, SymbolPage, SymbolRef};
+use crate::navigation::Route;
 use crate::runtime::store::StoreEvent;
 use crate::shell::reader::Reader;
 use crate::shell::region::Links;
@@ -39,7 +40,7 @@ pub(super) fn of(page: &SymbolPage) -> Vec<DeclRef> {
 
 #[derive(Default)]
 struct Watching {
-    readers: HashMap<EntityId, (Vec<PageKey>, Subscription)>,
+    readers: HashMap<EntityId, (Route, Vec<PageKey>, Subscription)>,
 }
 
 impl Global for Watching {}
@@ -61,8 +62,20 @@ pub(super) fn gather(companions: &[DeclRef], links: &Links, active: bool, cx: &m
 
 fn watch(keys: &[PageKey], links: &Links, cx: &mut Context<Reader>) {
     let reader = cx.entity_id();
-    let same = cx.try_global::<Watching>().and_then(|watching| watching.readers.get(&reader)).is_some_and(|(watched, _)| watched == keys);
+    let route = links.snapshot(cx).route().clone();
+    let same = cx.try_global::<Watching>().and_then(|watching| watching.readers.get(&reader)).is_some_and(|(visit, watched, _)| visit == &route && watched == keys);
     if same {
+        // A covered page may have been invalidated while its observer was
+        // inactive. Visiting it again renews only its visible companions.
+        let revoked = {
+            let store = links.store.read(cx);
+            keys.iter().filter(|key| store.observation_revoked(key)).cloned().collect::<Vec<_>>()
+        };
+        if !revoked.is_empty() {
+            links.store.update(cx, |store, cx| {
+                for key in revoked { store.ensure(key, cx); }
+            });
+        }
         return;
     }
     if keys.is_empty() {
@@ -72,12 +85,22 @@ fn watch(keys: &[PageKey], links: &Links, cx: &mut Context<Reader>) {
         return;
     }
     let wanted = keys.to_vec();
-    let subscription = cx.subscribe(&links.store, move |_, _, event: &StoreEvent, cx| {
-        if wanted.iter().any(|key| event.touches(key)) {
+    let visit = route.clone();
+    let subscription = cx.subscribe(&links.store, move |_, store, event: &StoreEvent, cx| {
+        if let Some(key) = wanted.iter().find(|key| event.touches(key)).cloned() {
+            let revoked = {
+                let data = store.read(cx);
+                let snapshot = data.snapshot();
+                snapshot.route() == &visit && snapshot.overlay().is_none()
+                    && data.observation_revoked(&key)
+            };
+            if revoked {
+                store.update(cx, |store, cx| { store.ensure(key, cx); });
+            }
             cx.notify();
         }
     });
-    cx.default_global::<Watching>().readers.insert(reader, (keys.to_vec(), subscription));
+    cx.default_global::<Watching>().readers.insert(reader, (route, keys.to_vec(), subscription));
     let keys = keys.to_vec();
     links.store.update(cx, |store, cx| {
         for key in keys {

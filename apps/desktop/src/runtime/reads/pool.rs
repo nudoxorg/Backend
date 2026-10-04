@@ -954,6 +954,15 @@ impl ReadPool {
         self.shared.cancel(key)
     }
 
+    /// Completed package publications also supersede the shared outline
+    /// cache. Its insert fence covers cancelled workers still finishing I/O.
+    pub(crate) fn invalidate_package_outlines(
+        &self,
+        packages: &BTreeSet<crate::model::pages::PackageRef>,
+    ) {
+        self.shared.outlines.invalidate(packages);
+    }
+
     /// Takes up to `limit` finished outcomes without waiting. Each keeps its
     /// read's admission until it is dropped.
     pub fn take(&self, limit: NonZeroUsize) -> Batch {
