@@ -584,7 +584,10 @@ fn resolve_libclang_path(path: &Path) -> Result<(PathBuf, PathBuf), ClangAuthori
             path: path.to_path_buf(),
             source,
         })?;
+    #[cfg(target_os = "windows")]
     let mut directories = vec![configured.clone()];
+    #[cfg(not(target_os = "windows"))]
+    let directories = vec![configured.clone()];
     #[cfg(target_os = "windows")]
     if configured.file_name().is_some_and(|name| name == "lib") {
         if let Some(parent) = configured.parent() {

@@ -8,7 +8,6 @@
 //! included in the arguments sent to libclang.
 
 use std::{
-    io::Read as _,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::mpsc,
