@@ -1154,6 +1154,8 @@ pub enum DiscoveryMetadataRow {
     Text(String),
     /// One bounded advisory header with nested lists paged separately.
     Advisory(DiscoveryAdvisorySummary),
+    /// One Cargo feature header; its member names are read from the nested
+    /// feature-member section.
     CargoFeature {
         /// Cargo feature name from this feature row.
         name: String,

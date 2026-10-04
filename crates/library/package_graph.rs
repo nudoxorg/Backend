@@ -100,15 +100,40 @@ pub enum PackageGraphAdmissionError {
     /// checks performed by [`CheckedPackageGraphFacts`].
     InvalidFacts(ProductAdmissionError),
     /// The checked facts exceeded the source-fact bound.
-    SourceLimit { observed: usize, maximum: usize },
+    SourceLimit {
+        /// Number of source records measured when the configured limit was exceeded.
+        observed: usize,
+        /// Configured maximum number of source records.
+        maximum: usize,
+    },
     /// The logical occupied source/row payload exceeded its byte bound.
-    FactByteLimit { observed: usize, maximum: usize },
+    FactByteLimit {
+        /// Logical occupied bytes measured for admitted source and row facts.
+        observed: usize,
+        /// Configured maximum for the logical fact-byte measurement.
+        maximum: usize,
+    },
     /// The checked facts exceeded the aggregate dependency-row bound.
-    RowLimit { observed: usize, maximum: usize },
+    RowLimit {
+        /// Aggregate dependency-row count measured across admitted sources.
+        observed: usize,
+        /// Configured maximum aggregate dependency-row count.
+        maximum: usize,
+    },
     /// The checked facts exceeded the reverse-posting bound.
-    ReverseEdgeLimit { observed: usize, maximum: usize },
+    ReverseEdgeLimit {
+        /// Number of runtime or optional reverse postings measured.
+        observed: usize,
+        /// Configured maximum number of reverse postings.
+        maximum: usize,
+    },
     /// The checked facts exceeded the lookup-key byte-payload bound.
-    IndexKeyByteLimit { observed: usize, maximum: usize },
+    IndexKeyByteLimit {
+        /// UTF-8 bytes measured for owned lookup-key payloads.
+        observed: usize,
+        /// Configured maximum lookup-key payload in bytes.
+        maximum: usize,
+    },
     /// A checked aggregate count overflowed `usize` while it was measured.
     CountOverflow,
 }
@@ -531,7 +556,7 @@ impl PackageGraphAdmission {
         }
 
         let source_coordinate_bytes = source.coordinate.as_str().len();
-        self.add_fact_bytes(std::mem::size_of::<PackageDependencySourceFacts>())?;
+        self.add_fact_bytes(size_of::<PackageDependencySourceFacts>())?;
         self.add_fact_bytes(source_coordinate_bytes)?;
 
         // The index later owns a by-source key and a coordinate lookup key;
@@ -571,7 +596,7 @@ impl PackageGraphAdmission {
                     });
                 }
 
-                let row_storage_bytes = std::mem::size_of::<PackageDependencyRecord>()
+                let row_storage_bytes = size_of::<PackageDependencyRecord>()
                     .checked_mul(rows.len())
                     .ok_or(PackageGraphAdmissionError::CountOverflow)?;
                 self.add_fact_bytes(row_storage_bytes)?;

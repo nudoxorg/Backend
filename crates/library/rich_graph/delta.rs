@@ -148,6 +148,17 @@ impl RichGraphDelta {
 }
 
 impl RichGraphSnapshot {
+    /// Computes node and edge changes between this snapshot and `next`.
+    /// Each node or edge change list is capped independently. The resulting
+    /// delta uses this snapshot's revision as its base and carries the target
+    /// snapshot's revision, center, and availability. Its combined record
+    /// count is checked by [`RichGraphDelta::admit`] before application.
+    ///
+    /// # Errors
+    ///
+    /// Returns the snapshot admission error if either input is invalid, or
+    /// [`RichGraphError::DeltaBound`] when either node or edge change list
+    /// exceeds its record limit.
     pub fn diff(&self, next: &Self) -> Result<RichGraphDelta, RichGraphError> {
         self.admit()?;
         next.admit()?;

@@ -20,7 +20,7 @@ pub const MAX_INDEX_SEARCH_CURSOR_BYTES: usize = 64 * 1024;
 /// Maximum number of owner progress events returned by one index progress read.
 pub const MAX_INDEX_PROGRESS_EVENTS: usize = 16;
 /// Maximum human-readable detail retained in one derived-history status.
-pub const MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES: usize = 1024;
+pub(crate) const MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES: usize = 1024;
 
 /// Nonempty, bounded, NUL-free product text.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -519,30 +519,46 @@ pub enum SemanticHistoryPublicationStatus {
     /// This semantic version is not the committed selected product version.
     NotSelected,
     /// The committed selection has not yet been reconciled with V3 history.
-    NotRequested { selection_id: [u8; 32] },
+    NotRequested {
+        /// Identity of the selected product version awaiting V3 reconciliation.
+        selection_id: [u8; 32],
+    },
     /// A bounded worker is producing and admitting history for this selection.
-    Pending { selection_id: [u8; 32] },
+    Pending {
+        /// Identity of the selected product version being processed.
+        selection_id: [u8; 32],
+    },
     /// The committed selection is waiting for a bounded worker slot. The
     /// owner reschedules it from the current selected-marker inventory.
     Deferred {
+        /// Identity of the selected product version waiting for a worker slot.
         selection_id: [u8; 32],
+        /// Bounded detail explaining why the job was deferred.
         reason: String,
     },
     /// The exact selected image is durably published at this V3 branch commit.
     Published {
+        /// Identity of the selected product version whose image was published.
         selection_id: [u8; 32],
+        /// Commit containing the published derived history.
         commit: [u8; 32],
+        /// Reference name containing that commit.
         reference: String,
         /// Exact, bounded proof summary for this branch commit.
         proof: SemanticHistoryPublicationProof,
     },
     /// History could not be produced or admitted for this selected image.
     Refused {
+        /// Identity of the selected product version whose history was refused.
         selection_id: [u8; 32],
+        /// Bounded detail describing the production or admission refusal.
         reason: String,
     },
     /// The marker advanced while this derived-history job was running.
-    Superseded { selection_id: [u8; 32] },
+    Superseded {
+        /// Identity of the selection whose worker job was superseded by a newer marker.
+        selection_id: [u8; 32],
+    },
 }
 
 impl Default for SemanticHistoryPublicationStatus {
@@ -556,7 +572,10 @@ impl Default for SemanticHistoryPublicationStatus {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SemanticVersionFreshness {
     /// The selected generation's exact compiler input digest matches the latest observation.
-    Current { input_digest: [u8; 32] },
+    Current {
+        /// Digest of the selected generation's compiler inputs, matching the latest observation.
+        input_digest: [u8; 32],
+    },
     /// The generation uses an older input than the latest admitted observation.
     Historical {
         /// Exact input digest retained by this generation.
@@ -2179,19 +2198,28 @@ pub enum RegistryDiscoveryFreshness {
     /// The source claim was observed in this process and remains inside its
     /// configured freshness horizon.
     Current {
+        /// Unix-millisecond time when the source claim was observed.
         observed_at_millis: u64,
+        /// Unix-millisecond end of the claim's configured freshness horizon.
         valid_until_millis: u64,
     },
-    /// The claim was recovered from durable history after a cold reopen.
-    Historical { observed_at_millis: u64 },
+    /// The claim comes from historical source state or an incomplete backfill.
+    Historical {
+        /// Unix-millisecond time attached to the source observation.
+        observed_at_millis: u64,
+    },
     /// The source has not refreshed the claim within its freshness horizon.
     Expired {
+        /// Unix-millisecond time when the source claim was observed.
         observed_at_millis: u64,
+        /// Unix-millisecond end of the claim's configured freshness horizon.
         valid_until_millis: u64,
     },
     /// The last source refresh failed, so this is the last durable claim.
     Unavailable {
+        /// Unix-millisecond time attached to the last available source claim.
         observed_at_millis: u64,
+        /// Whether the last available claim is historical or from an incomplete backfill.
         historical: bool,
     },
 }
@@ -2440,7 +2468,7 @@ pub struct ForgeDiscoveryCandidate {
 impl ForgeDiscoveryCandidate {
     /// Checks that the source coordinate and package identity remain bound.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
-        let source = crate::ForgeCoordinate::parse(self.forge_coordinate.as_str().to_owned())
+        let source = ForgeCoordinate::parse(self.forge_coordinate.as_str().to_owned())
             .map_err(|_| ProductAdmissionError::ForgeSearchShape)?;
         let parsed = PackageCoordinate::parse(self.coordinate.as_str().to_owned())
             .map_err(|_| ProductAdmissionError::ForgeSearchShape)?;
@@ -2513,10 +2541,15 @@ impl ForgePackageDetailRecord {
 #[serde(tag = "state", content = "value", rename_all = "kebab-case")]
 pub enum ForgePackagePin {
     /// The manifest itself recorded this exact package version.
-    PackageVersion { coordinate: PackageCoordinate },
+    PackageVersion {
+        /// Version-pinned package coordinate parsed from the manifest.
+        coordinate: PackageCoordinate,
+    },
     /// The source resolved to a commit, but the manifest supplied no valid release PURL.
     PinnedRevision {
+        /// Revision requested by the source coordinate.
         requested_revision: ForgeRevision,
+        /// Commit to which the source revision resolved.
         resolved_commit: ForgeObjectId,
     },
 }
@@ -2777,7 +2810,7 @@ pub struct ForgeManifestRecord {
     pub version: Option<ProductText>,
     /// Dependency facts admitted from this source manifest. Unknown and
     /// unavailable facts remain distinct from a known empty edge set.
-    pub dependencies: crate::DependencyFacts<Box<[crate::PackageDependencyRecord]>>,
+    pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
 }
 
 /// Product DTO for a source acquired from GitHub, GitLab, Codeberg, or generic HTTPS Git.
@@ -2977,7 +3010,7 @@ pub enum SurfaceReply {
     /// Reverse dependency facts.
     Dependents(RegistryMetadata<Box<[RegistryPackageRecord]>>),
     /// Outgoing dependency facts.
-    Dependencies(crate::DependencyFacts<Box<[crate::PackageDependencyRecord]>>),
+    Dependencies(DependencyFacts<Box<[PackageDependencyRecord]>>),
     /// One immutable, bounded package graph page.
     PackageGraphPage(crate::PackageGraphPage),
     /// Publisher facts.
@@ -3152,7 +3185,7 @@ impl SurfaceReply {
             Self::IndexSearchWithDiscovery(hits) => hits.len(),
             Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
             Self::IndexSearchPage(page) => page.hits.len(),
-            Self::Dependencies(crate::DependencyFacts::Known(v)) => v.len(),
+            Self::Dependencies(DependencyFacts::Known(v)) => v.len(),
             Self::PackageGraphPage(page) => {
                 page.admit()
                     .map_err(|_| ProductAdmissionError::PackageGraphPage)?;
@@ -3390,13 +3423,13 @@ impl SurfaceReply {
                 .saturating_add(serde_json::to_vec(receipt).map_or(0, |bytes| bytes.len())),
             Self::Dependents(RegistryMetadata::NotRecorded(reason))
             | Self::Owner(RegistryMetadata::NotRecorded(reason)) => text_bound(reason),
-            Self::Dependencies(crate::DependencyFacts::Known(records)) => {
+            Self::Dependencies(DependencyFacts::Known(records)) => {
                 records.iter().fold(0_usize, |bound, record| {
                     bound.saturating_add(dependency_record_bound(record))
                 })
             }
-            Self::Dependencies(crate::DependencyFacts::Unknown(reason))
-            | Self::Dependencies(crate::DependencyFacts::Unavailable(reason)) => text_bound(reason),
+            Self::Dependencies(DependencyFacts::Unknown(reason))
+            | Self::Dependencies(DependencyFacts::Unavailable(reason)) => text_bound(reason),
             Self::PackageGraphPage(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
             Self::PackageProfile {
@@ -3577,7 +3610,7 @@ fn admit_registry_record(record: &RegistryPackageRecord) -> Result<(), ProductAd
     Ok(())
 }
 
-fn dependency_record_bound(record: &crate::PackageDependencyRecord) -> usize {
+fn dependency_record_bound(record: &PackageDependencyRecord) -> usize {
     fixed_record_bound()
         .saturating_add(package_reference_bound(&record.source))
         .saturating_add(text_bound(&record.target.name))
