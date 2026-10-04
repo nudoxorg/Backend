@@ -718,6 +718,7 @@ enum OwnerFinishDiagnostic {
 #[derive(Debug)]
 enum ListenerFinishDiagnostic {
     InvalidConfig,
+    FrameLimitsMismatch,
     EndpointOccupied,
     AlreadyRunning,
     Io(io::ErrorKind),
@@ -739,6 +740,7 @@ impl OwnerFinishDiagnostic {
             },
             Err(ProcessError::Listener(error)) => Self::Listener(match error {
                 ListenerError::InvalidConfig => ListenerFinishDiagnostic::InvalidConfig,
+                ListenerError::FrameLimitsMismatch => ListenerFinishDiagnostic::FrameLimitsMismatch,
                 ListenerError::EndpointOccupied => ListenerFinishDiagnostic::EndpointOccupied,
                 ListenerError::AlreadyRunning => ListenerFinishDiagnostic::AlreadyRunning,
                 ListenerError::Io(kind) => ListenerFinishDiagnostic::Io(kind),
