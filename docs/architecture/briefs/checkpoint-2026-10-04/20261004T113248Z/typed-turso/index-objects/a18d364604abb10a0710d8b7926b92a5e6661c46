@@ -6,10 +6,12 @@
 use crate::schema::PackageGraphMetadata;
 use crate::{ProjectionError, TursoProjection};
 use backend_library::{
-    CheckedPackageGraphFacts, DependencyFacts, PackageDependencyRecord, PackageGraphControl,
-    PackageGraphCursor, PackageGraphDirection, PackageGraphKnowledge, PackageGraphPage,
-    PackageGraphPageError, PackageGraphPageRequest, PackageGraphPageTerminal,
-    PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference, ProductText,
+    CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
+    DependencyScope, MAX_PACKAGE_GRAPH_AUTHORITIES, PackageDependencyRecord,
+    PackageDependencyTarget, PackageGraphControl, PackageGraphCursor, PackageGraphDirection,
+    PackageGraphKnowledge, PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest,
+    PackageGraphPageTerminal, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
+    ProductText,
 };
 
 /// Failure while reading one bounded package graph page.
@@ -328,10 +330,39 @@ async fn exact_source_present(
     connection: &turso::Connection,
     source: &PackageGraphSourceKey,
 ) -> Result<bool, PackageGraphReadError> {
-    Ok(source_inventory(connection, &source.coordinate)
-        .await?
-        .iter()
-        .any(|candidate| candidate == source))
+    let selected = source_present(connection, "backend_projection_package_sources", source).await?;
+    let witnessed = source_present(
+        connection,
+        "backend_projection_package_source_witnesses",
+        source,
+    )
+    .await?;
+    if selected != witnessed {
+        return Err(misuse("package graph source inventory differs from its witness index").into());
+    }
+    Ok(selected)
+}
+
+async fn source_present(
+    connection: &turso::Connection,
+    table: &'static str,
+    source: &PackageGraphSourceKey,
+) -> Result<bool, ProjectionError> {
+    let sql = format!(
+        "SELECT 1 FROM {table} WHERE source=?1 AND source_authority_kind=?2 \
+         AND source_authority_id=?3 LIMIT 1"
+    );
+    let mut rows = connection
+        .query(
+            &sql,
+            turso::params![
+                source.coordinate.as_str(),
+                source.authority.kind_tag(),
+                source.authority.id_bytes().as_slice()
+            ],
+        )
+        .await?;
+    Ok(rows.next().await?.is_some())
 }
 
 /// Confirms that the lookup inventory and its checked per-source witness
@@ -342,13 +373,55 @@ async fn source_inventory(
     connection: &turso::Connection,
     coordinate: &PackageReference,
 ) -> Result<Vec<PackageGraphSourceKey>, PackageGraphReadError> {
-    match crate::graph::package_source_inventory(connection, coordinate).await {
-        Ok(keys) => Ok(keys),
-        Err(ProjectionError::ReadLimitExceeded { .. }) => {
-            Err(PackageGraphPageError::AuthorityFanout.into())
-        }
-        Err(error) => Err(error.into()),
+    let source_keys =
+        source_authorities_for_table(connection, "backend_projection_package_sources", coordinate)
+            .await?;
+    let witness_keys = source_authorities_for_table(
+        connection,
+        "backend_projection_package_source_witnesses",
+        coordinate,
+    )
+    .await?;
+    if source_keys != witness_keys {
+        return Err(misuse("package graph source inventory differs from its witness index").into());
     }
+    Ok(source_keys)
+}
+
+async fn source_authorities_for_table(
+    connection: &turso::Connection,
+    table: &'static str,
+    coordinate: &PackageReference,
+) -> Result<Vec<PackageGraphSourceKey>, PackageGraphReadError> {
+    // `table` is selected only from the two constant names above. Both tables
+    // have the same primary-key order, so the per-coordinate query stays
+    // bounded and index-backed.
+    let sql = format!(
+        "SELECT source_authority_kind, source_authority_id FROM {table} \
+         WHERE source=?1 ORDER BY source_authority_kind, source_authority_id LIMIT ?2"
+    );
+    let mut rows = connection
+        .query(
+            &sql,
+            turso::params![
+                coordinate.as_str(),
+                i64::try_from(MAX_PACKAGE_GRAPH_AUTHORITIES + 1).unwrap_or(i64::MAX)
+            ],
+        )
+        .await?;
+    let mut sources = Vec::new();
+    while let Some(row) = rows.next().await? {
+        if sources.len() == MAX_PACKAGE_GRAPH_AUTHORITIES {
+            drop(rows);
+            return Err(PackageGraphPageError::AuthorityFanout.into());
+        }
+        sources.push(PackageGraphSourceKey::new(
+            coordinate.clone(),
+            decode_authority(row.get(0)?, row.get(1)?)?,
+        ));
+    }
+    drop(rows);
+    Ok(sources)
 }
 
 async fn forward_edges(
@@ -360,15 +433,14 @@ async fn forward_edges(
     let mut rows = if let Some(after) = after {
         connection
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
-                 FROM backend_projection_package_edges WHERE source=?1 AND coordinate_kind=?2 \
-                 AND source_authority_kind=?3 AND source_authority_id=?4 AND edge_id>?5 \
-                 ORDER BY edge_id LIMIT ?6",
+                 FROM backend_projection_package_edges WHERE source=?1 \
+                 AND source_authority_kind=?2 AND source_authority_id=?3 AND edge_id>?4 \
+                 ORDER BY edge_id LIMIT ?5",
                 turso::params![
                     source.coordinate.as_str(),
-                    i64::from(source.coordinate.kind().tag()),
                     source.authority.kind_tag(),
                     source.authority.id_bytes().as_slice(),
                     after.as_slice(),
@@ -379,15 +451,14 @@ async fn forward_edges(
     } else {
         connection
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
-                 FROM backend_projection_package_edges WHERE source=?1 AND coordinate_kind=?2 \
-                 AND source_authority_kind=?3 AND source_authority_id=?4 \
-                 ORDER BY edge_id LIMIT ?5",
+                 FROM backend_projection_package_edges WHERE source=?1 \
+                 AND source_authority_kind=?2 AND source_authority_id=?3 \
+                 ORDER BY edge_id LIMIT ?4",
                 turso::params![
                     source.coordinate.as_str(),
-                    i64::from(source.coordinate.kind().tag()),
                     source.authority.kind_tag(),
                     source.authority.id_bytes().as_slice(),
                     i64::from(limit) + 1
@@ -414,7 +485,7 @@ async fn reverse_edges(
     let mut rows = if let Some(after) = after {
         connection
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE target_ecosystem=?1 \
@@ -432,7 +503,7 @@ async fn reverse_edges(
     } else {
         connection
             .query(
-                "SELECT edge_id, source, coordinate_kind, source_authority_kind, source_authority_id, \
+                "SELECT edge_id, source, source_authority_kind, source_authority_id, \
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE target_ecosystem=?1 \
@@ -461,7 +532,7 @@ async fn read_edge_page(
             more = true;
             break;
         }
-        edges.push(crate::graph::decode_package_edge(&row)?);
+        edges.push(decode_edge(&row).await?);
     }
     Ok((edges, more))
 }
@@ -473,11 +544,9 @@ async fn package_state(
     let mut witness_rows = connection
         .query(
             "SELECT facts_witness FROM backend_projection_package_source_witnesses \
-             WHERE source=?1 AND coordinate_kind=?2 \
-             AND source_authority_kind=?3 AND source_authority_id=?4",
+             WHERE source=?1 AND source_authority_kind=?2 AND source_authority_id=?3",
             turso::params![
                 source.coordinate.as_str(),
-                i64::from(source.coordinate.kind().tag()),
                 source.authority.kind_tag(),
                 source.authority.id_bytes().as_slice()
             ],
@@ -492,11 +561,9 @@ async fn package_state(
     let mut rows = connection
         .query(
             "SELECT state, reason FROM backend_projection_package_states \
-             WHERE source=?1 AND coordinate_kind=?2 \
-             AND source_authority_kind=?3 AND source_authority_id=?4",
+             WHERE source=?1 AND source_authority_kind=?2 AND source_authority_id=?3",
             turso::params![
                 source.coordinate.as_str(),
-                i64::from(source.coordinate.kind().tag()),
                 source.authority.kind_tag(),
                 source.authority.id_bytes().as_slice()
             ],
@@ -518,11 +585,9 @@ async fn package_state(
         let mut edge_rows = connection
             .query(
                 "SELECT 1 FROM backend_projection_package_edges WHERE source=?1 \
-                 AND coordinate_kind=?2 AND source_authority_kind=?3 \
-                 AND source_authority_id=?4 LIMIT 1",
+                 AND source_authority_kind=?2 AND source_authority_id=?3 LIMIT 1",
                 turso::params![
                     source.coordinate.as_str(),
-                    i64::from(source.coordinate.kind().tag()),
                     source.authority.kind_tag(),
                     source.authority.id_bytes().as_slice()
                 ],
@@ -578,17 +643,14 @@ async fn reverse_knowledge(
     // answer. Probe the bounded state index instead of decoding all sources.
     let mut gaps = connection
         .query(
-            "SELECT source, coordinate_kind, source_authority_kind, source_authority_id, state, reason \
-             FROM backend_projection_package_states WHERE state IN (1,2) \
-             ORDER BY source, coordinate_kind, source_authority_kind, source_authority_id LIMIT 1",
+            "SELECT state, reason FROM backend_projection_package_states \
+             WHERE state IN (1,2) ORDER BY source, source_authority_kind, source_authority_id LIMIT 1",
             (),
         )
         .await?;
     if let Some(row) = gaps.next().await? {
-        let _source = crate::graph::decode_package_reference(row.get(1)?, row.get(0)?)?;
-        let _authority = decode_authority(row.get(2)?, row.get(3)?)?;
-        let state = row.get::<i64>(4)?;
-        let reason = product_text(&row.get::<String>(5)?);
+        let state = row.get::<i64>(0)?;
+        let reason = product_text(&row.get::<String>(1)?);
         return Ok(if state == 1 {
             PackageGraphKnowledge::Unknown {
                 reason: Some(reason),
@@ -598,6 +660,81 @@ async fn reverse_knowledge(
         });
     }
     Ok(PackageGraphKnowledge::Known)
+}
+
+async fn decode_edge(row: &turso::Row) -> Result<PackageDependencyRecord, ProjectionError> {
+    let source = PackageReference::parse(row.get::<String>(1)?)
+        .map_err(|_| misuse("invalid graph source"))?;
+    let source_authority = decode_authority(row.get(2)?, row.get(3)?)?;
+    let ecosystem =
+        backend_library::RegistryEcosystem::parse_canonical(match row.get::<i64>(4)? {
+            1 => "cargo",
+            2 => "npm",
+            3 => "pypi",
+            4 => "maven",
+            5 => "nuget",
+            6 => "golang",
+            7 => "cpp",
+            _ => return Err(misuse("invalid graph ecosystem")),
+        })
+        .map_err(|_| misuse("invalid graph ecosystem"))?;
+    let name = product_text(&row.get::<String>(5)?);
+    let requirement = product_text(&row.get::<String>(6)?);
+    let resolved = row
+        .get::<Option<String>>(7)?
+        .map(PackageReference::parse)
+        .transpose()
+        .map_err(|_| misuse("invalid graph resolution"))?;
+    let target =
+        PackageDependencyTarget::new(ecosystem, name.as_str(), requirement.as_str(), resolved)
+            .map_err(|_| misuse("invalid graph target"))?;
+    let scope = match row.get::<i64>(8)? {
+        0 => DependencyScope::Runtime,
+        1 => DependencyScope::Optional,
+        2 => DependencyScope::Development,
+        3 => DependencyScope::Build,
+        4 => DependencyScope::Peer,
+        _ => return Err(misuse("invalid graph scope")),
+    };
+    let optional = match row.get::<i64>(9)? {
+        0 => false,
+        1 => true,
+        _ => return Err(misuse("invalid graph optional flag")),
+    };
+    let authority = match row.get::<i64>(10)? {
+        0 => DependencyAuthority::RegistryMetadata,
+        1 => DependencyAuthority::ArchiveManifest,
+        2 => DependencyAuthority::ForgeManifest,
+        3 => DependencyAuthority::LocalManifest,
+        _ => return Err(misuse("invalid graph evidence authority")),
+    };
+    let frontier = fixed_32(row.get(11)?, "graph frontier")?;
+    let provenance = fixed_32(row.get(12)?, "graph provenance")?;
+    let facts_version = fixed_32(row.get(13)?, "graph facts version")?;
+    let edge_id = fixed_32(row.get(0)?, "graph edge id")?;
+    if edge_id != facts_version {
+        return Err(misuse("graph edge id differs from its facts identity"));
+    }
+    if !source_authority.matches_evidence(authority) {
+        return Err(misuse("graph evidence does not match its source authority"));
+    }
+    let record = PackageDependencyRecord {
+        source,
+        source_authority,
+        target,
+        scope,
+        optional,
+        evidence: DependencyEvidence {
+            authority,
+            frontier,
+            provenance,
+        },
+        facts_version,
+    };
+    if record.recomputed_version() != facts_version {
+        return Err(misuse("graph edge payload differs from its facts identity"));
+    }
+    Ok(record)
 }
 
 fn decode_authority(
@@ -665,9 +802,7 @@ fn empty_page(
 mod tests {
     use super::*;
     use backend_library::{
-        DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-        PackageDependencySourceFacts, PackageDependencyTarget, PackageReferenceKind,
-        RegistryAuthorityId, RegistryEcosystem,
+        DependencyFacts, PackageDependencySourceFacts, RegistryAuthorityId, RegistryEcosystem,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -731,10 +866,9 @@ mod tests {
                 &projection.connection,
                 "forward first page",
                 "SELECT edge_id FROM backend_projection_package_edges \
-                 WHERE source=?1 AND coordinate_kind=?2 \
-                 AND source_authority_kind=?3 AND source_authority_id=?4 \
-                 ORDER BY edge_id LIMIT ?5",
-                turso::params![coordinate, 1_i64, 1_i64, authority.as_slice(), 65_i64],
+                 WHERE source=?1 AND source_authority_kind=?2 AND source_authority_id=?3 \
+                 ORDER BY edge_id LIMIT ?4",
+                turso::params![coordinate, 1_i64, authority.as_slice(), 65_i64],
                 "backend_projection_package_edges_source",
             )
             .await;
@@ -742,12 +876,10 @@ mod tests {
                 &projection.connection,
                 "forward continuation",
                 "SELECT edge_id FROM backend_projection_package_edges \
-                 WHERE source=?1 AND coordinate_kind=?2 \
-                 AND source_authority_kind=?3 AND source_authority_id=?4 \
-                 AND edge_id>?5 ORDER BY edge_id LIMIT ?6",
+                 WHERE source=?1 AND source_authority_kind=?2 AND source_authority_id=?3 \
+                 AND edge_id>?4 ORDER BY edge_id LIMIT ?5",
                 turso::params![
                     coordinate,
-                    1_i64,
                     1_i64,
                     authority.as_slice(),
                     after.as_slice(),
@@ -948,153 +1080,6 @@ mod tests {
     }
 
     #[test]
-    fn same_text_purl_and_local_sources_have_independent_cursors() {
-        futures_executor::block_on(async {
-            let spelling = "pkg:cargo/cursor-collision@1.0.0";
-            let purl = PackageReference::from_kind(PackageReferenceKind::Purl, spelling)
-                .expect("explicit PURL");
-            let local = PackageReference::from_kind(PackageReferenceKind::Local, spelling)
-                .expect("explicit Local");
-            let authority = registry_authority(0x41);
-            let purl_key = PackageGraphSourceKey::new(purl.clone(), authority);
-            let local_key = PackageGraphSourceKey::new(local.clone(), authority);
-            let facts: [PackageDependencySourceFacts; 2] = [
-                (
-                    purl_key.clone(),
-                    DependencyFacts::Known(
-                        vec![
-                            edge(
-                                &purl,
-                                authority,
-                                "purl-a",
-                                "*",
-                                None,
-                                DependencyScope::Runtime,
-                                1,
-                            ),
-                            edge(
-                                &purl,
-                                authority,
-                                "purl-b",
-                                "*",
-                                None,
-                                DependencyScope::Runtime,
-                                3,
-                            ),
-                        ]
-                        .into_boxed_slice(),
-                    ),
-                ),
-                (
-                    local_key.clone(),
-                    DependencyFacts::Known(
-                        vec![
-                            edge(
-                                &local,
-                                authority,
-                                "local-a",
-                                "workspace",
-                                None,
-                                DependencyScope::Runtime,
-                                5,
-                            ),
-                            edge(
-                                &local,
-                                authority,
-                                "local-b",
-                                "workspace",
-                                None,
-                                DependencyScope::Runtime,
-                                7,
-                            ),
-                        ]
-                        .into_boxed_slice(),
-                    ),
-                ),
-            ];
-            let (path, projection) = projection_with_facts(&facts, 13).await;
-            let purl_request = PackageGraphPageRequest::new(
-                purl.clone(),
-                PackageGraphDirection::Dependencies,
-                None,
-                1,
-            )
-            .expect("PURL request");
-            let purl_first = projection
-                .read_package_graph_page(&purl_request)
-                .await
-                .expect("PURL first page");
-            assert_eq!(purl_first.source, Some(purl_key.clone()));
-            let PackageGraphPageTerminal::More(purl_cursor) = &purl_first.terminal else {
-                panic!("PURL page must have a continuation");
-            };
-            assert_eq!(purl_cursor.schema, backend_library::PACKAGE_GRAPH_PAGE_SCHEMA);
-            assert_eq!(purl_cursor.schema, 2, "typed cursor recipe uses schema v2");
-
-            let local_request = PackageGraphPageRequest::new(
-                local.clone(),
-                PackageGraphDirection::Dependencies,
-                None,
-                1,
-            )
-            .expect("Local request");
-            assert!(
-                projection
-                    .read_package_graph_page(
-                        &local_request.clone().with_cursor(purl_cursor.clone())
-                    )
-                    .await
-                    .is_err(),
-                "a PURL cursor cannot continue a same-text Local query"
-            );
-            let local_first = projection
-                .read_package_graph_page(&local_request)
-                .await
-                .expect("Local first page");
-            assert_eq!(local_first.source, Some(local_key.clone()));
-            let PackageGraphPageTerminal::More(local_cursor) = &local_first.terminal else {
-                panic!("Local page must have its own continuation");
-            };
-            assert_eq!(local_cursor.source.as_ref(), Some(&local_key));
-            let local_second = projection
-                .read_package_graph_page(
-                    &local_request.clone().with_cursor(local_cursor.clone()),
-                )
-                .await
-                .expect("Local continuation");
-            assert_eq!(local_second.source, Some(local_key));
-            assert_eq!(local_second.rows.len(), 1);
-            assert_eq!(local_second.terminal, PackageGraphPageTerminal::Complete);
-            let mut local_names = vec![
-                local_first.rows[0].target.name.as_str(),
-                local_second.rows[0].target.name.as_str(),
-            ];
-            local_names.sort_unstable();
-            assert_eq!(local_names, ["local-a", "local-b"]);
-            let reverse = projection
-                .read_package_graph_page(
-                    &PackageGraphPageRequest::new(
-                        package("pkg:cargo/local-a@1.0.0"),
-                        PackageGraphDirection::Dependents,
-                        None,
-                        4,
-                    )
-                    .expect("Local-source edge dependent query"),
-                )
-                .await
-                .expect("reverse decoder keeps the source kind");
-            assert_eq!(reverse.rows.len(), 1);
-            assert_eq!(reverse.rows[0].source, local);
-            assert_eq!(
-                reverse.rows[0].source.kind(),
-                PackageReferenceKind::Local
-            );
-            drop(projection);
-            remove_database(&path);
-        });
-    }
-
-    #[test]
     fn durable_edge_payload_must_match_its_content_identity() {
         futures_executor::block_on(async {
             let source = package("pkg:cargo/demo@1.0.0");
@@ -1161,11 +1146,9 @@ mod tests {
                 .connection
                 .execute(
                     "UPDATE backend_projection_package_states SET reason='changed reason' \
-                     WHERE source=?1 AND coordinate_kind=?2 \
-                     AND source_authority_kind=?3 AND source_authority_id=?4",
+                     WHERE source=?1 AND source_authority_kind=?2 AND source_authority_id=?3",
                     turso::params![
                         source.as_str(),
-                        i64::from(source.kind().tag()),
                         authority.kind_tag(),
                         authority.id_bytes().as_slice()
                     ],
@@ -1201,11 +1184,9 @@ mod tests {
                 .connection
                 .execute(
                     "DELETE FROM backend_projection_package_states WHERE source=?1 \
-                     AND coordinate_kind=?2 AND source_authority_kind=?3 \
-                     AND source_authority_id=?4",
+                     AND source_authority_kind=?2 AND source_authority_id=?3",
                     turso::params![
                         source.as_str(),
-                        i64::from(source.kind().tag()),
                         authority.kind_tag(),
                         authority.id_bytes().as_slice()
                     ],
@@ -1239,11 +1220,9 @@ mod tests {
                 .connection
                 .execute(
                     "DELETE FROM backend_projection_package_sources WHERE source=?1 \
-                     AND coordinate_kind=?2 AND source_authority_kind=?3 \
-                     AND source_authority_id=?4",
+                     AND source_authority_kind=?2 AND source_authority_id=?3",
                     turso::params![
                         source.as_str(),
-                        i64::from(source.kind().tag()),
                         authority.kind_tag(),
                         authority.id_bytes().as_slice()
                     ],
