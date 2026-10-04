@@ -27,8 +27,9 @@ use super::wire::{
     SPARSE_BINDING_ROW_BYTES,
 };
 use super::{
-    FullSemanticImageError, FullSemanticImageFault, SemanticImageProofOwner, SemanticImageView,
-    encode_full_semantic_image, full_semantic_image_len,
+    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    SemanticImageProofOwner, SemanticImageView, encode_full_semantic_image,
+    full_semantic_image_len,
 };
 
 fn version(value: u8) -> EntityVersion {
@@ -330,10 +331,13 @@ fn signature_binding_size_preflight_checks_wire_width_without_allocating() {
         let max_wire_bytes = u32::MAX as usize;
         let largest_rows = max_wire_bytes / row_bytes;
         let largest_bytes = largest_rows * row_bytes;
-        assert_eq!(
-            super::plan::signature_binding_lane_bytes(largest_rows, row_bytes, field),
-            Ok(largest_bytes)
-        );
+        let observed_bytes = super::plan::signature_binding_lane_bytes(
+            largest_rows,
+            row_bytes,
+            field,
+        )
+        .expect("largest whole-row count fits the wire width");
+        assert_eq!(observed_bytes, largest_bytes);
         assert!(matches!(
             super::plan::signature_binding_lane_bytes(largest_rows + 1, row_bytes, field),
             Err(FullSemanticImageFault::LengthOverflow { field: observed }) if observed == field
@@ -341,10 +345,9 @@ fn signature_binding_size_preflight_checks_wire_width_without_allocating() {
     }
 
     let half_wire = (u32::MAX as usize) / 2;
-    assert_eq!(
-        super::plan::signature_binding_lanes_bytes(half_wire, half_wire),
-        Ok(half_wire * 2)
-    );
+    let observed_bytes = super::plan::signature_binding_lanes_bytes(half_wire, half_wire)
+        .expect("two half-width lanes fit the directory wire width");
+    assert_eq!(observed_bytes, half_wire * 2);
     assert!(matches!(
         super::plan::signature_binding_lanes_bytes(half_wire + 1, half_wire + 1),
         Err(FullSemanticImageFault::LengthOverflow {
