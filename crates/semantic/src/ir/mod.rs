@@ -304,9 +304,10 @@ pub use versioned::{
     VersionedPlaneSegmentSchema,
 };
 pub use versioned_records::{
-    CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalPlaneStreamError,
-    CanonicalSemanticPlaneKeySink, CanonicalSemanticPlaneRecordCursor,
-    CanonicalSemanticPlaneRecordView, CanonicalSemanticPlaneRowKey,
+    CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalPlaneRowEncodingMetrics,
+    CanonicalPlaneRowStreamError, CanonicalPlaneStreamError, CanonicalSemanticPlaneKeySink,
+    CanonicalSemanticPlaneRecordCursor, CanonicalSemanticPlaneRecordView,
+    CanonicalSemanticPlaneRowKey, CanonicalSemanticPlaneRowSink,
     CanonicalSemanticPlaneSegmentPayload, CanonicalSemanticPlaneSegmentRef,
     CanonicalSemanticPlaneSegmentSink, CanonicalSemanticPlaneSegmentView,
     CheckedLanguageExtensionFamilyV2, CoreDeclarationRows, DocumentationRows,
@@ -317,7 +318,7 @@ pub use versioned_records::{
     decode_semantic_plane_segment_with_row_limit, encode_canonical_plane_family,
     encode_canonical_plane_family_measured, encode_declaration_planes,
     encode_language_extension_plane, stream_canonical_plane_family,
-    stream_canonical_plane_family_with_jumbo,
+    stream_canonical_plane_family_rows_with_limits, stream_canonical_plane_family_with_jumbo,
     stream_canonical_plane_family_with_jumbo_and_stable_key_anchors,
     stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits,
     stream_canonical_plane_family_with_stable_key_anchors, validate_language_extension_family_v2,

@@ -7,6 +7,7 @@
 
 use std::{
     collections::TryReserveError,
+    fmt,
     io::{self, Read},
     num::NonZeroUsize,
     ops::Deref,
@@ -127,6 +128,49 @@ pub enum ToolchainProbeCleanupAction {
     Terminate,
     /// Reaping the terminated or already-exited process failed.
     Reap,
+}
+
+/// Bytes of each stream quoted by a failed probe's message.
+const FAILURE_EXCERPT_BYTES: usize = 512;
+
+/// Quotes the beginning of a failed probe's two bounded streams.
+///
+/// Only the display is shortened; the error itself retains the complete bounded streams.
+struct FailureStreams<'streams> {
+    stdout: &'streams [u8],
+    stderr: &'streams [u8],
+}
+
+impl<'streams> FailureStreams<'streams> {
+    const fn new(stdout: &'streams [u8], stderr: &'streams [u8]) -> Self {
+        Self { stdout, stderr }
+    }
+}
+
+impl fmt::Display for FailureStreams<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (name, bytes) in [("stderr", self.stderr), ("stdout", self.stdout)] {
+            if bytes.is_empty() {
+                continue;
+            }
+            let shown = &bytes[..bytes.len().min(FAILURE_EXCERPT_BYTES)];
+            // `Debug` keeps a multi-line quotation on one line and escapes control bytes.
+            write!(
+                formatter,
+                "; {name}: {:?}",
+                String::from_utf8_lossy(shown).trim_end()
+            )?;
+            if shown.len() < bytes.len() {
+                write!(
+                    formatter,
+                    " (first {} of {} bytes)",
+                    shown.len(),
+                    bytes.len()
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Exact bounded-reader failure for one named child stream.
@@ -260,7 +304,13 @@ pub enum ToolchainProbeError {
         tool: NativeTool,
     },
     /// The executable exited unsuccessfully with both complete bounded streams retained.
-    #[error("{tool:?} version probe exited with {status}")]
+    ///
+    /// The message quotes the start of each stream so the cause of a refusal is visible without a
+    /// debugger: a tool that rejects its argument says so on stderr.
+    #[error(
+        "{tool:?} version probe exited with {status}{}",
+        FailureStreams::new(.stdout, .stderr)
+    )]
     Exit {
         /// Closed tool family.
         tool: NativeTool,
@@ -673,5 +723,148 @@ mod tests {
             ToolchainProbeError::Spawn { executable: observed, .. }
                 if observed == executable
         ));
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use std::{
+        num::NonZeroUsize,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
+
+    use backend_semantic::vocabulary::NativeTool;
+
+    use super::{
+        FAILURE_EXCERPT_BYTES, FailureStreams, ToolchainProbeError, ToolchainProbeLimits,
+        probe_command,
+    };
+
+    /// Name of the fixture test this module re-executes as a failing tool.
+    const FIXTURE: &str = "application::toolchain_probe::failure_tests::failing_tool_fixture";
+    /// Argument that switches the fixture from a no-op test to a failing tool.
+    const MODE: &str = "nudox-probe-fixture-fail";
+
+    fn limits() -> ToolchainProbeLimits {
+        ToolchainProbeLimits::new(
+            Duration::from_secs(30),
+            NonZeroUsize::new(64 * 1024).expect("nonzero output bound"),
+        )
+        .expect("valid probe bounds")
+    }
+
+    /// Re-executed by the probe tests below. Run as an ordinary test it does
+    /// nothing; run with [`MODE`] among its arguments it behaves like a tool
+    /// that rejects its arguments: a diagnostic on stderr and exit status 3.
+    #[test]
+    fn failing_tool_fixture() {
+        if std::env::args().any(|argument| argument == MODE) {
+            eprintln!("fixture tool: unexpected argument '--print'");
+            println!("fixture tool: usage text");
+            std::process::exit(3);
+        }
+    }
+
+    #[test]
+    fn a_failed_probe_keeps_and_shows_what_the_tool_said() {
+        let executable = std::env::current_exe().expect("test executable");
+        let error = probe_command(
+            NativeTool::Rustc,
+            &executable,
+            &["--exact", FIXTURE, MODE, "--nocapture"],
+            limits(),
+        )
+        .expect_err("the fixture tool exits unsuccessfully");
+
+        let message = error.to_string();
+        let ToolchainProbeError::Exit {
+            status,
+            stdout,
+            stderr,
+            ..
+        } = &error
+        else {
+            panic!("expected a typed exit, observed {error:?}");
+        };
+        assert_eq!(status.code(), Some(3));
+        assert!(
+            String::from_utf8_lossy(stderr).contains("unexpected argument '--print'"),
+            "the typed error retains stderr: {stderr:?}"
+        );
+        assert!(String::from_utf8_lossy(stdout).contains("usage text"));
+        assert!(
+            message.contains("unexpected argument '--print'") && message.contains("stderr"),
+            "the message quotes stderr: {message}"
+        );
+    }
+
+    #[test]
+    fn the_quotation_is_bounded_escaped_and_names_each_nonempty_stream() {
+        assert_eq!(FailureStreams::new(b"", b"").to_string(), "");
+        assert_eq!(
+            FailureStreams::new(b"", b"error: bad\nline two\n").to_string(),
+            "; stderr: \"error: bad\\nline two\""
+        );
+        assert_eq!(
+            FailureStreams::new(b"out", b"err").to_string(),
+            "; stderr: \"err\"; stdout: \"out\""
+        );
+        let long = vec![b'x'; FAILURE_EXCERPT_BYTES + 7];
+        let shown = FailureStreams::new(b"", &long).to_string();
+        assert_eq!(
+            shown,
+            format!(
+                "; stderr: \"{}\" (first {FAILURE_EXCERPT_BYTES} of {} bytes)",
+                "x".repeat(FAILURE_EXCERPT_BYTES),
+                FAILURE_EXCERPT_BYTES + 7
+            )
+        );
+        // Bytes that are not UTF-8 are quoted lossily instead of failing the message.
+        assert_eq!(
+            FailureStreams::new(b"", &[0xff, b'a']).to_string(),
+            "; stderr: \"\u{fffd}a\""
+        );
+    }
+
+    /// The compiler the host would select when `NUDOX_RUSTC` names the first `rustc` on `PATH`.
+    fn host_rustc() -> PathBuf {
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let from_path = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join(format!("rustc{suffix}")))
+                .find(|candidate| candidate.is_file())
+        });
+        let selected = std::env::var_os("RUSTC")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_file())
+            .or(from_path)
+            .expect("a cargo test environment provides rustc through RUSTC or PATH");
+        backend_frontend_rust::legacy::canonical_executable(&selected)
+            .expect("resolve the selected rustc as the host does")
+    }
+
+    /// A rustup proxy is a link to the `rustup` binary. The probe must reach the compiler, not
+    /// the toolchain manager that rejected `--print sysroot` and answered `--version` with its own
+    /// version.
+    #[test]
+    fn the_selected_rustc_answers_as_a_compiler_not_as_the_toolchain_manager() {
+        let rustc = host_rustc();
+        let version = probe_command(NativeTool::Rustc, &rustc, &["-vV"], limits())
+            .unwrap_or_else(|error| panic!("rustc -vV through {rustc:?}: {error}"));
+        let text = String::from_utf8_lossy(&version);
+        assert!(
+            text.starts_with("rustc "),
+            "unexpected version text: {text}"
+        );
+        assert!(text.contains("release:"), "unexpected version text: {text}");
+
+        let sysroot = probe_command(NativeTool::Rustc, &rustc, &["--print", "sysroot"], limits())
+            .unwrap_or_else(|error| panic!("rustc --print sysroot through {rustc:?}: {error}"));
+        let sysroot = PathBuf::from(String::from_utf8_lossy(&sysroot).trim());
+        assert!(
+            Path::new(&sysroot).is_absolute() && sysroot.is_dir(),
+            "the sysroot is an existing absolute directory: {sysroot:?}"
+        );
     }
 }

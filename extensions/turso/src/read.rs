@@ -3,6 +3,9 @@
 use crate::schema::{Metadata, SCHEMA_VERSION};
 use crate::{ProjectionError, TursoProjection};
 
+/// Maximum result size for one exact-label lookup.
+pub const MAX_LABEL_QUERY_ROWS: u32 = 512;
+
 /// Query output fenced by one immutable projection root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootedRows {
@@ -26,6 +29,12 @@ impl TursoProjection {
         label: &str,
         limit: u32,
     ) -> Result<RootedRows, ProjectionError> {
+        if limit > MAX_LABEL_QUERY_ROWS {
+            return Err(ProjectionError::ReadLimitExceeded {
+                maximum: MAX_LABEL_QUERY_ROWS as usize,
+            });
+        }
+        let _operation_guard = self.operation_guard()?;
         // Keep the root fence and the rows in one read transaction. A pair of
         // independent statements can otherwise observe `base` for the fence
         // and `target` for the rows when a writer commits between them.

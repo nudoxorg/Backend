@@ -49,7 +49,7 @@ const AUTHORITY_VALUE: &[u8] = backend_engine::PRODUCT_AUTHORITY_BYTES;
 /// ones) must name itself anew: otherwise a reopened workspace serves the
 /// old projection until its sources change, and replays journal events
 /// written under an older wire version it can no longer decode.
-const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
+pub(crate) const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
 const MAX_REBUILD_PACKAGES: usize = 1_000_000;
 pub(super) const MAX_REBUILD_BYTES: usize = 64 * 1024 * 1024;
 // One compact event is fsynced before publication. Keep short edit suffixes
@@ -72,6 +72,8 @@ use profile::{
     profile_descriptor,
 };
 pub use profile::{BuiltinIntent, BuiltinModel, BuiltinModelError};
+
+type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 
 #[path = "builtin/replication.rs"]
 mod replication;
@@ -98,6 +100,8 @@ mod pending_stored;
 mod s3_publication;
 #[path = "builtin/semantic_authority.rs"]
 mod semantic_authority;
+#[path = "builtin/sql_projection.rs"]
+mod sql_projection;
 pub use compiler_scope::{ProductCompilerScope, ProductCompilerTargetKind, product_compiler_scope};
 #[path = "builtin/selected_full_image.rs"]
 mod selected_full_image;
@@ -457,6 +461,42 @@ fn admit_manifest(
 
 pub(crate) fn genesis() -> Result<WorkspaceHead, BuiltinModelError> {
     head_for_intent(None)
+}
+
+/// The owner adapter [`open_empty_owner`] builds: a real product daemon whose
+/// command lane answers every command with an empty reply.
+#[cfg(test)]
+pub(crate) type EmptyOwner = crate::service::LocaldOwner<
+    BuiltinModel,
+    BuiltinValidator,
+    BuiltinAuthorityVerifier,
+    fn(
+        &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+        &[u8],
+    ) -> Result<Vec<u8>, String>,
+>;
+
+/// Opens a real, empty product owner at `workspace`, for tests of the layers
+/// that front it (leases, listeners) which need a daemon but not a project.
+#[cfg(test)]
+pub(crate) fn open_empty_owner(workspace: &Path) -> Result<EmptyOwner, String> {
+    let profile = profile_descriptor(BuiltinProfile::Product)?;
+    let dispatcher = builtin_dispatcher(Some([0x3C; 32]), profile, 1)?;
+    let registry = RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| format!("register source relation: {error:?}"))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let daemon = crate::Locald::open_with_dispatcher_and_registry(
+        workspace,
+        BuiltinModel,
+        genesis().map_err(|error| error.to_string())?,
+        dispatcher,
+        DaemonConfig::default(),
+        registry,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(daemon.into_owner(|_, _| Ok(Vec::new())))
 }
 
 /// Builds the checked head a workspace holding exactly `intent` would have.
@@ -1546,19 +1586,13 @@ pub(crate) fn compose_owner(
     }
     let published_roots = published.roots;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
-    let mut sql_projection = futures_executor::block_on(
-        backend_extension_turso::TursoProjection::open_or_rebuild(&projection_path),
-    )
+    let mut sql_projection = sql_projection::open_current(&projection_path, &daemon)
     .map_err(|error| {
         ProcessError::Profile(format!(
             "open Turso projection {}: {error}",
             projection_path.display()
         ))
     })?;
-    futures_executor::block_on(
-        sql_projection.synchronize(daemon.engine().daemon().library().view()),
-    )
-    .map_err(|error| ProcessError::Profile(format!("align Turso projection: {error}")))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -1654,15 +1688,29 @@ pub(crate) fn compose_owner(
         // Opening the gateway composes its source owners lazily. Load their
         // durable catalog before reading dependency facts so cold projection
         // repair sees the same graph inputs as an ordinary command.
+        let graph_base = sql_projection::GraphBase::capture(&sql_projection, &daemon)
+            .map_err(|error| {
+                ProcessError::Profile(format!("capture package graph revision: {error}"))
+            })?;
         let catalog = registry.catalog_projection().map_err(|error| {
             ProcessError::Profile(format!(
                 "open registry catalog for graph projection: {error}"
             ))
         })?;
-        futures_executor::block_on(sql_projection.synchronize_package_graph(
-            daemon.engine().daemon().library().view().root(),
-            &catalog.dependency_facts,
-        ))
+        let facts = backend_library::CheckedPackageGraphFacts::new(
+            catalog.dependency_facts.to_vec(),
+        )
+        .map_err(|error| {
+            ProcessError::Profile(format!("check package graph seed: {error}"))
+        })?;
+        if !registry.validate_resident_projection(&catalog).map_err(|error| {
+            ProcessError::Profile(format!("validate package graph source: {error}"))
+        })? {
+            return Err(ProcessError::Profile(
+                "registry source changed before initial package graph publication".to_owned(),
+            ));
+        }
+        graph_base.synchronize(&mut sql_projection, &facts)
         .map_err(|error| {
             ProcessError::Profile(format!("align package graph projection: {error}"))
         })?;

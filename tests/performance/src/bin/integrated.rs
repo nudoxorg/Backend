@@ -25,10 +25,12 @@ use backend_extension_tantivy::{
     IndexRelation, LexicalView, Limits as TantivyLimits, MatchMode, OverlayLimits,
     Query as LexQuery, ReadManifest, Recipe, RefreshOutcome, TantivySource,
 };
-use backend_extension_turso::{ProjectionUpdate, TursoProjection};
+use backend_extension_turso::{
+    ProjectionGraphSeed, ProjectionSeed, ProjectionUpdate, TursoProjection,
+};
 use backend_library::{
     Basis, Command as LibraryCommand, CommandDto, Coverage, CoverageCapability, Cursor,
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     source_selection_policy,
     Fragment, Frontier, Library, PackageDependencyRecord, PackageDependencyTarget,
     PackageReference, ProductText, Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta,
@@ -55,11 +57,11 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type BenchResult<T> = Result<T, Box<dyn Error>>;
 
-const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v4";
+const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v5";
 const MAX_RELATION_ROW_BYTES: usize = 32 * 1024;
 const MAX_LARGE_CORPUS_FILES: usize = 256;
 const MAX_LARGE_CORPUS_BYTES: usize = 4 * 1024 * 1024;
@@ -248,10 +250,27 @@ struct CatalogMeasurement {
     phase: String,
     wall: Stats,
     rows: usize,
-    database_bytes: usize,
-    pack_bytes: usize,
+    database_bytes: Option<usize>,
+    pack_bytes: Option<usize>,
+    projection_storage: Option<TursoStorageMeasurement>,
     output_root: String,
     correctness: Correctness,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TursoStorageMeasurement {
+    selected_generation: u64,
+    generation_count: usize,
+    selector_bytes: u64,
+    generation_counter_bytes: u64,
+    gate_bytes: u64,
+    other_control_bytes: u64,
+    selected_generation_bytes: u64,
+    retained_generation_bytes: u64,
+    wal_file_bytes: u64,
+    shm_file_bytes: u64,
+    total_namespace_file_bytes: u64,
+    allocated_namespace_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -339,6 +358,7 @@ struct LifecycleMeasurement {
     phase: &'static str,
     wall: Stats,
     storage_bytes: usize,
+    projection_storage: Option<TursoStorageMeasurement>,
     child_exit: String,
     correctness: Correctness,
 }
@@ -1079,9 +1099,12 @@ fn dir_bytes(root: &Path) -> usize {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_dir() {
                 recurse(&path, total);
-            } else if let Ok(metadata) = path.metadata() {
+            } else if metadata.file_type().is_file() {
                 *total = total.saturating_add(metadata.len() as usize);
             }
         }
@@ -1099,16 +1122,363 @@ fn signed_storage_growth(before: usize, after: usize) -> i64 {
     }
 }
 
-fn temp_root(label: &str) -> PathBuf {
-    env::temp_dir().join(format!(
-        "nudox-integrated-bench-{label}-{}",
-        std::process::id()
-    ))
+static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
+
+fn temp_root(label: &str) -> BenchResult<PathBuf> {
+    let safe_label = label
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let parent = env::temp_dir();
+    for _ in 0..128 {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let sequence = NEXT_TEMP_ROOT.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            "nudox-integrated-bench-{safe_label}-{}-{timestamp:x}-{sequence:x}",
+            std::process::id()
+        ));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("could not allocate a unique private benchmark directory".into())
+}
+
+struct StorageTally {
+    file_bytes: u64,
+    wal_bytes: u64,
+    shm_bytes: u64,
+    allocated_bytes: Option<u64>,
+}
+
+impl StorageTally {
+    fn new() -> Self {
+        Self {
+            file_bytes: 0,
+            wal_bytes: 0,
+            shm_bytes: 0,
+            allocated_bytes: Some(0),
+        }
+    }
+}
+
+fn add_allocated_bytes(tally: &mut StorageTally, metadata: &fs::Metadata) {
+    tally.allocated_bytes = tally
+        .allocated_bytes
+        .zip(allocated_object_bytes(metadata))
+        .map(|(current, bytes)| current.saturating_add(bytes));
+}
+
+#[cfg(unix)]
+fn allocated_object_bytes(metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.blocks().saturating_mul(512))
+}
+
+#[cfg(not(unix))]
+fn allocated_object_bytes(_: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+fn sqlite_sidecar_kind(name: &str) -> Option<bool> {
+    if name.ends_with("-wal") || name.ends_with(".wal") {
+        Some(true)
+    } else if name.ends_with("-shm") || name.ends_with(".shm") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn tally_tree(path: &Path, tally: &mut StorageTally) -> BenchResult<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("unexpected symlink in selected Turso storage: {}", path.display()).into());
+    }
+    add_allocated_bytes(tally, &metadata);
+    if metadata.file_type().is_file() {
+        tally.file_bytes = tally.file_bytes.saturating_add(metadata.len());
+        if let Some(is_wal) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(sqlite_sidecar_kind)
+        {
+            let total = if is_wal {
+                &mut tally.wal_bytes
+            } else {
+                &mut tally.shm_bytes
+            };
+            *total = total.saturating_add(metadata.len());
+        }
+        return Ok(());
+    }
+    if !metadata.file_type().is_dir() {
+        return Err(format!("unexpected filesystem entry in Turso storage: {}", path.display()).into());
+    }
+    for entry in fs::read_dir(path)? {
+        tally_tree(&entry?.path(), tally)?;
+    }
+    Ok(())
+}
+
+fn selected_namespace_path(database_stem: &Path) -> BenchResult<PathBuf> {
+    let parent = database_stem
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let file_name = database_stem
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid Turso database stem: {}", database_stem.display()))?;
+    Ok(parent.join(format!("{file_name}.namespace-v1")))
+}
+
+fn turso_storage_measurement(
+    database_stem: &Path,
+    selected_generation: u64,
+) -> BenchResult<TursoStorageMeasurement> {
+    if selected_generation == 0 {
+        return Err("selected Turso generation must be positive".into());
+    }
+    let namespace = selected_namespace_path(database_stem)?;
+    let root_metadata = fs::symlink_metadata(&namespace)?;
+    if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(format!("selected Turso namespace is not a private directory: {}", namespace.display()).into());
+    }
+    let mut control = StorageTally::new();
+    add_allocated_bytes(&mut control, &root_metadata);
+    let mut selector_bytes = 0_u64;
+    let mut generation_counter_bytes = 0_u64;
+    let mut gate_bytes = 0_u64;
+    let mut other_control_bytes = 0_u64;
+    let mut selector_record = None;
+    let mut generations_root = None;
+    let mut saw_selector = false;
+    let mut saw_gate = false;
+    for entry in fs::read_dir(&namespace)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("symlink in selected Turso namespace: {}", path.display()).into());
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("non-UTF8 entry in Turso namespace: {}", path.display()))?;
+        if name == "generations" {
+            if !metadata.file_type().is_dir() {
+                return Err("Turso generations entry is not a directory".into());
+            }
+            add_allocated_bytes(&mut control, &metadata);
+            generations_root = Some(path);
+            continue;
+        }
+        if !metadata.file_type().is_file() {
+            return Err(format!("unexpected entry in selected Turso namespace: {name}").into());
+        }
+        control.file_bytes = control.file_bytes.saturating_add(metadata.len());
+        add_allocated_bytes(&mut control, &metadata);
+        match name {
+            "selected" => {
+                saw_selector = true;
+                selector_bytes = metadata.len();
+                selector_record = Some(fs::read(&path)?);
+            }
+            "last-generation" => generation_counter_bytes = metadata.len(),
+            "selection.lock" => {
+                saw_gate = true;
+                gate_bytes = metadata.len();
+            }
+            _ => other_control_bytes = other_control_bytes.saturating_add(metadata.len()),
+        }
+    }
+    if !saw_selector || !saw_gate {
+        return Err("selected Turso namespace is missing selector or gate".into());
+    }
+    let selector_record = selector_record.ok_or("selected Turso namespace is missing selector")?;
+    if generation_from_record(&selector_record, b"BPTSEL01")? != selected_generation {
+        return Err("projection revision and namespace selector name different generations".into());
+    }
+    let generations_root = generations_root.ok_or("selected Turso namespace is missing generations")?;
+    let selected_name = format!("g{selected_generation:016x}");
+    let selected_path = generations_root.join(&selected_name);
+    let selected_marker = selected_path.join(".generation");
+    let selected_database = selected_path.join(backend_extension_turso::FILE_NAME);
+    if !fs::symlink_metadata(&selected_path)?.file_type().is_dir()
+        || !fs::symlink_metadata(&selected_marker)?.file_type().is_file()
+        || !fs::symlink_metadata(&selected_database)?.file_type().is_file()
+    {
+        return Err("selected Turso generation is missing its marker or database".into());
+    }
+    if generation_from_record(&fs::read(&selected_marker)?, b"BPTGEN01")? != selected_generation {
+        return Err("selected generation marker names a different generation".into());
+    }
+    let mut all_generations = StorageTally::new();
+    let mut selected_generation_bytes = None;
+    let mut generation_count = 0_usize;
+    for entry in fs::read_dir(&generations_root)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("non-UTF8 generation entry: {}", path.display()))?;
+        if !name.strip_prefix('g').is_some_and(|digits| {
+            digits.len() == 16
+                && digits
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(format!("invalid selected Turso generation directory: {name}").into());
+        }
+        if !fs::symlink_metadata(&path)?.file_type().is_dir() {
+            return Err(format!("generation entry is not a directory: {name}").into());
+        }
+        generation_count = generation_count.saturating_add(1);
+        let mut generation_tally = StorageTally::new();
+        tally_tree(&path, &mut generation_tally)?;
+        all_generations.file_bytes = all_generations
+            .file_bytes
+            .saturating_add(generation_tally.file_bytes);
+        all_generations.wal_bytes = all_generations
+            .wal_bytes
+            .saturating_add(generation_tally.wal_bytes);
+        all_generations.shm_bytes = all_generations
+            .shm_bytes
+            .saturating_add(generation_tally.shm_bytes);
+        all_generations.allocated_bytes = all_generations
+            .allocated_bytes
+            .zip(generation_tally.allocated_bytes)
+            .map(|(left, right)| left.saturating_add(right));
+        if name == selected_name {
+            selected_generation_bytes = Some(generation_tally.file_bytes);
+        }
+    }
+    let selected_generation_bytes = selected_generation_bytes
+        .ok_or("selected Turso generation is absent from its namespace inventory")?;
+    if fs::read(namespace.join("selected"))? != selector_record {
+        return Err("selected Turso namespace changed during storage measurement".into());
+    }
+    control.allocated_bytes = control
+        .allocated_bytes
+        .zip(all_generations.allocated_bytes)
+        .map(|(left, right)| left.saturating_add(right));
+    let total_namespace_file_bytes = control.file_bytes.saturating_add(all_generations.file_bytes);
+    Ok(TursoStorageMeasurement {
+        selected_generation,
+        generation_count,
+        selector_bytes,
+        generation_counter_bytes,
+        gate_bytes,
+        other_control_bytes,
+        selected_generation_bytes,
+        retained_generation_bytes: all_generations
+            .file_bytes
+            .saturating_sub(selected_generation_bytes),
+        wal_file_bytes: all_generations.wal_bytes,
+        shm_file_bytes: all_generations.shm_bytes,
+        total_namespace_file_bytes,
+        allocated_namespace_bytes: control.allocated_bytes,
+    })
+}
+
+fn generation_from_record(record: &[u8], magic: &[u8; 8]) -> BenchResult<u64> {
+    const RECORD_BYTES: usize = 155;
+    if record.len() != RECORD_BYTES || &record[..8] != magic || record[8..10] != [0, 1] {
+        return Err("selected Turso namespace record has an unsupported shape".into());
+    }
+    let generation_bytes: [u8; 8] = record[10..18]
+        .try_into()
+        .map_err(|_| "selected Turso namespace generation is truncated")?;
+    let generation = u64::from_be_bytes(generation_bytes);
+    if generation == 0 {
+        return Err("selected Turso namespace generation is zero".into());
+    }
+    Ok(generation)
+}
+
+fn selected_storage_measurement(
+    database_stem: &Path,
+    projection: &TursoProjection,
+) -> BenchResult<TursoStorageMeasurement> {
+    let revision = futures_executor::block_on(projection.revision())?;
+    turso_storage_measurement(database_stem, revision.generation().get())
+}
+
+fn open_or_seed_view(
+    database_stem: &Path,
+    mut seed_view: ViewRoot,
+    mut load_current: impl FnMut() -> BenchResult<ViewRoot>,
+) -> BenchResult<(TursoProjection, ViewRoot, ProjectionUpdate)> {
+    use backend_extension_turso::ProjectionError;
+
+    for _ in 0..8 {
+        match futures_executor::block_on(TursoProjection::seed_if_empty(
+            database_stem,
+            ProjectionSeed::new(&seed_view, ProjectionGraphSeed::Unavailable),
+        )) {
+            Ok(projection) => {
+                let update = ProjectionUpdate::Rebuilt {
+                    rows: seed_view.row_count(),
+                };
+                return Ok((projection, seed_view, update));
+            }
+            Err(ProjectionError::AlreadySeeded) => {
+                let mut projection =
+                    futures_executor::block_on(TursoProjection::open(database_stem))?;
+                let expected = futures_executor::block_on(projection.revision())?;
+                // Re-read only after capturing the selected projection fence.
+                let current = load_current()?;
+                let update = futures_executor::block_on(
+                    projection.synchronize_from(expected, &current),
+                )?;
+                return Ok((projection, current, update));
+            }
+            Err(ProjectionError::SeedConflict) => {
+                // A competing seed may be stale. Reacquire the source view before
+                // attempting another seed; AlreadySeeded takes the fenced reopen path.
+                seed_view = load_current()?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("Turso projection seed did not converge after eight bounded attempts".into())
+}
+
+fn pack_bytes_at(root: &Path) -> usize {
+    fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).ok()?;
+            (metadata.file_type().is_file()
+                && path.extension().is_some_and(|extension| extension == "pack"))
+            .then_some(metadata.len() as usize)
+        })
+        .fold(0_usize, usize::saturating_add)
 }
 
 fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
-    let root = temp_root("discovery-fixture");
-    let _ = fs::remove_dir_all(&root);
+    let root = temp_root("discovery-fixture")?;
     for directory in ["src/keep", "src/nested/keep", "src/nested/drop"] {
         fs::create_dir_all(root.join(directory))?;
     }
@@ -1308,9 +1678,7 @@ fn run_ingest(
             final_state = Some(state);
         }
         let state = final_state.ok_or("ingest did not produce a state")?;
-        let directory = temp_root(&format!("tantivy-{}", class.name));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory)?;
+        let directory = temp_root(&format!("tantivy-{}", class.name))?;
         let durable_started = Instant::now();
         let _durable = TantivySource::build_in_dir(&state, benchmark_tantivy_limits(), &directory)?;
         // `open_in_dir` verifies the persisted binding, schema, and token count against the
@@ -1730,19 +2098,17 @@ fn build_view_document_state(view: &ViewRoot) -> BenchResult<DocumentState> {
 mod lifecycle;
 
 fn database_pack_bytes(path: &Path) -> (usize, usize) {
-    let database = dir_bytes(path);
-    let pack = fs::read_dir(path)
-        .ok()
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
-                .filter_map(|entry| entry.metadata().ok())
-                .map(|metadata| metadata.len() as usize)
-                .sum()
-        })
-        .unwrap_or(0);
-    (database, pack)
+    (dir_bytes(path), pack_bytes_at(path))
+}
+
+fn catalog_footprint(
+    root: &Path,
+    database_stem: &Path,
+    projection: &TursoProjection,
+) -> BenchResult<(usize, usize, TursoStorageMeasurement)> {
+    let (database_bytes, pack_bytes) = database_pack_bytes(root);
+    let selected = selected_storage_measurement(database_stem, projection)?;
+    Ok((database_bytes, pack_bytes, selected))
 }
 
 fn run_concurrent_projection(
@@ -1751,7 +2117,7 @@ fn run_concurrent_projection(
     committed: &backend_library::CommittedViewDelta,
     next_view: &ViewRoot,
     size_class: &str,
-) -> BenchResult<CatalogMeasurement> {
+) -> BenchResult<(CatalogMeasurement, bool)> {
     let search_state = build_view_document_state(view)?;
     let search_source = Arc::new(TantivySource::build(
         &search_state,
@@ -1759,9 +2125,18 @@ fn run_concurrent_projection(
     )?);
     let search_query = LexQuery::new(vec!["polyglot".to_owned()], benchmark_tantivy_limits())?;
     let database_path = path.join(backend_extension_turso::FILE_NAME);
-    let mut initial = futures_executor::block_on(TursoProjection::open(&database_path))?;
-    futures_executor::block_on(initial.synchronize(view))?;
+    let (initial, seeded_view, seed_update) =
+        open_or_seed_view(&database_path, view.clone(), || Ok(view.clone()))?;
+    if seeded_view.root() != view.root()
+        || !matches!(
+            seed_update,
+            ProjectionUpdate::Rebuilt { .. } | ProjectionUpdate::Reused { .. }
+        )
+    {
+        return Err("concurrent Turso fixture did not admit the expected base view".into());
+    }
     drop(initial);
+    let expected_package_id = RowId::Package(package_key("polyglot@0.1.0")).stable_key();
     const READERS: usize = 8;
     const TIMEOUT: Duration = Duration::from_secs(10);
     let barrier = Arc::new(Barrier::new(READERS + 1));
@@ -1775,10 +2150,13 @@ fn run_concurrent_projection(
         let next_view = next_view.clone();
         let search_source = Arc::clone(&search_source);
         let search_query = search_query.clone();
+        let expected_package_id = expected_package_id.clone();
         handles.push(thread::spawn(move || {
             let result: BenchResult<(u128, usize, bool)> = (|| {
                 let mut projection = futures_executor::block_on(TursoProjection::open(&path))?;
-                let synchronized = futures_executor::block_on(projection.synchronize(&view))?;
+                let expected = futures_executor::block_on(projection.revision())?;
+                let synchronized =
+                    futures_executor::block_on(projection.synchronize_from(expected, &view))?;
                 if !matches!(synchronized, ProjectionUpdate::Reused { .. }) {
                     return Err("concurrent reader did not reuse the base root".into());
                 }
@@ -1789,7 +2167,7 @@ fn run_concurrent_projection(
                     futures_executor::block_on(projection.lookup_label("polyglot@0.1.0", 64))?;
                 let root_ok = (projected.root.as_slice() == view.root().as_bytes().as_slice()
                     || projected.root.as_slice() == next_view.root().as_bytes().as_slice())
-                    && !projected.ids.is_empty();
+                    && projected.ids.as_ref() == [expected_package_id];
                 Ok((started.elapsed().as_nanos(), hits.len(), root_ok))
             })();
             let _ = sender.send(result.map_err(|error| error.to_string()));
@@ -1804,7 +2182,9 @@ fn run_concurrent_projection(
     let writer_handle = thread::spawn(move || {
         let result: BenchResult<(u128, bool)> = (|| {
             let mut writer = futures_executor::block_on(TursoProjection::open(&writer_path))?;
-            let synchronized = futures_executor::block_on(writer.synchronize(&writer_view))?;
+            let expected = futures_executor::block_on(writer.revision())?;
+            let synchronized =
+                futures_executor::block_on(writer.synchronize_from(expected, &writer_view))?;
             if !matches!(synchronized, ProjectionUpdate::Reused { .. }) {
                 return Err("concurrent writer did not reuse the base root".into());
             }
@@ -1824,6 +2204,7 @@ fn run_concurrent_projection(
     let mut passed = true;
     let mut status = "ok";
     let mut writer_completed = false;
+    let mut all_readers_completed = true;
     let mut assertions = vec![format!("{} readers overlapped one checked writer", READERS)];
     match writer_receiver.recv_timeout(TIMEOUT) {
         Ok(Ok((elapsed, writer_passed))) => {
@@ -1870,6 +2251,7 @@ fn run_concurrent_projection(
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     status = "unavailable";
                     passed = false;
+                    all_readers_completed = false;
                     assertions.push(format!(
                         "reader did not finish within {} seconds",
                         TIMEOUT.as_secs()
@@ -1889,7 +2271,8 @@ fn run_concurrent_projection(
         // handles detaches any blocked child threads so the report can still
         // be written and the process can exit cleanly.
     }
-    if writer_completed && status != "unavailable" {
+    let workers_quiescent = writer_completed && all_readers_completed && status != "unavailable";
+    if workers_quiescent {
         for handle in handles {
             handle
                 .join()
@@ -1902,10 +2285,36 @@ fn run_concurrent_projection(
     if timings.is_empty() {
         timings.push(0);
     }
-    let (database_bytes, pack_bytes) = database_pack_bytes(path);
-    Ok(CatalogMeasurement {
+    let mut output_root = "unobserved_after_concurrent_timeout".to_owned();
+    let (database_bytes, pack_bytes, projection_storage) = if workers_quiescent {
+        let projection = futures_executor::block_on(TursoProjection::open(&database_path))?;
+        let revision = futures_executor::block_on(projection.revision())?;
+        let rooted = futures_executor::block_on(projection.lookup_label("polyglot@0.1.0", 64))?;
+        output_root = root_hex(&revision.root());
+        let selected_root_ok = revision.root() == *next_view.root().as_bytes()
+            && rooted.root == revision.root()
+            && rooted.ids.as_ref() == [expected_package_id];
+        passed &= selected_root_ok;
+        if !selected_root_ok {
+            assertions.push("reopened selected Turso root or label result differed from the committed target".to_owned());
+        }
+        let (database_bytes, pack_bytes) = database_pack_bytes(path);
+        let storage = selected_storage_measurement(&database_path, &projection)?;
+        (Some(database_bytes), Some(pack_bytes), Some(storage))
+    } else {
+        assertions.push("storage and selected-root census omitted because a worker may still own the private namespace".to_owned());
+        (None, None, None)
+    };
+    let reported_status = if passed {
+        "ok"
+    } else if status == "ok" {
+        "failed"
+    } else {
+        status
+    };
+    Ok((CatalogMeasurement {
         schema: JSON_SCHEMA,
-        status: if passed { "ok" } else { status },
+        status: reported_status,
         size_class: size_class.to_owned(),
         operation: "concurrent_readers_writer".to_owned(),
         phase: "concurrent".to_owned(),
@@ -1913,53 +2322,66 @@ fn run_concurrent_projection(
         rows,
         database_bytes,
         pack_bytes,
-        output_root: root_hex(next_view.root().as_bytes()),
+        projection_storage,
+        output_root,
         correctness: Correctness { passed, assertions },
-    })
+    }, workers_quiescent))
 }
 
 fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<CatalogMeasurement>> {
-    let (view, capability) = build_view(class)?;
-    let root = root_hex(view.root().as_bytes());
-    let path = temp_root("turso");
-    let _ = fs::remove_dir_all(&path);
-    fs::create_dir_all(&path)?;
+    let (seed_view, capability) = build_view(class)?;
+    let path = temp_root("turso")?;
     let database_path = path.join(backend_extension_turso::FILE_NAME);
     let mut measurements = Vec::new();
-    let mut projection = futures_executor::block_on(TursoProjection::open(&database_path))?;
     let cold_started = Instant::now();
-    let cold_update = futures_executor::block_on(projection.synchronize(&view))?;
-    if !matches!(cold_update, ProjectionUpdate::Rebuilt { .. }) {
-        return Err("unexpected Turso cold update".into());
+    let (mut projection, view, cold_update) = open_or_seed_view(
+        &database_path,
+        seed_view,
+        || build_view(class).map(|(current, _)| current),
+    )?;
+    if !matches!(
+        cold_update,
+        ProjectionUpdate::Rebuilt { .. } | ProjectionUpdate::Reused { .. }
+    ) {
+        return Err(format!("unexpected Turso cold update: {cold_update:?}").into());
     }
+    let root = root_hex(view.root().as_bytes());
     let cold_timing = cold_started.elapsed().as_nanos();
-    let (database_bytes, pack_bytes) = database_pack_bytes(&path);
+    let (database_bytes, pack_bytes, projection_storage) =
+        catalog_footprint(&path, &database_path, &projection)?;
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
         size_class: class.name.to_owned(),
-        operation: "cold_open_synchronize".to_owned(),
+        operation: "cold_complete_seed_or_fenced_reopen".to_owned(),
         phase: "cold_open".to_owned(),
         wall: stats(&mut vec![cold_timing]),
         rows: view.row_count() as usize,
-        database_bytes,
-        pack_bytes,
+        database_bytes: Some(database_bytes),
+        pack_bytes: Some(pack_bytes),
+        projection_storage: Some(projection_storage),
         output_root: root.clone(),
         correctness: Correctness {
             passed: true,
-            assertions: vec!["Turso projection rebuilt and root-fenced".to_owned()],
+            assertions: vec![format!(
+                "complete seed/reopen path returned {cold_update:?} for the admitted root"
+            )],
         },
     });
 
     let mut warm_timings = Vec::new();
     for _ in 0..profile.repetitions().saturating_sub(1) {
+        let expected = futures_executor::block_on(projection.revision())?;
+        let current_view = build_view(class)?.0;
         let started = Instant::now();
-        let update = futures_executor::block_on(projection.synchronize(&view))?;
+        let update = futures_executor::block_on(projection.synchronize_from(expected, &current_view))?;
         if !matches!(update, ProjectionUpdate::Reused { .. }) {
             return Err("Turso warm synchronize did not reuse the exact root".into());
         }
         warm_timings.push(started.elapsed().as_nanos());
     }
+    let (database_bytes, pack_bytes, projection_storage) =
+        catalog_footprint(&path, &database_path, &projection)?;
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
@@ -1968,8 +2390,9 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         phase: "warm".to_owned(),
         wall: stats(&mut warm_timings),
         rows: view.row_count() as usize,
-        database_bytes,
-        pack_bytes,
+        database_bytes: Some(database_bytes),
+        pack_bytes: Some(pack_bytes),
+        projection_storage: Some(projection_storage),
         output_root: root.clone(),
         correctness: Correctness {
             passed: true,
@@ -1980,10 +2403,15 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
     drop(projection);
     let restart_started = Instant::now();
     let mut restarted = futures_executor::block_on(TursoProjection::open(&database_path))?;
-    let restart_update = futures_executor::block_on(restarted.synchronize(&view))?;
+    let restart_revision = futures_executor::block_on(restarted.revision())?;
+    let restart_view = build_view(class)?.0;
+    let restart_update =
+        futures_executor::block_on(restarted.synchronize_from(restart_revision, &restart_view))?;
     if !matches!(restart_update, ProjectionUpdate::Reused { .. }) {
         return Err("Turso restart did not reuse the exact root".into());
     }
+    let (database_bytes, pack_bytes, projection_storage) =
+        catalog_footprint(&path, &database_path, &restarted)?;
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
@@ -1992,12 +2420,15 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         phase: "cold_restart".to_owned(),
         wall: stats(&mut vec![restart_started.elapsed().as_nanos()]),
         rows: view.row_count() as usize,
-        database_bytes,
-        pack_bytes,
+        database_bytes: Some(database_bytes),
+        pack_bytes: Some(pack_bytes),
+        projection_storage: Some(projection_storage),
         output_root: root.clone(),
         correctness: Correctness {
             passed: true,
-            assertions: vec!["exact-root synchronize reused without SQL rebuild".to_owned()],
+            assertions: vec![
+                "selected-only reopen captured its revision before reading and reusing the exact admitted root".to_owned(),
+            ],
         },
     });
 
@@ -2031,6 +2462,8 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
     if !matches!(update, ProjectionUpdate::Advanced { .. }) {
         return Err("Turso one-package delta did not advance".into());
     }
+    let (database_bytes, pack_bytes, projection_storage) =
+        catalog_footprint(&path, &database_path, &restarted)?;
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
@@ -2039,8 +2472,9 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         phase: "warm_delta".to_owned(),
         wall: stats(&mut vec![delta_started.elapsed().as_nanos()]),
         rows: next_view.row_count() as usize,
-        database_bytes: database_pack_bytes(&path).0,
-        pack_bytes: database_pack_bytes(&path).1,
+        database_bytes: Some(database_bytes),
+        pack_bytes: Some(pack_bytes),
+        projection_storage: Some(projection_storage),
         output_root: root_hex(next_view.root().as_bytes()),
         correctness: Correctness {
             passed: committed.base_root() == view.root()
@@ -2057,6 +2491,10 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
     let projected = futures_executor::block_on(restarted.lookup_label("polyglot@0.1.0", 16))?;
     let projected_root_matches =
         projected.root.as_slice() == next_view.root().as_bytes().as_slice();
+    let expected_package_id = RowId::Package(package).stable_key();
+    let package_rows_match = projected.ids.as_ref() == [expected_package_id];
+    let (database_bytes, pack_bytes, projection_storage) =
+        catalog_footprint(&path, &database_path, &restarted)?;
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
@@ -2065,18 +2503,24 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         phase: "warm".to_owned(),
         wall: stats(&mut vec![search_started.elapsed().as_nanos()]),
         rows: hits.len(),
-        database_bytes: database_pack_bytes(&path).0,
-        pack_bytes: database_pack_bytes(&path).1,
+        database_bytes: Some(database_bytes),
+        pack_bytes: Some(pack_bytes),
+        projection_storage: Some(projection_storage),
         output_root: root_hex(next_view.root().as_bytes()),
         correctness: Correctness {
-            passed: !hits.is_empty() && !projected.ids.is_empty() && projected_root_matches,
+            passed: !hits.is_empty() && package_rows_match && projected_root_matches,
             assertions: vec![
                 "Tantivy lexical search returned rows from the advanced view state".to_owned(),
-                "root-fenced Turso label lookup matched the restarted projection".to_owned(),
+                "root-fenced Turso label lookup returned the exact package row from the advanced selected root".to_owned(),
             ],
         },
     });
 
+    // Fence the graph publication before constructing the registry fact observation.
+    let graph_revision = futures_executor::block_on(restarted.package_graph_revision())?;
+    if graph_revision.view_root() != *next_view.root().as_bytes() {
+        return Err("graph revision was not attached to the exact selected view root".into());
+    }
     let dependency_source =
         PackageReference::parse("pkg:cargo/polyglot@0.1.0").map_err(|error| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
@@ -2115,28 +2559,44 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
             ),
         ),
     ];
+    let checked_graph = CheckedPackageGraphFacts::new(graph_facts.clone())
+        .map_err(|error| format!("invalid graph benchmark fixture: {error:?}"))?;
     let graph_started = Instant::now();
-    let graph_update = futures_executor::block_on(
-        restarted.synchronize_package_graph(next_view.root(), &graph_facts),
-    )?;
+    let graph_update = futures_executor::block_on(restarted.synchronize_checked_package_graph_from(
+        graph_revision,
+        next_view.root(),
+        &checked_graph,
+    ))?;
     let graph_elapsed = graph_started.elapsed().as_nanos();
-    let graph_reuse = futures_executor::block_on(
-        restarted.synchronize_package_graph(next_view.root(), &graph_facts),
-    )?;
+    let reuse_revision = futures_executor::block_on(restarted.package_graph_revision())?;
+    let graph_reuse = futures_executor::block_on(restarted.synchronize_checked_package_graph_from(
+        reuse_revision,
+        next_view.root(),
+        &checked_graph,
+    ))?;
     let forward = futures_executor::block_on(restarted.package_dependencies(&dependency_source))?;
     let reverse = futures_executor::block_on(restarted.package_dependents(&dependency_target))?;
     let unavailable =
         futures_executor::block_on(restarted.package_dependencies(&unavailable_source))?;
+    let graph_after = futures_executor::block_on(restarted.package_graph_revision())?;
     let graph_passed = matches!(graph_update, ProjectionUpdate::Rebuilt { rows: 1 })
         && matches!(graph_reuse, ProjectionUpdate::Reused { rows: 1 })
+        && graph_after.view_root() == *next_view.root().as_bytes()
+        && graph_after.facts_witness() == Some(checked_graph.witness())
         && forward.edges.as_ref() == std::slice::from_ref(&dependency_edge)
         && reverse.edges.len() == 1
+        && forward.facts_witness == checked_graph.witness()
+        && reverse.facts_witness == checked_graph.witness()
+        && unavailable.facts_witness == checked_graph.witness()
         && unavailable
             .state
             .as_ref()
             .is_some_and(|state| state.kind == 2)
-        && forward.root.as_ref() == next_view.root().as_bytes();
-    let (graph_database_bytes, graph_pack_bytes) = database_pack_bytes(&path);
+        && forward.root.as_ref() == next_view.root().as_bytes()
+        && reverse.root.as_ref() == next_view.root().as_bytes()
+        && unavailable.root.as_ref() == next_view.root().as_bytes();
+    let (graph_database_bytes, graph_pack_bytes, graph_storage) =
+        catalog_footprint(&path, &database_path, &restarted)?;
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: if graph_passed { "ok" } else { "failed" },
@@ -2145,32 +2605,34 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         phase: "dependency_projection".to_owned(),
         wall: stats(&mut vec![graph_elapsed]),
         rows: forward.edges.len(),
-        database_bytes: graph_database_bytes,
-        pack_bytes: graph_pack_bytes,
+        database_bytes: Some(graph_database_bytes),
+        pack_bytes: Some(graph_pack_bytes),
+        projection_storage: Some(graph_storage),
         output_root: root_hex(next_view.root().as_bytes()),
         correctness: Correctness {
             passed: graph_passed,
             assertions: vec![
                 "known dependency edge was durably projected".to_owned(),
-                "same graph root reused without rewriting".to_owned(),
-                "reverse dependency and unavailable state queries retained the root fence"
-                    .to_owned(),
+                "checked graph publication and exact-root reuse were fenced by captured graph revisions".to_owned(),
+                "forward, reverse, and unavailable-state queries returned the selected view root and exact facts witness".to_owned(),
             ],
         },
     });
-    let concurrent_path = temp_root("turso-concurrent");
-    let _ = fs::remove_dir_all(&concurrent_path);
-    fs::create_dir_all(&concurrent_path)?;
-    measurements.push(run_concurrent_projection(
+    let concurrent_path = temp_root("turso-concurrent")?;
+    let (concurrent_measurement, cleanup_concurrent_path) = run_concurrent_projection(
         &concurrent_path,
         &view,
         &committed,
         &next_view,
         class.name,
-    )?);
-    let _ = fs::remove_dir_all(&concurrent_path);
+    )?;
+    measurements.push(concurrent_measurement);
+    if cleanup_concurrent_path {
+        fs::remove_dir_all(&concurrent_path)?;
+    }
 
-    let (final_database_bytes, final_pack_bytes) = database_pack_bytes(&path);
+    let (final_database_bytes, final_pack_bytes, final_projection_storage) =
+        catalog_footprint(&path, &database_path, &restarted)?;
     for operation in ["registry_read", "advisory_read"] {
         measurements.push(CatalogMeasurement {
             schema: JSON_SCHEMA,
@@ -2180,8 +2642,9 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
             phase: "unavailable".to_owned(),
             wall: stats(&mut Vec::new()),
             rows: 0,
-            database_bytes: final_database_bytes,
-            pack_bytes: final_pack_bytes,
+            database_bytes: Some(final_database_bytes),
+            pack_bytes: Some(final_pack_bytes),
+            projection_storage: Some(final_projection_storage.clone()),
             output_root: root_hex(next_view.root().as_bytes()),
             correctness: Correctness {
                 passed: false,
@@ -2192,7 +2655,8 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
             },
         });
     }
-    let _ = fs::remove_dir_all(path);
+    drop(restarted);
+    fs::remove_dir_all(path)?;
     Ok(measurements)
 }
 
@@ -2665,7 +3129,7 @@ fn run_network_round(
     let (endpoint_url, fixture_counters, fixture_thread) =
         acquisition::start_loopback_registry(endpoint_seed.to_vec(), archive.to_vec())?;
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url.clone())?;
-    let registry_root = temp_root(&format!("network-singleflight-{callers}-{round}"));
+    let registry_root = temp_root(&format!("network-singleflight-{callers}-{round}"))?;
     let _ = fs::remove_dir_all(&registry_root);
     let (owner, _) = RegistryOwner::open(
         &registry_root,
@@ -2884,9 +3348,7 @@ fn run_acquisition(
     if bytes.is_empty() {
         return Err("acquisition source file has no bytes".into());
     }
-    let path = temp_root("cas");
-    let _ = fs::remove_dir_all(&path);
-    fs::create_dir_all(&path)?;
+    let path = temp_root("cas")?;
     let key = ObjectKey::<ImmutableObjectSchema>::from_value(&bytes);
     let version = ObjectVersion::<ImmutableObjectSchema>::from_value(&bytes);
     let authority_id =
@@ -3177,8 +3639,7 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
             },
         };
     };
-    let output = temp_root("gui-output");
-    let _ = fs::remove_dir_all(&output);
+    let output = temp_root("gui-output")?;
     let started = Instant::now();
     let status = Command::new(gui_bin)
         .args(["capture", "--output"])

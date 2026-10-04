@@ -7,9 +7,49 @@
 use crate::browse::read_tree;
 use backend_advisory::{AdvisoryAuthority, AdvisorySource, AuthorityFeed, normalize_package};
 use backend_library::browse::{
-    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, PackageOrigin,
-    ProjectTree, RoleId, TreeSource, build_tree, lockfile_input, metadata_input,
+    CargoTreeError, LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership,
+    PackageOrigin, ProjectTree, RoleId, TreeInput, TreeSource, build_tree, lockfile_input,
+    metadata_input_with_stable_source_witness,
 };
+use backend_library::native_test_paths::localize_cargo_metadata;
+
+/// Reads the recorded document the way the owner does: through the one entry
+/// point that emits exact Cargo source authority, with the roots spelled in the
+/// host's native absolute form (a POSIX root is not absolute on Windows, where
+/// the owner would never have recorded one).
+fn owner_metadata_input(
+    metadata: &[u8],
+    host: &str,
+    lockfile: Option<&str>,
+) -> Result<TreeInput, CargoTreeError> {
+    metadata_input_with_stable_source_witness(
+        &with_recorded_feature_sets(&localize_cargo_metadata(metadata)),
+        host,
+        lockfile,
+        [0x42; 32],
+    )
+}
+
+/// The recorded document predates resolved-feature recording, so Cargo source
+/// authority (which binds the exact resolved feature set of a release) is
+/// unavailable for every package it describes. The tests below are about
+/// reference alignment, not features, so each resolve node that records none is
+/// given an explicit empty feature set, which is the shape current Cargo
+/// writes for a package built with no optional features.
+fn with_recorded_feature_sets(metadata: &[u8]) -> Vec<u8> {
+    let mut document: serde_json::Value =
+        serde_json::from_slice(metadata).expect("recorded Cargo metadata");
+    let nodes = document["resolve"]["nodes"]
+        .as_array_mut()
+        .expect("resolve nodes");
+    for node in nodes {
+        if let Some(node) = node.as_object_mut() {
+            node.entry("features")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        }
+    }
+    serde_json::to_vec(&document).expect("re-encoded Cargo metadata")
+}
 
 const METADATA: &[u8] = include_bytes!("../library/browse/fixtures/tree-2026-09-27/metadata.json");
 const LOCKFILE: &str = include_str!("../library/browse/fixtures/tree-2026-09-27/Cargo.lock");
@@ -20,7 +60,7 @@ fn tree() -> ProjectTree {
     authority
         .apply(AuthorityFeed::parse(AdvisorySource::RustSec, BINCODE, 1, None, None).expect("feed"))
         .expect("admit");
-    let input = metadata_input(METADATA, "aarch64-apple-darwin", Some(LOCKFILE)).expect("metadata");
+    let input = owner_metadata_input(METADATA, "aarch64-apple-darwin", Some(LOCKFILE)).expect("metadata");
     let observe = |name: &str, version: &str| {
         authority.observe(&normalize_package("cargo", name).expect("identity"), version, false, false, 1, false)
     };
@@ -45,7 +85,7 @@ fn the_tree_reads_as_the_library_page_says_it() {
     );
     assert_eq!(
         reading.health,
-        "advisories from a partial source, not a full check of 884"
+        "advisory coverage unknown: 0 of 884 checked"
     );
     let alert = &reading.alerts[0];
     assert_eq!(alert.title, "bincode 1.3.3 is unmaintained");
@@ -220,7 +260,7 @@ fn lockfile_fallback_never_claims_workspace_membership() {
     let reading = read_tree(&tree);
     assert_eq!(
         reading.lede,
-        "Cargo.lock lists 1237 package rows; workspace membership is unknown."
+        "Cargo.lock lists 1,237 package rows; workspace membership is unknown."
     );
     assert_eq!(tree.members.len(), 0);
     assert_eq!(tree.direct.len(), 0);

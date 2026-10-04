@@ -881,6 +881,7 @@ pub enum PackageAuthorityError {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::host_path;
     use std::{
         path::Path,
         sync::atomic::AtomicBool,
@@ -927,12 +928,12 @@ mod tests {
     fn retained_package_configuration_accepts_only_explicit_ts_and_go_authorities() {
         let typescript = TypeScriptChecker::default()
             .with_node(
-                Path::new("/configured/node").to_path_buf(),
-                Path::new("/configured/lib/node_modules").to_path_buf(),
+                host_path("/configured/node").to_path_buf(),
+                host_path("/configured/lib/node_modules").to_path_buf(),
             )
             .expect("absolute Node runtime is admissible");
         let go = GoOracle::default().with_configuration(
-            GoOracleConfiguration::go_toolchain(Path::new("/configured/go").to_path_buf())
+            GoOracleConfiguration::go_toolchain(host_path("/configured/go").to_path_buf())
                 .expect("absolute Go toolchain is admissible"),
         );
         let configuration = PackageAuthorityConfiguration {
@@ -952,7 +953,7 @@ mod tests {
     fn clang_toolchain() -> ResolvedToolchain<'static> {
         ResolvedToolchain::from_version(
             NativeTool::Clang,
-            Path::new("/configured/clang"),
+            host_path("/configured/clang"),
             b"package-authority-test-toolchain",
         )
         .expect("absolute fixture executable is admissible")
@@ -961,7 +962,7 @@ mod tests {
     fn csharp_toolchain() -> ResolvedToolchain<'static> {
         ResolvedToolchain::from_version(
             NativeTool::CSharpCompiler,
-            Path::new("/configured/dotnet"),
+            host_path("/configured/dotnet"),
             b"package-authority-test-dotnet",
         )
         .expect("absolute fixture executable is admissible")
