@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use sha2::{Digest, Sha256};
 
 use backend_frontend_typescript::legacy::{
-    AstKind, AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
+    AstKind, AuthorityError, BoundReference, CheckerIndex, GetSpan,
     MappedModifier as CheckerMappedModifier, NodeId, Origin, OxcModule, ReferenceFlags, Semantic,
     Span, SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
     syntax_mapped_modifier, with_analysis, with_analysis_declaration,
@@ -3752,28 +3752,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         }
         Ok(None)
     }
-}
-
-/// Streams every OXC-bound declaration with its declared types, signatures,
-/// references, and documentation into canonical declaration facts, running
-/// the configured TypeScript checker authority as the type plane beside the
-/// in-process syntax projection.
-///
-/// The exact TypeScript checker is required once for the source. Any checker
-/// failure is a typed authority rejection; syntax projection is never used as
-/// a fallback for missing semantic facts.
-///
-/// This accepts no reconstructed token stream. OXC contributes its distinct
-/// syntax, lexical-binding, source-coordinate, and declaration authorities.
-pub(crate) fn collect<'source>(
-    profile: TypeScriptSource,
-    source: &'source [u8],
-    facts: &mut FactSet<'source>,
-) -> Result<(), TypeScriptCollectError> {
-    let report = Checker::default()
-        .run(profile, source)
-        .map_err(|cause| TypeScriptCollectError::Authority(AuthorityError::Checker { cause }))?;
-    collect_with_checker(profile, source, Some(&report), facts)
 }
 
 /// Streams the OXC projection with one caller-supplied checker report.

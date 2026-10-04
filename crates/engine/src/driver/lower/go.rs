@@ -74,8 +74,8 @@ use backend_semantic::ir::{
     SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeParameterListId, TypeReason, TypeWidth,
 };
 use backend_semantic::vocabulary::{
-    GoImageDeclarationKind, GoImageDocOwnerKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault,
-    GoImageMemberKind, GoImagePlane, GoImageTypeKind,
+    GoImageDeclarationKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault, GoImagePlane,
+    GoImageTypeKind,
     GoProjectionFault as PortableGoProjectionFault, GoProjectionIndexPhase, GoProjectionListPhase,
     LoweringUnsupported, ProjectionForeignKeyFault, ProjectionLineagePart,
     ProjectionPackageLineageFault,
@@ -134,8 +134,6 @@ enum ProjectionFault {
         /// Image signature row carrying the impossible claim.
         signature: u32,
     },
-    /// No pushed fact existed to own an anonymous compound row.
-    Anchor { owner: u32 },
     /// A bounded pooled field or method list exceeded its bounded width.
     ListCapacity {
         owner: u32,
@@ -234,22 +232,6 @@ const fn go_type_kind(kind: TypeRowKind) -> GoImageTypeKind {
         TypeRowKind::Union => GoImageTypeKind::Union,
         TypeRowKind::Tuple => GoImageTypeKind::Tuple,
         TypeRowKind::Invalid => GoImageTypeKind::Invalid,
-    }
-}
-
-const fn go_member_kind(kind: MemberKind) -> GoImageMemberKind {
-    match kind {
-        MemberKind::Field => GoImageMemberKind::Field,
-        MemberKind::Method => GoImageMemberKind::Method,
-    }
-}
-
-const fn go_doc_owner_kind(kind: DocOwner) -> GoImageDocOwnerKind {
-    match kind {
-        DocOwner::Declaration => GoImageDocOwnerKind::Declaration,
-        DocOwner::Method => GoImageDocOwnerKind::Method,
-        DocOwner::Member => GoImageDocOwnerKind::Member,
-        DocOwner::Package => GoImageDocOwnerKind::Package,
     }
 }
 
@@ -797,7 +779,6 @@ fn terminal(fault: ProjectionFault) -> GoCollectError {
         ProjectionFault::VariadicWithoutParameter { signature } => {
             PortableGoProjectionFault::VariadicWithoutParameter { signature }
         }
-        ProjectionFault::Anchor { owner } => PortableGoProjectionFault::Anchor { owner },
         ProjectionFault::ListCapacity { owner, phase } => {
             PortableGoProjectionFault::ListCapacity { owner, phase }
         }

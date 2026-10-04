@@ -1148,13 +1148,6 @@ impl<'bytes> Reader<'bytes> {
         Ok(usize::from(u16::from_be_bytes([bytes[0], bytes[1]])))
     }
 
-    fn array2(&mut self) -> Result<[u8; 2], CompilerInputManifestV2Error> {
-        self.take(2)
-            .map_err(map_read_error)?
-            .try_into()
-            .map_err(|_| CompilerInputManifestV2Error::Truncated)
-    }
-
     fn array32(&mut self) -> Result<[u8; 32], CompilerInputManifestV2Error> {
         self.take(32)
             .map_err(map_read_error)?

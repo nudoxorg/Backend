@@ -3392,15 +3392,6 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
     }
 }
 
-fn copy_bytes(bytes: &[u8]) -> Result<Box<[u8]>, PackageSemanticError> {
-    let mut owned = Vec::new();
-    owned
-        .try_reserve_exact(bytes.len())
-        .map_err(PackageSemanticError::Allocation)?;
-    owned.extend_from_slice(bytes);
-    Ok(owned.into_boxed_slice())
-}
-
 fn checked_package_bytes(
     accumulated: usize,
     additional: usize,

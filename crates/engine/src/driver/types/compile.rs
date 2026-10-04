@@ -248,19 +248,16 @@ enum EnteredAuthority<'source> {
         report: Option<&'source backend_frontend_python::legacy::CheckerReport>,
     },
     Rust {
-        profile: backend_semantic::vocabulary::RustEdition,
         project: &'source backend_frontend_rust::legacy::RustProject,
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
         features: backend_frontend_rust::legacy::RustFeatureControl<'source>,
     },
     RustWorkspace {
-        profile: backend_semantic::vocabulary::RustEdition,
         workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
         source_path: &'source std::path::Path,
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },
     Go {
-        profile: backend_semantic::vocabulary::GoVersion,
         image: &'source [u8],
     },
     Java {
@@ -268,7 +265,6 @@ enum EnteredAuthority<'source> {
         image: &'source [u8],
     },
     CSharp {
-        profile: backend_semantic::vocabulary::CSharpVersion,
         image: &'source [u8],
     },
 }
@@ -717,42 +713,40 @@ fn enter_authority<'source, 'diagnostic>(
             })
         }
         (
-            LanguageProfile::Rust(profile),
+            LanguageProfile::Rust(_),
             SemanticAuthorityInput::Rust {
                 project,
                 maximum_source_bytes,
                 features,
             },
         ) => Ok(EnteredAuthority::Rust {
-            profile,
             project,
             maximum_source_bytes,
             features,
         }),
         (
-            LanguageProfile::Rust(profile),
+            LanguageProfile::Rust(_),
             SemanticAuthorityInput::RustWorkspace {
                 workspace,
                 source_path,
                 maximum_source_bytes,
             },
         ) => Ok(EnteredAuthority::RustWorkspace {
-            profile,
             workspace,
             source_path,
             maximum_source_bytes,
         }),
         (LanguageProfile::Rust(_), SemanticAuthorityInput::None) => Err(required()),
-        (LanguageProfile::Go(profile), SemanticAuthorityInput::Go { image }) => {
-            Ok(EnteredAuthority::Go { profile, image })
+        (LanguageProfile::Go(_), SemanticAuthorityInput::Go { image }) => {
+            Ok(EnteredAuthority::Go { image })
         }
         (LanguageProfile::Go(_), SemanticAuthorityInput::None) => Err(required()),
         (LanguageProfile::Java(profile), SemanticAuthorityInput::Java { image }) => {
             Ok(EnteredAuthority::Java { profile, image })
         }
         (LanguageProfile::Java(_), SemanticAuthorityInput::None) => Err(required()),
-        (LanguageProfile::CSharp(profile), SemanticAuthorityInput::CSharp { image }) => {
-            Ok(EnteredAuthority::CSharp { profile, image })
+        (LanguageProfile::CSharp(_), SemanticAuthorityInput::CSharp { image }) => {
+            Ok(EnteredAuthority::CSharp { image })
         }
         (LanguageProfile::CSharp(_), SemanticAuthorityInput::None) => Err(required()),
         (_, _) => Err(mismatch()),

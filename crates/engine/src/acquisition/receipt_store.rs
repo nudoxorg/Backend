@@ -39,6 +39,7 @@ enum ReceiptPublishPhase {
     Snapshots,
     Delta,
     Record,
+    #[cfg(test)]
     Head,
 }
 
@@ -142,6 +143,7 @@ struct StoredRecord {
 /// Filesystem-backed immutable receipt blobs and per-intent selected heads.
 #[derive(Clone, Debug)]
 pub(super) struct AcquisitionReceiptStore {
+    #[cfg(test)]
     root: Arc<PathBuf>,
     snapshots: DirectoryCapability,
     deltas: DirectoryCapability,
@@ -179,6 +181,7 @@ impl AcquisitionReceiptStore {
             .try_into()
             .map_err(|_| io::Error::other("receipt directory initialization failed"))?;
         Ok(Self {
+            #[cfg(test)]
             root: Arc::new(requested_root),
             snapshots,
             deltas,

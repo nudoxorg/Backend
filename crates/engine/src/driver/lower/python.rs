@@ -99,19 +99,6 @@ pub(crate) fn collect<'source>(
     collect_with_checker(&module, source, facts, checker.as_ref())
 }
 
-/// Streams the syntax-proven plane only, with no type-authority transaction.
-///
-/// Test and deterministic paths pin this entry point so laws hold identically
-/// on machines with and without pyrefly provisioned.
-pub(crate) fn collect_syntax_only<'source>(
-    profile: PythonVersion,
-    source: &'source [u8],
-    facts: &mut FactSet<'source>,
-) -> Result<(), PythonCollectError> {
-    let module = extract(source, profile).map_err(PythonCollectError::Authority)?;
-    collect_with_checker(&module, source, facts, None)
-}
-
 /// Streams the plane with a caller-supplied type-authority report.
 pub(crate) fn collect_with_checker<'a, 'source>(
     module: &'a ModuleFacts,
@@ -2307,50 +2294,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    /// The innermost live class whose extent contains the occurrence site.
-    fn innermost_enclosing_class_index(&self, occurrence: &OccurrenceFact) -> Option<usize> {
-        let mut best: Option<(usize, u32)> = None;
-        for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind != DeclarationKind::Class
-                || !self.live[index]
-                || !span_contains(declaration.span, occurrence.span)
-            {
-                continue;
-            }
-            let area = declaration.span.end - declaration.span.start;
-            if best.map_or(true, |(_, span_area)| area < span_area) {
-                best = Some((index, area));
-            }
-        }
-        best.map(|(index, _)| index)
-    }
-
-    /// Resolves one `super().attr` read by walking same-file bases only.
-    /// Fields are decided first; ambiguous fields stay unresolved without
-    /// consulting methods.
-    fn super_attribute_read(&self, occurrence: &OccurrenceFact, class_index: usize) -> Option<u32> {
-        let attribute_bytes = occurrence.target.as_bytes();
-        match self.inherited_member_status(class_index, DeclarationKind::Field, attribute_bytes) {
-            InheritedMemberStatus::Unique(ordinal) => return Some(ordinal),
-            InheritedMemberStatus::Ambiguous => return None,
-            InheritedMemberStatus::Absent => {}
-        }
-        match self.inherited_member_status(class_index, DeclarationKind::Function, attribute_bytes)
-        {
-            InheritedMemberStatus::Unique(ordinal) => Some(ordinal),
-            InheritedMemberStatus::Ambiguous | InheritedMemberStatus::Absent => None,
-        }
-    }
-
-    /// Resolves one `super().method()` call by walking same-file bases only.
-    fn super_method_call(&self, occurrence: &OccurrenceFact, class_index: usize) -> Option<u32> {
-        self.inherited_member_ordinal(
-            class_index,
-            DeclarationKind::Function,
-            occurrence.target.as_bytes(),
-        )
-    }
-
     /// The innermost live class declaration with the recorded class name whose
     /// extent contains the occurrence site.
     fn enclosing_class_span(&self, occurrence: &OccurrenceFact, class: &str) -> Option<Span> {
@@ -2600,47 +2543,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
         Some(())
     }
 
-    /// The borrowed module spelling of one import binding when a `from … import
-    /// …` row carries a dotted module in `value_source`; otherwise the
-    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
-        let class_bytes = class.as_bytes();
-        let attribute_bytes = occurrence.target.as_bytes();
-        let mut class_span: Option<Span> = None;
-        for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind != DeclarationKind::Class
-                || declaration.name.as_bytes() != class_bytes
-                || !self.live[index]
-                || !span_contains(declaration.span, occurrence.span)
-            {
-                continue;
-            }
-            let area = declaration.span.end - declaration.span.start;
-            let occupied = class_span.map_or(true, |span| area < span.end - span.start);
-            if occupied {
-                class_span = Some(declaration.span);
-            }
-        }
-        let class_span = class_span?;
-        let mut matches: Vec<u32> = Vec::new();
-        for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind != DeclarationKind::Field
-                || declaration.name.as_bytes() != attribute_bytes
-                || !self.live[index]
-                || !span_contains(class_span, declaration.span)
-            {
-                continue;
-            }
-            if let Some(ordinal) = self.ordinals[index] {
-                matches.push(ordinal);
-            }
-        }
-        if matches.len() == 1 {
-            Some(matches[0])
-        } else {
-            None
-        }
-    }
-
+    /// Returns the borrowed module spelling of one import binding. A dotted
+    /// module in `value_source` takes precedence; otherwise this returns the
     /// binding's own `value_span` spelling.
     fn imported_module_spelling(
         &self,

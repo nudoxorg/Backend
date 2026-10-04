@@ -865,12 +865,6 @@ struct Ordinals {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ImageDeclarationId(u32);
 
-/// A type-fact coordinate in the staging image. This is the only coordinate
-/// C# generic constraints may lend to the shared type-parameter pool.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StagedTypeFactId(u32);
-
 impl ImageDeclarationId {
     fn from_index(index: usize) -> Result<Self, ProjectionFault> {
         u32::try_from(index)
@@ -887,25 +881,6 @@ impl ImageDeclarationId {
             observed: self.0 as u64,
         })
     }
-}
-
-impl StagedTypeFactId {
-    const fn raw(self) -> u32 {
-        self.0
-    }
-}
-
-/// Resolves a named type through the two coordinate domains. Keeping this
-/// bridge here prevents an image-row index from ever being passed as a fact
-/// type reference (the former C# constraint corruption seam).
-fn staged_type_for_named_image_declaration(
-    names: &Names<'_>,
-    ordinals: &Ordinals,
-    spelling: &[u8],
-) -> Option<StagedTypeFactId> {
-    let image = names.lookup(spelling)?;
-    let staged = ordinals.lookup(usize::try_from(image.0).ok()?)?;
-    Some(StagedTypeFactId(staged))
 }
 
 impl Ordinals {

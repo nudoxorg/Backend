@@ -373,11 +373,6 @@ impl LocalCompilerPlaneExecutionIdentity {
         self.local_authority_fingerprint
     }
 
-    fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
-        self.local_authority_fingerprint = fingerprint;
-        self
-    }
-
     /// Returns the closed child-environment recipe identity.
     #[must_use]
     pub const fn environment_identity(self) -> [u8; 32] {
@@ -2049,7 +2044,6 @@ impl LocalCompilerClient {
         let command = RuntimeCommand::Compile {
             request,
             response: response_tx,
-            request_id: lease.request_id,
             cancelled: Arc::clone(&lease.cancelled),
         };
         let sender = self
@@ -2209,7 +2203,6 @@ impl LocalCompilerClient {
         match sender.try_send(RuntimeCommand::CompilePackageSources {
             request,
             response,
-            request_id: lease.request_id,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
             Ok(()) => lease.mark_dispatched(),
@@ -2277,7 +2270,6 @@ impl LocalCompilerClient {
         match sender.try_send(RuntimeCommand::CompilePackageSourcesStaged {
             request,
             response,
-            request_id: lease.request_id,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
             Ok(()) => lease.mark_dispatched(),
@@ -2633,7 +2625,6 @@ enum RuntimeCommand {
     Compile {
         request: OwnedCompilerRequest,
         response: SyncSender<RuntimeEvent>,
-        request_id: u64,
         cancelled: Arc<AtomicBool>,
     },
     SemanticImage {
@@ -2644,13 +2635,11 @@ enum RuntimeCommand {
     CompilePackageSources {
         request: OwnedPackageSourceSet,
         response: SyncSender<Result<PublishedSemanticPackage, PackageSemanticRuntimeError>>,
-        request_id: u64,
         cancelled: Arc<AtomicBool>,
     },
     CompilePackageSourcesStaged {
         request: OwnedPackageSourceSet,
         response: SyncSender<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
-        request_id: u64,
         cancelled: Arc<AtomicBool>,
     },
     ActivateSemanticGeneration {
@@ -3194,7 +3183,6 @@ fn dispatch_runtime_command(
         RuntimeCommand::Compile {
             request,
             response,
-            request_id: _,
             cancelled,
         } => {
             let facts = request.facts();
@@ -3241,7 +3229,6 @@ fn dispatch_runtime_command(
         RuntimeCommand::CompilePackageSources {
             request,
             response,
-            request_id: _,
             cancelled,
         } => queue_package_sources(
             request,
@@ -3259,7 +3246,6 @@ fn dispatch_runtime_command(
         RuntimeCommand::CompilePackageSourcesStaged {
             request,
             response,
-            request_id: _,
             cancelled,
         } => queue_package_sources(
             request,

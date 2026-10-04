@@ -135,8 +135,6 @@ pub(super) const MAX_REF_LISTS: usize = 4096;
 /// flat pool can address, not a fixed row width. A list beyond this is still
 /// a typed `RefListElements` rejection, never a truncated emission.
 pub(super) const MAX_REF_LIST_ELEMENTS: usize = 4096;
-/// Total atom budget: one name per fact plus every extension atom.
-pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
 /// 8,192 slots × 4-byte `u32` owner = 32 KiB; measured target high-water 0 rows. Roll back to 2,048 if it stays below 1,024.
 pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 8192;
@@ -534,6 +532,7 @@ impl<'source> SemanticFact<'source> {
 
     /// Appends one literal text child (template-literal parts).
     #[must_use]
+    #[cfg(test)]
     pub(super) fn type_text_child(mut self, text: &'source [u8]) -> Self {
         let ordinal = usize::from(self.type_child_count);
         if ordinal < MAX_TYPE_CHILDREN {

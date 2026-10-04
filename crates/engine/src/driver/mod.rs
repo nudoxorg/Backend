@@ -9,6 +9,7 @@
 
 mod database;
 mod lower;
+#[cfg(all(test, unix))]
 mod native;
 mod types;
 
