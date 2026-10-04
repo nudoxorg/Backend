@@ -422,7 +422,7 @@ mod tests {
         }
     }
 
-    fn env(pairs: &[(&str, &Path)]) -> impl Fn(&str) -> Option<OsString> {
+    fn env(pairs: &[(&str, &Path)]) -> impl Fn(&str) -> Option<OsString> + use<> {
         let pairs = pairs
             .iter()
             .map(|(name, value)| ((*name).to_owned(), value.as_os_str().to_owned()))
