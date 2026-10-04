@@ -1,0 +1,49 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T14:34:05.525129+00:00",
+  "label": "borrowed-source-witness",
+  "branch": "codex/checkpoint-borrowed-source-witness-20261004T143405Z",
+  "worktree": "/private/tmp/nudox-borrowed-source-witness-20261004",
+  "parent": "d21562d4bfd5e7648b0aeb6bdd8bab6fc8d5555d",
+  "merge_parents": [],
+  "working_source_tree": "d64da94a7c4c7d1b761b0ed5366ee7ef19930a15",
+  "description": "Frozen borrowed source witness and common checked graph constructor admission. Uses existing allocation-counter integration test instead of unsafe allocation instrumentation. Root requested canonical coordinate/reason validation for both full and borrowed constructors; source includes those independent rejection controls. Final incremental source review and Rust/allocation/storage execution remain pending.",
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs"
+  ],
+  "source_sha256": {
+    "crates/library/lib.rs": "b3a72b5c40848707a56d549d3e1a10268086a1e0d71318acbbff637a291e2c22",
+    "crates/library/package_graph.rs": "26f20123dad72e26045fa2bbc5b8ee597c37b95f8ab9f06813c84251e3f45c2b",
+    "crates/library/tests/package_graph_source_witness_allocation.rs": "b8e0925c10d2be15e329991b593fdbb143a3ba90d761ad99fb0a1c5ca6948fa7",
+    "extensions/turso/src/graph.rs": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+    "extensions/turso/src/package_graph_read.rs": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e"
+  },
+  "untracked_source_paths": [
+    "crates/library/tests/package_graph_source_witness_allocation.rs"
+  ],
+  "original_index_sha256": "16927742c2499c257ba8f956de9c69415332a2dcbbb476c71675d7db4354102b",
+  "original_index_stages_sha256": "e012d7c550804660bb856fa477020effd724d2ee0cf3821435618691bd7ef91d",
+  "original_status_sha256": "b0d26d3becde927ce65ce90708a44114767a45dbf1d237a5672f6f9df9238fe3",
+  "preserved_index_blobs": [
+    "86289f2a9b148331ee8e13a6ac9faadfb58e9687",
+    "b892c4f17fa2bcce89a4587931771ffea0a07510",
+    "bcba5a279e598ac6a74af35823cbd6185b0f2d06",
+    "e796822d0b40542ee0e2b6d9433afb32cf1f3459"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {
+    "preserved_files": {
+      "unified-admission.patch": "/private/tmp/nudox-borrowed-source-witness-unified-constructor-admission.patch"
+    }
+  },
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}

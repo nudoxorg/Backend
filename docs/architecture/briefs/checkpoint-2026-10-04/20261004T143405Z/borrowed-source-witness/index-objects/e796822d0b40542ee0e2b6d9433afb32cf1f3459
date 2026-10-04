@@ -669,28 +669,6 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn durable_source_identity_decoders_reject_malformed_tags_and_ids() {
-        assert!(crate::graph::decode_package_reference(
-            3,
-            "pkg:cargo/decoder-check@1.0.0".to_owned(),
-        )
-        .is_err());
-        assert!(crate::graph::decode_package_reference(
-            i64::from(PackageReferenceKind::Purl.tag()),
-            "not a package URL".to_owned(),
-        )
-        .is_err());
-        assert!(crate::graph::decode_package_reference(
-            i64::from(PackageReferenceKind::Local.tag()),
-            " padded local coordinate ".to_owned(),
-        )
-        .is_err());
-        assert!(crate::graph::decode_source_authority(5, vec![0; 32]).is_err());
-        assert!(crate::graph::decode_source_authority(0, vec![1; 32]).is_err());
-        assert!(crate::graph::decode_source_authority(1, vec![1; 31]).is_err());
-    }
-
     fn package(value: &str) -> PackageReference {
         PackageReference::parse(value).expect("valid package coordinate")
     }

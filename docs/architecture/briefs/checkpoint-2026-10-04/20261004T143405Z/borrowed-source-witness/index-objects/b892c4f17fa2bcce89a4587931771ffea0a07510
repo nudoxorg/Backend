@@ -154,8 +154,7 @@ pub use graph_query::{
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use package_graph::{
-    BorrowedPackageGraphSourceState, CheckedPackageGraphFacts,
-    CheckedPackageGraphSourceWitness, DependencyAuthority, DependencyEvidence, DependencyFacts,
+    CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
     DependencyScope, DependentSources, IndexedCheckedPackageGraph, MAX_PACKAGE_GRAPH_ROWS,
     PackageDependencyLookup, PackageDependencyRecord, PackageDependencySourceFacts,
     PackageDependencyTarget, PackageGraphAdmissionError, PackageGraphIndexLimits,
